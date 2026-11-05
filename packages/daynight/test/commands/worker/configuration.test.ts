@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationManagerOptions, WorkerConfigurationSnapshot } from "../../../src/commands/worker/configuration.js";
-import type { WorkerCloudDesired, WorkerCloudItem } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
 import { replaceFileAtomically } from "../../../src/platform/files.js";
 
 const projectId = "11111111-1111-4111-8111-111111111111";
@@ -275,6 +275,43 @@ describe("Worker cloud configuration application", () => {
     expect(reopened.current().effective.native).toBeNull();
   });
 
+  it.each([
+    { scope: "global", projects: false, model: "current-model", args: ["--no-alt-screen"] },
+    { scope: "project", projects: true, model: "current-model", args: ["--no-alt-screen"] },
+    { scope: "global", projects: false, model: null, args: [] },
+    { scope: "project", projects: true, model: null, args: [] },
+  ])("validates the current $scope target before exposing cached settings with model $model", async ({ projects, model, args }) => {
+    const previous = desired("1", "previous-good", projects);
+    const first = await fixture();
+    await first.manager.receive({ ...previous, value: { ...previous.value, native: { ...previous.value.native, args: ["--search"] } } });
+    await first.manager.settle();
+    await first.manager.stop();
+    const release = deferred(), entered = deferred(), checked: WorkerCloudNative[] = [], published: WorkerConfigurationSnapshot[] = [];
+    const current = desired("2", "current-model", projects), native = { ...current.value.native, model, args };
+    const effective = (snapshot: WorkerConfigurationSnapshot): WorkerCloudNative | null => projects ? snapshot.effective.projects[0]?.native ?? null : snapshot.effective.native;
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal,
+      applyNative: async value => {
+        checked.push(value);
+        if (value.model === model) {
+          if (checked.filter(value => value.model === model).length === (projects ? 2 : 1)) entered.resolve();
+          await release.promise;
+        }
+      },
+      onChange: snapshot => { published.push(snapshot); },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive({ ...current, value: { ...current.value, native } });
+    try {
+      await entered.promise;
+      expect(effective(reopened.current())).toBeNull();
+      expect(published.every(snapshot => effective(snapshot) === null)).toBe(true);
+    } finally { release.resolve(); }
+    await reopened.settle();
+    expect(effective(reopened.current())).toEqual(native);
+    expect(checked).toEqual(Array.from({ length: projects ? 2 : 1 }, () => native));
+    expect(published.every(snapshot => effective(snapshot)?.model !== "previous-good")).toBe(true);
+  });
+
   it("revalidates a historical successful tuple when the newest cloud native target fails", async () => {
     const first = await fixture();
     await first.manager.receive(desired("1", "previous-good", false));
@@ -287,9 +324,74 @@ describe("Worker cloud configuration application", () => {
     fixtures.push({ manager: reopened, directory: first.directory });
     await reopened.receive(desired("2", "new-invalid", false));
     await reopened.settle();
-    expect(checked).toEqual(["previous-good", "new-invalid"]);
+    expect(checked).toEqual(["new-invalid", "previous-good"]);
     expect(reopened.current().effective.native?.model).toBe("previous-good");
     expect(item(reopened.current(), "native")).toMatchObject({ state: "error", targetRevision: "2", appliedValue: { model: "previous-good" } });
+  });
+
+  it("keeps an already validated live tuple available while applying the current target", async () => {
+    const entered = deferred(), release = deferred();
+    const { manager } = await fixture({ applyNative: async native => {
+      if (native.model === "current-model") { entered.resolve(); await release.promise; }
+    } });
+    await manager.receive(desired("1", "previous-good"));
+    await manager.settle();
+    await manager.receive(desired("2", "current-model"));
+    try {
+      await entered.promise;
+      expect(manager.current().effective.native?.model).toBe("previous-good");
+      expect(manager.current().effective.projects[0]?.native?.model).toBe("previous-good");
+    } finally { release.resolve(); }
+    await manager.settle();
+    expect(manager.current().effective.native?.model).toBe("current-model");
+    expect(manager.current().effective.projects[0]?.native?.model).toBe("current-model");
+  });
+
+  it.each([true, false])("retains the current failure when cached null-model history is usable: %s", async usable => {
+    const first = await fixture(), original = desired("1");
+    const previous = { ...original.value.native, model: null, args: ["--search"] };
+    await first.manager.receive({ ...original, value: { ...original.value, native: previous } });
+    await first.manager.settle();
+    await first.manager.stop();
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal,
+      applyNative: async native => {
+        if (native.model === "new-invalid") throw new TypeError("invalid current target");
+        if (!usable) throw new Error("historical provider unavailable");
+      },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(desired("2", "new-invalid"));
+    await reopened.settle();
+    expect(reopened.current().effective.native).toEqual(usable ? previous : null);
+    expect(reopened.current().effective.projects[0]?.native).toEqual(usable ? previous : null);
+    for (const kind of ["native", "projectNative"] as const) {
+      expect(item(reopened.current(), kind)).toMatchObject({ state: "error", appliedValue: previous, error: { code: "invalid_configuration" }, lastFailure: { code: "invalid_configuration" } });
+    }
+  });
+
+  it.each(["superseded", "cancelled"] as const)("does not publish a %s historical validation", async transition => {
+    const first = await fixture();
+    await first.manager.receive(desired("1", "previous-good", false));
+    await first.manager.settle();
+    await first.manager.stop();
+    const entered = deferred(), release = deferred(), cancellation = new AbortController(), published: WorkerConfigurationSnapshot[] = [];
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: cancellation.signal,
+      applyNative: async native => {
+        if (native.model === "new-invalid") throw new TypeError("invalid current target");
+        if (native.model === "previous-good") { entered.resolve(); await release.promise; }
+      },
+      onChange: snapshot => { published.push(snapshot); },
+    });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(desired("2", "new-invalid", false));
+    try {
+      await entered.promise;
+      if (transition === "superseded") await reopened.receive(desired("3", "latest", false));
+      else cancellation.abort(new Error("Worker stopped during historical validation."));
+    } finally { release.resolve(); }
+    await reopened.settle();
+    expect(reopened.current().effective.native?.model ?? null).toBe(transition === "superseded" ? "latest" : null);
+    expect(published.every(snapshot => snapshot.effective.native?.model !== "previous-good")).toBe(true);
   });
 
   it("settles immediate application work without waiting for a future retry", async () => {

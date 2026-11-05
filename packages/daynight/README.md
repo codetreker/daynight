@@ -1772,9 +1772,14 @@ authenticated user and Worker ID. One serialized commit owner merges receives,
 application results and acknowledgments, atomically persists the latest state,
 then publishes an immutable effective view. Invalid scope, corrupt data and
 storage errors remain failures. Cached native success history is retained for
-observation, but a new runtime must validate it under the current local control
-mode before use. Atomic file replacement alone does not permit
-an older application result to overwrite a newer target.
+observation. For both global and Project native settings, a new runtime validates
+the current cloud target first and publishes that tuple on success, including
+explicit null model and empty arguments. Only a failed target validation permits
+revalidation of historical successful settings under the current local control
+mode. Unvalidated history remains unavailable while the target is being checked;
+values already validated in this runtime remain usable during later updates.
+Atomic file replacement alone does not permit an older application result to
+overwrite a newer target.
 
 Heartbeats exchange targets and actual results; native and Project operations
 run outside the report attempt and cache commit queue. Independent successful

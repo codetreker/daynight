@@ -34,8 +34,14 @@ and Worker ID. One serialized commit owner computes receive, application-result
 and report-acknowledgment transitions against the latest state. It rechecks the
 target and failure identities at the head of the queue, atomically persists the
 result, then publishes that immutable view. Invalid scope, corrupt data and
-storage failures remain errors. Native success history remains observable, but
-a new runtime revalidates it under the current local control mode before use.
+storage failures remain errors. Native success history remains observable. For
+both global and Project native items, a new runtime validates the current cloud
+target first and publishes it on success, including explicit null model and empty
+arguments. Only failure of that target permits revalidating the historical
+successful tuple under the current local control mode. Until either validation
+succeeds, native settings remain unavailable; a tuple already validated by the
+current runtime remains usable during later target application. Every result
+retains the target-revision and cancellation checks at publication.
 
 Native validation and Project adapters execute outside the commit queue and
 report attempt. Independent successful scalar or native items remain applied
@@ -124,10 +130,19 @@ and removal can preserve unknown ownership and capacity independently. The singl
 configuration owner and retained bindings leave that adaptation possible without
 changing task or claim records.
 
+**Publish revalidated history before checking the startup target.** A recovered
+claim can launch between the two publications with an old model even when the
+current cloud target is valid. Checking the target first prevents scheduling
+from choosing history merely because its validation completed earlier, while
+retaining historical recovery when the target fails.
+
 ## Consequences
 
 Cloud updates can change subsequent scheduling and native choices without
-reconstructing the coordinator or restarting healthy processes. Partial failures
+reconstructing the coordinator or restarting healthy processes. Startup recovery
+waits for the applicable current native target; it does not race a transient
+publication of cached history. Failed targets still retain independently
+revalidated historical settings. Partial failures
 and unavailable values remain observable, and startup cannot silently promote
 a stale local managed value to authority. Local managed writers must query cloud
 ownership when the cache is absent rather than assuming a new Worker.

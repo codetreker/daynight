@@ -226,24 +226,26 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       return replaceItem(current, { ...item, started: key.kind === "projectRemoval" || item.started, value: { ...item.value, state: "applying", error: null, nextAttemptAt: null } });
     });
     if (!began || controller.signal.aborted) return;
-    if (key.kind === "native" || key.kind === "projectNative") {
-      const previous = findItem(cache, key)?.value.appliedValue;
-      if (typeof previous === "object" && previous !== null && !equal(previous, intended) && !equal(previous, validatedNative.get(keyOf(key)))) {
-        let usable = false;
-        try { await options.applyNative(previous, controller.signal); usable = true; }
-        catch {
-          // A historical tuple invalid in this local mode stays unavailable; the current target is validated independently.
-        }
-        if (usable && !controller.signal.aborted) await commit(current => current, false, { key, revision, native: previous });
-      }
-    }
-    if (stopped || controller.signal.aborted) return;
     let outcome: { succeeded: true } | { succeeded: false; error: unknown } = { succeeded: true }, preparationDeferred = false;
+    let validated: WorkerCloudNative | undefined;
     try {
-      if (key.kind === "native" || key.kind === "projectNative") await options.applyNative(intended as WorkerCloudNative, controller.signal);
+      if (key.kind === "native" || key.kind === "projectNative") {
+        await options.applyNative(intended as WorkerCloudNative, controller.signal);
+        validated = intended as WorkerCloudNative;
+      }
       else if (key.kind === "projectPreparation") preparationDeferred = await prepare!(key.projectId, controller.signal) === false;
       else if (key.kind === "projectRemoval") await remove!(key.projectId, controller.signal);
     } catch (error) { outcome = { succeeded: false, error }; }
+    if (stopped || controller.signal.aborted) return;
+    if (!outcome.succeeded && (key.kind === "native" || key.kind === "projectNative")) {
+      const previous = findItem(cache, key)?.value.appliedValue;
+      if (typeof previous === "object" && previous !== null && !equal(previous, intended) && !equal(previous, validatedNative.get(keyOf(key)))) {
+        try { await options.applyNative(previous, controller.signal); validated = previous; }
+        catch {
+          // Retain the current target's diagnostic; unusable history cannot establish an effective value.
+        }
+      }
+    }
     if (stopped || controller.signal.aborted) return;
     if (preparationDeferred) {
       await commit(current => {
@@ -260,7 +262,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       if (current.nextFailureId === Number.MAX_SAFE_INTEGER) throw new RangeError("Worker configuration failure sequence is exhausted.");
       const diagnostic = failure(outcome.error, key, now()), attempts = Math.min(item.attempts + 1, retryDelays.length), delay = retryDelays[attempts - 1]!;
       return { ...replaceItem(current, { ...item, attempts, failureId: current.nextFailureId, value: { ...item.value, state: "error", error: diagnostic, lastFailure: diagnostic, nextAttemptAt: new Date(now() + delay).toISOString() } }), nextFailureId: current.nextFailureId + 1 };
-    }, false, outcome.succeeded && (key.kind === "native" || key.kind === "projectNative") ? { key, revision, native: intended as WorkerCloudNative } : undefined);
+    }, false, validated === undefined ? undefined : { key, revision, native: validated });
   };
   const pump = (): void => {
     if (stopped || fatal !== undefined || !synchronized) return;
