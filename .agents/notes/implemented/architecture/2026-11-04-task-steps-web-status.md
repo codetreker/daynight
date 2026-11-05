@@ -22,11 +22,18 @@ coalesces a new parent read at that floor and opening generation. Reopening
 requires a fresh parent read even at the same version; repeated stale responses
 fail visibly instead of leaving an unbounded retry or a permanently busy gate.
 Task and Steps state publication both check convergence, including when a
-same-version summary mismatch clears.
+same-version summary mismatch clears. A parent response matching the persisted
+summary can still be ahead of the current page's projection when another page
+commits first. The owner retains that response for pending admission until the
+local projection catches up; completing the cache transaction alone does not
+establish a current parent detail.
 
 A conflict, malformed success or uncertain transport result is reconciled by
 reading current resources under the original identity, without replay. A failed
-readback keeps recovery available and the gate closed. A child 404 checks the
+readback keeps recovery available and the gate closed. If storing a fresh parent
+fails but summary validation permits displaying it, the storage error ends the
+recovery attempt and preserves explicit retry rather than leaving it busy.
+A child 404 checks the
 parent before retiring access. A confirmed parent deletion remains visible across
 a cache generation replacement; the authorized cache index, rather than a
 lagging rendered graph, establishes removal. Request IDs correlate recovery reads with their
