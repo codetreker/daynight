@@ -55,6 +55,11 @@ Escape stops propagation while retaining its native default action. Display and
 keyboard hints retain their inner-layer priority. Outside pointer dismissal
 leaves focus and default behavior to the clicked target.
 
+The [slash submission decision](2026-11-05-session-slash-submission.md) separates
+default highlighting from explicit candidate selection and retains selected
+command identity across argument edits and dismissal. Menu closure still only
+changes presentation; it does not erase that intent or submit an operation.
+
 The [Session requirements](../../../../docs/spec/task-sessions.md#chatbox-设置命令与运行状态)
 and [protocol design](../../../../docs/design/task-session-protocol.md) own the
 behavior and layout mechanism. This extends the

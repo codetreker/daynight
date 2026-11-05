@@ -46,14 +46,14 @@ describe('composer provider controls', () => {
     expect(props.onSend).not.toHaveBeenCalled();
     await waitFor(() => expect(input).toHaveValue(''));
   });
-  it('opens local slash settings and rejects unknown slash commands', async () => {
+  it('opens local slash settings and sends unknown slash input normally', async () => {
     const props = base(); render(<SessionComposer {...props} />);const input = screen.getByRole('textbox');
     fireEvent.change(input, { target: { value: '/model' } });fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
     fireEvent.keyDown(input, { key: 'Escape' });
     fireEvent.change(input, { target: { value: '/made-up' } });fireEvent.keyDown(input, { key: 'Enter' });
-    expect(await screen.findByText(/Unknown or unavailable command/)).toBeVisible();
-    expect(props.onExecuteCommand).not.toHaveBeenCalled();expect(props.onSend).not.toHaveBeenCalled();expect(input).toHaveValue('/made-up');
+    await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/made-up'));
+    expect(props.onExecuteCommand).not.toHaveBeenCalled(); expect(screen.queryByText(/Unknown or unavailable command/)).toBeNull();
   });
   it('uses arrow navigation, exposes directory errors and retries discovery without agent input', async () => {
     const props = base(); props.state = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commandsError: 'Native discovery failed' } } };
@@ -284,4 +284,137 @@ it('reveals keyboard selection at both ends of a long catalog without accumulati
   fireEvent.keyDown(input, { key: 'ArrowDown' });
   expect(body.scrollTop).toBe(0);
   expect(input).toHaveFocus();
+});
+
+
+it.each(['/Users/name/copilot 路径说明', '/made-up', '/mo', '/', '  /Users/a/copilot  中文\n保留  空格\n第二行  '])('sends unmatched input %j through Enter and the button with only outer whitespace trimmed', async value => {
+  const props = base(); render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  for (const submit of ['enter', 'button']) {
+    fireEvent.change(input, { target: { value } });
+    if (submit === 'enter') fireEvent.keyDown(input, { key: 'Enter' });
+    else fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(input).toHaveValue(''));
+  }
+  expect(props.onSend.mock.calls).toEqual([[value.trim()], [value.trim()]]);
+  expect(props.onExecuteCommand).not.toHaveBeenCalled(); expect(screen.queryByRole('combobox')).toBeNull();
+});
+
+it.each(['removed', 'replaced', 'unavailable', 'ambiguous'] as const)('retains selected command intent when its catalog is %s', async mode => {
+  const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/rev' } }); fireEvent.keyDown(input, { key: 'Tab' });
+  fireEvent.change(input, { target: { value: '/review changed arguments' } }); fireEvent.keyDown(input, { key: 'Escape' });
+  const original = controls.commands[0]!;
+  const commands = mode === 'removed' ? [] : mode === 'replaced' ? [{ ...original, id: 'replacement' }] : mode === 'unavailable' ? [{ ...original, available: false }] : [original, { ...original, id: 'second' }];
+  view.rerender(<SessionComposer {...props} state={{ ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, revision: '4', commands } } }} />);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  expect(await screen.findByText(/Unknown or unavailable command/)).toBeVisible();
+  expect(props.onExecuteCommand).not.toHaveBeenCalled(); expect(props.onSend).not.toHaveBeenCalled(); expect(input).toHaveValue('/review changed arguments');
+  fireEvent.change(input, { target: { value: '/different changed arguments' } }); fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/different changed arguments'));
+});
+
+it('uses the current revision for a selected command and preserves a newer draft during acceptance', async () => {
+  const props = base(); let resolve!: () => void;
+  props.onExecuteCommand.mockImplementation(() => new Promise<void>(done => { resolve = done; }));
+  const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/rev' } }); fireEvent.keyDown(input, { key: 'Tab' });
+  fireEvent.change(input, { target: { value: '/review new arguments' } });
+  view.rerender(<SessionComposer {...props} state={{ ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, revision: '4' } } }} />);
+  fireEvent.keyDown(input, { key: 'Enter' }); fireEvent.keyDown(input, { key: 'Enter' });
+  expect(props.onExecuteCommand).toHaveBeenCalledExactlyOnceWith('skill:review', 'new arguments', '4', '/review new arguments');
+  fireEvent.change(input, { target: { value: 'new draft' } }); await act(async () => resolve());
+  expect(input).toHaveValue('new draft'); expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it('requires an explicit arrow selection before Enter completes a prefix and resets it on edits and catalog refresh', async () => {
+  const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' }); fireEvent.keyDown(input, { key: 'Enter' });
+  expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible(); fireEvent.keyDown(input, { key: 'Escape' });
+  fireEvent.change(input, { target: { value: '/m' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
+  fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/mo'));
+  fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
+  view.rerender(<SessionComposer {...props} state={{ ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, revision: '4' } } }} />);
+  fireEvent.keyDown(input, { key: 'Enter' }); await waitFor(() => expect(props.onSend).toHaveBeenCalledTimes(2));
+});
+
+it.each(['missing', 'failed', 'working'] as const)('uses the ordinary send gate for unmatched slash input with %s controls', async mode => {
+  const props = base(); const { controls: _controls, ...withoutControls } = props.state.snapshot!;
+  props.state = { ...props.state, snapshot: mode === 'missing' ? withoutControls : { ...props.state.snapshot!, ...(mode === 'working' ? { activity: 'working', currentTurnId: 'turn' } : {}), controls: { ...controls, commandsError: 'Discovery failed' } } };
+  render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/Users/path 中文' } });
+  const submit = screen.getByRole('button', { name: mode === 'working' ? 'Add to current turn' : 'Send' });
+  expect(submit).toBeEnabled(); fireEvent.click(submit);
+  await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/Users/path 中文')); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it.each(['Provider rejected', 'Delivery outcome is unknown'])('never downgrades a command after %s', async failure => {
+  const props = base(); props.onExecuteCommand.mockRejectedValue(new Error(failure)); render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: '/compact' } }); fireEvent.keyDown(input, { key: 'Enter' });
+  expect(await screen.findByRole('alert')).toHaveTextContent(failure); expect(input).toHaveValue('/compact');
+  expect(props.onExecuteCommand).toHaveBeenCalledOnce(); expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it.each(['escape', 'toolbar', 'inactive'] as const)('clears temporary arrow selection across %s menu lifecycle', async mode => {
+  const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
+  if (mode === 'escape') fireEvent.keyDown(input, { key: 'Escape' });
+  else if (mode === 'toolbar') fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  else { view.rerender(<SessionComposer {...props} active={false} />); view.rerender(<SessionComposer {...props} />); }
+  if (mode !== 'inactive') fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  fireEvent.keyDown(input, { key: 'Enter' }); await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/mo'));
+  expect(screen.queryByRole('combobox')).toBeNull();
+});
+
+it('clears selected command intent on a session change even when the draft header stays the same', async () => {
+  const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/rev' } }); fireEvent.keyDown(input, { key: 'Tab' });
+  fireEvent.change(input, { target: { value: '/review text' } });
+  view.rerender(<SessionComposer {...props} state={{ ...props.state, snapshot: { ...props.state.snapshot!, sessionId: 'other-session', controls: { ...controls, commands: [] } } }} />);
+  fireEvent.keyDown(input, { key: 'Enter' }); await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/review text'));
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it('rejects direct ambiguous and unavailable commands while preserving their text', async () => {
+  const props = base(), original = controls.commands[0]!;
+  props.state = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commands: [original, { ...original, id: 'duplicate' }, { ...controls.commands[1]!, available: false }] } } };
+  render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  for (const value of ['/review args', '/compact', '/model invalid']) {
+    fireEvent.change(input, { target: { value } }); fireEvent.keyDown(input, { key: 'Enter' });
+    expect(await screen.findByText(/Unknown or unavailable command/)).toBeVisible(); expect(input).toHaveValue(value);
+  }
+  expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it('preserves unknown text and prevents duplicate ordinary sends while a result is pending or unknown', async () => {
+  const props = base(); let reject!: (reason: Error) => void;
+  props.onSend.mockImplementation(() => new Promise<void>((_resolve, fail) => { reject = fail; }));
+  render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/Users/path  中文' } });
+  fireEvent.keyDown(input, { key: 'Enter' }); fireEvent.keyDown(input, { key: 'Enter' });
+  expect(props.onSend).toHaveBeenCalledOnce();
+  await act(async () => reject(new Error('Delivery outcome is unknown')));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Delivery outcome is unknown'); expect(input).toHaveValue('/Users/path  中文');
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it('leaves slash text untouched for IME and Shift+Enter', () => {
+  const props = base(); render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/mo' } });
+  expect(fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })).toBe(true);
+  for (const composition of [{ isComposing: true }, { keyCode: 229 }]) expect(fireEvent.keyDown(input, { key: 'Enter', ...composition })).toBe(true);
+  fireEvent.compositionStart(input); fireEvent.keyDown(input, { key: 'Enter' }); fireEvent.compositionEnd(input);
+  expect(input).toHaveValue('/mo'); expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it.each(['offline', 'auth', 'read-only', 'unsynchronized', 'pending', 'no-steer'] as const)('does not bypass the %s send restriction for slash text', mode => {
+  const props = base();
+  if (mode === 'read-only') props.state = { ...props.state, snapshot: { ...props.state.snapshot!, operations: { ...props.state.snapshot!.operations, canSend: false } } };
+  if (mode === 'unsynchronized') props.state = { ...props.state, snapshot: { ...props.state.snapshot!, synchronized: false } };
+  if (mode === 'no-steer') props.state = { ...props.state, snapshot: { ...props.state.snapshot!, activity: 'working', currentTurnId: 'turn', capabilities: { ...props.state.snapshot!.capabilities, steer: false } } };
+  if (mode === 'pending') props.state = { ...props.state, operations: new Map([['pending', { protocol: props.state.snapshot!.protocol, sessionId: props.state.snapshot!.sessionId, claimId: props.state.snapshot!.claimId, executionGeneration: props.state.snapshot!.executionGeneration, operationId: 'pending', kind: 'send_message', state: 'unknown', providerResult: null, error: null } as SessionOperation]]) };
+  render(<SessionComposer {...props} connected={mode !== 'offline'} authPaused={mode === 'auth'} />);
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: '/Users/path 中文' } });
+  expect(screen.getByRole('button', { name: mode === 'no-steer' ? 'Add to current turn' : 'Send' })).toBeDisabled();
+  fireEvent.keyDown(input, { key: 'Enter' }); expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
 });

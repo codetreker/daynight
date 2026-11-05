@@ -562,7 +562,7 @@ export class TaskSessionClient {
   }
   send = (text: string): Promise<void> => {
     this.admitted();
-    if (!this.live() || !text.trim() || text.trimStart().startsWith('/') || !sessionSendGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Sending is not currently allowed.'));
+    if (!this.live() || !text.trim() || !sessionSendGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Sending is not currently allowed.'));
     return this.execute({ kind: 'send_message', payload: { content: [{ type: 'text', text }], expectedTurnId: this.view.state.snapshot!.activity === 'working' ? this.view.state.snapshot!.currentTurnId : null } });
   };
   updateSetting = (settingId: string, value: string, revision: string): Promise<void> => {

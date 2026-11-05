@@ -25,6 +25,11 @@ replaying a mutation. [Session requirements](../../../../docs/spec/task-sessions
 and the [protocol design](../../../../docs/design/task-session-protocol.md) own
 current behavior and compatibility limits.
 
+The [slash submission decision](../bug-fix/2026-11-05-session-slash-submission.md)
+narrows command classification to full-name matches and retained explicit
+command intent. Unknown slash text uses ordinary message submission; recognized
+commands retain the native dispatch and receipt protections described here.
+
 ## Alternatives
 
 **Only add selectors and send slash text as messages.** This would hide missing

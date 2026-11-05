@@ -8,6 +8,16 @@ import type { SessionState } from './state';
 import { sessionCancelGate, sessionSendGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 
+type CommandIntent = { readonly id: string; readonly name: string; readonly sessionId: string | undefined };
+const parseCommand = (text: string) => /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(text.trimStart());
+function classifySubmission(text: string, commands: readonly SessionNativeCommand[], intent: CommandIntent | null) {
+  const parsed = parseCommand(text), matches = commands.filter(command => command.name === parsed?.[1]);
+  if (!intent && matches.length === 0) return { kind: 'message' } as const;
+  const command = matches.length === 1 ? matches[0] : undefined;
+  if (!command || intent && command.id !== intent.id) return { kind: 'invalid' } as const;
+  return { kind: 'command', command, args: parsed?.[2] ?? '' } as const;
+}
+
 export function SessionComposer({ state, connected, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls }: {
   readonly sessionNoticeOwned?: boolean; readonly statusDescriptionId?: string;
   readonly state: SessionState; readonly connected: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
@@ -34,6 +44,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     return () => document.removeEventListener('keydown', dismiss, true);
   }, [keyboardHintVisible]);
   const [commandIndex, setCommandIndex] = useState(0), [commandsDismissed, dismissCommands] = useState(false);
+  const [candidateExplicit, setCandidateExplicit] = useState(false);
+  const commandIntent = useRef<CommandIntent | null>(null);
   const [commandPending, setCommandPending] = useState(false), [refreshing, setRefreshing] = useState(false);
   const commandInFlight = useRef(false);
 
@@ -46,7 +58,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const focusCleanups = useRef(new Set<() => void>());
   useEffect(() => () => { for (const cleanup of focusCleanups.current) cleanup(); focusCleanups.current.clear(); }, []);
   const activeRef = useRef(active); activeRef.current = active;
-  const setText = (value: string) => { setCommandIndex(0); dismissCommands(false); currentText.current = value; localRevision.current++; if (onDraftChange) onDraftChange(value); else setLocalText(value); };
+  const setText = (value: string) => { if (parseCommand(value)?.[1] !== commandIntent.current?.name) commandIntent.current = null; setCommandIndex(0); setCandidateExplicit(false); dismissCommands(false); currentText.current = value; localRevision.current++; if (onDraftChange) onDraftChange(value); else setLocalText(value); };
   const [pending, setPending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [interruptedTurn, setInterruptedTurn] = useState<string | null>(null);
@@ -104,6 +116,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   }, [active, error]);
   const snapshot = state.snapshot;
   const controls = snapshot?.controls;
+  const intent = commandIntent.current?.sessionId === snapshot?.sessionId && commandIntent.current?.name === parseCommand(text)?.[1] ? commandIntent.current : null;
+  useLayoutEffect(() => { commandIntent.current = intent; }, [text, snapshot?.sessionId, intent]);
   const localCommands: SessionNativeCommand[] = [
     { id: '$model', name: 'model', description: m.modelSettings, argumentHint: null, available: true },
     { id: '$permissions', name: 'permissions', description: m.permissionSettings, argumentHint: null, available: true },
@@ -118,6 +132,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const matchingCommands = commands.filter(command => command.name.startsWith(commandQuery));
   const showCommands = controlView === 'commands' || isCommand && !commandsDismissed && !/\s/u.test(commandQuery) && controlView === null;
   const selectedIndex = Math.min(commandIndex, Math.max(0, matchingCommands.length - 1));
+  const submission = classifySubmission(text, commands, intent);
+  useLayoutEffect(() => { setCommandIndex(0); setCandidateExplicit(false); }, [text, controls, showCommands, controlView, active]);
   const controlsAllowed = !authPaused && !pending && !commandPending && sessionControlGate(state, connected);
   const closeControls = useCallback(() => { setControlView(null); dismissCommands(true); inputRef.current?.focus({ preventScroll: true }); }, []);
   useEffect(() => {
@@ -193,8 +209,10 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   }
   function chooseCommand(command: SessionNativeCommand) {
     if (authPaused || !connected || pending || commandPending) return;
+    const matches = commands.filter(candidate => candidate.name === command.name);
+    if (!command.available || matches.length !== 1 || matches[0]?.id !== command.id) { setError(m.commandUnavailable); return; }
     if (command.argumentHint && command.id !== '$model' && command.id !== '$permissions') {
-      setText(`/${command.name} `); setControlView(null); dismissCommands(true); inputRef.current?.focus({ preventScroll: true });
+      setText(`/${command.name} `); commandIntent.current = { id: command.id, name: command.name, sessionId: snapshot?.sessionId }; setControlView(null); dismissCommands(true); inputRef.current?.focus({ preventScroll: true });
     } else void executeCommand(command, '');
   }
   const sendReady = sessionSendGate(state, connected);
@@ -258,12 +276,11 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     return () => { observer?.disconnect(); owner.style.removeProperty('--session-composer-space'); };
   }, [active, showCommands, controlView, text, error, notice]);
   async function send() {
-    if (currentText.current.trimStart().startsWith('/')) {
-      const match = /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(currentText.current.trimStart());
-      const matching = commands.filter(command => command.name === match?.[1]);
-      const command = matching.length === 1 ? matching[0] : undefined;
-      if (!command) { setError(controls?.commandsError ?? m.commandUnavailable); return; }
-      await executeCommand(command, match?.[2] ?? ''); return;
+    const currentIntent = commandIntent.current?.sessionId === snapshot?.sessionId && commandIntent.current?.name === parseCommand(currentText.current)?.[1] ? commandIntent.current : null;
+    const currentSubmission = classifySubmission(currentText.current, commands, currentIntent);
+    if (currentSubmission.kind === 'invalid') { setError(m.commandUnavailable); return; }
+    if (currentSubmission.kind === 'command') {
+      await executeCommand(currentSubmission.command, currentSubmission.args); return;
     }
     if (!latest.current.sendAllowed || latest.current.pending || commandInFlight.current || !currentText.current.trim()) return;
     const submitted = currentText.current;
@@ -313,8 +330,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     <textarea aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
       if (showCommands && matchingCommands.length && !authPaused) {
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
-        if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') { event.preventDefault(); chooseCommand(matchingCommands[selectedIndex]!); return; }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setCandidateExplicit(true); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
+        if ((event.key === 'Enter' && !event.shiftKey && candidateExplicit) || event.key === 'Tab') { event.preventDefault(); chooseCommand(matchingCommands[selectedIndex]!); return; }
       }
       if (event.key !== 'Enter' || event.shiftKey) return;
       event.preventDefault(); void send();
@@ -326,7 +343,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
         <button type="button" className="session-control-trigger" aria-label={m.commands} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
       </div>
       <SessionActivity suppressStatus={sessionNoticeOwned} snapshot={snapshot} connected={connected} active={active} commandPending={commandPending || hasPendingOperation(state, 'execute_command')} interruptRequested={interruptRequested} interruptPending={cancelling || hasPendingOperation(state, 'cancel')} interruptAllowed={cancelAllowed} onInterrupt={() => void cancel()} />
-      <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(isCommand ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>
+      <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(submission.kind !== 'message' ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>
     </div>
     {error ? <p className="session-error" role="alert">{error}</p> : null}
     </div>
