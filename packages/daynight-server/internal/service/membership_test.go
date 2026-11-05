@@ -76,9 +76,9 @@ func (f *membershipFixture) join(t *testing.T, admin, p model.Principal, project
 func (f *membershipFixture) member(t *testing.T, p model.Principal, projectID string) model.ProjectMember {
 	t.Helper()
 	var member model.ProjectMember
-	if err := f.database.ReadSnapshot(context.Background(), func(snapshot *store.Snapshot) error {
+	if err := f.database.ReadSnapshot(context.Background(), func(snapshot store.SnapshotScope) error {
 		var err error
-		member, err = snapshot.DirectProjectMember(context.Background(), p.UserID, projectID)
+		member, err = snapshot.ProjectDAO().DirectProjectMember(context.Background(), p.UserID, projectID)
 		return err
 	}); err != nil {
 		t.Fatal(err)

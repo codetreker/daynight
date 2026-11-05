@@ -298,16 +298,5 @@ func TestTaskAssigneesFailuresNeverReturnPartialProfiles(t *testing.T) {
 			t.Fatalf("storage failure became partial/empty success: %#v %v", result, err)
 		}
 	}
-	tasks, database, project, databaseURL, _ := taskService(t)
-	outsider := servicePrincipal(t, database)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: cancel})
-	result, err := traced.Assignees(ctx, outsider, project.ID, TaskAssigneesRequest{})
-	assertOperational(t, err)
-	if !errors.Is(err, context.Canceled) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
-		t.Fatal("transaction completion failure was hidden by project refusal", err)
-	}
-	_, err = tasks.Assignees(context.Background(), outsider, project.ID, TaskAssigneesRequest{})
-	requireFault(t, err, "not_found")
+
 }

@@ -10,8 +10,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

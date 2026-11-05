@@ -1,6 +1,6 @@
 # Task 预定义属性设计
 
-状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。
+状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存存储取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)；[Task 数据归属决策](../../.agents/notes/implemented/architecture/2026-11-05-task-data-ownership.md)记录值、写策略与编码的分工。
 
 ## 职责与数据流
 
@@ -19,7 +19,7 @@ flowchart LR
   Read --> Client
 ~~~
 
-core 使用通用 TaskProperties map。internal/taskproperties 依赖 core 并拥有静态注册表、值 codec、规范化与 typed business accessors；core 不反向依赖 codec。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
+core 使用通用 TaskProperties map。internal/core/model/taskproperty 拥有静态注册表、值 codec、规范化与 typed reader；internal/core/task/properties 使用同一注册表执行公开写权限与 Worker/sessionStartup 关联规则。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
 定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused、worker 与 sessionStartup。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 

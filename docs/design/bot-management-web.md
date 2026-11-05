@@ -16,11 +16,11 @@
 
 ## 读取与展示
 
-`useBotRead` 为列表、defaults 和选中详情分别管理请求。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。失败保留上次值并标记 stale，切换资源不显示前一个资源的值。
+`useBotRead` 为列表、defaults 和选中详情分别管理请求。资源 key 与账号 scope 共同约束结果；每五秒在页面可见且身份准入时刷新，不重叠请求。隐藏、资源变化和 scope abort 取消旧读取，结果发布前再次检查准入。暂停与实际失败分开：普通后台检查保留同 scope、同 key 已确认的值，实际失败保留上次值并标记 stale；切换资源不显示前一个资源的值。首次加载、显式刷新和实际错误各自保留原有语义。
 
 列表遍历到末页后一次发布，检查重复 ID/cursor，搜索在完整快照中进行。defaults 单独读取，因此 Worker 观测失败不会清空助手列表。`ready` 仅显示已启动，当前同步和输入可用性继续由 Session View 解释。服务端 defaults 的 Worker 状态不替代 Session 同步事实。
 
-`BotsPage` 在选中项之上创建一次缓存，`/bots` 与 `/bots/{id}` 使用同一个组件位置。SessionHost 始终挂载；未知绑定传 null，已缓存的 pane 隐藏，只有当前权威详情提供真实绑定。关闭聊天只导航回列表。删除或权威拒绝访问调用 `cache.invalidateBot`；普通读取失败撤下输入但不销毁可恢复状态。
+`BotsPage` 在选中项之上创建一次缓存，`/bots` 与 `/bots/{id}` 使用同一个组件位置。SessionHost 始终挂载；未知绑定传 null，已缓存的 pane 隐藏，只有当前目标同 scope 的已确认详情提供真实绑定。临时准入暂停不会使已确认绑定消失，Host 的 active 表示实际选中和展示；Session client 自行暂停请求、发送及结果发布。关闭聊天只导航回列表。删除或权威拒绝访问调用 `cache.invalidateBot`；普通读取失败撤下输入但不销毁可恢复状态。
 
 路由进入既有身份检查与页面标题流程，保留原生链接修改键行为。全局侧栏提供助手入口，并按助手路由显示选中状态；导航不替换本页身份或会话缓存模型。
 
@@ -40,7 +40,7 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 ## 详情与全屏边界
 
-`BotsPage` 拥有局部 `detailsOpen` 状态和名称按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板是会话内容的兄弟节点，`BotDetailsPanel` 接收当前详情读取所得的 Bot、相同 workerId 的 defaults 观测及 stale 标记，不另行读取或保存选中 Bot。切换时 `useBotRead` 的资源 key 隔离会立即清空旧值；面板可以保持挂载并显示加载，随后与标题及绑定一起接纳新目标。权威删除、拒绝访问、无选中项和读取失去准入均撤下面板。
+`BotsPage` 拥有局部 `detailsOpen` 状态和名称按钮 ref；它们不参与 Session cache、pane key 或 client 的依赖。面板是会话内容的兄弟节点，`BotDetailsPanel` 接收当前详情读取所得的 Bot、相同 workerId 的 defaults 观测及 stale 标记，不另行读取或保存选中 Bot。切换时 `useBotRead` 的资源 key 隔离会立即清空旧值；面板可以保持挂载并显示加载，随后与标题及绑定一起接纳新目标。权威删除、拒绝访问、无选中项或 scope 失效撤下面板；临时读取准入暂停保留展开状态和已确认内容。创建及删除确认的展示同样由用户操作、真实资源状态与 scope 生命周期拥有，提交仍检查准入。
 
 名称、Worker、cwd 和 Agent 来自已解析的 Bot 定义。`BotStatus` 复用列表与标题的启动结果及观测解释，详情状态不以 Worker 名称替代可用性说明；冻结启动配置不受后来 defaults 变化影响。读取失败与不可用保持原有状态，不将持久 ready 转换为当前 Session 同步事实。
 

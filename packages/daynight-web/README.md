@@ -52,7 +52,10 @@ independent drafts and reading positions. The current name opens details without
 rebuilding the conversation; narrow layouts and full screen share the existing
 focus rules. Closing a view does not stop its Worker-owned Agent. List deletion
 uses authoritative cleanup stages and invalidates only the target's known
-conversation state; an old Test URL cannot bypass deletion.
+conversation state; an old Test URL cannot bypass deletion. Background identity
+and data checks retain confirmed dialogs, the selected conversation and its
+reading state while request and publication admission remain enforced. Actual
+access loss still clears the affected state.
 
 The [management requirements](../../docs/spec/bot-management-web.md) and
 [Session design](../../docs/design/bot-session-view.md) own behavior and identity
@@ -146,11 +149,14 @@ attachment pages defer restoration until the workspace appears. Team-dependent
 links and its project directory wait for a verified selection, while the page's
 own resource and the shared-project directory can load independently. Restoration
 failures expose a workspace retry without replacing the saved choice. Only a
-verified missing Team clears that choice and restores Personal. When the
-confirmed selection is Personal, Team members and settings entries are omitted
-from the sidebar in all layouts; ordinary Teams retain links to their own
-member and settings pages regardless of their names. Direct Personal member and
-settings URLs remain available under their existing access rules. The
+verified missing Team clears that choice and restores Personal. Background
+checks retain the confirmed Team and all loaded selector pages until a complete
+refreshed prefix is available; actual changes and recoverable errors remain
+visible. Explicit refresh still reads the directory. When the confirmed selection
+is Personal, Team members and settings entries are omitted from the sidebar in
+all layouts; ordinary Teams retain links to their own member and settings pages
+regardless of their names. Direct Personal member and settings URLs remain
+available under their existing access rules. The
 [personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
 records this visibility choice. The
 [browser Team preference decision](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)
@@ -261,9 +267,12 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
-Team settings, members and invitations retain loaded content, drafts and open
-confirmations during ordinary identity checks. Same-account recovery rereads them
-in the background; writes require fresh Team, membership and invitation admission.
+Team settings display the selectable Team ID with an adjacent copy button for every
+viewer. Clipboard success and failure are reported locally; failure leaves the ID
+selectable and retryable. Pending copies are guarded and results are discarded when
+the Team or identity context changes. Team settings, members and invitations retain loaded content, the invitation area, drafts and open
+confirmations throughout ordinary identity checks and same-account background reads, without loading rows or disabling local editing. Initial reads and actual errors retain their own feedback. Writes require fresh Team, membership and invitation admission;
+explicit reconciliation retains the original operation result and never replays a write or infers its success from a read.
 A changed selected member role or version invalidates its confirmation. Project
 settings, membership and transfer results retain their original scope and wait for
 admission before publication. Current access is rechecked where required; a
@@ -441,6 +450,11 @@ editor and draft while pausing configuration reads. The active, visible,
 identity-admitted tab performs its own five-second single-flight refresh without
 using the runtime observation clock.
 
+Background identity checks retain the editor, dialogs, local input and unapplied
+Project selection while private requests and new saves remain gated. In-flight
+saves retain their submitted snapshot and result classification until admission
+resumes. Background directory reads preserve the complete loaded collection,
+including an empty collection; actual failures retain their error semantics.
 Background results do not replace draft input, focus or selection. Saving uses
 the draft's target revision; observation updates cannot invalidate that baseline.
 A conflict retains the draft and exposes the latest cloud value for explicit
@@ -2051,8 +2065,16 @@ language scenarios remain GET/HEAD-only in the browser; fixture writes use the
 installed CLI or authenticated API request context. The three task-status scenarios
 and `task-status-transitions` separately admit only registered project/task PUT status requests with exact expected
 counts. Six authentication scenarios declare only their exact expected management writes;
-unrelated browser mutations remain failures. The `project-settings` journey
-admits exactly four registered project-settings PATCHes: successful save, stale
+unrelated browser mutations remain failures. The visible `auth-login-session`
+journey names its awaited operations and saves `auth-login-operations` on success
+and failure. The JSON attachment contains only operation labels, status, duration
+and optional error names; authentication traces remain disabled. Owned route and
+provider cleanup actions each have a five-second limit. Interception disable
+failure still attempts CDP detach, and original, cleanup and attachment errors
+remain visible together. The [login diagnostics decision](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
+owns failure preservation and diagnostic privacy.
+
+The `project-settings` journey admits exactly four registered project-settings PATCHes: successful save, stale
 conflict, committed response loss and demoted-member refusal. Other users and
 administrative preparation use authenticated request contexts; a failed read
 reconciliation can be recovered only by an explicit read retry, without a fifth

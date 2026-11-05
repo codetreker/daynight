@@ -82,6 +82,20 @@ func TestSharedFixtures(t *testing.T) {
 					if err == nil {
 						_, err = DecodeMessage(encoded)
 					}
+					if err == nil && (fixture.File == "valid-ledger.json" || strings.HasPrefix(fixture.File, "valid-prepared-stop-")) {
+						var original, roundtrip any
+						if err = json.Unmarshal(raw, &original); err != nil {
+							t.Fatal(err)
+						}
+						if err = json.Unmarshal(encoded, &roundtrip); err != nil {
+							t.Fatal(err)
+						}
+						before, _ := CanonicalJSON(original)
+						after, _ := CanonicalJSON(roundtrip)
+						if string(before) != string(after) {
+							t.Fatal("stop proof serialization changed its canonical identity")
+						}
+					}
 				}
 			case "archive":
 				_, err = DecodeArchive(raw)

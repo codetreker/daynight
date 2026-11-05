@@ -23,6 +23,7 @@ export const TeamSelector = ({ personalId, selectedId, expanded, onExpand, onNav
     <div className="team-options" aria-label={m.switchTeam}>
       {teams.list.status === "loading" && <p role="status">{m.loading}</p>}
       {teams.list.status === "error" && <p role="alert">{m.failed} {detail(teams.list.error)} <button type="button" onClick={teams.refreshList}>{m.retry}</button></p>}
+      {teams.list.status === "ready" && teams.list.error !== null && <p role="alert">{m.failed} {detail(teams.list.error)} <button type="button" onClick={teams.revalidateList}>{m.retry}</button></p>}
       <a href={`/teams/${personalId}`} onClick={follow} aria-current={personalId === selectedId ? "true" : undefined}>{m.personal}</a>
       {teams.list.items.filter((team) => team.id !== personalId).map((team) => <a key={team.id} href={team.id === personalId ? "/projects" : `/teams/${team.id}`} onClick={follow} aria-current={team.id === selectedId ? "true" : undefined}>{team.kind === "personal" ? m.personal : team.name}</a>)}
       {onCreate && <button type="button" className="create-team-item" onClick={() => { if (menu.current) { menu.current.open = false; menu.current.querySelector("summary")?.focus(); } onCreate(); }}>{m.createTeam}</button>}

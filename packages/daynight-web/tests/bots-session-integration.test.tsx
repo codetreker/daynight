@@ -1,6 +1,7 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import * as sessions from '../src/api/sessions';
+import { pauseAuthRequests } from '../src/api/client';
 import { BotsPage } from '../src/features/bots/BotsPage';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -40,4 +41,43 @@ it('keeps real shared Session nodes and drafts across list selection and close/r
   expect(a).toHaveValue('draft A');expect(view.container.querySelector('.bot-session-host')).toBe(host);
   expect(fixtures.every(f=>vi.mocked(f.api.command).mock.calls.length===0)).toBe(true);
  }finally{view.unmount();scope.dispose();}
+});
+
+it('retains the real session pane, draft and display state while identity and Bot reads recover',async()=>{
+ const fixture=botFixture();
+ const definition={...botDefinition(),id:fixture.binding.botId,ownerUserId:botOwner,sessionId:fixture.binding.sessionId,testExecutionId:fixture.binding.testExecutionId,roleConfiguration:{instructions:'role',revision:'v1',digest:'a'.repeat(64)},startupResult:{state:'ready',code:null}};
+ vi.spyOn(sessions,'createBotSessionApi').mockReturnValue(fixture.api);
+ const pending: Array<{url:string; request:ReturnType<typeof Promise.withResolvers<Response>>}> = [];
+ let defer=false;
+ const fetch=vi.fn(async(url:string|URL|Request, _options?:RequestInit)=>{
+  const path=String(url);
+  if(defer){const request=Promise.withResolvers<Response>();pending.push({url:path,request});return request.promise;}
+  return botResponse(path.includes('/defaults')?botDefaults():path.includes('?')?{items:[definition],nextCursor:null}:definition,botOwner);
+ }); vi.stubGlobal('fetch',fetch);
+ const scope=createTaskCacheScope({userId:botOwner,onIdentityMismatch:vi.fn()});
+ const node=(enabled:boolean)=><TaskCacheProvider scope={scope}><BotsPage botId={definition.id} readEnabled={enabled} /></TaskCacheProvider>;
+ const view=renderWithLocale(node(true),{locale:'en'}); let resume: (()=>void)|undefined;
+ try{
+  const input=await screen.findByRole('textbox',{name:'Message'}); await waitFor(()=>expect(input).toBeEnabled());
+  fireEvent.change(input,{target:{value:'unfinished draft'}});
+  fireEvent.click(screen.getByRole('button',{name:'Enter Session fullscreen'}));
+  fireEvent.click(screen.getByRole('button',{name:'Display'}));
+  const menu=screen.getByRole('menu'), pane=input.closest('.bot-session-pane'), timeline=view.container.querySelector('.session-timeline');
+  const channelCount=vi.mocked(fixture.api.channel).mock.calls.length;
+  defer=true; resume=pauseAuthRequests(); view.rerender(node(false));
+  expect(screen.getByRole('textbox',{name:'Message'})).toBe(input); expect(input).toBeVisible(); expect(input).toHaveValue('unfinished draft');
+  expect(screen.getByRole('menu')).toBe(menu); expect(pane).toBeVisible();
+  expect(view.container.querySelector('.bot-conversation')).toHaveAttribute('data-session-fullscreen','true');
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Send'})).toBeDisabled());
+  resume(); resume=undefined; view.rerender(node(true));
+  await waitFor(()=>expect(pending.length).toBeGreaterThanOrEqual(3));
+  expect(screen.getByRole('textbox',{name:'Message'})).toBe(input); expect(screen.getByRole('menu')).toBe(menu);
+  expect(view.container.querySelector('.session-timeline')).toBe(timeline); expect(input).toHaveValue('unfinished draft');
+  await act(async()=>{for(const {url,request} of pending)request.resolve(botResponse(url.includes('/defaults')?botDefaults():url.includes('?')?{items:[definition],nextCursor:null}:definition,botOwner));});
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Send'})).toBeEnabled());
+  expect(screen.getByRole('textbox',{name:'Message'})).toBe(input); expect(screen.getByRole('menu')).toBe(menu);
+  expect(vi.mocked(fixture.api.channel)).toHaveBeenCalledTimes(channelCount);
+  expect(fixture.api.command).not.toHaveBeenCalled();
+  expect(fetch.mock.calls.every(([, options])=>!options?.method || options.method==='GET')).toBe(true);
+ }finally{resume?.();view.unmount();scope.dispose();}
 });

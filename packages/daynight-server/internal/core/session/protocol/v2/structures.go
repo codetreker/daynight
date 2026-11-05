@@ -32,6 +32,17 @@ func bindingProgression(previous, next map[string]any) bool {
 }
 func validStopProof(v any) bool {
 	processSchema := fields{"role": enums("shell", "agent"), "pid": boundedInt(1, 2147483647), "birthToken": native, "bootId": native}
+	if m := mapAt(v); m != nil {
+		if _, prepared := m["nativeLaunch"]; prepared {
+			shellSchema := fields{"role": literal("shell"), "pid": boundedInt(1, 2147483647), "birthToken": native, "bootId": native}
+			daemonSchema := fields{"pid": boundedInt(1, 2147483647), "birthToken": native, "bootId": native}
+			if !object(v, fields{"recordId": uuid, "executionGeneration": positive, "binding": nested(bindingSchema), "bootId": native, "stoppedAt": timestamp, "method": enums("instances_exited", "boot_changed"), "terminalStopped": literal(true), "nativeLaunch": literal("not_submitted"), "daemon": nested(daemonSchema), "processes": arrayOf(nested(shellSchema), 1, 1, "")}) {
+				return false
+			}
+			daemon, shell := mapAt(m["daemon"]), mapAt(m["processes"].([]any)[0])
+			return daemon["bootId"] == m["bootId"] && shell["bootId"] == m["bootId"] && daemon["pid"] != shell["pid"]
+		}
+	}
 	if !object(v, fields{"recordId": uuid, "executionGeneration": positive, "binding": nested(bindingSchema), "bootId": native, "stoppedAt": timestamp, "method": enums("instances_exited", "boot_changed"), "terminalStopped": literal(true), "processes": arrayOf(nested(processSchema), 2, 1000, "")}) {
 		return false
 	}
@@ -64,6 +75,9 @@ func validRun(v any) bool {
 	}
 	if proof == nil {
 		return true
+	}
+	if proof["nativeLaunch"] == "not_submitted" && (len(m["segmentIds"].([]any)) != 0 || !reflect.DeepEqual(mapAt(m["binding"])["nativeSessionId"], mapAt(proof["binding"])["nativeSessionId"])) {
+		return false
 	}
 	return m["executionGeneration"] == proof["executionGeneration"] && m["stoppedAt"] == proof["stoppedAt"] && bindingProgression(mapAt(m["binding"]), mapAt(proof["binding"])) && !timeValue(stringAt(m["stoppedAt"])).Before(timeValue(stringAt(m["startedAt"])))
 }

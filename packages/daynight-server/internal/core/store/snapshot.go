@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -14,7 +14,7 @@ type Snapshot struct {
 	tx pgx.Tx
 }
 
-func (s *Store) ReadSnapshot(ctx context.Context, operation func(*Snapshot) error) error {
+func (s *Store) ReadSnapshot(ctx context.Context, operation func(SnapshotScope) error) error {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return queryError("begin snapshot", err)
@@ -24,6 +24,14 @@ func (s *Store) ReadSnapshot(ctx context.Context, operation func(*Snapshot) erro
 	}
 	return nil
 }
+
+func (s *Snapshot) CredentialDAO() CredentialReader { return s }
+func (s *Snapshot) TeamDAO() TeamReader             { return s }
+func (s *Snapshot) ProjectDAO() ProjectReader       { return s }
+func (s *Snapshot) TaskDAO() TaskReader             { return s }
+func (s *Snapshot) WorkerDAO() WorkerReader         { return s }
+func (s *Snapshot) BotDAO() BotReader               { return s }
+func (s *Snapshot) AttachmentDAO() AttachmentReader { return s }
 
 func (s *Snapshot) Project(ctx context.Context, id string) (model.Project, error) {
 	return readProject(ctx, s.tx, id)
@@ -114,7 +122,7 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 			if workerValue == nil {
 				continue
 			}
-			value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue), false)
+			value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue))
 			if err != nil {
 				return TaskPage{}, queryError("decode worker inventory", err)
 			}

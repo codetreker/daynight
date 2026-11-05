@@ -23,15 +23,15 @@ func (s *Tasks) Get(ctx context.Context, principal model.Principal, projectID, i
 	}
 	var result model.Task
 	var missing *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &missing) {
 				return nil
 			}
 			return err
 		}
 		var err error
-		result, err = snapshot.Task(ctx, projectID, id)
+		result, err = snapshot.TaskDAO().Task(ctx, projectID, id)
 		if validation := propertyValidationFault(err); validation != nil {
 			missing = validation
 			return nil
@@ -89,15 +89,15 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	}
 	var result store.TaskPage
 	var missing *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &missing) {
 				return nil
 			}
 			return err
 		}
 		var err error
-		result, err = snapshot.Tasks(ctx, projectID, store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Worker: worker, AssignedTo: assignedTo})
+		result, err = snapshot.TaskDAO().Tasks(ctx, projectID, store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Worker: worker, AssignedTo: assignedTo})
 		if validation := propertyValidationFault(err); validation != nil {
 			missing = validation
 			return nil

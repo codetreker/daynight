@@ -42,16 +42,16 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 	}
 	var result model.TaskSync
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result.ActorAccess, err = RequireProjectRead(ctx, snapshot, principal, projectID)
+		result.ActorAccess, err = RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID)
 		if err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
 			return err
 		}
-		result.Project, err = snapshot.Project(ctx, projectID)
+		result.Project, err = snapshot.ProjectDAO().Project(ctx, projectID)
 		if errors.Is(err, model.ErrNotFound) {
 			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
 			return nil
@@ -59,11 +59,11 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 		if err != nil {
 			return err
 		}
-		result.Epoch, err = snapshot.TaskCacheEpoch(ctx, projectID)
+		result.Epoch, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, projectID)
 		if err != nil {
 			return err
 		}
-		size, err := snapshot.TaskGraphSize(ctx, projectID)
+		size, err := snapshot.TaskDAO().TaskGraphSize(ctx, projectID)
 		if err != nil {
 			return err
 		}
@@ -81,7 +81,7 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 				lower = &boundary
 			}
 		}
-		result.Tasks, err = snapshot.TaskSyncTasks(ctx, projectID, lower, graphTitlePreviewCharacters)
+		result.Tasks, err = snapshot.TaskDAO().TaskSyncTasks(ctx, projectID, lower, graphTitlePreviewCharacters)
 		if validation := propertyValidationFault(err); validation != nil {
 			refusal = validation
 			return nil
@@ -89,7 +89,7 @@ func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID
 		if err != nil {
 			return err
 		}
-		people, err := snapshot.TaskAssignees(ctx, projectID)
+		people, err := snapshot.TaskDAO().TaskAssignees(ctx, projectID)
 		if err != nil {
 			return err
 		}

@@ -275,8 +275,8 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/webui/` | Embedded production HTML/assets and static response policy |
 | `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
-| `internal/filestorage/` | Generic bucket/path byte operations and address validation |
-| `internal/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
+| `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
+| `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
 | `api/` | Project/task/attachment, identity and membership DTOs; common HTTP error envelopes |
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
 | `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
@@ -792,8 +792,9 @@ separate storage and current-permission behavior.
 
 The shared `model.Project` and `model.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
-candidate reachability. The static property registry in `internal/taskproperties/`
-owns native validation, normalization, schemas and public writability. Generic
+candidate reachability. The static property registry in `internal/core/model/taskproperty/`
+owns native validation, normalization, schemas and read-only metadata;
+`internal/core/task/properties/` applies public write policy. Generic
 maps preserve every property key. Each task/property is a `task_properties` row,
 keyed by task_id/name, with one complete JSON value stored as text. JSON-escaped
 NUL retains its existing string semantics without SQL JSON conversion. Full
@@ -1332,7 +1333,8 @@ attachments, PRs and Sessions. Task state, disabled automatic execution, absent
 Sessions and active Worker ownership do not restrict Steps. No Steps write
 freezes a Session or calls the full Task updater.
 
-`internal/tasksteps` is the sole public DTO/codec owner. Exact Encoder output
+`internal/core/task/codec` is the sole public DTO/codec owner;
+`internal/core/task/steps` owns ordered candidates. Exact Encoder output
 includes default escaping and terminal LF, with 19 version digits reserved
 within 67,108,864 bytes. A frozen successfully encoded collection is the response
 body. An over-limit real-change candidate returns `409 steps_limit_exceeded`

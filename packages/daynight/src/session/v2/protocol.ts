@@ -1,6 +1,6 @@
 import { parseSessionSnapshot } from "../protocol.js";
 import { SESSION_V2_PROTOCOL, SESSION_V2_LIMITS, bool, byteLength, canonicalSessionJson, choice, decodeStrictSessionJson, errorCode, exact, fail, hash, hashSessionBytes, integer, list, literal, nativeText, nullable, origin, seq, text, timestamp, unique, utf8 } from "./values.js";
-import type { SessionV2Action, SessionV2Envelope, SessionV2Key, SessionV2Lease, SessionV2Message, SessionV2Owner, SessionV2Payloads, SessionV2Receipt, SessionV2Run, SessionV2StopProof, SessionV2UnavailableEvidence, SessionV2UnavailableReason, TerminalBinding, TerminalFrame } from "./types.js";
+import type { SessionV2Action, SessionV2Envelope, SessionV2Key, SessionV2Lease, SessionV2Message, SessionV2Owner, SessionV2Payloads, SessionV2PreparedStopProof, SessionV2Receipt, SessionV2Run, SessionV2StopProof, SessionV2UnavailableEvidence, SessionV2UnavailableReason, TerminalBinding, TerminalFrame } from "./types.js";
 export type * from "./types.js";
 
 export const assertNativeSessionIdProgression = (previous: string | null, next: string | null): void => {
@@ -37,7 +37,19 @@ export const parseTerminalFrame = (value: unknown): TerminalFrame => {
   if (rows.length !== result.height || utf8.encode(canonicalSessionJson(result)).length > SESSION_V2_LIMITS.frameMaxBytes) return fail("recording_limit");
   return result;
 };
+export const isPreparedSessionV2StopProof = (proof: SessionV2StopProof): proof is SessionV2PreparedStopProof => "nativeLaunch" in proof;
 const parseStopProof = (value: unknown): SessionV2StopProof => {
+  if (value !== null && typeof value === "object" && Object.hasOwn(value, "nativeLaunch")) {
+    const o = exact(value, ["recordId", "executionGeneration", "binding", "bootId", "stoppedAt", "method", "terminalStopped", "nativeLaunch", "daemon", "processes"]);
+    const daemon = exact(o.daemon, ["pid", "birthToken", "bootId"]);
+    const processes = list(o.processes, raw => {
+      const p = exact(raw, ["role", "pid", "birthToken", "bootId"]);
+      return { role: literal(p.role, "shell"), pid: integer(p.pid, 1, 2147483647), birthToken: nativeText(p.birthToken), bootId: nativeText(p.bootId) };
+    }, 1, 1);
+    const proof: SessionV2PreparedStopProof = { recordId: uuidValue(o.recordId), executionGeneration: seq(o.executionGeneration), binding: parseTerminalBinding(o.binding), bootId: nativeText(o.bootId), stoppedAt: timestamp(o.stoppedAt), method: choice(o.method, ["instances_exited", "boot_changed"]), terminalStopped: literal(o.terminalStopped, true), nativeLaunch: literal(o.nativeLaunch, "not_submitted"), daemon: { pid: integer(daemon.pid, 1, 2147483647), birthToken: nativeText(daemon.birthToken), bootId: nativeText(daemon.bootId) }, processes: [processes[0]!] };
+    if (proof.daemon.bootId !== proof.bootId || proof.processes[0].bootId !== proof.bootId || proof.daemon.pid === proof.processes[0].pid) return fail("stop_unknown");
+    return proof;
+  }
   const o = exact(value, ["recordId", "executionGeneration", "binding", "bootId", "stoppedAt", "method", "terminalStopped", "processes"]);
   const processes = unique(list(o.processes, raw => {
     const p = exact(raw, ["role", "pid", "birthToken", "bootId"]);
@@ -54,6 +66,7 @@ const parseRun = (value: unknown): SessionV2Run => {
   if (run.stopProof !== null) {
     if (run.stopProof.executionGeneration !== run.executionGeneration || run.stopProof.stoppedAt !== run.stoppedAt || Date.parse(run.stoppedAt!) < Date.parse(run.startedAt)) return fail("stop_unknown");
     assertTerminalBinding(run.binding, run.stopProof.binding);
+    if (isPreparedSessionV2StopProof(run.stopProof) && (run.segmentIds.length !== 0 || run.binding.nativeSessionId !== run.stopProof.binding.nativeSessionId)) return fail("stop_unknown");
   }
   return run;
 };

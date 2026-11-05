@@ -8,23 +8,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 const threadClockBudget = 100 * time.Millisecond
-
-// ThreadClockError means the bounded preparation did not obtain a reliable
-// forward position; it does not assert that the database clock moved backwards.
-type ThreadClockError struct {
-	Head     model.ThreadPosition
-	Observed time.Time
-	Cause    error
-}
-
-func (err *ThreadClockError) Error() string {
-	return "reliable forward clock position was not obtained within budget"
-}
-func (err *ThreadClockError) Unwrap() error { return err.Cause }
 
 func (tx *ThreadTx) LockTaskPresence(ctx context.Context, projectID, taskID string) (TaskPresence, error) {
 	return taskPresence(ctx, tx.tx, projectID, taskID, " FOR SHARE")
@@ -53,7 +40,7 @@ func (tx *ThreadTx) SourceTask(ctx context.Context, projectID, taskID string) (m
 		return model.Task{}, queryError("read thread source", err)
 	}
 	if workerValue != nil {
-		result.Properties["worker"], err = taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue), false)
+		result.Properties["worker"], err = taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue))
 		if err != nil {
 			return model.Task{}, queryError("decode thread source", err)
 		}

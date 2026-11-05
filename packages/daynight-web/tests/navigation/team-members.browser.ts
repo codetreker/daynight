@@ -16,13 +16,13 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
 const task = detailFixture(projectId, taskId, { title: 'Retained Task' });
 const graph = graphFixture([task]);
 const access = directAccessFixture(projectId, alice, 'admin');
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, holdInvitationRead: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
@@ -53,7 +53,10 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
       if (state.invitationSuccess) return send({ id: '00000000-0000-4000-8000-000000000051', teamId, createdBy: alice, createdAt: time, expiresAt: '2099-10-27T09:00:00Z', consumedBy: null, consumedAt: null, revokedAt: null, link: `${new URL(request.url()).origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` }, 201);
       return route.abort('failed');
     }
-    if (method === 'GET' && path === `/api/v1/teams/${teamId}/invitations`) return state.members.get(alice)?.role === 'admin' ? send({ items: [] }) : send(error('forbidden'), 403);
+    if (method === 'GET' && path === `/api/v1/teams/${teamId}/invitations`) {
+      const gate = state.holdInvitationRead; state.holdInvitationRead = null; if (gate) { gate.started(); await gate.wait; }
+      return state.members.get(alice)?.role === 'admin' ? send({ items: [] }) : send(error('forbidden'), 403);
+    }
     if (method === 'GET' && path === `/api/v1/teams/${betaId}/invitations`) return send({ items: [] });
     if (path === `/api/v1/teams/${personalId}/members`) return send({ items: roster(personalId) });
     if (path === `/api/v1/teams/${teamId}` && (state.teamReadNetworkFailure || state.failReadsAfterWrite && state.writes.length > 0)) return route.abort('failed');
@@ -63,21 +66,23 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     }
     if (path === `/api/v1/teams/${teamId}/members` && method === 'GET') {
       const gate = state.holdRosterRead; state.holdRosterRead = null; if (gate) { gate.started(); await gate.wait; }
+      if (state.rosterReadNetworkFailure) return route.abort('failed');
       return state.members.has(alice) ? send({ items: roster(teamId) }) : send(error('not_found'), 404);
     }
     if (path.startsWith(`/api/v1/teams/${teamId}/members/`) && (method === 'PATCH' || method === 'DELETE')) {
       const target = path.split('/').at(-1)!, body = request.postDataJSON() as Record<string, unknown>;
       state.writes.push({ method, path, body });
-      if (state.refusal) return send(error(state.refusal), 409);
+      const reject = (code: string) => { state.writeEvents.push(`rejected: ${code}`); return send(error(code), 409); };
+      if (state.refusal) return reject(state.refusal);
       const member = state.members.get(target)!, actor = state.members.get(alice)!;
-      if (body.expectedUserId !== alice) return send(error('identity_mismatch'), 409);
-      if (body.version !== member.version) return send(error('version_conflict'), 409);
-      if (actor.role !== 'admin' && (method === 'PATCH' || target !== alice)) return send(error('forbidden'), 403);
-      if (member.role === 'admin' && (method === 'DELETE' || body.role === 'member') && [...state.members.values()].filter((m) => m.role === 'admin').length === 1) return send(error('last_admin'), 409);
+      if (body.expectedUserId !== alice) return reject('identity_mismatch');
+      if (body.version !== member.version) return reject('version_conflict');
+      if (actor.role !== 'admin' && (method === 'PATCH' || target !== alice)) { state.writeEvents.push('rejected: forbidden'); return send(error('forbidden'), 403); }
+      if (member.role === 'admin' && (method === 'DELETE' || body.role === 'member') && [...state.members.values()].filter((m) => m.role === 'admin').length === 1) return reject('last_admin');
       if (method === 'PATCH') { member.role = body.role as Role; member.version += 10; }
       else state.members.delete(target);
-      const gate = state.holdWrite; state.holdWrite = null; if (gate) { gate.started(); await gate.wait; }
-      if (state.lost) return route.abort('failed');
+      const gate = state.holdWrite; state.holdWrite = null; if (gate) { state.writeEvents.push('held'); gate.started(); await gate.wait; }
+      if (state.lost) { state.writeEvents.push('response: network failure'); return route.abort('failed'); }
       const actorRole = state.members.get(alice)?.role ?? null;
       return method === 'PATCH' ? send({ membership: membership(target), actorRole }) : send({ teamId, userId: target, removed: true, actorRole });
     }
@@ -100,6 +105,70 @@ const foreground = async (page: Page, api: State) => {
   return { finish: finish.resolve };
 };
 
+for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+  test(`member role columns align at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+    const api = await install(page);
+    api.members.get(bob)!.role = 'member';
+    api.members.get(bob)!.name = 'Bob — Platform Engineering and Infrastructure Collaboration';
+    api.members.get(bob)!.email = 'very.long.member.address.for.layout.verification@example.enterprise.test';
+    await page.setViewportSize({ width, height: 900 }); await page.goto(`/teams/${teamId}/members`);
+    await expect(page.getByLabel('Team role: Alice')).toBeVisible();
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const selects = page.locator('.team-member-row .role-select');
+    await expect(selects).toHaveCount(3);
+    await expect(selects.nth(0)).toBeDisabled(); await expect(selects.nth(1)).toBeEnabled();
+    const geometry = await page.locator('.team-member-row').evaluateAll((rows) => rows.map((row) => {
+      const rect = (selector: string) => row.querySelector(selector)!.getBoundingClientRect();
+      const role = rect('select'), person = rect('.person'), action = rect('button');
+      return { left: role.left, right: role.right, width: role.width, roleY: role.top + role.height / 2, personY: person.top + person.height / 2, actionY: action.top + action.height / 2 };
+    }));
+    for (const item of geometry) {
+      expect(item.width).toBe(120);
+      expect(Math.abs(item.left - geometry[0]!.left)).toBeLessThanOrEqual(1);
+      expect(Math.abs(item.right - geometry[0]!.right)).toBeLessThanOrEqual(1);
+      expect(Math.abs(item.width - geometry[0]!.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs(item.actionY - item.roleY)).toBeLessThanOrEqual(1);
+      if (width > 600) expect(Math.abs(item.personY - item.roleY)).toBeLessThanOrEqual(1);
+    }
+    await testInfo.attach('geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
+    const textSpace = await selects.nth(0).evaluate((element: HTMLSelectElement) => {
+      const style = getComputedStyle(element), canvas = document.createElement('canvas'), context = canvas.getContext('2d')!;
+      context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      return { available: element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), required: Math.max(...Array.from(element.options, (option) => context.measureText(option.text).width)) };
+    });
+    expect(textSpace.available).toBeGreaterThanOrEqual(textSpace.required);
+    if (width === 601 && locale === 'en') {
+      const caption = await page.locator('.team-member-caption').evaluate((element) => ({ height: element.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(element).lineHeight) }));
+      expect(caption.height).toBeGreaterThan(caption.lineHeight);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await selects.nth(1).focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
+    await expect(selects.nth(1)).toBeFocused();
+    await page.screenshot({ path: testInfo.outputPath('members.png'), fullPage: true });
+    await selects.nth(1).click(); await page.keyboard.press('Escape');
+    await selects.nth(1).selectOption('admin');
+    await expect(page.getByRole('dialog')).toBeVisible(); await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0); expect(api.writes).toHaveLength(0);
+  });
+}
+
+test('member loading and read failure retain a working retry', async ({ page }) => {
+  const api = await install(page);
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  api.holdRosterRead = { started: started.resolve, wait: finish.promise };
+  try {
+    await page.goto(`/teams/${teamId}/members`); await started.promise;
+    await expect(page.getByRole('status').filter({ hasText: 'Loading' })).toBeVisible();
+  } finally { finish.resolve(); }
+  await expect(page.getByLabel('Team role: Bob')).toBeVisible();
+  api.rosterReadNetworkFailure = true; await page.reload();
+  await expect(page.getByRole('alert').filter({ hasText: 'Unable to read members.' })).toBeVisible();
+  api.rosterReadNetworkFailure = false;
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByLabel('Team role: Bob')).toBeVisible();
+  expect(api.writes).toHaveLength(0);
+});
+
 test('admin promotes and removes members and can demote self while another admin remains', async ({ page }) => {
   const api = await install(page); await start(page);
   const charlieRole = page.getByLabel(`Team role: ${charlie}`);
@@ -120,19 +189,45 @@ test('admin promotes and removes members and can demote self while another admin
 });
 
 test('a retained invitation result survives returning while the Team read is in flight', async ({ page }) => {
+  await page.addInitScript((target) => {
+    const tracked = window as unknown as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] };
+    tracked.teamReadSignals = [];
+    const fetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+      if (url.pathname !== `/api/v1/teams/${target}` || (init?.method ?? 'GET') !== 'GET') return fetch(input, init);
+      const entry = { signal: init?.signal ?? undefined, settled: false };
+      tracked.teamReadSignals.push(entry);
+      return fetch(input, init).then((response) => { entry.settled = true; return response; }, (error: unknown) => { entry.settled = true; throw error; });
+    };
+  }, teamId);
   const api = await install(page); await start(page); api.invitationSuccess = true;
-  const invitationStarted = Promise.withResolvers<void>(), finishInvitation = Promise.withResolvers<void>();
-  const teamReadStarted = Promise.withResolvers<void>(), finishTeamRead = Promise.withResolvers<void>();
-  api.holdInvitation = { started: invitationStarted.resolve, wait: finishInvitation.promise };
+  const finishInvitation = Promise.withResolvers<void>(), finishTeamRead = Promise.withResolvers<void>();
+  let invitationStarted = false, teamReadStarted = false;
+  api.holdInvitation = { started: () => { invitationStarted = true; }, wait: finishInvitation.promise };
   await page.getByRole('button', { name: 'Invite member' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click(); await invitationStarted.promise;
-  api.holdTeamRead = { started: teamReadStarted.resolve, wait: finishTeamRead.promise };
+  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click();
+  await expect.poll(() => invitationStarted, { message: 'Invitation request must reach its response gate' }).toBe(true);
   try {
-    await traverse(page, `/teams/${teamId}`); await teamReadStarted.promise;
+    await traverse(page, `/teams/${teamId}`);
+    await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha', exact: true })).toBeVisible();
+    const before = await page.evaluate(() => (window as unknown as Window & { teamReadSignals: unknown[] }).teamReadSignals.length);
+    api.holdTeamRead = { started: () => { teamReadStarted = true; }, wait: finishTeamRead.promise };
+    const identity = await foreground(page, api); identity.finish();
+    await expect.poll(() => teamReadStarted, { message: 'Preference GET must reach its response gate' }).toBe(true);
+    await expect.poll(() => page.evaluate(() => (window as unknown as Window & { teamReadSignals: unknown[] }).teamReadSignals.length)).toBe(before + 1);
+    const readState = () => page.evaluate((index) => {
+      const entry = (window as unknown as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] }).teamReadSignals[index]!;
+      return { aborted: entry.signal?.aborted, settled: entry.settled };
+    }, before);
+    expect(await readState()).toEqual({ aborted: false, settled: false });
     finishInvitation.resolve();
     await traverse(page, `/teams/${teamId}/members`);
     await expect(page.getByRole('dialog', { name: 'Invitation link created' }).getByLabel('One-time invitation link')).toBeVisible({ timeout: 5000 });
+    expect(await readState()).toEqual({ aborted: false, settled: false });
     expect(api.invitationWrites).toBe(1);
+    finishTeamRead.resolve();
+    await expect.poll(readState).toEqual({ aborted: false, settled: true });
   } finally { finishInvitation.resolve(); finishTeamRead.resolve(); }
 });
 
@@ -302,28 +397,39 @@ test('unknown removal reports the observed absence while retaining unknown', asy
 
 test('a pending self exit survives navigation to another Team and a Task, then exposes unknown after 404', async ({ page }) => {
   const api = await install(page, 'member'); await start(page);
-  let entered = false;
   const finish = Promise.withResolvers<void>();
-  api.holdWrite = { started: () => { entered = true; }, wait: finish.promise }; api.lost = true;
+  api.holdWrite = { started: () => {}, wait: finish.promise }; api.lost = true;
   try {
-    await page.getByRole('button', { name: 'Leave Team' }).click();
-    await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click();
-    await expect.poll(() => ({ entered, writes: api.writes }), { message: 'Self exit must reach the held write after authorization' }).toMatchObject({ entered: true, writes: [{ method: 'DELETE', path: `/api/v1/teams/${teamId}/members/${alice}`, body: { expectedUserId: alice, version: 1 } }] });
-    await traverse(page, `/teams/${betaId}/members`);
-    await expect(page.getByRole('heading', { name: 'Team members' })).toBeVisible();
-    await expect.poll(() => selected(page)).toBe(betaId);
-    await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
-    await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
-    finish.resolve();
-    await traverse(page, `/teams/${teamId}/members`);
-    await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-    await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
-    await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/members`);
-    await page.getByRole('button', { name: 'Check current state' }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-    await page.getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-    expect(api.writes).toHaveLength(1);
+    await test.step('dispatch the self exit and hold its response', async () => {
+      await page.getByRole('button', { name: 'Leave Team' }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click();
+      await expect.poll(() => ({ writes: api.writes, events: api.writeEvents }), { timeout: 10000, message: 'Self exit must reach the mock and enter its response gate' }).toEqual({
+        writes: [{ method: 'DELETE', path: `/api/v1/teams/${teamId}/members/${alice}`, body: { expectedUserId: alice, version: 1 } }], events: ['held'],
+      });
+    });
+    await test.step('visit the other Team and mount the Task page', async () => {
+      await traverse(page, `/teams/${betaId}/members`);
+      const betaRole = page.locator(`#team-role-${betaId}-${bob}`);
+      await expect(betaRole).toBeVisible(); await expect(betaRole).toHaveValue('member');
+      await expect.poll(() => selected(page)).toBe(betaId);
+      await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
+      await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${projectId}/tasks/${taskId}`);
+      await expect(page.locator('main.task-detail-page')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
+    });
+    await test.step('lose the response and inspect the retained result after 404', async () => {
+      finish.resolve();
+      await expect.poll(() => api.writeEvents, { timeout: 10000, message: 'The held self-exit response must fail' }).toEqual(['held', 'response: network failure']);
+      await traverse(page, `/teams/${teamId}/members`);
+      await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+      await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
+      await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/members`);
+      await page.getByRole('button', { name: 'Check current state' }).click();
+      await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+      await page.getByRole('button', { name: 'Close', exact: true }).click();
+      await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+      expect(api.writes).toHaveLength(1);
+    });
   } finally { finish.resolve(); }
 });
 
@@ -399,6 +505,34 @@ test('same-account checking retains a pending exit until a confirmed Team 404', 
     await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
     expect(api.writes).toHaveLength(1);
   } finally { revalidation.finish(); teamFinish.resolve(); rosterFinish.resolve(); finish.resolve(); }
+});
+
+for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`retains members and invitation confirmation through background reads at ${width}px`, async ({ page }, testInfo) => {
+  const api = await install(page); await page.setViewportSize({ width, height: 844 });
+  await start(page); await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+  const invite = page.getByRole('button', { name: locale === 'en' ? 'Invite member' : '邀请成员' });
+  await expect(invite).toBeVisible(); await expect(invite).toBeEnabled();
+  const panel = invite.locator('xpath=ancestor::section');
+  const originalPanel = await panel.elementHandle(), panelBox = await panel.boundingBox();
+  await invite.click();
+  const dialog = page.getByRole('dialog'), originalDialog = await dialog.elementHandle(), dialogBox = await dialog.boundingBox();
+  const rosterStarted = Promise.withResolvers<void>(), rosterFinish = Promise.withResolvers<void>();
+  const inviteStarted = Promise.withResolvers<void>(), inviteFinish = Promise.withResolvers<void>();
+  api.holdRosterRead = { started: rosterStarted.resolve, wait: rosterFinish.promise };
+  api.holdInvitationRead = { started: inviteStarted.resolve, wait: inviteFinish.promise };
+  const check = await foreground(page, api);
+  const verify = async () => {
+    expect(await panel.evaluate((element, original) => element === original, originalPanel)).toBe(true);
+    expect(await dialog.evaluate((element, original) => element === original, originalDialog)).toBe(true);
+    expect(await panel.boundingBox()).toEqual(panelBox); expect(await dialog.boundingBox()).toEqual(dialogBox);
+    await expect(dialog).toBeVisible();
+    expect(api.writes).toHaveLength(0); expect(api.invitationWrites).toBe(0);
+  };
+  try {
+    await verify(); check.finish(); await Promise.all([rosterStarted.promise, inviteStarted.promise]); await verify();
+    rosterFinish.resolve(); await verify(); inviteFinish.resolve(); await expect(invite).toBeEnabled(); await verify();
+    await page.screenshot({ path: testInfo.outputPath(`background-${width}-${locale}.png`) });
+  } finally { check.finish(); rosterFinish.resolve(); inviteFinish.resolve(); }
 });
 
 test('narrow viewport and Chinese dialog retain usable controls', async ({ page }) => {

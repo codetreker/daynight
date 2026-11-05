@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -179,7 +179,7 @@ func taskWorker(ctx context.Context, tx pgx.Tx, id string, t task) (task, error)
 		if err := rows.Scan(&name, &value); err != nil {
 			return task{}, err
 		}
-		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value), false)
+		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value))
 		if err != nil {
 			return task{}, err
 		}

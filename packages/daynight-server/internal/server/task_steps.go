@@ -12,9 +12,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -53,7 +53,7 @@ func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, pri
 	}
 	stepID := request.PathValue("stepId")
 	if operation == "get" {
-		stepID, err = tasksteps.CanonicalID(stepID)
+		stepID, err = taskcodec.CanonicalID(stepID)
 		if err != nil {
 			writeStepsError(w, request, logger, "read", invalidInput(err.Error()))
 			return
@@ -130,7 +130,7 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 		refuse(err)
 		return
 	}
-	id, err := tasksteps.CanonicalID(input.ID)
+	id, err := taskcodec.CanonicalID(input.ID)
 	if err != nil {
 		refuse(invalidInput(err.Error()))
 		return

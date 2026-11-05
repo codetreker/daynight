@@ -5,8 +5,9 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func propertyValidationFault(err error) *model.Fault {
@@ -28,7 +29,7 @@ func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, proj
 	if err := requirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
-	value, err := taskproperties.ParseInput(name, valueText)
+	value, err := taskprops.ParseInput(name, valueText)
 	if err != nil {
 		return model.Task{}, propertyInputFault(err)
 	}
@@ -43,7 +44,7 @@ func (s *Tasks) RemoveProperty(ctx context.Context, principal model.Principal, p
 	if err := requirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
-	if err := taskproperties.CheckWritable(name); err != nil {
+	if err := taskprops.CheckWritable(name); err != nil {
 		return model.Task{}, propertyInputFault(err)
 	}
 	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ *store.ProjectTx, current model.Task) (taskMutation, error) {

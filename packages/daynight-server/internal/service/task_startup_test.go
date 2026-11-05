@@ -8,7 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/google/uuid"
 )
 

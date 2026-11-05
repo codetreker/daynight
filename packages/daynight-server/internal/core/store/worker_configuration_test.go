@@ -37,9 +37,9 @@ func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 		t.Fatal("configuration migration changed telemetry or Task facts")
 	}
 	var resource model.WorkerConfigurationResource
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		resource, err = snapshot.WorkerConfiguration(ctx, userID, workerID)
+		resource, err = snapshot.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -124,11 +124,11 @@ func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
 	}); !errors.Is(err, sentinelConfigurationRollback) {
 		t.Fatalf("rollback operation error lost: %v", err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		if err := snapshot.tx.Rollback(ctx); err != nil {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if err := snapshot.(*Snapshot).tx.Rollback(ctx); err != nil {
 			return err
 		}
-		_, err := snapshot.WorkerConfiguration(ctx, userID, workerID)
+		_, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
 		if !errors.Is(err, pgx.ErrTxClosed) {
 			t.Fatalf("closed read failure lost: %v", err)
 		}
@@ -178,8 +178,8 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		current, err := snapshot.WorkerConfiguration(ctx, admin.UserID, workerID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)
 		if err != nil {
 			return err
 		}

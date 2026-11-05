@@ -7,7 +7,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
 
 type DeleteTaskStep struct{ Version int64 }
@@ -18,7 +19,7 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 	if err != nil {
 		return result, err
 	}
-	stepID, err = tasksteps.CanonicalID(stepID)
+	stepID, err = taskcodec.CanonicalID(stepID)
 	if err != nil {
 		return result, invalidInput(err.Error())
 	}
@@ -36,7 +37,7 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 		if err != nil {
 			return err
 		}
-		if _, err := tasksteps.Collection(header, current); err != nil {
+		if _, err := taskcodec.Collection(header, current); err != nil {
 			return err
 		}
 		candidate, index, err := tasksteps.DeleteCandidate(current, stepID)
@@ -54,7 +55,7 @@ func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, proje
 			return err
 		}
 		header.Version++
-		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
+		result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}

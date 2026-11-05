@@ -7,21 +7,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ThreadTransactionError records local write stages without inventing a durable
-// submission identity. An unsuccessful COMMIT is not proof of rollback.
-type ThreadTransactionError struct {
-	Phase           string
-	Cause           error
-	CommitAttempted bool
-	OutcomeUnknown  bool
-	RollbackFailed  bool
-}
-
-func (err *ThreadTransactionError) Error() string {
-	return "thread transaction " + err.Phase + " failed"
-}
-func (err *ThreadTransactionError) Unwrap() error { return err.Cause }
-
 type ThreadTx struct {
 	tx pgx.Tx
 }

@@ -41,9 +41,9 @@ func (s *Workers) Configuration(ctx context.Context, principal model.Principal, 
 		return model.WorkerConfigurationResource{}, err
 	}
 	var result model.WorkerConfigurationResource
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result, err = snapshot.WorkerConfiguration(ctx, principal.UserID, workerID)
+		result, err = snapshot.WorkerDAO().WorkerConfiguration(ctx, principal.UserID, workerID)
 		return configurationNotFound(err)
 	})
 	if err != nil {

@@ -849,6 +849,91 @@
       "file": "valid-control-unresolved-initial.json",
       "type": "message",
       "valid": true
+    },
+    {
+      "file": "valid-prepared-stop-ledger.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-prepared-stop-boot-change.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-prepared-stop-retained-native.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-prepared-stop-missing-launch.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-missing-daemon.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-null-launch.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-wrong-launch.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-extra-daemon-key.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-daemon-boot.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-daemon-shell-pid.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-agent.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-segments.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-native-enrichment.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-proof-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-proof-terminal.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-two-shells.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-archive-prepared-final-run.json",
+      "type": "archive",
+      "valid": true
     }
   ]
 }

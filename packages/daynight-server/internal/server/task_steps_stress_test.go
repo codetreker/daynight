@@ -20,7 +20,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -33,11 +33,11 @@ func TestStepsHTTPExactCapacityStress(t *testing.T) {
 	for index := range steps {
 		steps[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 	}
-	_, base, err := tasksteps.EncodeCollection(header, steps)
+	_, base, err := taskcodec.EncodeCollection(header, steps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := tasksteps.MaxEncodedBytes - len(base)
+	remaining := taskcodec.MaxEncodedBytes - len(base)
 	for index := range steps {
 		size := min(remaining, 524288)
 		steps[index].Description = strings.Repeat("X", size)
@@ -69,7 +69,7 @@ func TestStepsHTTPExactCapacityStress(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(response.Body, tasksteps.MaxEncodedBytes+1))
+		data, err := io.ReadAll(io.LimitReader(response.Body, taskcodec.MaxEncodedBytes+1))
 		if err != nil || response.StatusCode != status {
 			t.Fatalf("HTTP boundary: status=%d bytes=%d error=%v", response.StatusCode, len(data), err)
 		}
@@ -90,11 +90,11 @@ func TestStepsHTTPExactCapacityStress(t *testing.T) {
 			}
 		}
 	}
-	read(200, tasksteps.MaxEncodedBytes, math.MaxInt64)
+	read(200, taskcodec.MaxEncodedBytes, math.MaxInt64)
 	if _, err := database.Pool.Exec(context.Background(), `UPDATE tasks SET version=1 WHERE id=$1`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	read(200, tasksteps.MaxEncodedBytes-18, 1)
+	read(200, taskcodec.MaxEncodedBytes-18, 1)
 	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_steps SET description=description||'X' WHERE task_id=$1 AND id='0000007f'`, task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -125,11 +125,11 @@ func TestStepsHTTPAddCapacityStress(t *testing.T) {
 	}
 	candidate := append(append([]model.TaskStep{}, steps...), model.TaskStep{ID: "ffffffff", Position: 128, Title: "New <&> 中文", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
 	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
-	_, base, err := tasksteps.EncodeCollection(header, candidate)
+	_, base, err := taskcodec.EncodeCollection(header, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := tasksteps.MaxEncodedBytes - len(base)
+	remaining := taskcodec.MaxEncodedBytes - len(base)
 	for index := range steps {
 		size := min(remaining, 524288)
 		steps[index].Description = strings.Repeat("X", size)
@@ -168,7 +168,7 @@ func TestStepsHTTPAddCapacityStress(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(response.Body, tasksteps.MaxEncodedBytes+1))
+		data, err := io.ReadAll(io.LimitReader(response.Body, taskcodec.MaxEncodedBytes+1))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -216,7 +216,7 @@ func TestStepsHTTPAddCapacityStress(t *testing.T) {
 		if added.ID != "ffffffff" || added.Title != "New <&> 中文" || added.Description != "" || added.Status != model.TaskStepTodo || added.CreatedAt.IsZero() || added.CreatedAt != added.UpdatedAt || added.CreatedAt.Nanosecond()%1000 != 0 || added.CreatedAt.Location() != time.UTC {
 			t.Fatal("invalid new Step in calibration receipt")
 		}
-		if len(data) > tasksteps.MaxEncodedBytes || audit.shifts.Load() != 1 || audit.inserts.Load() != 1 || audit.touches.Load() != 1 {
+		if len(data) > taskcodec.MaxEncodedBytes || audit.shifts.Load() != 1 || audit.inserts.Load() != 1 || audit.touches.Load() != 1 {
 			t.Fatal("successful calibration exceeded capacity or changed persistence stages")
 		}
 	}
@@ -238,7 +238,7 @@ func TestStepsHTTPAddCapacityStress(t *testing.T) {
 				measured = len(data)
 			case 409:
 				var refusal api.ErrorResponse
-				if json.Unmarshal(data, &refusal) != nil || refusal.Error.Code != "steps_limit_exceeded" || refusal.Error.Details == nil || refusal.Error.Details.EncodedBytes == nil || refusal.Error.Details.MaxEncodedBytes == nil || *refusal.Error.Details.MaxEncodedBytes != tasksteps.MaxEncodedBytes || *refusal.Error.Details.EncodedBytes <= tasksteps.MaxEncodedBytes {
+				if json.Unmarshal(data, &refusal) != nil || refusal.Error.Code != "steps_limit_exceeded" || refusal.Error.Details == nil || refusal.Error.Details.EncodedBytes == nil || refusal.Error.Details.MaxEncodedBytes == nil || *refusal.Error.Details.MaxEncodedBytes != taskcodec.MaxEncodedBytes || *refusal.Error.Details.EncodedBytes <= taskcodec.MaxEncodedBytes {
 					t.Fatalf("invalid calibration refusal: %s", data)
 				}
 				measured = int(*refusal.Error.Details.EncodedBytes)
@@ -261,16 +261,16 @@ func TestStepsHTTPAddCapacityStress(t *testing.T) {
 		t.Fatalf("capacity calibration did not converge: %s", strings.Join(history, "; "))
 		return nil
 	}
-	exact := calibrate(tasksteps.MaxEncodedBytes)
+	exact := calibrate(taskcodec.MaxEncodedBytes)
 	getStatus, getData := request("GET", path, "")
 	if getStatus != 200 || !bytes.Equal(exact, getData) {
 		t.Fatal("boundary GET differs from the frozen POST bytes")
 	}
 	t.Logf("actual POST and GET each returned %d bytes, including terminal LF", len(exact))
 	padding++
-	refusal := calibrate(tasksteps.MaxEncodedBytes + 1)
+	refusal := calibrate(taskcodec.MaxEncodedBytes + 1)
 	var response api.ErrorResponse
-	if json.Unmarshal(refusal, &response) != nil || response.Error.Code != "steps_limit_exceeded" || *response.Error.Details.EncodedBytes != tasksteps.MaxEncodedBytes+1 {
+	if json.Unmarshal(refusal, &response) != nil || response.Error.Code != "steps_limit_exceeded" || *response.Error.Details.EncodedBytes != taskcodec.MaxEncodedBytes+1 {
 		t.Fatal("one-byte-over response invalid")
 	}
 	t.Logf("one-byte-over POST refused %d bytes before all row/touch SQL", *response.Error.Details.EncodedBytes)

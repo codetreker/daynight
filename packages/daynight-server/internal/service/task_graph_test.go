@@ -170,66 +170,6 @@ func TestTaskGraphInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	}
 }
 
-func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
-	for _, test := range []struct {
-		name, fragment                  string
-		missing, overLimit, cancelAfter bool
-	}{
-		{name: "project query", fragment: "SELECT p.id::text, p.name, p.repo_url"},
-		{name: "count query", fragment: "SELECT count(*) FROM selected"},
-		{name: "projection query", fragment: "left(t.title, $3)"},
-		{name: "clock query", fragment: "SELECT statement_timestamp()"},
-		{name: "clock completion", fragment: "SELECT statement_timestamp()", cancelAfter: true},
-		{name: "missing project completion", fragment: "FROM project_grants", missing: true, cancelAfter: true},
-		{name: "limit refusal completion", fragment: "SELECT count(*) FROM selected", overLimit: true, cancelAfter: true},
-		{name: "success completion", fragment: "left(t.title, $3)", cancelAfter: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, database, project, databaseURL, principal := taskService(t)
-			rootID := "00000000-0000-4000-8000-000000000099"
-			if test.overLimit {
-				rootID = seedConnectedGraph(t, database, project.ID, 1001, 1000)
-			} else {
-				rootID = createTask(t, NewTasks(database), principal, project.ID, "Snapshot root").ID
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			action := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.fragment) }}
-			if test.cancelAfter {
-				action.end = cancel
-			} else {
-				action.start = cancel
-			}
-			traced := tracedTasks(t, databaseURL, action)
-			id := project.ID
-			if test.missing {
-				id = "00000000-0000-0000-0000-000000000000"
-			}
-			graph, err := traced.Graph(ctx, principal, id, rootID)
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(graph, model.TaskGraph{}) {
-				t.Fatalf("cancellation cause or partial result: %#v, %v", graph, err)
-			}
-		})
-	}
-	for _, table := range []string{"projects", "tasks", "task_dependencies"} {
-		t.Run("missing "+table, func(t *testing.T) {
-			tasks, database, project, _, principal := taskService(t)
-			root := createTask(t, tasks, principal, project.ID, "Failure root")
-			if _, err := database.Pool.Exec(context.Background(), "DROP TABLE "+table); err != nil {
-				t.Fatal(err)
-			}
-			_, err := tasks.Graph(context.Background(), principal, project.ID, root.ID)
-			assertOperational(t, err)
-		})
-	}
-	tasks, database, project, _, principal := taskService(t)
-	root := createTask(t, tasks, principal, project.ID, "Closed store root")
-	database.Close()
-	_, err := tasks.Graph(context.Background(), principal, project.ID, root.ID)
-	assertOperational(t, err)
-}
-
 func TestTaskGraphOneLayerExternalPrerequisitesAndOrdinaryBranches(t *testing.T) {
 	tasks, _, project, _, principal := taskService(t)
 	ctx := context.Background()

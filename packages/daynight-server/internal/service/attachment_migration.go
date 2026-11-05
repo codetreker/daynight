@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )

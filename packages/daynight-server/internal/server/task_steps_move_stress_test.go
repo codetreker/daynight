@@ -19,7 +19,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -52,11 +52,11 @@ func TestStepsHTTPMoveCapacityStress(t *testing.T) {
 		rows[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 	}
 	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
-	_, base, err := tasksteps.EncodeCollection(header, rows)
+	_, base, err := taskcodec.EncodeCollection(header, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := tasksteps.MaxEncodedBytes - len(base)
+	remaining := taskcodec.MaxEncodedBytes - len(base)
 	for index := range rows {
 		size := min(remaining, 524288)
 		rows[index].Description = strings.Repeat("X", size)
@@ -98,14 +98,14 @@ func TestStepsHTTPMoveCapacityStress(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(response.Body, tasksteps.MaxEncodedBytes+1))
+		data, err := io.ReadAll(io.LimitReader(response.Body, taskcodec.MaxEncodedBytes+1))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return response.StatusCode, data
 	}
 	status, data := request("PUT", "/00000000/position", `{"version":9223372036854775806,"position":"last"}`)
-	if status != 200 || len(data) != tasksteps.MaxEncodedBytes || data[len(data)-1] != '\n' {
+	if status != 200 || len(data) != taskcodec.MaxEncodedBytes || data[len(data)-1] != '\n' {
 		t.Fatalf("actual move boundary status=%d bytes=%d", status, len(data))
 	}
 	var moved api.StepsResource

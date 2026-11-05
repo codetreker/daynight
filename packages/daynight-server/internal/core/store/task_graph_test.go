@@ -37,12 +37,12 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 		ALTER TABLE tasks RENAME TO task_source;
 		CREATE VIEW tasks AS SELECT id, project_id, title, reject_description() AS description,
 		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		size, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, pending.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		size, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, project.ID, pending.ID)
 		if err != nil || size != (TaskGraphSize{NodeCount: 6, EdgeCount: 5}) {
 			t.Fatalf("scoped size: %#v, %v", size, err)
 		}
-		tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, queryID(11), 160)
+		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, queryID(11), 160)
 		if err != nil || len(tasks) != 6 {
 			t.Fatalf("graph tasks: %#v, %v", tasks, err)
 		}
@@ -64,7 +64,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 			!slices.Equal(tasks[5].BlockedBy, []string{pending.ID}) || tasks[4].Status != model.TaskTodo || tasks[5].Status != model.TaskTodo {
 			t.Fatalf("graph derived fields: %#v", tasks)
 		}
-		empty, err := snapshot.TaskGraphTasks(ctx, queryID(999), queryID(11), 160)
+		empty, err := snapshot.TaskDAO().TaskGraphTasks(ctx, queryID(999), queryID(11), 160)
 		if err != nil || empty == nil || len(empty) != 0 {
 			t.Fatalf("empty graph slice: %#v, %v", empty, err)
 		}
@@ -80,11 +80,11 @@ func TestTaskGraphCountAndProjectionShareSnapshot(t *testing.T) {
 	project := queryProject(t, s, 1)
 	a := queryTask(t, s, project.ID, 11, model.TaskTodo)
 	b := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID)
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		if _, err := snapshot.Project(ctx, project.ID); err != nil {
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if _, err := snapshot.ProjectDAO().Project(ctx, project.ID); err != nil {
 			return err
 		}
-		before, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, a.ID)
+		before, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, project.ID, a.ID)
 		if err != nil {
 			return err
 		}
@@ -97,11 +97,11 @@ func TestTaskGraphCountAndProjectionShareSnapshot(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		after, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, a.ID)
+		after, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, project.ID, a.ID)
 		if err != nil || before != (TaskGraphSize{2, 1}) || after != before {
 			t.Fatalf("count mixed snapshots: before %#v after %#v, %v", before, after, err)
 		}
-		tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, queryID(11), 160)
+		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, queryID(11), 160)
 		if err != nil || len(tasks) != 2 || tasks[0].TitlePreview != a.Title || tasks[0].Status != model.TaskTodo ||
 			!reflect.DeepEqual(tasks[1].BlockedBy, []string{a.ID}) || tasks[1].Ready {
 			t.Fatalf("projection mixed snapshots: %#v, %v", tasks, err)
@@ -133,16 +133,16 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 			project := queryProject(t, s, 1)
 			queryTask(t, s, project.ID, 11, model.TaskTodo)
 			mustQueryExec(t, s, test.ddl)
-			err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+			err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 				if test.count {
 					if test.name == "count" {
-						_, err := snapshot.TaskGraphSize(context.Background(), project.ID)
+						_, err := snapshot.TaskDAO().TaskGraphSize(context.Background(), project.ID)
 						return err
 					}
-					_, err := snapshot.TaskGraphProjectionSize(context.Background(), project.ID, queryID(11))
+					_, err := snapshot.TaskDAO().TaskGraphProjectionSize(context.Background(), project.ID, queryID(11))
 					return err
 				}
-				_, err := snapshot.TaskGraphTasks(context.Background(), project.ID, queryID(11), 160)
+				_, err := snapshot.TaskDAO().TaskGraphTasks(context.Background(), project.ID, queryID(11), 160)
 				return err
 			})
 			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private graph") {
@@ -164,17 +164,17 @@ func TestTaskGraphRootRequiresLiveProjectScopedTask(t *testing.T) {
 	project, other := queryProject(t, database, 1), queryProject(t, database, 2)
 	root := queryTask(t, database, project.ID, 11, model.TaskTodo)
 	foreign := queryTask(t, database, other.ID, 21, model.TaskTodo)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { return snapshot.TaskGraphRoot(ctx, project.ID, root.ID) }); err != nil {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { return snapshot.TaskDAO().TaskGraphRoot(ctx, project.ID, root.ID) }); err != nil {
 		t.Fatalf("live graph root refused: %v", err)
 	}
 	for _, id := range []string{queryID(99), foreign.ID} {
-		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { return snapshot.TaskGraphRoot(ctx, project.ID, id) })
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { return snapshot.TaskDAO().TaskGraphRoot(ctx, project.ID, id) })
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing or cross-project graph root exposed: %v", err)
 		}
 	}
 	mustQueryExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE project_id=$1 AND id=$2`, project.ID, root.ID)
-	err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { return snapshot.TaskGraphRoot(ctx, project.ID, root.ID) })
+	err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { return snapshot.TaskDAO().TaskGraphRoot(ctx, project.ID, root.ID) })
 	if !errors.Is(err, model.ErrTaskDeleted) {
 		t.Fatalf("deleted graph root lost deletion marker: %v", err)
 	}
@@ -195,12 +195,12 @@ func TestTaskGraphStoreSelectsOrdinaryComponentAndDirectExternalContext(t *testi
 	mustQueryExec(t, database, `UPDATE task_dependencies SET external=true
   WHERE project_id=$1 AND ((task_id=$2 AND depends_on_task_id=$3) OR (task_id=$4 AND depends_on_task_id=$2) OR (task_id=$5 AND depends_on_task_id=$4))`, project.ID, x.ID, y.ID, b.ID, reverse.ID)
 	for _, seed := range []model.Task{a, b, c, d} {
-		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-			size, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, seed.ID)
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			size, err := snapshot.TaskDAO().TaskGraphProjectionSize(ctx, project.ID, seed.ID)
 			if err != nil || size != (TaskGraphSize{NodeCount: 5, EdgeCount: 6}) {
 				t.Fatalf("scoped graph counted unrelated nodes or lost raw context edges: %#v %v", size, err)
 			}
-			tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, seed.ID, 160)
+			tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, seed.ID, 160)
 			if err != nil {
 				return err
 			}

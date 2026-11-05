@@ -83,16 +83,16 @@ func (s *Projects) GetWithAccess(ctx context.Context, principal model.Principal,
 	var project model.Project
 	var access model.ProjectAccess
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		access, err = RequireProjectRead(ctx, snapshot, principal, id)
+		access, err = RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, id)
 		if err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
 			return err
 		}
-		project, err = snapshot.Project(ctx, id)
+		project, err = snapshot.ProjectDAO().Project(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
 			return nil
@@ -137,9 +137,9 @@ func (s *Projects) ListScoped(ctx context.Context, principal model.Principal, re
 	}
 	var result store.ProjectPage
 	var refusal error
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result, err = snapshot.ScopedProjects(ctx, principal, scope, page)
+		result, err = snapshot.ProjectDAO().ScopedProjects(ctx, principal, scope, page)
 		if errors.Is(err, model.ErrNotFound) {
 			refusal = &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}
 			return nil

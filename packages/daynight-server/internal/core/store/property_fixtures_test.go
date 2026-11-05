@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func fixtureTaskProperties(t *testing.T, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	properties, err := taskproperties.WithWorker(model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}, worker)
+	properties, err := taskprops.WithWorker(model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}, worker)
 	if err != nil {
 		t.Fatal(err)
 	}

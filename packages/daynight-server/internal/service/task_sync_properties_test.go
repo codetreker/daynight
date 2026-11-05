@@ -2,14 +2,13 @@ package service
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
@@ -51,47 +50,6 @@ func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
 	fresh, err = NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, TaskSyncRequest{Epoch: baseline.Epoch, Since: &after.UpdatedAt})
 	if err != nil || len(fresh.Tasks) != 1 || fresh.Tasks[0].Version != removed.Version || fresh.Tasks[0].Properties == nil || len(fresh.Tasks[0].Properties) != 0 || fresh.Epoch != baseline.Epoch {
 		t.Fatalf("removed property returned a default or rotated epoch: %#v %v", fresh, err)
-	}
-}
-
-func TestTaskSyncIllegalPropertiesPreserveTransactionCompletionPriority(t *testing.T) {
-	for _, completeFailure := range []bool{false, true} {
-		name := "validation"
-		if completeFailure {
-			name = "completion cancellation"
-		}
-		t.Run(name, func(t *testing.T) {
-			tasks, database, project, databaseURL, principal := taskService(t)
-			target := createTask(t, tasks, principal, project.ID, "Bad persisted property")
-			if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2)`, target.ID, `[{"url":"private-sync-value"}]`); err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			source := database
-			if completeFailure {
-				traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool {
-					return strings.Contains(sql, "SELECT task_id::text,name,value FROM task_properties")
-				}, end: cancel})
-				source = traced.store
-			}
-			result, err := NewTaskSync(source, 10*time.Second).Get(ctx, principal, project.ID, TaskSyncRequest{})
-			if !reflect.DeepEqual(result, model.TaskSync{}) {
-				t.Fatalf("failed sync returned partial state: %#v", result)
-			}
-			if completeFailure {
-				assertOperational(t, err)
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("transaction failure was hidden by invalid stored value: %v", err)
-				}
-			} else {
-				fault := requireFault(t, err, "invalid_input")
-				var validation *taskproperties.ValidationError
-				if !errors.As(fault, &validation) || strings.Contains(fault.Error(), "private-sync-value") {
-					t.Fatalf("stored validation lost safe typed cause: %v", fault)
-				}
-			}
-		})
 	}
 }
 

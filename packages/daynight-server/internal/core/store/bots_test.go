@@ -62,7 +62,7 @@ func TestBotTransactionRollbackAndCompositeWorkerForeignKey(t *testing.T) {
 	if !errors.Is(err, failure) || !errors.As(err, &transaction) || transaction.Outcome != TransactionNotCommitted {
 		t.Fatalf("rollback outcome: %v", err)
 	}
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { _, err := snapshot.Bot(ctx, candidate.ID); return err })
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { _, err := snapshot.BotDAO().Bot(ctx, candidate.ID); return err })
 	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("rolled back Bot remained: %v", err)
 	}
@@ -80,8 +80,8 @@ func TestBotTransactionRollbackAndCompositeWorkerForeignKey(t *testing.T) {
 	if err := migrate(ctx, database.Pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		bot, err := snapshot.Bot(ctx, candidate.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		bot, err := snapshot.BotDAO().Bot(ctx, candidate.ID)
 		if err == nil && (bot.Version != 1 || bot.CreationOrder < 1 || bot.CreatedAt.IsZero() || !bot.CreatedAt.Equal(bot.UpdatedAt)) {
 			t.Fatalf("invalid committed definition: %+v", bot)
 		}
@@ -101,10 +101,10 @@ func TestBotStorageFailuresRemainErrors(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `UPDATE bots SET requested_overrides='{"workerId":42}' WHERE id=$1`, candidate.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, read := range []func(*Snapshot) error{
-		func(snapshot *Snapshot) error { _, err := snapshot.Bot(ctx, candidate.ID); return err },
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.Bots(ctx, candidate.OwnerUserID, nil, Page{Limit: 10})
+	for _, read := range []func(SnapshotScope) error{
+		func(snapshot SnapshotScope) error { _, err := snapshot.BotDAO().Bot(ctx, candidate.ID); return err },
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.BotDAO().Bots(ctx, candidate.OwnerUserID, nil, Page{Limit: 10})
 			return err
 		},
 	} {
@@ -128,9 +128,12 @@ func TestBotStorageFailuresRemainErrors(t *testing.T) {
 		func() error { _, err := closed.Bot(ctx, candidate.ID); return err },
 		func() error { return closed.InsertBot(ctx, candidate) },
 		func() error { _, err := closed.DeleteBot(ctx, candidate.ID, 1, model.BotDeletion{}); return err },
-		func() error { _, err := snapshot.Bot(ctx, candidate.ID); return err },
-		func() error { return snapshot.BotWorker(ctx, candidate.OwnerUserID, candidate.WorkerID) },
-		func() error { _, err := snapshot.Bots(ctx, candidate.OwnerUserID, nil, Page{Limit: 10}); return err },
+		func() error { _, err := snapshot.BotDAO().Bot(ctx, candidate.ID); return err },
+		func() error { return snapshot.BotDAO().BotWorker(ctx, candidate.OwnerUserID, candidate.WorkerID) },
+		func() error {
+			_, err := snapshot.BotDAO().Bots(ctx, candidate.OwnerUserID, nil, Page{Limit: 10})
+			return err
+		},
 	} {
 		if err := operation(); err == nil {
 			t.Fatal("closed transaction appeared successful")
@@ -173,9 +176,9 @@ func TestBotStorageDeletionAndScopedPagination(t *testing.T) {
 	readPage := func(ownerID string, workerID *string, page Page) BotPage {
 		t.Helper()
 		var result BotPage
-		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			result, err = snapshot.Bots(ctx, ownerID, workerID, page)
+			result, err = snapshot.BotDAO().Bots(ctx, ownerID, workerID, page)
 			return err
 		}); err != nil {
 			t.Fatal(err)
