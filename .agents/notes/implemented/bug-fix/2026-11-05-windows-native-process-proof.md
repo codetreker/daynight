@@ -1,0 +1,126 @@
+# Agent Note: Native Windows Process Proofs
+
+Status: implemented
+
+## Problem
+
+Windows Controller startup needs the original process birth and full command
+line before ownership can be saved and authenticated IPC can listen. A fresh
+PowerShell/CIM query introduces shell and management-provider initialization
+into both the parent's observation and the child's self-proof. A finite query
+allowance can expire before either proof exists, leaving the submitted writer
+and its resources unconfirmed.
+
+The [startup budget decision](2026-11-05-windows-startup-process-proof-budget.md)
+raised acquisition from five to fifteen seconds after matching parent and child
+queries timed out. The same path recurred in the source-bound
+[Windows failure](https://github.com/codetreker/daynight/actions/runs/41965894295/job/127044963808)
+at `f9d0368ad19f09b52f91d0fefd721bb47a3330a5`: the parent's PID 5468 query was killed
+with SIGTERM after 15114 ms, and the child's log retains the matching query
+failure before Controller proof and Job publication. Parent and child ticket
+paths agree. Both journals retain the original error and unknown startup state
+with no Controller proof. This is the acquisition failure recurring beyond the
+selected allowance, independently of the
+[fixture teardown race](../testing/2026-11-05-bot-fixture-teardown.md).
+The later readiness timeout and missing-proof cleanup error are consequences;
+they do not establish a second writer or successful cleanup. The killed queries
+do not reveal how long successful CIM acquisition would have needed.
+
+## Decision
+
+Windows process capture uses the existing Koffi dependency to query native
+process information in the calling process. One `OpenProcess` handle remains
+open while `GetProcessTimes` obtains birth and `NtQueryInformationProcess`
+obtains basic identity and the full UTF-16 command line. Holding that handle
+binds all queries to one process instance even if its numeric PID is reused.
+Returned PID and parent identity, native statuses, command-line byte lengths and
+pointer bounds are validated before constructing a proof. The command-line
+query uses one owned allocation of the `UNICODE_STRING` header plus 65,536 bytes,
+covering its `USHORT` byte-length range without trusting a returned allocation
+size or dereferencing a pointer outside that buffer. The command text is hashed
+in full; an executable path is insufficient.
+
+Birth is emitted in the existing UTC representation with seven fractional
+digits and CIM's microsecond precision: native FILETIME ticks are truncated to
+microseconds before formatting, leaving the final fractional digit zero.
+[System.Management's conversion](https://github.com/dotnet/runtime/blob/51bd84c27560d2dd3e9ae04c84c8c1fa24ea1e07/src/libraries/System.Management/src/System/Management/ManagementDateTime.cs#L170-L201)
+expands CIM microseconds to DateTime ticks. Native hosted comparison against the
+actual CIM provider qualifies that representation. `ProcessProof` retains its
+PID, parent PID, nullable process group, birth, full-command hash and optional
+Job identity. Parent observation, Controller self-capture and later inspection
+therefore use the same identity representation.
+
+The existing acquisition defaults remain fifteen seconds on Windows and five
+seconds on POSIX, with explicit caller budgets and five-second inspection.
+Windows checks its deadline after library loading, process opening, each
+information call and handle closure, and waits for a call already in progress.
+A JavaScript timer cannot preempt a kernel call, so this is an admission and
+completion budget rather than a strict wall-clock interruption bound. Native acquisition starts no PowerShell or CIM query. The POSIX `ps`
+probe retains its timeout and locale behavior.
+
+Acquisition failures propagate their original errors, including the native
+stage and status. If handle release also fails, an `AggregateError` retains both
+errors and names the acquisition error as its cause. A successful release
+rethrows the original acquisition error object. A failed Controller self-proof prevents that Controller's Job
+assignment, journal proof publication and authenticated IPC readiness. A failed
+parent observation retains its unknown submission while the original child can
+still finish its own startup. Existing Job setup and descendant inspection
+remain separate operations. Unknown submission still retains the
+original launch identity and resource responsibility; absence of proof or IPC
+never authorizes a new writer, deletion or a successful stop result. The
+fixture's joined teardown remains responsible for its resources.
+
+`NtQueryInformationProcess` is an internal Windows API whose information classes
+can change. Full command-line capture uses `ProcessCommandLineInformation`
+(class 60), as used for Windows 8.1 and newer by
+[System Informer](https://github.com/winsiderss/systeminformer/blob/0a4975a4763ad202747397ef5daf5893849b5b00/phlib/nativeprocess.c#L1922-L1972).
+Native library loading, unsupported classes, access denial and malformed results
+fail visibly. They are not retried through CIM, and they do
+not produce reduced or guessed identity. The native dependency must be
+reconsidered if a supported Windows environment cannot supply the full command
+line. [Microsoft's API guidance](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryinformationprocess)
+explains this dependency; [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes)
+owns the native creation-time semantics and
+[CIM datetime](https://learn.microsoft.com/en-us/windows/win32/wmisdk/cim-datetime)
+owns the retained precision.
+
+## Alternatives
+
+**Increase the query or test timeout again.** The earlier allowance already
+recurred, and the failed query reveals no sufficient replacement timeout.
+Extending the outer test cannot make the child publish proof or bind IPC after
+its acquisition failed.
+
+**Hash only the executable path.** `QueryFullProcessImageName` omits arguments.
+Distinct command lines would compare as the same writer, weakening the existing
+identity used for reconciliation and cleanup.
+
+**Read remote PEB memory directly.** That adds remote-memory access, address
+layout and cross-bitness responsibilities. A native command-line information
+query supplies the complete string without adopting those additional layouts.
+
+**Fallback to CIM after a native failure.** This restores the observed
+initialization dependency and can hide access or unsupported-query failures.
+Native errors must remain visible so ownership stays unconfirmed.
+
+## Consequences
+
+Windows capture no longer depends on a fresh shell and management provider.
+It retains full identity and one process instance across the native queries,
+with bounded native output and no new package dependency. The internal
+command-line query remains a Windows compatibility dependency; native hosted
+validation is required alongside controlled regressions.
+
+Focused regressions cover birth precision, complete Unicode command lines,
+PID replacement, native failures, malformed lengths and pointers, deadline
+checks and original-error preservation. The Windows-only
+[native identity regression](../../../../packages/daynight/test/commands/controller/process-proof-native-windows.test.ts)
+starts one controlled child and requires its self-proof, the parent's proof and
+later inspection to agree. One isolated CIM query compares the persisted birth
+and full-command hash against the provider's actual format. That oracle has its
+own sixty-second query allowance inside a ninety-second test; its extra time
+qualifies the format without becoming a production acquisition fallback. The
+child is stopped and its close joined after either success or failure. Real
+Controller/Bot integration still owns proof-before-IPC ordering, one
+authenticated writer, no initialization user turn, and complete process-tree
+confirmation before resource deletion.

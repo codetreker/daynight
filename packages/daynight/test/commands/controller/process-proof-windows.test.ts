@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-const f = vi.hoisted(() => ({ exec: vi.fn(), job: vi.fn() }));
-vi.mock("node:child_process", () => ({ execFile: f.exec }));
+const f = vi.hoisted(() => ({ native: vi.fn(), job: vi.fn() }));
+vi.mock("../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: f.native }));
 vi.mock("../../../src/commands/controller/windows-job.js", () => ({ createControllerJob: vi.fn(), inspectControllerJob: f.job }));
 import { stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 
@@ -11,7 +11,7 @@ beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   vi.useFakeTimers(); vi.clearAllMocks();
   f.job.mockResolvedValue([]);
-  f.exec.mockImplementation((_file, args, _options, callback) => callback(null, JSON.stringify({ ProcessId: Number(/ProcessId = (\d+)/u.exec(args.at(-1))![1]), ParentProcessId: controller.parentPid, Birth: controller.startedAt, CommandLine: "fixture-controller" })));
+  f.native.mockImplementation(async pid => ({ ...controller, pid }));
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.defineProperty(process, "platform", platform); });
 const missing = () => { throw Object.assign(new Error("Gone"), { code: "ESRCH" }); };
