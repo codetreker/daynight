@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestMatchesEntityTag(t *testing.T) {
@@ -202,7 +202,7 @@ func TestIdentityHTTPMeCacheDoesNotHideUserReadFailure(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	RequestLogging(h.auth.logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.auth.me(w, r, core.Principal{UserID: user.ID})
+		h.auth.me(w, r, model.Principal{UserID: user.ID})
 	})).ServeHTTP(response, request)
 	assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
 	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" {

@@ -1,8 +1,18 @@
-# 助手定义、Session 绑定与准入
+# 助手组合、定义与 Session 准入
 
-[需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `core.Bot`、PostgreSQL store、`service.Bots` 和 HTTP 投影负责；`sessionrelay` 在原有独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
+[需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `model.Bot`、PostgreSQL store、`service.Bots` 和 HTTP 投影负责；`sessionrelay` 在原有独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
 
 网页选择、详情与全屏组合由[助手管理页面设计](bot-management-web.md)拥有；[助手 Session 设计](bot-session-view.md)拥有共享视图绑定与缓存，不复制本文的服务端生命周期。
+
+## 产品组合
+
+Server 的正式构造入口将同一 Store、文件存储和 `sessionrelay.Service` 注入 Bot 管理与 Worker 生命周期路由。`/bots` 与 `/bots/{botId}` 同时注册为 SPA 页面入口，使直接访问和刷新能加载应用；登录配置将 `/bots` 保留为产品路由，避免自定义认证端点覆盖它。Bot 继续使用原独立 Session 的传输身份与共享 renderer，任务 Session 和独立 Test 不转换成 Bot。
+
+Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行、授权维护、恢复和删除组合为独立管理循环。它不等待项目准备，也不占用 Task coordinator 的执行槽。托管预检与当前有效的全局原生配置共同生成 `assistantHost`；旧 Worker 缺少该报告时，默认解析保留 unsupported。配置先按 Worker 自己的原生控制模式解析，助手采集器再检查 Web 参数兼容性；合法 Herdr 参数若不支持 Web，只将对应助手 Provider 报告为 `unsupported_arguments`，不能阻断普通 Task 状态报告。新配置更新报告和后续首次意图，已有配置与角色按持久身份保持冻结。退出先停止管理循环并汇总所有执行停止结果，再关闭 stores 与释放实例锁；失败不能转成成功。
+
+网页 `AuthenticatedApp` 与全局侧栏共同选择 `/bots` 或 `/bots/{id}`，复用既有身份 scope、`BotsPage`、`BotSessionHost` 和 `SessionView`。导航、关闭聊天、切换选择及详情只改变浏览器展示与连接，不进入 Worker 停止路径。三个 pane 的缓存、定向删除失效和共享阅读恢复继续由各自模块拥有。
+
+组合不增加持久格式：服务端迁移随 Go embed 发布，Worker SQLite SQL 随 CLI 包发布。验证必须覆盖真实安装 CLI 与生产 HTTP、生产 Web 页面及共享 relay，并明确受控 Provider 与真实原生执行的证据边界。整体独立验收不能由模块单测替代。组合取舍见[助手组合决策](../../.agents/notes/implemented/architecture/2026-11-05-assistant-composition.md)。
 
 ## 数据拥有者
 
@@ -102,7 +112,7 @@ SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_op
 
 ## 扩展约束
 
-公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。未组合托管能力前不启用完整助手 UI 入口。Worker 的[角色与 CLI 环境准备](bot-role-environment.md)提供单一版本化模板、持久角色选择和当前认证检查。Provider 实际启动与恢复、首次角色持久化与冻结接入、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
+公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。助手导航与正式 Worker 托管在同一产品组合中启用。Worker 的[角色与 CLI 环境准备](bot-role-environment.md)提供单一版本化模板、持久角色选择和当前认证检查。Provider 实际启动与恢复、首次角色持久化与冻结接入、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
 
 默认与偏好取舍见[默认解析决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-default-resolution.md)。管理定义取舍见[管理定义决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-definition-storage.md)。
 

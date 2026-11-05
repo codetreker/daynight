@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
@@ -30,7 +30,7 @@ func grantVersion(fields map[string]json.RawMessage) (*int64, error) {
 	return &version, nil
 }
 
-func grantActorAccess(access *core.ProjectAccess) *api.ProjectAccess {
+func grantActorAccess(access *model.ProjectAccess) *api.ProjectAccess {
 	if access == nil {
 		return nil
 	}
@@ -38,7 +38,7 @@ func grantActorAccess(access *core.ProjectAccess) *api.ProjectAccess {
 	return &result
 }
 
-func (h *MembershipRoutes) setGrant(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *MembershipRoutes) setGrant(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	started := time.Now()
 	w.Header().Set("Cache-Control", "no-store")
 	logger, projectID, err := h.scoped(request, principal)
@@ -64,7 +64,7 @@ func (h *MembershipRoutes) setGrant(w http.ResponseWriter, request *http.Request
 		writeGrantError(w, request, logger, "prepare", started, err)
 		return
 	}
-	result, err := h.memberships.SetGrant(request.Context(), principal, projectID, request.PathValue("userId"), service.SetProjectGrant{Version: version, Role: core.ProjectRole(role), ExpectedUserID: expected})
+	result, err := h.memberships.SetGrant(request.Context(), principal, projectID, request.PathValue("userId"), service.SetProjectGrant{Version: version, Role: model.ProjectRole(role), ExpectedUserID: expected})
 	if err != nil {
 		writeGrantError(w, request, logger, "set", started, err)
 		return
@@ -72,7 +72,7 @@ func (h *MembershipRoutes) setGrant(w http.ResponseWriter, request *http.Request
 	writeGrantJSON(w, request, logger, started, api.ProjectGrantResult{Grant: projectGrantResponse(result.Grant), ActorAccess: grantActorAccess(result.ActorAccess)})
 }
 
-func (h *MembershipRoutes) removeGrant(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *MembershipRoutes) removeGrant(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	started := time.Now()
 	w.Header().Set("Cache-Control", "no-store")
 	logger, projectID, err := h.scoped(request, principal)

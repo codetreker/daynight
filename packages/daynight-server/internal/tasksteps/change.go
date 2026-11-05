@@ -4,7 +4,7 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 var ErrTargetNotFound = errors.New("step target was not found")
@@ -12,13 +12,13 @@ var ErrTargetNotFound = errors.New("step target was not found")
 type Changes struct {
 	Title       *string
 	Description *string
-	Status      *core.TaskStepStatus
+	Status      *model.TaskStepStatus
 }
 
 // ChangeCandidate compares content before assigning timestamps and leaves every
 // existing identity, position and time untouched. The caller validates the input
 // fields and stored collection before applying this task-local change.
-func ChangeCandidate(current []core.TaskStep, stepID string, changes Changes) ([]core.TaskStep, int, bool, error) {
+func ChangeCandidate(current []model.TaskStep, stepID string, changes Changes) ([]model.TaskStep, int, bool, error) {
 	for index, existing := range current {
 		if existing.ID != stepID {
 			continue

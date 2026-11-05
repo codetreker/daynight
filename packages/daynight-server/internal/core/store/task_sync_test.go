@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -22,10 +22,10 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project, other := queryProject(t, s, 1), queryProject(t, s, 2)
-	queryTask(t, s, other.ID, 19, core.TaskTodo)
-	a := queryTask(t, s, project.ID, 10, core.TaskDone)
-	b := queryTask(t, s, project.ID, 11, core.TaskInProgress, a.ID)
-	c := queryTask(t, s, project.ID, 12, core.TaskTodo, a.ID, b.ID)
+	queryTask(t, s, other.ID, 19, model.TaskTodo)
+	a := queryTask(t, s, project.ID, 10, model.TaskDone)
+	b := queryTask(t, s, project.ID, 11, model.TaskInProgress, a.ID)
+	c := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID, b.ID)
 	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456000, time.UTC)
 	mustQueryExec(t, s, `UPDATE tasks SET created_at=$1, updated_at=$1, version=9007199254740993,
 		title=repeat('😀',161), description=repeat('private description',10000) WHERE project_id=$2`, stamp, project.ID)
@@ -40,7 +40,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		all, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].TitlePreview != strings.Repeat("😀", 160) || !all[0].TitleTruncated ||
-			all[0].RequiredPlatform != nil || all[2].RequiredPlatform == nil || *all[2].RequiredPlatform != core.TaskPlatform("linux") || !all[2].AllowAgents ||
+			all[0].RequiredPlatform != nil || all[2].RequiredPlatform == nil || *all[2].RequiredPlatform != model.TaskPlatform("linux") || !all[2].AllowAgents ||
 			!slices.Equal(all[2].DependsOn, []string{a.ID, b.ID}) || !slices.Equal(all[2].ExternalDependsOn, []string{b.ID}) {
 			t.Fatalf("intrinsic projection: %#v, %v", all, err)
 		}
@@ -103,7 +103,7 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	}
 	other := queryProject(t, s, 2)
 	if err := s.WriteProject(ctx, queryID(1), func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, queryID(11), TaskWrite{Title: "Changed", Status: core.TaskTodo})
+		_, err := tx.UpdateTask(ctx, queryID(11), TaskWrite{Title: "Changed", Status: model.TaskTodo})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 			t.Fatalf("epoch changed or shared: %s %s", current, otherEpoch)
 		}
 		_, err = snapshot.TaskCacheEpoch(ctx, queryID(99))
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("epoch missing cause: %v", err)
 		}
 		return nil
@@ -214,13 +214,13 @@ func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			s := isolatedStore(t)
 			project := queryProject(t, s, 1)
-			queryTask(t, s, project.ID, 11, core.TaskTodo)
+			queryTask(t, s, project.ID, 11, model.TaskTodo)
 			mustQueryExec(t, s, test.ddl)
 			err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
 				_, err := snapshot.TaskSyncTasks(context.Background(), project.ID, nil, 160)
 				return err
 			})
-			if err == nil || errors.Is(err, core.ErrNotFound) || strings.Contains(err.Error(), "private") {
+			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
 				t.Fatalf("sync failure hidden or leaked: %v", err)
 			}
 			if test.name == "iteration" {
@@ -237,7 +237,7 @@ func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := expired.TaskSyncTasks(context.Background(), queryID(1), nil, 160)
-	if !errors.Is(err, pgx.ErrTxClosed) || !reflect.DeepEqual(rows, []core.TaskViewRecord(nil)) {
+	if !errors.Is(err, pgx.ErrTxClosed) || !reflect.DeepEqual(rows, []model.TaskViewRecord(nil)) {
 		t.Fatalf("closed snapshot: %#v %v", rows, err)
 	}
 }

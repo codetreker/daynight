@@ -5,10 +5,10 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func taskGraphResponse(graph core.TaskGraph) api.TaskGraph {
+func taskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 	response := api.TaskGraph{
 		Project:    projectResponse(graph.Project),
 		ObservedAt: graph.ObservedAt.UTC(),
@@ -29,7 +29,7 @@ func taskGraphResponse(graph core.TaskGraph) api.TaskGraph {
 	return response
 }
 
-func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	start := time.Now()
 	projectID, _, logger, err := h.resource(request, principal)

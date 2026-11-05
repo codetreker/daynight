@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 	"github.com/google/uuid"
 )
@@ -115,12 +115,12 @@ func TestInstalledCLITaskStepsAddCapacityStress(t *testing.T) {
 		project := process.project(t, "Installed Add capacity")
 		task := process.task(t, project, "Exact capacity candidate")
 		stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
-		header := core.TaskHeader{ProjectID: project.ID, ID: task.ID, Version: math.MaxInt64}
-		rows := make([]core.TaskStep, 128)
+		header := model.TaskHeader{ProjectID: project.ID, ID: task.ID, Version: math.MaxInt64}
+		rows := make([]model.TaskStep, 128)
 		for index := range rows {
-			rows[index] = core.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
+			rows[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 		}
-		candidate := append(append([]core.TaskStep{}, rows...), core.TaskStep{ID: "ffffffff", Position: 128, Title: "New <&> 中文", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
+		candidate := append(append([]model.TaskStep{}, rows...), model.TaskStep{ID: "ffffffff", Position: 128, Title: "New <&> 中文", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
 		_, base, err := tasksteps.EncodeCollection(header, candidate)
 		if err != nil {
 			t.Fatal(err)
@@ -193,7 +193,7 @@ func TestInstalledCLITaskStepsAddCapacityStress(t *testing.T) {
 						}
 					}
 					added := resource.Steps[128]
-					if added.ID != "ffffffff" || added.Title != "New <&> 中文" || added.Description != "" || added.Status != core.TaskStepTodo || added.CreatedAt.IsZero() || added.CreatedAt != added.UpdatedAt || added.CreatedAt.Nanosecond()%1000 != 0 {
+					if added.ID != "ffffffff" || added.Title != "New <&> 中文" || added.Description != "" || added.Status != model.TaskStepTodo || added.CreatedAt.IsZero() || added.CreatedAt != added.UpdatedAt || added.CreatedAt.Nanosecond()%1000 != 0 {
 						t.Fatal("capacity Add target receipt fields/times are not exact")
 					}
 					taskStepsAddProducerTarget(t, process, requestID, "ffffffff")

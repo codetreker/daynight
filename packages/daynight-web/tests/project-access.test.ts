@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { ApiError } from '../src/api/client';
+import { openDB } from 'idb';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
+import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph } from './helpers/taskSync';
 import { getProjectAccess } from '../src/api/auth';
@@ -253,4 +255,156 @@ it.each(['success', 'failure'] as const)('keeps confirmed revocation when an old
   expect(await read).toBeNull();
   expect(scope.getAuthorizedProject(projectId)).toBeNull();
   expect(session.snapshot()).toMatchObject({ status: 'unavailable', access: null, refreshing: false, error: { code: 'not_found' } });
+});
+
+
+it.each(['network', 'identity'] as const)('holds an in-flight access %s failure until identity admission', async (outcome) => {
+  const pending = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(pending.promise);
+  const { session } = mount();
+  session.publishSync(session.beginObservation(), admin);
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  const resume = pauseAuthRequests();
+  pending.reject(new ApiError('network'));
+  await new Promise<void>((done) => setTimeout(done, 0));
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: admin, refreshing: true, error: null });
+  if (outcome === 'identity') invalidateAuthRequests(); else resume();
+  await read; resume();
+  if (outcome === 'identity') expect(session.snapshot().status).toBe('ready');
+  else expect(session.snapshot().status).toBe('error');
+});
+
+
+it('withdraws a trusted denial during identity pause before foreground replacement and a later network failure', async () => {
+  const pending = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(pending.promise).mockRejectedValue(new ApiError('network'));
+  const { session, scope } = mount();
+  const taskId = '00000000-0000-4000-8000-000000000103';
+  const graph = graphFixture([detailFixture(projectId, taskId)]);
+  const initial = await scope.beginSync(projectId, scope.signal);
+  const active = await scope.applySync(initial, taskSyncFromGraph(graph, { versionForTask: () => 1n }), scope.signal);
+  session.publishSync(session.beginObservation(), admin);
+  const revoked = vi.fn();
+  const unsubscribe = scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) revoked(event); });
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  const resume = pauseAuthRequests();
+  try {
+    pending.reject(new ApiError('server', 404, 'not_found'));
+    await vi.waitFor(() => expect(session.snapshot()).toMatchObject({ status: 'unavailable', access: null }));
+    expect(revoked).toHaveBeenCalledOnce();
+    expect(revoked).toHaveBeenCalledWith(expect.objectContaining({ projectId, accessRevoked: true, revokedGeneration: active.project.manifest.cacheGeneration, error: expect.objectContaining({ status: 404, code: 'not_found' }) }));
+    expect(() => scope.getAuthorizedProject(projectId)).toThrow();
+    expect(await database.get('projects', [TEST_VIEWER_ID, projectId])).toMatchObject({ state: 'active' });
+    expect(await database.get('summaries', [TEST_VIEWER_ID, projectId, taskId])).toBeDefined();
+    window.dispatchEvent(new Event('focus'));
+    expect(session.snapshot().access).toBeNull();
+    expect(getProjectAccess).toHaveBeenCalledOnce();
+    resume();
+    await read;
+    await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+    await session.waitForFreshAccess(scope.signal);
+    expect(session.snapshot()).toMatchObject({ status: 'error', access: null, error: { kind: 'network' } });
+    expect(scope.getAuthorizedProject(projectId)).toBeNull();
+    expect(await database.get('projects', [TEST_VIEWER_ID, projectId])).toMatchObject({ state: 'invalidated', invalidatedBy: 'access' });
+    expect(await database.get('summaries', [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
+  } finally { resume(); database.close(); unsubscribe(); }
+});
+
+it('keeps confirmed denial cleanup owned by the scope if a subscriber deactivates the panel', async () => {
+  const pending = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(pending.promise);
+  const { session, scope } = mount();
+  const taskId = '00000000-0000-4000-8000-000000000103';
+  const graph = graphFixture([detailFixture(projectId, taskId)]);
+  const initial = await scope.beginSync(projectId, scope.signal);
+  await scope.applySync(initial, taskSyncFromGraph(graph, { versionForTask: () => 1n }), scope.signal);
+  session.publishSync(session.beginObservation(), admin);
+  const unsubscribe = session.subscribe(() => { if (session.snapshot().status === 'unavailable') session.setActive(false); });
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  const readSignal = vi.mocked(getProjectAccess).mock.calls[0]![1];
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  const resume = pauseAuthRequests();
+  try {
+    pending.reject(new ApiError('server', 404, 'not_found'));
+    await vi.waitFor(() => expect(session.snapshot()).toMatchObject({ status: 'unavailable', access: null }));
+    expect(readSignal.aborted).toBe(true);
+    expect(await database.get('projects', [TEST_VIEWER_ID, projectId])).toMatchObject({ state: 'active' });
+    resume(); await read;
+    expect(scope.getAuthorizedProject(projectId)).toBeNull();
+    expect(await database.get('projects', [TEST_VIEWER_ID, projectId])).toMatchObject({ state: 'invalidated', invalidatedBy: 'access' });
+    expect(await database.get('summaries', [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
+  } finally { resume(); database.close(); unsubscribe(); }
+});
+
+it('does not withdraw a newer cache generation for a stale denial while identity is paused', async () => {
+  const pending = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(pending.promise);
+  const { session, scope } = mount();
+  const graph = graphFixture([detailFixture(projectId, '00000000-0000-4000-8000-000000000103')]);
+  const initial = await scope.beginSync(projectId, scope.signal);
+  await scope.applySync(initial, taskSyncFromGraph(graph, { versionForTask: () => 1n }), scope.signal);
+  session.publishSync(session.beginObservation(), admin);
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  const replacement = await scope.beginSync(projectId, scope.signal);
+  const current = await scope.applySync(replacement, taskSyncFromGraph(graph, { epoch: '00000000-0000-4000-8000-000000000999', versionForTask: () => 1n }), scope.signal);
+  const resume = pauseAuthRequests();
+  try {
+    pending.reject(new ApiError('server', 404, 'not_found'));
+    await new Promise<void>((done) => setTimeout(done, 0));
+    expect(session.snapshot()).toMatchObject({ status: 'ready', access: admin, refreshing: true });
+    expect(() => scope.getAuthorizedProject(projectId)).toThrow();
+    resume(); await read;
+    expect(scope.getAuthorizedProject(projectId)!.manifest.cacheGeneration).toBe(current.project.manifest.cacheGeneration);
+    expect(session.snapshot().status).toBe('loading');
+  } finally { resume(); }
+});
+
+it.each(['focus-first', 'visibility-first'] as const)('supersedes a pre-departure access read on foreground return: %s', async (order) => {
+  const old = deferred<ProjectAccess>(), fresh = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(old.promise).mockReturnValue(fresh.promise);
+  const { session } = mount();
+  session.publishSync(session.beginObservation(), admin);
+  const earlier = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  const oldSignal = vi.mocked(getProjectAccess).mock.calls[0]![1];
+  const resume = pauseAuthRequests();
+  if (order === 'focus-first') { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange')); }
+  else { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); }
+  expect(oldSignal.aborted).toBe(true);
+  old.resolve(admin); await earlier;
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: admin, refreshing: true });
+  resume();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  expect(session.snapshot().refreshing).toBe(true);
+  fresh.resolve(member); await session.revalidate();
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: member, refreshing: false });
+});
+
+it('waits across protected verification and consecutive foreground returns before admitting access', async () => {
+  const protectedResult = deferred<ProjectAccess>(), oldReturn = deferred<ProjectAccess>(), latest = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(protectedResult.promise).mockReturnValueOnce(oldReturn.promise).mockReturnValueOnce(latest.promise);
+  const { session, scope } = mount();
+  session.publishSync(session.beginObservation(), admin);
+  const protectedRead = session.revalidateAfterMutation();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(1));
+  window.dispatchEvent(new Event('focus'));
+  const result = session.waitForFreshAccess(scope.signal);
+  protectedResult.resolve(admin); await protectedRead;
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  expect(session.snapshot().refreshing).toBe(true);
+  const resume = pauseAuthRequests();
+  window.dispatchEvent(new Event('focus'));
+  oldReturn.resolve(admin);
+  await Promise.resolve();
+  expect(session.snapshot().refreshing).toBe(true);
+  resume();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(3));
+  latest.resolve(member);
+  expect(await result).toEqual(member);
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: member, refreshing: false });
 });

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -20,7 +20,7 @@ func TestResourceServicesRejectAbsentPrincipals(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.NewString()
 	projects, tasks, attachments := NewProjects(nil), NewTasks(nil), NewAttachments(nil, nil)
-	for _, principal := range []core.Principal{{}, {UserID: id, CredentialID: id, Kind: "unknown"}} {
+	for _, principal := range []model.Principal{{}, {UserID: id, CredentialID: id, Kind: "unknown"}} {
 		calls := []func() error{
 			func() error { _, err := projects.Get(ctx, principal, id); return err },
 			func() error { _, err := tasks.Create(ctx, principal, id, CreateTask{Title: "Hidden"}); return err },
@@ -30,15 +30,18 @@ func TestResourceServicesRejectAbsentPrincipals(t *testing.T) {
 			},
 			func() error { _, err := tasks.Get(ctx, principal, id, id); return err },
 			func() error {
-				_, err := tasks.List(ctx, principal, id, TaskListRequest{PageRequest: PageRequest{Limit: 1}})
+				_, err := tasks.List(ctx, principal, id, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
 				return err
 			},
 			func() error { _, err := tasks.Graph(ctx, principal, id, id); return err },
 			func() error {
-				_, err := tasks.SetStatus(ctx, principal, id, id, SetTaskStatus{Version: 1, Status: core.TaskTodo})
+				_, err := tasks.SetStatus(ctx, principal, id, id, SetTaskStatus{Version: 1, Status: model.TaskTodo})
 				return err
 			},
-			func() error { _, err := attachments.List(ctx, principal, id, id, PageRequest{Limit: 1}); return err },
+			func() error {
+				_, err := attachments.List(ctx, principal, id, id, model.PageRequest{Limit: 1})
+				return err
+			},
 			func() error {
 				_, _, err := attachments.Put(ctx, principal, id, id, "file", "text/plain", strings.NewReader("content"))
 				return err
@@ -72,12 +75,12 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 	attachments := NewAttachments(f.database, probe)
 	putAttachment(t, attachments, admin, task, "secret.html", "<h1>same-origin</h1>")
 	ctx := context.Background()
-	readAndWrite := func(principal core.Principal) []func() error {
+	readAndWrite := func(principal model.Principal) []func() error {
 		return []func() error{
 			func() error { _, err := f.projects.Get(ctx, principal, project.ID); return err },
 			func() error { _, err := tasks.Get(ctx, principal, project.ID, task.ID); return err },
 			func() error {
-				_, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}})
+				_, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}})
 				return err
 			},
 			func() error { _, err := tasks.Graph(ctx, principal, project.ID, task.ID); return err },
@@ -90,7 +93,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 				return err
 			},
 			func() error {
-				_, err := attachments.List(ctx, principal, project.ID, task.ID, PageRequest{Limit: 1})
+				_, err := attachments.List(ctx, principal, project.ID, task.ID, model.PageRequest{Limit: 1})
 				return err
 			},
 			func() error {
@@ -107,9 +110,9 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 			func() error { return attachments.Delete(ctx, principal, project.ID, task.ID, "member.txt") },
 		}
 	}
-	actions := func(principal core.Principal) []func() error {
+	actions := func(principal model.Principal) []func() error {
 		calls := make([]func() error, 0, 3)
-		for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+		for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 			calls = append(calls, func() error {
 				_, err := tasks.SetStatus(ctx, principal, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: status})
 				return err
@@ -117,7 +120,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 		}
 		return calls
 	}
-	for _, principal := range []core.Principal{outsider, {}} {
+	for _, principal := range []model.Principal{outsider, {}} {
 		before := probe.count()
 		for _, call := range append(readAndWrite(principal), actions(principal)...) {
 			code := "not_found"
@@ -145,7 +148,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 	if probe.count() != before {
 		t.Fatal("removed member reached filesystem")
 	}
-	page, err := f.projects.List(ctx, member, PageRequest{Limit: 1})
+	page, err := f.projects.List(ctx, member, model.PageRequest{Limit: 1})
 	if err != nil || len(page.Items) != 0 || page.NextCursor != nil {
 		t.Fatalf("removed member project list: %#v %v", page, err)
 	}
@@ -250,7 +253,7 @@ func TestRevokedPATCannotAuthenticateForAnotherResourceRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := identity.Authenticate(ctx, core.PATCredential, token.Secret)
+	principal, err := identity.Authenticate(ctx, model.PATCredential, token.Secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +263,7 @@ func TestRevokedPATCannotAuthenticateForAnotherResourceRequest(t *testing.T) {
 	if err := identity.RevokePAT(ctx, owner, token.Credential.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = identity.Authenticate(ctx, core.PATCredential, token.Secret)
+	_, err = identity.Authenticate(ctx, model.PATCredential, token.Secret)
 	requireFault(t, err, "unauthenticated")
 }
 
@@ -299,9 +302,9 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 			results <- taskResult{task: updated, err: err}
 		}()
 		for _, action := range []struct {
-			task   core.Task
-			status core.TaskStatus
-		}{{task, core.TaskTodo}, {todo, core.TaskInProgress}, {active, core.TaskDone}} {
+			task   model.Task
+			status model.TaskStatus
+		}{{task, model.TaskTodo}, {todo, model.TaskInProgress}, {active, model.TaskDone}} {
 			go func() {
 				updated, err := tasks.SetStatus(ctx, member, project.ID, action.task.ID, SetTaskStatus{Version: action.task.Version, Status: action.status})
 				results <- taskResult{task: updated, err: err}
@@ -318,7 +321,7 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 	assertTaskUnchanged(t, tasks, admin, task)
 	assertTaskUnchanged(t, tasks, admin, todo)
 	assertTaskUnchanged(t, tasks, admin, active)
-	page, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}})
+	page, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
 	if err != nil || len(page.Items) != 3 {
 		t.Fatalf("rejected creation persisted: %#v %v", page, err)
 	}
@@ -331,13 +334,13 @@ func TestMemberCanSetEveryTaskStatus(t *testing.T) {
 	f.join(t, admin, member, project.ID)
 	tasks := NewTasks(f.database)
 	task := createTask(t, tasks, member, project.ID, "Member-owned work")
-	if task.Status != core.TaskTodo {
+	if task.Status != model.TaskTodo {
 		t.Fatalf("new task status: %s", task.Status)
 	}
-	for _, status := range []core.TaskStatus{core.TaskInProgress, core.TaskDone, core.TaskTodo, core.TaskDone} {
+	for _, status := range []model.TaskStatus{model.TaskInProgress, model.TaskDone, model.TaskTodo, model.TaskDone} {
 		task = setStatusTask(t, tasks, member, task, status)
 	}
-	if task.Status != core.TaskDone || task.Version != 5 {
+	if task.Status != model.TaskDone || task.Version != 5 {
 		t.Fatalf("member status changes: %#v", task)
 	}
 }

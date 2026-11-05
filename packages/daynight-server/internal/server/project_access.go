@@ -4,16 +4,16 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
-func projectGrantResponse(grant core.ProjectGrant) api.ProjectGrant {
+func projectGrantResponse(grant model.ProjectGrant) api.ProjectGrant {
 	return api.ProjectGrant{ProjectID: grant.ProjectID, UserID: grant.UserID, Role: string(grant.Role),
 		Version: grant.Version, CreatedAt: grant.CreatedAt.UTC(), UpdatedAt: grant.UpdatedAt.UTC()}
 }
 
-func projectAccessResponse(access core.ProjectAccess) api.ProjectAccess {
+func projectAccessResponse(access model.ProjectAccess) api.ProjectAccess {
 	var direct *api.ProjectGrant
 	if grant := access.DirectGrant; grant != nil {
 		response := projectGrantResponse(*grant)
@@ -27,7 +27,7 @@ func projectAccessResponse(access core.ProjectAccess) api.ProjectAccess {
 	return api.ProjectAccess{ProjectID: access.ProjectID, OwnerTeam: teamRefResponse(access.OwnerTeam), Ownership: ownershipResponse(access.Ownership), EffectiveRole: string(access.Role), DirectGrant: direct, TeamRole: teamRole, CanTransfer: access.CanTransfer}
 }
 
-func (h *projectHandler) access(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *projectHandler) access(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
 	projectID, err := service.CanonicalID(request.PathValue("projectId"))
@@ -48,10 +48,10 @@ func (h *projectHandler) access(w http.ResponseWriter, request *http.Request, pr
 	writeJSON(w, request, logger, http.StatusOK, projectAccessResponse(access))
 }
 
-func ownershipResponse(ownership core.ProjectOwnership) api.ProjectOwnership {
+func ownershipResponse(ownership model.ProjectOwnership) api.ProjectOwnership {
 	return api.ProjectOwnership{TeamID: ownership.TeamID, Version: ownership.Version}
 }
 
-func teamRefResponse(team core.TeamRef) api.TeamRef {
+func teamRefResponse(team model.TeamRef) api.TeamRef {
 	return api.TeamRef{ID: team.ID, Kind: team.Kind, Name: team.Name}
 }

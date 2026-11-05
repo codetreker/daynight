@@ -1,13 +1,13 @@
 package service
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core"
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 
-func taskAssignmentFilter(value *string, principalUserID string) (core.TaskAssignmentFilter, error) {
+func taskAssignmentFilter(value *string, principalUserID string) (model.TaskAssignmentFilter, error) {
 	if value == nil {
-		return core.TaskAssignmentFilter{}, nil
+		return model.TaskAssignmentFilter{}, nil
 	}
 	if *value == "unassigned" {
-		return core.TaskAssignmentFilter{Mode: core.TaskAssignmentUnassigned}, nil
+		return model.TaskAssignmentFilter{Mode: model.TaskAssignmentUnassigned}, nil
 	}
 	userID := *value
 	if userID == "me" {
@@ -15,22 +15,22 @@ func taskAssignmentFilter(value *string, principalUserID string) (core.TaskAssig
 	}
 	canonical, err := CanonicalID(userID)
 	if err != nil {
-		return core.TaskAssignmentFilter{}, err
+		return model.TaskAssignmentFilter{}, err
 	}
-	return core.TaskAssignmentFilter{Mode: core.TaskAssignmentUser, UserID: canonical}, nil
+	return model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: canonical}, nil
 }
 
-func taskAssignmentScope(value core.TaskAssignmentFilter) (string, error) {
+func taskAssignmentScope(value model.TaskAssignmentFilter) (string, error) {
 	switch value.Mode {
-	case core.TaskAssignmentAll:
+	case model.TaskAssignmentAll:
 		if value.UserID == "" {
 			return "all", nil
 		}
-	case core.TaskAssignmentUnassigned:
+	case model.TaskAssignmentUnassigned:
 		if value.UserID == "" {
 			return "unassigned", nil
 		}
-	case core.TaskAssignmentUser:
+	case model.TaskAssignmentUser:
 		canonical, err := CanonicalID(value.UserID)
 		if err != nil {
 			return "", err

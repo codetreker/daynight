@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 type attachmentCursor struct {
@@ -20,7 +20,7 @@ type attachmentCursor struct {
 	Path      string `json:"path"`
 }
 
-func attachmentListPage(request PageRequest, projectID, taskID string) (store.AttachmentQuery, error) {
+func attachmentListPage(request model.PageRequest, projectID, taskID string) (store.AttachmentQuery, error) {
 	if request.Limit < 1 || request.Limit > 100 {
 		return store.AttachmentQuery{}, invalidInput("Limit must be between 1 and 100.")
 	}
@@ -49,7 +49,7 @@ func attachmentListPage(request PageRequest, projectID, taskID string) (store.At
 	return query, nil
 }
 
-func (s *Attachments) List(ctx context.Context, principal core.Principal, projectID, taskID string, request PageRequest) (AttachmentPage, error) {
+func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (AttachmentPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return AttachmentPage{}, err
 	}

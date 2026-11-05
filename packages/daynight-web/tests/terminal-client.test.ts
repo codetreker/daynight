@@ -17,6 +17,48 @@ function harness(isCurrent?: () => boolean, nativeSessionId?: string | null) {
 }
 afterEach(() => { vi.useRealTimers(); window.sessionStorage.clear(); });
 describe('terminal client control ownership', () => {
+  it('keeps discovery stable and requires a fresh channel before admitting input after registration', async () => {
+    vi.useFakeTimers(); const h = harness();
+    vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', availability: 'not_registered', transport: 'disconnected', inputReady: false });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.api.channel).toHaveBeenCalledOnce();
+    expect(h.client.getSnapshot()).toMatchObject({ availability: null, transport: 'connecting', inputReady: false, ownsControl: false });
+    await h.client.control('acquire_control'); expect(h.api.command).not.toHaveBeenCalled();
+    h.manual(); expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'connected', inputReady: true, ownsControl: true });
+    h.client.close();
+  });
+  it('recovers discovery when admission briefly closes as the retry timer fires', async () => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted);
+    vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); admitted = false;
+    await vi.advanceTimersByTimeAsync(1500); expect(h.api.current).toHaveBeenCalledOnce(); admitted = true;
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); expect(h.api.channel).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('recovers when a discovery response arrives during a transient admission gate', async () => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted); let resolve!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.current).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    h.client.setVisible(true); admitted = false; resolve(h.state()); await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.channel).not.toHaveBeenCalled(); admitted = true; h.client.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0); expect(h.api.channel).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('resumes an explicit refresh interrupted after an inapplicable result', async () => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted); let resolve!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_applicable', protocol: r.protocol });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    vi.mocked(h.api.current).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const refresh = h.client.refresh(); admitted = false; resolve(h.state()); await refresh;
+    admitted = true; h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.current).toHaveBeenCalledTimes(3); expect(h.api.channel).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('rejects a not-registered response for another claim without polling it', async () => {
+    vi.useFakeTimers(); const h = harness();
+    vi.mocked(h.api.current).mockResolvedValue({ status: 'not_registered', protocol: r.protocol, claimId: owner.projectId, agentControlMode: 'herdr' });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(5000);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', availability: null, error: { code: 'stale_fence' } });
+    expect(h.api.current).toHaveBeenCalledOnce(); expect(h.api.channel).not.toHaveBeenCalled(); h.client.close();
+  });
   it('only subscribes when visible and closes its read subscription on hiding', async () => {
     const h = harness(); expect(h.api.current).not.toHaveBeenCalled(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.publish();
     expect(h.client.getSnapshot().phase).toBe('ready'); h.client.setVisible(false); expect(h.close).toHaveBeenCalledOnce(); expect(h.client.getSnapshot().ownsControl).toBe(false); h.client.close();
@@ -67,6 +109,164 @@ describe('terminal client control ownership', () => {
     let current = true; const h = harness(() => current); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
     current = false; h.client.setVisible(false); current = true; h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledTimes(2));
     expect(h.client.getSnapshot().ownsControl).toBe(false); h.publish(state()); expect(h.client.getSnapshot().phase).toBe('ready'); h.client.close();
+  });
+  it('retains the confirmed frame while paused and requires a fresh matching channel before input or renewal', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const confirmed = structuredClone(h.state()); const staleReceiver = vi.mocked(h.api.channel).mock.calls[0]![2];
+    let resolve!: (value: TerminalSessionState) => void; let signal!: AbortSignal;
+    vi.mocked(h.api.state).mockImplementationOnce((_id, s) => { signal = s; return new Promise(done => { resolve = done; }); });
+    h.client.setVisible(false);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'paused', inputReady: false, ownsControl: false, session: confirmed });
+    await vi.advanceTimersByTimeAsync(30000); expect(h.api.command).not.toHaveBeenCalled();
+    h.client.setVisible(true);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'connecting', inputReady: false, session: confirmed });
+    const late = structuredClone(confirmed); late.snapshot!.frame.frameSeq = '99'; staleReceiver(late);
+    expect(h.client.getSnapshot().session?.snapshot?.frame.frameSeq).toBe(confirmed.snapshot!.frame.frameSeq);
+    resolve(structuredClone(confirmed)); await vi.advanceTimersByTimeAsync(0);
+    expect(signal.aborted).toBe(false); expect(h.api.channel).toHaveBeenCalledTimes(2);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'connecting', inputReady: false, ownsControl: false, session: confirmed });
+    await h.client.paste('must wait'); await h.client.control('renew_control'); expect(h.api.command).not.toHaveBeenCalled();
+    const stale = structuredClone(confirmed); stale.control = null; h.publish(stale);
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: false, ownsControl: false });
+    const oldEpoch = structuredClone(confirmed); oldEpoch.control!.controlEpoch = '0'; oldEpoch.control!.lease!.controlEpoch = '0'; h.publish(oldEpoch);
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: false, ownsControl: false });
+    await h.client.key('Enter'); expect(h.api.command).not.toHaveBeenCalled();
+    h.publish(structuredClone(confirmed)); expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'connected', inputReady: true, ownsControl: true });
+    expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('ignores a read that resolves after it was aborted by a pause and reports a real disconnect', async () => {
+    const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
+    let resolve!: (value: TerminalSessionState) => void; let signal!: AbortSignal;
+    vi.mocked(h.api.state).mockImplementationOnce((_id, s) => { signal = s; return new Promise(done => { resolve = done; }); });
+    const staleRead = h.client.refresh(); h.client.setVisible(false); expect(signal.aborted).toBe(true);
+    h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledTimes(2)); h.publish(structuredClone(h.state()));
+    const late = structuredClone(h.state()); late.snapshot!.frame.frameSeq = '99'; resolve(late); await staleRead;
+    expect(h.client.getSnapshot().session?.snapshot?.frame.frameSeq).not.toBe('99');
+    const disconnected = structuredClone(h.state()); disconnected.connected = false; h.publish(disconnected);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'disconnected', ownsControl: false }); h.client.close();
+  });
+  it('keeps a channel renewal when an earlier read returns, but accepts later reads and real control changes', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const old = structuredClone(h.state()); let resolve!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const refreshing = h.client.refresh();
+    const renewed = structuredClone(old); renewed.control!.lease!.expiresAt = '2100-01-01T00:00:00Z'; h.publish(renewed);
+    resolve(structuredClone(old)); await refreshing;
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: true, ownsControl: true, session: { control: { lease: { expiresAt: '2100-01-01T00:00:00Z' } } } });
+    await vi.advanceTimersByTimeAsync(10_000); expect(h.api.command).toHaveBeenCalledOnce(); expect(vi.mocked(h.api.command).mock.calls[0]![2].payload).toMatchObject({ action: 'renew_control' });
+    vi.mocked(h.api.state).mockResolvedValueOnce(structuredClone(old)); await h.client.refresh();
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: false, ownsControl: false, session: { control: { lease: { expiresAt: old.control!.lease!.expiresAt } } } });
+    h.publish(renewed); let resolveRevocation!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolveRevocation = done; }));
+    const pending = h.client.refresh(); const latest = structuredClone(renewed); latest.control!.lease!.expiresAt = '2101-01-01T00:00:00Z'; h.publish(latest);
+    const revoked = structuredClone(old); revoked.control = { ...revoked.control!, state: 'suspended', lease: null, availableActions: [] };
+    resolveRevocation(revoked); await pending;
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: false, ownsControl: false, session: { control: { state: 'suspended', lease: null } } });
+    h.client.close();
+  });
+  it.each(['control', 'capabilities'] as const)('reconciles an older GET with a newer channel %s without replaying input', async changed => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const old = structuredClone(h.state()); let resolve!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const refreshing = h.client.refresh(); const latest = structuredClone(old);
+    if (changed === 'control') latest.control!.initialAssignment = 'transport_completed';
+    else latest.capabilities.archive = false;
+    h.publish(latest); resolve(old); await refreshing;
+    expect(h.client.getSnapshot().inputReady).toBe(false); expect(h.api.command).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: true, session: { control: latest.control, capabilities: latest.capabilities } });
+    expect(h.api.state).toHaveBeenCalledTimes(2); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it.each(['timer', 'in-flight'] as const)('resumes reconciliation when the admission gate interrupts the %s', async interruption => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted);
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const changed = structuredClone(h.state()); changed.control!.initialAssignment = 'transport_completed';
+    vi.mocked(h.api.state).mockResolvedValueOnce(changed); await h.client.refresh();
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: false, ownsControl: false });
+    if (interruption === 'timer') {
+      admitted = false; await vi.advanceTimersByTimeAsync(1500);
+      expect(h.api.state).toHaveBeenCalledTimes(1);
+    } else {
+      let resolve!: (value: TerminalSessionState) => void;
+      vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+      await vi.advanceTimersByTimeAsync(1500); expect(h.api.state).toHaveBeenCalledTimes(2);
+      for (let i = 0; i < 4; i++) { h.client.setVisible(true); await vi.advanceTimersByTimeAsync(250); }
+      expect(h.api.state).toHaveBeenCalledTimes(2);
+      admitted = false; resolve(structuredClone(h.state())); await vi.advanceTimersByTimeAsync(0);
+      expect(h.client.getSnapshot().inputReady).toBe(false);
+    }
+    const before = vi.mocked(h.api.state).mock.calls.length;
+    admitted = true;
+    for (let i = 0; i < 5; i++) { h.client.setVisible(true); await vi.advanceTimersByTimeAsync(250); }
+    expect(h.api.state).toHaveBeenCalledTimes(before);
+    expect(h.client.getSnapshot().inputReady).toBe(false);
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(250);
+    expect(h.api.state).toHaveBeenCalledTimes(before + 1);
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: true, ownsControl: true });
+    expect(h.api.channel).toHaveBeenCalledOnce(); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('keeps a newer GET and waits for matching channel state before admitting input', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const changed = structuredClone(h.state()); changed.control = { ...changed.control!, state: 'suspended', lease: null, availableActions: [] }; changed.capabilities.control = false;
+    vi.mocked(h.api.state).mockImplementation(async () => structuredClone(changed)); await h.client.refresh();
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: false, ownsControl: false, session: { control: { state: 'suspended', lease: null }, capabilities: { control: false } } });
+    await vi.advanceTimersByTimeAsync(1500); expect(h.client.getSnapshot().inputReady).toBe(false); expect(h.api.command).not.toHaveBeenCalled();
+    h.publish(structuredClone(changed)); expect(h.client.getSnapshot().inputReady).toBe(true);
+    await h.client.paste('must remain unavailable'); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('resolves a late conflicting disconnect without flashing, then displays a confirmed disconnect', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const disconnected = structuredClone(h.state()); disconnected.connected = false;
+    let resolve!: (value: TerminalSessionState) => void; vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const refreshing = h.client.refresh(); h.publish(disconnected); const connected = structuredClone(disconnected); connected.connected = true; h.publish(connected); resolve(disconnected); await refreshing;
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', inputReady: false, session: { connected: true } });
+    await vi.advanceTimersByTimeAsync(1500); expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', inputReady: true, session: { connected: true } });
+    vi.mocked(h.api.state).mockResolvedValueOnce(disconnected); await h.client.refresh();
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'disconnected', inputReady: false, session: { connected: false } });
+    await vi.advanceTimersByTimeAsync(1500); expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', inputReady: true, session: { connected: true } });
+    vi.mocked(h.api.state).mockResolvedValueOnce(disconnected); await h.client.refresh();
+    h.publish(disconnected); expect(h.client.getSnapshot()).toMatchObject({ phase: 'disconnected', ownsControl: false, session: { connected: false } });
+    expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('resolves connectivity uncertainty while newer terminal frames keep arriving', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const disconnected = structuredClone(h.state()); disconnected.connected = false;
+    let resolveOld!: (value: TerminalSessionState) => void; vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolveOld = done; }));
+    const stale = h.client.refresh(); h.publish(disconnected); const connected = structuredClone(disconnected); connected.connected = true; h.publish(connected); resolveOld(disconnected); await stale;
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', inputReady: false, session: { connected: true } });
+    let resolveFresh!: (value: TerminalSessionState) => void; vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolveFresh = done; }));
+    await vi.advanceTimersByTimeAsync(1500);
+    for (const seq of ['8', '9', '10']) { const frame = structuredClone(connected); frame.snapshot!.frame.frameSeq = seq; h.publish(frame); await vi.advanceTimersByTimeAsync(250); }
+    expect(h.client.getSnapshot().inputReady).toBe(false); resolveFresh(structuredClone(connected)); await vi.advanceTimersByTimeAsync(0);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', inputReady: true, ownsControl: true, session: { connected: true, snapshot: { frame: { frameSeq: '10' } } } });
+    expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('stops conflict recovery on hiding and ignores its late read', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const changed = structuredClone(h.state()); changed.control!.initialAssignment = 'transport_completed';
+    vi.mocked(h.api.state).mockResolvedValueOnce(changed); await h.client.refresh();
+    let resolve!: (value: TerminalSessionState) => void; let signal!: AbortSignal;
+    vi.mocked(h.api.state).mockImplementationOnce((_id, s) => { signal = s; return new Promise(done => { resolve = done; }); });
+    await vi.advanceTimersByTimeAsync(1500); expect(h.api.state).toHaveBeenCalledTimes(2);
+    h.client.setVisible(false); expect(signal.aborted).toBe(true); resolve(structuredClone(h.state())); await vi.advanceTimersByTimeAsync(20_000);
+    expect(h.api.state).toHaveBeenCalledTimes(2); expect(h.api.command).not.toHaveBeenCalled(); expect(h.client.getSnapshot()).toMatchObject({ transport: 'paused', inputReady: false, session: { control: { initialAssignment: 'transport_completed' } } }); h.client.close();
+  });
+  it('propagates a permission failure during conflict recovery', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const changed = structuredClone(h.state()); changed.capabilities.control = false;
+    vi.mocked(h.api.state).mockResolvedValueOnce(changed).mockRejectedValueOnce(new ApiError('server', 403, 'permission_denied')); await h.client.refresh();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', session: null, inputReady: false, error: { code: 'permission_denied' } });
+    await vi.advanceTimersByTimeAsync(20_000); expect(h.api.state).toHaveBeenCalledTimes(2); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it('bounds a stalled conflict-recovery read and reports the transport failure', async () => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const changed = structuredClone(h.state()); changed.capabilities.control = false;
+    vi.mocked(h.api.state).mockResolvedValueOnce(changed); await h.client.refresh();
+    let signal!: AbortSignal; vi.mocked(h.api.state).mockImplementationOnce((_id, s) => { signal = s; return new Promise(() => {}); });
+    await vi.advanceTimersByTimeAsync(1500); await vi.advanceTimersByTimeAsync(10_000);
+    expect(signal.aborted).toBe(true); expect(h.client.getSnapshot()).toMatchObject({ phase: 'disconnected', transport: 'disconnected', inputReady: false });
+    expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
   });
   it('blocks new input while its unknown receipt remains unresolved, until explicit acknowledgement', async () => {
     const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
@@ -305,7 +505,7 @@ describe('terminal client control ownership', () => {
     const h = harness(undefined, null); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
     const old = structuredClone(h.state()); const enriched = structuredClone(old); enriched.binding.nativeSessionId = 'discovered-native-session'; enriched.snapshot!.binding.nativeSessionId = 'discovered-native-session'; enriched.control = { ...enriched.control!, state: 'suspended', controlEpoch: '2', lease: null, availableActions: ['acquire_control'] }; h.publish(enriched);
     h.client.setVisible(false); vi.mocked(h.api.state).mockResolvedValueOnce(old); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledTimes(2));
-    expect(h.client.getSnapshot()).toMatchObject({ phase: 'loading', ownsControl: false, session: { binding: { nativeSessionId: 'discovered-native-session' }, control: { controlEpoch: '2', state: 'suspended' } } });
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'connecting', inputReady: false, ownsControl: false, session: { binding: { nativeSessionId: 'discovered-native-session' }, control: { controlEpoch: '2', state: 'suspended' } } });
     h.publish(old); expect(h.client.getSnapshot().ownsControl).toBe(false); h.client.close();
   });
 

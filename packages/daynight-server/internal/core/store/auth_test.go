@@ -8,21 +8,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func testAuthRecords(t *testing.T, s *Store) (core.User, core.Principal, core.Session) {
+func testAuthRecords(t *testing.T, s *Store) (model.User, model.Principal, model.Session) {
 	t.Helper()
 	now := time.Now().UTC()
 	hash := sha256.Sum256([]byte(uuid.NewString()))
-	c := core.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-	u, err := s.CreateIdentitySession(context.Background(), core.User{ID: uuid.NewString(), UniAuthID: "github:" + uuid.NewString()}, c)
+	c := model.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	u, err := s.CreateIdentitySession(context.Background(), model.User{ID: uuid.NewString(), UniAuthID: "github:" + uuid.NewString()}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.Authenticate(context.Background(), core.SessionCredential, hash[:], now)
+	p, err := s.Authenticate(context.Background(), model.SessionCredential, hash[:], now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestIdentityStorageConstraintsAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := sha256.Sum256([]byte("current"))
-	if err := s.CreateLogin(ctx, core.LoginTransaction{ID: uuid.NewString(), StateHash: h[:], BrowserBindingHash: h[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}, now); err != nil {
+	if err := s.CreateLogin(ctx, model.LoginTransaction{ID: uuid.NewString(), StateHash: h[:], BrowserBindingHash: h[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range []string{"login_transactions", "sessions", "personal_access_tokens"} {
@@ -81,7 +81,7 @@ func TestIdentityStorageRollbackAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	user, p, c := testAuthRecords(t, s)
 	_, other, _ := testAuthRecords(t, s)
-	_, err := s.CreateIdentitySession(ctx, core.User{ID: uuid.NewString(), UniAuthID: "rollback-user"}, c)
+	_, err := s.CreateIdentitySession(ctx, model.User{ID: uuid.NewString(), UniAuthID: "rollback-user"}, c)
 	if err == nil {
 		t.Fatal("duplicate session accepted")
 	}
@@ -90,11 +90,11 @@ func TestIdentityStorageRollbackAndOwnership(t *testing.T) {
 		t.Fatalf("user not rolled back: %d %v", count, err)
 	}
 	hash := sha256.Sum256([]byte("pat"))
-	pat := core.PersonalAccessToken{ID: uuid.NewString(), TokenHash: hash[:], Name: "owned", CreatedAt: time.Now().UTC(), ExpiresAt: storeTokenExpiry(time.Now().UTC().Add(time.Hour))}
+	pat := model.PersonalAccessToken{ID: uuid.NewString(), TokenHash: hash[:], Name: "owned", CreatedAt: time.Now().UTC(), ExpiresAt: storeTokenExpiry(time.Now().UTC().Add(time.Hour))}
 	if err := s.CreatePAT(ctx, p, pat); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(ctx, core.PATCredential, hash[:], time.Now()); err != nil {
+	if _, err := s.Authenticate(ctx, model.PATCredential, hash[:], time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RevokePAT(ctx, other, pat.ID, time.Now()); err != nil {
@@ -104,14 +104,14 @@ func TestIdentityStorageRollbackAndOwnership(t *testing.T) {
 	if err != nil || len(tokens) != 1 || tokens[0].UserID != user.ID || tokens[0].TokenHash != nil {
 		t.Fatalf("ownership/list: %+v %v", tokens, err)
 	}
-	p.Kind = core.PATCredential
-	if _, err := s.ListPATs(ctx, p, time.Now()); !errors.Is(err, core.ErrNotFound) {
+	p.Kind = model.PATCredential
+	if _, err := s.ListPATs(ctx, p, time.Now()); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("PAT session access: %v", err)
 	}
-	if _, err := s.Authenticate(ctx, "unknown", hash[:], time.Now()); !errors.Is(err, core.ErrNotFound) {
+	if _, err := s.Authenticate(ctx, "unknown", hash[:], time.Now()); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("invalid kind: %v", err)
 	}
-	if _, err := s.IdentityUser(ctx, uuid.NewString()); !errors.Is(err, core.ErrNotFound) {
+	if _, err := s.IdentityUser(ctx, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing user: %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 			_, p, c := testAuthRecords(t, s)
 			now := time.Now().UTC()
 			hash := sha256.Sum256([]byte("state"))
-			pending := core.LoginTransaction{ID: uuid.NewString(), StateHash: hash[:], BrowserBindingHash: hash[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}
+			pending := model.LoginTransaction{ID: uuid.NewString(), StateHash: hash[:], BrowserBindingHash: hash[:], Provider: "github", ReturnPath: "/", ExpiresAt: now.Add(time.Minute)}
 			table := "personal_access_tokens"
 			switch phase {
 			case "create-login", "consume-login":
@@ -142,9 +142,9 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 			case "create-login":
 				err = s.CreateLogin(context.Background(), pending, now)
 			case "upsert-user", "insert-session":
-				_, err = s.CreateIdentitySession(context.Background(), core.User{ID: uuid.NewString(), UniAuthID: "github:new"}, c)
+				_, err = s.CreateIdentitySession(context.Background(), model.User{ID: uuid.NewString(), UniAuthID: "github:new"}, c)
 			case "insert-pat":
-				err = s.CreatePAT(context.Background(), p, core.PersonalAccessToken{ID: uuid.NewString(), TokenHash: hash[:], Name: "token", CreatedAt: now, ExpiresAt: storeTokenExpiry(now.Add(time.Hour))})
+				err = s.CreatePAT(context.Background(), p, model.PersonalAccessToken{ID: uuid.NewString(), TokenHash: hash[:], Name: "token", CreatedAt: now, ExpiresAt: storeTokenExpiry(now.Add(time.Hour))})
 			case "list-pat":
 				_, err = s.ListPATs(context.Background(), p, now)
 			case "delete-pat":
@@ -154,7 +154,7 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 			case "consume-login":
 				_, err = s.ConsumeLogin(context.Background(), hash[:], hash[:], now)
 			case "authenticate":
-				_, err = s.Authenticate(context.Background(), core.SessionCredential, c.TokenHash, now)
+				_, err = s.Authenticate(context.Background(), model.SessionCredential, c.TokenHash, now)
 			case "user":
 				_, err = s.IdentityUser(context.Background(), p.UserID)
 			}
@@ -167,13 +167,13 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 	s := isolatedStore(t)
 	s.Close()
 	now := time.Now().UTC()
-	if err := s.CreateLogin(context.Background(), core.LoginTransaction{}, now); err == nil {
+	if err := s.CreateLogin(context.Background(), model.LoginTransaction{}, now); err == nil {
 		t.Fatal("closed pool login accepted")
 	}
-	if _, err := s.CreateIdentitySession(context.Background(), core.User{}, core.Session{}); err == nil {
+	if _, err := s.CreateIdentitySession(context.Background(), model.User{}, model.Session{}); err == nil {
 		t.Fatal("closed pool identity accepted")
 	}
-	if _, err := s.ListPATs(context.Background(), core.Principal{Kind: core.SessionCredential}, now); err == nil {
+	if _, err := s.ListPATs(context.Background(), model.Principal{Kind: model.SessionCredential}, now); err == nil {
 		t.Fatal("closed pool operation accepted")
 	}
 }

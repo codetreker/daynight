@@ -17,12 +17,8 @@ export type GraphMessages = {
   readonly closeDialog: string;
   readonly chainSummary: (args: { shown: number; total: number }) => string;
   readonly chainSummaryLabel: (args: { shown: number; total: number }) => string;
-  readonly chainNote: string;
   readonly emptyTitle: string;
   readonly emptyDescription: string;
-  readonly completedTitle: string;
-  readonly completedDescription: (args: { count: number }) => string;
-  readonly showAll: string;
   readonly blocked: string;
   readonly external: string;
   readonly nodeLabel: (args: { title: string; status: string; blocked: boolean; external: boolean }) => string;

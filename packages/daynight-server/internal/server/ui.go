@@ -1,11 +1,11 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"errors"
 	"log/slog"
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/webui"
 )
 
@@ -15,7 +15,7 @@ func uiRoutes(mux *http.ServeMux, logger *slog.Logger) {
 	asset := uiHandler(logger, ui.Asset)
 	for _, pattern := range []string{
 		"/{$}", "/login", "/projects", "/teams/{teamId}", "/teams/{teamId}/settings", "/teams/{teamId}/members", "/shared-projects", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
-		"/projects/{projectId}/tasks/{taskId}", "/test-sessions", "/test-sessions/{sessionId}", "/workers", "/workers/{workerId}",
+		"/projects/{projectId}/tasks/{taskId}", "/test-sessions", "/test-sessions/{sessionId}", "/bots", "/bots/{botId}", "/workers", "/workers/{workerId}",
 		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/team-invitations", "/device", "/setup",
 	} {
 		mux.HandleFunc("GET "+pattern, page)
@@ -34,7 +34,7 @@ func uiHandler(logger *slog.Logger, serve func(http.ResponseWriter, *http.Reques
 				return
 			}
 			if errors.Is(err, webui.ErrNotFound) {
-				err = &service.Fault{Code: "not_found", Message: "resource not found", Cause: err}
+				err = &model.Fault{Code: "not_found", Message: "resource not found", Cause: err}
 			}
 			writeError(w, request, logger, "webui", "read", err)
 		}

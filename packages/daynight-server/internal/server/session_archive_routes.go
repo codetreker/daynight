@@ -7,9 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 func (h *sessionRoutes) registerArchiveRoutes(mux *http.ServeMux) {
@@ -19,7 +18,7 @@ func (h *sessionRoutes) registerArchiveRoutes(mux *http.ServeMux) {
 		}
 		mux.HandleFunc("GET "+base+"/content", h.auth.Require(h.parameters(h.archiveContent)))
 		for path, methods := range map[string]string{base: "GET, POST, PUT", base + "/content": "GET"} {
-			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
+			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 				methodNotAllowed(h.logger, methods)(w, r)
 			})
 			mux.HandleFunc(path, fallback)
@@ -27,7 +26,7 @@ func (h *sessionRoutes) registerArchiveRoutes(mux *http.ServeMux) {
 		}
 	}
 }
-func (h *sessionRoutes) archiveStatus(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) archiveStatus(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if _, err := queryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
@@ -35,7 +34,7 @@ func (h *sessionRoutes) archiveStatus(w http.ResponseWriter, r *http.Request, p 
 	out, err := h.service.ArchiveStatus(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"))
 	h.result(w, r, http.StatusOK, map[string]any{"archive": out}, err)
 }
-func (h *sessionRoutes) archiveContent(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) archiveContent(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if _, err := queryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
@@ -43,7 +42,7 @@ func (h *sessionRoutes) archiveContent(w http.ResponseWriter, r *http.Request, p
 	out, err := h.service.ArchiveContent(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"))
 	h.result(w, r, http.StatusOK, map[string]any{"archive": out}, err)
 }
-func (h *sessionRoutes) updateArchive(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) updateArchive(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)
@@ -69,13 +68,13 @@ func archiveBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {
-			return nil, &service.Fault{Code: "payload_too_large", Message: "Session archive exceeds the 64 MiB limit."}
+			return nil, &model.Fault{Code: "payload_too_large", Message: "Session archive exceeds the 64 MiB limit."}
 		}
 		return nil, invalidInput("Unable to read session archive.")
 	}
 	return body, nil
 }
-func (h *sessionRoutes) putArchive(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) putArchive(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := archiveBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)

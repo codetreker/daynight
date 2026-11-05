@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 const configurationInputProjectA = "11111111-1111-4111-8111-111111111111"
@@ -45,7 +45,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.MaxConcurrent != 9007199254740991 || value.PollIntervalMs != 2147483647 || value.RecoveryLimit != 0 || value.Native.Agent != core.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
+	if value.MaxConcurrent != 9007199254740991 || value.PollIntervalMs != 2147483647 || value.RecoveryLimit != 0 || value.Native.Agent != model.AgentCopilot || value.Native.Model == nil || *value.Native.Model != "provider/model" || !reflect.DeepEqual(value.Native.Args, []string{"--flag", "a b"}) {
 		t.Fatalf("invalid parsed settings: %+v", value)
 	}
 	if len(value.Projects) != 2 || value.Projects[0].ProjectID != configurationInputProjectA || value.Projects[1].ProjectID != configurationInputProjectB || len(value.Projects[0].NativeOverrides) != 0 {
@@ -59,7 +59,7 @@ func TestWorkerConfigurationInputPreservesOverridesAndCanonicalizesProjects(t *t
 		document := configurationInputDocument()
 		document["native"].(map[string]any)["agent"] = agent
 		parsed, err := ParseWorkerConfiguration(configurationInputJSON(t, document))
-		if err != nil || parsed.Native.Agent != core.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
+		if err != nil || parsed.Native.Agent != model.WorkerAgent(agent) || parsed.Native.Model != nil || parsed.Native.Args == nil || parsed.Projects == nil {
 			t.Fatalf("explicit empty settings rejected: %+v %v", parsed, err)
 		}
 	}

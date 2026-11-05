@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 )
@@ -25,7 +25,7 @@ type StepDocument struct {
 	JSON     []byte
 }
 
-func (s *TaskSteps) read(ctx context.Context, principal core.Principal, projectID, taskID string, operation func(*store.Snapshot, core.TaskHeader) error) error {
+func (s *TaskSteps) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(*store.Snapshot, model.TaskHeader) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -42,14 +42,14 @@ func (s *TaskSteps) read(ctx context.Context, principal core.Principal, projectI
 			return err
 		}
 		header, err := snapshot.TaskHeader(ctx, projectID, taskID)
-		if errors.Is(err, core.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return taskNotFound(err)
 		}
 		if err != nil {
 			return err
 		}
 		if header.DeletedAt != nil {
-			return taskNotFound(core.ErrTaskDeleted)
+			return taskNotFound(model.ErrTaskDeleted)
 		}
 		return operation(snapshot, header)
 	})
@@ -59,9 +59,9 @@ func (s *TaskSteps) read(ctx context.Context, principal core.Principal, projectI
 	return nil
 }
 
-func (s *TaskSteps) List(ctx context.Context, principal core.Principal, projectID, taskID string) (StepsDocument, error) {
+func (s *TaskSteps) List(ctx context.Context, principal model.Principal, projectID, taskID string) (StepsDocument, error) {
 	var document StepsDocument
-	err := s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot, header core.TaskHeader) error {
+	err := s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot, header model.TaskHeader) error {
 		steps, err := snapshot.TaskSteps(ctx, header.ID)
 		if err != nil {
 			return err
@@ -75,7 +75,7 @@ func (s *TaskSteps) List(ctx context.Context, principal core.Principal, projectI
 	return document, nil
 }
 
-func (s *TaskSteps) Get(ctx context.Context, principal core.Principal, projectID, taskID, stepID string) (StepDocument, error) {
+func (s *TaskSteps) Get(ctx context.Context, principal model.Principal, projectID, taskID, stepID string) (StepDocument, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return StepDocument{}, err
 	}
@@ -84,10 +84,10 @@ func (s *TaskSteps) Get(ctx context.Context, principal core.Principal, projectID
 		return StepDocument{}, invalidInput(err.Error())
 	}
 	var document StepDocument
-	err = s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot, header core.TaskHeader) error {
+	err = s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot, header model.TaskHeader) error {
 		step, err := snapshot.TaskStep(ctx, header.ID, id)
-		if errors.Is(err, core.ErrNotFound) {
-			return &Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
+		if errors.Is(err, model.ErrNotFound) {
+			return &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
 		}
 		if err != nil {
 			return err
@@ -104,7 +104,7 @@ func (s *TaskSteps) Get(ctx context.Context, principal core.Principal, projectID
 // The store may join its exact not-found marker around a wrapped business
 // refusal. Other joined branches can represent failed transaction cleanup and
 // must keep the whole operation an internal failure.
-func TaskStepsFault(err error) (*Fault, bool) {
+func TaskStepsFault(err error) (*model.Fault, bool) {
 	var transaction *store.TransactionError
 	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
 		return nil, false
@@ -113,21 +113,21 @@ func TaskStepsFault(err error) (*Fault, bool) {
 	return fault, pure && fault != nil
 }
 
-func taskStepsFault(err error) (*Fault, bool) {
+func taskStepsFault(err error) (*model.Fault, bool) {
 	if failure, ok := err.(*store.TransactionError); ok {
 		if failure.Phase != "operation" || failure.CleanupFailed || failure.Outcome != store.TransactionNotCommitted {
 			return nil, false
 		}
 		return taskStepsFault(failure.Cause)
 	}
-	if err == core.ErrNotFound {
+	if err == model.ErrNotFound {
 		return nil, true
 	}
-	if fault, ok := err.(*Fault); ok {
+	if fault, ok := err.(*model.Fault); ok {
 		return fault, true
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		var fault *Fault
+		var fault *model.Fault
 		for _, child := range joined.Unwrap() {
 			candidate, pure := taskStepsFault(child)
 			if !pure {
@@ -150,7 +150,7 @@ type AddTaskStep struct {
 	ID          string
 	Title       string
 	Description string
-	Status      *core.TaskStepStatus
+	Status      *model.TaskStepStatus
 	Before      *string
 	After       *string
 }
@@ -163,7 +163,7 @@ type StepsWriteResult struct {
 	CleanupFailed      bool
 }
 
-func (s *TaskSteps) Add(ctx context.Context, principal core.Principal, projectID, taskID string, input AddTaskStep) (StepsWriteResult, error) {
+func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectID, taskID string, input AddTaskStep) (StepsWriteResult, error) {
 	result := StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}
 	projectID, taskID, err := taskWriteIdentity(principal, projectID, taskID, input.Version)
 	if err != nil {
@@ -176,7 +176,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal core.Principal, projectID
 	if err := tasksteps.ValidateText(input.Title, input.Description); err != nil {
 		return result, invalidInput(err.Error())
 	}
-	status := core.TaskStepTodo
+	status := model.TaskStepTodo
 	if input.Status != nil {
 		status = *input.Status
 	}
@@ -213,18 +213,18 @@ func (s *TaskSteps) Add(ctx context.Context, principal core.Principal, projectID
 		if _, err := tasksteps.Collection(header, current); err != nil {
 			return err
 		}
-		candidate, position, err := tasksteps.AddCandidate(current, core.TaskStep{ID: input.ID, Title: input.Title, Description: input.Description, Status: status}, input.Before, input.After)
+		candidate, position, err := tasksteps.AddCandidate(current, model.TaskStep{ID: input.ID, Title: input.Title, Description: input.Description, Status: status}, input.Before, input.After)
 		if errors.Is(err, tasksteps.ErrIDConflict) {
-			return &Fault{Code: "step_id_conflict", Message: "Step ID already exists."}
+			return &model.Fault{Code: "step_id_conflict", Message: "Step ID already exists."}
 		}
 		if errors.Is(err, tasksteps.ErrAnchorNotFound) {
-			return &Fault{Code: "not_found", Message: "Step anchor was not found."}
+			return &model.Fault{Code: "not_found", Message: "Step anchor was not found."}
 		}
 		if err != nil {
 			return err
 		}
 		if header.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
 		observed, err := tx.ObservedAt(ctx)
 		if err != nil {
@@ -255,7 +255,7 @@ func finishStepsWrite(result StepsWriteResult, projectLocked bool, err error) (S
 				result.Phase = "commit"
 			}
 		}
-		if !projectLocked && errors.Is(err, core.ErrNotFound) && transaction != nil && transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed {
+		if !projectLocked && errors.Is(err, model.ErrNotFound) && transaction != nil && transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed {
 			err = projectNotFound(err)
 		}
 		result.StepsDocument = StepsDocument{}
@@ -268,8 +268,8 @@ func finishStepsWrite(result StepsWriteResult, projectLocked bool, err error) (S
 func taskStepsEncodingFault(err error) error {
 	var limit *tasksteps.LimitError
 	if errors.As(err, &limit) {
-		return &Fault{Code: "steps_limit_exceeded", Message: "Task steps exceed the encoded resource limit.", Cause: err,
-			StepsLimit: &StepsLimitDetails{EncodedBytes: limit.EncodedBytes, MaxEncodedBytes: tasksteps.MaxEncodedBytes}}
+		return &model.Fault{Code: "steps_limit_exceeded", Message: "Task steps exceed the encoded resource limit.", Cause: err,
+			StepsLimit: &model.StepsLimitDetails{EncodedBytes: limit.EncodedBytes, MaxEncodedBytes: tasksteps.MaxEncodedBytes}}
 	}
 	return err
 }

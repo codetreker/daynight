@@ -16,8 +16,43 @@ persist an ordinary/external classification and task/graph reads expose the
 required external subset. Public create and versioned PATCH accept explicit
 classification while preserving all-edge execution and project authorization.
 
+## Assistants
+
+The runtime composes Bot management with the same Store, file storage and
+Session relay used by existing sessions. `/api/v1/me/bots` exposes authenticated,
+account-owned definitions and defaults without requiring a Project. Worker Bot
+registration, grants, startup reports and deletion receipts use the bound
+Worker's normal PAT; Controller relay credentials do not authorize those writes.
+The [assistant contract](../../docs/spec/assistant.md) defines exact endpoints,
+version strings, idempotency, observed availability and failure responses.
+
+A name-only create resolves a fresh compatible Worker report and freezes its
+configuration. Older Workers without `assistantHost` remain unsupported, even
+when online. A pending definition does not prove native startup; the relay checks
+actual synchronization before committing successful preferences. Bot sessions
+retain independent Session protocol identities and are excluded from ordinary
+Test lists. Existing Task and standalone Test paths remain separate.
+
+Deletion commits a persistent access barrier before cleanup. Completed requires
+both the bound Worker's verified stop/private-file receipt and successful server
+history cleanup. The server removes Bot-associated Session rows, content and its
+restricted archive namespace, preserving minimal deletion responsibility. It does
+not delete independently created tasks, ordinary working directories or
+Provider-owned native history. There is no deleted-assistant archive entry.
+The [design](../../docs/design/assistant.md) owns lock ordering, identity checks
+and reconciliation after uncertain writes.
+
+Hosting depends on the foreground Worker remaining online; this service does not
+install an OS daemon, migrate conversations automatically or provide Webhook/MCP
+adapters. CLI/Server and production-page browser acceptance are distinct from
+live Provider acceptance.
+
+## Contracts
+
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
+Read the [organization rules](../../docs/daynight-server.md) before adding to,
+modifying, or reviewing daynight-server.
 The TypeScript review command retains its separate configuration, storage and
 lifecycle. The client HTTP foundation targets this service's API.
 
@@ -240,11 +275,11 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/webui/` | Embedded production HTML/assets and static response policy |
 | `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
-| `internal/filestorage/` | Generic bucket/path byte operations and address validation |
-| `internal/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
+| `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
+| `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
 | `api/` | Project/task/attachment, identity and membership DTOs; common HTTP error envelopes |
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
-| `internal/core/` | Shared project/task, identity/member models and resource-not-found markers |
+| `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
 
 HTTP startup prepares one local file-storage root and creates and verifies one
 concrete PostgreSQL store. The handler factory `server.New(Dependencies, Config, logger)` returns
@@ -551,7 +586,7 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
-New Session archives use `internal/sessionarchive.Namespace` for project/user
+New Session archives use `internal/core/model/sessionarchive.Namespace` for project/user
 and Session UUID directories. Task Web/Herdr objects use
 `session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
 independent Test/Bot objects use
@@ -755,7 +790,7 @@ references by current project membership and undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
 
-The shared `core.Project` and `core.Task` models have one representation across
+The shared `model.Project` and `model.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
 candidate reachability. The static property registry in `internal/taskproperties/`
 owns native validation, normalization, schemas and public writability. Generic
@@ -770,7 +805,7 @@ checksums remain immutable; the new checksum includes the frozen transform.
 Public mutations reject protected worker values. Missing properties are not
 materialized, and illegal stored properties fail the complete HTTP operation
 with 400 invalid_input; database failures remain 500 internal_error. The HTTP
-boundary and value codecs share strict object decoding in `internal/jsonobject/`.
+boundary and value codecs share strict object decoding in `internal/utils/jsonobject/`.
 Property PUT receives unchanged argument text as valueText; it decodes JSON or
 string shorthand through the definition rather than trusting client validation.
 The complete JSON envelope, including its extra escaping, shares the 1 MiB request

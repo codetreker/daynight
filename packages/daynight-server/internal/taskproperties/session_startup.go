@@ -3,8 +3,8 @@ package taskproperties
 import (
 	"encoding/json"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 func normalizeSessionStartup(raw json.RawMessage) (json.RawMessage, error) {
@@ -15,7 +15,7 @@ func normalizeSessionStartup(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(value)
 }
 
-func SessionStartup(properties core.TaskProperties) (*sp.StartupReport, error) {
+func SessionStartup(properties model.TaskProperties) (*sp.StartupReport, error) {
 	raw, exists := properties["sessionStartup"]
 	if !exists {
 		return nil, nil

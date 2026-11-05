@@ -11,7 +11,7 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -33,12 +33,12 @@ func attachmentRoutes(mux *http.ServeMux, attachments *service.Attachments, auth
 	mux.HandleFunc(base+"/preview/{path...}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 }
 
-func attachmentResponse(attachment core.Attachment) api.Attachment {
+func attachmentResponse(attachment model.Attachment) api.Attachment {
 	return api.Attachment{Path: attachment.Path, ContentType: attachment.ContentType,
 		SizeBytes: attachment.SizeBytes, CreatedAt: attachment.CreatedAt.UTC(), UpdatedAt: attachment.UpdatedAt.UTC()}
 }
 
-func (h *attachmentHandler) resource(request *http.Request, principal core.Principal) (string, string, *slog.Logger, error) {
+func (h *attachmentHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
 	projectID, taskID, logger, err := (&taskHandler{logger: h.logger}).resource(request, principal)
 	if err == nil && request.PathValue("path") != "" {
 		logger = logger.With("path", request.PathValue("path"))
@@ -46,7 +46,7 @@ func (h *attachmentHandler) resource(request *http.Request, principal core.Princ
 	return projectID, taskID, logger, err
 }
 
-func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -70,7 +70,7 @@ func (h *attachmentHandler) list(w http.ResponseWriter, request *http.Request, p
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -99,7 +99,7 @@ func (h *attachmentHandler) put(w http.ResponseWriter, request *http.Request, pr
 	writeJSON(w, request, logger, status, attachmentResponse(attachment))
 }
 
-func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err == nil {
@@ -115,15 +115,15 @@ func (h *attachmentHandler) delete(w http.ResponseWriter, request *http.Request,
 	}
 }
 
-func (h *attachmentHandler) download(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *attachmentHandler) download(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	h.content(w, request, principal, "attachment", "download")
 }
 
-func (h *attachmentHandler) preview(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *attachmentHandler) preview(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	h.content(w, request, principal, "inline", "preview")
 }
 
-func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request, principal core.Principal, disposition, phase string) {
+func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request, principal model.Principal, disposition, phase string) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {

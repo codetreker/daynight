@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -76,11 +76,11 @@ func TestTaskGraphScopedProjectionAndSummary(t *testing.T) {
 	queued := createTask(t, tasks, principal, project.ID, "Queued", done.ID)
 	queuedBlocked := createTask(t, tasks, principal, project.ID, "Queued blocked", active.ID)
 	graph, err := tasks.Graph(ctx, principal, project.ID, done.ID)
-	wantSummary := core.TaskGraphSummary{Total: 6, Todo: 4, InProgress: 1, Done: 1, Ready: 2, Blocked: 2}
+	wantSummary := model.TaskGraphSummary{Total: 6, Todo: 4, InProgress: 1, Done: 1, Ready: 2, Blocked: 2}
 	if err != nil || graph.Summary != wantSummary || len(graph.Tasks) != 6 || !reflect.DeepEqual(graph.Project, project) {
 		t.Fatalf("complete graph: %#v, %v", graph, err)
 	}
-	for index, original := range []core.Task{done, active, ready, blocked, queued, queuedBlocked} {
+	for index, original := range []model.Task{done, active, ready, blocked, queued, queuedBlocked} {
 		got := graph.Tasks[index]
 		if got.ID != original.ID || got.TitlePreview != original.Title || got.TitleTruncated || got.Status != original.Status ||
 			!slices.Equal(got.DependsOn, original.DependsOn) || !slices.Equal(got.BlockedBy, original.BlockedBy) || got.Ready != original.Ready ||
@@ -92,7 +92,7 @@ func TestTaskGraphScopedProjectionAndSummary(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 	_, err = tasks.Graph(ctx, principal, "00000000-0000-0000-0000-000000000000", done.ID)
 	fault := requireFault(t, err, "not_found")
-	if !errors.Is(fault, core.ErrNotFound) || fault.GraphLimit != nil {
+	if !errors.Is(fault, model.ErrNotFound) || fault.GraphLimit != nil {
 		t.Fatalf("missing graph cause: %#v", fault)
 	}
 }
@@ -115,8 +115,8 @@ func TestTaskGraphExactLimitsAndIndependentRejections(t *testing.T) {
 			graph, err := traced.Graph(context.Background(), principal, project.ID, rootID)
 			if test.refused {
 				fault := requireFault(t, err, "graph_limit_exceeded")
-				want := &GraphLimitDetails{NodeCount: int64(test.nodes), EdgeCount: int64(test.edges), MaxNodes: 1000, MaxEdges: 5000}
-				if !reflect.DeepEqual(fault.GraphLimit, want) || readProjection || !reflect.DeepEqual(graph, core.TaskGraph{}) {
+				want := &model.GraphLimitDetails{NodeCount: int64(test.nodes), EdgeCount: int64(test.edges), MaxNodes: 1000, MaxEdges: 5000}
+				if !reflect.DeepEqual(fault.GraphLimit, want) || readProjection || !reflect.DeepEqual(graph, model.TaskGraph{}) {
 					t.Fatalf("limit returned partial data or inaccurate counts: %#v, %#v, read %v", fault, graph, readProjection)
 				}
 				return
@@ -148,10 +148,10 @@ func TestTaskGraphInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		end: func() {
 			writes++
 			if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-				if _, err := tx.UpdateTask(ctx, predecessor.ID, store.TaskWrite{Title: "Completed", Status: core.TaskDone}); err != nil {
+				if _, err := tx.UpdateTask(ctx, predecessor.ID, store.TaskWrite{Title: "Completed", Status: model.TaskDone}); err != nil {
 					return err
 				}
-				_, err := tx.CreateTask(ctx, "00000000-0000-4000-8000-000000000001", store.TaskWrite{Title: "New", Status: core.TaskTodo, DependsOn: []string{dependent.ID}})
+				_, err := tx.CreateTask(ctx, "00000000-0000-4000-8000-000000000001", store.TaskWrite{Title: "New", Status: model.TaskTodo, DependsOn: []string{dependent.ID}})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -159,13 +159,13 @@ func TestTaskGraphInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		},
 	})
 	old, err := traced.Graph(ctx, principal, project.ID, predecessor.ID)
-	if err != nil || writes != 1 || len(old.Tasks) != 2 || old.Tasks[0].TitlePreview != predecessor.Title || old.Tasks[0].Status != core.TaskTodo ||
-		old.Tasks[1].Ready || !slices.Equal(old.Tasks[1].BlockedBy, []string{predecessor.ID}) || old.Summary != (core.TaskGraphSummary{Total: 2, Todo: 2, Ready: 1, Blocked: 1}) {
+	if err != nil || writes != 1 || len(old.Tasks) != 2 || old.Tasks[0].TitlePreview != predecessor.Title || old.Tasks[0].Status != model.TaskTodo ||
+		old.Tasks[1].Ready || !slices.Equal(old.Tasks[1].BlockedBy, []string{predecessor.ID}) || old.Summary != (model.TaskGraphSummary{Total: 2, Todo: 2, Ready: 1, Blocked: 1}) {
 		t.Fatalf("mixed snapshot: %#v, writes %d, %v", old, writes, err)
 	}
 	fresh, err := tasks.Graph(ctx, principal, project.ID, predecessor.ID)
 	if err != nil || len(fresh.Tasks) != 3 || fresh.Tasks[0].TitlePreview != "Completed" || !fresh.Tasks[1].Ready ||
-		fresh.Summary != (core.TaskGraphSummary{Total: 3, Todo: 2, Done: 1, Ready: 1, Blocked: 1}) {
+		fresh.Summary != (model.TaskGraphSummary{Total: 3, Todo: 2, Done: 1, Ready: 1, Blocked: 1}) {
 		t.Fatalf("fresh snapshot: %#v, %v", fresh, err)
 	}
 }
@@ -207,7 +207,7 @@ func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 			}
 			graph, err := traced.Graph(ctx, principal, id, rootID)
 			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(graph, core.TaskGraph{}) {
+			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(graph, model.TaskGraph{}) {
 				t.Fatalf("cancellation cause or partial result: %#v, %v", graph, err)
 			}
 		})
@@ -244,7 +244,7 @@ func TestTaskGraphOneLayerExternalPrerequisitesAndOrdinaryBranches(t *testing.T)
 	reverse := createTask(t, tasks, principal, project.ID, "External dependent", b.ID)
 	reverse = updateTask(t, tasks, principal, reverse, UpdateTask{ExternalDependsOn: pointer([]string{b.ID})})
 	isolated := createTask(t, tasks, principal, project.ID, "Isolated")
-	for _, seed := range []core.Task{a, b, c, d} {
+	for _, seed := range []model.Task{a, b, c, d} {
 		graph, err := tasks.Graph(ctx, principal, strings.ToUpper(project.ID), strings.ToUpper(seed.ID))
 		if err != nil {
 			t.Fatal(err)
@@ -253,7 +253,7 @@ func TestTaskGraphOneLayerExternalPrerequisitesAndOrdinaryBranches(t *testing.T)
 		for _, task := range graph.Tasks {
 			ids = append(ids, task.ID)
 		}
-		if !slices.Equal(ids, []string{x.ID, a.ID, b.ID, c.ID, d.ID}) || graph.Summary != (core.TaskGraphSummary{Total: 5, Todo: 5, Ready: 1, Blocked: 4}) {
+		if !slices.Equal(ids, []string{x.ID, a.ID, b.ID, c.ID, d.ID}) || graph.Summary != (model.TaskGraphSummary{Total: 5, Todo: 5, Ready: 1, Blocked: 4}) {
 			t.Fatalf("seed %s changed ordinary component or expanded external context: %#v", seed.ID, graph)
 		}
 		context := graph.Tasks[0]
@@ -266,7 +266,7 @@ func TestTaskGraphOneLayerExternalPrerequisitesAndOrdinaryBranches(t *testing.T)
 		t.Fatalf("external dependent entered another chain: %#v %v", graph, err)
 	}
 	graph, err = tasks.Graph(ctx, principal, project.ID, isolated.ID)
-	if err != nil || len(graph.Tasks) != 1 || graph.Tasks[0].ID != isolated.ID || graph.Summary != (core.TaskGraphSummary{Total: 1, Todo: 1, Ready: 1}) {
+	if err != nil || len(graph.Tasks) != 1 || graph.Tasks[0].ID != isolated.ID || graph.Summary != (model.TaskGraphSummary{Total: 1, Todo: 1, Ready: 1}) {
 		t.Fatalf("isolated task lost its graph: %#v %v", graph, err)
 	}
 }
@@ -287,7 +287,7 @@ func TestTaskGraphIgnoresUnrelatedProjectCapacityAndRefusesDeletedRoot(t *testin
 	}
 	graph, err = tasks.Graph(ctx, principal, project.ID, isolated.ID)
 	fault := requireFault(t, err, "task_deleted")
-	if !errors.Is(fault, core.ErrTaskDeleted) || !reflect.DeepEqual(graph, core.TaskGraph{}) {
+	if !errors.Is(fault, model.ErrTaskDeleted) || !reflect.DeepEqual(graph, model.TaskGraph{}) {
 		t.Fatalf("deleted root leaked graph: %#v %v", graph, err)
 	}
 }

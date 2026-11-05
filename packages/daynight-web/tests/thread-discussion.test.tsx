@@ -13,9 +13,9 @@ const projectId = id(100), taskId = id(200);
 const message = (value: number, body: string, extra: Partial<ThreadMessage> = {}): ThreadMessage => ({ id: id(value), author: { userId: TEST_VIEWER_ID, displayName: 'Alice', Agent: false }, body, createdAt: `2026-11-03T08:${String(value).padStart(2, '0')}:00.123Z`, ...extra });
 const resource = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
 const page = (items: readonly ThreadMessage[], hasMoreBefore = false, hasMoreAfter = false) => resource({ items, hasMoreBefore, hasMoreAfter });
-const Harness = ({ active = true, occupied = () => {}, admissionBlocked = false }: { readonly active?: boolean; readonly occupied?: (value: boolean) => void; readonly admissionBlocked?: boolean }) => {
+const Harness = ({ active = true, occupied = () => {}, admissionBlocked = false, parentUnavailable = false }: { readonly active?: boolean; readonly occupied?: (value: boolean) => void; readonly admissionBlocked?: boolean; readonly parentUnavailable?: boolean }) => {
   const owner = useRef<HTMLDivElement>(null);
-  return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice' }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} /></div></CurrentAccountProvider>;
+  return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice' }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} parentUnavailable={parentUnavailable} /></div></CurrentAccountProvider>;
 };
 const render = (ui = <Harness />) => renderWithLocale(ui, { locale: 'zh-CN', taskCache: true });
 
@@ -122,14 +122,92 @@ it('renders missing names as account identity and blocks Markdown resource/unsaf
 });
 
 
-it('closes details during account revalidation while keeping task data and the draft', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => page([message(1, 'Retained while checking')])));
-  const view = render(); await screen.findByText('Retained while checking');
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my draft' } });
-  fireEvent.click(screen.getByRole('button', { name: '消息详情' })); expect(screen.getByRole('dialog')).toBeVisible();
+it('retains the same details dialog and reading state through account revalidation', async () => {
+  const first = message(1, 'Retained while checking'), receipt = message(2, 'Submitted message');
+  let resolveRead!: (value: Response) => void;
+  const pending = new Promise<Response>(resolve => { resolveRead = resolve; });
+  const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? resource(receipt, 201) : fetcher.mock.calls.filter(([, options]) => options?.method !== 'POST').length === 1 ? page([first], true) : pending);
+  vi.stubGlobal('fetch', fetcher);
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  const showModal = vi.spyOn(HTMLDialogElement.prototype, 'showModal'), occupied = vi.fn();
+  const view = render(<Harness occupied={occupied} />); await screen.findByText(first.body);
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: receipt.body } }); fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await screen.findByText(receipt.body);
+  fireEvent.click(screen.getAllByRole('button', { name: '回复 Alice' })[0]!);
+  fireEvent.change(input, { target: { value: 'Keep my draft' } }); input.setSelectionRange(2, 6);
+  const reply = view.container.querySelector('.thread-reply-preview')!, timeline = view.container.querySelector<HTMLDivElement>('.thread-timeline')!;
+  timeline.scrollTop = 42;
+  fireEvent.click(screen.getAllByRole('button', { name: '消息详情' })[1]!);
+  const dialog = screen.getByRole('dialog') as HTMLDialogElement, close = screen.getByRole('button', { name: '关闭消息详情' });
+  const body = dialog.querySelector<HTMLDivElement>('.thread-metadata-body')!, owner = view.container.querySelector('.task-discussion')!.parentElement!;
+  body.scrollTop = 31;
+  const assertRetained = () => {
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(dialog).toBeVisible(); expect(dialog.open).toBe(true);
+    expect(dialog.querySelector('.thread-metadata-body')).toBe(body); expect(body.scrollTop).toBe(31); expect(timeline.scrollTop).toBe(42);
+    expect(close).toHaveFocus(); expect(owner).toHaveAttribute('inert'); expect(occupied.mock.calls.map(([open]) => open)).toEqual([true]);
+    expect(showModal).toHaveBeenCalledTimes(1); expect(view.container.querySelector('.thread-reply-preview')).toBe(reply);
+    expect(input).toHaveValue('Keep my draft'); expect([input.selectionStart, input.selectionEnd]).toEqual([2, 6]);
+  };
+  assertRetained();
+  visibility.mockReturnValue('hidden'); fireEvent(document, new Event('visibilitychange')); assertRetained();
+  view.rerender(<Harness occupied={occupied} admissionBlocked />); assertRetained(); expect(input).toBeEnabled();
+  visibility.mockReturnValue('visible'); fireEvent(document, new Event('visibilitychange')); assertRetained();
+  view.rerender(<Harness occupied={occupied} />); await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3)); assertRetained();
+  await act(async () => { resolveRead(page([{ ...receipt, author: { ...receipt.author } }])); });
+  await waitFor(() => expect(input).toBeEnabled()); assertRetained();
+  expect(fetcher.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+  view.unmount(); visibility.mockRestore(); showModal.mockRestore();
+});
+
+it('allows editing a loaded draft during revalidation without dispatching a post', async () => {
+  let resolveRead!: (value: Response) => void;
+  const pending = new Promise<Response>(resolve => { resolveRead = resolve; });
+  const fetcher = vi.fn(async (_url: string, init?: RequestInit) => init?.method === 'POST' ? resource(message(2, 'Unexpected'), 201) : fetcher.mock.calls.length === 1 ? page([message(1, 'Loaded')]) : pending);
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(); await screen.findByText('Loaded');
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: 'original draft' } }); input.focus(); input.setSelectionRange(2, 8);
   view.rerender(<Harness admissionBlocked />);
-  expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByRole('textbox')).toHaveValue('Keep my draft'); expect(screen.getByRole('textbox')).toBeDisabled(); expect(screen.getByText('Retained while checking')).toBeVisible();
-  view.rerender(<Harness />); await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled());
+  expect(input).toBeEnabled(); expect(input).toHaveFocus(); expect([input.selectionStart, input.selectionEnd]).toEqual([2, 8]);
+  expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+  fireEvent.change(input, { target: { value: 'edited during checking' } }); input.setSelectionRange(7, 13);
+  fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+  expect(fetcher.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0);
+  view.rerender(<Harness />); await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  expect(input).toHaveFocus(); expect(input).toHaveValue('edited during checking'); expect([input.selectionStart, input.selectionEnd]).toEqual([7, 13]);
+  await act(async () => { resolveRead(page([])); });
+  expect(input).toHaveFocus(); expect(input).toHaveValue('edited during checking'); expect([input.selectionStart, input.selectionEnd]).toEqual([7, 13]);
+  expect(fetcher.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0);
+});
+
+it('keeps the first load disabled while allowing an already loaded empty discussion to be edited', async () => {
+  let resolveRead!: (value: Response) => void;
+  const pending = new Promise<Response>(resolve => { resolveRead = resolve; });
+  const fetcher = vi.fn(async () => pending); vi.stubGlobal('fetch', fetcher);
+  const view = render(<Harness admissionBlocked />);
+  const input = screen.getByRole('textbox'); expect(input).toBeDisabled(); expect(fetcher).not.toHaveBeenCalled();
+  view.rerender(<Harness />); await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1)); expect(input).toBeDisabled();
+  await act(async () => { resolveRead(page([])); }); await screen.findByText('还没有讨论');
+  expect(input).toBeEnabled();
+  view.rerender(<Harness admissionBlocked />); expect(input).toBeEnabled();
+  fireEvent.change(input, { target: { value: 'Draft in empty discussion' } });
+  expect(input).toHaveValue('Draft in empty discussion'); expect(screen.getByRole('button', { name: '发送' })).toBeDisabled();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it('retires details without restoring focus to a hidden or unavailable task', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => page([message(1, 'Retired task')])));
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible'), occupied = vi.fn();
+  const view = render(<Harness occupied={occupied} />); await screen.findByText('Retired task');
+  const opener = screen.getByRole('button', { name: '消息详情' }); opener.focus(); fireEvent.click(opener);
+  const focus = vi.spyOn(opener, 'focus');
+  visibility.mockReturnValue('hidden'); fireEvent(document, new Event('visibilitychange'));
+  expect(screen.getByRole('dialog')).toBeVisible();
+  view.rerender(<Harness occupied={occupied} parentUnavailable />);
+  expect(screen.queryByRole('dialog')).toBeNull(); expect(focus).not.toHaveBeenCalled();
+  expect(occupied.mock.calls.map(([open]) => open)).toEqual([true, false]); expect(screen.queryByText('Retired task')).toBeNull();
+  view.unmount(); visibility.mockRestore();
 });
 
 it('keeps reference-window history reachable after viewing a disconnected own receipt', async () => {

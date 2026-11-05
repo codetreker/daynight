@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func storeTeamFixture(t *testing.T) (*Store, core.Principal, core.Team) {
+func storeTeamFixture(t *testing.T) (*Store, model.Principal, model.Team) {
 	t.Helper()
 	s := isolatedStore(t)
 	_, actor, _ := testAuthRecords(t, s)
@@ -24,9 +24,9 @@ func storeTeamFixture(t *testing.T) (*Store, core.Principal, core.Team) {
 	return s, actor, team
 }
 
-func readStoreTeam(t *testing.T, s *Store, userID, teamID string) core.Team {
+func readStoreTeam(t *testing.T, s *Store, userID, teamID string) model.Team {
 	t.Helper()
-	var team core.Team
+	var team model.Team
 	err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
 		var err error
 		team, err = snapshot.Team(context.Background(), userID, teamID)
@@ -54,7 +54,7 @@ func TestTeamCreationIsAtomicAndRollbackPreservesCause(t *testing.T) {
 		t.Fatalf("partial Team persisted %d %v", count, err)
 	}
 	_, err = s.CreateTeam(ctx, uuid.NewString(), uuid.NewString(), "Missing creator")
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing creator cause lost %v", err)
 	}
 }

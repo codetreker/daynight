@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -28,10 +28,10 @@ func taskStepsMoveSeed(t *testing.T, fixture *acceptanceFixture, task api.Task) 
 	t.Helper()
 	stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
 	rows := []api.TaskStep{
-		{ID: "00000000", Title: "  Same\x1b[31m\nFull title  ", Description: "# original Markdown\n\"\\\u2028\u2029", Status: core.TaskStepDone, CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)},
-		{ID: "abcdef01", Title: "same", Description: "second", Status: core.TaskStepTodo, CreatedAt: stamp.Add(time.Microsecond), UpdatedAt: stamp.Add(time.Microsecond)},
-		{ID: "12345678", Title: "same", Description: "third", Status: core.TaskStepSkipped, CreatedAt: stamp.Add(time.Second), UpdatedAt: stamp.Add(2 * time.Second)},
-		{ID: "fedcba98", Title: "\uFEFF", Description: "fourth", Status: core.TaskStepInProgress, CreatedAt: stamp.Add(3 * time.Second), UpdatedAt: stamp.Add(3 * time.Second)},
+		{ID: "00000000", Title: "  Same\x1b[31m\nFull title  ", Description: "# original Markdown\n\"\\\u2028\u2029", Status: model.TaskStepDone, CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)},
+		{ID: "abcdef01", Title: "same", Description: "second", Status: model.TaskStepTodo, CreatedAt: stamp.Add(time.Microsecond), UpdatedAt: stamp.Add(time.Microsecond)},
+		{ID: "12345678", Title: "same", Description: "third", Status: model.TaskStepSkipped, CreatedAt: stamp.Add(time.Second), UpdatedAt: stamp.Add(2 * time.Second)},
+		{ID: "fedcba98", Title: "\uFEFF", Description: "fourth", Status: model.TaskStepInProgress, CreatedAt: stamp.Add(3 * time.Second), UpdatedAt: stamp.Add(3 * time.Second)},
 	}
 	for index, step := range rows {
 		fixture.exec(t, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, task.ID, step.ID, index, step.Title, step.Description, step.Status, step.CreatedAt, step.UpdatedAt)

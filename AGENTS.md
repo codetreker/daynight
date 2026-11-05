@@ -14,8 +14,9 @@ take precedence.
   related documents stored in Daynight task descriptions or attachments in
   Chinese. Preserve the required spelling of code, commands, identifiers, paths,
   and API names.
-- Write other repository documents, skills, code, comments, and commit messages
-  in English unless explicitly instructed otherwise.
+- Write the confirmed server organization rules in `docs/daynight-server.md` in
+  Chinese. Write other repository documents, skills, code, comments, and commit
+  messages in English unless explicitly instructed otherwise.
 - Use the user's confirmed task and existing requirements to establish scope.
   A request to investigate or discuss remains read-only unless edits are
   authorized. Skills describe workflows and grant no additional permission.
@@ -150,6 +151,8 @@ investigations stay read-only unless recording a proposal is authorized.
 
 ## Writing and review
 
+- Read and follow the [server code organization rules](docs/daynight-server.md)
+  before adding to, modifying, or reviewing daynight-server.
 - Follow the [UI design principles](docs/ui-design.md) when designing, adding,
   modifying, or reviewing UI.
 - Use [prose-standard](.agents/skills/prose-standard/SKILL.md) to preserve
@@ -185,9 +188,13 @@ CI unit, integration, and other routine test suites must not run stress-test
 cases. Run stress tests separately from these CI suites: slower CI runners make
 these cases expensive and delay PR delivery across the repository.
 
-Diagnose a failing check before retrying. Repeat an unchanged failure only after
-confirming a transient infrastructure cause. Add time bounds to commands that
-may hang and keep output streaming. Summarize actual checks and their limits.
+Inspect failure logs before retrying. Each failed check on the same commit may
+be rerun at most twice beyond its initial run, without first proving a transient
+infrastructure cause. Count retries across sessions, restarts and workflow
+reruns. If both retries fail, diagnose and repair the cause before further
+validation. A passing retry does not establish the root cause or relax required
+checks and acceptance criteria. Add time bounds to commands that may hang, keep
+output streaming, and report retries, observed results and their limits.
 
 Preserve task scope when staging and committing; use the repository's commit
 conventions and default Git identity. Omit AI tool co-author attribution. Keep

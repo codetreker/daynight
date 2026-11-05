@@ -1,6 +1,6 @@
 package sessionrelay
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 
 func archiveNamespace(project, owner, session string) (sessionarchive.Namespace, error) {
 	if project == "" {

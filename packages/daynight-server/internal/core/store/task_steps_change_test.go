@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -15,10 +15,10 @@ func TestTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskDone)
+	task := queryTask(t, database, project.ID, 10, model.TaskDone)
 	seedStoreStep(t, database, task.ID, "00000000", 0)
 	seedStoreStep(t, database, task.ID, "abcdef01", 1)
-	var before []core.TaskStep
+	var before []model.TaskStep
 	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		var err error
 		before, err = snapshot.TaskSteps(ctx, task.ID)
@@ -28,7 +28,7 @@ func TestTaskStepsChangeStoreUpdatesOneExistingTarget(t *testing.T) {
 	}
 	stamp := time.Date(2026, 11, 4, 3, 4, 5, 654321000, time.UTC)
 	target := before[0]
-	target.Title, target.Description, target.Status, target.UpdatedAt = "  Paired title  ", "# Paired body\n", core.TaskStepSkipped, stamp
+	target.Title, target.Description, target.Status, target.UpdatedAt = "  Paired title  ", "# Paired body\n", model.TaskStepSkipped, stamp
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error { return tx.UpdateTaskStep(ctx, task.ID, target) }); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestTaskStepsChangeStoreFailuresKeepCausesAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	seedStoreStep(t, database, task.ID, "00000000", 0)
 	state := func() string {
 		t.Helper()
@@ -87,7 +87,7 @@ func TestTaskStepsChangeStoreFailuresKeepCausesAndRollback(t *testing.T) {
 				t.Fatalf("failure completion: %+v %v", transaction, err)
 			}
 			if mode == "missing" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatal("missing row cause lost")
 				}
 			} else {

@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -250,13 +250,13 @@ func TestStepsHTTPAddSafeFailureMetadataAndErrorDetails(t *testing.T) {
 		status int
 		code   string
 	}{
-		{&service.Fault{Code: "step_id_conflict", Message: "fault-message-sentinel"}, 409, "step_id_conflict"},
-		{&service.Fault{Code: "version_conflict", Message: "fault-message-sentinel"}, 409, "version_conflict"},
-		{&service.Fault{Code: "version_exhausted", Message: "fault-message-sentinel"}, 409, "version_exhausted"},
-		{&service.Fault{Code: "steps_limit_exceeded", Message: "fault-message-sentinel", StepsLimit: &service.StepsLimitDetails{EncodedBytes: 67108865, MaxEncodedBytes: 67108864}}, 409, "steps_limit_exceeded"},
-		{&store.TransactionError{Phase: "cleanup", Cause: &service.Fault{Code: "step_id_conflict", Message: "fault-message-sentinel"}, Outcome: store.TransactionNotCommitted, CleanupFailed: true}, 500, "internal_error"},
+		{&model.Fault{Code: "step_id_conflict", Message: "fault-message-sentinel"}, 409, "step_id_conflict"},
+		{&model.Fault{Code: "version_conflict", Message: "fault-message-sentinel"}, 409, "version_conflict"},
+		{&model.Fault{Code: "version_exhausted", Message: "fault-message-sentinel"}, 409, "version_exhausted"},
+		{&model.Fault{Code: "steps_limit_exceeded", Message: "fault-message-sentinel", StepsLimit: &model.StepsLimitDetails{EncodedBytes: 67108865, MaxEncodedBytes: 67108864}}, 409, "steps_limit_exceeded"},
+		{&store.TransactionError{Phase: "cleanup", Cause: &model.Fault{Code: "step_id_conflict", Message: "fault-message-sentinel"}, Outcome: store.TransactionNotCommitted, CleanupFailed: true}, 500, "internal_error"},
 		{&store.TransactionError{Phase: "commit", Cause: &pgconn.PgError{Code: "23505", Message: "database-message-sentinel", Detail: "database-detail-sentinel"}, Outcome: store.TransactionUnknown, CommitAttempted: true}, 500, "internal_error"},
-		{errors.Join(&service.Fault{Code: "not_found", Message: "fault-message-sentinel"}, errors.New("cleanup-sentinel")), 500, "internal_error"},
+		{errors.Join(&model.Fault{Code: "not_found", Message: "fault-message-sentinel"}, errors.New("cleanup-sentinel")), 500, "internal_error"},
 	} {
 		response := httptest.NewRecorder()
 		writeStepsError(response, request, logger, "commit", tc.err)

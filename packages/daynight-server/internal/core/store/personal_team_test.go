@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func identitySession(userID, subject string) (core.User, core.Session) {
+func identitySession(userID, subject string) (model.User, model.Session) {
 	now := time.Now().UTC()
 	hash := sha256.Sum256([]byte(uuid.NewString()))
-	return core.User{ID: userID, UniAuthID: subject}, core.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	return model.User{ID: userID, UniAuthID: subject}, model.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 }
 
 func TestPersonalTeamConcurrentAndRepeatedLoginReusesCanonicalOwner(t *testing.T) {
@@ -25,7 +25,7 @@ func TestPersonalTeamConcurrentAndRepeatedLoginReusesCanonicalOwner(t *testing.T
 	ctx := context.Background()
 	const logins = 6
 	var wait sync.WaitGroup
-	users := make(chan core.User, logins)
+	users := make(chan model.User, logins)
 	failures := make(chan error, logins)
 	for range logins {
 		wait.Go(func() {
@@ -109,13 +109,13 @@ func TestPersonalIntegrityFailuresAreNotRepairedByLoginOrProjectCreation(t *test
 			}
 			login, session := identitySession(uuid.NewString(), user.UniAuthID)
 			login.Name = new("Changed")
-			if _, err := s.CreateIdentitySession(ctx, login, session); err == nil || errors.Is(err, core.ErrNotFound) {
+			if _, err := s.CreateIdentitySession(ctx, login, session); err == nil || errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("login hid invalid Personal ownership: %v", err)
 			}
-			if _, err := s.CreatePrivateProject(ctx, principal, uuid.NewString(), "Invalid", "host:repo"); err == nil || errors.Is(err, core.ErrNotFound) {
+			if _, err := s.CreatePrivateProject(ctx, principal, uuid.NewString(), "Invalid", "host:repo"); err == nil || errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("project creation hid invalid Personal ownership: %v", err)
 			}
-			if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, core.ErrNotFound) {
+			if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("account read hid invalid Personal ownership: %v", err)
 			}
 			var name *string
@@ -146,12 +146,12 @@ func TestProjectCreationPersonalLookupFailuresPreserveStateAndCause(t *testing.T
 			}
 			project, err := s.CreatePrivateProject(ctx, principal, uuid.NewString(), "Rejected", "host:repo")
 			var transaction *TransactionError
-			if err == nil || project != (core.Project{}) || !errors.As(err, &transaction) ||
+			if err == nil || project != (model.Project{}) || !errors.As(err, &transaction) ||
 				transaction.CommitAttempted || transaction.CleanupFailed || transaction.Outcome != TransactionNotCommitted {
 				t.Fatalf("failed Personal lookup returned a project or uncertain transaction: %#v %#v %v", project, transaction, err)
 			}
 			if failure == "missing-team" {
-				if errors.Is(err, core.ErrNotFound) || transaction.Cause.Error() != "user Personal Team is missing" {
+				if errors.Is(err, model.ErrNotFound) || transaction.Cause.Error() != "user Personal Team is missing" {
 					t.Fatalf("missing Personal Team did not retain its integrity error: %v", err)
 				}
 				var teams int
@@ -209,7 +209,7 @@ func testProjectOwnershipCreationAndRequiredReads(t *testing.T, missing string) 
 			return err
 		},
 	} {
-		if err := s.ReadSnapshot(ctx, read); err == nil || errors.Is(err, core.ErrNotFound) {
+		if err := s.ReadSnapshot(ctx, read); err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("project read %d accepted missing ownership or hid corruption: %v", index, err)
 		}
 	}
@@ -229,7 +229,7 @@ func TestIdentityUserReturnsCanonicalPersonalReference(t *testing.T) {
 		t.Fatalf("account reference does not identify the stored Personal owner: %s %v", ownedTeam, err)
 	}
 	mustQueryExec(t, s, `DELETE FROM teams WHERE id=$1`, ownedTeam)
-	if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, core.ErrNotFound) {
+	if _, err := s.IdentityUser(ctx, user.ID); err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing Personal Team was hidden as an absent account: %v", err)
 	}
 }

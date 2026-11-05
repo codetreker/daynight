@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 )
 
 func TestAttachmentHTTPUsesActualFilesystemNameCapabilities(t *testing.T) {

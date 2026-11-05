@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func workerFixture() core.WorkerClaim {
+func workerFixture() model.WorkerClaim {
 	native := "native-session"
-	return core.WorkerClaim{
-		ClaimID: "00000000-0000-4000-8000-000000000001", State: core.WorkerActive,
+	return model.WorkerClaim{
+		ClaimID: "00000000-0000-4000-8000-000000000001", State: model.WorkerActive,
 		UserID: "00000000-0000-4000-8000-000000000002", WorkerID: "00000000-0000-4000-8000-000000000003",
-		Machine:  core.WorkerMachine{ID: "00000000-0000-4000-8000-000000000004", Name: "Build machine 中文"},
-		Platform: core.PlatformLinux, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000005",
-		Phase: core.WorkerExecuting, Herdr: &core.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "pane"},
+		Machine:  model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000004", Name: "Build machine 中文"},
+		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000005",
+		Phase: model.WorkerExecuting, Herdr: &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "pane"},
 		NativeSessionID: &native, ClaimedAt: time.Date(2026, 10, 24, 1, 2, 3, 456789123, time.UTC),
 	}
 }
@@ -47,14 +47,14 @@ func workerPropertiesJSON(t *testing.T, worker map[string]json.RawMessage) []byt
 }
 
 func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
-	for _, state := range []core.WorkerState{core.WorkerActive, core.WorkerReleased, core.WorkerCompleted} {
-		for _, platform := range []core.TaskPlatform{core.PlatformWindows, core.PlatformLinux, core.PlatformMacOS} {
-			for _, agent := range []core.WorkerAgent{core.AgentCodex, core.AgentClaude, core.AgentCopilot} {
-				for _, phase := range []core.WorkerPhase{core.WorkerPreparing, core.WorkerExecuting, core.WorkerVerifying, core.WorkerCompleting, core.WorkerWaiting, core.WorkerPaused} {
+	for _, state := range []model.WorkerState{model.WorkerActive, model.WorkerReleased, model.WorkerCompleted} {
+		for _, platform := range []model.TaskPlatform{model.PlatformWindows, model.PlatformLinux, model.PlatformMacOS} {
+			for _, agent := range []model.WorkerAgent{model.AgentCodex, model.AgentClaude, model.AgentCopilot} {
+				for _, phase := range []model.WorkerPhase{model.WorkerPreparing, model.WorkerExecuting, model.WorkerVerifying, model.WorkerCompleting, model.WorkerWaiting, model.WorkerPaused} {
 					t.Run(fmt.Sprintf("%s/%s/%s/%s", state, platform, agent, phase), func(t *testing.T) {
 						worker := workerFixture()
 						worker.State, worker.Platform, worker.Agent, worker.Phase = state, platform, agent, phase
-						properties := propertyFixture(t, []core.PullRequestProperty{{URL: "opaque\x00", Title: "  preserved\n中文  "}}, &worker)
+						properties := propertyFixture(t, []model.PullRequestProperty{{URL: "opaque\x00", Title: "  preserved\n中文  "}}, &worker)
 						actual, err := Decode([]byte(encodedProperties(t, properties)))
 						if err != nil || !reflect.DeepEqual(actual, properties) {
 							t.Fatalf("worker resource changed during serialization: expected %#v actual %#v error %v", properties, actual, err)
@@ -64,12 +64,12 @@ func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
 			}
 		}
 	}
-	for _, worker := range []*core.WorkerClaim{nil, func() *core.WorkerClaim {
+	for _, worker := range []*model.WorkerClaim{nil, func() *model.WorkerClaim {
 		value := workerFixture()
 		value.Herdr, value.NativeSessionID = nil, nil
 		return &value
 	}()} {
-		properties := propertyFixture(t, []core.PullRequestProperty{}, worker)
+		properties := propertyFixture(t, []model.PullRequestProperty{}, worker)
 		encoded := encodedProperties(t, properties)
 		if strings.Contains(encoded, `"worker":`) != (worker != nil) {
 			t.Fatal("worker presence changed during serialization")

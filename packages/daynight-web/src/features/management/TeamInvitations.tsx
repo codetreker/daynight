@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createTeamInvitation, listTeamInvitations, revokeTeamInvitation, type TeamInvitation } from '../../api/auth';
-import { ApiError } from '../../api/client';
+import { ApiError, authRequestsPaused } from '../../api/client';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useOperation } from '../teams/TeamManagement';
@@ -10,14 +10,19 @@ import { ManagementError, SecretDialog } from './feedback';
 
 type Action = { readonly kind: 'create' } | { readonly kind: 'revoke'; readonly invitation: TeamInvitation } | { readonly kind: 'secret'; readonly secret: string };
 
-export const TeamInvitations = ({ teamId, teamName, active, onRoute, editable, actorRole, unavailable, admission, onIdentityMismatch, onPermissionChange, onGuardChange }: {
-  readonly teamId: string; readonly teamName: string; readonly active: boolean; readonly onRoute: boolean; readonly editable: boolean; readonly actorRole: 'admin' | 'member' | null; readonly unavailable: boolean;
+export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = false, permissionReady = true, onRoute, editable, actorRole, unavailable, admission, onIdentityMismatch, onPermissionChange, onGuardChange }: {
+  readonly teamId: string; readonly teamName: string; readonly active: boolean; readonly admissionBlocked?: boolean; readonly permissionReady?: boolean; readonly onRoute: boolean; readonly editable: boolean; readonly actorRole: 'admin' | 'member' | null; readonly unavailable: boolean;
   readonly admission: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onPermissionChange: () => void; readonly onGuardChange: (retain: boolean, lock: boolean) => void;
 }) => {
   const { locale, messages: { auth: { management: { members: m, common } }, common: globalCommon } } = useI18n();
   const zh = locale === 'zh-CN';
   const [items, setItems] = useState<readonly TeamInvitation[] | null>(null);
-  const [loading, setLoading] = useState(false), [error, setError] = useState<unknown>(null);
+  // A retained invitation list does not authorize writes while either read is pending.
+  const loaded = useRef(false), fresh = useRef(false), backgroundRecheck = useRef(false);
+  if (!active || !editable) { fresh.current = false; backgroundRecheck.current = false; }
+  else if (admissionBlocked) { fresh.current = false; backgroundRecheck.current = true; }
+  const [loading, setLoading] = useState(false), [error, setError] = useState<unknown>(null), [needsRefresh, setNeedsRefresh] = useState(false);
+  const permissionRef = useRef(false); permissionRef.current = permissionReady && !admissionBlocked;
   const [action, setAction] = useState<Action | null>(null), [observed, setObserved] = useState(false);
   const [issue, setIssue] = useState<unknown>(null), [receipt, setReceipt] = useState<'revoked' | 'already' | null>(null);
   const uncertain = useRef(new Set<string>()), read = useRef<AbortController | null>(null);
@@ -31,38 +36,52 @@ export const TeamInvitations = ({ teamId, teamName, active, onRoute, editable, a
   useEffect(() => { if (unknown && memberWithoutManagement) setAction(null); }, [unknown, memberWithoutManagement]);
   useEffect(() => () => { read.current?.abort(); guard.current(false, false); }, []);
   useEffect(() => { if (!onRoute && !operation.current.guarded()) setAction((current) => current?.kind === 'secret' ? current : null); }, [onRoute]);
-  const load = useCallback(async () => {
+  const load = useCallback(async (background = false) => {
     if (!active || !editable) return false;
     read.current?.abort(); const controller = new AbortController(); read.current = controller;
-    const signal = AbortSignal.any([controller.signal, admission.signal]); setLoading(true); setError(null);
+    const signal = AbortSignal.any([controller.signal, admission.signal]); fresh.current = false;
+    if (!background || !loaded.current) setLoading(true);
+    setError(null);
     try {
       await admission.ready(signal);
       const invitations = await listTeamInvitations(teamId, signal, { userId: admission.userId, onPrincipalMismatch: onIdentityMismatch });
       await admission.ready(signal);
       if (signal.aborted || admission.isInvalidated) return false;
-      permissionNotified.current = false; setItems(invitations); return true;
+      if (!permissionRef.current || authRequestsPaused()) { setNeedsRefresh(true); return false; }
+      permissionNotified.current = false; loaded.current = true; fresh.current = true; setItems(invitations); return true;
     } catch (failure) {
       if (signal.aborted || admission.isInvalidated) return false;
       try { await admission.ready(signal); } catch { return false; }
       if (signal.aborted || admission.isInvalidated) return false;
-      setItems(null); setError(failure);
+      loaded.current = false; setItems(null); setError(failure);
       if (failure instanceof ApiError && failure.kind === 'server' && (failure.status === 403 || failure.status === 404) && !permissionNotified.current) { permissionNotified.current = true; permission.current(); }
       return false;
     } finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) setLoading(false); } }
   }, [active, editable, admission, teamId, onIdentityMismatch]);
-  useEffect(() => { if (active && editable) void load(); return () => read.current?.abort(); }, [active, editable, load]);
+  useEffect(() => {
+    if (active && editable && !admissionBlocked) {
+      const background = backgroundRecheck.current && loaded.current;
+      backgroundRecheck.current = false;
+      void load(background);
+    }
+    return () => read.current?.abort();
+  }, [active, editable, admissionBlocked, load]);
+  useEffect(() => {
+    if (!needsRefresh || !active || !editable || admissionBlocked || !permissionReady || authRequestsPaused()) return;
+    setNeedsRefresh(false); void load(true);
+  }, [needsRefresh, active, editable, admissionBlocked, permissionReady, load]);
   const check = () => { void load().then((ok) => { if (ok && operation.current.result?.kind === 'unknown') { setIssue(operation.current.result.error); setObserved(true); operation.current.clear(); setAction(null); } }); };
   const open = (next: Action) => {
     if (!active || !editable || loading || op.pending || unknown || error !== null) return;
     operation.current.clear(); setAction(next); setReceipt(null);
   };
   const submit = () => {
-    if (!action || action.kind === 'secret' || !active || !editable || loading || op.pending || unknown || error !== null) return;
+    if (!action || action.kind === 'secret' || !active || !editable || authRequestsPaused() || !permissionReady || !fresh.current || loading || op.pending || unknown || error !== null) return;
     if (action.kind === 'revoke' && uncertain.current.has(action.invitation.id)) return;
     guard.current(true, true);
     const rejected = (failure: unknown) => { if (failure instanceof ApiError && failure.kind === 'server' && (failure.status === 403 || failure.status === 404)) permission.current(); };
     if (action.kind === 'create') void op.run((signal, dispatched) => createTeamInvitation(teamId, admission.userId, signal, onIdentityMismatch, dispatched), (created) => {
-      const { link, ...metadata } = created; setItems((previous) => [metadata, ...(previous ?? [])]); setAction({ kind: 'secret', secret: link }); setIssue(null); setObserved(false); if (active) void load();
+      setAction({ kind: 'secret', secret: created.link }); setIssue(null); setObserved(false); setNeedsRefresh(true);
     }, rejected);
     else void op.run((signal, dispatched) => revokeTeamInvitation(teamId, action.invitation.id, admission.userId, signal, onIdentityMismatch, dispatched), (result) => {
       setAction(null); setReceipt(result.changed ? 'revoked' : 'already'); setIssue(null); setObserved(false); if (active) void load();

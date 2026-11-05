@@ -1,4 +1,8 @@
 import Database from "better-sqlite3";
+import { createServer } from "node:http";
+import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
+import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
+import * as botEnvironment from "../../../src/commands/worker/bots/environment.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -109,7 +113,7 @@ test("joins the final process observation before rejecting its expired window", 
   expect(active).toBe(0);
 });
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
@@ -136,8 +140,11 @@ appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify({ pid: process.pid, 
 const { runController } = await import(${JSON.stringify(runtimeURL)});
 await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.argv[3], launchId: process.argv[5] });
 `);
-  const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 }); await once(relay, "listening");
-  const address = relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
+  const http = options.hosted ? createServer() : null;
+  const relay = http === null ? new WebSocketServer({ host: "127.0.0.1", port: 0 }) : new WebSocketServer({ server: http });
+  if (http === null) await once(relay, "listening");
+  else { http.listen(0, "127.0.0.1"); await once(http, "listening"); }
+  const address = http?.address() ?? relay.address(); if (typeof address === "string" || address === null) throw new Error("Missing fixture relay address.");
   const owner = { serverOrigin: `http://127.0.0.1:${address.port}`, ownerUserId: randomUUID(), workerId: randomUUID() };
   const store = openBotStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
   const executions = openBotExecutionStore(path.join(home, "worker.sqlite"), { onMigration: () => {} });
@@ -265,6 +272,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     finally {
       for (const socket of relay.clients) socket.terminate();
       await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));
+      if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); });
       executions.close(); store.close();
       if (stopped) {
         if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(home, bot.id)), { recursive: true, force: true });
@@ -274,7 +282,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
   });
   const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
   const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number }) : [];
-  return { home, cwd, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
+  return { home, cwd, packageDirectory, prepareEnvironment, http, snapshot, getBot: () => bot, setBot: (value: BotDefinition) => { bot = value; }, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
 };
 
 const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
@@ -452,3 +460,91 @@ test("deletes every private generation after real Controller stop while preservi
   expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);
   expect(f.relayErrors).toEqual([]);
 }, 120_000);
+
+
+test("runs the production Bot host through HTTP discovery, native recovery and precise deletion", async () => {
+  const f = await fixture({ hosted: true }), errors: string[] = [], calls: { method: string; path: string; body: any }[] = [];
+  // Native credentials and command aliases are fixture-owned; the host, stores,
+  // HTTP adapters, Controller, journal, IPC, provider adapter and deletion run unchanged.
+  vi.spyOn(botEnvironment, "prepareBotEnvironment").mockImplementation(f.prepareEnvironment);
+  let deleted: BotDeleted | null = null, serverGeneration = "1", serverInstance: string | null = null;
+  const parentToken = "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890";
+  f.http!.on("request", (request, response) => {
+    void (async () => {
+      response.setHeader("content-type", "application/json"); response.setHeader("Daynight-User-ID", f.owner.ownerUserId);
+      const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
+      const pathname = new URL(request.url!, f.owner.serverOrigin).pathname;
+      calls.push({ method: request.method!, path: pathname, body });
+      expect(request.headers.authorization).toBe(`Bearer ${parentToken}`);
+      const send = (value: unknown) => response.end(JSON.stringify(value));
+      if (request.method === "GET" && pathname.endsWith(`/workers/${f.owner.workerId}/bots`)) return send({ items: [deleted ?? f.getBot()], nextCursor: null });
+      if (request.method === "GET" && pathname.endsWith(`/me/bots/${f.getBot().id}`)) return send(deleted ?? f.getBot());
+      if (request.method === "POST" && pathname.endsWith("/register")) {
+        expect(body.registration).toEqual(f.current().intent!.registration);
+        expect(body.roleConfiguration).toEqual(f.current().intent!.roleConfiguration);
+        const registered = await f.api.register(f.current()); serverInstance = registered.snapshot.identity.controllerInstanceId;
+        return send({ bot: registered.bot, session: registered.snapshot });
+      }
+      if (request.method === "GET" && pathname.startsWith("/api/v1/test-sessions/")) {
+        const session = f.snapshot(f.current());
+        return send({ session: { ...session, executionGeneration: serverGeneration,
+          identity: { ...session.identity, controllerInstanceId: serverInstance! } } });
+      }
+      if (request.method === "POST" && pathname.endsWith("/grant")) {
+        if (body.grant.executionGeneration !== serverGeneration) {
+          expect(body.grant.previousGeneration).toBe(serverGeneration);
+          expect(body.grant.stopProof.previousControllerInstanceId).toBe(serverInstance);
+        }
+        serverGeneration = body.grant.executionGeneration; serverInstance = body.grant.controllerInstanceId;
+        return send(await f.api.grant(f.current()));
+      }
+      if (request.method === "POST" && pathname.endsWith("/report")) {
+        f.setBot({ ...f.getBot(), version: String(BigInt(f.getBot().version) + 1n), startupResult: body.result });
+        return send(f.getBot());
+      }
+      if (request.method === "POST" && pathname.endsWith("/deletion-complete")) {
+        expect(deleted).not.toBeNull(); expect(body.deletionId).toBe(deleted!.deletion.deletionId);
+        deleted = { ...deleted!, version: String(BigInt(deleted!.version) + 1n), deletion: { ...deleted!.deletion,
+          workerCleanup: body.result, serverCleanup: { state: "completed", code: null } } };
+        return send(deleted);
+      }
+      throw new Error(`Unexpected hosted fixture request ${request.method} ${pathname}`);
+    })().catch(error => { errors.push(String(error)); response.statusCode = 500; response.end(JSON.stringify({ error: { code: "fixture_error", message: "Controlled HTTP failed", requestId: "fixture" } })); });
+  });
+  const paths = { ...resolveWorkerPaths(f.home), databaseFile: path.join(f.home, "worker.sqlite") };
+  const makeHost = () => createWorkerBotHost({ homeDirectory: f.home, packageDirectory: f.packageDirectory, workingDirectory: f.cwd, paths, owner: f.owner,
+    serverToken: parentToken, configuration: () => ({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }),
+    recoveryLimit: () => 3, pollIntervalMs: () => 50, emit: event => { if (event.kind === "bot-unavailable") errors.push(event.message); } });
+  let host = makeHost(), cancellation = new AbortController(), running = host.run(cancellation.signal);
+  void running.catch(error => errors.push(String(error)));
+  const stop = async () => { cancellation.abort(); try { await host.shutdown(); await running; } finally { host.close(); } };
+  // This cleanup runs before the fixture's original-process cleanup, even on failure.
+  cleanups.push(stop);
+  await vi.waitFor(() => expect(f.getBot().startupResult.state, errors.join("\n")).toBe("ready"), { timeout: 60_000, interval: 100 });
+  const first = f.current().intent!;
+  const sentinel = path.join(f.cwd, "keep.txt"); await writeFile(sentinel, "user data");
+  expect(await f.launches()).toHaveLength(1);
+  await stop();
+  expect(f.journal()).toMatchObject({ nativeStopped: true, nativeSessionId: f.nativeId });
+  host = makeHost(); cancellation = new AbortController(); running = host.run(cancellation.signal);
+  void running.catch(error => errors.push(String(error)));
+  await vi.waitFor(() => expect(f.journal()).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: "2" }), { timeout: 60_000, interval: 100 });
+  expect(f.current().intent).toMatchObject({ sessionId: first.sessionId, executionId: first.executionId, roleConfiguration: first.roleConfiguration });
+  expect(f.executions.get(f.current())!.recoveryCount).toBe(0);
+  const current = f.getBot();
+  deleted = { id: current.id, workerId: current.workerId, version: String(BigInt(current.version) + 1n), deletion: { deletionId: randomUUID(), requestedVersion: current.version,
+    workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null } } };
+  f.revoke();
+  await vi.waitFor(() => expect(deleted!.deletion.workerCleanup.state, errors.join("\n")).toBe("completed"), { timeout: 60_000, interval: 100 });
+  expect(f.current()).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true } });
+  expect(existsSync(first.journalPath)).toBe(false); expect(existsSync(first.ticketPath)).toBe(false);
+  expect(await readFile(sentinel, "utf8")).toBe("user data");
+  expect(calls.filter(call => call.path.endsWith("/register"))).toHaveLength(1);
+  expect(calls.filter(call => call.path.endsWith("/deletion-complete"))).toHaveLength(1);
+  expect((await f.requests()).filter(request => request.method === "thread/start")).toHaveLength(1);
+  expect((await f.requests()).filter(request => request.method === "thread/resume")).toHaveLength(1);
+  expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);
+  expect(errors).toEqual([]); expect(f.relayErrors).toEqual([]);
+  await stop();
+}, 180_000);

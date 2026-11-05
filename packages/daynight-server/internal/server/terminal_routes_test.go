@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 func terminalRequest(h http.Handler, method, path, body, protocol string) *httptest.ResponseRecorder {

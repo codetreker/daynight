@@ -11,9 +11,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -37,7 +36,7 @@ type terminalCommand struct {
 type terminalOperation struct {
 	Command  terminalCommand
 	Result   v2.OperationResult
-	Actor    core.Principal
+	Actor    model.Principal
 	Hash     []byte
 	Epoch    *int64
 	Deadline time.Time
@@ -216,7 +215,7 @@ func loadTerminalOperation(ctx context.Context, tx pgx.Tx, id, operationID strin
 	if err != nil {
 		return out, err
 	}
-	out.Actor.Kind = core.CredentialKind(kind)
+	out.Actor.Kind = model.CredentialKind(kind)
 	if err = json.Unmarshal(command, &out.Command); err != nil {
 		return out, err
 	}
@@ -441,7 +440,7 @@ func (s *Service) refreshTerminalControl(ctx context.Context, tx pgx.Tx, r *term
 		if valid {
 			admin, e := member(ctx, tx, *r.ControlActor, r.Owner.ProjectID, s.now())
 			if e != nil {
-				var refusal *service.Fault
+				var refusal *model.Fault
 				if !errors.As(e, &refusal) {
 					return e
 				}
@@ -460,7 +459,7 @@ func (s *Service) refreshTerminalControl(ctx context.Context, tx pgx.Tx, r *term
 func (s *Service) terminalOnline(r *terminalRecord) bool {
 	return r.ServerInstance == s.instance && r.LastSeen != nil && s.now().Sub(*r.LastSeen) <= HeartbeatTimeout
 }
-func (s *Service) terminalCommandAllowed(ctx context.Context, tx pgx.Tx, r *terminalRecord, t task, p core.Principal, c terminalCommand) error {
+func (s *Service) terminalCommandAllowed(ctx context.Context, tx pgx.Tx, r *terminalRecord, t task, p model.Principal, c terminalCommand) error {
 	if !terminalActive(t, r) || !terminalFenceMatches(r, c.Envelope) {
 		return fault("stale_fence", "Terminal execution is no longer active.")
 	}
@@ -539,7 +538,7 @@ func (s *Service) terminalCommandAllowed(ctx context.Context, tx pgx.Tx, r *term
 
 // SubmitTerminal durably reserves an operation ID before exposing an offer. A
 // repeated intent reads its prior outcome; it never issues another native input.
-func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project, taskID, id, browserClientID string, m v2.Message) (v2.Message, error) {
+func (s *Service) SubmitTerminal(ctx context.Context, p model.Principal, project, taskID, id, browserClientID string, m v2.Message) (v2.Message, error) {
 	checked, err := terminalCheckedMessage(m)
 	if err != nil {
 		return v2.Message{}, err
@@ -633,7 +632,7 @@ func (s *Service) SubmitTerminal(ctx context.Context, p core.Principal, project,
 	}
 	return out, err
 }
-func (s *Service) TerminalOperation(ctx context.Context, p core.Principal, project, taskID, id, operationID string) (v2.Message, error) {
+func (s *Service) TerminalOperation(ctx context.Context, p model.Principal, project, taskID, id, operationID string) (v2.Message, error) {
 	var out v2.Message
 	err := s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, t task, _ bool) error {
 		if err := s.refreshTerminalControl(ctx, tx, r, t); err != nil {
@@ -651,7 +650,7 @@ func (s *Service) TerminalOperation(ctx context.Context, p core.Principal, proje
 
 // PollTerminal consumes an offer once. Committing dispatching precedes returning
 // the body, so a lost response is unknown and never causes automatic replay.
-func (s *Service) PollTerminal(ctx context.Context, p core.Principal, project, taskID, id string, f v2.Envelope, epoch string) ([]v2.Message, error) {
+func (s *Service) PollTerminal(ctx context.Context, p model.Principal, project, taskID, id string, f v2.Envelope, epoch string) ([]v2.Message, error) {
 	out := []v2.Message{}
 	err := s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, t task, _ bool) error {
 		if err := terminalOwner(p, r); err != nil {
@@ -689,7 +688,7 @@ func (s *Service) PollTerminal(ctx context.Context, p core.Principal, project, t
 			raw := s.terminalBody(id, operationID)
 			if authorizeErr != nil || len(raw) == 0 {
 				if authorizeErr != nil {
-					var refusal *service.Fault
+					var refusal *model.Fault
 					if !errors.As(authorizeErr, &refusal) {
 						return authorizeErr
 					}
@@ -728,7 +727,7 @@ func (s *Service) PollTerminal(ctx context.Context, p core.Principal, project, t
 
 // HandleTerminalControl accepts Worker observations on the bound connection.
 // Late results remain attached to their original operation and cannot regrant a lease.
-func (s *Service) HandleTerminalControl(ctx context.Context, p core.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
+func (s *Service) HandleTerminalControl(ctx context.Context, p model.Principal, project, taskID, id, epoch string, m v2.Message) (v2.Message, error) {
 	checked, err := terminalCheckedMessage(m)
 	if err != nil {
 		return v2.Message{}, err
@@ -778,7 +777,7 @@ func (s *Service) HandleTerminalControl(ctx context.Context, p core.Principal, p
 			if current && payload.Result.State == "transport_completed" {
 				admin, authorization := member(ctx, tx, op.Actor, project, s.now())
 				if authorization != nil {
-					var refusal *service.Fault
+					var refusal *model.Fault
 					if !errors.As(authorization, &refusal) {
 						return authorization
 					}
@@ -946,8 +945,8 @@ func (s *Service) acceptTerminalResult(ctx context.Context, tx pgx.Tx, r *termin
 	return result, writeTerminalResult(ctx, tx, r.Envelope.SessionID, result)
 }
 
-func (s *Service) DisconnectTerminal(ctx context.Context, p core.Principal, project, taskID, id string, f v2.Envelope, epoch string) error {
-	if p.Kind == core.PATCredential && id == f.SessionID {
+func (s *Service) DisconnectTerminal(ctx context.Context, p model.Principal, project, taskID, id string, f v2.Envelope, epoch string) error {
+	if p.Kind == model.PATCredential && id == f.SessionID {
 		defer s.forgetTerminalConnection(p.UserID, f, epoch)
 	}
 	return s.terminalAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
@@ -967,7 +966,7 @@ func (s *Service) DisconnectTerminal(ctx context.Context, p core.Principal, proj
 
 // DisconnectTerminalViewer revokes only the departing browser's lease. It never
 // resumes automation or sends terminal keystrokes to discard a user's draft.
-func (s *Service) DisconnectTerminalViewer(ctx context.Context, p core.Principal, project, taskID, id, browserClientID, claimID, connectionEpoch string) error {
+func (s *Service) DisconnectTerminalViewer(ctx context.Context, p model.Principal, project, taskID, id, browserClientID, claimID, connectionEpoch string) error {
 	return s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
 		// A browser identity may be reused after Worker reconnect. Release only
 		// the connection captured when this viewer subscribed; a run advancing on

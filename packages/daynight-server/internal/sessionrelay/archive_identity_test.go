@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
 
 func TestArchiveNativeIdentitySurvivesAnotherRelayLiveCache(t *testing.T) {

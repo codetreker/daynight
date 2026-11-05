@@ -13,17 +13,18 @@ const render = createLocaleRender("en");
 type HarnessProps = {
   readonly collapsed?: boolean;
   readonly routeKey?: string;
-  readonly identityChecking?: boolean;
+  readonly selectedTeamId?: string;
+  readonly blocked?: boolean;
   readonly initiallyInert?: boolean;
   readonly anotherLock?: boolean;
   readonly onToggle?: () => void;
   readonly onNavigate?: () => void;
 };
-const Harness = ({ collapsed = false, routeKey = "/", identityChecking = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
+const Harness = ({ collapsed = false, routeKey = "/", selectedTeamId = "00000000-0000-4000-8000-000000000701", blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} activeProjectId={null} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId={selectedTeamId} workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
@@ -62,10 +63,36 @@ describe("workspace sidebar", () => {
     expect(workers.closest(".sidebar-projects")).toBeNull();
   });
 
+  it.each(["/bots", "/bots/00000000-0000-4000-8000-000000000001"])("exposes assistant route %s outside project navigation", (routeKey) => {
+    const view = render(<Harness collapsed routeKey={routeKey} />);
+    const assistants = screen.getByRole("link", { name: "Assistants" });
+    expect(assistants).toHaveAttribute("href", "/bots");
+    expect(assistants).toHaveAttribute("aria-current", "page");
+    expect(assistants.closest(".sidebar-projects")).toBeNull();
+    expect(screen.getByRole("link", { name: "Test Sessions" })).toHaveAttribute("href", "/test-sessions");
+    view.setLocale("zh-CN");
+    expect(screen.getByRole("link", { name: /^助手$/ })).toBe(assistants);
+  });
+
+  it("opens assistants from the narrow drawer and preserves native modified navigation", () => {
+    mockSidebarMediaQuery(true);
+    const onNavigate = vi.fn();
+    render(<Harness onNavigate={onNavigate} />);
+    const { drawer } = openDrawer();
+    const assistants = within(drawer).getByRole("link", { name: "Assistants" });
+    fireEvent.click(assistants, { ctrlKey: true });
+    expect(screen.getByRole("dialog")).toBe(drawer);
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(assistants);
+    expect(window.location.pathname).toBe("/bots");
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("provides a native Team members link and marks the active page", () => {
-    render(<Harness collapsed routeKey="/members" />);
+    render(<Harness collapsed routeKey="/members" selectedTeamId="00000000-0000-4000-8000-000000000702" />);
     const link = screen.getByRole("link", { name: "Team members" });
-    expect(link).toHaveAttribute("href", "/teams/00000000-0000-4000-8000-000000000701/members");
+    expect(link).toHaveAttribute("href", "/teams/00000000-0000-4000-8000-000000000702/members");
     expect(link).toHaveAttribute("aria-current", "page");
   });
 
@@ -154,17 +181,17 @@ describe("workspace sidebar", () => {
     expect(document.body.style.overflow).not.toBe("hidden");
   });
 
-  it.each(["route", "identity"] as const)("ends mobile navigation on %s changes without retaining a hidden modal", (change) => {
+  it.each(["route", "blocked"] as const)("ends mobile navigation on %s changes without retaining a hidden modal", (change) => {
     mockSidebarMediaQuery(true);
     const view = render(<Harness />);
     const draft = screen.getByRole("textbox");
     openDrawer();
-    view.rerender(<Harness routeKey={change === "route" ? "/account" : "/"} identityChecking={change === "identity"} />);
+    view.rerender(<Harness routeKey={change === "route" ? "/account" : "/"} blocked={change === "blocked"} />);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.getByTestId("workspace")).not.toHaveAttribute("inert");
     expect(document.body.style.overflow).not.toBe("hidden");
     expect(screen.getByRole("textbox")).toBe(draft);
-    if (change === "identity") {
+    if (change === "blocked") {
       fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
       expect(screen.queryByRole("dialog")).toBeNull();
     }

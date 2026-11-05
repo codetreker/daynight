@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -71,7 +71,7 @@ func authTestHarness(t *testing.T) *authHarness {
 	}
 	mux := http.NewServeMux()
 	h.auth.RegisterRoutes(mux)
-	mux.HandleFunc("POST /mutation", h.auth.Require(func(w http.ResponseWriter, r *http.Request, p core.Principal) { w.WriteHeader(204) }))
+	mux.HandleFunc("POST /mutation", h.auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) { w.WriteHeader(204) }))
 	h.handler = RequestLogging(logger, mux)
 	return h
 }

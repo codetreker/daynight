@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -37,11 +37,11 @@ func TestMembersAndActorAccessShareSnapshotAcrossSourceChange(t *testing.T) {
 		})
 	}})
 	result, err := NewMemberships(traced.store).ListWithAccess(ctx, actor, project.ID)
-	if changed != nil || err != nil || result.ActorAccess.Role != core.ProjectAdmin || !result.ActorAccess.CanTransfer || result.ActorAccess.DirectGrant != nil || result.ActorAccess.TeamRole == nil || *result.ActorAccess.TeamRole != core.ProjectAdmin || len(result.Items) != 1 || result.Items[0].EffectiveRole != core.ProjectAdmin || result.Items[0].InheritedFrom == nil || result.Items[0].InheritedFrom.Role != core.ProjectAdmin {
+	if changed != nil || err != nil || result.ActorAccess.Role != model.ProjectAdmin || !result.ActorAccess.CanTransfer || result.ActorAccess.DirectGrant != nil || result.ActorAccess.TeamRole == nil || *result.ActorAccess.TeamRole != model.ProjectAdmin || len(result.Items) != 1 || result.Items[0].EffectiveRole != model.ProjectAdmin || result.Items[0].InheritedFrom == nil || result.Items[0].InheritedFrom.Role != model.ProjectAdmin {
 		t.Fatalf("mixed snapshot: %#v changed=%v err=%v", result, changed, err)
 	}
 	after, err := f.projects.Access(ctx, actor, project.ID)
-	if err != nil || after.Role != core.ProjectMemberRole || after.CanTransfer {
+	if err != nil || after.Role != model.ProjectMemberRole || after.CanTransfer {
 		t.Fatalf("new snapshot failed to observe downgrade: %#v %v", after, err)
 	}
 }

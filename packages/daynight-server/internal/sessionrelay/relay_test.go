@@ -6,10 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -23,7 +23,7 @@ import (
 
 type fixture struct {
 	s             *Service
-	p             core.Principal
+	p             model.Principal
 	project, task string
 	r             sp.Registration
 }
@@ -169,9 +169,9 @@ func setup(t *testing.T) fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
-	f := fixture{s: New(db), p: core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}, project: uuid.NewString(), task: uuid.NewString()}
+	f := fixture{s: New(db), p: model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}, project: uuid.NewString(), task: uuid.NewString()}
 	f.r = sp.Registration{Protocol: sp.Protocol, RegistrationID: uuid.NewString(), ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), WorktreeID: uuid.NewString(), Provider: "codex", ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString()}
-	properties, err := taskproperties.WithWorker(core.TaskProperties{}, &core.WorkerClaim{ClaimID: f.r.ClaimID, UserID: f.p.UserID, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, State: core.WorkerActive, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeWeb, Machine: core.WorkerMachine{ID: uuid.NewString(), Name: "test"}, Platform: core.PlatformLinux, Phase: core.WorkerExecuting, ClaimedAt: time.Now()})
+	properties, err := taskproperties.WithWorker(model.TaskProperties{}, &model.WorkerClaim{ClaimID: f.r.ClaimID, UserID: f.p.UserID, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, State: model.WorkerActive, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "test"}, Platform: model.PlatformLinux, Phase: model.WorkerExecuting, ClaimedAt: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestClaimCompletionFreezesSessionInTheTaskTransaction(t *testing.T) {
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
 	claim := v.ClaimID
-	if _, err := service.NewTasks(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, service.SetTaskStatus{Version: 1, Status: core.TaskDone, ClaimID: &claim}); err != nil {
+	if _, err := service.NewTasks(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, service.SetTaskStatus{Version: 1, Status: model.TaskDone, ClaimID: &claim}); err != nil {
 		for errors.Unwrap(err) != nil {
 			err = errors.Unwrap(err)
 		}
@@ -359,7 +359,7 @@ func TestForcedWorkerWithdrawalFreezesWebSessionWithoutStopClaim(t *testing.T) {
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
 	task, err := service.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, service.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
-	if _, present := task.Properties["worker"]; err != nil || present || task.AllowAgents || task.Status != core.TaskTodo {
+	if _, present := task.Properties["worker"]; err != nil || present || task.AllowAgents || task.Status != model.TaskTodo {
 		t.Fatal("withdrawal retained ownership", task, err)
 	}
 	var raw []byte

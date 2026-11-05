@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -53,7 +53,7 @@ func serviceDatabaseURL(t *testing.T) string {
 	return parsed.String()
 }
 
-func projectService(t *testing.T) (*Projects, *store.Store, string, core.Principal) {
+func projectService(t *testing.T) (*Projects, *store.Store, string, model.Principal) {
 	t.Helper()
 	databaseURL := serviceDatabaseURL(t)
 	database, err := store.Open(context.Background(), databaseURL)
@@ -64,16 +64,16 @@ func projectService(t *testing.T) (*Projects, *store.Store, string, core.Princip
 	return NewProjects(database), database, databaseURL, servicePrincipal(t, database)
 }
 
-func servicePrincipal(t *testing.T, database *store.Store) core.Principal {
+func servicePrincipal(t *testing.T, database *store.Store) model.Principal {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	secret := randomSecret("dnst_")
-	credential := core.Session{ID: uuid.NewString(), TokenHash: secretHash(secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
-	if _, err := database.CreateIdentitySession(ctx, core.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential); err != nil {
+	credential := model.Session{ID: uuid.NewString(), TokenHash: secretHash(secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
+	if _, err := database.CreateIdentitySession(ctx, model.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential); err != nil {
 		t.Fatal(err)
 	}
-	principal, err := database.Authenticate(ctx, core.SessionCredential, secretHash(secret), now)
+	principal, err := database.Authenticate(ctx, model.SessionCredential, secretHash(secret), now)
 	if err != nil {
 		t.Fatal(err)
 	}

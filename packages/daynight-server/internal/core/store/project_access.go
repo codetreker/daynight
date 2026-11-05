@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -24,7 +24,7 @@ const projectAccessRelation = `SELECT project_id,user_id,
 
 type nullableProjectGrant struct {
 	projectID, userID    *string
-	role                 *core.ProjectRole
+	role                 *model.ProjectRole
 	version              *int64
 	createdAt, updatedAt *time.Time
 }
@@ -33,24 +33,24 @@ func (grant *nullableProjectGrant) destinations() []any {
 	return []any{&grant.projectID, &grant.userID, &grant.role, &grant.version, &grant.createdAt, &grant.updatedAt}
 }
 
-func (grant nullableProjectGrant) value() *core.ProjectGrant {
+func (grant nullableProjectGrant) value() *model.ProjectGrant {
 	if grant.projectID == nil {
 		return nil
 	}
-	return &core.ProjectGrant{ProjectID: *grant.projectID, UserID: *grant.userID, Role: *grant.role,
+	return &model.ProjectGrant{ProjectID: *grant.projectID, UserID: *grant.userID, Role: *grant.role,
 		Version: *grant.version, CreatedAt: *grant.createdAt, UpdatedAt: *grant.updatedAt}
 }
 
 // ReadProjectAccess evaluates both sources in one statement without row locks.
-func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
+func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string) (model.ProjectAccess, error) {
 	var id string
 	var ownershipID, teamID, ownerTeamID, accessUserID, profileID *string
-	var role *core.ProjectRole
+	var role *model.ProjectRole
 	var grant nullableProjectGrant
 	var ownerName, personalUserID *string
 	var ownershipVersion *int64
 	var ownershipUpdatedAt *time.Time
-	var teamRole *core.ProjectRole
+	var teamRole *model.ProjectRole
 	destinations := []any{&id, &ownershipID, &teamID, &ownerTeamID, &accessUserID, &profileID, &role, &ownerName, &personalUserID, &ownershipVersion, &ownershipUpdatedAt, &teamRole}
 	err := tx.QueryRow(ctx, `SELECT p.id::text,o.project_id::text,o.team_id::text,t.id::text,a.user_id::text,u.id::text,a.role,t.name,t.personal_user_id::text,o.version,o.updated_at,m.role,
         g.project_id::text,g.user_id::text,g.role,g.version,g.created_at,g.updated_at
@@ -62,81 +62,81 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
         LEFT JOIN project_grants g ON g.project_id=p.id AND g.user_id=$2
         WHERE p.id=$1`, projectID, userID).Scan(append(destinations, grant.destinations()...)...)
 	if err != nil {
-		return core.ProjectAccess{}, authQueryError("read project access", err)
+		return model.ProjectAccess{}, authQueryError("read project access", err)
 	}
 	if ownershipID == nil || teamID == nil || ownerTeamID == nil {
-		return core.ProjectAccess{}, queryError("read project access", fmt.Errorf("project ownership or owner Team is missing"))
+		return model.ProjectAccess{}, queryError("read project access", fmt.Errorf("project ownership or owner Team is missing"))
 	}
 	if accessUserID == nil {
-		return core.ProjectAccess{}, authQueryError("read project access", pgx.ErrNoRows)
+		return model.ProjectAccess{}, authQueryError("read project access", pgx.ErrNoRows)
 	}
 	if profileID == nil || *profileID != *accessUserID {
-		return core.ProjectAccess{}, queryError("read project access", fmt.Errorf("project access profile is missing or inconsistent"))
+		return model.ProjectAccess{}, queryError("read project access", fmt.Errorf("project access profile is missing or inconsistent"))
 	}
 	kind := "ordinary"
 	if personalUserID != nil {
 		kind = "personal"
 	}
-	return core.ProjectAccess{ProjectID: id, UserID: *accessUserID, Role: *role, DirectGrant: grant.value(),
-		OwnerTeam: core.TeamRef{ID: *ownerTeamID, Kind: kind, Name: ownerName},
-		Ownership: core.ProjectOwnership{TeamID: *teamID, Version: *ownershipVersion, UpdatedAt: ownershipUpdatedAt.UTC()},
-		TeamRole:  teamRole, CanTransfer: teamRole != nil && *teamRole == core.ProjectAdmin}, nil
+	return model.ProjectAccess{ProjectID: id, UserID: *accessUserID, Role: *role, DirectGrant: grant.value(),
+		OwnerTeam: model.TeamRef{ID: *ownerTeamID, Kind: kind, Name: ownerName},
+		Ownership: model.ProjectOwnership{TeamID: *teamID, Version: *ownershipVersion, UpdatedAt: ownershipUpdatedAt.UTC()},
+		TeamRole:  teamRole, CanTransfer: teamRole != nil && *teamRole == model.ProjectAdmin}, nil
 }
 
 // LockProjectAuthorization stabilizes ownership and each real source until commit.
 // Task and credential locks precede it. Project is never locked here because
 // ordinary writes acquire Project before Task. Source locks use a fixed order.
-func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (core.ProjectAccess, error) {
+func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID string) (model.ProjectAccess, error) {
 	var teamID string
 	var ownerName, personalUserID *string
-	var ownership core.ProjectOwnership
+	var ownership model.ProjectOwnership
 	err := tx.QueryRow(ctx, `SELECT o.team_id::text,o.version,o.updated_at FROM project_ownership o
         WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownership.Version, &ownership.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)`, projectID).Scan(&exists); err != nil {
-			return core.ProjectAccess{}, queryError("read project presence", err)
+			return model.ProjectAccess{}, queryError("read project presence", err)
 		}
 		if exists {
-			return core.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project ownership or owner Team is missing"))
+			return model.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project ownership or owner Team is missing"))
 		}
 	}
 	if err != nil {
-		return core.ProjectAccess{}, queryError("lock project authorization", err)
+		return model.ProjectAccess{}, queryError("lock project authorization", err)
 	}
 	// The ownership lock may have waited for a transfer. Read its Team in a
 	// fresh statement snapshot, rather than retaining a join from before the wait.
 	err = tx.QueryRow(ctx, `SELECT name,personal_user_id::text FROM teams WHERE id=$1`, teamID).Scan(&ownerName, &personalUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return core.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project owner Team is missing"))
+		return model.ProjectAccess{}, queryError("lock project authorization", fmt.Errorf("project owner Team is missing"))
 	}
 	if err != nil {
-		return core.ProjectAccess{}, queryError("read project owner Team", err)
+		return model.ProjectAccess{}, queryError("read project owner Team", err)
 	}
-	var teamRole *core.ProjectRole
-	var lockedTeamRole core.ProjectRole
+	var teamRole *model.ProjectRole
+	var lockedTeamRole model.ProjectRole
 	err = tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2 FOR SHARE`, teamID, userID).Scan(&lockedTeamRole)
 	if err == nil {
 		teamRole = &lockedTeamRole
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return core.ProjectAccess{}, queryError("lock project team authorization", err)
+		return model.ProjectAccess{}, queryError("lock project team authorization", err)
 	}
-	var grant core.ProjectGrant
+	var grant model.ProjectGrant
 	err = tx.QueryRow(ctx, `SELECT project_id::text,user_id::text,role,version,created_at,updated_at
         FROM project_grants WHERE project_id=$1 AND user_id=$2 FOR SHARE`, projectID, userID).Scan(
 		&grant.ProjectID, &grant.UserID, &grant.Role, &grant.Version, &grant.CreatedAt, &grant.UpdatedAt)
-	var directGrant *core.ProjectGrant
+	var directGrant *model.ProjectGrant
 	if err == nil {
 		directGrant = &grant
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return core.ProjectAccess{}, queryError("lock project direct authorization", err)
+		return model.ProjectAccess{}, queryError("lock project direct authorization", err)
 	}
 	if teamRole == nil && directGrant == nil {
-		return core.ProjectAccess{}, queryError("lock project authorization", pgx.ErrNoRows)
+		return model.ProjectAccess{}, queryError("lock project authorization", pgx.ErrNoRows)
 	}
-	role := core.ProjectMemberRole
-	if teamRole != nil && *teamRole == core.ProjectAdmin || directGrant != nil && directGrant.Role == core.ProjectAdmin {
-		role = core.ProjectAdmin
+	role := model.ProjectMemberRole
+	if teamRole != nil && *teamRole == model.ProjectAdmin || directGrant != nil && directGrant.Role == model.ProjectAdmin {
+		role = model.ProjectAdmin
 	}
 	kind := "ordinary"
 	if personalUserID != nil {
@@ -144,20 +144,20 @@ func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID 
 	}
 	ownership.TeamID = teamID
 	ownership.UpdatedAt = ownership.UpdatedAt.UTC()
-	return core.ProjectAccess{ProjectID: projectID, UserID: userID, Role: role, DirectGrant: directGrant,
-		OwnerTeam: core.TeamRef{ID: teamID, Kind: kind, Name: ownerName}, Ownership: ownership,
-		TeamRole: teamRole, CanTransfer: teamRole != nil && *teamRole == core.ProjectAdmin}, nil
+	return model.ProjectAccess{ProjectID: projectID, UserID: userID, Role: role, DirectGrant: directGrant,
+		OwnerTeam: model.TeamRef{ID: teamID, Kind: kind, Name: ownerName}, Ownership: ownership,
+		TeamRole: teamRole, CanTransfer: teamRole != nil && *teamRole == model.ProjectAdmin}, nil
 }
 
-func (tx *ThreadTx) LockProjectAuthorization(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
+func (tx *ThreadTx) LockProjectAuthorization(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
 	return LockProjectAuthorization(ctx, tx.tx, principal.UserID, projectID)
 }
 
-func (s *Snapshot) ProjectAccess(ctx context.Context, principal core.Principal, projectID string) (core.ProjectAccess, error) {
+func (s *Snapshot) ProjectAccess(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
 	return ReadProjectAccess(ctx, s.tx, principal.UserID, projectID)
 }
 
-func (tx *ProjectTx) ProjectAccess(ctx context.Context, principal core.Principal) (core.ProjectAccess, error) {
+func (tx *ProjectTx) ProjectAccess(ctx context.Context, principal model.Principal) (model.ProjectAccess, error) {
 	return ReadProjectAccess(ctx, tx.tx, principal.UserID, tx.projectID)
 }
 
@@ -174,11 +174,11 @@ type ProjectScope struct {
 	TeamID string
 }
 
-func (s *Snapshot) AccessibleProjects(ctx context.Context, principal core.Principal, page Page) (ProjectPage, error) {
+func (s *Snapshot) AccessibleProjects(ctx context.Context, principal model.Principal, page Page) (ProjectPage, error) {
 	return s.ScopedProjects(ctx, principal, ProjectScope{Kind: ProjectScopeAll}, page)
 }
 
-func (s *Snapshot) ScopedProjects(ctx context.Context, principal core.Principal, scope ProjectScope, page Page) (ProjectPage, error) {
+func (s *Snapshot) ScopedProjects(ctx context.Context, principal model.Principal, scope ProjectScope, page Page) (ProjectPage, error) {
 	condition := ""
 	var arguments []any
 	switch scope.Kind {
@@ -217,7 +217,7 @@ func (s *Snapshot) ScopedProjects(ctx context.Context, principal core.Principal,
 		return ProjectPage{}, queryError("list accessible projects", err)
 	}
 	defer rows.Close()
-	items := []core.Project{}
+	items := []model.Project{}
 	for rows.Next() {
 		project, err := scanProject(rows)
 		if err != nil {

@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/google/uuid"
 )
 
@@ -81,9 +81,9 @@ func TestTerminalArchiveStateRequiresOriginalOwnerCredentialAndMembership(t *tes
 				var err error
 				switch actor {
 				case "browser":
-					p = listCredential(t, f, f.p.UserID, core.SessionCredential)
+					p = listCredential(t, f, f.p.UserID, model.SessionCredential)
 				case "member", "admin", "nonmember":
-					p = listCredential(t, f, uuid.NewString(), core.PATCredential)
+					p = listCredential(t, f, uuid.NewString(), model.PATCredential)
 					if actor != "nonmember" {
 						_, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,$3)`, f.project, p.UserID, actor)
 					}

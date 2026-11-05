@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -80,7 +80,7 @@ func TestInstalledCLITaskStepsUpdateAcceptance(t *testing.T) {
 		task = process.setStatus(t, process.readTask(t, task), "in_progress")
 		task = process.setStatus(t, task, "done")
 		current = acceptanceDecode[api.StepsResource](t, process.request(context.Background(), http.MethodGet, path, nil, ""), http.StatusOK)
-		if task.Status != "done" || task.AllowAgents || current.Steps[0].Status != core.TaskStepInProgress || current.Steps[1].Status != core.TaskStepInProgress {
+		if task.Status != "done" || task.AllowAgents || current.Steps[0].Status != model.TaskStepInProgress || current.Steps[1].Status != model.TaskStepInProgress {
 			t.Fatal("update fixture lacks done parent, disabled execution and multiple in-progress Steps")
 		}
 		targetID := "00abcdef"
@@ -128,7 +128,7 @@ func TestInstalledCLITaskStepsUpdateAcceptance(t *testing.T) {
 		expected.Title, expected.Description = "\uFEFF", description
 		run("update", []string{"--title", expected.Title, "--description", description}, true, expected)
 		run("update", []string{"--title", expected.Title, "--description", description}, false, expected)
-		states := []core.TaskStepStatus{core.TaskStepTodo, core.TaskStepInProgress, core.TaskStepDone, core.TaskStepSkipped}
+		states := []model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}
 		for _, from := range states {
 			for _, to := range states {
 				expected.Status = from
@@ -287,7 +287,7 @@ func TestInstalledCLITaskStepsUpdateUnknownAfterRealCommit(t *testing.T) {
 				if current.Version != before.Version+1 || len(current.Steps) != 1 || current.Steps[0].ID != "00abcdef" || current.Steps[0].CreatedAt != before.Steps[0].CreatedAt {
 					t.Fatal("lost Step receipt changed original identity or repeated the write")
 				}
-				if name == "update" && (current.Steps[0].Title != "unknown-title-sentinel" || current.Steps[0].Description != "unknown-markdown-sentinel" || current.Steps[0].Status != before.Steps[0].Status) || name == "set-status" && (current.Steps[0].Status != core.TaskStepSkipped || current.Steps[0].Title != before.Steps[0].Title || current.Steps[0].Description != before.Steps[0].Description) {
+				if name == "update" && (current.Steps[0].Title != "unknown-title-sentinel" || current.Steps[0].Description != "unknown-markdown-sentinel" || current.Steps[0].Status != before.Steps[0].Status) || name == "set-status" && (current.Steps[0].Status != model.TaskStepSkipped || current.Steps[0].Title != before.Steps[0].Title || current.Steps[0].Description != before.Steps[0].Description) {
 					t.Fatal("real unknown commit lost requested fields or changed omitted fields")
 				}
 				process.signal(t)

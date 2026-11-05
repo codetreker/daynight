@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -26,7 +26,7 @@ func teamFault(t *testing.T, err error, code string) {
 	}
 }
 
-func newTestTeam(t *testing.T, teams *Teams, p core.Principal, name string) core.Team {
+func newTestTeam(t *testing.T, teams *Teams, p model.Principal, name string) model.Team {
 	t.Helper()
 	team, err := teams.Create(context.Background(), p, CreateTeam{Name: name, ExpectedUserID: p.UserID})
 	if err != nil {
@@ -41,7 +41,7 @@ func TestTeamLifecycleUsesRealMembershipAndExactMetadata(t *testing.T) {
 	ctx := context.Background()
 	raw := " \t研发😀\u2003 " + strings.Repeat("x", 180)
 	team := newTestTeam(t, teams, actor, raw)
-	if team.Kind != "ordinary" || team.Name == nil || *team.Name != raw || team.Version != 1 || team.Membership.TeamID != team.ID || team.Membership.UserID != actor.UserID || team.Membership.Role != core.ProjectAdmin || team.Membership.Version < 1 || team.CreatedAt.IsZero() || !team.CreatedAt.Equal(team.UpdatedAt) {
+	if team.Kind != "ordinary" || team.Name == nil || *team.Name != raw || team.Version != 1 || team.Membership.TeamID != team.ID || team.Membership.UserID != actor.UserID || team.Membership.Role != model.ProjectAdmin || team.Membership.Version < 1 || team.CreatedAt.IsZero() || !team.CreatedAt.Equal(team.UpdatedAt) {
 		t.Fatalf("incomplete Team %#v", team)
 	}
 	duplicate := newTestTeam(t, teams, actor, raw)
@@ -85,10 +85,10 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := teams.Get(ctx, member, team.ID)
-	if err != nil || got.Membership.Role != core.ProjectMemberRole || got.Membership.UserID != member.UserID {
+	if err != nil || got.Membership.Role != model.ProjectMemberRole || got.Membership.UserID != member.UserID {
 		t.Fatalf("member read %#v %v", got, err)
 	}
-	for _, principal := range []core.Principal{member, outsider} {
+	for _, principal := range []model.Principal{member, outsider} {
 		code := "forbidden"
 		if principal.UserID == outsider.UserID {
 			code = "not_found"
@@ -97,17 +97,17 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 		teamFault(t, err, code)
 		teamFault(t, teams.Delete(ctx, principal, team.ID, ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: principal.UserID}), code)
 	}
-	page, err := teams.List(ctx, actor, PageRequest{Limit: 100})
+	page, err := teams.List(ctx, actor, model.PageRequest{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var personal core.Team
+	var personal model.Team
 	for _, item := range page.Items {
 		if item.Kind == "personal" {
 			personal = item
 		}
 	}
-	if personal.ID == "" || personal.Name != nil || personal.Membership.Role != core.ProjectAdmin {
+	if personal.ID == "" || personal.Name != nil || personal.Membership.Role != model.ProjectAdmin {
 		t.Fatalf("Personal %#v", personal)
 	}
 	_, err = teams.Rename(ctx, actor, personal.ID, ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID})
@@ -148,7 +148,7 @@ func TestTeamPaginationBindsCurrentActorAndRealVersions(t *testing.T) {
 	var ids []string
 	var cursor *string
 	for {
-		page, err := teams.List(ctx, actor, PageRequest{Limit: 1, Cursor: cursor})
+		page, err := teams.List(ctx, actor, model.PageRequest{Limit: 1, Cursor: cursor})
 		if err != nil || len(page.Items) != 1 {
 			t.Fatalf("page %#v %v", page, err)
 		}
@@ -161,7 +161,7 @@ func TestTeamPaginationBindsCurrentActorAndRealVersions(t *testing.T) {
 			break
 		}
 		if cursor == nil {
-			_, err := teams.List(ctx, other, PageRequest{Limit: 1, Cursor: page.NextCursor})
+			_, err := teams.List(ctx, other, model.PageRequest{Limit: 1, Cursor: page.NextCursor})
 			teamFault(t, err, "invalid_input")
 		}
 		cursor = page.NextCursor
@@ -169,9 +169,9 @@ func TestTeamPaginationBindsCurrentActorAndRealVersions(t *testing.T) {
 	if len(ids) != 3 || ids[1] != first.ID || ids[2] != second.ID {
 		t.Fatalf("membership pagination %#v", ids)
 	}
-	_, err := teams.List(ctx, actor, PageRequest{Limit: 0})
+	_, err := teams.List(ctx, actor, model.PageRequest{Limit: 0})
 	teamFault(t, err, "invalid_input")
-	_, err = teams.List(ctx, actor, PageRequest{Limit: 1, Cursor: pointer("invalid")})
+	_, err = teams.List(ctx, actor, model.PageRequest{Limit: 1, Cursor: pointer("invalid")})
 	teamFault(t, err, "invalid_input")
 }
 
@@ -209,11 +209,11 @@ func TestTeamValidationAndIdentityGuardPrecedeSQL(t *testing.T) {
 		_, err := teams.Create(ctx, actor, CreateTeam{Name: "valid", ExpectedUserID: expected})
 		teamFault(t, err, "invalid_input")
 	}
-	_, err = teams.Create(ctx, core.Principal{}, CreateTeam{Name: "valid", ExpectedUserID: actor.UserID})
+	_, err = teams.Create(ctx, model.Principal{}, CreateTeam{Name: "valid", ExpectedUserID: actor.UserID})
 	teamFault(t, err, "unauthenticated")
-	_, err = teams.Get(ctx, core.Principal{}, uuid.NewString())
+	_, err = teams.Get(ctx, model.Principal{}, uuid.NewString())
 	teamFault(t, err, "unauthenticated")
-	_, err = teams.List(ctx, core.Principal{}, PageRequest{Limit: 1})
+	_, err = teams.List(ctx, model.Principal{}, model.PageRequest{Limit: 1})
 	teamFault(t, err, "unauthenticated")
 }
 
@@ -232,7 +232,7 @@ func TestTeamMetadataVersionExhaustionAndFaultPriority(t *testing.T) {
 	_, err = teams.Rename(ctx, actor, team.ID, ChangeTeam{Name: "Changed", Version: math.MaxInt64, ExpectedUserID: actor.UserID})
 	teamFault(t, err, "version_exhausted")
 	sentinel := &pgconn.PgError{Code: "08006", Message: "private database failure"}
-	refusal := &Fault{Code: "forbidden", Message: "refused"}
+	refusal := &model.Fault{Code: "forbidden", Message: "refused"}
 	for _, test := range []struct {
 		tx   *store.TransactionError
 		code string

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
 type pullRequestDocument struct {
@@ -14,7 +14,7 @@ type pullRequestDocument struct {
 	Title string `json:"title"`
 }
 
-func Encode(properties core.TaskProperties) (string, error) {
+func Encode(properties model.TaskProperties) (string, error) {
 	normalized, err := Normalize(properties, false)
 	if err != nil {
 		return "", err
@@ -23,20 +23,20 @@ func Encode(properties core.TaskProperties) (string, error) {
 	return string(data), err
 }
 
-func Decode(data []byte) (core.TaskProperties, error) {
+func Decode(data []byte) (model.TaskProperties, error) {
 	fields, err := jsonobject.Decode(data, "properties", propertyNames()...)
 	if err != nil {
 		return nil, validation("properties", err.Error(), err)
 	}
-	return Normalize(core.TaskProperties(fields), false)
+	return Normalize(model.TaskProperties(fields), false)
 }
 
-func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
+func DecodePatch(data []byte) (model.TaskPropertiesPatch, error) {
 	fields, err := jsonobject.Decode(data, "properties", propertyNames()...)
 	if err != nil {
 		return nil, validation("properties", err.Error(), err)
 	}
-	return Normalize(core.TaskProperties(fields), true)
+	return Normalize(model.TaskProperties(fields), true)
 }
 
 func normalizePaused(raw json.RawMessage) (json.RawMessage, error) {
@@ -67,7 +67,7 @@ func normalizeWorker(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(encodeWorker(worker))
 }
 
-func Worker(properties core.TaskProperties) (*core.WorkerClaim, error) {
+func Worker(properties model.TaskProperties) (*model.WorkerClaim, error) {
 	raw, exists := properties["worker"]
 	if !exists {
 		return nil, nil
@@ -79,7 +79,7 @@ func Worker(properties core.TaskProperties) (*core.WorkerClaim, error) {
 	return decodeWorker(value)
 }
 
-func WithWorker(properties core.TaskProperties, worker *core.WorkerClaim) (core.TaskProperties, error) {
+func WithWorker(properties model.TaskProperties, worker *model.WorkerClaim) (model.TaskProperties, error) {
 	result := Clone(properties)
 	if worker == nil {
 		delete(result, "worker")
@@ -98,7 +98,7 @@ func WithWorker(properties core.TaskProperties, worker *core.WorkerClaim) (core.
 	return result, nil
 }
 
-func PullRequests(properties core.TaskProperties) ([]core.PullRequestProperty, error) {
+func PullRequests(properties model.TaskProperties) ([]model.PullRequestProperty, error) {
 	raw, exists := properties["pullRequests"]
 	if !exists {
 		return nil, nil
@@ -110,7 +110,7 @@ func PullRequests(properties core.TaskProperties) ([]core.PullRequestProperty, e
 	return decodePullRequests(value)
 }
 
-func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {
+func decodePullRequests(raw []byte) ([]model.PullRequestProperty, error) {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("properties.pullRequests must be an array")
 	}
@@ -118,7 +118,7 @@ func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {
 	if err := json.Unmarshal(raw, &items); err != nil {
 		return nil, fmt.Errorf("properties.pullRequests must be an array")
 	}
-	values := make([]core.PullRequestProperty, 0, len(items))
+	values := make([]model.PullRequestProperty, 0, len(items))
 	for index, item := range items {
 		path := fmt.Sprintf("properties.pullRequests[%d]", index)
 		fields, err := jsonobject.Decode(item, path, "url", "title")
@@ -133,7 +133,7 @@ func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {
 		if err != nil {
 			return nil, err
 		}
-		values = append(values, core.PullRequestProperty{URL: url, Title: title})
+		values = append(values, model.PullRequestProperty{URL: url, Title: title})
 	}
 	return values, nil
 }

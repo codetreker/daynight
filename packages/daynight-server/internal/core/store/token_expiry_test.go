@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -25,7 +25,7 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 	user, session := identitySession(uuid.NewString(), "historical:"+uuid.NewString())
 	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,$3,$3)`, user.ID, user.UniAuthID, now)
 	mustQueryExec(t, s, `INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5)`, session.ID, user.ID, session.TokenHash, session.CreatedAt, session.ExpiresAt)
-	p := core.Principal{Kind: core.SessionCredential, UserID: user.ID, CredentialID: session.ID}
+	p := model.Principal{Kind: model.SessionCredential, UserID: user.ID, CredentialID: session.ID}
 	finite := deviceStoreCredential(now)
 	finite.ExpiresAt = storeTokenExpiry(now.Add(30 * 24 * time.Hour))
 	if err := s.CreatePAT(ctx, p, finite); err != nil {
@@ -51,19 +51,19 @@ func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testi
 		t.Fatal(err)
 	}
 	future := now.Add(365 * 24 * time.Hour)
-	if _, err := s.Authenticate(ctx, core.PATCredential, never.TokenHash, future); err != nil {
+	if _, err := s.Authenticate(ctx, model.PATCredential, never.TokenHash, future); err != nil {
 		t.Fatalf("nonexpiring token expired: %v", err)
 	}
-	if _, err := s.Authenticate(ctx, core.PATCredential, finite.TokenHash, future); !errors.Is(err, core.ErrNotFound) {
+	if _, err := s.Authenticate(ctx, model.PATCredential, finite.TokenHash, future); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("historical finite expiry lost: %v", err)
 	}
-	if _, err := s.Authenticate(ctx, core.SessionCredential, session.TokenHash, session.ExpiresAt); !errors.Is(err, core.ErrNotFound) {
+	if _, err := s.Authenticate(ctx, model.SessionCredential, session.TokenHash, session.ExpiresAt); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("session became nonexpiring: %v", err)
 	}
-	if err := s.CreateLogin(ctx, core.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("state"), BrowserBindingHash: deviceStoreHash("binding"), Provider: "github", ReturnPath: "/", ExpiresAt: future.Add(time.Minute)}, future); err != nil {
+	if err := s.CreateLogin(ctx, model.LoginTransaction{ID: uuid.NewString(), StateHash: deviceStoreHash("state"), BrowserBindingHash: deviceStoreHash("binding"), Provider: "github", ReturnPath: "/", ExpiresAt: future.Add(time.Minute)}, future); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(ctx, core.PATCredential, never.TokenHash, future); err != nil {
+	if _, err := s.Authenticate(ctx, model.PATCredential, never.TokenHash, future); err != nil {
 		t.Fatalf("cleanup deleted nonexpiring token: %v", err)
 	}
 }
@@ -90,10 +90,10 @@ func TestTokenExpiryUpdatePreservesCredentialAndObservedValue(t *testing.T) {
 	if _, conflict, err = s.UpdatePATExpiry(ctx, alice, c.ID, longer, first, now); err != nil || conflict {
 		t.Fatalf("extension failed: %t %v", conflict, err)
 	}
-	if _, err = s.Authenticate(ctx, core.PATCredential, c.TokenHash, now.Add(31*24*time.Hour)); err != nil {
+	if _, err = s.Authenticate(ctx, model.PATCredential, c.TokenHash, now.Add(31*24*time.Hour)); err != nil {
 		t.Fatalf("extension replaced bearer credential: %v", err)
 	}
-	if _, _, err = s.UpdatePATExpiry(ctx, bob, c.ID, nil, longer, now); !errors.Is(err, core.ErrNotFound) {
+	if _, _, err = s.UpdatePATExpiry(ctx, bob, c.ID, nil, longer, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("other user edited token: %v", err)
 	}
 	if _, conflict, err = s.UpdatePATExpiry(ctx, alice, c.ID, nil, longer, now); err != nil || conflict {
@@ -107,17 +107,17 @@ func TestTokenExpiryUpdatePreservesCredentialAndObservedValue(t *testing.T) {
 		t.Fatalf("expiry update replaced credential hash: %v", err)
 	}
 	pat := alice
-	pat.Kind = core.PATCredential
-	if _, _, err = s.UpdatePATExpiry(ctx, pat, c.ID, first, nil, now); !errors.Is(err, core.ErrNotFound) {
+	pat.Kind = model.PATCredential
+	if _, _, err = s.UpdatePATExpiry(ctx, pat, c.ID, first, nil, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("PAT changed expiry: %v", err)
 	}
-	if _, _, err = s.UpdatePATExpiry(ctx, alice, uuid.NewString(), first, nil, now); !errors.Is(err, core.ErrNotFound) {
+	if _, _, err = s.UpdatePATExpiry(ctx, alice, uuid.NewString(), first, nil, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing token edited: %v", err)
 	}
-	if err = s.DeleteCurrentPAT(ctx, core.Principal{UserID: alice.UserID, CredentialID: c.ID}); err != nil {
+	if err = s.DeleteCurrentPAT(ctx, model.Principal{UserID: alice.UserID, CredentialID: c.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = s.UpdatePATExpiry(ctx, alice, c.ID, nil, nil, now); !errors.Is(err, core.ErrNotFound) {
+	if _, _, err = s.UpdatePATExpiry(ctx, alice, c.ID, nil, nil, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("revoked token resurrected: %v", err)
 	}
 	c = deviceStoreCredential(now.Add(-time.Hour))
@@ -125,7 +125,7 @@ func TestTokenExpiryUpdatePreservesCredentialAndObservedValue(t *testing.T) {
 	if err = s.CreatePAT(ctx, alice, c); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = s.UpdatePATExpiry(ctx, alice, c.ID, nil, c.ExpiresAt, now); !errors.Is(err, core.ErrNotFound) {
+	if _, _, err = s.UpdatePATExpiry(ctx, alice, c.ID, nil, c.ExpiresAt, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("expired token resurrected: %v", err)
 	}
 }

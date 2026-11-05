@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/google/uuid"
@@ -24,44 +24,44 @@ func NewTasks(database *store.Store) *Tasks {
 
 type CreateTask struct {
 	AssignedTo        *string
-	RequiredPlatform  *core.TaskPlatform
+	RequiredPlatform  *model.TaskPlatform
 	ExternalDependsOn []string
 	Title             string
 	Description       string
-	Properties        core.TaskProperties
+	Properties        model.TaskProperties
 	DependsOn         []string
 }
 
 type UpdateTask struct {
 	AssignedTo        **string
-	RequiredPlatform  **core.TaskPlatform
+	RequiredPlatform  **model.TaskPlatform
 	ExternalDependsOn *[]string
 	AllowAgents       *bool
 	Version           int64
 	Title             *string
 	Description       *string
 	DependsOn         *[]string
-	Properties        core.TaskPropertiesPatch
+	Properties        model.TaskPropertiesPatch
 }
 
 type TaskListRequest struct {
 	AssignedTo *string
-	PageRequest
-	Status             *core.TaskStatus
+	model.PageRequest
+	Status             *model.TaskStatus
 	Ready              *bool
 	AllowAgents        *bool
-	CompatiblePlatform *core.TaskPlatform
+	CompatiblePlatform *model.TaskPlatform
 	WorkerID           *string
 }
 
 type TaskPage struct {
-	Items      []core.Task
+	Items      []model.Task
 	NextCursor *string
 }
 
 type taskMutation struct {
 	id            string
-	current       core.Task
+	current       model.Task
 	values        store.TaskWrite
 	create        bool
 	changed       bool
@@ -69,37 +69,37 @@ type taskMutation struct {
 	removeDepends bool
 }
 
-func (s *Tasks) Create(ctx context.Context, principal core.Principal, projectID string, input CreateTask) (core.Task, error) {
+func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID string, input CreateTask) (model.Task, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	properties, err := taskproperties.Normalize(input.Properties, true)
 	if err != nil {
-		return core.Task{}, propertyInputFault(err)
+		return model.Task{}, propertyInputFault(err)
 	}
 	projectID, err = CanonicalID(projectID)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	id, err := uuid.NewRandom()
 	if err != nil {
-		return core.Task{}, fmt.Errorf("generate task ID: %w", err)
+		return model.Task{}, fmt.Errorf("generate task ID: %w", err)
 	}
 	assignedTo, err := canonicalAssignedTo(input.AssignedTo)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
-	values := store.TaskWrite{AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: core.TaskTodo, Properties: properties}
+	values := store.TaskWrite{AssignedTo: assignedTo, RequiredPlatform: input.RequiredPlatform, AllowAgents: false, Title: input.Title, Description: input.Description, Status: model.TaskTodo, Properties: properties}
 	values.DependsOn, err = canonicalDependencies(input.DependsOn, id.String())
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	values.ExternalDependsOn, err = canonicalExternalDependencies(input.ExternalDependsOn, id.String(), values.DependsOn)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if err := validateTaskValues(values); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
 		if err := validateCandidate(ctx, tx, id.String(), values); err != nil {
@@ -109,17 +109,17 @@ func (s *Tasks) Create(ctx context.Context, principal core.Principal, projectID 
 	})
 }
 
-func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID, id string, input UpdateTask) (core.Task, error) {
+func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID, id string, input UpdateTask) (model.Task, error) {
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, input.Version)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && len(input.Properties) == 0 && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil {
-		return core.Task{}, invalidInput("At least one task field must be provided.")
+		return model.Task{}, invalidInput("At least one task field must be provided.")
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
 		current, err := tx.Task(ctx, id)
-		if errors.Is(err, core.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return taskMutation{}, taskNotFound(err)
 		}
 		if err != nil {
@@ -139,11 +139,11 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 		if err != nil {
 			return taskMutation{}, err
 		}
-		if current.AllowAgents != values.AllowAgents && current.Status == core.TaskInProgress {
-			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Automatic execution permission cannot change while the task is in progress."}
+		if current.AllowAgents != values.AllowAgents && current.Status == model.TaskInProgress {
+			return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Automatic execution permission cannot change while the task is in progress."}
 		}
-		if !equalOptional(current.RequiredPlatform, values.RequiredPlatform) && current.Status == core.TaskInProgress {
-			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Execution platform cannot change while the task is in progress."}
+		if !equalOptional(current.RequiredPlatform, values.RequiredPlatform) && current.Status == model.TaskInProgress {
+			return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Execution platform cannot change while the task is in progress."}
 		}
 		if err := validateCandidate(ctx, tx, id, values); err != nil {
 			return taskMutation{}, err
@@ -154,9 +154,9 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 	})
 }
 
-func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID string, prepare func(*store.ProjectTx) (taskMutation, error)) (core.Task, error) {
-	var result core.Task
-	var refusal *Fault
+func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID string, prepare func(*store.ProjectTx) (taskMutation, error)) (model.Task, error) {
+	var result model.Task
+	var refusal *model.Fault
 	err := s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
 		if _, err := RequireProjectWrite(ctx, tx, principal); err != nil {
 			if errors.As(err, &refusal) {
@@ -192,26 +192,26 @@ func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID s
 		}
 		return err
 	})
-	if errors.Is(err, core.ErrNotFound) {
-		return core.Task{}, projectNotFound(err)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.Task{}, projectNotFound(err)
 	}
 	if err != nil {
-		return core.Task{}, fmt.Errorf("write task: %w", err)
+		return model.Task{}, fmt.Errorf("write task: %w", err)
 	}
 	if refusal != nil {
-		return core.Task{}, refusal
+		return model.Task{}, refusal
 	}
 	return result, nil
 }
 
-func (s *Tasks) versionedWrite(ctx context.Context, principal core.Principal, projectID, id string, version int64, prepare func(*store.ProjectTx, core.Task) (taskMutation, error)) (core.Task, error) {
+func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, projectID, id string, version int64, prepare func(*store.ProjectTx, model.Task) (taskMutation, error)) (model.Task, error) {
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, version)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
 		current, err := tx.Task(ctx, id)
-		if errors.Is(err, core.ErrNotFound) {
+		if errors.Is(err, model.ErrNotFound) {
 			return taskMutation{}, taskNotFound(err)
 		}
 		if err != nil {
@@ -231,7 +231,7 @@ func (s *Tasks) versionedWrite(ctx context.Context, principal core.Principal, pr
 	})
 }
 
-func taskCandidate(current core.Task, input UpdateTask) (store.TaskWrite, error) {
+func taskCandidate(current model.Task, input UpdateTask) (store.TaskWrite, error) {
 	values := currentTaskWrite(current)
 	if input.AssignedTo != nil {
 		var err error
@@ -307,20 +307,20 @@ func canonicalDependencies(ids []string, self string) ([]string, error) {
 	slices.Sort(canonical)
 	for index, id := range canonical {
 		if id == self {
-			return nil, &Fault{Code: "invalid_input", Message: "Task cannot depend on itself.", TaskIDs: []string{id}}
+			return nil, &model.Fault{Code: "invalid_input", Message: "Task cannot depend on itself.", TaskIDs: []string{id}}
 		}
 		if index > 0 && id == canonical[index-1] {
-			return nil, &Fault{Code: "invalid_input", Message: "Task dependencies must not repeat.", TaskIDs: []string{id}}
+			return nil, &model.Fault{Code: "invalid_input", Message: "Task dependencies must not repeat.", TaskIDs: []string{id}}
 		}
 	}
 	return canonical, nil
 }
 
-func taskNotFound(cause error) *Fault {
-	if errors.Is(cause, core.ErrTaskDeleted) {
-		return &Fault{Code: "task_deleted", Message: "Task was deleted.", Cause: cause}
+func taskNotFound(cause error) *model.Fault {
+	if errors.Is(cause, model.ErrTaskDeleted) {
+		return &model.Fault{Code: "task_deleted", Message: "Task was deleted.", Cause: cause}
 	}
-	return &Fault{Code: "not_found", Message: "Task was not found.", Cause: cause}
+	return &model.Fault{Code: "not_found", Message: "Task was not found.", Cause: cause}
 }
 
 func canonicalExternalDependencies(ids []string, self string, dependencies []string) ([]string, error) {
@@ -335,7 +335,7 @@ func canonicalExternalDependencies(ids []string, self string, dependencies []str
 		}
 	}
 	if len(outside) > 0 {
-		return nil, &Fault{Code: "invalid_input", Message: "External dependencies must belong to the complete dependency set.", TaskIDs: outside}
+		return nil, &model.Fault{Code: "invalid_input", Message: "External dependencies must belong to the complete dependency set.", TaskIDs: outside}
 	}
 	return canonical, nil
 }

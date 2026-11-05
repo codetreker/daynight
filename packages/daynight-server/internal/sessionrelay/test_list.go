@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -45,7 +45,7 @@ func testListCursor(value string, owner string, online bool) (testListPosition, 
 	return p, nil
 }
 
-func (s *Service) ListTest(ctx context.Context, p core.Principal, token string, limit int, online bool) (TestListPage, error) {
+func (s *Service) ListTest(ctx context.Context, p model.Principal, token string, limit int, online bool) (TestListPage, error) {
 	page := TestListPage{Items: []TestListItem{}}
 	if limit < 1 || limit > 100 {
 		return page, fault("invalid_input", "Test session list limit must be between 1 and 100.")

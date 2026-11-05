@@ -206,7 +206,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(aliceUser.id).not.toBe(bobUser.id);
     const rawName = `  Browser project ${randomUUID()}  `;
     const rawRepo = `git@example.org:group/${randomUUID()}.git`;
-    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
+    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 5 }]);
     await page.goto('/projects');
     await expect(page.locator('.topbar')).toBeVisible();
     // Exercise recovery over an existing draft using the native browser modal and
@@ -240,9 +240,81 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           try { await page.locator('.topbar').getByRole('combobox', { name: messages.language.label }).selectOption(locale); }
           finally { await page.evaluate(() => (window as unknown as { restoreLocaleStorage: () => void }).restoreLocaleStorage()); }
           await expect(page.locator('.topbar .locale-notice')).toBeVisible();
-          await page.getByRole('button', { name: messages.auth.createProject.open }).click();
+          const opener = page.getByRole('button', { name: messages.auth.createProject.open });
+          await opener.click();
           const draft = page.getByRole('dialog', { name: messages.auth.createProject.title });
           const nameInput = draft.getByLabel(messages.auth.createProject.name);
+          const repositoryInput = draft.getByLabel(messages.auth.createProject.repository);
+          await expect(nameInput).toBeFocused();
+          expect(await draft.evaluate((element) => element.matches(':modal'))).toBe(true);
+          await expect(draft.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+          await expect(draft.getByRole('button', { name: messages.common.retrySave })).toHaveCount(0);
+          const header = draft.locator('.dialog-header');
+          await expect(header.locator(':scope > *')).toHaveCount(2);
+          const headerGeometry = await header.evaluate((element) => {
+            const title = element.querySelector('h2')!.getBoundingClientRect();
+            const close = element.querySelector('button')!.getBoundingClientRect();
+            return { title: { right: title.right, top: title.top, bottom: title.bottom }, close: { left: close.left, right: close.right, top: close.top, bottom: close.bottom }, viewport: window.innerWidth, document: document.documentElement.scrollWidth };
+          });
+          expect(headerGeometry.title.right).toBeLessThanOrEqual(headerGeometry.close.left);
+          expect(headerGeometry.title.top).toBeLessThan(headerGeometry.close.bottom);
+          expect(headerGeometry.close.top).toBeLessThan(headerGeometry.title.bottom);
+          expect(headerGeometry.close.right).toBeLessThanOrEqual(width);
+          expect(headerGeometry.document).toBeLessThanOrEqual(width);
+          await page.keyboard.press('Tab');
+          await expect(repositoryInput).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          await expect(nameInput).toBeFocused();
+          const close = draft.getByRole('button', { name: messages.auth.createProject.close });
+          const submit = draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true });
+          await submit.focus();
+          await page.keyboard.press('Tab');
+          if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press('Tab');
+          await expect(close).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press('Shift+Tab');
+          await expect(submit).toBeFocused();
+          await nameInput.focus();
+          await page.locator('.topbar select').evaluate((element: HTMLSelectElement) => element.focus());
+          await expect(nameInput).toBeFocused();
+          await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
+          await expect(nameInput).toBeFocused();
+          expect(await nameInput.evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(true);
+          await page.keyboard.press('Escape');
+          await expect(draft).toHaveCount(0);
+          await expect(opener).toBeFocused();
+          await opener.click();
+          await expect(nameInput).toBeFocused();
+          await nameInput.fill('Retained draft ' + 'long '.repeat(24));
+          await repositoryInput.fill('https://example.com/' + 'long-path/'.repeat(20));
+          const releaseCreate = Promise.withResolvers<void>();
+          let createRequests = 0;
+          const creationRoute = async (route: Route) => {
+            if (route.request().method() !== 'POST') return route.continue();
+            createRequests++;
+            await releaseCreate.promise;
+            await route.fulfill({ status: 400, headers: { 'Daynight-User-ID': aliceUser.id }, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_argument', message: 'Invalid project', requestId: 'creation-test' } }) });
+          };
+          await page.route(`${baseURL}/api/v1/projects`, creationRoute);
+          try {
+            await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
+            await expect.poll(() => createRequests).toBe(1);
+            await expect(nameInput).toBeDisabled();
+            await expect(repositoryInput).toBeDisabled();
+            await expect(draft.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+            await page.keyboard.press('Escape');
+            await expect(draft).toBeVisible();
+            await picture(page, info, `auth-create-${locale}-${width}-pending`);
+            releaseCreate.resolve();
+            await expect(draft.getByRole('alert')).toContainText(messages.auth.createProject.error);
+            await expect(nameInput).toHaveValue('Retained draft ' + 'long '.repeat(24));
+            await expect(repositoryInput).toHaveValue('https://example.com/' + 'long-path/'.repeat(20));
+            expect(createRequests).toBe(1);
+            await picture(page, info, `auth-create-${locale}-${width}-error`);
+          } finally {
+            releaseCreate.resolve();
+            await page.unroute(`${baseURL}/api/v1/projects`, creationRoute);
+          }
           await nameInput.fill('Retained draft');
           const draftNode = await draft.elementHandle();
           if (draftNode === null) throw new Error('The project draft was not mounted.');
@@ -310,10 +382,102 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
             page.off('request', countRequests);
           }
           await draft.getByRole('button', { name: messages.auth.createProject.cancel }).click();
+          await expect(opener).toBeFocused();
         }
       }
       await page.setViewportSize({ width: 1600, height: 1100 });
       await page.locator('.topbar').getByRole('combobox', { name: zhCN.language.label }).selectOption('zh-CN');
+      await page.setViewportSize({ width: 390, height: 700 });
+      const unlockedOverflow = await page.evaluate(() => document.body.style.overflow);
+      await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+      const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+      const drawerNode = await drawer.elementHandle();
+      expect(drawerNode).not.toBeNull();
+      const drawerFocus = drawer.getByRole('link', { name: '我的 Worker', exact: true });
+      await drawerFocus.focus();
+      await expect(drawerFocus).toBeFocused();
+      await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+      await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+      const firstCheck = Promise.withResolvers<void>(), finishFirstCheck = Promise.withResolvers<void>();
+      const teamReads: import('@playwright/test').Request[] = [];
+      const drawerRequestOrder: string[] = [];
+      let firstIdentityRequest: import('@playwright/test').Request | null = null;
+      const countTeamRead = (request: import('@playwright/test').Request) => {
+        if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/v1/teams') {
+          teamReads.push(request); drawerRequestOrder.push(`team-request:${teamReads.length}`);
+        }
+      };
+      const countIdentityResponse = (response: import('@playwright/test').Response) => {
+        if (response.request() === firstIdentityRequest) drawerRequestOrder.push('identity-response');
+      };
+      page.on('request', countTeamRead);
+      page.on('response', countIdentityResponse);
+      let checks = 0;
+      const drawerIdentityRoute = async (route: Route) => {
+        checks++;
+        if (checks === 1) {
+          firstIdentityRequest = route.request();
+          const response = await authenticatedAPI(context.request).fetch(route.request());
+          expect([200, 304]).toContain(response.status());
+          expect(response.headers()['daynight-user-id']).toBe(aliceUser.id);
+          const body = await response.body();
+          firstCheck.resolve(); await finishFirstCheck.promise;
+          await route.fulfill({ status: response.status(), headers: response.headers(), ...(response.status() === 304 ? {} : { body }) });
+        } else if (checks === 2) {
+          await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Unavailable', requestId: 'drawer-revalidation-test' } }) });
+        } else await route.continue();
+      };
+      await page.route(`${baseURL}/api/v1/me`, drawerIdentityRoute);
+      try {
+        await recoveryTab.bringToFront();
+        await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+        await page.bringToFront(); await firstCheck.promise;
+        await expect(drawer).toBeVisible();
+        expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+        await expect(drawerFocus).toBeFocused();
+        await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+        await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+        const teamBaseline = teamReads.length;
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        expect(teamReads).toHaveLength(teamBaseline);
+        const sameIdentity = page.waitForResponse(`${baseURL}/api/v1/me`);
+        const refreshedTeams = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/teams'
+          && teamReads.indexOf(response.request()) >= teamBaseline);
+        finishFirstCheck.resolve(); await (await sameIdentity).finished();
+        const teamResponse = await refreshedTeams;
+        expect(teamResponse.status()).toBe(200);
+        expect(teamResponse.headers()['daynight-user-id']).toBe(aliceUser.id);
+        await teamResponse.finished();
+        expect(teamReads.length).toBeGreaterThan(teamBaseline);
+        expect(drawerRequestOrder).toContain('identity-response');
+        expect(drawerRequestOrder.indexOf(`team-request:${teamReads.indexOf(teamResponse.request()) + 1}`)).toBeGreaterThan(drawerRequestOrder.indexOf('identity-response'));
+        await expect(drawer).toBeVisible();
+        expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+        await expect(drawerFocus).toBeFocused();
+        await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+        await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+        await recoveryTab.bringToFront();
+        await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+        await page.bringToFront();
+        const overlay = page.getByRole('dialog', { name: zhCN.auth.shell.revalidationLabel });
+        await expect(overlay.getByRole('heading', { name: zhCN.auth.shell.revalidationError })).toBeVisible();
+        await expect(drawer).toHaveCount(0);
+        await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
+        expect(await page.evaluate(() => document.body.style.overflow)).toBe(unlockedOverflow);
+        await expect(page.locator('.auth-shell')).toHaveAttribute('inert', '');
+        const retryResponse = page.waitForResponse(`${baseURL}/api/v1/me`);
+        await overlay.getByRole('button', { name: zhCN.auth.shell.revalidationRetry }).click();
+        await retryResponse; await expect(overlay).toHaveCount(0);
+        await expect(page.locator('.auth-shell')).not.toHaveAttribute('inert', '');
+        await expect(drawer).toHaveCount(0);
+        expect(checks).toBe(3);
+      } finally {
+        finishFirstCheck.resolve();
+        await page.unroute(`${baseURL}/api/v1/me`, drawerIdentityRoute);
+        page.off('request', countTeamRead);
+        page.off('response', countIdentityResponse);
+      }
+      await page.setViewportSize({ width: 1600, height: 1100 });
     } finally { await recoveryTab.close(); }
     await page.getByRole('button', { name: '＋ 创建项目' }).click();
     const creation = page.getByRole('dialog', { name: '创建私有项目' });
@@ -551,7 +715,14 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await expect(detail).toHaveCount(0);
     await page.setViewportSize({ width: 390, height: 700 });
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: '工作空间导航', exact: true })).toBeVisible();
+    const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer).toBeVisible();
+    const drawerNode = await drawer.elementHandle();
+    expect(drawerNode).not.toBeNull();
+    const oldWorkspace = await page.locator('.workspace').elementHandle();
+    expect(oldWorkspace).not.toBeNull();
+    const drawerFocus = drawer.getByRole('link', { name: '我的 Worker', exact: true });
+    await drawerFocus.focus();
     await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
     await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     await otherTab.bringToFront();
@@ -566,12 +737,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await page.bringToFront();
     await expect.poll(() => heldChecks.length).toBe(2);
     expect(heldChecks[1]!.identity).toBe(aliceUser.id);
-    await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
-    await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
-    await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+    await expect(drawer).toBeVisible();
+    expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+    await expect(drawerFocus).toBeFocused();
+    await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
-    await page.setViewportSize({ width: 1600, height: 1100 });
-    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     await otherTab.bringToFront();
     await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
@@ -583,7 +754,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     heldChecks[1]!.release();
     await heldChecks[1]!.completed;
     await expect(page.locator('body')).not.toHaveClass(/auth-session-checking/);
-    await expect(page.getByRole('button', { name: '账户菜单：Alice', exact: true })).toBeVisible();
+    await expect(page.locator('.account-button')).toHaveAttribute('aria-label', '账户菜单：Alice');
+    await expect(drawer).toBeVisible();
+    expect(await drawer.evaluate((element, original) => element === original, drawerNode)).toBe(true);
+    await expect(drawerFocus).toBeFocused();
+    await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'changed-user', baseline: changedUserGraphBaseline, beforeRelease: graphRequests.length });
     const deniedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/task-sync`
@@ -596,11 +772,14 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(graphRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
     expect((await graphRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
     await expect(page.getByRole('button', { name: '账户菜单：Bob', exact: true })).toBeVisible();
-    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
-    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
+    expect(await drawerNode!.evaluate((element) => element.isConnected)).toBe(false);
+    expect(await oldWorkspace!.evaluate((element) => element.hasAttribute('inert'))).toBe(false);
     await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
     await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
     await expect(page.getByRole('heading', { name: own.name, exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
     expect(identityRequests).toEqual(['GET', 'GET', 'GET']);

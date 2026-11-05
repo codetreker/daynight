@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -17,7 +17,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	ctx := context.Background()
 	owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 	workerID := uuid.NewString()
-	add := func(principal core.Principal, id string) core.Task {
+	add := func(principal model.Principal, id string) model.Task {
 		descriptor := workerDescriptor()
 		descriptor.WorkerID = id
 		return claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), descriptor)
@@ -33,7 +33,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 		t.Fatal(err)
 	}
 	completed := add(owner, workerID)
-	_, err = tasks.SetStatus(ctx, owner, project.ID, completed.ID, SetTaskStatus{Version: completed.Version, Status: core.TaskDone, ClaimID: &testWorker(t, completed.Properties).ClaimID})
+	_, err = tasks.SetStatus(ctx, owner, project.ID, completed.ID, SetTaskStatus{Version: completed.Version, Status: model.TaskDone, ClaimID: &testWorker(t, completed.Properties).ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	manual = updateTask(t, tasks, admin, manual, UpdateTask{AllowAgents: pointer(false), RequiredPlatform: platformChange(pointer(core.PlatformWindows))})
+	manual = updateTask(t, tasks, admin, manual, UpdateTask{AllowAgents: pointer(false), RequiredPlatform: platformChange(pointer(model.PlatformWindows))})
 	descriptor := workerDescriptor()
 	descriptor.WorkerID = workerID
 	manual, err = tasks.ResumeWorker(ctx, owner, project.ID, manual.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: manual.Version, WorkerDescriptor: descriptor}, PreviousClaimID: previous.ClaimID})
@@ -56,7 +56,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	}
 	want := []string{first.ID, second.ID, manual.ID}
 	uppercase := strings.ToUpper(workerID)
-	request := TaskListRequest{PageRequest: PageRequest{Limit: 1}, WorkerID: &uppercase}
+	request := TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &uppercase}
 	var got []string
 	for {
 		page, err := tasks.List(ctx, owner, project.ID, request)
@@ -94,11 +94,11 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 		{TaskListRequest{Ready: pointer(true)}, nil},
 		{TaskListRequest{AllowAgents: pointer(true)}, want[:2]},
 		{TaskListRequest{AllowAgents: pointer(false)}, want[2:]},
-		{TaskListRequest{CompatiblePlatform: pointer(core.PlatformLinux)}, want[:2]},
-		{TaskListRequest{Status: pointer(core.TaskInProgress)}, want},
-		{TaskListRequest{Status: pointer(core.TaskTodo)}, nil},
+		{TaskListRequest{CompatiblePlatform: pointer(model.PlatformLinux)}, want[:2]},
+		{TaskListRequest{Status: pointer(model.TaskInProgress)}, want},
+		{TaskListRequest{Status: pointer(model.TaskTodo)}, nil},
 	} {
-		test.request.PageRequest, test.request.WorkerID = PageRequest{Limit: 100}, &workerID
+		test.request.PageRequest, test.request.WorkerID = model.PageRequest{Limit: 100}, &workerID
 		page, err := tasks.List(ctx, owner, project.ID, test.request)
 		if err != nil {
 			t.Fatal(err)
@@ -119,9 +119,9 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 	owner := workerMember(t, database, project.ID)
 	descriptor := workerDescriptor()
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	inventory := func(principal core.Principal, wantClaim string) {
+	inventory := func(principal model.Principal, wantClaim string) {
 		t.Helper()
-		page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, WorkerID: &descriptor.WorkerID})
+		page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, WorkerID: &descriptor.WorkerID})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -158,12 +158,12 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 	next.ClaimID, next.WorktreeID = uuid.NewString(), uuid.NewString()
 	task = claimWorkerTask(t, tasks, owner, task, next)
 	inventory(owner, next.ClaimID)
-	task, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &next.ClaimID})
+	task, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &next.ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	inventory(owner, "")
-	task = setStatusTask(t, tasks, admin, task, core.TaskTodo)
+	task = setStatusTask(t, tasks, admin, task, model.TaskTodo)
 	fresh := workerDescriptor()
 	fresh.WorkerID = descriptor.WorkerID
 	task = claimWorkerTask(t, tasks, owner, task, fresh)
@@ -174,17 +174,17 @@ func TestTaskWorkerInventoryRejectsInvalidFilterAndPreservesReadFailures(t *test
 	tasks, database, project, _, owner := taskService(t)
 	ctx := context.Background()
 	for _, workerID := range []string{"", "invalid", "00000000000000000000000000000000"} {
-		_, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, WorkerID: &workerID})
+		_, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
 		requireFault(t, err, "invalid_input")
 	}
 	workerID := uuid.NewString()
-	_, err := tasks.List(ctx, servicePrincipal(t, database), project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, WorkerID: &workerID})
+	_, err := tasks.List(ctx, servicePrincipal(t, database), project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
 	requireFault(t, err, "not_found")
 	task := createTask(t, tasks, owner, project.ID, "Invalid stored worker")
 	if _, err := database.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker','{}')`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, WorkerID: &workerID})
+	_, err = tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID})
 	requireFault(t, err, "invalid_input")
 	var stored *store.Error
 	if !errors.As(err, &stored) || errors.Unwrap(err) == nil {

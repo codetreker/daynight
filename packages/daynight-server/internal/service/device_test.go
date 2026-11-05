@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func requireDeviceError(t *testing.T, err error, code string) {
@@ -72,7 +72,7 @@ func TestDeviceAuthorizationLifecycle(t *testing.T) {
 	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.Name != "Daynight CLI (workstation)" || minted.Credential.ExpiresAt != nil {
 		t.Fatal("invalid CLI credential")
 	}
-	pat, err := f.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
+	pat, err := f.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
 	if err != nil || pat.UserID != alice.UserID {
 		t.Fatalf("CLI credential: %+v %v", pat, err)
 	}
@@ -92,7 +92,7 @@ func TestDeviceAuthorizationLifecycle(t *testing.T) {
 	if err = f.identity.LogoutDevice(ctx, pat); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
+	_, err = f.identity.Authenticate(ctx, model.PATCredential, minted.Secret)
 	requireFault(t, err, "unauthenticated")
 	requireFault(t, f.identity.LogoutDevice(ctx, alice), "forbidden")
 }
@@ -120,7 +120,7 @@ func TestDeviceDeniedExpiredAndBrowserRestrictions(t *testing.T) {
 		t.Fatalf("expired: %+v %v", inspected, err)
 	}
 	requireFault(t, f.identity.DecideDevice(ctx, alice, expired.UserCode, "approve", alice.UserID), "invalid_transition")
-	pat := core.Principal{Kind: core.PATCredential, UserID: alice.UserID, CredentialID: alice.CredentialID}
+	pat := model.Principal{Kind: model.PATCredential, UserID: alice.UserID, CredentialID: alice.CredentialID}
 	_, err = f.identity.InspectDevice(ctx, pat, expired.UserCode)
 	requireFault(t, err, "forbidden")
 	requireFault(t, f.identity.DecideDevice(ctx, pat, expired.UserCode, "approve", pat.UserID), "forbidden")
@@ -355,7 +355,7 @@ func TestDeviceStoreFailuresAndAtomicMint(t *testing.T) {
 	requireIdentityOperationalError(t, f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID))
 	_, err = redeemDevice(f, d)
 	requireIdentityOperationalError(t, err)
-	requireIdentityOperationalError(t, f.identity.LogoutDevice(ctx, core.Principal{Kind: core.PATCredential, UserID: alice.UserID, CredentialID: alice.CredentialID}))
+	requireIdentityOperationalError(t, f.identity.LogoutDevice(ctx, model.Principal{Kind: model.PATCredential, UserID: alice.UserID, CredentialID: alice.CredentialID}))
 }
 
 func TestDeviceDecisionBindsReviewedAccount(t *testing.T) {
@@ -407,5 +407,5 @@ func TestDevicePersistenceFailuresRemainOperational(t *testing.T) {
 	_, err = f.identity.StartDevice(ctx, DeviceClientID, "source")
 	requireIdentityOperationalError(t, err)
 	f.database.Close()
-	requireIdentityOperationalError(t, f.database.CreateDeviceAuthorization(ctx, core.DeviceAuthorization{}))
+	requireIdentityOperationalError(t, f.database.CreateDeviceAuthorization(ctx, model.DeviceAuthorization{}))
 }

@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Pre-permission rows receive true through migration; project it explicitly while comparing all historical fields.
-func snapshotTaskBeforePermission(t *testing.T, database *Store, projectID, id string) core.Task {
+func snapshotTaskBeforePermission(t *testing.T, database *Store, projectID, id string) model.Task {
 	t.Helper()
 	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT
   t.id::text,t.project_id::text,t.title,t.description,t.status,t.version,
@@ -33,15 +33,15 @@ func TestTaskAgentPermissionMigrationPreservesHistoryAndDefaults(t *testing.T) {
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 1)
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
-	var before []core.Task
-	for index, status := range []core.TaskStatus{core.TaskStatus("proposed"), core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+	var before []model.Task
+	for index, status := range []model.TaskStatus{model.TaskStatus("proposed"), model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 		id := queryID(index + 10)
 		var started, completed *time.Time
-		if status == core.TaskInProgress || status == core.TaskDone {
+		if status == model.TaskInProgress || status == model.TaskDone {
 			start := stamp.Add(time.Minute)
 			started = &start
 		}
-		if status == core.TaskDone {
+		if status == model.TaskDone {
 			end := stamp.Add(2 * time.Minute)
 			completed = &end
 		}
@@ -62,7 +62,7 @@ func TestTaskAgentPermissionMigrationPreservesHistoryAndDefaults(t *testing.T) {
 	}
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'New SQL task')`, queryID(20), project.ID)
 	created := snapshotHistoricalTask(t, database, project.ID, queryID(20))
-	if created.AllowAgents || created.Status != core.TaskStatus("proposed") || created.Version != 1 || !created.CreatedAt.Equal(created.UpdatedAt) {
+	if created.AllowAgents || created.Status != model.TaskStatus("proposed") || created.Version != 1 || !created.CreatedAt.Equal(created.UpdatedAt) {
 		t.Fatalf("new SQL defaults: %#v", created)
 	}
 	_, err := pool.Exec(ctx, `UPDATE tasks SET allow_agents=NULL WHERE id=$1`, created.ID)

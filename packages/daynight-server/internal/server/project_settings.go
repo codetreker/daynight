@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -21,7 +21,7 @@ func projectSettingsInput(fields map[string]json.RawMessage) (api.UpdateProjectS
 	return api.UpdateProjectSettingsRequest{Version: version, ExecutionWarningMinutes: minutes}, nil
 }
 
-func (h *projectHandler) settings(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *projectHandler) settings(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
 	id, err := service.CanonicalID(request.PathValue("projectId"))

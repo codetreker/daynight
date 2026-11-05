@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -32,10 +32,10 @@ func TestTaskDeletionRemovesIncomingRelationshipsAndPreservesSourceFacts(t *test
 	target = updateTask(t, tasks, principal, target, UpdateTask{DependsOn: pointer([]string{outgoing.ID})})
 	target = finishTask(t, tasks, principal, target)
 	putAttachment(t, attachments, principal, target, "evidence.txt", "preserved")
-	var sources []core.Task
-	for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+	var sources []model.Task
+	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 		source := createTask(t, tasks, principal, projectID, "Source", target.ID, unrelated.ID)
-		source = updateTask(t, tasks, principal, source, UpdateTask{ExternalDependsOn: pointer([]string{target.ID, unrelated.ID}), Properties: propertyPatch(core.PullRequestProperty{URL: "Evidence", Title: "Preserved"})})
+		source = updateTask(t, tasks, principal, source, UpdateTask{ExternalDependsOn: pointer([]string{target.ID, unrelated.ID}), Properties: propertyPatch(model.PullRequestProperty{URL: "Evidence", Title: "Preserved"})})
 		sources = append(sources, setStatusTask(t, tasks, principal, source, status))
 	}
 	worker := claimableTask(t, tasks, principal, projectID)
@@ -81,7 +81,7 @@ func TestTaskDeletionRemovesIncomingRelationshipsAndPreservesSourceFacts(t *test
 			t.Fatal("unrelated external classification was discarded")
 		}
 	}
-	for _, preserved := range []core.Task{outgoing, unrelated} {
+	for _, preserved := range []model.Task{outgoing, unrelated} {
 		data, marker, updated, version := deletedTaskStorage(t, database, preserved)
 		old := before[preserved.ID]
 		if data != old.data || !reflect.DeepEqual(marker, old.marker) || updated != old.updated || version != old.version {
@@ -102,11 +102,11 @@ func TestTaskDeletionRemovesIncomingRelationshipsAndPreservesSourceFacts(t *test
 	_, err = tasks.Update(ctx, principal, projectID, sources[0].ID, UpdateTask{Version: sources[0].Version, Title: pointer("Stale update")})
 	requireFault(t, err, "version_conflict")
 	after, err := sync.Get(ctx, principal, projectID, TaskSyncRequest{Epoch: baseline.Epoch, Since: &baseline.ObservedAt})
-	if err != nil || after.Mode != "snapshot" || after.Epoch == baseline.Epoch || slices.ContainsFunc(after.Tasks, func(task core.TaskViewRecord) bool { return task.ID == target.ID }) {
+	if err != nil || after.Mode != "snapshot" || after.Epoch == baseline.Epoch || slices.ContainsFunc(after.Tasks, func(task model.TaskViewRecord) bool { return task.ID == target.ID }) {
 		t.Fatalf("cache baseline did not reflect deletion: %#v %v", after, err)
 	}
 	for _, source := range sources[:len(sources)-1] {
-		index := slices.IndexFunc(after.Tasks, func(task core.TaskViewRecord) bool { return task.ID == source.ID })
+		index := slices.IndexFunc(after.Tasks, func(task model.TaskViewRecord) bool { return task.ID == source.ID })
 		if index < 0 || after.Tasks[index].Version != before[source.ID].version+1 || !slices.Equal(after.Tasks[index].DependsOn, []string{unrelated.ID}) {
 			t.Fatal("source version and relationships were not included in replacement snapshot")
 		}
@@ -177,10 +177,10 @@ func TestTaskDeletionRemoveDependsConcurrentSourceUpdateUsesVersion(t *testing.T
 	target := createTask(t, tasks, principal, project.ID, "Target")
 	source := createTask(t, tasks, principal, project.ID, "Source", target.ID)
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
-			return core.Task{}, tasks.Delete(ctx, principal, project.ID, target.ID, DeleteTask{Version: target.Version, RemoveDepends: true})
+		func(ctx context.Context) (model.Task, error) {
+			return model.Task{}, tasks.Delete(ctx, principal, project.ID, target.ID, DeleteTask{Version: target.Version, RemoveDepends: true})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, source.ID, UpdateTask{Version: source.Version, Title: pointer("Changed")})
 		})
 	updated, deleted := false, false
@@ -213,10 +213,10 @@ func TestTaskDeletionRemoveDependsSerializesWithNewSource(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Target")
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
-			return core.Task{}, tasks.Delete(ctx, principal, project.ID, target.ID, DeleteTask{Version: target.Version, RemoveDepends: true})
+		func(ctx context.Context) (model.Task, error) {
+			return model.Task{}, tasks.Delete(ctx, principal, project.ID, target.ID, DeleteTask{Version: target.Version, RemoveDepends: true})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Create(ctx, principal, project.ID, CreateTask{Title: "New source", DependsOn: []string{target.ID}})
 		})
 	// The lock order may admit creation before deletion, in which case both writes succeed.

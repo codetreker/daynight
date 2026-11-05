@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTerminalSessionApi, parseTerminalSessionState, parseSessionHistory } from '../src/api/terminal-sessions';
+import { createSessionApi } from '../src/api/sessions';
 import { hashSessionBytes } from '../../daynight/src/session/v2/values';
 const fixture = (name: string) => JSON.parse(readFileSync(`../daynight/test/session/fixtures/v2/${name}.json`, 'utf8'));
 const r = fixture('valid-registration');
@@ -23,6 +24,14 @@ describe('terminal transport', () => {
     expect((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].headers).toMatchObject({ 'Daynight-Session-Protocol': 'daynight.session.v2' });
     fetch.mockImplementation(async () => response(state(), owner.workerId));
     await expect(api().current(signal())).rejects.toMatchObject({ code: 'principal_mismatch' });
+  });
+  it('selects native v1 startup observation and accepts a registered null report', async () => {
+    const snapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => response({ status: 'registered', session: snapshot, startupReport: null })); vi.stubGlobal('fetch', fetch);
+    const native = createSessionApi(snapshot.identity.projectId, snapshot.identity.taskId, owner.ownerUserId, vi.fn());
+    await expect(native.current(signal())).resolves.toMatchObject({ status: 'registered', startupReport: null });
+    expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ Accept: 'application/json', 'X-Daynight-Startup-Version': '1' });
+    expect(fetch.mock.calls[0]?.[1]?.headers).not.toHaveProperty('Daynight-Session-Protocol');
   });
   it('accepts nanosecond history timestamps and rejects inconsistent backend or ready identity', () => {
     const item = { sessionId: r.sessionId, claimId: r.claimId, executionGeneration: '1', agentControlMode: 'herdr', contentKind: 'terminal_recording', createdAt: '2026-11-03T10:00:00.123456789Z', endedAt: null, archive: { state: 'pending', sha256: null, byteLength: null, completeness: null } };
@@ -63,6 +72,26 @@ describe('terminal transport', () => {
     const fetch = vi.fn(async (url: string) => response(url.includes('?') ? { items: [], nextCursor: null } : { status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' })); vi.stubGlobal('fetch', fetch);
     expect(await api().current(signal())).toMatchObject({ status: 'not_registered' }); expect(await api().history('stable cursor', signal())).toEqual({ items: [], nextCursor: null });
     expect(fetch.mock.calls[1]?.[0]).toContain('cursor=stable%20cursor');
+  });
+  it('distinguishes both valid empty states from malformed current responses', async () => {
+    const fetch = vi.fn(async () => response({ status: 'not_applicable', protocol: r.protocol })); vi.stubGlobal('fetch', fetch);
+    await expect(api().current(signal())).resolves.toEqual({ status: 'not_applicable', protocol: r.protocol });
+    for (const body of [null, '', '{broken', 'null', '{}', JSON.stringify({ status: 'not_registered', protocol: r.protocol, claimId: owner.taskId, agentControlMode: 'web' })]) {
+      fetch.mockImplementation(async () => new Response(body, { status: 200, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': owner.ownerUserId } }));
+      await expect(api().current(signal())).rejects.toMatchObject({ kind: 'protocol' });
+    }
+  });
+  it.each([[400, 'unsupported_protocol'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'], [410, 'task_deleted']] as const)(
+    'preserves HTTP %i (%s) rather than treating it as an empty session', async (status, code) => {
+      vi.stubGlobal('fetch', vi.fn(async () => response({ error: { code, message: 'Unavailable', requestId: 'request-1' } }, owner.ownerUserId, status)));
+      await expect(api().current(signal())).rejects.toMatchObject({ kind: 'server', status, code });
+    },
+  );
+  it('reports a network failure and can make a later successful current read', async () => {
+    const fetch = vi.fn().mockRejectedValueOnce(new TypeError('offline')).mockResolvedValueOnce(response({ status: 'not_applicable', protocol: r.protocol })); vi.stubGlobal('fetch', fetch);
+    await expect(api().current(signal())).rejects.toMatchObject({ kind: 'network' });
+    await expect(api().current(signal())).resolves.toEqual({ status: 'not_applicable', protocol: r.protocol });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
   it('returns a pending archive without fetching content', async () => {
     const status = fixture('valid-status-pending'); vi.stubGlobal('fetch', vi.fn(async () => response(status)));

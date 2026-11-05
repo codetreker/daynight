@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/jackc/pgx/v5"
 )
@@ -25,7 +25,7 @@ func (s *Store) ReadSnapshot(ctx context.Context, operation func(*Snapshot) erro
 	return nil
 }
 
-func (s *Snapshot) Project(ctx context.Context, id string) (core.Project, error) {
+func (s *Snapshot) Project(ctx context.Context, id string) (model.Project, error) {
 	return readProject(ctx, s.tx, id)
 }
 
@@ -38,7 +38,7 @@ func (s *Snapshot) Projects(ctx context.Context, page Page) (ProjectPage, error)
 		return ProjectPage{}, queryError("list projects", err)
 	}
 	defer rows.Close()
-	items := make([]core.Project, 0)
+	items := make([]model.Project, 0)
 	for rows.Next() {
 		project, err := scanProject(rows)
 		if err != nil {
@@ -56,7 +56,7 @@ func (s *Snapshot) Projects(ctx context.Context, page Page) (ProjectPage, error)
 	return ProjectPage{Items: items, HasMore: hasMore}, nil
 }
 
-func (s *Snapshot) Task(ctx context.Context, projectID, id string) (core.Task, error) {
+func (s *Snapshot) Task(ctx context.Context, projectID, id string) (model.Task, error) {
 	return readTask(ctx, s.tx, projectID, id)
 }
 
@@ -72,16 +72,16 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 	arguments := []any{projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit}
 	assignmentCondition := ""
 	switch query.AssignedTo.Mode {
-	case core.TaskAssignmentAll:
+	case model.TaskAssignmentAll:
 		if query.AssignedTo.UserID != "" {
 			return TaskPage{}, queryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
 		}
-	case core.TaskAssignmentUnassigned:
+	case model.TaskAssignmentUnassigned:
 		if query.AssignedTo.UserID != "" {
 			return TaskPage{}, queryError("list tasks", fmt.Errorf("task assignment filter is invalid"))
 		}
 		assignmentCondition = " AND t.assigned_to IS NULL"
-	case core.TaskAssignmentUser:
+	case model.TaskAssignmentUser:
 		assignmentCondition = " AND t.assigned_to = $9::uuid"
 		arguments = append(arguments, query.AssignedTo.UserID)
 	default:
@@ -99,7 +99,7 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 		return TaskPage{}, queryError("list tasks", err)
 	}
 	defer rows.Close()
-	items := make([]core.Task, 0, query.Page.Limit+1)
+	items := make([]model.Task, 0, query.Page.Limit+1)
 	for rows.Next() {
 		var workerValue *string
 		var trailing []any
@@ -118,11 +118,11 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 			if err != nil {
 				return TaskPage{}, queryError("decode worker inventory", err)
 			}
-			worker, err := taskproperties.Worker(core.TaskProperties{"worker": value})
+			worker, err := taskproperties.Worker(model.TaskProperties{"worker": value})
 			if err != nil {
 				return TaskPage{}, queryError("decode worker inventory", err)
 			}
-			if worker.State != core.WorkerActive || worker.UserID != query.Worker.UserID || worker.WorkerID != query.Worker.WorkerID {
+			if worker.State != model.WorkerActive || worker.UserID != query.Worker.UserID || worker.WorkerID != query.Worker.WorkerID {
 				continue
 			}
 		}
@@ -145,19 +145,19 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 	return TaskPage{Items: items, HasMore: hasMore}, nil
 }
 
-func readTask(ctx context.Context, tx pgx.Tx, projectID, id string) (core.Task, error) {
+func readTask(ctx context.Context, tx pgx.Tx, projectID, id string) (model.Task, error) {
 	return readTaskWithLock(ctx, tx, projectID, id, "")
 }
 
-func readTaskWithLock(ctx context.Context, tx pgx.Tx, projectID, id, lock string) (core.Task, error) {
+func readTaskWithLock(ctx context.Context, tx pgx.Tx, projectID, id, lock string) (model.Task, error) {
 	task, err := scanTask(liveTaskRow{tx.QueryRow(ctx, `SELECT `+taskProjection+`, t.deleted_at FROM tasks t
   WHERE t.project_id = $1 AND t.id = $2`+lock, projectID, id)})
 	if err != nil {
-		return core.Task{}, queryError("read task", err)
+		return model.Task{}, queryError("read task", err)
 	}
 	values, err := loadTaskProperties(ctx, tx, []string{id})
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	task.Properties = values[id]
 	return task, nil

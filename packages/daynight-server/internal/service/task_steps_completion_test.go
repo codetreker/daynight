@@ -1,5 +1,6 @@
 package service
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"errors"
 	"testing"
@@ -13,7 +14,7 @@ func TestTaskStepsWriteCompletionRetainsTransactionFactsAndCauses(t *testing.T) 
 	for _, failure := range []*store.TransactionError{
 		{Phase: "commit", Cause: cause, Outcome: store.TransactionUnknown, CommitAttempted: true},
 		{Phase: "cleanup", Cause: errors.Join(cause, cleanup), Outcome: store.TransactionCommitted, CommitAttempted: true, CleanupFailed: true},
-		{Phase: "cleanup", Cause: errors.Join(&Fault{Code: "not_found", Message: "business refusal"}, cleanup), Outcome: store.TransactionUnknown, CleanupFailed: true},
+		{Phase: "cleanup", Cause: errors.Join(&model.Fault{Code: "not_found", Message: "business refusal"}, cleanup), Outcome: store.TransactionUnknown, CleanupFailed: true},
 	} {
 		result, err := finishStepsWrite(StepsWriteResult{Phase: "persist", Changed: true, StepsDocument: StepsDocument{JSON: []byte("unconfirmed bytes")}}, true, failure)
 		if !errors.Is(err, failure) || result.TransactionOutcome != failure.Outcome || result.CleanupFailed != failure.CleanupFailed || result.JSON != nil || !result.Changed {

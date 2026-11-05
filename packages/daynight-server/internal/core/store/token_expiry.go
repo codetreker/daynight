@@ -4,12 +4,12 @@ import (
 	"context"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
-func scanPAT(row pgx.Row) (core.PersonalAccessToken, error) {
-	var c core.PersonalAccessToken
+func scanPAT(row pgx.Row) (model.PersonalAccessToken, error) {
+	var c model.PersonalAccessToken
 	err := row.Scan(&c.ID, &c.UserID, &c.Name, &c.CreatedAt, &c.ExpiresAt)
 	c.CreatedAt = c.CreatedAt.UTC()
 	if c.ExpiresAt != nil {
@@ -28,8 +28,8 @@ func equalTokenExpiry(first, second *time.Time) bool {
 	return first.Equal(*second)
 }
 
-func (s *Store) UpdatePATExpiry(ctx context.Context, p core.Principal, id string, expiry, expected *time.Time, now time.Time) (core.PersonalAccessToken, bool, error) {
-	var result core.PersonalAccessToken
+func (s *Store) UpdatePATExpiry(ctx context.Context, p model.Principal, id string, expiry, expected *time.Time, now time.Time) (model.PersonalAccessToken, bool, error) {
+	var result model.PersonalAccessToken
 	conflict := false
 	err := s.withSession(ctx, p, now, func(tx pgx.Tx) error {
 		current, err := scanPAT(tx.QueryRow(ctx, `SELECT `+patFields+` FROM personal_access_tokens WHERE id=$1 AND user_id=$2 AND (expires_at IS NULL OR expires_at>$3) FOR UPDATE`, id, p.UserID, now))

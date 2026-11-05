@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"github.com/coder/websocket"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
 	"net/http"

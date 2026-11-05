@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -193,12 +194,12 @@ func TestThreadHTTPFailurePriorityAndResponseWrite(t *testing.T) {
 		status int
 		code   string
 	}{
-		{&service.Fault{Code: "message_not_found", Message: "message not found"}, 404, "message_not_found"},
-		{&service.Fault{Code: "clock_not_advanced", Message: "Clock unavailable"}, 503, "clock_not_advanced"},
-		{&service.Fault{Code: "payload_too_large", Message: "Message too large"}, 413, "payload_too_large"},
+		{&model.Fault{Code: "message_not_found", Message: "message not found"}, 404, "message_not_found"},
+		{&model.Fault{Code: "clock_not_advanced", Message: "Clock unavailable"}, 503, "clock_not_advanced"},
+		{&model.Fault{Code: "payload_too_large", Message: "Message too large"}, 413, "payload_too_large"},
 		{&service.ThreadMessageError{MessageID: "candidate", Cause: &store.ThreadTransactionError{Phase: "callback", Cause: &store.ThreadClockError{Cause: context.DeadlineExceeded}}}, 503, "clock_not_advanced"},
 		{&store.ThreadTransactionError{Phase: "commit", CommitAttempted: true, OutcomeUnknown: true, Cause: context.DeadlineExceeded}, 503, "message_outcome_unknown"},
-		{&store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true, Cause: &service.Fault{Code: "invalid_input", Message: "private business refusal"}}, 500, "internal_error"},
+		{&store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true, Cause: &model.Fault{Code: "invalid_input", Message: "private business refusal"}}, 500, "internal_error"},
 	} {
 		recorder := httptest.NewRecorder()
 		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

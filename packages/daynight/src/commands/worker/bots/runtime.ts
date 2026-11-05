@@ -16,12 +16,16 @@ import { parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
  */
 export const createManagedAssistantRuntime = (options: {
   owner: BotOwner; store: BotStore; remote: BotRemote; process: BotProcess; sessionApi: BotSessionApi;
-  deletion: BotDeletionManager; pollIntervalMs: number; now?: () => number; onError(message: string, botId: string | null): void;
+  deletion: BotDeletionManager; pollIntervalMs: number | (() => number); now?: () => number; onError(message: string, botId: string | null): void;
   inventory?: Pick<ReturnType<typeof createBotInventory>, "reconcile">;
 }) => {
   const owner = parseBotOwner(options.owner), now = options.now ?? Date.now;
-  if (!Number.isSafeInteger(options.pollIntervalMs) || options.pollIntervalMs < 1) throw new Error("Bot discovery interval must be a positive integer.");
-  const interval = Math.min(options.pollIntervalMs, 5000);
+  const interval = (): number => {
+    const value = typeof options.pollIntervalMs === "function" ? options.pollIntervalMs() : options.pollIntervalMs;
+    if (!Number.isSafeInteger(value) || value < 1) throw new Error("Bot discovery interval must be a positive integer.");
+    return Math.min(value, 5000);
+  };
+  interval();
   const inventory = options.inventory ?? createBotInventory({ owner, store: options.store, remote: options.remote, now });
   const jobs = new Map<string, Promise<void>>(), errors = new Map<string, string>();
   let running = false, closing = false;
@@ -121,7 +125,7 @@ export const createManagedAssistantRuntime = (options: {
         while (!combined.aborted) {
           try { await discover(combined); errors.delete("inventory"); }
           catch (cause) { if (!combined.aborted) error(null, cause); }
-          try { await delay(interval, undefined, { signal: combined }); }
+          try { await delay(interval(), undefined, { signal: combined }); }
           catch (cause) { if (!combined.aborted) throw cause; }
         }
       };

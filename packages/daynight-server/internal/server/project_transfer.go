@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -64,7 +64,7 @@ func transferLogID(logger *slog.Logger, field, value string) *slog.Logger {
 	return logger
 }
 
-func (h *projectHandler) transferPreview(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *projectHandler) transferPreview(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	start := time.Now()
 	w.Header().Set("Cache-Control", "no-store")
 	logger := transferLogID(h.logger.With("user_id", p.UserID), "project_id", r.PathValue("projectId"))
@@ -101,7 +101,7 @@ func (h *projectHandler) transferPreview(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, r, logger, http.StatusOK, response)
 }
 
-func (h *projectHandler) transfer(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *projectHandler) transfer(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	start := time.Now()
 	w.Header().Set("Cache-Control", "no-store")
 	logger := transferLogID(h.logger.With("user_id", p.UserID), "project_id", r.PathValue("projectId"))
@@ -136,13 +136,13 @@ func writeTransferError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 		phase = transaction.Phase
 		if transaction.CommitAttempted && transaction.Outcome == store.TransactionUnknown {
 			outcome = "unknown"
-			err = &service.Fault{Code: "write_outcome_unknown", Message: "The write outcome is unknown. Read the current resource before deciding on another operation.", Cause: err}
+			err = &model.Fault{Code: "write_outcome_unknown", Message: "The write outcome is unknown. Read the current resource before deciding on another operation.", Cause: err}
 		} else if transaction.CleanupFailed {
-			err = &service.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}
+			err = &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}
 		} else if transaction.Phase != "operation" || transaction.Outcome != store.TransactionNotCommitted {
-			err = &service.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}
-		} else if _, ok := knownFault(err); !ok && errors.Is(err, core.ErrNotFound) {
-			err = &service.Fault{Code: "not_found", Message: "Project or target Team was not found.", Cause: err}
+			err = &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}
+		} else if _, ok := knownFault(err); !ok && errors.Is(err, model.ErrNotFound) {
+			err = &model.Fault{Code: "not_found", Message: "Project or target Team was not found.", Cause: err}
 		}
 	}
 	if outcome == "failed" {
@@ -170,7 +170,7 @@ func writeTransferJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	logger = logger.With("duration_ms", time.Since(start).Milliseconds())
 	data, err := json.Marshal(value)
 	if err != nil {
-		fault := &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
+		fault := &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
 		logTransferUnknown(logger.With("outcome", "unknown"), r, "response", fault)
 		writeJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: RequestID(r.Context())}})
 		return

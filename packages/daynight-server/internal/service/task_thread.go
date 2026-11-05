@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskthreadjson"
 )
@@ -39,12 +39,12 @@ type ThreadListRequest struct {
 }
 
 type ThreadMessageDocument struct {
-	Message core.ThreadMessage
+	Message model.ThreadMessage
 	JSON    []byte
 }
 
 type ThreadPageDocument struct {
-	Page core.ThreadPage
+	Page model.ThreadPage
 	JSON []byte
 }
 
@@ -52,14 +52,14 @@ type ThreadPageDocument struct {
 // MessageID identifies a candidate, and does not imply that it was committed.
 type ThreadMessageError struct {
 	MessageID string
-	Execution *core.ThreadExecution
+	Execution *model.ThreadExecution
 	Cause     error
 }
 
 func (err *ThreadMessageError) Error() string { return "post thread message failed" }
 func (err *ThreadMessageError) Unwrap() error { return err.Cause }
 
-func threadScope(principal core.Principal, projectID, taskID string) (string, string, error) {
+func threadScope(principal model.Principal, projectID, taskID string) (string, string, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return "", "", err
 	}
@@ -80,14 +80,14 @@ func canonicalThreadID(id *string) (*string, error) {
 }
 
 func threadAccessError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
-		return &Fault{Code: "forbidden", Message: "Project access is required.", Cause: err}
+	if errors.Is(err, model.ErrNotFound) {
+		return &model.Fault{Code: "forbidden", Message: "Project access is required.", Cause: err}
 	}
 	return err
 }
 
 func threadCredentialError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return unauthenticated(err)
 	}
 	return err
@@ -95,22 +95,22 @@ func threadCredentialError(err error) error {
 
 func threadPresence(presence store.TaskPresence) error {
 	if !presence.Found {
-		return taskNotFound(core.ErrNotFound)
+		return taskNotFound(model.ErrNotFound)
 	}
 	if presence.DeletedAt != nil {
-		return taskNotFound(core.ErrTaskDeleted)
+		return taskNotFound(model.ErrTaskDeleted)
 	}
 	return nil
 }
 
 func threadMessageError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
-		return &Fault{Code: "message_not_found", Message: "Message was not found in this task.", Cause: err}
+	if errors.Is(err, model.ErrNotFound) {
+		return &model.Fault{Code: "message_not_found", Message: "Message was not found in this task.", Cause: err}
 	}
 	return err
 }
 
-func (s *TaskThreads) Post(ctx context.Context, principal core.Principal, projectID, taskID string, input CreateThreadMessage) (ThreadMessageDocument, error) {
+func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, projectID, taskID string, input CreateThreadMessage) (ThreadMessageDocument, error) {
 	ctx, cancel := context.WithTimeout(ctx, threadOperationTimeout)
 	defer cancel()
 	projectID, taskID, err := threadScope(principal, projectID, taskID)
@@ -152,7 +152,7 @@ func (s *TaskThreads) Post(ctx context.Context, principal core.Principal, projec
 		if err != nil {
 			return err
 		}
-		author := core.ThreadAuthor{UserID: principal.UserID, DisplayName: name}
+		author := model.ThreadAuthor{UserID: principal.UserID, DisplayName: name}
 		if input.ClaimID != nil {
 			current, err := tx.SourceTask(ctx, projectID, taskID)
 			if err != nil {
@@ -163,10 +163,10 @@ func (s *TaskThreads) Post(ctx context.Context, principal core.Principal, projec
 				return err
 			}
 			if worker.UserID != principal.UserID {
-				return &Fault{Code: "forbidden", Message: "Only the current execution owner may use this claim."}
+				return &model.Fault{Code: "forbidden", Message: "Only the current execution owner may use this claim."}
 			}
 			author.Agent = true
-			author.Execution = &core.ThreadExecution{ClaimID: worker.ClaimID, WorkerID: worker.WorkerID, Provider: string(worker.Agent)}
+			author.Execution = &model.ThreadExecution{ClaimID: worker.ClaimID, WorkerID: worker.WorkerID, Provider: string(worker.Agent)}
 			failure.Execution = author.Execution
 		}
 		head, err := tx.LockHead(ctx, taskID)
@@ -178,7 +178,7 @@ func (s *TaskThreads) Post(ctx context.Context, principal core.Principal, projec
 				return threadMessageError(err)
 			}
 		}
-		message, err := tx.InsertMessage(ctx, core.ThreadMessage{TaskID: taskID, Author: author, Body: input.Body, ReplyTo: input.ReplyTo})
+		message, err := tx.InsertMessage(ctx, model.ThreadMessage{TaskID: taskID, Author: author, Body: input.Body, ReplyTo: input.ReplyTo})
 		if err != nil {
 			return err
 		}
@@ -214,10 +214,10 @@ func (s *TaskThreads) Post(ctx context.Context, principal core.Principal, projec
 }
 
 func threadMessageTooLarge() error {
-	return &Fault{Code: "payload_too_large", Message: "Complete encoded message exceeds 64 KiB."}
+	return &model.Fault{Code: "payload_too_large", Message: "Complete encoded message exceeds 64 KiB."}
 }
 
-func admitThreadMessage(ctx context.Context, message core.ThreadMessage) ([]byte, error) {
+func admitThreadMessage(ctx context.Context, message model.ThreadMessage) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -238,7 +238,7 @@ func admitThreadMessage(ctx context.Context, message core.ThreadMessage) ([]byte
 	return normal, nil
 }
 
-func (s *TaskThreads) List(ctx context.Context, principal core.Principal, projectID, taskID string, input ThreadListRequest) (ThreadPageDocument, error) {
+func (s *TaskThreads) List(ctx context.Context, principal model.Principal, projectID, taskID string, input ThreadListRequest) (ThreadPageDocument, error) {
 	ctx, cancel := context.WithTimeout(ctx, threadOperationTimeout)
 	defer cancel()
 	projectID, taskID, err := threadScope(principal, projectID, taskID)
@@ -277,7 +277,7 @@ func (s *TaskThreads) List(ctx context.Context, principal core.Principal, projec
 		if err := threadPresence(presence); err != nil {
 			return err
 		}
-		var anchor *core.ThreadPosition
+		var anchor *model.ThreadPosition
 		id := input.AfterID
 		if input.BeforeID != nil {
 			id = input.BeforeID
@@ -324,23 +324,23 @@ func (s *TaskThreads) List(ctx context.Context, principal core.Principal, projec
 	return result, nil
 }
 
-func selectThreadPage(ctx context.Context, candidates []core.ThreadMessage, count int, details, reverse bool) (core.ThreadPage, error) {
-	page := core.ThreadPage{Items: make([]core.ThreadMessage, 0, min(count, len(candidates)))}
+func selectThreadPage(ctx context.Context, candidates []model.ThreadMessage, count int, details, reverse bool) (model.ThreadPage, error) {
+	page := model.ThreadPage{Items: make([]model.ThreadMessage, 0, min(count, len(candidates)))}
 	empty, err := taskthreadjson.EncodePage(page, details)
 	if err != nil {
-		return core.ThreadPage{}, err
+		return model.ThreadPage{}, err
 	}
 	size := len(empty)
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
-			return core.ThreadPage{}, err
+			return model.ThreadPage{}, err
 		}
 		if len(page.Items) == count {
 			break
 		}
 		encoded, err := taskthreadjson.EncodeMessage(candidate, details)
 		if err != nil {
-			return core.ThreadPage{}, err
+			return model.ThreadPage{}, err
 		}
 		extra := len(encoded)
 		if len(page.Items) > 0 {
@@ -348,7 +348,7 @@ func selectThreadPage(ctx context.Context, candidates []core.ThreadMessage, coun
 		}
 		if size+extra > taskthreadjson.PageLimit {
 			if len(page.Items) == 0 {
-				return core.ThreadPage{}, errors.New("stored thread message cannot fit in a page")
+				return model.ThreadPage{}, errors.New("stored thread message cannot fit in a page")
 			}
 			break
 		}
@@ -359,27 +359,27 @@ func selectThreadPage(ctx context.Context, candidates []core.ThreadMessage, coun
 		slices.Reverse(page.Items)
 	}
 	if err := ctx.Err(); err != nil {
-		return core.ThreadPage{}, err
+		return model.ThreadPage{}, err
 	}
 	return page, nil
 }
 
 // ThreadResponseFault classifies Thread-local outcomes before the general HTTP
 // error mapper examines their causes. A failed cleanup always remains internal.
-func ThreadResponseFault(err error) (*Fault, bool) {
+func ThreadResponseFault(err error) (*model.Fault, bool) {
 	var transaction *store.ThreadTransactionError
 	if !errors.As(err, &transaction) {
 		return nil, false
 	}
 	if transaction.RollbackFailed {
-		return &Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
+		return &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
 	}
 	if transaction.OutcomeUnknown {
-		return &Fault{Code: "message_outcome_unknown", Message: "Message outcome is unknown. Keep the draft and read the thread before deciding whether to send again.", Cause: err}, true
+		return &model.Fault{Code: "message_outcome_unknown", Message: "Message outcome is unknown. Keep the draft and read the thread before deciding whether to send again.", Cause: err}, true
 	}
 	var clock *store.ThreadClockError
 	if !transaction.CommitAttempted && errors.As(err, &clock) {
-		return &Fault{Code: "clock_not_advanced", Message: "A reliable forward message position was not obtained within the clock budget.", Cause: err}, true
+		return &model.Fault{Code: "clock_not_advanced", Message: "A reliable forward message position was not obtained within the clock budget.", Cause: err}, true
 	}
 	return nil, false
 }

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 )
 
 func TestArchiveObjectAddressRequiresCanonicalDirectoryComponents(t *testing.T) {

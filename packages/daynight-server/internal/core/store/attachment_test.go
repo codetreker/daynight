@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -15,7 +15,7 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	projectID, taskID := uuid.NewString(), uuid.NewString()
-	input := core.Attachment{ProjectID: projectID, TaskID: taskID, Path: "docs/a.md", ContentType: "text/markdown", SizeBytes: 10}
+	input := model.Attachment{ProjectID: projectID, TaskID: taskID, Path: "docs/a.md", ContentType: "text/markdown", SizeBytes: 10}
 	first, created, err := database.PutAttachment(ctx, input)
 	if err != nil || !created || first.CreatedAt.IsZero() || !first.CreatedAt.Equal(first.UpdatedAt) {
 		t.Fatalf("insert: %#v, %v, %v", first, created, err)
@@ -58,14 +58,14 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	if err := database.DeleteAttachment(ctx, projectID, taskID, "docs/a.md"); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.DeleteAttachment(ctx, projectID, taskID, "docs/a.md"); !errors.Is(err, core.ErrNotFound) {
+	if err := database.DeleteAttachment(ctx, projectID, taskID, "docs/a.md"); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing delete: %v", err)
 	}
 	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		_, err := snapshot.Attachment(ctx, projectID, taskID, "docs/a.md")
 		return err
 	})
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing read: %v", err)
 	}
 }
@@ -73,7 +73,7 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 func TestAttachmentSchemaConstraintsAndStoreFailures(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
-	input := core.Attachment{ProjectID: uuid.NewString(), TaskID: uuid.NewString(), Path: "file", ContentType: "text/plain", SizeBytes: -1}
+	input := model.Attachment{ProjectID: uuid.NewString(), TaskID: uuid.NewString(), Path: "file", ContentType: "text/plain", SizeBytes: -1}
 	_, _, err := database.PutAttachment(ctx, input)
 	var postgresError *pgconn.PgError
 	if !errors.As(err, &postgresError) || postgresError.Code != "23514" {
@@ -108,7 +108,7 @@ func assertAttachmentStoreError(t *testing.T, err error) {
 	t.Helper()
 	var postgresError *pgconn.PgError
 	var databaseError *Error
-	if !errors.As(err, &postgresError) || postgresError.Code != "42P01" || !errors.As(err, &databaseError) || errors.Is(err, core.ErrNotFound) {
+	if !errors.As(err, &postgresError) || postgresError.Code != "42P01" || !errors.As(err, &databaseError) || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing table error lost: %v", err)
 	}
 }

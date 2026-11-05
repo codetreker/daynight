@@ -9,7 +9,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 type ValidationError struct {
@@ -96,8 +96,8 @@ func NormalizeValue(name string, raw json.RawMessage, public bool) (json.RawMess
 	return normalized, nil
 }
 
-func Normalize(properties core.TaskProperties, public bool) (core.TaskProperties, error) {
-	result := make(core.TaskProperties, len(properties))
+func Normalize(properties model.TaskProperties, public bool) (model.TaskProperties, error) {
+	result := make(model.TaskProperties, len(properties))
 	for _, name := range slices.Sorted(maps.Keys(properties)) {
 		value, err := NormalizeValue(name, properties[name], public)
 		if err != nil {
@@ -108,15 +108,15 @@ func Normalize(properties core.TaskProperties, public bool) (core.TaskProperties
 	return result, nil
 }
 
-func Clone(properties core.TaskProperties) core.TaskProperties {
-	result := make(core.TaskProperties, len(properties))
+func Clone(properties model.TaskProperties) model.TaskProperties {
+	result := make(model.TaskProperties, len(properties))
 	for name, value := range properties {
 		result[name] = bytes.Clone(value)
 	}
 	return result
 }
 
-func Equal(left, right core.TaskProperties) bool {
+func Equal(left, right model.TaskProperties) bool {
 	return maps.EqualFunc(left, right, func(a, b json.RawMessage) bool { return bytes.Equal(a, b) })
 }
 

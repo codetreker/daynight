@@ -10,9 +10,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
 func configurationObject(raw json.RawMessage, path string, optional bool, keys ...string) (map[string]json.RawMessage, error) {
@@ -61,12 +61,12 @@ func configurationInteger(raw json.RawMessage, minimum, maximum int64) (int64, e
 	return value, nil
 }
 
-func configurationNative(raw json.RawMessage, overrides bool) (core.WorkerNativeConfiguration, map[string]json.RawMessage, error) {
+func configurationNative(raw json.RawMessage, overrides bool) (model.WorkerNativeConfiguration, map[string]json.RawMessage, error) {
 	fields, err := configurationObject(raw, "native", overrides, "agent", "model", "args")
 	if err != nil {
-		return core.WorkerNativeConfiguration{}, nil, err
+		return model.WorkerNativeConfiguration{}, nil, err
 	}
-	var value core.WorkerNativeConfiguration
+	var value model.WorkerNativeConfiguration
 	if field, exists := fields["agent"]; exists {
 		if err := configurationDecode(field, &value.Agent); err != nil || !value.Agent.Valid() {
 			return value, nil, invalidInput("Native agent must be codex, claude or copilot.")
@@ -103,8 +103,8 @@ func configurationNative(raw json.RawMessage, overrides bool) (core.WorkerNative
 	return value, normalized, nil
 }
 
-func ParseWorkerConfiguration(raw json.RawMessage) (core.WorkerConfiguration, error) {
-	var value core.WorkerConfiguration
+func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, error) {
+	var value model.WorkerConfiguration
 	if !jsonunicode.Valid(raw) {
 		return value, invalidInput("Worker configuration must contain valid Unicode.")
 	}
@@ -132,14 +132,14 @@ func ParseWorkerConfiguration(raw json.RawMessage) (core.WorkerConfiguration, er
 	if err := configurationDecode(fields["projects"], &projects); err != nil {
 		return value, err
 	}
-	value.Projects = make([]core.WorkerProjectConfiguration, 0, len(projects))
+	value.Projects = make([]model.WorkerProjectConfiguration, 0, len(projects))
 	seen := make(map[string]bool, len(projects))
 	for _, raw := range projects {
 		fields, err := configurationObject(raw, "project", false, "projectId", "nativeOverrides")
 		if err != nil {
 			return value, err
 		}
-		var project core.WorkerProjectConfiguration
+		var project model.WorkerProjectConfiguration
 		if err := configurationDecode(fields["projectId"], &project.ProjectID); err != nil {
 			return value, err
 		}
@@ -157,11 +157,11 @@ func ParseWorkerConfiguration(raw json.RawMessage) (core.WorkerConfiguration, er
 		}
 		value.Projects = append(value.Projects, project)
 	}
-	slices.SortFunc(value.Projects, func(a, b core.WorkerProjectConfiguration) int { return strings.Compare(a.ProjectID, b.ProjectID) })
+	slices.SortFunc(value.Projects, func(a, b model.WorkerProjectConfiguration) int { return strings.Compare(a.ProjectID, b.ProjectID) })
 	return value, nil
 }
 
-func configurationFailure(raw json.RawMessage) (*core.WorkerConfigurationFailure, error) {
+func configurationFailure(raw json.RawMessage) (*model.WorkerConfigurationFailure, error) {
 	if configurationNull(raw) {
 		return nil, nil
 	}
@@ -169,7 +169,7 @@ func configurationFailure(raw json.RawMessage) (*core.WorkerConfigurationFailure
 	if err != nil {
 		return nil, err
 	}
-	var failure core.WorkerConfigurationFailure
+	var failure model.WorkerConfigurationFailure
 	if err := json.Unmarshal(raw, &failure); err != nil {
 		return nil, invalidInput("Configuration failure is invalid.")
 	}
@@ -182,7 +182,7 @@ func configurationFailure(raw json.RawMessage) (*core.WorkerConfigurationFailure
 	return &failure, nil
 }
 
-func ParseWorkerConfigurationExchange(raw json.RawMessage) (*core.WorkerConfigurationExchange, error) {
+func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigurationExchange, error) {
 	if !jsonunicode.Valid(raw) {
 		return nil, invalidInput("Worker configuration exchange must contain valid Unicode.")
 	}
@@ -190,7 +190,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*core.WorkerConfigur
 	if err != nil {
 		return nil, err
 	}
-	exchange := &core.WorkerConfigurationExchange{}
+	exchange := &model.WorkerConfigurationExchange{}
 	if !configurationNull(fields["bootstrap"]) {
 		value, err := ParseWorkerConfiguration(fields["bootstrap"])
 		if err != nil {
@@ -205,7 +205,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*core.WorkerConfigur
 	if err != nil {
 		return nil, err
 	}
-	var observation core.WorkerConfigurationObservation
+	var observation model.WorkerConfigurationObservation
 	if err := json.Unmarshal(fields["observation"], &observation); err != nil {
 		return nil, invalidInput("Configuration observation is invalid.")
 	}
@@ -220,8 +220,8 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*core.WorkerConfigur
 	if err := configurationDecode(observationFields["items"], &items); err != nil {
 		return nil, err
 	}
-	observation.Items = make([]core.WorkerConfigurationItem, 0, len(items))
-	seen := make(map[core.WorkerConfigurationItemKey]bool, len(items))
+	observation.Items = make([]model.WorkerConfigurationItem, 0, len(items))
+	seen := make(map[model.WorkerConfigurationItemKey]bool, len(items))
 	for _, raw := range items {
 		itemFields, err := configurationObject(raw, "configuration item", false, "key", "targetRevision", "appliedValue", "state", "error", "lastFailure", "nextAttemptAt")
 		if err != nil {
@@ -231,7 +231,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*core.WorkerConfigur
 		if err != nil {
 			return nil, err
 		}
-		var item core.WorkerConfigurationItem
+		var item model.WorkerConfigurationItem
 		if err := json.Unmarshal(raw, &item); err != nil {
 			return nil, invalidInput("Configuration item is invalid.")
 		}

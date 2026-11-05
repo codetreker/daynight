@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -38,13 +38,13 @@ type ThreadCredential struct {
 	ExpiresAt *time.Time
 }
 
-func threadCredential(ctx context.Context, tx pgx.Tx, principal core.Principal, lock string) (ThreadCredential, error) {
+func threadCredential(ctx context.Context, tx pgx.Tx, principal model.Principal, lock string) (ThreadCredential, error) {
 	table, err := credentialTable(principal.Kind)
 	if err != nil {
 		return ThreadCredential{}, queryError("read thread credential", err)
 	}
 	predicate := "expires_at > clock_timestamp()"
-	if principal.Kind == core.PATCredential {
+	if principal.Kind == model.PATCredential {
 		predicate = "(expires_at IS NULL OR expires_at > clock_timestamp())"
 	}
 	var credential ThreadCredential
@@ -57,44 +57,44 @@ func threadCredential(ctx context.Context, tx pgx.Tx, principal core.Principal, 
 	return credential, nil
 }
 
-func (s *Snapshot) Credential(ctx context.Context, principal core.Principal) (ThreadCredential, error) {
+func (s *Snapshot) Credential(ctx context.Context, principal model.Principal) (ThreadCredential, error) {
 	return threadCredential(ctx, s.tx, principal, "")
 }
 
 const threadMessageProjection = `task_id::text,message_id::text,created_at,author_user_id::text,
  author_display_name,author_agent,author_claim_id::text,author_worker_id::text,author_provider,body,reply_to_message_id::text`
 
-func scanThreadMessage(row pgx.Row) (core.ThreadMessage, error) {
-	var message core.ThreadMessage
+func scanThreadMessage(row pgx.Row) (model.ThreadMessage, error) {
+	var message model.ThreadMessage
 	var claimID, workerID, provider *string
 	err := row.Scan(&message.TaskID, &message.ID, &message.CreatedAt, &message.Author.UserID,
 		&message.Author.DisplayName, &message.Author.Agent, &claimID, &workerID, &provider, &message.Body, &message.ReplyTo)
 	if err != nil {
-		return core.ThreadMessage{}, err
+		return model.ThreadMessage{}, err
 	}
 	if claimID != nil && workerID != nil && provider != nil {
-		message.Author.Execution = &core.ThreadExecution{ClaimID: *claimID, WorkerID: *workerID, Provider: *provider}
+		message.Author.Execution = &model.ThreadExecution{ClaimID: *claimID, WorkerID: *workerID, Provider: *provider}
 	}
 	message.CreatedAt = message.CreatedAt.UTC()
 	return message, nil
 }
 
-func readThreadMessage(ctx context.Context, tx pgx.Tx, taskID, id string) (core.ThreadMessage, error) {
+func readThreadMessage(ctx context.Context, tx pgx.Tx, taskID, id string) (model.ThreadMessage, error) {
 	message, err := scanThreadMessage(tx.QueryRow(ctx, `SELECT `+threadMessageProjection+`
  FROM task_thread_messages WHERE task_id=$1 AND message_id=$2`, taskID, id))
 	if err != nil {
-		return core.ThreadMessage{}, queryError("read thread message", err)
+		return model.ThreadMessage{}, queryError("read thread message", err)
 	}
 	return message, nil
 }
 
-func (s *Snapshot) ThreadMessage(ctx context.Context, taskID, id string) (core.ThreadMessage, error) {
+func (s *Snapshot) ThreadMessage(ctx context.Context, taskID, id string) (model.ThreadMessage, error) {
 	return readThreadMessage(ctx, s.tx, taskID, id)
 }
 
 // ThreadCandidates returns at most limit candidates in traversal order and closes
 // its rows before returning, so callers may query page sides on the same connection.
-func (s *Snapshot) ThreadCandidates(ctx context.Context, taskID string, anchor *core.ThreadPosition, before bool, limit int) ([]core.ThreadMessage, error) {
+func (s *Snapshot) ThreadCandidates(ctx context.Context, taskID string, anchor *model.ThreadPosition, before bool, limit int) ([]model.ThreadMessage, error) {
 	var anchorTime, anchorID any
 	if anchor != nil {
 		anchorTime, anchorID = anchor.CreatedAt, anchor.ID
@@ -110,7 +110,7 @@ func (s *Snapshot) ThreadCandidates(ctx context.Context, taskID string, anchor *
 		return nil, queryError("read thread candidates", err)
 	}
 	defer rows.Close()
-	items := make([]core.ThreadMessage, 0)
+	items := make([]model.ThreadMessage, 0)
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
 			return nil, queryError("read thread candidates", err)
@@ -127,7 +127,7 @@ func (s *Snapshot) ThreadCandidates(ctx context.Context, taskID string, anchor *
 	return items, nil
 }
 
-func (s *Snapshot) ThreadSides(ctx context.Context, taskID string, first, last core.ThreadPosition) (bool, bool, error) {
+func (s *Snapshot) ThreadSides(ctx context.Context, taskID string, first, last model.ThreadPosition) (bool, bool, error) {
 	var before, after bool
 	err := s.tx.QueryRow(ctx, `SELECT
  EXISTS(SELECT 1 FROM task_thread_messages WHERE task_id=$1 AND (created_at,message_id)<($2,$3::uuid)),

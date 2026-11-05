@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -16,23 +16,23 @@ type Workers struct{ store *store.Store }
 func NewWorkers(database *store.Store) *Workers { return &Workers{store: database} }
 
 type WorkerReportResult struct {
-	Configuration  *core.WorkerConfigurationReceipt
+	Configuration  *model.WorkerConfigurationReceipt
 	ObservedAt     time.Time
 	LastReportedAt time.Time
 }
 
 type WorkerPage struct {
 	ObservedAt time.Time
-	Items      []core.WorkerSnapshot
+	Items      []model.WorkerSnapshot
 	NextCursor *string
 }
 
 type WorkerDetailResult struct {
 	ObservedAt time.Time
-	Worker     core.WorkerSnapshot
+	Worker     model.WorkerSnapshot
 }
 
-func (s *Workers) Report(ctx context.Context, principal core.Principal, workerID string, input core.WorkerReport) (WorkerReportResult, error) {
+func (s *Workers) Report(ctx context.Context, principal model.Principal, workerID string, input model.WorkerReport) (WorkerReportResult, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return WorkerReportResult{}, err
 	}
@@ -60,16 +60,16 @@ func (s *Workers) Report(ctx context.Context, principal core.Principal, workerID
 		if err != nil {
 			return err
 		}
-		observation := core.WorkerTaskObservation{State: core.WorkerTasksUnavailable, Items: []core.WorkerObservedTask{}}
+		observation := model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
 		if input.TaskInventory != nil {
 			items, err := tx.ReportTaskSnapshots(ctx, principal.UserID, workerID, *input.TaskInventory)
 			if err != nil {
 				return err
 			}
-			observation = core.WorkerTaskObservation{State: core.WorkerTasksObserved, ObservedAt: &observedAt,
+			observation = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &observedAt,
 				InventoryObservedAt: &input.TaskInventory.ObservedAt, Items: items}
 		}
-		stored, err := tx.UpsertWorker(ctx, core.WorkerSnapshot{UserID: principal.UserID, WorkerID: workerID,
+		stored, err := tx.UpsertWorker(ctx, model.WorkerSnapshot{UserID: principal.UserID, WorkerID: workerID,
 			CreatedAt: observedAt, LastReportedAt: observedAt, Telemetry: input.Telemetry, TaskSnapshot: observation})
 		if err != nil {
 			return err
@@ -90,7 +90,7 @@ func (s *Workers) Report(ctx context.Context, principal core.Principal, workerID
 	return result, nil
 }
 
-func (s *Workers) List(ctx context.Context, principal core.Principal, request PageRequest) (WorkerPage, error) {
+func (s *Workers) List(ctx context.Context, principal model.Principal, request model.PageRequest) (WorkerPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return WorkerPage{}, err
 	}
@@ -125,7 +125,7 @@ func (s *Workers) List(ctx context.Context, principal core.Principal, request Pa
 	return result, nil
 }
 
-func (s *Workers) Get(ctx context.Context, principal core.Principal, workerID string) (WorkerDetailResult, error) {
+func (s *Workers) Get(ctx context.Context, principal model.Principal, workerID string) (WorkerDetailResult, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return WorkerDetailResult{}, err
 	}
@@ -134,7 +134,7 @@ func (s *Workers) Get(ctx context.Context, principal core.Principal, workerID st
 		return WorkerDetailResult{}, err
 	}
 	var result WorkerDetailResult
-	var refusal *Fault
+	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		var err error
 		result.ObservedAt, err = snapshot.ObservedAt(ctx)
@@ -142,8 +142,8 @@ func (s *Workers) Get(ctx context.Context, principal core.Principal, workerID st
 			return err
 		}
 		result.Worker, err = snapshot.Worker(ctx, principal.UserID, workerID, result.ObservedAt)
-		if errors.Is(err, core.ErrNotFound) {
-			refusal = &Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
+		if errors.Is(err, model.ErrNotFound) {
+			refusal = &model.Fault{Code: "not_found", Message: "Worker was not found.", Cause: err}
 			return nil
 		}
 		return err

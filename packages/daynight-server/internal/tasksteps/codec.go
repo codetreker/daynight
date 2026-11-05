@@ -11,18 +11,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 const MaxEncodedBytes = 64 * 1024 * 1024
 
 type Step struct {
-	ID          string              `json:"id"`
-	Title       string              `json:"title"`
-	Description string              `json:"description"`
-	Status      core.TaskStepStatus `json:"status"`
-	CreatedAt   time.Time           `json:"createdAt"`
-	UpdatedAt   time.Time           `json:"updatedAt"`
+	ID          string               `json:"id"`
+	Title       string               `json:"title"`
+	Description string               `json:"description"`
+	Status      model.TaskStepStatus `json:"status"`
+	CreatedAt   time.Time            `json:"createdAt"`
+	UpdatedAt   time.Time            `json:"updatedAt"`
 }
 
 type StepsResource struct {
@@ -102,7 +102,7 @@ func validTime(value time.Time) bool {
 	return !value.IsZero() && value.Year() >= 1 && value.Year() <= 9999 && value.Nanosecond()%1000 == 0
 }
 
-func ValidateStep(step core.TaskStep) error {
+func ValidateStep(step model.TaskStep) error {
 	id, err := CanonicalID(step.ID)
 	if err != nil || id != step.ID {
 		return errors.New("stored step ID is not canonical")
@@ -122,19 +122,19 @@ func ValidateStep(step core.TaskStep) error {
 	return nil
 }
 
-func ValidateHeader(header core.TaskHeader) error {
+func ValidateHeader(header model.TaskHeader) error {
 	if !canonicalUUID(header.ProjectID) || !canonicalUUID(header.ID) || header.Version < 1 || header.DeletedAt != nil {
 		return errors.New("task steps parent header is invalid")
 	}
 	return nil
 }
 
-func publicStep(step core.TaskStep) Step {
+func publicStep(step model.TaskStep) Step {
 	return Step{ID: step.ID, Title: step.Title, Description: step.Description, Status: step.Status,
 		CreatedAt: step.CreatedAt.UTC(), UpdatedAt: step.UpdatedAt.UTC()}
 }
 
-func Collection(header core.TaskHeader, steps []core.TaskStep) (StepsResource, error) {
+func Collection(header model.TaskHeader, steps []model.TaskStep) (StepsResource, error) {
 	if err := ValidateHeader(header); err != nil {
 		return StepsResource{}, err
 	}
@@ -159,7 +159,7 @@ func Collection(header core.TaskHeader, steps []core.TaskStep) (StepsResource, e
 	return resource, nil
 }
 
-func Item(header core.TaskHeader, step core.TaskStep) (StepResource, error) {
+func Item(header model.TaskHeader, step model.TaskStep) (StepResource, error) {
 	if err := ValidateHeader(header); err != nil {
 		return StepResource{}, err
 	}
@@ -191,7 +191,7 @@ func checkCapacity(encodedBytes int, version int64) error {
 	return nil
 }
 
-func EncodeCollection(header core.TaskHeader, steps []core.TaskStep) (StepsResource, []byte, error) {
+func EncodeCollection(header model.TaskHeader, steps []model.TaskStep) (StepsResource, []byte, error) {
 	resource, err := Collection(header, steps)
 	if err != nil {
 		return StepsResource{}, nil, err
@@ -200,7 +200,7 @@ func EncodeCollection(header core.TaskHeader, steps []core.TaskStep) (StepsResou
 	return resource, data, err
 }
 
-func EncodeItem(header core.TaskHeader, step core.TaskStep) (StepResource, []byte, error) {
+func EncodeItem(header model.TaskHeader, step model.TaskStep) (StepResource, []byte, error) {
 	resource, err := Item(header, step)
 	if err != nil {
 		return StepResource{}, nil, err

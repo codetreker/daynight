@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
@@ -21,7 +21,7 @@ func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth *Authenticati
 	mux.HandleFunc(path+"/{name}", auth.Require(resourceMethodNotAllowed(logger, "PUT, DELETE")))
 }
 
-func propertyResponse(task core.Task) api.PropertyResource {
+func propertyResponse(task model.Task) api.PropertyResource {
 	return api.PropertyResource{ProjectID: task.ProjectID, TaskID: task.ID, Version: task.Version, Properties: propertiesResponse(task.Properties)}
 }
 
@@ -32,7 +32,7 @@ func propertyQuery(request *http.Request) error {
 	return nil
 }
 
-func (h *taskHandler) propertySchema(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) propertySchema(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	if err := propertyQuery(request); err != nil {
 		writeError(w, request, logger, "task_property", "schema", err)
@@ -47,7 +47,7 @@ func (h *taskHandler) propertySchema(w http.ResponseWriter, request *http.Reques
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *taskHandler) getProperties(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) getProperties(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
 		writeError(w, request, logger, "task_property", "get", err)
@@ -66,15 +66,15 @@ func (h *taskHandler) getProperties(w http.ResponseWriter, request *http.Request
 	writeJSON(w, request, logger, http.StatusOK, propertyResponse(task))
 }
 
-func (h *taskHandler) setProperty(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) setProperty(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	h.propertyMutation(w, request, principal, false)
 }
 
-func (h *taskHandler) removeProperty(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) removeProperty(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	h.propertyMutation(w, request, principal, true)
 }
 
-func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Request, principal core.Principal, remove bool) {
+func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Request, principal model.Principal, remove bool) {
 	phase := "set"
 	allowed := []string{"version", "valueText"}
 	if remove {
@@ -104,7 +104,7 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 		writeError(w, request, logger, "task_property", phase, err)
 		return
 	}
-	var task core.Task
+	var task model.Task
 	if remove {
 		task, err = h.tasks.RemoveProperty(workerProtocolContext(request), principal, projectID, id, name, version)
 	} else {

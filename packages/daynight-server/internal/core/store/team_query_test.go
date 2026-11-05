@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -48,7 +48,7 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 		if team.ID == first.ID && (team.Version != metadataVersion || team.Membership.Version != memberVersion) {
 			t.Fatalf("rounded versions %#v", team)
 		}
-		if len(ids) == 0 && (team.Kind != "personal" || team.Name != nil || team.Membership.Role != core.ProjectAdmin) {
+		if len(ids) == 0 && (team.Kind != "personal" || team.Name != nil || team.Membership.Role != model.ProjectAdmin) {
 			t.Fatalf("Personal projection %#v", team)
 		}
 		ids = append(ids, team.ID)
@@ -74,7 +74,7 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
-	var changed core.Team
+	var changed model.Team
 	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		before, err := snapshot.Teams(ctx, actor.UserID, Page{Limit: 100})
 		if err != nil {
@@ -112,7 +112,7 @@ func TestTeamSnapshotAbsenceCancellationAndStoredIntegrityFailures(t *testing.T)
 	_, outsider, _ := testAuthRecords(t, s)
 	for _, target := range []struct{ userID, teamID string }{{outsider.UserID, team.ID}, {actor.UserID, uuid.NewString()}} {
 		err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error { _, err := snapshot.Team(ctx, target.userID, target.teamID); return err })
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing Team membership cause %v", err)
 		}
 	}
@@ -142,7 +142,7 @@ func TestTeamSnapshotAbsenceCancellationAndStoredIntegrityFailures(t *testing.T)
 	} {
 		err := s.ReadSnapshot(ctx, read)
 		var failure *Error
-		if err == nil || errors.Is(err, core.ErrNotFound) || !errors.As(err, &failure) {
+		if err == nil || errors.Is(err, model.ErrNotFound) || !errors.As(err, &failure) {
 			t.Fatalf("invalid Personal owner was accepted/hidden %v", err)
 		}
 	}

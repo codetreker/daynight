@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 	"github.com/google/uuid"
@@ -41,7 +41,7 @@ func TestTaskStepsDeletePreservesSurvivorsParentAndExecutionPolicies(t *testing.
 	for _, policy := range []string{"todo", "in_progress", "done", "active_worker", "invalid_worker"} {
 		t.Run(policy, func(t *testing.T) {
 			task := createTask(t, tasks, admin, project.ID, "Parent", dependency.ID)
-			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), ExternalDependsOn: pointer([]string{dependency.ID}), RequiredPlatform: platformChange(pointer(core.PlatformLinux))})
+			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), ExternalDependsOn: pointer([]string{dependency.ID}), RequiredPlatform: platformChange(pointer(model.PlatformLinux))})
 			if policy == "active_worker" {
 				task = updateTask(t, tasks, admin, task, UpdateTask{AssignedTo: pointer(pointer(owner.UserID))})
 				task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
@@ -178,7 +178,7 @@ func TestTaskStepsDeleteReleasesIdentityForANewRecord(t *testing.T) {
 		t.Fatal("reused ID did not create an independent current record")
 	}
 	fresh := recreated.Resource.Steps[3]
-	if fresh.ID != "abcdef01" || fresh.Title != "New record" || fresh.Description != "" || fresh.Status != core.TaskStepTodo || fresh.CreatedAt != fresh.UpdatedAt || fresh.CreatedAt == original.Resource.Steps[2].CreatedAt || fresh.UpdatedAt == original.Resource.Steps[2].UpdatedAt {
+	if fresh.ID != "abcdef01" || fresh.Title != "New record" || fresh.Description != "" || fresh.Status != model.TaskStepTodo || fresh.CreatedAt != fresh.UpdatedAt || fresh.CreatedAt == original.Resource.Steps[2].CreatedAt || fresh.UpdatedAt == original.Resource.Steps[2].UpdatedAt {
 		t.Fatal("reused ID restored old content/status/times")
 	}
 	for index, source := range []int{0, 1, 3} {
@@ -197,11 +197,11 @@ func TestTaskStepsDeleteAdmissionAndStorageFailuresStayExplicit(t *testing.T) {
 	seedMoveSteps(t, database, task.ID)
 	steps := NewTaskSteps(database)
 	for _, tc := range []struct {
-		principal                   core.Principal
+		principal                   model.Principal
 		project, task, target, code string
 		version                     int64
 	}{
-		{core.Principal{}, project.ID, task.ID, moveStepIDs[0], "unauthenticated", 1}, {principal, "bad", task.ID, moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, "bad", moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, task.ID, "bad", "invalid_input", 1}, {principal, project.ID, task.ID, moveStepIDs[0], "invalid_input", 0},
+		{model.Principal{}, project.ID, task.ID, moveStepIDs[0], "unauthenticated", 1}, {principal, "bad", task.ID, moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, "bad", moveStepIDs[0], "invalid_input", 1}, {principal, project.ID, task.ID, "bad", "invalid_input", 1}, {principal, project.ID, task.ID, moveStepIDs[0], "invalid_input", 0},
 		{principal, uuid.NewString(), task.ID, moveStepIDs[0], "not_found", 1}, {principal, project.ID, uuid.NewString(), moveStepIDs[0], "not_found", 1}, {servicePrincipal(t, database), project.ID, task.ID, moveStepIDs[0], "not_found", 1},
 	} {
 		_, err := steps.Delete(context.Background(), tc.principal, tc.project, tc.task, tc.target, DeleteTaskStep{Version: tc.version})
@@ -297,7 +297,7 @@ func TestTaskStepsDeletePartialTailAndSuppressedWritesRollBack(t *testing.T) {
 				t.Fatalf("delete SQL completion: %+v %v", failure, err)
 			}
 			if strings.HasPrefix(mode, "suppressed") {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatal("suppressed persistence count mismatch cause lost")
 				}
 			} else {
@@ -329,25 +329,25 @@ func TestTaskStepsDeleteSameVersionCompetition(t *testing.T) {
 			task := createTask(t, tasks, principal, project.ID, "Parent")
 			seedMoveSteps(t, database, task.ID)
 			steps := NewTaskSteps(database)
-			remove := func(ctx context.Context) (core.Task, error) {
+			remove := func(ctx context.Context) (model.Task, error) {
 				result, err := steps.Delete(ctx, principal, project.ID, task.ID, moveStepIDs[0], DeleteTaskStep{Version: 1})
-				return core.Task{Version: result.Resource.Version}, err
+				return model.Task{Version: result.Resource.Version}, err
 			}
 			other := remove
 			if kind == "different_target" {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					result, err := steps.Delete(ctx, principal, project.ID, task.ID, moveStepIDs[3], DeleteTaskStep{Version: 1})
-					return core.Task{Version: result.Resource.Version}, err
+					return model.Task{Version: result.Resource.Version}, err
 				}
 			}
 			if kind == "add" {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					result, err := steps.Add(ctx, principal, project.ID, task.ID, AddTaskStep{Version: 1, ID: "12345678", Title: "Added"})
-					return core.Task{Version: result.Resource.Version}, err
+					return model.Task{Version: result.Resource.Version}, err
 				}
 			}
 			if kind == "task" {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					return tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: 1, Title: pointer("Parent changed")})
 				}
 			}

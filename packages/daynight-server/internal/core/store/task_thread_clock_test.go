@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestThreadClockSamplesForwardWithoutChangingUUID(t *testing.T) {
-	head := core.ThreadPosition{CreatedAt: time.Date(2026, 11, 3, 10, 0, 0, 123000000, time.UTC), ID: queryID(9)}
-	candidate := core.ThreadPosition{CreatedAt: head.CreatedAt.Add(-time.Hour), ID: queryID(10)}
+	head := model.ThreadPosition{CreatedAt: time.Date(2026, 11, 3, 10, 0, 0, 123000000, time.UTC), ID: queryID(9)}
+	candidate := model.ThreadPosition{CreatedAt: head.CreatedAt.Add(-time.Hour), ID: queryID(10)}
 	if threadPositionAfter(candidate, head) {
 		t.Fatal("an earlier timestamp bypassed clock recovery with a larger UUID")
 	}
@@ -30,13 +30,13 @@ func TestThreadClockSamplesForwardWithoutChangingUUID(t *testing.T) {
 	if err != nil || observed != samples[2] || calls != 3 || waits != 2 {
 		t.Fatalf("clock recovery: %s calls=%d waits=%d %v", observed, calls, waits, err)
 	}
-	if !threadPositionAfter(core.ThreadPosition{CreatedAt: head.CreatedAt, ID: queryID(10)}, head) || threadPositionAfter(head, head) {
+	if !threadPositionAfter(model.ThreadPosition{CreatedAt: head.CreatedAt, ID: queryID(10)}, head) || threadPositionAfter(head, head) {
 		t.Fatal("same-millisecond UUID ordering changed")
 	}
 }
 
 func TestThreadClockBudgetsSamplingAndKeepsParentCancellation(t *testing.T) {
-	head := core.ThreadPosition{CreatedAt: time.Now().UTC(), ID: queryID(9)}
+	head := model.ThreadPosition{CreatedAt: time.Now().UTC(), ID: queryID(9)}
 	for _, duringSample := range []bool{false, true} {
 		t.Run(map[bool]string{false: "timer", true: "query"}[duringSample], func(t *testing.T) {
 			started := time.Now()
@@ -95,7 +95,7 @@ func TestThreadTimestampWaitRetainsSingleDatabaseGeneratedUUID(t *testing.T) {
 	mustQueryExec(t, database, `CREATE SEQUENCE thread_uuid_calls;
  CREATE FUNCTION thread_test_uuid() RETURNS uuid LANGUAGE SQL VOLATILE AS $$ SELECT '00000000-0000-4000-8000-000000000001'::uuid FROM nextval('thread_uuid_calls') $$;
  ALTER TABLE task_thread_messages ALTER COLUMN message_id SET DEFAULT thread_test_uuid()`)
-	var message core.ThreadMessage
+	var message model.ThreadMessage
 	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
 		if _, err := tx.LockHead(ctx, queryID(1)); err != nil {
 			return err
@@ -104,12 +104,12 @@ func TestThreadTimestampWaitRetainsSingleDatabaseGeneratedUUID(t *testing.T) {
 		if err := tx.tx.QueryRow(ctx, `SELECT date_trunc('milliseconds',clock_timestamp())+interval '30 milliseconds'`).Scan(&stamp); err != nil {
 			return err
 		}
-		head := &core.ThreadPosition{CreatedAt: stamp.UTC(), ID: "ffffffff-ffff-4fff-8fff-ffffffffffff"}
+		head := &model.ThreadPosition{CreatedAt: stamp.UTC(), ID: "ffffffff-ffff-4fff-8fff-ffffffffffff"}
 		if err := tx.AdvanceHead(ctx, queryID(1), *head); err != nil {
 			return err
 		}
 		var err error
-		message, err = tx.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1), Author: core.ThreadAuthor{UserID: queryID(9)}, Body: "one UUID"})
+		message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "one UUID"})
 		if err != nil {
 			return err
 		}
@@ -138,17 +138,17 @@ func TestThreadTimestampWaitRetainsSingleDatabaseGeneratedUUID(t *testing.T) {
 func TestThreadClockExhaustionDoesNotPublishInsertedCandidate(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
-	var candidate core.ThreadMessage
+	var candidate model.ThreadMessage
 	err := database.WriteThread(ctx, func(tx *ThreadTx) error {
 		if _, err := tx.LockHead(ctx, queryID(1)); err != nil {
 			return err
 		}
 		var err error
-		candidate, err = tx.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1), Author: core.ThreadAuthor{UserID: queryID(9)}, Body: "must roll back"})
+		candidate, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "must roll back"})
 		if err != nil {
 			return err
 		}
-		head := &core.ThreadPosition{CreatedAt: candidate.CreatedAt.Add(time.Hour), ID: queryID(1)}
+		head := &model.ThreadPosition{CreatedAt: candidate.CreatedAt.Add(time.Hour), ID: queryID(1)}
 		return tx.PrepareTimestamp(ctx, &candidate, head)
 	})
 	var clock *ThreadClockError

@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
-func storeTeamInvitation(team core.Team, admin core.Principal, name string) core.TeamInvitation {
+func storeTeamInvitation(team model.Team, admin model.Principal, name string) model.TeamInvitation {
 	now := time.Now().UTC()
 	hash := sha256.Sum256([]byte(name))
-	return core.TeamInvitation{ID: uuid.NewString(), TeamID: team.ID, CreatedBy: admin.UserID, TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
+	return model.TeamInvitation{ID: uuid.NewString(), TeamID: team.ID, CreatedBy: admin.UserID, TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
 }
 
 func TestTeamInvitationStoreLifecycle(t *testing.T) {
@@ -59,11 +59,11 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 			t.Fatal("personal Team reference")
 		}
 		_, err = snapshot.InvitationTeam(ctx, uuid.NewString())
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing Team: %v", err)
 		}
 		_, err = snapshot.InvitationTeamMember(ctx, team.ID, member.UserID)
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing member: %v", err)
 		}
 		return nil
@@ -83,7 +83,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if joined.UserID != member.UserID || joined.TeamID != team.ID || joined.Role != core.ProjectMemberRole || joined.Version < 1 {
+		if joined.UserID != member.UserID || joined.TeamID != team.ID || joined.Role != model.ProjectMemberRole || joined.Version < 1 {
 			t.Fatal("invited member")
 		}
 		return tx.ConsumeInvitation(ctx, got.ID, member.UserID, time.Now())
@@ -92,7 +92,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	}
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		memberRow, err := snapshot.InvitationTeamMember(ctx, team.ID, member.UserID)
-		if err != nil || memberRow.Role != core.ProjectMemberRole {
+		if err != nil || memberRow.Role != model.ProjectMemberRole {
 			return errors.New("stored member")
 		}
 		list, err := snapshot.TeamInvitations(ctx, team.ID, time.Now())

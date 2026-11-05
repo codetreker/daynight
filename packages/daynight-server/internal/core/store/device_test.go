@@ -8,21 +8,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
 func deviceStoreHash(value string) []byte { hash := sha256.Sum256([]byte(value)); return hash[:] }
-func deviceStoreGrant(t *testing.T, s *Store, now time.Time) core.DeviceAuthorization {
+func deviceStoreGrant(t *testing.T, s *Store, now time.Time) model.DeviceAuthorization {
 	t.Helper()
-	d := core.DeviceAuthorization{ID: uuid.NewString(), DeviceCodeHash: deviceStoreHash(uuid.NewString()), UserCode: "BCDFGHJKLM", Status: "pending", CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute), NextPollAt: now.Add(5 * time.Second), PollIntervalSeconds: 5}
+	d := model.DeviceAuthorization{ID: uuid.NewString(), DeviceCodeHash: deviceStoreHash(uuid.NewString()), UserCode: "BCDFGHJKLM", Status: "pending", CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute), NextPollAt: now.Add(5 * time.Second), PollIntervalSeconds: 5}
 	if err := s.CreateDeviceAuthorization(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	return d
 }
-func deviceStoreCredential(now time.Time) core.PersonalAccessToken {
-	return core.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI", TokenHash: deviceStoreHash(uuid.NewString()), CreatedAt: now}
+func deviceStoreCredential(now time.Time) model.PersonalAccessToken {
+	return model.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI", TokenHash: deviceStoreHash(uuid.NewString()), CreatedAt: now}
 }
 func requireDeviceStoreFailure(t *testing.T, err error) {
 	t.Helper()
@@ -39,7 +39,7 @@ func TestDeviceStoreDecisionPollingAndCredentialOwnership(t *testing.T) {
 	_, bob, _ := testAuthRecords(t, s)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	d := deviceStoreGrant(t, s, now)
-	for _, p := range []core.Principal{alice, bob} {
+	for _, p := range []model.Principal{alice, bob} {
 		got, err := s.InspectDeviceAuthorization(ctx, p, d.UserCode, now)
 		if err != nil || got.Status != "pending" || got.UserID != nil || !got.ExpiresAt.Equal(d.ExpiresAt) {
 			t.Fatalf("pending grant: %+v %v", got, err)
@@ -63,10 +63,10 @@ func TestDeviceStoreDecisionPollingAndCredentialOwnership(t *testing.T) {
 	if err != nil || outcome != "" {
 		t.Fatalf("approval: %s %v", outcome, err)
 	}
-	if _, err = s.InspectDeviceAuthorization(ctx, bob, d.UserCode, now); !errors.Is(err, core.ErrNotFound) {
+	if _, err = s.InspectDeviceAuthorization(ctx, bob, d.UserCode, now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("other account inspected decided grant: %v", err)
 	}
-	if _, err = s.DecideDeviceAuthorization(ctx, bob, d.UserCode, "denied", now); !errors.Is(err, core.ErrNotFound) {
+	if _, err = s.DecideDeviceAuthorization(ctx, bob, d.UserCode, "denied", now); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("other account changed decided grant: %v", err)
 	}
 	outcome, err = s.DecideDeviceAuthorization(ctx, alice, d.UserCode, "denied", now)
@@ -78,7 +78,7 @@ func TestDeviceStoreDecisionPollingAndCredentialOwnership(t *testing.T) {
 	if err != nil || outcome != "" {
 		t.Fatalf("redemption: %s %v", outcome, err)
 	}
-	pat, err := s.Authenticate(ctx, core.PATCredential, c.TokenHash, c.CreatedAt)
+	pat, err := s.Authenticate(ctx, model.PATCredential, c.TokenHash, c.CreatedAt)
 	if err != nil || pat.UserID != alice.UserID {
 		t.Fatalf("issued credential owner: %+v %v", pat, err)
 	}
@@ -90,16 +90,16 @@ func TestDeviceStoreDecisionPollingAndCredentialOwnership(t *testing.T) {
 	if err != nil || outcome != "invalid_grant" {
 		t.Fatalf("repeated redemption: %s %v", outcome, err)
 	}
-	if err = s.DeleteCurrentPAT(ctx, core.Principal{CredentialID: pat.CredentialID, UserID: bob.UserID, Kind: core.PATCredential}); err != nil {
+	if err = s.DeleteCurrentPAT(ctx, model.Principal{CredentialID: pat.CredentialID, UserID: bob.UserID, Kind: model.PATCredential}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Authenticate(ctx, core.PATCredential, c.TokenHash, c.CreatedAt); err != nil {
+	if _, err = s.Authenticate(ctx, model.PATCredential, c.TokenHash, c.CreatedAt); err != nil {
 		t.Fatal("another account deleted credential")
 	}
 	if err = s.DeleteCurrentPAT(ctx, pat); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Authenticate(ctx, core.PATCredential, c.TokenHash, c.CreatedAt); !errors.Is(err, core.ErrNotFound) {
+	if _, err = s.Authenticate(ctx, model.PATCredential, c.TokenHash, c.CreatedAt); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("logout retained credential: %v", err)
 	}
 }
@@ -184,18 +184,18 @@ func TestDeviceStoreTerminalStatesAndSessionBoundaries(t *testing.T) {
 			if err != nil || outcome != "invalid_grant" {
 				t.Fatalf("unknown grant: %s %v", outcome, err)
 			}
-			if _, err = s.InspectDeviceAuthorization(ctx, alice, "BCDFGHJKLN", now); !errors.Is(err, core.ErrNotFound) {
+			if _, err = s.InspectDeviceAuthorization(ctx, alice, "BCDFGHJKLN", now); !errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("unknown code: %v", err)
 			}
 			pat := alice
-			pat.Kind = core.PATCredential
-			if _, err = s.InspectDeviceAuthorization(ctx, pat, d.UserCode, now); !errors.Is(err, core.ErrNotFound) {
+			pat.Kind = model.PATCredential
+			if _, err = s.InspectDeviceAuthorization(ctx, pat, d.UserCode, now); !errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("PAT inspected grant: %v", err)
 			}
 			if err = s.DeleteSession(ctx, alice); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = s.DecideDeviceAuthorization(ctx, alice, d.UserCode, "approved", now); !errors.Is(err, core.ErrNotFound) {
+			if _, err = s.DecideDeviceAuthorization(ctx, alice, d.UserCode, "approved", now); !errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("revoked session decided grant: %v", err)
 			}
 		})
@@ -206,7 +206,7 @@ func TestDeviceStorePersistentRateAndCleanupBounds(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	buckets := []core.DeviceRateBucket{{Hash: deviceStoreHash("global"), Limit: 4}, {Hash: deviceStoreHash("actor"), Limit: 2}}
+	buckets := []model.DeviceRateBucket{{Hash: deviceStoreHash("global"), Limit: 4}, {Hash: deviceStoreHash("actor"), Limit: 2}}
 	for range 2 {
 		allowed, err := s.TakeDeviceRate(ctx, buckets, now)
 		if err != nil || !allowed {
@@ -266,7 +266,7 @@ func TestDeviceStoreOperationalErrorsPreserveCause(t *testing.T) {
 	if _, err = s.Pool.Exec(ctx, `DROP TABLE device_authorization_limits`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.TakeDeviceRate(ctx, []core.DeviceRateBucket{{Hash: deviceStoreHash("limit"), Limit: 1}}, now)
+	_, err = s.TakeDeviceRate(ctx, []model.DeviceRateBucket{{Hash: deviceStoreHash("limit"), Limit: 1}}, now)
 	requireDeviceStoreFailure(t, err)
 	s.Close()
 	_, err = s.TakeDeviceRate(ctx, nil, now)

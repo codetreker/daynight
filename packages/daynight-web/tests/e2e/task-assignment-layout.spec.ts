@@ -2,13 +2,13 @@ import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
 import type { Locator, Page, Response, TestInfo } from '@playwright/test';
 import { bearerContext, type AuthenticatedAPI } from './authentication';
-import { createProject, createTask, expect, seedUserProfile, test } from './fixtures';
+import { createProject, createTask, executeTask, expect, finishTask, seedUserProfile, startTask, test } from './fixtures';
 import { closeChain, openChain } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
 import { createWireReceipts } from '../../scripts/acceptance/wire-receipts.mts';
 
 const scenario = { annotation: { type: 'scenario', description: 'task-assignment-layout' } };
-const longName = 'Alexandra 长姓名负责人 María del Carmen — complete accessible identity across task views';
+const longName = `Alexandra${'W'.repeat(70)}`;
 type Profile = { readonly id: string; readonly name: string | null; readonly avatarUrl: string | null };
 const profile = async (api: AuthenticatedAPI): Promise<Profile> => {
   const response = await api.get('/api/v1/me'); expect(response.status()).toBe(200); return await response.json() as Profile;
@@ -73,6 +73,8 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   const project = await createProject(api, { name: 'Persistent assignee and current-account cache acceptance' });
   const first = await createTask(api, project.id, { title: 'First task sharing an inline avatar', assignedTo: alice.id });
   const second = await createTask(api, project.id, { title: 'Second task sharing an inline avatar', assignedTo: alice.id });
+  const historic = await createTask(api, project.id, { title: 'Historical completed standalone task', assignedTo: alice.id });
+  await executeTask(api, project.id, historic);
   const peoplePath = `/api/v1/projects/${project.id}/task-assignees`;
   const syncPath = `/api/v1/projects/${project.id}/task-sync`;
   const requests: string[][] = [];
@@ -127,6 +129,12 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   try {
     await page.clock.install({ time: new Date('2029-01-01T00:00:00Z') });
     await page.goto(`/projects/${project.id}`); await standalone(page);
+    await expect(page.locator(`#standalone-task-${historic.id}`)).toBeVisible();
+    const status = page.getByRole('combobox', { name: /^(状态|Status)$/, exact: true });
+    await status.selectOption('done');
+    await expect(page.locator(`#standalone-task-${historic.id}`)).toBeVisible();
+    await expect(page.locator(`#standalone-task-${first.id}`)).toHaveCount(0);
+    await status.selectOption('all');
     await expectAvatar(page.locator(`#standalone-task-${first.id} .assignee-avatar img`));
     await expectMe(0, 200);
     expect(requests, 'Shared visible assignees are resolved once').toEqual([[alice.id]]);
@@ -227,7 +235,10 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     const unassigned = await createTask(api, project.id, { title: 'Unassigned task', assignedTo: null });
     const goal = await createTask(api, project.id, { title: 'Goal context assigned to another person', assignedTo: bobProfile.id });
     const child = await createTask(api, project.id, { title: 'Matching blocked successor', assignedTo: aliceProfile.id, dependsOn: [goal.id] });
-    const hiddenSibling = await createTask(api, project.id, { title: 'Hidden sibling remains in the full graph', assignedTo: bobProfile.id, dependsOn: [goal.id] });
+    const hiddenSibling = await createTask(api, project.id, { title: 'Other sibling remains in the full chain', assignedTo: bobProfile.id, dependsOn: [goal.id] });
+    const startedGoal = await startTask(api, project.id, goal);
+    const completed = await createTask(api, project.id, { title: 'Completed task assigned to me', assignedTo: aliceProfile.id });
+    await executeTask(api, project.id, completed);
     const shortBob = bobProfile.id.slice(0, 8);
     const peopleRequests: { readonly bounded: boolean; readonly status: number }[] = [];
     page.on('response', (response) => {
@@ -238,6 +249,21 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     for (const { locale, width } of layouts) {
       await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
       await page.setViewportSize({ width, height: 900 }); await standalone(page);
+      const status = page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true });
+      await expect(status.locator('option')).toHaveText(locale === 'en' ? ['All statuses', 'To do', 'In progress', 'Done'] : ['全部状态', '待办', '进行中', '已完成']);
+      await chooseFilter(page, longName);
+      await expect.poll(() => status.evaluate((element) => {
+        const owner = document.querySelector<HTMLElement>('.task-assignee-filter')!.getBoundingClientRect();
+        const status = element.getBoundingClientRect();
+        const separate = owner.right <= status.left + 1 || status.right <= owner.left + 1 || owner.bottom <= status.top + 1 || status.bottom <= owner.top + 1;
+        return separate && owner.left >= 0 && status.left >= 0 && owner.right <= innerWidth && status.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
+      })).toBe(true);
+      if (width === 1366) {
+        const ownerBounds = await page.locator('.task-assignee-filter').boundingBox();
+        const statusBounds = await status.boundingBox();
+        expect(Math.abs(ownerBounds!.y + ownerBounds!.height / 2 - statusBounds!.y - statusBounds!.height / 2)).toBeLessThanOrEqual(2);
+      }
+      await chooseFilter(page, locale === 'en' ? 'Everyone' : '所有负责人');
       const row = page.locator(`#standalone-task-${assigned.id}`);
       await expect(row.locator('.task-assignee-identity')).toHaveAccessibleName(`${locale === 'en' ? 'Assignee: ' : '负责人：'}${longName}`);
       await expect(row.locator('.assignee-avatar')).toHaveText('A'); await expect(row.locator('.assignee-avatar img')).toHaveCount(0);
@@ -275,18 +301,43 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
     await chooseFilter(page, 'Assigned to me'); await page.getByRole('tab', { name: 'Task chains', exact: true }).click();
     const goalRow = page.locator(`[data-chain-id="${goal.id}"]`); await expect(goalRow).toBeVisible();
+    const status = page.getByRole('combobox', { name: 'Status', exact: true });
+    await expect(status).toHaveValue('all');
+    await status.focus(); await page.keyboard.press('End');
+    await expect(status).toHaveValue('done');
+    await expect(goalRow).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+    await expect(page.locator(`#standalone-task-${completed.id}`)).toBeVisible();
+    await expect(page.locator(`#standalone-task-${assigned.id}`)).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Task chains', exact: true }).click();
+    await status.selectOption('in_progress');
+    // The representative is in progress and a different member is assigned to me.
+    await expect(goalRow).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'No tasks match the filters', exact: true })).toBeVisible();
+    await selectOverview(page); await page.locator('.overview-progress-row').filter({ hasText: goal.title }).click();
+    await expect(goalRow.locator('.goal-toggle')).toBeFocused();
+    await expect(goalRow.locator('.goal-toggle')).toHaveClass(/overview-progress-target/);
+    await expect(status).toHaveValue('all');
+    await expect(page.locator('.task-assignee-filter .assignee-trigger')).toHaveText('Assigned to me');
+    await status.selectOption('todo');
+    await expect(goalRow).toBeVisible();
     await expect(goalRow.locator('.root-progress-label')).toHaveText('0/3 completed'); await goalRow.locator('.goal-toggle').click();
-    await expect(goalRow.getByText('1 matching child tasks', { exact: true })).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${child.id}`)).toBeVisible();
     await expect(page.locator(`#chain-task-${goal.id}-${child.id}`).locator('..').locator('.graph-blocked-badge')).toBeVisible();
-    await expect(page.locator(`#chain-task-${goal.id}-${hiddenSibling.id}`)).toHaveCount(0);
+    await expect(page.locator(`#chain-task-${goal.id}-${hiddenSibling.id}`)).toBeVisible();
     await page.locator(`#chain-task-${goal.id}-${child.id}`).click();
     await expect(detail(page).locator('.task-detail-blocked')).toBeVisible();
     await expect(detail(page).getByRole('button', { name: /Goal context assigned to another person/ })).toHaveCount(2); await closeDetail(page);
     await openChain(page, goal.id); await expect(page.locator('.task-chain-meta')).toContainText('0/3 completed');
     await expect(page.locator('.task-chain-dialog .task-node-title', { hasText: goal.title })).toBeVisible();
     await expect(page.locator('.task-chain-dialog .task-node-title', { hasText: hiddenSibling.title })).toBeVisible(); await closeChain(page);
-    await chooseFilter(page, 'Unassigned'); await expect(page.getByRole('heading', { name: 'No tasks match this assignee', exact: true })).toBeVisible();
+    await finishTask(api, project.id, startedGoal);
+    await startTask(api, project.id, child);
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(goalRow).toHaveCount(0);
+    await status.selectOption('in_progress'); await expect(goalRow).toBeVisible();
+    await status.selectOption('all');
+    await chooseFilter(page, 'Unassigned'); await expect(goalRow).toHaveCount(0);
     await selectOverview(page); await page.locator('.overview-progress-row').filter({ hasText: goal.title }).click();
     await expect(page.locator('.task-assignee-filter .assignee-trigger')).toHaveText('Everyone'); await expect(goalRow).toBeVisible();
 

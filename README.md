@@ -5,7 +5,8 @@ work, dependencies, required inputs and resulting artifacts together, with a
 browser dashboard for understanding progress and a command-line client for
 managing tasks. A foreground worker runs automatically claimed tasks through
 Codex, Claude Code or Copilot in private Herdr workspaces or browser-controlled
-Task Sessions. The CLI also provides automated
+Task Sessions. The same Worker hosts named assistants in ordinary directories,
+with shared browser conversations and Daynight CLI access. The CLI also provides automated
 GitHub pull request review through Copilot CLI.
 
 Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
@@ -53,6 +54,11 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Control a task session in the browser.** With `worker.agentControlMode: web`,
   view native messages, reasoning and tool results, send text, stop a turn, and
   answer supported approvals, questions and forms in the task’s Session tab.
+- **Keep an assistant available.** Open Assistants in the workspace and create one
+  with just a name. A compatible online Worker supplies the directory and Agent;
+  advanced settings allow explicit choices. Switch conversations, inspect details
+  and close or reopen the chat without stopping its Agent. Assistants use the CLI
+  for system queries and authorized operations across accessible projects.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
@@ -143,6 +149,28 @@ customizing it and locating the copy included in the npm package.
 Run `daynight completion setup` to install Bash or zsh completion. The
 [completion guide](packages/daynight/README.md#shell-completion) covers shell
 selection, startup files and activation.
+
+## Assistants
+
+Keep `daynight worker run` running on a machine with a configured native Agent,
+then open **Assistants** in the workspace. No repository registration or separate
+Controller command is required. Create with a name, or expand advanced settings
+to choose a Worker, ordinary directory and Agent. Older Workers without assistant
+hosting reports remain visible as unsupported and cannot be selected automatically.
+
+The Worker remains a foreground process: closing a browser does not stop an
+assistant, but an offline or stopped Worker cannot execute requests. Normal Worker
+restart resumes the original native conversation when its identity and stop
+evidence are available; uncertain execution is reported without starting an
+empty replacement or replaying input.
+
+Deleting an assistant removes its Daynight conversation and private execution
+files after verified stopping. It leaves independently created tasks, working
+directories and Provider-owned native history intact. Webhook/MCP integrations,
+automatic migration and OS service installation are not provided. Existing
+standalone Test Sessions remain separate and are not converted automatically.
+See the [assistant guide](packages/daynight/README.md#bot-management) for CLI
+commands, authentication, lifecycle and failure handling.
 
 ## Standalone Session testing
 
@@ -293,7 +321,7 @@ upload HTML you trust with that authority.
 | Component | Role | Documentation |
 |---|---|---|
 | [`packages/daynight/`](packages/daynight/) | TypeScript CLI, task-management skill and Copilot review coordinator | [CLI manual](packages/daynight/README.md) |
-| [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md) |
+| [`packages/daynight-server/`](packages/daynight-server/) | Go service, authentication, memberships, PostgreSQL and file storage | [Server guide](packages/daynight-server/README.md), [organization rules](docs/daynight-server.md) |
 | [`packages/daynight-web/`](packages/daynight-web/) | React/TypeScript browser workspace embedded in the service | [Web guide](packages/daynight-web/README.md) |
 | [`deployment/localhost/`](deployment/localhost/) | Persistent Docker Compose deployment | [Deployment guide](deployment/localhost/README.md) |
 | [`deployment/dev-ci/`](deployment/dev-ci/) | Disposable full-stack verification environment | [Dev-CI guide](deployment/dev-ci/README.md) |
@@ -454,6 +482,7 @@ for decision notes, scope choices and prose, and
 | `README.md` | Project purpose, capabilities, setup, development entry points and documentation conventions |
 | Package READMEs and `docs/development.md` | Component usage, development, release procedures and validation methods |
 | [`docs/ui-design.md`](docs/ui-design.md) | Shared UI design principles, examples and information boundaries |
+| [`docs/daynight-server.md`](docs/daynight-server.md) | Stable server code organization rules |
 | `docs/spec/` | Required product behavior and observable guarantees |
 | `docs/design/` | Current structure, mechanisms, rationale and implementation boundaries |
 | `docs/research/` | Investigations, evidence, sources and observation conditions |
@@ -473,6 +502,7 @@ must not be committed, including interactive previews composed from production
 components. Keep local prototypes in the task worktree's Git-ignored `.tmp/`
 and reviewable prototypes in their owning Daynight task's attachments.
 
-Specifications and designs use Chinese headings and prose while preserving
-technical literals. Other documents, skills, code, comments and commit messages
-use English unless explicitly instructed otherwise. Discuss work in Chinese.
+Specifications, designs, and the server organization rules use Chinese headings
+and prose while preserving technical literals. Other documents, skills, code,
+comments and commit messages use English unless explicitly instructed otherwise.
+Discuss work in Chinese.

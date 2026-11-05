@@ -19,6 +19,6 @@ pnpm --dir "$DAYNIGHT_MODULE_ROOT/../.." web:build
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 
-for stress_package in ./internal/server ./internal/sessionprotocol/v2 ./internal/filestorage/local; do
+for stress_package in ./internal/server ./internal/core/session/protocol/v2 ./internal/core/filestorage/local; do
   go test -v -tags stress -run '^TestStress' -race -count=1 -timeout=10m "$stress_package"
 done

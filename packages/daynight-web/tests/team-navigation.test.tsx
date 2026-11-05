@@ -269,14 +269,87 @@ describe("Team workspace navigation", () => {
     await act(async () => recheck.resolve(json(team(a, "  Alpha  "))));
     await waitFor(() => expect(screen.getByLabelText("Team name")).toHaveValue("Unsaved draft"));
   });
-  it("retains typed deletion confirmation through same-account revalidation", async () => {
-    window.history.replaceState(null, "", `/teams/${a}/settings`); const fetcher = install();
-    render(<AuthenticatedApp />); await screen.findByRole("button", { name: /^Edit$/ }); fireEvent.click(screen.getByRole("button", { name: "Delete Team" }));
-    const dialog = await screen.findByRole("dialog", { name: "Delete Team" }); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha  " } });
+  it("revalidates Team settings after a same-account check while retaining the open editor", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const identity = Promise.withResolvers<Response>(), reread = Promise.withResolvers<Response>();
+    let meReads = 0, teamReads = 0;
+    const fetcher = install((url, init) => {
+      if (url === "/api/v1/me" && ++meReads === 2) return identity.promise;
+      if (url === `/api/v1/teams/${a}` && !init?.method && ++teamReads === 3) return reread.promise;
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }));
+    const membersLink = screen.getByRole("link", { name: "Team members" });
+    const settingsLink = screen.getByRole("link", { name: "Team settings" });
+    const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
+    const name = within(dialog).getByLabelText("Team name") as HTMLTextAreaElement;
+    fireEvent.change(name, { target: { value: "Unsaved draft" } }); name.focus(); name.setSelectionRange(2, 5);
     focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(2));
-    await waitFor(() => expect(screen.getByRole("dialog", { name: "Delete Team" })).toBeVisible());
-    expect(within(screen.getByRole("dialog", { name: "Delete Team" })).getByLabelText("Enter the Team name to confirm")).toHaveValue("  Alpha  ");
+    await waitFor(() => expect(meReads).toBe(2)); expect(teamReads).toBe(2);
+    expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog);
+    await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
+    await waitFor(() => expect(teamReads).toBe(3));
+    expect(screen.getByRole("link", { name: "Team members" })).toBe(membersLink);
+    expect(screen.getByRole("link", { name: "Team settings" })).toBe(settingsLink);
+    expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog); expect(dialog).toBeVisible();
+    expect(document.activeElement).toBe(name); expect(name.selectionStart).toBe(2); expect(name.selectionEnd).toBe(5);
+    expect(name).toHaveValue("Unsaved draft"); expect(name).not.toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    await act(async () => reread.resolve(json(team(a, "  Alpha  "))));
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBe(dialog);
+    expect(screen.getByRole("link", { name: "Team members" })).toBe(membersLink);
+    expect(screen.getByRole("link", { name: "Team settings" })).toBe(settingsLink);
+    expect(document.activeElement).toBe(name); expect(name).toHaveValue("Unsaved draft");
+  });
+  it("retains Team members during recovery reads and rejects submissions until permissions are fresh", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/members`);
+    const identity = Promise.withResolvers<Response>(), rosterRead = Promise.withResolvers<Response>();
+    const other = "00000000-0000-4000-8000-000000000009";
+    const membership = (id: string, role: "admin" | "member", version = 1n) => ({ teamId: a, userId: id, role, version, createdAt: time, updatedAt: time, profile: { name: id === userId ? "Alice" : "Other", email: null, avatarUrl: null } });
+    let meReads = 0, rosterReads = 0;
+    const fetcher = install((url) => {
+      if (url === "/api/v1/me" && ++meReads === 2) return identity.promise;
+      if (url === `/api/v1/teams/${a}/members`) return ++rosterReads === 2 ? rosterRead.promise : json({ items: [membership(userId, "admin"), membership(other, "member")] });
+      if (url === `/api/v1/teams/${a}/invitations`) return json({ items: [] });
+      return undefined;
+    });
+    render(<AuthenticatedApp />);
+    const row = (await screen.findByText("Other", { selector: ".person-name" })).closest(".team-member-row") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove member" });
+    const submit = within(dialog).getByRole("button", { name: "Remove member" });
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(meReads).toBe(2));
+    expect(screen.getByRole("dialog", { name: "Remove member" })).toBe(dialog);
+    fireEvent.click(submit); expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
+    await waitFor(() => expect(rosterReads).toBe(2));
+    expect(screen.getByRole("dialog", { name: "Remove member" })).toBe(dialog); expect(row).toBeVisible();
+    fireEvent.click(submit); expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    await act(async () => rosterRead.resolve(json({ items: [membership(userId, "admin"), membership(other, "admin", 2n)] })));
+    await waitFor(() => expect(submit).toBeDisabled());
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+  it("keeps the management dialog and focused draft visible while identity is pending", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const identity = Promise.withResolvers<Response>(); let meReads = 0;
+    const fetcher = install((url) => url === "/api/v1/me" && ++meReads === 2 ? identity.promise : undefined);
+    render(<AuthenticatedApp />); const heading = await screen.findByRole("heading", { name: "Team settings" });
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
+    const confirmation = within(dialog).getByLabelText("Enter the Team name to confirm") as HTMLTextAreaElement;
+    fireEvent.change(confirmation, { target: { value: "  Alpha  " } }); confirmation.focus(); confirmation.setSelectionRange(2, 5);
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(meReads).toBe(2));
+    expect(screen.getByRole("heading", { name: "Team settings", hidden: true })).toBe(heading);
+    expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog); expect(dialog).toBeVisible();
+    expect(document.activeElement).toBe(confirmation); expect(confirmation.selectionStart).toBe(2); expect(confirmation.selectionEnd).toBe(5);
+    expect(confirmation).toHaveValue("  Alpha  "); expect(confirmation).not.toBeDisabled();
+    await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
+    expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog);
+    expect(document.activeElement).toBe(confirmation); expect(confirmation.selectionStart).toBe(2); expect(confirmation.selectionEnd).toBe(5);
     expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
   it.each(["success", "lost"] as const)("keeps a pending delete through 404 on revalidation: %s", async (outcome) => {
@@ -291,7 +364,7 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(deletes).toBe(1)); focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
     await waitFor(() => expect(reads).toBeGreaterThanOrEqual(4)); expect(window.location.pathname).toBe(`/teams/${a}/settings`);
     if (outcome === "success") { await act(async () => reply.resolve(json({ teamId: a, deleted: true }))); await waitFor(() => expect(window.location.pathname).toBe(`/teams/${personal}`)); }
-    else { await act(async () => reply.reject(new TypeError("connection lost"))); expect(await screen.findByText(/result is unknown/)).toBeInTheDocument(); expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(deletes).toBe(1); }
+    else { await act(async () => reply.reject(new TypeError("connection lost"))); await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest('[hidden]'))).toBe(true)); expect(window.location.pathname).toBe(`/teams/${a}/settings`); expect(deletes).toBe(1); }
   });
   it("does not replace a rename receipt with a late settings reread", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`); const patch = Promise.withResolvers<Response>(), late = Promise.withResolvers<Response>(); let reads = 0, patches = 0;
@@ -370,16 +443,44 @@ describe("Team workspace navigation", () => {
     failStorage = false; fireEvent.click(screen.getByRole("button", { name: "Retry" })); await waitFor(() => expect(window.location.pathname).toBe("/projects"));
   });
 
-  it("suspends the create dialog during same-account identity revalidation without losing its draft", async () => {
+  it("keeps the mobile drawer and its focus trap through a pending same-account check", async () => {
+    mockSidebarMediaQuery(true);
     const identity = Promise.withResolvers<Response>(); let meReads = 0;
     install((url) => url === "/api/v1/me" && ++meReads === 2 ? identity.promise : undefined);
     render(<AuthenticatedApp />); await screen.findByRole("heading", { name: "Personal" });
-    const selector = document.querySelector<HTMLDetailsElement>("details.team-selector")!; fireEvent.click(selector.querySelector("summary")!); fireEvent.click(within(selector).getByRole("button", { name: "Create Team" }));
-    const dialog = screen.getByRole("dialog", { name: "Create Team" }); fireEvent.change(within(dialog).getByLabelText(/Team name/), { target: { value: "Draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    const drawer = screen.getByRole("dialog", { name: "Workspace navigation" });
+    const focus = within(drawer).getByRole("link", { name: "My Workers" }); focus.focus();
+    const workspace = document.querySelector(".workspace")!;
+    expect(workspace).toHaveAttribute("inert"); expect(document.body.style.overflow).toBe("hidden");
     focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(dialog.parentElement).toHaveAttribute("hidden")); fireEvent.keyDown(document, { key: "Escape" });
-    await act(async () => identity.resolve(json(person))); await waitFor(() => expect(screen.getByRole("dialog", { name: "Create Team" })).toBeVisible());
-    expect(within(screen.getByRole("dialog", { name: "Create Team" })).getByLabelText(/Team name/)).toHaveValue("Draft");
+    await waitFor(() => expect(meReads).toBe(2));
+    expect(screen.getByRole("dialog", { name: "Workspace navigation" })).toBe(drawer);
+    expect(drawer).toBeVisible(); expect(document.activeElement).toBe(focus);
+    expect(workspace).toHaveAttribute("inert"); expect(document.body.style.overflow).toBe("hidden");
+    await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
+    expect(screen.getByRole("dialog", { name: "Workspace navigation" })).toBe(drawer);
+    expect(document.activeElement).toBe(focus); expect(workspace).toHaveAttribute("inert");
+  });
+  it("keeps the create dialog, selection, and focus throughout same-account identity revalidation", async () => {
+    const identity = Promise.withResolvers<Response>(); let meReads = 0;
+    const fetcher = install((url) => url === "/api/v1/me" && ++meReads === 2 ? identity.promise : undefined);
+    render(<AuthenticatedApp />); const page = await screen.findByRole("heading", { name: "Personal" });
+    const selector = document.querySelector<HTMLDetailsElement>("details.team-selector")!; fireEvent.click(selector.querySelector("summary")!); fireEvent.click(within(selector).getByRole("button", { name: "Create Team" }));
+    const dialog = screen.getByRole("dialog", { name: "Create Team" });
+    const name = within(dialog).getByLabelText(/Team name/) as HTMLTextAreaElement;
+    fireEvent.change(name, { target: { value: "Draft Team" } }); name.focus(); name.setSelectionRange(1, 5);
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(meReads).toBe(2));
+    expect(screen.getByRole("dialog", { name: "Create Team" })).toBe(dialog);
+    expect(dialog).toBeVisible(); expect(screen.getByRole("heading", { name: "Personal", hidden: true })).toBe(page);
+    expect(document.activeElement).toBe(name); expect(name.selectionStart).toBe(1); expect(name.selectionEnd).toBe(5);
+    expect(name).toHaveValue("Draft Team"); expect(name).not.toBeDisabled();
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
+    expect(screen.getByRole("dialog", { name: "Create Team" })).toBe(dialog);
+    expect(document.activeElement).toBe(name); expect(name.selectionStart).toBe(1); expect(name.selectionEnd).toBe(5);
+    expect(name).toHaveValue("Draft Team");
   });
   it("discards a create dialog's late unknown-state read when the account changes", async () => {
     const bob = "00000000-0000-4000-8000-000000000011", bobPersonal = "00000000-0000-4000-8000-000000000012";
@@ -401,4 +502,104 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create Team" })).toBeNull()); expect(screen.queryByText("Old account Team")).toBeNull();
   });
 
+});
+
+describe("Team selection at cold workspace entries", () => {
+  const savedKey = `daynight.selectedTeam:${userId}`;
+  const missing = () => json({ error: { code: "not_found", message: "missing", requestId: "rq-resource" } }, 404);
+  const resourceFallback = (url: string) => url === "/api/v1/me" || url.startsWith("/api/v1/teams?") || url === `/api/v1/teams/${a}` || url === `/api/v1/teams/${b}` || url.startsWith("/api/v1/projects?") ? undefined : missing();
+  const selector = () => document.querySelector("summary.team-switch");
+
+  it.each([`/projects/${projectId}`, "/shared-projects", "/workers", "/account"])("omits Personal management links on %s", async (path) => {
+    window.history.replaceState(null, "", path);
+    install(resourceFallback); render(<AuthenticatedApp />);
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team: Personal"));
+    expect(screen.queryByRole("link", { name: "Team members" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
+    expect(window.location.pathname).toBe(path);
+  });
+
+  it("keeps Personal management links absent throughout a same-navigation recheck", async () => {
+    window.history.replaceState(null, "", "/projects"); localStorage.setItem(savedKey, personal);
+    const reread = Promise.withResolvers<Response>(); let reads = 0;
+    install((url) => url === `/api/v1/teams/${personal}` ? ++reads === 1 ? json(team(personal, null, "personal")) : reread.promise : undefined);
+    render(<AuthenticatedApp />);
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team: Personal"));
+    const shared = screen.getByRole("link", { name: "Shared with me" }); shared.focus();
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(2));
+    expect(screen.queryByRole("link", { name: "Team members" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
+    expect(document.activeElement).toBe(shared);
+    await act(async () => reread.resolve(json(team(personal, null, "personal"))));
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team: Personal"));
+    expect(screen.queryByRole("link", { name: "Team members" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
+    expect(document.activeElement).toBe(shared);
+  });
+
+  it.each([`/projects/${projectId}`, `/projects/${projectId}/members`, `/projects/${projectId}/settings`, "/shared-projects", "/workers", "/account", "/bots", "/test-sessions"])("restores the sidebar Team independently of %s", async (path) => {
+    window.history.replaceState(null, "", path); localStorage.setItem(savedKey, a);
+    const fetcher = install(resourceFallback); render(<AuthenticatedApp />);
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));
+    expect(screen.getByRole("link", { name: "Team members" })).toHaveAttribute("href", `/teams/${a}/members`);
+    expect(screen.getByRole("link", { name: "Team settings" })).toHaveAttribute("href", `/teams/${a}/settings`);
+    expect(window.location.pathname).toBe(path);
+    expect(localStorage.getItem(savedKey)).toBe(a);
+    expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
+  });
+
+  it("keeps resource reads independent while dependent sidebar links and projects wait for restoration", async () => {
+    const path = `/projects/${projectId}`; window.history.replaceState(null, "", path); localStorage.setItem(savedKey, a);
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = install((url) => url === `/api/v1/teams/${a}` ? pending.promise : resourceFallback(url));
+    render(<AuthenticatedApp />);
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
+    expect(selector()).toHaveAttribute("aria-label", "Switch Team: Loading Teams");
+    for (const name of ["My projects", "Team members", "Team settings"]) {
+      const link = screen.getByRole("link", { name });
+      expect(link).toHaveAttribute("aria-disabled", "true"); expect(link).not.toHaveAttribute("href");
+      fireEvent.click(link); expect(window.location.pathname).toBe(path);
+    }
+    expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(false);
+    await act(async () => pending.resolve(json(team(a, "  Alpha  "))));
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${a}`))).toBe(true));
+    expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
+    expect(window.location.pathname).toBe(path);
+  });
+
+  it("keeps Shared content available during a failed restoration and retries without losing the saved Team", async () => {
+    window.history.replaceState(null, "", "/shared-projects"); localStorage.setItem(savedKey, a); let status = 500;
+    const fetcher = install((url) => url === `/api/v1/teams/${a}` && status === 500 ? json({ error: { code: "internal_error", message: "private", requestId: "rq-restore" } }, 500) : undefined);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "Projects shared with me" });
+    const notice = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+    expect(notice).toHaveTextContent("rq-restore"); expect(notice).not.toHaveTextContent("private");
+    expect(localStorage.getItem(savedKey)).toBe(a);
+    expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true);
+    expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
+    status = 200; fireEvent.click(within(notice).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));
+    expect(screen.queryByRole("heading", { name: "Unable to load Teams" })).toBeNull();
+    expect(window.location.pathname).toBe("/shared-projects");
+  });
+
+  it.each([a, personal])("honors the explicit Team %s on a members reload", async (teamId) => {
+    const path = `/teams/${teamId}/members`; window.history.replaceState(null, "", path); localStorage.setItem(savedKey, b);
+    install((url) => {
+      if (url === `/api/v1/teams/${personal}`) return json(team(personal, null, "personal"));
+      if (url === `/api/v1/teams/${teamId}/members`) return json({ items: [{ ...team(teamId, null).membership, profile: { name: "Alice", email: null, avatarUrl: null } }] });
+      if (url.startsWith(`/api/v1/teams/${teamId}/invitations?`)) return json({ items: [], nextCursor: null });
+      return resourceFallback(url);
+    });
+    render(<AuthenticatedApp />);
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", teamId === personal ? "Switch Team: Personal" : "Switch Team:   Alpha  "));
+    await screen.findByRole("heading", { name: "Team members" });
+    if (teamId === personal) {
+      expect(screen.queryByRole("link", { name: "Team members" })).toBeNull();
+      expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
+    } else expect(screen.getByRole("link", { name: "Team members" })).toHaveAttribute("href", path);
+    expect(window.location.pathname).toBe(path); expect(localStorage.getItem(savedKey)).toBe(teamId);
+  });
 });

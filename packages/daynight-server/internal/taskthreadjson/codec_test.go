@@ -7,14 +7,14 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestMessageEncodingPreservesCompleteAttributionAndMilliseconds(t *testing.T) {
 	for _, milliseconds := range []int{0, 120, 123} {
-		message := core.ThreadMessage{
+		message := model.ThreadMessage{
 			TaskID: "private-task", ID: "message-id", Body: "  <>&\"\\\n\t中文🌛\u2028\u2029  ",
-			Author:    core.ThreadAuthor{UserID: "account-id"},
+			Author:    model.ThreadAuthor{UserID: "account-id"},
 			CreatedAt: time.Date(2026, 11, 3, 5, 6, 7, milliseconds*int(time.Millisecond), time.FixedZone("east", 2*60*60)),
 		}
 		encoded, err := EncodeMessage(message, false)
@@ -42,7 +42,7 @@ func TestMessageEncodingPreservesCompleteAttributionAndMilliseconds(t *testing.T
 
 func TestDetailsAndReplyUseSnapshotWithoutChangingDefaultResource(t *testing.T) {
 	name, reply := "Alice", "reply-id"
-	message := core.ThreadMessage{ID: "id", Author: core.ThreadAuthor{UserID: "user", DisplayName: &name, Agent: true, Execution: &core.ThreadExecution{ClaimID: "claim", WorkerID: "worker", Provider: "codex"}}, Body: "reply", ReplyTo: &reply, CreatedAt: time.Now()}
+	message := model.ThreadMessage{ID: "id", Author: model.ThreadAuthor{UserID: "user", DisplayName: &name, Agent: true, Execution: &model.ThreadExecution{ClaimID: "claim", WorkerID: "worker", Provider: "codex"}}, Body: "reply", ReplyTo: &reply, CreatedAt: time.Now()}
 	for _, details := range []bool{false, true} {
 		encoded, err := EncodeMessage(message, details)
 		if err != nil {
@@ -67,14 +67,14 @@ func TestDetailsAndReplyUseSnapshotWithoutChangingDefaultResource(t *testing.T) 
 }
 
 func TestPageEncodingHasStableEmptyArrayAndBooleanFlags(t *testing.T) {
-	encoded, err := EncodePage(core.ThreadPage{}, false)
+	encoded, err := EncodePage(model.ThreadPage{}, false)
 	if err != nil || string(encoded) != `{"items":[],"hasMoreBefore":false,"hasMoreAfter":false}` {
 		t.Fatalf("empty page: %q, %v", encoded, err)
 	}
-	message := core.ThreadMessage{ID: "id", CreatedAt: time.Date(2026, 11, 3, 0, 0, 0, 120000000, time.UTC)}
+	message := model.ThreadMessage{ID: "id", CreatedAt: time.Date(2026, 11, 3, 0, 0, 0, 120000000, time.UTC)}
 	for _, before := range []bool{false, true} {
 		for _, after := range []bool{false, true} {
-			page := core.ThreadPage{Items: []core.ThreadMessage{message}, HasMoreBefore: before, HasMoreAfter: after}
+			page := model.ThreadPage{Items: []model.ThreadMessage{message}, HasMoreBefore: before, HasMoreAfter: after}
 			encoded, err := EncodePage(page, true)
 			if err != nil {
 				t.Fatal(err)

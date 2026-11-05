@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -222,7 +222,7 @@ func TestTerminalArchiveRejectsEvidenceMismatchAndRevokedAuthority(t *testing.T)
 		t.Fatal("foreign archive accepted")
 	}
 	other := f.p
-	other.Kind = core.SessionCredential
+	other.Kind = model.SessionCredential
 	if _, err := f.s.PutTerminalArchive(ctx, other, f.project, f.task, m.SessionID, encode(doc)); err == nil {
 		t.Fatal("browser finalized archive")
 	}

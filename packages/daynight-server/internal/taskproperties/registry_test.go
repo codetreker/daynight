@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing.T) {
@@ -104,7 +104,7 @@ func TestSchemaMatchesKnownValueStructures(t *testing.T) {
 }
 
 func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T) {
-	input := core.TaskProperties{"pullRequests": json.RawMessage(`[ { "title":"a", "url":"b" } ]`)}
+	input := model.TaskProperties{"pullRequests": json.RawMessage(`[ { "title":"a", "url":"b" } ]`)}
 	before := bytes.Clone(input["pullRequests"])
 	actual, err := Normalize(input, true)
 	if err != nil || string(actual["pullRequests"]) != `[{"url":"b","title":"a"}]` || !bytes.Equal(input["pullRequests"], before) {
@@ -116,10 +116,10 @@ func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T
 	if !json.Valid(actual["pullRequests"]) || len(actual) != 1 || Equal(copy, actual) {
 		t.Fatal("Clone shared map or raw bytes")
 	}
-	if !Equal(actual, Clone(actual)) || Equal(actual, core.TaskProperties{}) || !Equal(nil, core.TaskProperties{}) {
+	if !Equal(actual, Clone(actual)) || Equal(actual, model.TaskProperties{}) || !Equal(nil, model.TaskProperties{}) {
 		t.Fatal("normalized map equality changed property presence")
 	}
-	for _, empty := range []core.TaskProperties{nil, {}} {
+	for _, empty := range []model.TaskProperties{nil, {}} {
 		value, err := Normalize(empty, false)
 		if err != nil || value == nil || len(value) != 0 {
 			t.Fatalf("empty map gained properties: %#v %v", value, err)
@@ -140,17 +140,17 @@ func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T
 	if err != nil || !Equal(removed, actual) || workerValue(t, withWorker) == nil {
 		t.Fatalf("removing worker changed original map: %#v %v", removed, err)
 	}
-	for _, properties := range []core.TaskProperties{{"worker": json.RawMessage(`null`)}, {"pullRequests": json.RawMessage(`null`)}} {
+	for _, properties := range []model.TaskProperties{{"worker": json.RawMessage(`null`)}, {"pullRequests": json.RawMessage(`null`)}} {
 		_, err := Normalize(properties, false)
 		var invalidValue *ValidationError
 		if !errors.As(err, &invalidValue) {
 			t.Fatalf("invalid stored property lost typed error: %v", err)
 		}
 	}
-	if _, err := Worker(core.TaskProperties{"worker": json.RawMessage(`null`)}); err == nil {
+	if _, err := Worker(model.TaskProperties{"worker": json.RawMessage(`null`)}); err == nil {
 		t.Fatal("worker accessor accepted illegal present value")
 	}
-	if _, err := PullRequests(core.TaskProperties{"pullRequests": json.RawMessage(`null`)}); err == nil {
+	if _, err := PullRequests(model.TaskProperties{"pullRequests": json.RawMessage(`null`)}); err == nil {
 		t.Fatal("PR accessor accepted illegal present value")
 	}
 	worker.AgentControlMode = ""
@@ -191,7 +191,7 @@ func TestRegistryEnforcesPublicWritesAndSanitizesValidationErrors(t *testing.T) 
 	}
 }
 
-func ptrWorker(value core.WorkerClaim) *core.WorkerClaim { return &value }
+func ptrWorker(value model.WorkerClaim) *model.WorkerClaim { return &value }
 
 func TestRawInputPreservesNativeMeaningAndRejectsDuplicateOrTrailingJSON(t *testing.T) {
 	value, err := ParseInput("pullRequests", `[ { "title":"", "url":"raw\u0000" } ]`)
@@ -227,8 +227,8 @@ func TestPausedBooleanInputPreservesPresenceAndRejectsOtherValues(t *testing.T) 
 			if err != nil || string(parsed) != value {
 				t.Fatalf("boolean input %q: %s (%v)", input, parsed, err)
 			}
-			normalized, err := Normalize(core.TaskProperties{"paused": json.RawMessage(input)}, true)
-			if err != nil || len(normalized) != 1 || string(normalized["paused"]) != value || Equal(normalized, core.TaskProperties{}) {
+			normalized, err := Normalize(model.TaskProperties{"paused": json.RawMessage(input)}, true)
+			if err != nil || len(normalized) != 1 || string(normalized["paused"]) != value || Equal(normalized, model.TaskProperties{}) {
 				t.Fatalf("boolean normalization lost presence: %#v (%v)", normalized, err)
 			}
 		}

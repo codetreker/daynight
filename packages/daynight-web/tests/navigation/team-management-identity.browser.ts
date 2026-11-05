@@ -8,9 +8,9 @@ const personal = { id: personalId, kind: 'personal', name: null };
 const profile = { id: userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { exists: boolean; lost: boolean; holdMe: Gate | null; holdDelete: Gate | null; writes: number; details: number };
+type State = { exists: boolean; lost: boolean; holdMe: Gate | null; holdDetail: Gate | null; holdDelete: Gate | null; writes: number; details: number };
 const install = async (page: Page): Promise<State> => {
-  const state: State = { exists: true, lost: false, holdMe: null, holdDelete: null, writes: 0, details: 0 };
+  const state: State = { exists: true, lost: false, holdMe: null, holdDetail: null, holdDelete: null, writes: 0, details: 0 };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
@@ -30,7 +30,7 @@ const install = async (page: Page): Promise<State> => {
       const gate = state.holdDelete; state.holdDelete = null; if (gate) { gate.started(); await gate.wait; }
       return send({ teamId, deleted: true });
     }
-    if (path === `/api/v1/teams/${teamId}`) { state.details++; return state.exists ? send(team(teamId)) : send(error('not_found'), 404); }
+    if (path === `/api/v1/teams/${teamId}`) { state.details++; const gate = state.holdDetail; state.holdDetail = null; if (gate) { gate.started(); await gate.wait; } return state.exists ? send(team(teamId)) : send(error('not_found'), 404); }
     return send(error('not_found'), 404);
   });
   return state;
@@ -58,10 +58,9 @@ test('retains a settings draft and typed confirmation across same-user verificat
   const name = dialog.getByLabel('Enter the Team name to confirm'); await name.fill('Al');
   const second = await foreground(page, state);
   const backdrop = page.locator('.auth-modal-backdrop');
-  await expect(backdrop).toHaveAttribute('hidden', '');
-  expect(await backdrop.evaluate((el) => getComputedStyle(el).display)).toBe('none');
-  await page.keyboard.press('Tab'); expect(await backdrop.evaluate((el) => el.contains(document.activeElement))).toBe(false);
-  await page.keyboard.press('Escape');
+  await expect(backdrop).toBeVisible();
+  await expect(name).toBeFocused();
+  await expect(name).toHaveValue('Al');
   second.finish(); await expect(name).toHaveValue('Al'); await expect(name).toBeVisible();
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
   expect(state.writes).toBe(0); await second.other.close();
@@ -104,16 +103,79 @@ test('does not navigate on a 404 while the committed delete receipt is delayed',
 });
 
 
-test('retains the create dialog input while identity verification suspends it', async ({ page }) => {
+test('retains the create dialog input while identity verification is pending', async ({ page }) => {
   const state = await install(page); await page.goto('/projects');
   await page.locator('details.team-selector summary').click(); await page.getByRole('button', { name: 'Create Team', exact: true }).click();
   const backdrop = page.locator('.auth-modal-backdrop'), dialog = page.getByRole('dialog'), name = dialog.getByLabel('Team name');
   await name.fill('Unsubmitted Team');
+  await name.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(2, 8); });
+  const before = await name.evaluate((element: HTMLTextAreaElement) => ({ start: element.selectionStart, end: element.selectionEnd, box: element.getBoundingClientRect().toJSON() }));
   const check = await foreground(page, state);
-  await expect(backdrop).toHaveAttribute('hidden', ''); expect(await backdrop.evaluate((el) => getComputedStyle(el).display)).toBe('none');
-  await page.keyboard.press('Tab'); expect(await backdrop.evaluate((el) => el.contains(document.activeElement))).toBe(false);
-  await page.keyboard.press('Escape'); check.finish();
+  await expect(backdrop).toBeVisible(); await expect(name).toBeFocused();
+  expect(await name.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([before.start, before.end]);
+  expect(await name.boundingBox()).toMatchObject({ x: before.box.x, y: before.box.y, width: before.box.width, height: before.box.height });
+  check.finish();
   await expect(name).toHaveValue('Unsubmitted Team'); await expect(name).toBeFocused();
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
+  expect(state.writes).toBe(0); await check.other.close();
+});
+
+test('keeps the narrow navigation and focus during a same-user check', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = await install(page); await page.goto('/projects');
+  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+  const drawer = page.getByRole('dialog', { name: 'Workspace navigation' });
+  const link = drawer.getByRole('link', { name: 'My projects' });
+  await link.focus();
+  const handle = await drawer.elementHandle();
+  const box = await drawer.boundingBox();
+  const check = await foreground(page, state);
+  expect(await drawer.evaluate((element, original) => element === original, handle)).toBe(true);
+  await expect(drawer).toBeVisible(); await expect(link).toBeFocused();
+  await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
+  expect(await drawer.boundingBox()).toEqual(box);
+  check.finish(); await expect(drawer).toBeVisible(); await expect(link).toBeFocused();
+  await check.other.close();
+});
+
+test('keeps the Chinese narrow create dialog and selection during a same-user check', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
+  const state = await install(page); await page.goto('/projects');
+  await page.getByRole('button', { name: '展开侧栏' }).click();
+  await page.locator('details.team-selector summary').click();
+  await page.getByRole('button', { name: '创建 Team', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '创建 Team' });
+  const name = dialog.getByLabel('Team 名称');
+  await name.fill('未提交草稿');
+  await name.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(1, 3); });
+  const handle = await dialog.elementHandle(); const box = await dialog.boundingBox();
+  const check = await foreground(page, state);
+  expect(await dialog.evaluate((element, original) => element === original, handle)).toBe(true);
+  await expect(dialog).toBeVisible(); await expect(name).toBeFocused();
+  expect(await name.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 3]);
+  expect(await dialog.boundingBox()).toEqual(box);
+  check.finish(); await expect(name).toHaveValue('未提交草稿'); await expect(name).toBeFocused();
+  expect(state.writes).toBe(0); await check.other.close();
+});
+
+
+test('retains the editor while the same Team is reread after identity confirmation', async ({ page }) => {
+  const state = await install(page); await start(page);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const dialog = page.getByRole('dialog'), name = dialog.getByLabel('Team name');
+  await name.fill('Unsubmitted draft');
+  await name.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(2, 8); });
+  const original = await dialog.elementHandle(), box = await dialog.boundingBox();
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  state.holdDetail = { started: started.resolve, wait: finish.promise };
+  const check = await foreground(page, state);
+  await expect(name).toBeFocused(); check.finish(); await started.promise;
+  expect(await dialog.evaluate((element, node) => element === node, original)).toBe(true);
+  await expect(dialog).toBeVisible(); await expect(name).toBeFocused();
+  expect(await name.evaluate((element: HTMLTextAreaElement) => [element.selectionStart, element.selectionEnd])).toEqual([2, 8]);
+  expect(await dialog.boundingBox()).toEqual(box);
+  finish.resolve(); await expect(name).toHaveValue('Unsubmitted draft'); await expect(name).toBeFocused();
   expect(state.writes).toBe(0); await check.other.close();
 });

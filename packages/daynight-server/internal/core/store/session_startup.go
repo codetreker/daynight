@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/jackc/pgx/v5"
 )
 
 // MatchSessionStartup locks after the task, sharing the relay's task/session order.
 // A generation grant does not change task.version and therefore needs this fence.
-func (tx *ProjectTx) MatchSessionStartup(ctx context.Context, taskID string, worker *core.WorkerClaim, report sp.StartupReport) (bool, error) {
+func (tx *ProjectTx) MatchSessionStartup(ctx context.Context, taskID string, worker *model.WorkerClaim, report sp.StartupReport) (bool, error) {
 	var owner string
 	var raw []byte
 	err := tx.tx.QueryRow(ctx, `SELECT owner_user_id::text,snapshot FROM task_sessions

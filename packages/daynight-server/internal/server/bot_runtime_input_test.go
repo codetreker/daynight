@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
 )
@@ -13,9 +13,9 @@ import (
 func TestBotRuntimeStrictEnvelopes(t *testing.T) {
 	reg := sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}
 	grant := sp.Grant{Protocol: sp.Protocol, TestExecutionID: reg.TestExecutionID, ControllerID: reg.ControllerID, ControllerInstanceID: reg.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"}
-	register := sessionrelay.BotRegistration{BotVersion: 1, Registration: reg, Configuration: core.BotConfiguration{WorkerID: uuid.NewString(), Cwd: "/tmp", Provider: "codex", Args: []string{}}, RoleConfiguration: core.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}}
+	register := sessionrelay.BotRegistration{BotVersion: 1, Registration: reg, Configuration: model.BotConfiguration{WorkerID: uuid.NewString(), Cwd: "/tmp", Provider: "codex", Args: []string{}}, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}}
 	code := "preflight_failed"
-	report := sessionrelay.BotReport{BotVersion: 1, Result: core.BotStartupResult{State: "failed", Code: &code}}
+	report := sessionrelay.BotReport{BotVersion: 1, Result: model.BotStartupResult{State: "failed", Code: &code}}
 	cases := []struct {
 		name   string
 		input  any

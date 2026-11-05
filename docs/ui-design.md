@@ -23,6 +23,36 @@ When context does not explain why a control is disabled, its reason may be
 presented on demand near the control. Hover explanations must also be available
 through keyboard focus.
 
+## Keep rendered interfaces stable during background checks
+
+Run identity, permission, and data checks in the background while preserving
+the interface that has already been displayed.
+
+- Switching windows or browser tabs, restoring focus or visibility, and
+  returning to a previously visited page do not request a visible refresh.
+  These events may trigger background checks.
+- During a check, preserve displayed content, selected tabs, open dialogs and
+  menus, drafts, unapplied selections, loaded pages, expanded items, scroll
+  positions, focus, text selection, and graph viewports. A pending check must
+  not by itself hide or remount content, clear a list, replace content with a
+  loading placeholder, close an overlay, reset interaction state, disable local
+  editing, or insert and remove status rows that shift existing content.
+- When the confirmed identity, permissions, and data are unchanged, completion
+  of the check must leave the displayed interface and interaction state
+  unchanged. Preserving only the final state is insufficient: the interface
+  must remain stable throughout the wait and recovery reads.
+- Actual data changes may update the affected content. Confirmed account
+  changes, session expiry, and access revocation must still trigger the
+  required isolation and cleanup. Actual failures must remain visible and
+  recoverable under the applicable error policy.
+- An explicit refresh may show the progress of that operation. Navigating to
+  another resource may load its target content. Neither action implicitly
+  resets unrelated retained interface state.
+
+Keeping existing content visible does not grant request, publication, or
+mutation permission. Existing authentication and authorization gates remain
+enforced while a check is pending.
+
 ## Keep global language selection at page level
 
 The main Web interface provides its global language selector in the page

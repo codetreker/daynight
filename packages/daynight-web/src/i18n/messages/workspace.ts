@@ -71,6 +71,9 @@ export type WorkspaceMessages = {
     readonly empty: string;
     readonly emptyDetail: string;
     readonly chains: string;
+    readonly statusFilter: string;
+    readonly allStatuses: string;
+    readonly statusOptions: Readonly<Record<"todo" | "in_progress" | "done", string>>;
   };
   readonly overview: {
     readonly heading: string;
@@ -85,12 +88,8 @@ export type WorkspaceMessages = {
     readonly list: string;
     readonly summary: (args: { readonly visible: number; readonly total: number }) => string;
     readonly summaryLabel: (args: { readonly visible: number; readonly total: number }) => string;
-    readonly explanation: string;
     readonly empty: string;
     readonly emptyDetail: string;
-    readonly allCompleted: string;
-    readonly hiddenCompleted: (args: { readonly count: number }) => string;
-    readonly showAll: string;
     readonly createdOn: (args: { readonly date: string }) => string;
   };
   readonly pagination: {
@@ -115,9 +114,7 @@ export type WorkspaceMessages = {
   };
   readonly preferences: {
     readonly section: PreferenceNotices;
-    readonly completedChains: PreferenceNotices;
     readonly tab: PreferenceNotices;
-    readonly standalone: PreferenceNotices;
     readonly scroll: PreferenceNotices;
   };
 };
