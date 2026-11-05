@@ -1,5 +1,6 @@
 import { openChain } from './chain-dialog';
 import { expectLanguageLayout } from './language-layout';
+import { navigateNativeSelect } from './native-select';
 import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
@@ -383,11 +384,15 @@ test.describe('Web language journeys', () => {
     const workspaceLanguage = language(page.locator('.topbar'));
     await workspaceLanguage.selectOption('en');
     await workspaceLanguage.focus();
-    await page.keyboard.press('ArrowDown');
+    await navigateNativeSelect(page, 'ArrowDown', '简');
     await expect(workspaceLanguage).toHaveValue('zh-CN');
     await expect(workspaceLanguage).toBeFocused();
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe('zh-CN');
-    await page.keyboard.press('ArrowUp');
+    // Leaving and returning starts a new native typeahead prefix on macOS.
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Shift+Tab');
+    await expect(workspaceLanguage).toBeFocused();
+    await navigateNativeSelect(page, 'ArrowUp', 'e');
     await expect(workspaceLanguage).toHaveValue('en');
     await expect(workspaceLanguage).toBeFocused();
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.locale'))).toBe('en');

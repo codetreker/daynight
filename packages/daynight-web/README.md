@@ -1950,6 +1950,13 @@ non-colliding attachment fixture path; Linux and container phases retain the
 case-sensitive fixture. A normal Mac pass does not claim native case-coexistence
 coverage. Windows native Web acceptance is unsupported.
 
+Native select keyboard scenarios use character typeahead on macOS and direction
+keys on other browser platforms. They retain value, focus and persistence checks,
+and platform changes still require an explicit confirmation with no write before
+confirmation. Modified-link scenarios use the browser platform's new-tab
+modifier. The [macOS browser acceptance decision](../../.agents/notes/implemented/testing/2026-11-05-macos-browser-acceptance.md)
+records these input and recovery boundaries.
+
 Routine `pnpm web:test` does not attach disk images on macOS. It checks storage
 receipts and refusal paths without requesting disk authorization. Run the explicit
 `pnpm web:test:storage-native` suite for APFS lifecycle checks; its cases share
@@ -2401,7 +2408,13 @@ recorded phases in reverse order: optional `native/capacity`, then `container`
 and `native/functional`.
 A still-running native Go process also requires its recorded binary
 hash before targeted termination. Browser recovery checks its recorded executable,
-process group and profile marker; ambiguous startup processes, orphan-only groups
+process group and profile marker. On macOS, the inventory also freezes the selected
+main executable's device and inode. A recorded hard-link alias can identify that
+same file, including Chromium's code-signing clone; a copy or a familiar path
+name cannot. Active recovery rechecks the file and original process identity;
+helper and companion executable paths retain exact membership checks. A browser
+installation replaced between launch inventory and ownership recording is
+rejected if its file identity no longer matches. Ambiguous startup processes, orphan-only groups
 or unknown new profiles cause failure and remain for diagnosis. It does not kill
 unidentified processes or remove unidentified profiles. Dev-ci recovery uses the
 same recorded project identity and bounded cleanup entry.

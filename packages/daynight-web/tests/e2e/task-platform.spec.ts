@@ -1,4 +1,5 @@
 import { selectTaskList } from './project-view';
+import { navigateNativeSelect } from './native-select';
 import type { Locator, Page } from '@playwright/test';
 import { startTask, createTask, expect, test, updateTask, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
@@ -108,7 +109,7 @@ test('task-platform', scenario, async ({ page, api, allowBrowserWrites, controlP
     await expect(detail(page).locator('.task-detail-badges .task-platform')).toHaveCount(0);
     await expect(detail(page).getByRole('button', { name: /^(保存平台|Save platform)$/, exact: true })).toHaveCount(0);
     await platform(page).selectOption(''); expect(writes).toHaveLength(0); await expect(confirmation(page)).toHaveCount(0);
-    await platform(page).focus(); await page.keyboard.press('ArrowDown'); await expect(confirmation(page)).toBeVisible();
+    await platform(page).focus(); await navigateNativeSelect(page, 'ArrowDown', 'w'); await expect(confirmation(page)).toBeVisible();
     await expect(platform(page)).toHaveValue(''); expect(writes).toHaveLength(0);
     await page.keyboard.press('Escape'); await expect(confirmation(page)).toHaveCount(0); await expect(platform(page)).toBeFocused();
 

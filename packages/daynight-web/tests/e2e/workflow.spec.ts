@@ -246,7 +246,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
     const shared = page.getByRole('link', { name: '与我共享', exact: true });
     await expect(shared).toHaveAttribute('href', '/shared-projects');
     const opened = page.context().waitForEvent('page');
-    await shared.click({ modifiers: ['Control'] });
+    await shared.click({ modifiers: ['ControlOrMeta'] });
     const tab = await opened;
     try {
       await expect(tab).toHaveURL(`${baseURL}/shared-projects`);
