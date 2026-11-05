@@ -1,4 +1,4 @@
-package taskproperties
+package properties
 
 import (
 	"encoding/json"
@@ -9,11 +9,12 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 func encodedProperties(t *testing.T, properties model.TaskProperties) string {
 	t.Helper()
-	value, err := Encode(properties)
+	value, err := taskproperty.Encode(properties)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +33,7 @@ func propertyFixture(t *testing.T, requests []model.PullRequestProperty, worker 
 		if err != nil {
 			t.Fatal(err)
 		}
-		value, err = NormalizeValue("pullRequests", value, false)
+		value, err = taskproperty.NormalizeValue("pullRequests", value)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -47,7 +48,7 @@ func propertyFixture(t *testing.T, requests []model.PullRequestProperty, worker 
 
 func pullRequestsValue(t *testing.T, properties model.TaskProperties) []model.PullRequestProperty {
 	t.Helper()
-	value, err := PullRequests(properties)
+	value, err := taskproperty.PullRequests(properties)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func pullRequestsValue(t *testing.T, properties model.TaskProperties) []model.Pu
 
 func workerValue(t *testing.T, properties model.TaskProperties) *model.WorkerClaim {
 	t.Helper()
-	value, err := Worker(properties)
+	value, err := taskproperty.Worker(properties)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,12 +70,12 @@ func TestCodecPreservesPropertiesAndPatchPresence(t *testing.T) {
 	if strings.ContainsRune(encoded, 0) || !strings.Contains(encoded, `\u0000`) {
 		t.Fatal("NUL was not escaped for PostgreSQL text")
 	}
-	decoded, err := Decode([]byte(encoded))
+	decoded, err := taskproperty.Decode([]byte(encoded))
 	if err != nil || !slices.Equal(pullRequestsValue(t, decoded), items) {
 		t.Fatalf("property content changed: %+v, %v", decoded, err)
 	}
 	for _, properties := range []model.TaskProperties{{}, {"pullRequests": json.RawMessage(`[]`)}, {"paused": json.RawMessage(`true`)}, {"paused": json.RawMessage(`false`)}} {
-		decoded, err := Decode([]byte(encodedProperties(t, properties)))
+		decoded, err := taskproperty.Decode([]byte(encodedProperties(t, properties)))
 		if err != nil || !reflect.DeepEqual(decoded, properties) {
 			t.Fatalf("storage document changed presence: %+v, %v", decoded, err)
 		}
@@ -107,8 +108,8 @@ func TestCodecRejectsCorruptStoredStructures(t *testing.T) {
 		`{"pullRequests":[{"url":"x","title":"y","extra":true}]}`, `{"pullRequests":[{"url":"x","title":"y","title":"z"}]}`,
 	} {
 		t.Run(invalid, func(t *testing.T) {
-			_, err := Decode([]byte(invalid))
-			var invalidValue *ValidationError
+			_, err := taskproperty.Decode([]byte(invalid))
+			var invalidValue *taskproperty.ValidationError
 			if !errors.As(err, &invalidValue) {
 				t.Fatalf("corrupt stored properties must retain validation type: %v", err)
 			}
@@ -117,19 +118,19 @@ func TestCodecRejectsCorruptStoredStructures(t *testing.T) {
 }
 
 func TestCodecNormalizationPreservesLegacyDecodedTextAndValueSemantics(t *testing.T) {
-	left, err := Decode([]byte(`{"pullRequests":[{"title":"\ud800","url":"a\u0000b"}]}`))
+	left, err := taskproperty.Decode([]byte(`{"pullRequests":[{"title":"\ud800","url":"a\u0000b"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := Decode([]byte(`{"pullRequests":[ { "url":"a\u0000b", "title":"�" } ]}`))
-	if err != nil || !Equal(left, right) {
+	right, err := taskproperty.Decode([]byte(`{"pullRequests":[ { "url":"a\u0000b", "title":"�" } ]}`))
+	if err != nil || !taskproperty.Equal(left, right) {
 		t.Fatalf("equivalent decoded text changed: %s vs %s (%v)", left, right, err)
 	}
 	if value := pullRequestsValue(t, left)[0]; value.URL != "a\x00b" || value.Title != "�" {
 		t.Fatalf("typed string semantics changed: %#v", value)
 	}
-	_, err = Encode(model.TaskProperties{"pullRequests": json.RawMessage(`null`)})
-	var invalidValue *ValidationError
+	_, err = taskproperty.Encode(model.TaskProperties{"pullRequests": json.RawMessage(`null`)})
+	var invalidValue *taskproperty.ValidationError
 	if !errors.As(err, &invalidValue) {
 		t.Fatalf("Encode silently accepted invalid values: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestStructuredPatchRejectsMalformedObjectsWithoutLosingValidationIdentity(t
 	} {
 		t.Run(input, func(t *testing.T) {
 			patch, err := DecodePatch([]byte(input))
-			var invalidValue *ValidationError
+			var invalidValue *taskproperty.ValidationError
 			if patch != nil || !errors.As(err, &invalidValue) || invalidValue.Path != "properties" || errors.Unwrap(err) == nil {
 				t.Fatalf("malformed structured patch lost its rejection contract: %#v %v", patch, err)
 			}

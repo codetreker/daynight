@@ -8,8 +8,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 type taskHandler struct {
@@ -80,7 +81,7 @@ func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesP
 	if !exists {
 		return nil, nil
 	}
-	properties, err := taskproperties.DecodePatch(raw)
+	properties, err := taskprops.DecodePatch(raw)
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-package tasksteps
+package steps
 
 import (
 	"slices"

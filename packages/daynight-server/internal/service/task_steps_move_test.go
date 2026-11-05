@@ -12,7 +12,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -28,12 +28,12 @@ func seedMoveSteps(t *testing.T, database *store.Store, taskID string) {
 	}
 }
 
-func assertMoveResource(t *testing.T, actual, original tasksteps.StepsResource, order []string) {
+func assertMoveResource(t *testing.T, actual, original taskcodec.StepsResource, order []string) {
 	t.Helper()
 	if len(actual.Steps) != len(order) || actual.ProjectID != original.ProjectID || actual.TaskID != original.TaskID {
 		t.Fatal("move resource scope/count changed")
 	}
-	byID := make(map[string]tasksteps.Step, len(original.Steps))
+	byID := make(map[string]taskcodec.Step, len(original.Steps))
 	for _, step := range original.Steps {
 		byID[step.ID] = step
 	}

@@ -9,8 +9,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/google/uuid"
 )
 
@@ -73,7 +74,7 @@ func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID
 	if err := requirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
-	properties, err := taskproperties.Normalize(input.Properties, true)
+	properties, err := taskprops.Normalize(input.Properties)
 	if err != nil {
 		return model.Task{}, propertyInputFault(err)
 	}
@@ -269,7 +270,7 @@ func taskCandidate(current model.Task, input UpdateTask) (store.TaskWrite, error
 			return store.TaskWrite{}, err
 		}
 	}
-	properties, err := taskproperties.Normalize(input.Properties, true)
+	properties, err := taskprops.Normalize(input.Properties)
 	if err != nil {
 		return store.TaskWrite{}, propertyInputFault(err)
 	}

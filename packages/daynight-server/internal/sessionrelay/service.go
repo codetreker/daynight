@@ -17,7 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -179,7 +179,7 @@ func taskWorker(ctx context.Context, tx pgx.Tx, id string, t task) (task, error)
 		if err := rows.Scan(&name, &value); err != nil {
 			return task{}, err
 		}
-		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value), false)
+		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value))
 		if err != nil {
 			return task{}, err
 		}

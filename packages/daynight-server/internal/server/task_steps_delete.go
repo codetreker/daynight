@@ -6,8 +6,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 )
 
 func (h *taskStepsHandler) delete(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -20,7 +20,7 @@ func (h *taskStepsHandler) delete(w http.ResponseWriter, request *http.Request, 
 		refuse(err)
 		return
 	}
-	stepID, err := tasksteps.CanonicalID(request.PathValue("stepId"))
+	stepID, err := taskcodec.CanonicalID(request.PathValue("stepId"))
 	if err != nil {
 		refuse(invalidInput(err.Error()))
 		return

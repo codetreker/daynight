@@ -1,4 +1,4 @@
-package taskthreadjson
+package codec
 
 import (
 	"encoding/json"
@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
@@ -21,7 +20,7 @@ func TestMessageEncodingPreservesCompleteAttributionAndMilliseconds(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		var result api.ThreadMessage
+		var result ThreadMessage
 		if err := json.Unmarshal(encoded, &result); err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +47,7 @@ func TestDetailsAndReplyUseSnapshotWithoutChangingDefaultResource(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		var result api.ThreadMessage
+		var result ThreadMessage
 		if err := json.Unmarshal(encoded, &result); err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +78,7 @@ func TestPageEncodingHasStableEmptyArrayAndBooleanFlags(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var result api.ThreadPage
+			var result ThreadPage
 			if err := json.Unmarshal(encoded, &result); err != nil || len(result.Items) != 1 || result.HasMoreBefore != before || result.HasMoreAfter != after {
 				t.Fatalf("page: %#v, %v", result, err)
 			}

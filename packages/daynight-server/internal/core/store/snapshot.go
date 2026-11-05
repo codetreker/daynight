@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -114,7 +114,7 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 			if workerValue == nil {
 				continue
 			}
-			value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue), false)
+			value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue))
 			if err != nil {
 				return TaskPage{}, queryError("decode worker inventory", err)
 			}

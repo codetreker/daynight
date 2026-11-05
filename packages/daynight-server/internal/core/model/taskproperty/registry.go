@@ -1,4 +1,4 @@
-package taskproperties
+package taskproperty
 
 import (
 	"bytes"
@@ -64,26 +64,10 @@ func definition(name string) (Definition, error) {
 	return value, nil
 }
 
-func CheckWritable(name string) error {
-	value, err := definition(name)
-	if err != nil {
-		return err
-	}
-	if value.ReadOnly {
-		return validation("properties."+value.Name, "properties."+value.Name+" is read-only and managed by execution operations", nil)
-	}
-	return nil
-}
-
-func NormalizeValue(name string, raw json.RawMessage, public bool) (json.RawMessage, error) {
+func NormalizeValue(name string, raw json.RawMessage) (json.RawMessage, error) {
 	value, err := definition(name)
 	if err != nil {
 		return nil, err
-	}
-	if public {
-		if err := CheckWritable(name); err != nil {
-			return nil, err
-		}
 	}
 	path := "properties." + name
 	if err := strictValue(raw); err != nil {
@@ -96,10 +80,10 @@ func NormalizeValue(name string, raw json.RawMessage, public bool) (json.RawMess
 	return normalized, nil
 }
 
-func Normalize(properties model.TaskProperties, public bool) (model.TaskProperties, error) {
+func Normalize(properties model.TaskProperties) (model.TaskProperties, error) {
 	result := make(model.TaskProperties, len(properties))
 	for _, name := range slices.Sorted(maps.Keys(properties)) {
-		value, err := NormalizeValue(name, properties[name], public)
+		value, err := NormalizeValue(name, properties[name])
 		if err != nil {
 			return nil, err
 		}
@@ -123,9 +107,6 @@ func Equal(left, right model.TaskProperties) bool {
 func ParseInput(name, input string) (json.RawMessage, error) {
 	value, err := definition(name)
 	if err != nil {
-		return nil, err
-	}
-	if err := CheckWritable(name); err != nil {
 		return nil, err
 	}
 	return parseDefinitionInput(value, input)

@@ -9,9 +9,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 type WorkerDescriptor struct {
@@ -195,7 +196,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, pro
 			return taskMutation{current: current}, nil
 		}
 		values := currentTaskWrite(current)
-		values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
+		values.Properties, err = taskprops.WithWorker(values.Properties, &next)
 		if err != nil {
 			return taskMutation{}, err
 		}
@@ -229,7 +230,7 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, pr
 		next.State = model.WorkerReleased
 		values := currentTaskWrite(current)
 		values.Status = model.TaskTodo
-		values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
+		values.Properties, err = taskprops.WithWorker(values.Properties, &next)
 		if err != nil {
 			return taskMutation{}, err
 		}
@@ -255,7 +256,7 @@ func (s *Tasks) WithdrawWorker(ctx context.Context, principal model.Principal, p
 		}
 		values := currentTaskWrite(current)
 		values.Status, values.AllowAgents = model.TaskTodo, false
-		values.Properties, err = taskproperties.WithWorker(values.Properties, nil)
+		values.Properties, err = taskprops.WithWorker(values.Properties, nil)
 		if err != nil {
 			return taskMutation{}, err
 		}
@@ -322,7 +323,7 @@ func acquireWorker(ctx context.Context, tx *store.ProjectTx, current model.Task,
 	values := currentTaskWrite(current)
 	delete(values.Properties, "sessionStartup")
 	values.Status = model.TaskInProgress
-	values.Properties, err = taskproperties.WithWorker(values.Properties, &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: model.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: claimedAt})
+	values.Properties, err = taskprops.WithWorker(values.Properties, &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: model.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: claimedAt})
 	if err != nil {
 		return taskMutation{}, err
 	}

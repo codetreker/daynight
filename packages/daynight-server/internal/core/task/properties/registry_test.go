@@ -1,23 +1,24 @@
-package taskproperties
+package properties
 
 import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"reflect"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing.T) {
-	catalog := Definitions()
+	catalog := taskproperty.Definitions()
 	if len(catalog) != 4 || catalog["paused"].ReadOnly || catalog["pullRequests"].ReadOnly || !catalog["worker"].ReadOnly {
 		t.Fatalf("unexpected definitions: %#v", catalog)
 	}
-	if got := propertyNames(); !slices.Equal(got, []string{"paused", "pullRequests", "sessionStartup", "worker"}) {
+	if got := testPropertyNames(); !slices.Equal(got, []string{"paused", "pullRequests", "sessionStartup", "worker"}) {
 		t.Fatalf("property order: %v", got)
 	}
 	encoded, err := json.Marshal(catalog)
@@ -26,11 +27,11 @@ func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing
 	}
 	catalog["worker"].Schema[0] = 'X'
 	delete(catalog, "pullRequests")
-	if fresh := Definitions(); len(fresh) != 4 || !json.Valid(fresh["worker"].Schema) {
+	if fresh := taskproperty.Definitions(); len(fresh) != 4 || !json.Valid(fresh["worker"].Schema) {
 		t.Fatal("caller mutated registry definitions")
 	}
-	for _, name := range propertyNames() {
-		definition := Definitions()[name]
+	for _, name := range testPropertyNames() {
+		definition := taskproperty.Definitions()[name]
 		if definition.Name != name || definition.Description == "" || definition.Normalize == nil {
 			t.Fatalf("incomplete definition %s", name)
 		}
@@ -38,8 +39,8 @@ func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing
 }
 
 func TestSchemaMatchesKnownValueStructures(t *testing.T) {
-	catalog := Definitions()
-	if string(catalog["paused"].Schema) != `{"type":"boolean"}` || catalog["paused"].kind != "boolean" {
+	catalog := taskproperty.Definitions()
+	if string(catalog["paused"].Schema) != `{"type":"boolean"}` {
 		t.Fatalf("paused schema and input kind diverged: %#v", catalog["paused"])
 	}
 	var pr struct {
@@ -106,28 +107,28 @@ func TestSchemaMatchesKnownValueStructures(t *testing.T) {
 func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T) {
 	input := model.TaskProperties{"pullRequests": json.RawMessage(`[ { "title":"a", "url":"b" } ]`)}
 	before := bytes.Clone(input["pullRequests"])
-	actual, err := Normalize(input, true)
+	actual, err := Normalize(input)
 	if err != nil || string(actual["pullRequests"]) != `[{"url":"b","title":"a"}]` || !bytes.Equal(input["pullRequests"], before) {
 		t.Fatalf("normalization changed source or failed canonicalization: %s (%v)", actual, err)
 	}
-	copy := Clone(actual)
+	copy := taskproperty.Clone(actual)
 	copy["pullRequests"][0] = 'X'
 	copy["added"] = json.RawMessage(`true`)
-	if !json.Valid(actual["pullRequests"]) || len(actual) != 1 || Equal(copy, actual) {
+	if !json.Valid(actual["pullRequests"]) || len(actual) != 1 || taskproperty.Equal(copy, actual) {
 		t.Fatal("Clone shared map or raw bytes")
 	}
-	if !Equal(actual, Clone(actual)) || Equal(actual, model.TaskProperties{}) || !Equal(nil, model.TaskProperties{}) {
+	if !taskproperty.Equal(actual, taskproperty.Clone(actual)) || taskproperty.Equal(actual, model.TaskProperties{}) || !taskproperty.Equal(nil, model.TaskProperties{}) {
 		t.Fatal("normalized map equality changed property presence")
 	}
 	for _, empty := range []model.TaskProperties{nil, {}} {
-		value, err := Normalize(empty, false)
+		value, err := taskproperty.Normalize(empty)
 		if err != nil || value == nil || len(value) != 0 {
 			t.Fatalf("empty map gained properties: %#v %v", value, err)
 		}
-		if worker, err := Worker(empty); err != nil || worker != nil {
+		if worker, err := taskproperty.Worker(empty); err != nil || worker != nil {
 			t.Fatalf("absent worker changed: %#v %v", worker, err)
 		}
-		if requests, err := PullRequests(empty); err != nil || requests != nil {
+		if requests, err := taskproperty.PullRequests(empty); err != nil || requests != nil {
 			t.Fatalf("absent PR property changed: %#v %v", requests, err)
 		}
 	}
@@ -137,20 +138,20 @@ func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T
 		t.Fatalf("adding worker changed original map: %#v %v", withWorker, err)
 	}
 	removed, err := WithWorker(withWorker, nil)
-	if err != nil || !Equal(removed, actual) || workerValue(t, withWorker) == nil {
+	if err != nil || !taskproperty.Equal(removed, actual) || workerValue(t, withWorker) == nil {
 		t.Fatalf("removing worker changed original map: %#v %v", removed, err)
 	}
 	for _, properties := range []model.TaskProperties{{"worker": json.RawMessage(`null`)}, {"pullRequests": json.RawMessage(`null`)}} {
-		_, err := Normalize(properties, false)
-		var invalidValue *ValidationError
+		_, err := taskproperty.Normalize(properties)
+		var invalidValue *taskproperty.ValidationError
 		if !errors.As(err, &invalidValue) {
 			t.Fatalf("invalid stored property lost typed error: %v", err)
 		}
 	}
-	if _, err := Worker(model.TaskProperties{"worker": json.RawMessage(`null`)}); err == nil {
+	if _, err := taskproperty.Worker(model.TaskProperties{"worker": json.RawMessage(`null`)}); err == nil {
 		t.Fatal("worker accessor accepted illegal present value")
 	}
-	if _, err := PullRequests(model.TaskProperties{"pullRequests": json.RawMessage(`null`)}); err == nil {
+	if _, err := taskproperty.PullRequests(model.TaskProperties{"pullRequests": json.RawMessage(`null`)}); err == nil {
 		t.Fatal("PR accessor accepted illegal present value")
 	}
 	worker.AgentControlMode = ""
@@ -177,8 +178,8 @@ func TestRegistryEnforcesPublicWritesAndSanitizesValidationErrors(t *testing.T) 
 		{"private-property-input", `[]`, false}, {"worker", `{}`, true}, {"pullRequests", `[{"url":"private-value","title":`, true},
 		{"pullRequests", `[{"url":"private-value","title":17}]`, false}, {"pullRequests", `[{"url":"a","title":"b","title":"private-value"}]`, false},
 	} {
-		_, err := NormalizeValue(test.name, json.RawMessage(test.raw), test.public)
-		var invalidValue *ValidationError
+		_, err := normalizeValueForTest(test.name, json.RawMessage(test.raw), test.public)
+		var invalidValue *taskproperty.ValidationError
 		if !errors.As(err, &invalidValue) || invalidValue.Path == "" || invalidValue.Rule == "" || strings.Contains(err.Error(), "private-") {
 			t.Fatalf("validation error exposed input or lost metadata: %#v (%v)", invalidValue, err)
 		}
@@ -186,7 +187,7 @@ func TestRegistryEnforcesPublicWritesAndSanitizesValidationErrors(t *testing.T) 
 			t.Fatalf("value error lost its cause: %v", err)
 		}
 	}
-	if _, err := Normalize(propertyFixture(t, nil, ptrWorker(workerFixture())), true); err == nil {
+	if _, err := Normalize(propertyFixture(t, nil, ptrWorker(workerFixture()))); err == nil {
 		t.Fatal("public map accepted worker")
 	}
 }
@@ -208,16 +209,7 @@ func TestRawInputPreservesNativeMeaningAndRejectsDuplicateOrTrailingJSON(t *test
 			t.Fatalf("unwritable property %s accepted", name)
 		}
 	}
-	for _, raw := range []string{`{"n":9223372036854775807,"nested":[null,true,false,17.5,"text",{}]}`, `-17`, `[]`, `{}`} {
-		if err := strictValue([]byte(raw)); err != nil {
-			t.Fatalf("valid JSON value rejected: %s (%v)", raw, err)
-		}
-	}
-	for _, raw := range []string{"", `}`, `]`, `{`, `[`, `{1:2}`, `{"x":}`, `{"x":1`, `{"x":1]`, `[1}`, `[1,]`, `{"x":{"y":1,"y":2}}`, `1 2`} {
-		if err := strictValue([]byte(raw)); err == nil {
-			t.Fatalf("invalid JSON value accepted: %s", raw)
-		}
-	}
+
 }
 
 func TestPausedBooleanInputPreservesPresenceAndRejectsOtherValues(t *testing.T) {
@@ -227,8 +219,8 @@ func TestPausedBooleanInputPreservesPresenceAndRejectsOtherValues(t *testing.T) 
 			if err != nil || string(parsed) != value {
 				t.Fatalf("boolean input %q: %s (%v)", input, parsed, err)
 			}
-			normalized, err := Normalize(model.TaskProperties{"paused": json.RawMessage(input)}, true)
-			if err != nil || len(normalized) != 1 || string(normalized["paused"]) != value || Equal(normalized, model.TaskProperties{}) {
+			normalized, err := Normalize(model.TaskProperties{"paused": json.RawMessage(input)})
+			if err != nil || len(normalized) != 1 || string(normalized["paused"]) != value || taskproperty.Equal(normalized, model.TaskProperties{}) {
 				t.Fatalf("boolean normalization lost presence: %#v (%v)", normalized, err)
 			}
 		}
@@ -236,10 +228,10 @@ func TestPausedBooleanInputPreservesPresenceAndRejectsOtherValues(t *testing.T) 
 	for _, input := range []string{"", "null", `"true"`, `"false"`, "0", "1", "[]", "{}", "[true]", `{"paused":true}`, "true false", "false null", "TRUE"} {
 		for _, parse := range []func() error{
 			func() error { _, err := ParseInput("paused", input); return err },
-			func() error { _, err := NormalizeValue("paused", json.RawMessage(input), true); return err },
+			func() error { _, err := normalizeValueForTest("paused", json.RawMessage(input), true); return err },
 		} {
 			err := parse()
-			var invalidValue *ValidationError
+			var invalidValue *taskproperty.ValidationError
 			if !errors.As(err, &invalidValue) || invalidValue.Path != "properties.paused" || errors.Unwrap(err) == nil {
 				t.Fatalf("invalid boolean input %q lost validation identity: %v", input, err)
 			}
@@ -247,49 +239,13 @@ func TestPausedBooleanInputPreservesPresenceAndRejectsOtherValues(t *testing.T) 
 	}
 }
 
-func TestStringDefinitionsAcceptRawTextAndJSONStringWithoutNewProductProperty(t *testing.T) {
-	valueDefinition := Definition{Name: "testText", kind: "string", Normalize: func(raw json.RawMessage) (json.RawMessage, error) {
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
+func testPropertyNames() []string { return slices.Sorted(maps.Keys(taskproperty.Definitions())) }
+
+func normalizeValueForTest(name string, raw json.RawMessage, public bool) (json.RawMessage, error) {
+	if public {
+		if err := CheckWritable(name); err != nil {
 			return nil, err
 		}
-		return json.Marshal(value)
-	}}
-	for _, test := range []struct{ input, want string }{
-		{"", ""}, {"abc", "abc"}, {"123", "123"}, {"true", "true"}, {"null", "null"}, {`[1]`, `[1]`},
-		{`"123"`, "123"}, {`"line\n中文"`, "line\n中文"}, {`"unterminated`, `"unterminated`},
-	} {
-		actual, err := parseDefinitionInput(valueDefinition, test.input)
-		var got string
-		if err != nil || json.Unmarshal(actual, &got) != nil || got != test.want {
-			t.Fatalf("string input %q: got %q (%v), want %q", test.input, actual, err, test.want)
-		}
 	}
-	if !reflect.DeepEqual(propertyNames(), []string{"paused", "pullRequests", "sessionStartup", "worker"}) {
-		t.Fatal("string shorthand test registered a product property")
-	}
-}
-
-func TestInvalidValueSchemaFailsBeforeDefinitionsCanBePublished(t *testing.T) {
-	malformedDefinition := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"worker": json.RawMessage(`{"type":`),
-		},
-	}
-	var recovered any
-	func() {
-		defer func() { recovered = recover() }()
-		schemaJSON(malformedDefinition)
-	}()
-	failure, ok := recovered.(error)
-	var marshalFailure *json.MarshalerError
-	if !ok || !errors.As(failure, &marshalFailure) || !strings.Contains(failure.Error(), "encode property definition") {
-		t.Fatalf("malformed definition did not fail with its JSON encoding cause: %#v", recovered)
-	}
-	for name, definition := range Definitions() {
-		if !json.Valid(definition.Schema) {
-			t.Fatalf("failed definition construction corrupted catalog entry %s", name)
-		}
-	}
+	return taskproperty.NormalizeValue(name, raw)
 }

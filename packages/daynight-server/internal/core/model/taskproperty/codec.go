@@ -1,4 +1,4 @@
-package taskproperties
+package taskproperty
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ type pullRequestDocument struct {
 }
 
 func Encode(properties model.TaskProperties) (string, error) {
-	normalized, err := Normalize(properties, false)
+	normalized, err := Normalize(properties)
 	if err != nil {
 		return "", err
 	}
@@ -28,15 +28,7 @@ func Decode(data []byte) (model.TaskProperties, error) {
 	if err != nil {
 		return nil, validation("properties", err.Error(), err)
 	}
-	return Normalize(model.TaskProperties(fields), false)
-}
-
-func DecodePatch(data []byte) (model.TaskPropertiesPatch, error) {
-	fields, err := jsonobject.Decode(data, "properties", propertyNames()...)
-	if err != nil {
-		return nil, validation("properties", err.Error(), err)
-	}
-	return Normalize(model.TaskProperties(fields), true)
+	return Normalize(model.TaskProperties(fields))
 }
 
 func normalizePaused(raw json.RawMessage) (json.RawMessage, error) {
@@ -72,30 +64,20 @@ func Worker(properties model.TaskProperties) (*model.WorkerClaim, error) {
 	if !exists {
 		return nil, nil
 	}
-	value, err := NormalizeValue("worker", raw, false)
+	value, err := NormalizeValue("worker", raw)
 	if err != nil {
 		return nil, err
 	}
 	return decodeWorker(value)
 }
 
-func WithWorker(properties model.TaskProperties, worker *model.WorkerClaim) (model.TaskProperties, error) {
-	result := Clone(properties)
-	if worker == nil {
-		delete(result, "worker")
-		delete(result, "sessionStartup")
-		return result, nil
-	}
+// EncodeWorker encodes and validates a worker claim for storage.
+func EncodeWorker(worker *model.WorkerClaim) (json.RawMessage, error) {
 	raw, err := json.Marshal(encodeWorker(worker))
 	if err != nil {
 		return nil, err
 	}
-	value, err := NormalizeValue("worker", raw, false)
-	if err != nil {
-		return nil, err
-	}
-	result["worker"] = value
-	return result, nil
+	return NormalizeValue("worker", raw)
 }
 
 func PullRequests(properties model.TaskProperties) ([]model.PullRequestProperty, error) {
@@ -103,7 +85,7 @@ func PullRequests(properties model.TaskProperties) ([]model.PullRequestProperty,
 	if !exists {
 		return nil, nil
 	}
-	value, err := NormalizeValue("pullRequests", raw, false)
+	value, err := NormalizeValue("pullRequests", raw)
 	if err != nil {
 		return nil, err
 	}
