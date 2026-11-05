@@ -11,7 +11,7 @@ vi.mock("node:timers/promises", () => ({ setTimeout: (ms: number, value: unknown
 }) }));
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
 afterEach(()=>{vi.useRealTimers();});
-const fixture=()=>{
+const fixture=(pollIntervalMs: number | (() => number) = 60000)=>{
   const owner={serverOrigin:"https://daynight.example",ownerUserId:id(1),workerId:id(2)};
   const records=[3,4].map(n=>({owner,botId:id(n),intent:null,observed:{id:id(n),version:"1",deletion:null,startupResult:{state:"pending",code:null}},definition:{},observedAt:1}) as BotRecord);
   const store={list:()=>records,get:(_owner:unknown,key:string)=>records.find(r=>r.botId===key)!,observe:(_owner:unknown,bot:any)=>{const r=records.find(r=>r.botId===bot.id)!;r.observed=bot;return r;}};
@@ -20,7 +20,7 @@ const fixture=()=>{
   const remote={owner,list:vi.fn(async()=>records.map(r=>r.observed)),read:vi.fn(async(key:string)=>records.find(r=>r.botId===key)!.observed)};
   const reconcile=vi.fn(async()=>({observed:records.map(r=>r.botId),missing:[]})); const onError=vi.fn();
   const deletion={advance:vi.fn(async(_record:BotRecord,_signal:AbortSignal)=>{})};
-  const runtime=createManagedAssistantRuntime({owner,store:store as never,process:process as never,sessionApi:api as never,remote:remote as never,pollIntervalMs:60000,onError,deletion,inventory:{reconcile}});
+  const runtime=createManagedAssistantRuntime({owner,store:store as never,process:process as never,sessionApi:api as never,remote:remote as never,pollIntervalMs,onError,deletion,inventory:{reconcile}});
   return {runtime,process,api,remote,records,reconcile,onError,deletion};
 };
 
@@ -103,4 +103,16 @@ test("retains deletion errors for retry and continues the other Bot",async()=>{
  f.deletion.advance.mockRejectedValueOnce(new Error("permission denied"));
  await f.runtime.tick(new AbortController().signal);expect(f.onError).toHaveBeenCalledWith("permission denied",id(3));
  await f.runtime.tick(new AbortController().signal);expect(f.deletion.advance).toHaveBeenCalledTimes(2);expect(f.process.advance).toHaveBeenCalledTimes(2);
+});
+
+test("uses updated discovery intervals without replacing its runtime or stopping Bots", async () => {
+  vi.useFakeTimers(); let interval = 1000; const f = fixture(() => interval), cancellation = new AbortController();
+  const running = f.runtime.run(cancellation.signal); await vi.advanceTimersByTimeAsync(1000);
+  expect(f.reconcile).toHaveBeenCalledTimes(2);
+  interval = 2000; await vi.advanceTimersByTimeAsync(1000);
+  expect(f.reconcile).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(1999); expect(f.reconcile).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(1); expect(f.reconcile).toHaveBeenCalledTimes(4);
+  expect(f.process.shutdown).not.toHaveBeenCalled();
+  cancellation.abort(); await running;
 });

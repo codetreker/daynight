@@ -1425,6 +1425,37 @@ records binary transport and output ownership.
 
 ## Bot management
 
+Open **Assistants** in the Web workspace to create a named assistant, switch
+conversations, inspect its Worker/directory/Agent, or close and reopen its chat.
+The shared Session View provides conversation/standard modes, full screen and
+native interactions. Closing a chat or browser only closes the view.
+
+Run `daynight worker run` with a valid service login and a supported native Agent.
+It hosts assistants independently of task slots, including with no registered
+repositories. The Worker's actual startup directory is the default cwd. Its
+current global native configuration supplies the default Agent/model/arguments;
+per-project task configuration does not configure assistants. The default cwd
+must exist, and choosing a different directory never creates it automatically.
+Only fresh compatible hosting reports are eligible for default selection; an
+online older Worker without `assistantHost` is unsupported. Native preflight
+reports tool availability, not successful future authentication or execution.
+
+Worker execution remains foreground; keep the process and machine online. Normal
+shutdown stops owned native execution and retains recovery data. Restart uses
+the same Bot, Session, frozen role and native identity when verified stop evidence
+permits recovery. Missing native identity or uncertain stopping remains an error,
+without creating a blank replacement or resending a previous request. Bots use
+Web sessions even when task execution uses Herdr, and do not consume task
+`maxConcurrent` slots; their processes still consume machine resources.
+
+The assistant receives additional native role instructions and uses the normal
+Daynight CLI for queries and authorized operations. Its capabilities follow CLI
+permissions, without an assistant-specific action allowlist. A query needs no
+Goal; a delivery request follows the existing requirements, design, execution and
+acceptance workflow. `task list`, `task show`, dependency reads and `worker
+list/show` report separate status, pause, readiness and resource observations.
+The Bot's directory grants no additional project access.
+
 Bot commands use the configured server and signed-in account. They work in an
 ordinary directory without Git or a Project and do not accept `--project`.
 
@@ -1468,8 +1499,8 @@ only their minimal deletion responsibility. List disappearance is not proof of
 process termination or history removal. The service commits a deletion barrier
 before cleanup, and requires the bound Worker's verified stop receipt before
 server history cleanup can complete. The CLI consumes those stages; it does not
-stop native processes or generate cleanup receipts. These entry points do not
-enable the complete assistant UI or establish complete Bot hosting.
+stop native processes or generate cleanup receipts. The bound Worker owns those
+operations and retains failed cleanup responsibility for later reconciliation.
 
 All four commands support `--json`. `list` emits an array; `show`, `create` and
 `delete` emit a Bot resource. Lists follow every page and produce output only
@@ -1497,7 +1528,13 @@ credential, checks its server and current account, and probes the effective CLI
 in the Bot's ordinary directory. It preserves native homes and existing alias
 rules; Controller relay credentials are not CLI credentials. The caller owns
 durable preparation, registration, startup and release of its prepared aliases.
-These helpers do not themselves enable Bot hosting or bypass native approvals.
+The Worker hosting composition invokes these helpers for new and recovered
+execution; native approvals remain in force. Deletion clears Daynight-managed
+conversation data and private execution files after verified stopping. It never
+removes the ordinary cwd, independent tasks/worktrees, shared native homes or
+Provider-owned history. Webhook/MCP, automatic migration, high availability and
+OS service installation are outside this feature. Existing Test Sessions remain
+independent and are never imported automatically.
 
 ## Remote Worker queries
 

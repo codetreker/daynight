@@ -206,7 +206,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(aliceUser.id).not.toBe(bobUser.id);
     const rawName = `  Browser project ${randomUUID()}  `;
     const rawRepo = `git@example.org:group/${randomUUID()}.git`;
-    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
+    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 5 }]);
     await page.goto('/projects');
     await expect(page.locator('.topbar')).toBeVisible();
     // Exercise recovery over an existing draft using the native browser modal and
@@ -240,9 +240,81 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           try { await page.locator('.topbar').getByRole('combobox', { name: messages.language.label }).selectOption(locale); }
           finally { await page.evaluate(() => (window as unknown as { restoreLocaleStorage: () => void }).restoreLocaleStorage()); }
           await expect(page.locator('.topbar .locale-notice')).toBeVisible();
-          await page.getByRole('button', { name: messages.auth.createProject.open }).click();
+          const opener = page.getByRole('button', { name: messages.auth.createProject.open });
+          await opener.click();
           const draft = page.getByRole('dialog', { name: messages.auth.createProject.title });
           const nameInput = draft.getByLabel(messages.auth.createProject.name);
+          const repositoryInput = draft.getByLabel(messages.auth.createProject.repository);
+          await expect(nameInput).toBeFocused();
+          expect(await draft.evaluate((element) => element.matches(':modal'))).toBe(true);
+          await expect(draft.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+          await expect(draft.getByRole('button', { name: messages.common.retrySave })).toHaveCount(0);
+          const header = draft.locator('.dialog-header');
+          await expect(header.locator(':scope > *')).toHaveCount(2);
+          const headerGeometry = await header.evaluate((element) => {
+            const title = element.querySelector('h2')!.getBoundingClientRect();
+            const close = element.querySelector('button')!.getBoundingClientRect();
+            return { title: { right: title.right, top: title.top, bottom: title.bottom }, close: { left: close.left, right: close.right, top: close.top, bottom: close.bottom }, viewport: window.innerWidth, document: document.documentElement.scrollWidth };
+          });
+          expect(headerGeometry.title.right).toBeLessThanOrEqual(headerGeometry.close.left);
+          expect(headerGeometry.title.top).toBeLessThan(headerGeometry.close.bottom);
+          expect(headerGeometry.close.top).toBeLessThan(headerGeometry.title.bottom);
+          expect(headerGeometry.close.right).toBeLessThanOrEqual(width);
+          expect(headerGeometry.document).toBeLessThanOrEqual(width);
+          await page.keyboard.press('Tab');
+          await expect(repositoryInput).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          await expect(nameInput).toBeFocused();
+          const close = draft.getByRole('button', { name: messages.auth.createProject.close });
+          const submit = draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true });
+          await submit.focus();
+          await page.keyboard.press('Tab');
+          if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press('Tab');
+          await expect(close).toBeFocused();
+          await page.keyboard.press('Shift+Tab');
+          if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press('Shift+Tab');
+          await expect(submit).toBeFocused();
+          await nameInput.focus();
+          await page.locator('.topbar select').evaluate((element: HTMLSelectElement) => element.focus());
+          await expect(nameInput).toBeFocused();
+          await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
+          await expect(nameInput).toBeFocused();
+          expect(await nameInput.evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(true);
+          await page.keyboard.press('Escape');
+          await expect(draft).toHaveCount(0);
+          await expect(opener).toBeFocused();
+          await opener.click();
+          await expect(nameInput).toBeFocused();
+          await nameInput.fill('Retained draft ' + 'long '.repeat(24));
+          await repositoryInput.fill('https://example.com/' + 'long-path/'.repeat(20));
+          const releaseCreate = Promise.withResolvers<void>();
+          let createRequests = 0;
+          const creationRoute = async (route: Route) => {
+            if (route.request().method() !== 'POST') return route.continue();
+            createRequests++;
+            await releaseCreate.promise;
+            await route.fulfill({ status: 400, headers: { 'Daynight-User-ID': aliceUser.id }, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_argument', message: 'Invalid project', requestId: 'creation-test' } }) });
+          };
+          await page.route(`${baseURL}/api/v1/projects`, creationRoute);
+          try {
+            await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
+            await expect.poll(() => createRequests).toBe(1);
+            await expect(nameInput).toBeDisabled();
+            await expect(repositoryInput).toBeDisabled();
+            await expect(draft.locator('select, .locale-preference, .locale-notice')).toHaveCount(0);
+            await page.keyboard.press('Escape');
+            await expect(draft).toBeVisible();
+            await picture(page, info, `auth-create-${locale}-${width}-pending`);
+            releaseCreate.resolve();
+            await expect(draft.getByRole('alert')).toContainText(messages.auth.createProject.error);
+            await expect(nameInput).toHaveValue('Retained draft ' + 'long '.repeat(24));
+            await expect(repositoryInput).toHaveValue('https://example.com/' + 'long-path/'.repeat(20));
+            expect(createRequests).toBe(1);
+            await picture(page, info, `auth-create-${locale}-${width}-error`);
+          } finally {
+            releaseCreate.resolve();
+            await page.unroute(`${baseURL}/api/v1/projects`, creationRoute);
+          }
           await nameInput.fill('Retained draft');
           const draftNode = await draft.elementHandle();
           if (draftNode === null) throw new Error('The project draft was not mounted.');
@@ -310,6 +382,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
             page.off('request', countRequests);
           }
           await draft.getByRole('button', { name: messages.auth.createProject.cancel }).click();
+          await expect(opener).toBeFocused();
         }
       }
       await page.setViewportSize({ width: 1600, height: 1100 });

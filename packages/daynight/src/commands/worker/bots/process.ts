@@ -22,7 +22,7 @@ import type { BotRecord } from "./types.js";
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
-  sessionApi: BotSessionApi; recoveryLimit: number; now?: () => number;
+  sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
   dependencies?: { prepareEnvironment?: typeof prepareBotEnvironment; launch?: typeof launchControllerProcess; observe?: typeof observeControllerProcess; readSnapshot?: typeof readControllerSnapshot; confirmStopped?: typeof confirmControllerProcessesStopped; stopProcesses?: typeof stopControllerProcesses; recordStopped?: typeof recordStoppedControllerGeneration; request?: typeof requestController };
 }) => {
   const now = options.now ?? Date.now, serialize = createControllerExecutionSerializer();
@@ -121,7 +121,7 @@ export const createBotProcess = (options: {
     // registration only once the initial environment is known to be usable.
     const prepared = await prepareEnvironment(record, signal);
     try {
-      if (record.intent === null) options.store.prepare(record.owner, record.botId, { homeDirectory: options.homeDirectory, recoveryLimit: options.recoveryLimit });
+      if (record.intent === null) options.store.prepare(record.owner, record.botId, { homeDirectory: options.homeDirectory, recoveryLimit: typeof options.recoveryLimit === "function" ? options.recoveryLimit() : options.recoveryLimit });
       record = current(record);
       options.store.freezeRole(record.owner, record.botId, selectBotRole({ serverRole: record.definition!.roleConfiguration, preparedRole: record.intent!.roleConfiguration }));
       record = current(record);

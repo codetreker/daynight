@@ -117,7 +117,7 @@ const executableMissing = async (agent: string, environment: NodeJS.ProcessEnv, 
 
 export const createWorkerTelemetryCollector = (options: {
   paths: WorkerPaths; homeDirectory: string; version: string; workingDirectory: string; machine: WorkerMachine; platform: TaskPlatform; workerId: string; serverOrigin: string;
-  assistantHost?: { collect: (operation: Operation) => Promise<AssistantHostSample> };
+  assistantHost?: { collect: (operation: Operation) => Promise<AssistantHostSample | undefined> };
 }) => {
   if (!path.isAbsolute(options.workingDirectory) || /[\0\r\n]/.test(options.workingDirectory)) throw new TypeError("The Worker startup directory must be absolute and contain no control separators.");
   const environment = createHerdrNativeEnvironment(options.paths, process.env);

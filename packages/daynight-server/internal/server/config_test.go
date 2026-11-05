@@ -188,7 +188,7 @@ func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) 
 }
 
 func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
-	for _, callbackPath := range []string{"/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback"} {
+	for _, callbackPath := range []string{"/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config := configuredTestConfig()
 			config.UniAuthCallbackURL = config.PublicOrigin + callbackPath
@@ -221,7 +221,7 @@ func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
 }
 
 func TestPublicPageCallbackReservationPreservesDistinctPaths(t *testing.T) {
-	for _, callbackPath := range []string{"/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback", "/login-callback", "/logincallback", "/auth/login/callback", "/projects-callback", "/workers-callback", "/workerscallback", "/auth/workers/callback"} {
+	for _, callbackPath := range []string{"/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback", "/login-callback", "/logincallback", "/auth/login/callback", "/projects-callback", "/workers-callback", "/workerscallback", "/auth/workers/callback", "/bots-callback", "/botscallback", "/auth/bots/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config, err := LoadConfig(configEnvironment(map[string]string{
 				"DAYNIGHT_UNIAUTH_CALLBACK_URL": "https://daynight.example" + callbackPath,

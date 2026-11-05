@@ -5,6 +5,7 @@ import { stringify } from "yaml";
 import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import { ApiError } from "../../../src/api/client.js";
+import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -15,14 +16,16 @@ import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coor
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn() }));
+vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
+vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
-vi.mock("../../../src/commands/worker/herdr/version-probe.js", () => ({ probeNativeAgentVersion: mocks.probe }));
+vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({
   ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }),
 }));
@@ -83,6 +86,8 @@ const finishAtTick = (cancellation: AbortController, check: (options: WorkerCoor
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.emit.mockReset();
+  mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
+  mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined) });
   mocks.reporter.mockImplementation(reporter);
   mocks.remote.mockReturnValue({
     currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => resource(desired())),
@@ -323,6 +328,29 @@ describe("worker cloud-first startup", () => {
     expect(mocks.coordinator).toHaveBeenCalledOnce();
   });
 
+  it("keeps Herdr-only defaults observable while reporting unsupported assistant arguments", async () => {
+    const f = await fixture(), target = desired();
+    mocks.remote().configuration.mockResolvedValue(resource({ ...target, value: { ...target.value, native: { ...target.value.native, args: ["--search"] } } }));
+    mocks.remote.mockClear();
+    const actual = await vi.importActual<typeof import("../../../src/commands/worker/bots/host-capabilities.js")>("../../../src/commands/worker/bots/host-capabilities.js");
+    mocks.hostCollector.mockImplementation((options: Parameters<typeof actual.createAssistantHostCollector>[0]) => actual.createAssistantHostCollector({ ...options,
+      resolveExecutable: () => { throw Object.assign(new Error("Fixture has no native assistant executable."), { code: "ENOENT" }); },
+    }));
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+      const coordinator = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+      expect(coordinator.globalConfiguration).toMatchObject({ agentControlMode: "herdr", args: ["--search"] });
+      const operation = createOperation();
+      try {
+        const sample = await (mocks.reporter.mock.calls[0]![0] as ReporterOptions).collect(operation);
+        expect(sample.telemetry.versions.daynight).toBe(f.version);
+        expect(sample.telemetry.assistantHost?.providers.find(provider => provider.provider === "codex")).toEqual({ provider: "codex", available: false, reason: "unsupported_arguments", model: null, args: [] });
+        expect(sample.issues).toEqual(expect.arrayContaining([expect.objectContaining({ component: "assistantHost_codex", code: "unavailable" })]));
+      } finally { operation.dispose(); }
+    } finally { cancellation.abort(); await running; }
+  });
+
   it("keeps a prepared project's frozen Web recovery available when its new native defaults fail", async () => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, agentControlMode: "web" } }));
@@ -502,4 +530,43 @@ it("rebuilds unknown zero-version Web state before starting its coordinator", as
   expect(web.pragma("user_version", { simple: true })).toBe(2);
   expect(web.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all()).toEqual([{ name: "executions" }]);
   expect(web.prepare("SELECT * FROM executions").all()).toEqual([]); web.close();
+});
+
+it("starts Bot management with no projects and preserves the Worker lock through Bot shutdown", async () => {
+  const f = await fixture(false, false), cancellation = new AbortController(); cancellations.add(cancellation);
+  mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+  let botOptions: any;
+  mocks.bots.mockImplementation(options => {
+    botOptions = options;
+    return { run: vi.fn(async (signal: AbortSignal) => {
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    }), shutdown: vi.fn(async () => {
+      expect(await readFile(f.paths.lockFile, "utf8")).toContain(String(process.pid));
+      expect(options.store.list(options.owner)).toEqual([]);
+    }) };
+  });
+  mocks.coordinator.mockImplementation(() => coordinator(async () => cancellation.abort()));
+  await runWorker({ ...f, signal: cancellation.signal });
+  expect(mocks.bots).toHaveBeenCalledOnce();
+  expect(botOptions.owner).toEqual({ serverOrigin: origin, ownerUserId: uuid(6), workerId });
+  expect(mocks.bots.mock.results[0]!.value.run).toHaveBeenCalledOnce();
+  expect(mocks.bots.mock.results[0]!.value.shutdown).toHaveBeenCalledOnce();
+  expect(() => botOptions.store.list(botOptions.owner)).toThrow();
+  expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
+});
+
+it("attempts Task shutdown and releases stores and the lock when Bot shutdown fails", async () => {
+  const f = await fixture(false, false), cancellation = new AbortController(); cancellations.add(cancellation);
+  mocks.remote().configuration.mockResolvedValue(resource(desired([]))); mocks.remote.mockClear();
+  const failure = new Error("Bot writer stop remains unconfirmed");
+  let botOptions: any;
+  mocks.bots.mockImplementation(options => {
+    botOptions = options;
+    return { run: async () => {}, shutdown: async () => { throw failure; } };
+  });
+  const tasks = coordinator(async () => cancellation.abort()); mocks.coordinator.mockReturnValue(tasks);
+  await expect(runWorker({ ...f, signal: cancellation.signal })).rejects.toBe(failure);
+  expect(tasks.shutdown).toHaveBeenCalledOnce();
+  expect(() => botOptions.store.list(botOptions.owner)).toThrow();
+  expect((await readdir(f.paths.workerDirectory))).not.toContain("instance.lock");
 });
