@@ -105,7 +105,7 @@ Codex 和 Copilot 仅在活动 turn 匹配且原生能力允许时执行 steer�
 
 Codex 只在匹配当前 thread 的原生轮次明确为 `interrupted` 时生成 `turn_interrupted`，条目身份由 native thread ID 与 turn ID 派生。重复通知、Controller 重连和原生历史恢复复用相同身份；每个历史轮次的中断标记排在该轮 items 之后。点击 Interrupt 或收到其 RPC ACK 本身不证明轮次被中断，正常完成及 `failed` 继续采用原有结果与错误规则。中断投影不改变 `turn/interrupt` 调用、准入、草稿或重放策略。
 
-原生可能在记录 `userMessage` 前结束轮次；`turn/completed.items=[]` 且 `itemsView=notLoaded` 也不证明输入不存在。Controller 优先投影已经观测到的原生用户条目，并回收结束载荷中明确提供的用户条目。仍未观测到的已提交输入以带来源说明的用户行保留，随后按需读取完整轮次核对；查询不阻塞原生结束状态或取消确认。仅匹配原生 `clientId` 才能调用输入受理观察回调，本地保留文本不消除 unknown，也不会触发重新发送。
+原生可能在记录 `userMessage` 前结束轮次；`turn/completed.items=[]` 且 `itemsView=notLoaded` 也不证明输入不存在。Controller 优先投影已经观测到的原生用户条目，并回收结束载荷中明确提供的用户条目。仍未观测到的已提交输入以带来源说明的用户行保留，随后按需读取完整轮次核对。若输入派发仍在进行，补偿行与中断标记等待该派发结果：明确拒绝不保留为用户输入，受理或未知结果分别保留其真实语义；先显示输入，再显示中断标记。派发等待与历史查询均不阻塞原生结束状态或取消确认。关闭 Provider 时先终止原生连接并结算待处理请求，再等待已启动的终态投影完成后返回，确保已确认中断进入归档；关闭期间不发起新的历史查询。仅匹配原生 `clientId` 才能调用输入受理观察回调，本地保留文本不消除 unknown，也不会触发重新发送。
 
 完整原生历史确认缺少输入时显示 `native_input_missing`；无法核实时明确显示未核实。单独从原生历史恢复的空中断轮次只有缺失说明与中断标记，不能重建原生未保存的正文；同一 Controller journal 中已有的保留文本继续可读；原生条目携带相同 turn ID 与 clientId 时，优先复用 journal 中已存在的补偿行身份，避免 Controller 换代后重复显示。历史文件和旧 Session 归档不被改写。机制与取舍见[中断投影决策](../../.agents/notes/implemented/bug-fix/2026-11-06-codex-interrupted-timeline.md)。
 

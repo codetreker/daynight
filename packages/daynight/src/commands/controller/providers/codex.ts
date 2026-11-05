@@ -25,6 +25,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   let projection: CodexProjection;
   const interruptions = new CodexInterruptions(() => nativeId, options.onTimeline, options.hasTimelineEntry);
   const completing = new Set<string>();
+  const terminalProjections = new Set<Promise<void>>();
   let turnStartedAt: string | null = null;
   let controls: CodexControls;
   const pending = new Map<string, Pending>(); const turns = new NativeTurns();
@@ -77,13 +78,18 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const projectInterrupted = async (turn: NativeObject) => {
     const id = string(turn.id);
     for (const item of Array.isArray(turn.items) ? turn.items : []) if (record(item).type === "userMessage") projectItem(item, true, id);
+    // A native completion can share a stdout chunk with a steer rejection. Wait
+    // for the dispatch continuation before preserving unobserved input; turn
+    // state and cancel confirmation are settled independently by finishTurn.
+    const dispatch = interruptions.settlement(id);
+    if (dispatch) await dispatch;
     let completeHistory = turn.itemsView === "full";
     interruptions.completed(turn, completeHistory ? true : null);
-    if (!completeHistory && interruptions.missing(id)) {
+    if (!completeHistory && interruptions.missing(id) && !closed && !closing) {
       try { completeHistory = await readItems(id, true); }
       catch (error) { options.onDiagnostic?.(`Native interrupted-turn input could not be read: ${String(error)}`); }
     }
-    if (!closed && !closing) interruptions.completed(turn, completeHistory);
+    interruptions.completed(turn, completeHistory);
     interruptions.finished(id);
   };
   const finishTurn = (turn: NativeObject) => {
@@ -103,7 +109,10 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       if (turn.status === "interrupted" && p.threadId === nativeId && id) {
         if (!completing.has(id)) {
           completing.add(id);
-          void projectInterrupted(turn).catch(error => { options.onFatalError?.(error instanceof Error ? error : new Error(String(error))); });
+          const terminal = projectInterrupted(turn)
+            .catch(error => { options.onFatalError?.(error instanceof Error ? error : new Error(String(error))); })
+            .finally(() => { terminalProjections.delete(terminal); });
+          terminalProjections.add(terminal);
         }
       }
       finishTurn(turn);
@@ -134,10 +143,15 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   });
   const close = async () => {
     closing = true; controls.close();
-    if (closed) { rpc.dispose(); return; }
+    if (closed) { rpc.dispose(); await Promise.all(terminalProjections); return; }
     const exited = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Native Codex stop is unconfirmed.")), 10_000); child.once("close", () => { clearTimeout(timer); resolve(); }); });
     child.stdin.end(); const kill = setTimeout(() => child.kill("SIGTERM"), 1_000); const force = setTimeout(() => child.kill("SIGKILL"), 5_000);
-    try { await exited; } finally { clearTimeout(kill); clearTimeout(force); rpc.dispose(); }
+    try { await exited; } finally {
+      clearTimeout(kill); clearTimeout(force); rpc.dispose();
+      // Closing transport settles unknown dispatches and history reads. Finish
+      // their known terminal projection before the owner can close its journal.
+      await Promise.all(terminalProjections);
+    }
   };
   try {
     await rpc.request("initialize", { clientInfo: { name: "daynight", title: "Daynight Controller", version: "0.22.0" }, capabilities: { experimentalApi: true } }); rpc.notify("initialized");
@@ -181,7 +195,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       interruptions.submitting(operationId, text, expectedTurnId);
       try {
       const result = record(await rpc.request(currentTurnId ? "turn/steer" : "turn/start", { threadId: nativeId, ...(currentTurnId ? { expectedTurnId: currentTurnId } : {}), clientUserMessageId: operationId, input: [{ type: "text", text, text_elements: [] }, ...(skill ? [{ type: "skill", ...skill }] : [])], ...(!currentTurnId && (controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort)) ? { effort: controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort) } : {}) }));
-      if (expectedTurnId) { if (result.turnId !== expectedTurnId) throw new Error("Native steer receipt is unknown."); return { disposition: "queued", turnId: expectedTurnId }; }
+      if (expectedTurnId) { if (result.turnId !== expectedTurnId) throw new Error("Native steer receipt is unknown."); interruptions.accepted(operationId, expectedTurnId); return { disposition: "queued", turnId: expectedTurnId }; }
       const turn = record(result.turn); if (!string(turn.id)) throw new Error("Native turn receipt is unknown.");
       interruptions.accepted(operationId, string(turn.id));
       if (turn.status === "inProgress" && !turns.isComplete(string(turn.id))) { currentTurnId = string(turn.id); activity = "working"; state(); }
@@ -189,7 +203,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       } catch (error) {
         if (error instanceof NativeRpcError) interruptions.rejected(operationId);
         throw error;
-      } finally { sending = false; interruptions.dispatched(); }
+      } finally { sending = false; interruptions.dispatched(operationId); }
   };
   return {
     nativeSessionId: nativeId, send,

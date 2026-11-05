@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
@@ -169,7 +169,7 @@ test("interruption never reclassifies an earlier retry as recovery", async () =>
     await provider.send(JSON.stringify({ status: "interrupted", error: null }), randomUUID(), "native-turn");
     expect(await completion).toBeInstanceOf(Error);
     expect(errors(entries).filter(entry => entry.code !== "turn_interrupted" && entry.code !== "native_input_missing")).toEqual(before);
-    expect(errors(entries).some(entry => entry.code === "turn_interrupted")).toBe(true);
+    await vi.waitFor(() => expect(errors(entries).some(entry => entry.code === "turn_interrupted")).toBe(true));
   } finally { await provider.close(); }
 });
 

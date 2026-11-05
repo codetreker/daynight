@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
-let waiting = null, holdResponse = false, interruptUser = null;
+let waiting = null, holdResponse = false, interruptUser = null, pendingSteer = null;
 const interruptCase = process.env.CODEX_TEST_INTERRUPT;
 const interruptedHistory = id => ({ id, status: 'interrupted', error: null, items: [], itemsView: 'full', rootTurnId: id, startedAt: 1, completedAt: 2, durationMs: 1000 });
 const sleep = { type: 'sleep', id: 'sleep-call', durationMs: 50000, startedAtMs: 1793708507841 };
@@ -59,7 +59,7 @@ for await (const line of createInterface({input:process.stdin})) {
  if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
  if(m.method==='skills/list')out({id:m.id,result:{data:[]}});
- if(m.method==='turn/steer') {if(interruptCase==='steer-rejected'){out({id:m.id,error:{code:-32602,message:'Steer rejected'}});continue;}out({id:m.id,result:{turnId:m.params.expectedTurnId}});continue;}
+ if(m.method==='turn/steer') {if(interruptCase?.startsWith('race:')){pendingSteer=m.id;continue;}if(interruptCase==='steer-rejected'){out({id:m.id,error:{code:-32602,message:'Steer rejected'}});continue;}out({id:m.id,result:{turnId:m.params.expectedTurnId}});continue;}
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
@@ -91,6 +91,18 @@ for await (const line of createInterface({input:process.stdin})) {
   out({id:m.id,result:{turn}});
  }
  if(m.method==='turn/interrupt'){
+  if(interruptCase?.startsWith('race:')) {
+   const [,order,itemsView]=interruptCase.split(':');
+   const completion={method:'turn/completed',params:{threadId:'native-thread',turn:{...interruptedHistory('native-turn'),itemsView,items:itemsView==='full'?[interruptUser]:[]}}};
+   const rejection={id:pendingSteer,error:{code:-32602,message:'Racing steer rejected'}};
+   const receipt={id:m.id,result:{}};
+   const batch=messages=>process.stdout.write(messages.map(message=>JSON.stringify(message)+'\n').join(''));
+   if(order==='reject-first')batch([rejection,completion,receipt]);
+   else if(order==='complete-first')batch([completion,rejection,receipt]);
+   else {batch([completion,receipt]);if(order!=='timeout')setTimeout(()=>out(order==='accept-delayed'?{id:pendingSteer,result:{turnId:'native-turn'}}:rejection),100);}
+   continue;
+  }
+
   const complete=()=>out({method:'turn/completed',params:{threadId:'native-thread',turn:{...interruptedHistory('native-turn'),status:['completed','failed'].includes(interruptCase)?interruptCase:'interrupted',error:interruptCase==='failed'?{message:'Unrelated native failure'}:null,itemsView:interruptCase==='completion-items'?'full':'notLoaded',items:interruptCase==='completion-items'?[interruptUser]:[]}}});
   if(interruptCase==='completion-first') {complete();complete();out({id:m.id,result:{}});} else {out({id:m.id,result:{}});setTimeout(complete,20);}
  }

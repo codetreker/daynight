@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import type { ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
@@ -10,11 +11,12 @@ import type { ProviderEntry } from "../../../src/commands/controller/providers/t
 
 const open = async (scenario: string, resumed = false, journal?: { hasTimelineEntry(id: string): boolean; projectTimeline(entry: ProviderEntry): unknown }) => {
   const entries: ProviderEntry[] = [], observed: string[] = [];
+  let child!: ChildProcess;
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: resumed ? "native-thread" : null,
     executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), env: { ...process.env, CODEX_TEST_INTERRUPT: scenario },
     ...(journal ? { hasTimelineEntry: (id: string) => journal.hasTimelineEntry(id) } : {}),
-    onTimeline: entry => { entries.push(entry); journal?.projectTimeline(entry); }, onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: () => {} });
-  return { provider, entries, observed };
+    onTimeline: entry => { entries.push(entry); journal?.projectTimeline(entry); }, onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: value => { child = value; } });
+  return { provider, entries, observed, child };
 };
 const rows = (entries: readonly ProviderEntry[]) => [...new Map(entries.map(entry => [entry.entryId, entry])).values()];
 const markers = (entries: readonly ProviderEntry[]) => rows(entries).filter(entry => entry.kind === "error" && entry.code === "turn_interrupted");
@@ -201,3 +203,103 @@ test.each(["history-user", "history-read-failure", "ack-first"])("%s input keeps
     expect(markers(stored())).toHaveLength(1);
   } finally { journal.close(); await rm(home, { recursive: true, force: true }); }
 });
+
+test.each(["reject-first", "complete-first", "reject-delayed"].flatMap(order => ["full", "notLoaded"].map(view => `${order}:${view}`)))("a racing rejected steer (%s) never persists input or a missing-input diagnosis", async scenario => {
+  const live = await open(`race:${scenario}`);
+  try {
+    const sent = await live.provider.send("cancel", randomUUID(), null);
+    let settled = false;
+    const steer = live.provider.send("rejected racing input", randomUUID(), sent.turnId!).then(() => null, error => { settled = true; return error; });
+    await live.provider.cancel(sent.turnId!);
+    if (scenario.startsWith("reject-delayed")) expect(settled).toBe(false);
+    expect(await steer).toMatchObject({ message: "Racing steer rejected" });
+    await vi.waitFor(() => expect(markers(live.entries)).toHaveLength(1));
+    expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(1);
+    expect(live.entries.some(entry => entry.kind === "error" && entry.code === "native_input_missing")).toBe(false);
+  } finally { await live.provider.close(); }
+});
+
+test("a racing accepted steer is retained only after its receipt settles, without delaying cancellation", async () => {
+  const live = await open("race:accept-delayed:full");
+  try {
+    const sent = await live.provider.send("cancel", randomUUID(), null);
+    let settled = false;
+    const steer = live.provider.send("accepted racing input", randomUUID(), sent.turnId!).then(receipt => { settled = true; return receipt; });
+    await live.provider.cancel(sent.turnId!);
+    expect(settled).toBe(false);
+    expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(1);
+    expect(await steer).toMatchObject({ disposition: "queued" });
+    await vi.waitFor(() => expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(2));
+    const all = rows(live.entries);
+    expect(all.at(-1)).toMatchObject({ code: "turn_interrupted" });
+    expect(all.find(entry => entry.kind === "user_message" && entry.content.some(part => part.type === "text" && part.text === "accepted racing input"))).toBeDefined();
+  } finally { await live.provider.close(); }
+});
+
+test("a timed-out racing steer retains explicitly unknown dispatch text after cancellation already settled", async () => {
+  const live = await open("race:timeout:full");
+  try {
+    const sent = await live.provider.send("cancel", randomUUID(), null);
+    vi.useFakeTimers();
+    const steer = live.provider.send("unknown racing input", randomUUID(), sent.turnId!).catch(error => error as Error);
+    await live.provider.cancel(sent.turnId!);
+    expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(await steer).toMatchObject({ name: "NativeRpcTimeoutError" });
+    const users = rows(live.entries).filter(entry => entry.kind === "user_message");
+    expect(users).toHaveLength(2);
+    expect(JSON.stringify(users[1])).toContain("dispatch outcome is unknown");
+    expect(markers(live.entries)).toHaveLength(1);
+  } finally { vi.useRealTimers(); await live.provider.close(); }
+});
+
+
+test.each(["reject-delayed", "timeout"])("close flushes an interrupted turn waiting for %s dispatch before returning", async outcome => {
+  const live = await open(`race:${outcome}:notLoaded`);
+  try {
+    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const steer = live.provider.send("racing input", randomUUID(), sent.turnId!).catch(error => error as Error);
+    await live.provider.cancel(sent.turnId!);
+    await live.provider.close();
+    const countAtClose = live.entries.length;
+    await steer;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(live.entries).toHaveLength(countAtClose);
+    expect(markers(live.entries)).toHaveLength(1);
+    const users = rows(live.entries).filter(entry => entry.kind === "user_message");
+    expect(users).toHaveLength(outcome === "reject-delayed" ? 1 : 2);
+    if (outcome === "timeout") expect(JSON.stringify(users[1])).toContain("dispatch outcome is unknown");
+    else expect(live.entries.some(entry => entry.kind === "error" && entry.code === "native_input_missing")).toBe(false);
+  } finally { await live.provider.close(); }
+}, 3_000);
+
+test("native process loss retains a confirmed interruption while dispatch becomes unknown", async () => {
+  const live = await open("race:timeout:notLoaded");
+  try {
+    const sent = await live.provider.send("cancel", randomUUID(), null);
+    const steer = live.provider.send("racing input", randomUUID(), sent.turnId!).catch(error => error as Error);
+    await live.provider.cancel(sent.turnId!);
+    live.child.kill("SIGTERM");
+    await steer;
+    await live.provider.close();
+    const countAtClose = live.entries.length;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(live.entries).toHaveLength(countAtClose);
+    expect(markers(live.entries)).toHaveLength(1);
+    expect(rows(live.entries).filter(entry => entry.kind === "user_message")).toHaveLength(2);
+  } finally { await live.provider.close(); }
+}, 3_000);
+
+test("close drains an interrupted turn's outstanding input-history projection", async () => {
+  const live = await open("history-delayed");
+  try {
+    const sent = await live.provider.send("cancel", randomUUID(), null);
+    await live.provider.cancel(sent.turnId!);
+    await live.provider.close();
+    const countAtClose = live.entries.length;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(live.entries).toHaveLength(countAtClose);
+    expect(markers(live.entries)).toHaveLength(1);
+    expect(rows(live.entries)).toContainEqual(expect.objectContaining({ code: "native_input_missing", message: expect.stringContaining("could not be verified") }));
+  } finally { await live.provider.close(); }
+}, 3_000);

@@ -25,7 +25,13 @@ cannot infer terminal status absent from its source.
 
 Retain unobserved submitted text for the active turn as presentation evidence.
 On interruption, recover native user items supplied with completion, then show
-any remaining input with an explicit Controller provenance label. Missing native
+any remaining input with an explicit Controller provenance label. If dispatch
+is still pending, defer those rows until its outcome settles so an explicit
+rejection cannot become durable user history. Accepted and unknown outcomes
+retain distinct wording, with input before the interruption marker; native turn
+settlement remains independent. Closing the provider settles pending transport
+requests and joins terminal projections before returning so an acknowledged
+interruption survives immediate shutdown and archival. Missing native
 items are reconciled against full turn history without delaying native turn
 settlement. A matching native client ID can replace the temporary presentation
 using its turn and client IDs; a read-only journal lookup retains that mapping
