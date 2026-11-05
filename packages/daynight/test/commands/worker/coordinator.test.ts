@@ -2394,6 +2394,80 @@ describe("explicit resume with cloud project selection", () => {
 });
 
 describe("cloud project removal", () => {
+  it("defers an unqueried mapping's Git ownership until its claim inventory is covered", async () => {
+    const f = await fixture();
+    const next: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/next.git", localPath: path.join(f.root, "next") };
+    const owner = { projectId: next.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.ownInventory).mockImplementationOnce(async projects => {
+      expect(projects.map(project => project.projectId)).toEqual([f.project.projectId]);
+      await pending;
+      return [];
+    });
+    const tick = f.coordinator.tick();
+    try {
+      await eventually(() => expect(f.remote.ownInventory).toHaveBeenCalledOnce());
+      f.store.registerProject(next);
+      f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+      f.grant(task(next.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex" });
+      f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }, { project: next, configuration }], readyProjectIds: [f.project.projectId, next.projectId], targetProjectIds: [f.project.projectId, next.projectId], globalConfiguration: configuration, maxConcurrent: 1 });
+      release(); await tick;
+      expect(f.events.some(event => event.kind === "warning" && event.message.includes("unproven Git ownership"))).toBe(false);
+      expect(f.remote.claim).not.toHaveBeenCalled();
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(f.store.getTask(owner)).toBeNull();
+      await f.coordinator.tick();
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+      expect(f.tasks.start.mock.calls[0]![0]).toMatchObject(owner);
+      expect(f.remote.claim).not.toHaveBeenCalled();
+    } finally { release(); await tick; await f.coordinator.shutdown(); }
+  });
+
+  it("defers admission if a project is registered after resource discovery starts", async () => {
+    const f = await fixture();
+    const next: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/next.git", localPath: path.join(f.root, "next") };
+    const owner = { projectId: next.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementationOnce(async (project, operation) => { await pending; return list(project, operation); });
+    const tick = f.coordinator.tick();
+    try {
+      await eventually(() => expect(f.git.listWorktrees).toHaveBeenCalledOnce());
+      f.store.registerProject(next);
+      f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+      f.grant(task(next.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex" });
+      f.coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration }, { project: next, configuration }], readyProjectIds: [f.project.projectId, next.projectId], targetProjectIds: [f.project.projectId, next.projectId], globalConfiguration: configuration, maxConcurrent: 1 });
+      release(); await tick;
+      expect(f.remote.claim).not.toHaveBeenCalled();
+      expect(f.tasks.start).not.toHaveBeenCalled();
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      await f.coordinator.tick();
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+      expect(f.tasks.start.mock.calls[0]![0]).toMatchObject(owner);
+      expect(f.remote.claim).not.toHaveBeenCalled();
+    } finally { release(); await tick; await f.coordinator.shutdown(); }
+  });
+
+  it("keeps an in-flight grant pending if a project appears before the grant returns", async () => {
+    const f = await fixture();
+    const next: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/next.git", localPath: path.join(f.root, "next") };
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await pending; return f.grant(candidate, descriptor); });
+    const tick = f.coordinator.tick();
+    try {
+      await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+      f.store.registerProject(next);
+      release(); await tick;
+      expect(f.store.listUnfinishedTasks()[0]?.status).toBe("pending");
+      expect(f.tasks.start).not.toHaveBeenCalled();
+      await f.coordinator.tick();
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    } finally { release(); await tick; await f.coordinator.shutdown(); }
+  });
+
   it("isolates unreadable repositories without recorded ownership from healthy project admission", async () => {
     const f = await fixture();
     const broken: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/broken.git", localPath: path.join(f.root, "broken") };

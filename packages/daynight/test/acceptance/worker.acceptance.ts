@@ -25,7 +25,7 @@ const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.r
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-27T00:00:00Z";
 type Row = { project_id: string; task_id: string; claim_id: string; status: string; agent: string; session_id: string | null; agent_control_mode: "herdr" | "web" };
-type Event = { kind: string; timestamp: number; name?: string; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string; code?: string; daemonPid?: number; workspaceId?: string; label?: string; cwd?: string; restored?: boolean };
+type Event = { kind: string; timestamp: number; name?: string; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; projectMapped?: boolean; argv?: string[]; message?: string; code?: string; daemonPid?: number; workspaceId?: string; label?: string; cwd?: string; restored?: boolean };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
@@ -39,7 +39,7 @@ if(process.argv.includes('--version')){process.stdout.write('herdr 0.9.5\n');pro
 const require=createRequire(import.meta.url),Database=require(process.env.FIXTURE_SQLITE),events=process.env.FIXTURE_EVENTS;
 const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),daemonPid:process.pid,...value})+'\n');
 const socketError=error=>{if(error.code==='ECONNRESET'||error.code==='EPIPE'){void event({kind:'peer-disconnect',code:error.code});return;}throw error;};
-const record=async(kind,taskId,extra={})=>{const sql=new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});try{await event({kind,taskId,row:sql.prepare('SELECT * FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
+const record=async(kind,taskId,extra={})=>{const sql=new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});try{const row=sql.prepare('SELECT * FROM tasks WHERE task_id=?').get(taskId);await event({kind,taskId,row,projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,projectMapped:!!row&&!!sql.prepare('SELECT 1 FROM projects WHERE project_id=?').get(row.project_id),...extra});}finally{sql.close();}};
 const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');await mkdir(directory,{recursive:true});
 const workspaces=[],panes=[],agents=[],tabs=[],shells=new Map(),children=new Map(),nativeArguments=new Map();let next=0;
 const clone=value=>JSON.parse(JSON.stringify(value));
@@ -203,7 +203,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   let cloudObservation: (WorkerCloudObservation & { readonly reportedAt: string }) | null = null;
   let cloudObservationRevision = "0";
   let bootstrapImports = 0;
-  const inventoryResponses: { projectId: string; itemCount: number; status: number; mappedProjectCount: number }[] = [];
+  const inventoryResponses: { projectId: string; itemCount: number; status: number; mappedProjectCount: number | null; mappedProject: boolean | null }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
   let installed: Awaited<ReturnType<typeof createAcceptanceCli>> | undefined;
   let failure: unknown;
@@ -262,7 +262,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         const assignedTo = url.searchParams.get("assignedTo");
         const selectedAssignee = assignedTo === null ? undefined : assignedTo === "me" ? uuid(100) : assignedTo === "unassigned" ? null : assignedTo.toLowerCase();
         if (inventory !== null && failInventory) {
-          inventoryResponses.push({ projectId: project.id, itemCount: 0, status: 500, mappedProjectCount: 2 });
+          inventoryResponses.push({ projectId: project.id, itemCount: 0, status: 500, mappedProjectCount: null, mappedProject: null });
           send(response, { error: { code: "internal_error", message: "Injected unavailable inventory", requestId: "worker-inventory-fault" } }, 500); return;
         }
         const items = tasks.filter((item) => {
@@ -273,7 +273,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         });
         if (inventory !== null) {
           const sql = new Database(databaseFile, { readonly: true });
-          try { inventoryResponses.push({ projectId: project.id, itemCount: items.length, status: 200, mappedProjectCount: (sql.prepare("SELECT count(*) AS count FROM projects").get() as { count: number }).count }); }
+          try { inventoryResponses.push({ projectId: project.id, itemCount: items.length, status: 200, mappedProjectCount: (sql.prepare("SELECT count(*) AS count FROM projects").get() as { count: number }).count, mappedProject: sql.prepare("SELECT 1 FROM projects WHERE project_id=?").get(project.id) !== undefined }); }
           finally { sql.close(); }
         }
         send(response, { items, nextCursor: null }); return;
@@ -486,7 +486,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(readWorkerClaim(second.properties)!.claimId).toBe(originalClaim);
       expect(second.assignedTo).toBe(scenario === "null-session" ? null : uuid(101));
       expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST" && request.path.endsWith("/worker-claim"))).toBe(false);
-      expect(inventoryResponses.filter((response) => response.status === 200).every((response) => response.mappedProjectCount === 2)).toBe(true);
+      const observedInventories = inventoryResponses.filter((response) => response.status === 200);
+      expect(observedInventories.every((response) => response.mappedProject)).toBe(true);
+      expect(new Set(observedInventories.map((response) => response.projectId))).toEqual(new Set(projects.map((project) => project.id)));
       expect(restarted.child.kill("SIGINT")).toBe(true);
       await expectExit(restarted.closed, 0);
       expect(row(second.id)?.status).toBe("active");
@@ -502,7 +504,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     for (const event of observed.filter((entry) => entry.kind === "workspace" || entry.kind === "native-start")) {
       expect(event.row).toMatchObject({ status: "active", agent: "codex", agent_control_mode: "herdr" });
       expect(Object.keys(event.row!).sort()).toEqual(["agent", "agent_control_mode", "claim_id", "project_id", "session_id", "status", "task_id"]);
-      expect(event.projectCount).toBe(2);
+      expect(event.projectMapped).toBe(true);
       if (event.kind === "workspace") {
         const task = tasks.find((task) => task.id === event.taskId)!;
         const original = originalClaims.get(task.id)!;
