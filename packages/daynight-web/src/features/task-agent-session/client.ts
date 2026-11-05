@@ -15,6 +15,21 @@ export function clearSessionDrafts(userId: string): void {
   try { const storage = window.sessionStorage; for (let i = storage.length - 1; i >= 0; i--) { const key = storage.key(i); if (key?.startsWith(draftPrefix(userId))) storage.removeItem(key); } } catch { /* Unavailable browser storage cannot retain new drafts. */ }
 }
 
+/** Clear one independent Session's raw storage, including visits through its old Test URL. */
+export function clearIndependentSessionStorage(userId: string, sessionId: string, storage?: Storage | null): void {
+  const draft = `${draftPrefix(userId)}test:${sessionId}:`, operations = `daynight:session-operations:${userId}:${sessionId}:`;
+  try {
+    const disk = storage === undefined ? window.sessionStorage : storage;
+    if (!disk) return;
+    for (let i = disk.length - 1; i >= 0; i--) {
+      const key = disk.key(i);
+      if (key && (key.startsWith(draft) || key.startsWith(operations))) {
+        try { disk.removeItem(key); } catch { /* Continue clearing the remaining owned keys. */ }
+      }
+    }
+  } catch { /* Session admission still prevents restoring inaccessible deleted history. */ }
+}
+
 export type SessionSettingIntent = { readonly operationId: string; readonly settingId: string; readonly value: string; readonly confirmedValue: string | null };
 type CommandInput = { [K in SessionCommand['kind']]: Pick<Extract<SessionCommand, { kind: K }>, 'kind' | 'payload'> }[SessionCommand['kind']];
 export type SessionViewState = {

@@ -1,7 +1,7 @@
 import { createRef, type RefObject } from 'react';
 import { createBotSessionApi, type BotSessionBinding, type SessionApi } from '../../api/sessions';
 import type { TimelineReadingBookmark } from '../../ui/useTimelineScroll';
-import { TaskSessionClient } from '../task-agent-session/client';
+import { TaskSessionClient, clearIndependentSessionStorage } from '../task-agent-session/client';
 import type { SessionTimelineReadingHandle } from '../task-agent-session/SessionTimeline';
 import { clearSessionDisplayPreference } from '../task-agent-session/useSessionDisplayPreference';
 import { BotSessionStorage, clearBotSessionStorage } from './session-storage';
@@ -12,7 +12,10 @@ export const botSessionKey = (binding: BotSessionBinding): string => JSON.string
 export function clearBotStoredSessionState(userId: string, botId: string, sessionId?: string, storage?: Storage | null): void {
   const sessions = new Set(clearBotSessionStorage(userId, botId, storage));
   if (sessionId) sessions.add(sessionId);
-  for (const id of sessions) clearSessionDisplayPreference({ userId, sessionId: id });
+  for (const id of sessions) {
+    clearIndependentSessionStorage(userId, id, storage);
+    clearSessionDisplayPreference({ userId, sessionId: id });
+  }
 }
 type Retained = { readonly storage: BotSessionStorage; bookmark: TimelineReadingBookmark | null };
 export type BotSessionPane = {
