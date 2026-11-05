@@ -56,7 +56,7 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
     setConfirmation(null);
   };
   let reason = m.readonlyReason;
-  const errorCode = control?.unavailableReason ?? (view.error instanceof ApiError ? view.error.code : null);
+  const errorCode = view.error instanceof ApiError ? view.error.code : view.error ? null : control?.unavailableReason;
   if (errorCode === 'permission_denied' || view.error instanceof ApiError && [401, 403, 404, 410].includes(view.error.status ?? 0)) reason = m.permission;
   else if (errorCode === 'unsupported_protocol' || errorCode === 'unsupported_content_kind') reason = m.unsupported;
   else if (errorCode === 'lease_expired') reason = m.leaseExpired;
@@ -64,12 +64,16 @@ export function TerminalSessionView({ projectId, api, claimId, active, current }
   else if (errorCode === 'stale_fence' || errorCode === 'target_changed') reason = m.changed;
   else if (errorCode === 'input_unknown') reason = m.unknown;
   else if (errorCode === 'stop_unknown') reason = m.stopUnknown;
+  else if (view.error instanceof ApiError && view.error.kind === 'network') reason = m.networkError;
+  else if (view.error instanceof ApiError && view.error.kind === 'protocol') reason = m.protocolError;
+  else if (view.error) reason = m.error;
   else if (control?.state === 'manual' && !ownLease) reason = m.other;
   else if (control?.state === 'closing' || control?.state === 'closed') reason = m[control.state];
   else if (!view.session?.connected) reason = m.disconnected;
   return <section ref={fullscreen.sectionRef} className={`task-agent-session terminal-session${fullscreen.fullscreen ? ' session-fullscreen' : ''}`} onKeyDown={fullscreen.onKeyDown}>
     <div className="terminal-host-toolbar"><strong>{stateLabel}</strong><button className="button" disabled={view.pending} onClick={() => client.refresh()}>{m.refresh}</button><button ref={fullscreen.buttonRef} className="button" aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>{fullscreen.fullscreen ? sm.exitFullscreen : sm.enterFullscreen}</button></div>
     {view.phase === 'loading' ? <p role="status">{m.loading}</p> : null}
+    {view.phase === 'unavailable' && view.availability ? <p role="status">{view.availability === 'not_registered' ? m.notRegistered : m.notApplicable}</p> : null}
     {view.error ? <p role="alert" className="session-error">{reason === m.readonlyReason ? m.error : reason}</p> : null}
     {unknownInitial ? <div className="terminal-notice"><p>{m.initialUnknown}</p><button className="button" disabled={!allowed('resolve_initial_assignment')} onClick={() => requestConfirmation('resolve_initial_assignment')}>{m.resolve}</button></div> : null}
     {control?.state === 'suspended' ? <div className="terminal-notice"><p>{m.suspended}</p><button className="button" disabled={!allowed('resume_automation')} onClick={() => requestConfirmation('resume_automation')}>{m.resume}</button></div> : null}

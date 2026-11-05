@@ -8,7 +8,7 @@ import { ApiError, pauseAuthRequests } from '../src/api/client';
 const read = (name: string) => JSON.parse(readFileSync(`../daynight/test/session/fixtures/v2/${name}.json`, 'utf8'));
 const r = read('valid-registration'), owner = r.payload.owner;
 const render = createLocaleRender('en', { taskCache: { viewerId: owner.ownerUserId } });
-afterEach(() => { sessionStorage.clear(); });
+afterEach(() => { vi.useRealTimers(); sessionStorage.clear(); });
 function fixture() {
   let value = parseTerminalSessionState({ status: 'registered', ...terminalEnvelope(r), owner, binding: r.payload.binding, connectionEpoch: '1', connected: true, capabilities: r.payload.capabilities, control: { ...read('valid-control').payload, state: 'automation', lease: null, availableActions: ['acquire_control'] }, snapshot: read('valid-snapshot').payload, ledger: read('valid-active-ledger').payload, archive: read('valid-status-pending').payload, recording: [] }, owner.projectId, owner.taskId, owner.serverOrigin);
   let receive: (s: TerminalSessionState) => void = () => {}; const close = vi.fn();
@@ -16,6 +16,60 @@ function fixture() {
   return { api, close, set(next: TerminalSessionState) { value = next; act(() => receive(value)); }, publish(next: TerminalSessionState) { value = next; receive(value); }, get: () => value, show: () => act(() => receive(value)), element: (active = true, current = true) => <TerminalSessionView projectId={owner.projectId} api={api} claimId={r.claimId} active={active} current={current} /> };
 }
 describe('terminal production view', () => {
+  it('keeps the empty view stable through visibility checks and discovers a later registration', async () => {
+    vi.useFakeTimers(); const f = fixture();
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    const view = render(f.element()); await act(() => vi.advanceTimersByTimeAsync(0));
+    const empty = screen.getByText('This execution has not registered a Session yet.');
+    fireEvent.change(screen.getByLabelText('Terminal input'), { target: { value: 'draft' } });
+    await act(() => vi.advanceTimersByTimeAsync(4500));
+    expect(f.api.current).toHaveBeenCalledTimes(4); expect(screen.getByText(empty.textContent!)).toBe(empty);
+    expect(screen.queryByText('Loading session…')).not.toBeInTheDocument(); expect(screen.getByLabelText('Terminal input')).toHaveValue('draft');
+    vi.mocked(f.api.current).mockResolvedValue(f.get()); await act(() => vi.advanceTimersByTimeAsync(1500));
+    expect(f.api.channel).toHaveBeenCalledOnce(); f.show(); await act(() => vi.advanceTimersByTimeAsync(3000));
+    expect(f.api.current).toHaveBeenCalledTimes(5); expect(f.api.channel).toHaveBeenCalledOnce(); expect(screen.getByLabelText('Terminal input')).toHaveValue('draft');
+    view.unmount();
+  });
+  it('serializes a delayed discovery across visibility checks and cancels it on hiding', async () => {
+    vi.useFakeTimers(); const f = fixture(); let resolve!: (value: ReturnType<typeof f.get>) => void; let signal!: AbortSignal;
+    vi.mocked(f.api.current).mockImplementationOnce(s => { signal = s; return new Promise(done => { resolve = done; }); });
+    const view = render(f.element()); await act(() => vi.advanceTimersByTimeAsync(4000));
+    expect(f.api.current).toHaveBeenCalledOnce(); view.rerender(f.element(false)); expect(signal.aborted).toBe(true);
+    await act(async () => { resolve(f.get()); await Promise.resolve(); }); expect(f.api.channel).not.toHaveBeenCalled();
+    view.rerender(f.element()); await act(() => vi.advanceTimersByTimeAsync(0)); expect(f.api.channel).toHaveBeenCalledOnce();
+    view.unmount(); await act(() => vi.advanceTimersByTimeAsync(5000)); expect(f.api.channel).toHaveBeenCalledOnce();
+  });
+  it('does not poll an inapplicable execution and permits an explicit refresh', async () => {
+    vi.useFakeTimers(); const f = fixture(); vi.mocked(f.api.current).mockResolvedValueOnce({ status: 'not_applicable', protocol: r.protocol });
+    const view = render(f.element()); await act(() => vi.advanceTimersByTimeAsync(6000));
+    expect(f.api.current).toHaveBeenCalledOnce(); expect(screen.getByText('A terminal Session is not available for this execution.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await act(() => vi.advanceTimersByTimeAsync(0)); expect(f.api.channel).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+  it('replaces the scheduled retry with one explicit refresh and stops when the document hides', async () => {
+    vi.useFakeTimers(); const f = fixture();
+    vi.mocked(f.api.current).mockResolvedValue({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    const view = render(f.element()); await act(() => vi.advanceTimersByTimeAsync(500));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(f.api.current).toHaveBeenCalledTimes(2); await act(() => vi.advanceTimersByTimeAsync(1000)); expect(f.api.current).toHaveBeenCalledTimes(2);
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden'); fireEvent(document, new Event('visibilitychange'));
+    await act(() => vi.advanceTimersByTimeAsync(5000)); expect(f.api.current).toHaveBeenCalledTimes(2);
+    visibility.mockReturnValue('visible'); fireEvent(document, new Event('visibilitychange')); await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(f.api.current).toHaveBeenCalledTimes(3); view.unmount(); visibility.mockRestore();
+  });
+  it('keeps errors visible during bounded retries and recovers without repeated loading', async () => {
+    vi.useFakeTimers(); const f = fixture(); vi.mocked(f.api.current).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    const view = render(f.element()); await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(f.api.current).toHaveBeenCalledOnce(); expect(screen.getByRole('alert')).toHaveTextContent('The session could not be loaded or verified.');
+    await act(() => vi.advanceTimersByTimeAsync(500)); expect(f.api.current).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('This execution has not registered a Session yet.')).toBeInTheDocument(); expect(screen.queryByText('Loading session…')).not.toBeInTheDocument();
+    view.unmount();
+  });
+  it.each([['network', 'Could not connect to load the Session. Try again.'], ['protocol', 'The Session response could not be verified. Try again.']] as const)('reports a %s discovery error without treating it as an empty Session', async (kind, message) => {
+    const f = fixture(); vi.mocked(f.api.current).mockRejectedValue(new ApiError(kind));
+    render(f.element()); expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(screen.queryByText('This execution has not registered a Session yet.')).not.toBeInTheDocument();
+  });
   it('only observes by default and releases its subscription when the tab hides', async () => {
     const f = fixture(); const view = render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce()); f.show();
     expect(screen.getByRole('button', { name: 'Paste text' })).toBeDisabled(); expect(f.api.command).not.toHaveBeenCalled();
@@ -93,5 +147,12 @@ describe('terminal production view', () => {
     vi.mocked(f.api.state).mockRejectedValue(new ApiError('server', 403, 'permission_denied'));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); expect(await screen.findByRole('alert')).toHaveTextContent('You no longer have permission to access this Session.');
     expect(f.close).toHaveBeenCalled(); expect(screen.getByRole('button', { name: 'Take control' })).toBeDisabled();
+  });
+  it('reports the current network failure instead of an older control reason', async () => {
+    const f = fixture(); render(f.element()); await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+    f.set({ ...f.get(), control: { ...f.get().control!, unavailableReason: 'unsupported_protocol' } });
+    vi.mocked(f.api.state).mockRejectedValue(new ApiError('network'));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not connect to load the Session. Try again.');
   });
 });
