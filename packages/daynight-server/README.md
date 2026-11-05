@@ -273,7 +273,8 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status and direct command tests |
 | `cmd/e2e_tests/` | Test-only package for built-process, installed-CLI and attachment-migration acceptance |
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
-| `internal/webui/` | Embedded production HTML/assets and static response policy |
+| `internal/service/webui/` | Embedded production HTML/assets and resource reads |
+| `internal/server/webui/` | Static routes and HTTP response policy |
 | `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
 | `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
 | `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
@@ -346,7 +347,7 @@ export DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
 ```
 
 `web:build` typechecks and builds the web package, validates the real output and
-publishes it to `internal/webui/dist/`. Generated files are ignored by Git; a
+publishes it to `internal/service/webui/dist/`. Generated files are ignored by Git; a
 clean Go build without them fails at `go:embed`. No placeholder index or frontend
 runtime is used. Once built, the binary requires PostgreSQL and a writable,
 local storage directory and valid UniAuth App settings at runtime. Linux requires

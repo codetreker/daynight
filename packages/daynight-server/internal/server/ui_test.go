@@ -2,9 +2,7 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/webui"
 )
 
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
@@ -238,53 +235,6 @@ func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
 	if response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
 		t.Fatal("member API must retain authenticated JSON behavior")
 	}
-}
-
-func TestUIErrorsCancellationAndFailedWriteUseSafeSingleBoundary(t *testing.T) {
-	for _, err := range []error{errors.New("private-resource-path"), webui.ErrNotFound} {
-		var logs bytes.Buffer
-		logger := slog.New(slog.NewJSONHandler(&logs, nil))
-		handler := httpx.RequestLogging(logger, uiHandler(logger, func(http.ResponseWriter, *http.Request) error { return err }))
-		response := projectRequest(handler, http.MethodGet, "/", "")
-		status, code := http.StatusInternalServerError, "internal_error"
-		if errors.Is(err, webui.ErrNotFound) {
-			status, code = http.StatusNotFound, "not_found"
-		}
-		assertProjectError(t, response, status, code)
-		if strings.Contains(logs.String(), "private") || strings.Contains(response.Body.String(), "private") || strings.Count(logs.String(), `"type":"operation_error"`) != 1 || strings.Count(logs.String(), `"type":"http_request"`) != 1 {
-			t.Fatalf("unsafe or duplicate UI error log: %s %s", response.Body, &logs)
-		}
-	}
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	request := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
-	request.Header.Set("X-Request-ID", "project-test")
-	response := httptest.NewRecorder()
-	uiTestHandler(t, &logs).ServeHTTP(response, request)
-	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"cause":"canceled"`) {
-		t.Fatalf("canceled UI request wrote a response or lost cause: %s %s", response.Body, &logs)
-	}
-	logs.Reset()
-	writer := &countFailedUIWriter{header: make(http.Header)}
-	uiHandler(logger, webui.New().Page)(writer, httptest.NewRequest(http.MethodGet, "/", nil))
-	if writer.writes != 1 || writer.status != http.StatusOK || strings.Contains(logs.String(), "private") || !strings.Contains(logs.String(), `"phase":"response"`) || strings.Count(logs.String(), `"type":"operation_error"`) != 1 {
-		t.Fatalf("failed UI writer attempted a second response or lost safe error: %+v %s", writer, &logs)
-	}
-}
-
-type countFailedUIWriter struct {
-	header http.Header
-	writes int
-	status int
-}
-
-func (w *countFailedUIWriter) Header() http.Header    { return w.header }
-func (w *countFailedUIWriter) WriteHeader(status int) { w.status = status }
-func (w *countFailedUIWriter) Write([]byte) (int, error) {
-	w.writes++
-	return 0, errors.New("private-connection-error")
 }
 
 func TestUITestSessionDeepLinkLoadsShellWithoutAuthorizingData(t *testing.T) {

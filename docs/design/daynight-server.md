@@ -101,9 +101,10 @@ packages/daynight-server/
 ├── api/
 └── internal/
     ├── server/
+    │   └── webui/                页面和资源 HTTP 适配
     ├── service/
-    ├── webui/
-    │   └── dist/                 生成的真实页面与资源，不提交
+    │   └── webui/
+    │       └── dist/             生成的真实页面与资源，不提交
     └── core/
         ├── model/
         │   ├── project.go
@@ -118,9 +119,8 @@ packages/daynight-server/
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、
 HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 用例、业务
 校验与事务编排。`internal/core/model` 拥有共享领域模型；`internal/core/store` 使用具体的
-`pgx`/`pgxpool` 类型实现 PostgreSQL 查询、事务和迁移。`internal/webui` 拥有
-`go:embed` 资源及页面/资源响应，server 在既有 mux 精确注册路由。静态处理不经过
-service/store；请求仍只经过一次现有日志包装。HTML、图、Worker 观测及最新详情为 no-store，
+`pgx`/`pgxpool` 类型实现 PostgreSQL 查询、事务和迁移。`internal/service/webui` 拥有 `go:embed` 资源和读取，`internal/server/webui`
+在既有 mux 精确注册页面及资源响应。静态处理不访问业务 store；请求仍只经过一次现有日志包装。HTML、图、Worker 观测及最新详情为 no-store，
 哈希资源为 immutable，缺失资源不回退 HTML。精确 UI 页面形状包含公开根路径、
 `/login`、`/projects`、项目页、账号级 `/workers` 与 `/workers/{workerId}`、公开静态使用引导 `/setup`、
 `/projects/{projectId}/tasks/{taskId}` 完整详情和其附件路径入口。
