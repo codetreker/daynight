@@ -829,7 +829,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect(vertical()).toHaveAttribute('aria-checked', 'true');
     await inspectTask(page, goalA.id).click();
     await expect(inspectTask(page, goalA.id)).toHaveAttribute('aria-pressed', 'true');
-    await pauseRefreshClock(page);
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 60_000));
     const beforeRefresh = (await page.evaluate(captureStableDependencyGeometry)).geometry;
     expect(await nextAutomaticRefresh(page, preferenceProject.id)).toBe(200);
     await expect(vertical()).toHaveAttribute('aria-checked', 'true');
