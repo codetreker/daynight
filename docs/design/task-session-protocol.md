@@ -83,7 +83,7 @@ Journal 的 1→6 非零迁移由本库定义持有并保留原数据；版本 0
 
 本地数据库更新与 IPC 请求使用不同的错误边界，更新失败不能被解释成不可达而创建新 generation 或重放输入。独立 launcher 的退出保留 journal 错误，同时继续尝试停止已归属 child；完整停止及 journal 证明缺失时保留 native lease 和未确认结果。
 
-Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
+Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并以 `thread/turns/list` 分页读取轮次状态、`thread/items/list` 分页读取对应 items；仅当原生明确不支持该方法时回退 `thread/items/list`，此时没有轮次状态就不推断中断。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
 ### Codex 重试与错误详情
 
@@ -100,6 +100,14 @@ Codex/Claude 原生 user message 的 clientId 或 UUID 可证明某条持久输�
 Codex 原生进程意外退出、Claude SDK 意外 EOF 和 Copilot runtime 失联均进入 fatal 路径：撤销写能力，保留未确认操作，通知 Controller 清理 provider、relay 与 IPC 后退出。Task worker 独立确认旧进程停止后才按预算恢复原生 ID；独立 Test launcher 则停止并保留失败事实，不创建替代会话。
 
 Codex 和 Copilot 仅在活动 turn 匹配且原生能力允许时执行 steer；Copilot 使用 SDK `send({mode: "immediate"})`，不能改用 queue 冒充当前 turn 追加。Claude 仅在原生协商支持 msg_lifecycle_v1 与 interrupt_cancel_queued_v1 时提供 steer，以输入 UUID 跟踪 queued、started、completed、cancelled；中断请求包含 cancelQueued 并核验被取消输入。缺少协商能力时运行中普通发送保持禁用。审批、问题和 form 的响应携带 interactionId、revision 和原生请求身份。Codex 等待原生请求 resolved 通知；Claude 等待 matching tool result，elicitation 等待相应 turn 成功结束。SDK callback 返回仅表示响应已交给 SDK，不能立即标记原生 confirmed。超过等待期限的响应保持 unknown；随后原生 resolved 证据仍可按原交互身份将对应 journal 操作补记 confirmed 并发送迟到回执，不再次响应原生请求。
+
+### Codex 中断与缺失输入
+
+Codex 只在匹配当前 thread 的原生轮次明确为 `interrupted` 时生成 `turn_interrupted`，条目身份由 native thread ID 与 turn ID 派生。重复通知、Controller 重连和原生历史恢复复用相同身份；每个历史轮次的中断标记排在该轮 items 之后。点击 Interrupt 或收到其 RPC ACK 本身不证明轮次被中断，正常完成及 `failed` 继续采用原有结果与错误规则。中断投影不改变 `turn/interrupt` 调用、准入、草稿或重放策略。
+
+原生可能在记录 `userMessage` 前结束轮次；`turn/completed.items=[]` 且 `itemsView=notLoaded` 也不证明输入不存在。Controller 优先投影已经观测到的原生用户条目，并回收结束载荷中明确提供的用户条目。仍未观测到的已提交输入以带来源说明的用户行保留，随后按需读取完整轮次核对。若输入派发仍在进行，补偿行与中断标记等待该派发结果：明确拒绝不保留为用户输入，受理或未知结果分别保留其真实语义；先显示输入，再显示中断标记。派发等待与历史查询均不阻塞原生结束状态或取消确认。关闭 Provider 时先终止原生连接并结算待处理请求，再等待已启动的终态投影完成后返回，确保已确认中断进入归档；关闭期间不发起新的历史查询。仅匹配原生 `clientId` 才能调用输入受理观察回调，本地保留文本不消除 unknown，也不会触发重新发送。
+
+完整原生历史确认缺少输入时显示 `native_input_missing`；无法核实时明确显示未核实。单独从原生历史恢复的空中断轮次只有缺失说明与中断标记，不能重建原生未保存的正文；同一 Controller journal 中已有的保留文本继续可读；原生条目携带相同 turn ID 与 clientId 时，优先复用 journal 中已存在的补偿行身份，避免 Controller 换代后重复显示。历史文件和旧 Session 归档不被改写。机制与取舍见[中断投影决策](../../.agents/notes/implemented/bug-fix/2026-11-06-codex-interrupted-timeline.md)。
 
 ### Codex 审批正文
 
@@ -167,7 +175,7 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 菜单的默认高亮与明确候选选择分离，直接 Enter 不消费仅前缀匹配的默认项。临时候选随输入、目录和菜单生命周期变化重置；目录按 revision、错误及命令字段的稳定签名比较，等值快照重建 controls 对象不清除明确选择。显式选择带参数命令产生独立的 commandId 与命令头意图，参数编辑、目录刷新和菜单关闭保留它，修改命令头、清空草稿或切换 Session 才清除。提交使用当前 controls revision 验证同一 ID 与完整名称，不能冻结旧 revision，也不能在移除、替换、不可用或歧义后退回普通消息。原生命令草稿仍沿用 revision 与受理回执绑定；execute_command 的拒绝、失败或 unknown 不调用普通发送路径。运行中目录查询错误通过 refresh_controls 重新读取；只读与失效投影深拷贝后关闭 mutable/available，不能改写持久能力。没有命令目录时，普通消息仍由原有发送权限决定。
 
-已核实的排队取消使用 input_cancelled，Claude 实时主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
+已核实的排队取消使用 input_cancelled，Claude 实时主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted；Codex 根据匹配轮次的 interrupted 状态识别中断。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
 
 Claude 原生中断会生成内容恰为 `[Request interrupted by user]` 或 `[Request interrupted by user for tool use]` 的单文本 user 消息。适配层不将它投影为用户发言或输入受理证据；实时路径仍等待上述中断确认，历史路径则直接将顶层合成消息投影为 `turn_interrupted`。实时确认后的标记复用合成消息的原生 UUID，与历史投影使用同一 entryId，避免恢复重复；子 Agent 标记不代表主 turn 中断。SDK 的实时合成标识不覆盖这类消息，历史读取又不保留来源元数据，因此只匹配完整单文本，不裁剪空白、不匹配前后缀或混合内容。用户恰好发送完全相同的独立文本时，原生历史无法与合成消息区分。既有归档文件保持不变。识别取舍见[Claude 中断投影决策](../../.agents/notes/implemented/bug-fix/2026-11-06-claude-interruption-projection.md)。
 

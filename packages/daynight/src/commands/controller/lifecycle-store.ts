@@ -164,6 +164,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     }),
     markOperationAcknowledged: (id: string): void => atomic(() => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); }),
     getLastAcknowledgedSequence: (): string => read(() => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence),
+    hasTimelineEntry: (entryId: string): boolean => read(() => pendingContent.entries.has(entryId)),
     projectTimeline: (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
       const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
       void ignored; void ignoredSequence;
