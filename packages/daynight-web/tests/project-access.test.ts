@@ -138,6 +138,40 @@ it('ignores a late access response after a retained panel becomes inactive', asy
   expect(session.snapshot()).toMatchObject({ status: 'ready', access: member, refreshing: false });
 });
 
+it('holds write admission across an inactive recovery until the returning access check finishes', async () => {
+  const old = deferred<ProjectAccess>(), fresh = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+  const { session, scope } = mount();
+  session.publishSync(session.beginObservation(), admin);
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(1));
+  const resume = pauseAuthRequests();
+  session.setActive(false);
+  const admitted = vi.fn();
+  const waiting = session.waitForFreshAccess(scope.signal, true).then(admitted);
+  old.resolve(admin); await read;
+  resume();
+  await new Promise<void>((done) => setTimeout(done, 0));
+  expect(admitted).not.toHaveBeenCalled();
+  session.setActive(true);
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  expect(admitted).not.toHaveBeenCalled();
+  fresh.resolve(member); await waiting;
+  expect(admitted).toHaveBeenCalledWith(member);
+});
+
+it('cancels inactive write admission with its owning lifetime', async () => {
+  const { session, scope } = mount();
+  session.publishSync(session.beginObservation(), admin);
+  session.setActive(false);
+  const controller = new AbortController();
+  const waiting = session.waitForFreshAccess(controller.signal, true);
+  await Promise.resolve();
+  controller.abort();
+  await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
+  expect(scope.isInvalidated).toBe(false);
+});
+
 it('retains a mutation receipt while inactive and verifies it when the panel returns', async () => {
   const { session } = mount();
   session.publishSync(session.beginObservation(), member);

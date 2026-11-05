@@ -11,8 +11,8 @@ prove that a source Team is inaccessible.
 
 ## Decision
 
-Project settings show the actual owner and use `canTransfer` from fresh
-ProjectAccess for the transfer control. The dialog previews a selected or
+Project settings show the actual owner and use confirmed `canTransfer` for the
+transfer control; dispatch requires fresh ProjectAccess. The dialog previews a selected or
 explicit same-service target before a versioned confirmation. The server receipt
 establishes success and supplies the actor's remaining access. When access is
 lost, the matching Task cache generation is revoked before navigation. The source
@@ -23,6 +23,8 @@ retain a read-only check and are never automatically replayed.
 The [service transfer decision](../architecture/2026-11-04-project-transfer.md)
 owns the transaction and receipt. The [browser Team preference decision](2026-11-04-browser-team-preference.md)
 owns selection persistence.
+The [stable Project checks decision](../bug-fix/2026-11-05-stable-project-checks.md)
+separates retained presentation from fresh mutation admission.
 
 ## Alternatives
 
