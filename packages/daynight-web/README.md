@@ -52,7 +52,10 @@ independent drafts and reading positions. The current name opens details without
 rebuilding the conversation; narrow layouts and full screen share the existing
 focus rules. Closing a view does not stop its Worker-owned Agent. List deletion
 uses authoritative cleanup stages and invalidates only the target's known
-conversation state; an old Test URL cannot bypass deletion.
+conversation state; an old Test URL cannot bypass deletion. Background identity
+and data checks retain confirmed dialogs, the selected conversation and its
+reading state while request and publication admission remain enforced. Actual
+access loss still clears the affected state.
 
 The [management requirements](../../docs/spec/bot-management-web.md) and
 [Session design](../../docs/design/bot-session-view.md) own behavior and identity
