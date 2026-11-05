@@ -389,9 +389,22 @@ export type TaskFilters = {
   readonly compatiblePlatform?: TaskPlatform;
   readonly workerId?: string;
 };
+export type TaskSearchInput = Omit<TaskFilters, "workerId"> & { readonly query: string };
+export type TaskSearchItem = {
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly status: TaskStatus;
+  readonly context: { readonly taskId: string; readonly title: string } | null;
+  readonly match: { readonly fields: readonly ("title" | "description")[]; readonly descriptionSnippet: string | null };
+};
+export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
 export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {
+  readonly reason?: string;
+  readonly position?: number;
+  readonly length?: number;
   readonly encodedBytes?: number;
   readonly maxEncodedBytes?: number;
   readonly taskIds?: readonly string[];
