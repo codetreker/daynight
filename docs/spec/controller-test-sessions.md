@@ -34,6 +34,8 @@ Test 与 Task 身份必须明确区分。Test 不伪造 task、claim、worker �
 
 Test 页面与 Task 页面复用 Session client、timeline、composer、交互卡片、资源与回执处理。仅外围身份、API 地址和授权来源不同，不维护第二份近似 UI 或模拟 transport。基础交互范围沿用 [Task Session 需求](task-sessions.md#基础会话交互)。
 
+`/test-sessions/<id>` 在不超过 600px 的视口中使用贴边外层布局：返回列表入口保持单行且可点击高度至少 36px，页面 `h1` 视觉隐藏但保留在辅助技术结构中；Session 去掉页面内边距、卡片边框和圆角，从返回行下方延伸到可见区底部。贴边以现有侧栏之外的内容区为界；加载、错误与归档只读状态遵守相同规则。宽于 600px 时保留现有页面留白和可见标题。此规则不改变全站页头、侧栏、Task Session、助手页面、Session 内部排列、Chatbox 安全区及全屏/Escape 行为。
+
 无 prompt 的 Test 会话在 Provider 初始化完成、Controller 持有可用 handle 且 relay 同步后才能发送第一条消息。Claude 在空会话阶段可以尚无已确认原生 ID；此时不得填造 ID，收到真实原生证据后才显示。其他首次输入门控与未知结果防重规则不因此放宽。
 
 刷新、关闭页面、打开第二个页面及重连不创建新 Agent、不重发 prompt。未知结果保留原 operation 身份供查询，不用新的 operation 或新会话绕过不确定性。长对话中的折叠工具结果不应因无关回执变化反复执行昂贵渲染；实际可用性需在浏览器中验证。
