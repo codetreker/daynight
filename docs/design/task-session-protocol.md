@@ -77,6 +77,8 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订索引及有界 outbox，timeline 和资源正文写入相邻的待归档文件。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
+`captureProcessProof` 统一拥有新进程证明采集的默认预算：Windows 为 15 秒，POSIX 为 5 秒；显式调用预算仍优先。父 launcher、Controller 自身以及 native spawn 共用该机制。Windows 启动包含独立 PowerShell/CIM 查询；`inspectProcessProof` 的日常身份复核仍显式使用 5 秒。证明继续要求原 PID 的出生时间与完整命令行哈希，Controller 先保存自身证明及 Windows Job 边界，再绑定认证 IPC。采集失败保留原错误和未确认责任，缺失管道不能证明启动未提交或进程已停止。预算依据与代价见[Windows 启动证明决策](../../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)。
+
 Journal 的 1→6 非零迁移由本库定义持有并保留原数据；版本 0 在准入后丢弃原 schema 和数据，从基线与编号升级重建。已有空版本 0 文件也在查询访问时初始化。启动在同一事务中先检查旧 owner，再重置或升级及执行原 ticket/generation 认领；版本 0 没有 `execution` 表时可重置，已有该表时必须能读取 `id` 和 `owner_pid`，缺列或活跃、未知 owner 均在 DDL 前失败。纯读取只完成格式重置或升级，不启动 Controller 或认领 writer。当前格式在同一只读快照内检查并读取，不创建或重建待归档文件。版本 0 重置不删除独立待归档源；若启动时已没有 execution 身份记录而待归档 timeline 或资源非空，必须拒绝采用，不能只凭相同 Session ID 把历史归入新 ticket。空 manifest 可以用于尚未写入内容的初始化重试。独立 stopped writer 在事务外验证进程树，最终事务重查格式及 snapshot 后写停止状态；close 清除 owner_pid 也是受格式检查的写入口。
 
 本地数据库更新与 IPC 请求使用不同的错误边界，更新失败不能被解释成不可达而创建新 generation 或重放输入。独立 launcher 的退出保留 journal 错误，同时继续尝试停止已归属 child；完整停止及 journal 证明缺失时保留 native lease 和未确认结果。

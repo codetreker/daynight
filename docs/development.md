@@ -94,7 +94,12 @@ escalation; only complete teardown restores mocks and environment variables.
 Failed startup records the controlled child's logs, journal and parent/child
 ticket paths while retaining original errors and unknown process ownership. The
 [Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)
-owns this isolation and budget rationale.
+owns this isolation and budget rationale. Startup process-proof acquisition uses
+fifteen seconds on Windows and five seconds on POSIX; recurring identity
+inspection retains five seconds. Virtual-time regressions exercise a six-second
+CIM query and preserve timeout failures without adding real sleeps. The
+[Windows startup proof decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
+owns that production acquisition policy.
 The native fsmonitor regression uses a real hook's invocation marker to qualify
 ordinary Git and verify protected-query suppression. Its
 [fixture decision](../.agents/notes/implemented/testing/2026-11-04-fsmonitor-fixture-marker.md)

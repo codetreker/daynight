@@ -20,11 +20,14 @@ from the child's paths even when both have an explicit home directory.
 ## Decision
 
 The real Bot integration file owns a separate 180-second teardown hook budget.
-It covers proof acquisition, cooperative IPC stop, original-process observation,
-Windows Job termination, final confirmation and failure diagnostics for the
-controlled Controller and native process. Windows identity probes retain their
-five-second bounds and Job Object probes retain their fifteen-second bounds.
-The production launch and stop policy is unchanged.
+It covers the thirty-second durable-proof observation, cooperative IPC stop,
+original-process observation, Windows Job termination, final confirmation and
+failure diagnostics for the controlled Controller and native process. Windows
+startup identity acquisition has a fifteen-second bound; recurring identity
+probes retain five seconds and Job Object probes retain fifteen seconds.
+Startup proof acquisition uses the separate
+[Windows startup budget](../bug-fix/2026-11-05-windows-startup-process-proof-budget.md);
+this hook does not set production launch or stop deadlines.
 
 Process confirmation is polled sequentially, joining each system probe before
 starting another or escalating. A polling deadline limits another round; an

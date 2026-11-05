@@ -7,7 +7,9 @@ export type ProcessProof = { readonly pid: number; readonly parentPid: number; r
 const run = (file: string, args: string[], timeout = 5000): Promise<string> => new Promise((resolve, reject) => execFile(file, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, ...(file === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}) }, (error, stdout) => error === null ? resolve(stdout) : reject(error)));
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 const validPid = (pid: number): void => { if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 2_147_483_647) throw new Error("Invalid process identity."); };
-export const captureProcessProof = async (pid: number, timeoutMs = 5000): Promise<ProcessProof> => {
+// Windows startup captures include PowerShell and CIM initialization. Inspection
+// below keeps its shorter bound without releasing ownership on a query timeout.
+export const captureProcessProof = async (pid: number, timeoutMs = process.platform === "win32" ? 15_000 : 5000): Promise<ProcessProof> => {
   validPid(pid);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error("Process identity timeout must be a positive supported integer.");
   if (process.platform === "win32") {
@@ -30,7 +32,7 @@ export const inspectProcessProof = async (proof: ProcessProof): Promise<"running
   try { process.kill(proof.pid, 0); }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return "stopped"; throw new Error("Process liveness could not be established.", { cause: error }); }
   let current: ProcessProof;
-  try { current = await captureProcessProof(proof.pid); }
+  try { current = await captureProcessProof(proof.pid, 5000); }
   catch (error) { try { process.kill(proof.pid, 0); } catch (missing) { if (missing instanceof Error && "code" in missing && missing.code === "ESRCH") return "stopped"; } throw error; }
   return current.startedAt === proof.startedAt && current.commandHash === proof.commandHash && current.processGroupId === proof.processGroupId ? "running" : "replaced";
 };
