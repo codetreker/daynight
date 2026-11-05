@@ -1,4 +1,4 @@
-package service
+package migration_test
 
 import (
 	"bytes"
@@ -19,8 +19,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -42,7 +46,7 @@ type attachmentMigrationIntegrationFixture struct {
 
 func attachmentMigrationIntegrationSetup(t *testing.T) *attachmentMigrationIntegrationFixture {
 	t.Helper()
-	_, database, project, databaseURL, principal := taskService(t)
+	_, database, project, databaseURL, principal := testsupport.TaskService(t)
 	other, err := projectservice.NewProjects(database).Create(t.Context(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Migration secondary", RepoURL: "host:migration-secondary"})
 	if err != nil {
 		t.Fatal(err)
@@ -109,15 +113,15 @@ func (fixture *attachmentMigrationIntegrationFixture) seed(t *testing.T) {
 	}
 }
 
-func (fixture *attachmentMigrationIntegrationFixture) run(t *testing.T, action, operationID string) (AttachmentMigrationSummary, error) {
+func (fixture *attachmentMigrationIntegrationFixture) run(t *testing.T, action, operationID string) (migration.AttachmentMigrationSummary, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	return MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, action, operationID,
+	return runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, action, operationID,
 		slog.New(slog.NewJSONHandler(io.Discard, nil)))
 }
 
-func (fixture *attachmentMigrationIntegrationFixture) requireRun(t *testing.T, action, operationID string) AttachmentMigrationSummary {
+func (fixture *attachmentMigrationIntegrationFixture) requireRun(t *testing.T, action, operationID string) migration.AttachmentMigrationSummary {
 	t.Helper()
 	summary, err := fixture.run(t, action, operationID)
 	if err != nil {
@@ -218,9 +222,9 @@ func (fixture *attachmentMigrationIntegrationFixture) assertPublished(t *testing
 	}
 }
 
-func attachmentMigrationIntegrationError(t *testing.T, err error, category string) *AttachmentMigrationError {
+func attachmentMigrationIntegrationError(t *testing.T, err error, category string) *migration.AttachmentMigrationError {
 	t.Helper()
-	var migration *AttachmentMigrationError
+	var migration *migration.AttachmentMigrationError
 	if !errors.As(err, &migration) || migration.Category != category || migration.Diagnostic == "" {
 		t.Fatalf("expected migration error %s, got %#v", category, err)
 	}
@@ -371,16 +375,16 @@ func TestAttachmentMigrationResumesAfterObservedPhaseCancellation(t *testing.T) 
 					cancel()
 				}
 			})
-			var plan AttachmentMigrationSummary
+			var plan migration.AttachmentMigrationSummary
 			if step == "plan_created" {
 				var err error
-				plan, err = MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
+				plan, err = runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
 				if err != nil {
 					t.Fatalf("persisted plan: %v", err)
 				}
 			} else {
 				plan = fixture.requireRun(t, "plan", "")
-				_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+				_, err := runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
 				if step == "complete" {
 					if err != nil {
 						t.Fatalf("persisted completion: %v", err)
@@ -430,7 +434,7 @@ func TestAttachmentMigrationChecksFreshMetadataBeforeMovingAndPublishing(t *test
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
-			_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+			_, err := runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
 			attachmentMigrationIntegrationError(t, err, "metadata_changed")
 			if phase == "before_apply" {
 				if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments")), legacy) {
@@ -473,7 +477,7 @@ func TestAttachmentMigrationUnregisteredCollisionRequiresItsOriginalOperation(t 
 			cancel()
 		}
 	})
-	if _, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger); !errors.Is(err, context.Canceled) {
+	if _, err := runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled source evacuation: %v", err)
 	}
 	_, err := fixture.run(t, "plan", "")
@@ -534,7 +538,7 @@ func TestAttachmentMigrationDoesNotOverwriteAConflictingTarget(t *testing.T) {
 			}
 		}
 	})
-	_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+	_, err := runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
 	if err == nil || !injected {
 		t.Fatalf("conflicting target was accepted: %v", err)
 	}
@@ -550,7 +554,7 @@ func TestAttachmentMigrationDoesNotOverwriteAConflictingTarget(t *testing.T) {
 	}
 }
 
-func (fixture *attachmentMigrationIntegrationFixture) stopAfter(t *testing.T, step string) (AttachmentMigrationSummary, attachmentMigrationIntegrationEvent) {
+func (fixture *attachmentMigrationIntegrationFixture) stopAfter(t *testing.T, step string) (migration.AttachmentMigrationSummary, attachmentMigrationIntegrationEvent) {
 	t.Helper()
 	plan := fixture.requireRun(t, "plan", "")
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
@@ -562,7 +566,7 @@ func (fixture *attachmentMigrationIntegrationFixture) stopAfter(t *testing.T, st
 			cancel()
 		}
 	})
-	_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+	_, err := runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
 	if observed.Step != step || !errors.Is(err, context.Canceled) {
 		t.Fatalf("stop after %s: event=%#v err=%v", step, observed, err)
 	}
@@ -926,7 +930,7 @@ func TestAttachmentMigrationPublishesOnlyCompletePlanRecordPair(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	plan, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
+	plan, err := runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1022,7 +1026,7 @@ func TestAttachmentMigrationInitializationFailureLeavesFreshPlanAvailable(t *tes
 					}
 				}
 			})
-			_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
+			_, err := runAttachmentMigration(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
 			if interruptedID == "" || err == nil {
 				t.Fatalf("initializer failure was not observed: operation=%s err=%v", interruptedID, err)
 			}
@@ -1062,7 +1066,7 @@ func TestAttachmentMigrationHardStopDuringPlanInitialization(t *testing.T) {
 		})
 		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 		defer cancel()
-		_, err := MigrateAttachmentLayout(ctx, os.Getenv("DAYNIGHT_ATTACHMENT_INITIALIZER_DATABASE"),
+		_, err := runAttachmentMigration(ctx, os.Getenv("DAYNIGHT_ATTACHMENT_INITIALIZER_DATABASE"),
 			os.Getenv("DAYNIGHT_ATTACHMENT_INITIALIZER_ROOT"), "plan", "", logger)
 		t.Fatalf("initializer returned before its hard-stop checkpoint %q: %v", step, err)
 	}
@@ -1160,4 +1164,8 @@ func TestAttachmentMigrationHardStopDuringPlanInitialization(t *testing.T) {
 			}
 		})
 	}
+}
+
+func runAttachmentMigration(ctx context.Context, databaseURL, root, action, operationID string, logger *slog.Logger) (migration.AttachmentMigrationSummary, error) {
+	return attachmentservice.MigrateAttachmentLayout(ctx, databaseURL, root, action, operationID, logger, service.OpenAttachmentMaintenance)
 }

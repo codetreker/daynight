@@ -1,4 +1,4 @@
-package service
+package migration
 
 import (
 	"context"
@@ -8,23 +8,22 @@ import (
 	"errors"
 	"fmt"
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
+	"hash"
 	"io"
 	"log/slog"
 	"os"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 const attachmentMigrationPrefix = ".attachment-layout-"
 const attachmentMigrationPendingPrefix = ".attachment-plan-"
-const attachmentMigrationLock int64 = 0x444e4154544c4159
 
 type AttachmentMigrationSummary struct {
 	OperationID       string  `json:"operationId"`
@@ -118,53 +117,39 @@ type attachmentMigrationSnapshot struct {
 
 type attachmentMigration struct {
 	root      *os.Root
-	database  *pgx.Conn
-	config    *pgx.ConnConfig
+	database  store.AttachmentMaintenance
 	logger    *slog.Logger
 	operation string
 	phase     string
 }
 
-// MigrateAttachmentLayout requires all HTTP, direct database, and file writers to remain stopped.
-// Its advisory lock serializes maintenance calls; it does not fence ordinary application writes.
-func MigrateAttachmentLayout(ctx context.Context, databaseURL, storageRoot, action, operationID string, logger *slog.Logger) (AttachmentMigrationSummary, error) {
-	m := &attachmentMigration{logger: logger, phase: "configuration"}
+// ValidateRequest validates the action before opening any maintenance resources.
+func ValidateRequest(action, operationID string) (string, error) {
+	m := &attachmentMigration{phase: "configuration"}
 	if action != "plan" && action != "apply" && action != "resume" {
-		return AttachmentMigrationSummary{}, m.failure("invalid_input", "Migration action must be plan, apply, or resume.", nil)
+		return "", m.failure("invalid_input", "Migration action must be plan, apply, or resume.", nil)
 	}
 	if action == "plan" {
 		if operationID != "" {
-			return AttachmentMigrationSummary{}, m.failure("invalid_input", "A new migration plan cannot specify an operation ID.", nil)
+			return "", m.failure("invalid_input", "A new migration plan cannot specify an operation ID.", nil)
 		}
-	} else {
-		id, err := model.CanonicalID(operationID)
-		if err != nil {
-			return AttachmentMigrationSummary{}, m.failure("invalid_input", "A valid migration operation ID is required.", err)
-		}
-		m.operation = id
+		return "", nil
 	}
-	if strings.TrimSpace(databaseURL) == "" || strings.TrimSpace(storageRoot) == "" {
-		return AttachmentMigrationSummary{}, m.failure("configuration", "DAYNIGHT_DATABASE_URL and DAYNIGHT_STORAGE_ROOT are required.", nil)
-	}
-	config, err := pgx.ParseConfig(databaseURL)
+	id, err := model.CanonicalID(operationID)
 	if err != nil {
-		return AttachmentMigrationSummary{}, m.failure("database", "Migration database configuration is invalid.", err)
+		return "", m.failure("invalid_input", "A valid migration operation ID is required.", err)
 	}
-	m.config = config
-	m.database, err = pgx.ConnectConfig(ctx, config)
+	return id, nil
+}
+
+// Run requires all HTTP, direct database, and file writers to remain stopped.
+// The maintenance session lock serializes maintenance; it does not fence application writes.
+func Run(ctx context.Context, database store.AttachmentMaintenance, root *os.Root, action, operationID string, logger *slog.Logger) (AttachmentMigrationSummary, error) {
+	id, err := ValidateRequest(action, operationID)
 	if err != nil {
-		return AttachmentMigrationSummary{}, m.failure("database", "Migration database connection failed.", err)
+		return AttachmentMigrationSummary{}, err
 	}
-	defer m.database.Close(context.Background())
-	if _, err := m.database.Exec(ctx, "SELECT pg_advisory_lock($1)", attachmentMigrationLock); err != nil {
-		return AttachmentMigrationSummary{}, m.failure("database", "Migration ownership lock failed.", err)
-	}
-	m.root, err = os.OpenRoot(storageRoot)
-	if err != nil {
-		return AttachmentMigrationSummary{}, m.failure("filesystem", "Migration storage root could not be opened.", err)
-	}
-	defer m.root.Close()
-	m.phase = "inventory"
+	m := &attachmentMigration{database: database, root: root, logger: logger, operation: id, phase: "inventory"}
 	if err := m.inspectOperations(ctx, action == "plan"); err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
@@ -213,106 +198,108 @@ func (m *attachmentMigration) inspectOperations(ctx context.Context, planning bo
 	return nil
 }
 
+type snapshotVisitor struct {
+	m        *attachmentMigration
+	result   attachmentMigrationSnapshot
+	digest   hash.Hash
+	projects map[string]bool
+	owners   map[string]string
+}
+
+func (v *snapshotVisitor) Identity(identity store.AttachmentMaintenanceIdentity) error {
+	data, err := json.Marshal([]any{identity.Host, identity.Port, identity.Database, identity.DatabaseOID, identity.Schema, identity.Relations})
+	if err != nil {
+		return v.m.failure("inventory", "Migration database identity could not be encoded.", err)
+	}
+	v.result.identity = attachmentMigrationIdentity{Database: identity.Database, Schema: identity.Schema, Relations: identity.Relations, Fingerprint: attachmentMigrationDigest(data)}
+	return nil
+}
+func (v *snapshotVisitor) Project(project store.AttachmentMaintenanceProject) error {
+	v.projects[project.ID] = true
+	fmt.Fprintln(v.digest, "projects", project.Data)
+	return nil
+}
+func (v *snapshotVisitor) Owner(owner store.AttachmentMaintenanceOwner) error {
+	if !v.projects[owner.ProjectID] {
+		return v.m.failure("ownership", "A migration task references a missing project.", nil)
+	}
+	v.owners[owner.TaskID] = owner.ProjectID
+	v.result.owners = append(v.result.owners, attachmentMigrationOwner{ProjectID: owner.ProjectID, TaskID: owner.TaskID})
+	fmt.Fprintln(v.digest, "tasks", owner.Data)
+	return nil
+}
+func (v *snapshotVisitor) Metadata(metadata store.AttachmentMaintenanceMetadata) error {
+	if v.owners[metadata.TaskID] != metadata.ProjectID {
+		return v.m.failure("ownership", "Attachment metadata has no matching project and task owner.", nil)
+	}
+	if err := filestorage.ValidateAddress(attachmentcore.Bucket, metadata.Path); err != nil || metadata.SizeBytes < 0 {
+		return v.m.failure("invalid_metadata", "Attachment metadata contains an invalid relative path or size.", err)
+	}
+	v.result.metadata = append(v.result.metadata, attachmentMigrationMetadata{ProjectID: metadata.ProjectID, TaskID: metadata.TaskID, Path: metadata.Path, SizeBytes: metadata.SizeBytes, Data: metadata.Data})
+	fmt.Fprintln(v.digest, "task_attachments", metadata.Data)
+	return nil
+}
 func (m *attachmentMigration) snapshot(ctx context.Context) (attachmentMigrationSnapshot, error) {
-	result := attachmentMigrationSnapshot{owners: []attachmentMigrationOwner{}, metadata: []attachmentMigrationMetadata{}}
-	tx, err := m.database.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return result, m.failure("database", "Migration metadata snapshot could not be opened.", err)
-	}
-	defer tx.Rollback(context.Background())
-	if _, err := tx.Exec(ctx, "SET LOCAL TIME ZONE 'UTC'"); err != nil {
-		return result, m.failure("database", "Migration snapshot time zone could not be set.", err)
-	}
-	var databaseOID string
-	identity := attachmentMigrationIdentity{Relations: map[string]string{}}
-	if err := tx.QueryRow(ctx, `SELECT current_database(), current_schema(), (SELECT oid::text FROM pg_database WHERE datname=current_database())`).Scan(&identity.Database, &identity.Schema, &databaseOID); err != nil {
-		return result, m.failure("database", "Migration database identity could not be read.", err)
-	}
-	for _, name := range []string{"projects", "tasks", "task_attachments"} {
-		var schema, oid string
-		if err := tx.QueryRow(ctx, `SELECT n.nspname, c.oid::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=to_regclass($1)`, name).Scan(&schema, &oid); err != nil {
-			return result, m.failure("database", "Migration source tables could not be identified.", err)
+	visitor := &snapshotVisitor{m: m, result: attachmentMigrationSnapshot{owners: []attachmentMigrationOwner{}, metadata: []attachmentMigrationMetadata{}}, digest: sha256.New(), projects: map[string]bool{}, owners: map[string]string{}}
+	if err := m.database.Snapshot(ctx, visitor); err != nil {
+		var migrationError *AttachmentMigrationError
+		if errors.As(err, &migrationError) {
+			return visitor.result, err
 		}
-		identity.Relations[name] = schema + "/" + oid
+		return visitor.result, m.failure("database", maintenanceDiagnostic(err, "Migration metadata snapshot failed."), err)
 	}
-	identityData, err := json.Marshal([]any{m.config.Host, strconv.Itoa(int(m.config.Port)), identity.Database, databaseOID, identity.Schema, identity.Relations})
-	if err != nil {
-		return result, m.failure("inventory", "Migration database identity could not be encoded.", err)
+	visitor.result.digest = hex.EncodeToString(visitor.digest.Sum(nil))
+	return visitor.result, nil
+}
+
+// MaintenanceDiagnostic maps neutral persistence failures to safe migration diagnostics.
+func MaintenanceDiagnostic(err error) string {
+	return maintenanceDiagnostic(err, "Migration database connection failed.")
+}
+
+func maintenanceDiagnostic(err error, fallback string) string {
+	var failure *store.AttachmentMaintenanceError
+	if !errors.As(err, &failure) {
+		return fallback
 	}
-	identity.Fingerprint = attachmentMigrationDigest(identityData)
-	result.identity = identity
-	digest := sha256.New()
-	projects := map[string]bool{}
-	rows, err := tx.Query(ctx, `SELECT id::text, to_jsonb(p)::text FROM projects p ORDER BY id`)
-	if err != nil {
-		return result, m.failure("database", "Migration projects could not be read.", err)
+	switch failure.Stage {
+	case store.AttachmentMaintenanceConfig:
+		return "Migration database configuration is invalid."
+	case store.AttachmentMaintenanceConnect:
+		return "Migration database connection failed."
+	case store.AttachmentMaintenanceLock:
+		return "Migration ownership lock failed."
+	case store.AttachmentMaintenanceSnapshotOpen:
+		return "Migration metadata snapshot could not be opened."
+	case store.AttachmentMaintenanceSnapshotTimezone:
+		return "Migration snapshot time zone could not be set."
+	case store.AttachmentMaintenanceIdentityRead:
+		return "Migration database identity could not be read."
+	case store.AttachmentMaintenanceRelationsRead:
+		return "Migration source tables could not be identified."
+	case store.AttachmentMaintenanceProjectsQuery:
+		return "Migration projects could not be read."
+	case store.AttachmentMaintenanceProjectsDecode:
+		return "Migration project row could not be decoded."
+	case store.AttachmentMaintenanceProjectsRead:
+		return "Migration project inventory failed."
+	case store.AttachmentMaintenanceTasksQuery:
+		return "Migration tasks could not be read."
+	case store.AttachmentMaintenanceTasksDecode:
+		return "Migration task row could not be decoded."
+	case store.AttachmentMaintenanceTasksRead:
+		return "Migration task inventory failed."
+	case store.AttachmentMaintenanceMetadataQuery:
+		return "Migration attachment metadata could not be read."
+	case store.AttachmentMaintenanceMetadataDecode:
+		return "Migration attachment row could not be decoded."
+	case store.AttachmentMaintenanceMetadataRead:
+		return "Migration attachment inventory failed."
+	case store.AttachmentMaintenanceSnapshotCommit:
+		return "Migration metadata snapshot could not be closed."
+	default:
+		return "Migration metadata snapshot failed."
 	}
-	for rows.Next() {
-		var id, data string
-		if err := rows.Scan(&id, &data); err != nil {
-			rows.Close()
-			return result, m.failure("database", "Migration project row could not be decoded.", err)
-		}
-		projects[id] = true
-		fmt.Fprintln(digest, "projects", data)
-	}
-	if err := rows.Err(); err != nil {
-		return result, m.failure("database", "Migration project inventory failed.", err)
-	}
-	rows, err = tx.Query(ctx, `SELECT id::text, project_id::text, to_jsonb(t)::text FROM tasks t ORDER BY id`)
-	if err != nil {
-		return result, m.failure("database", "Migration tasks could not be read.", err)
-	}
-	owners := map[string]string{}
-	for rows.Next() {
-		var owner attachmentMigrationOwner
-		var data string
-		if err := rows.Scan(&owner.TaskID, &owner.ProjectID, &data); err != nil {
-			rows.Close()
-			return result, m.failure("database", "Migration task row could not be decoded.", err)
-		}
-		if !projects[owner.ProjectID] {
-			rows.Close()
-			return result, m.failure("ownership", "A migration task references a missing project.", nil)
-		}
-		owners[owner.TaskID] = owner.ProjectID
-		result.owners = append(result.owners, owner)
-		fmt.Fprintln(digest, "tasks", data)
-	}
-	if err := rows.Err(); err != nil {
-		return result, m.failure("database", "Migration task inventory failed.", err)
-	}
-	rows, err = tx.Query(ctx, `SELECT project_id::text, task_id::text, path, size_bytes, to_jsonb(a)::text FROM task_attachments a ORDER BY task_id, path COLLATE "C"`)
-	if err != nil {
-		return result, m.failure("database", "Migration attachment metadata could not be read.", err)
-	}
-	for rows.Next() {
-		var metadata attachmentMigrationMetadata
-		var data string
-		if err := rows.Scan(&metadata.ProjectID, &metadata.TaskID, &metadata.Path, &metadata.SizeBytes, &data); err != nil {
-			rows.Close()
-			return result, m.failure("database", "Migration attachment row could not be decoded.", err)
-		}
-		if owners[metadata.TaskID] != metadata.ProjectID {
-			rows.Close()
-			return result, m.failure("ownership", "Attachment metadata has no matching project and task owner.", nil)
-		}
-		if err := filestorage.ValidateAddress(attachmentcore.Bucket, metadata.Path); err != nil || metadata.SizeBytes < 0 {
-			rows.Close()
-			return result, m.failure("invalid_metadata", "Attachment metadata contains an invalid relative path or size.", err)
-		}
-		metadata.Data = data
-		result.metadata = append(result.metadata, metadata)
-		fmt.Fprintln(digest, "task_attachments", data)
-	}
-	if err := rows.Err(); err != nil {
-		return result, m.failure("database", "Migration attachment inventory failed.", err)
-	}
-	result.digest = hex.EncodeToString(digest.Sum(nil))
-	if err := tx.Commit(ctx); err != nil {
-		return result, m.failure("database", "Migration metadata snapshot could not be closed.", err)
-	}
-	return result, nil
 }
 
 func attachmentMigrationDigest(data []byte) string {
