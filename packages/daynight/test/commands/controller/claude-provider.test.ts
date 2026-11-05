@@ -82,6 +82,59 @@ const nativeFixture = (echo = true) => {
   return { emit, interrupt, inputs, options: () => captured, end(error?: Error) { failure = error; ended = true; wake?.(); } };
 };
 
+test.each([
+  { name: "Bash", input: { command: 'printf "first\\nsecond"', description: "Print two lines", timeout: 0, run_in_background: false }, detail: 'printf "first\\nsecond"\ndescription: Print two lines\ntimeout: 0\nrun_in_background: false' },
+  { name: "Write", input: { file_path: "/tmp/review.ts", content: 'const value = "first";\nconsole.log(value);\n', encoding: "utf8" }, detail: 'file_path: /tmp/review.ts\nencoding: utf8\n\nContent:\nconst value = "first";\nconsole.log(value);\n' },
+  { name: "Write", input: { file_path: "/tmp/empty", content: "", extra: null }, detail: 'file_path: /tmp/empty\nextra: null\n\nContent:\n' },
+  { name: "Edit", input: { file_path: "/tmp/review.ts", old_string: 'one\n"two"', new_string: "", replace_all: false }, detail: 'file_path: /tmp/review.ts\nreplace_all: false\n\nBefore:\none\n"two"\n\nAfter:\n' },
+  { name: "MultiEdit", input: { file_path: "/tmp/review.ts", edits: [{ old_string: "one\ntwo", new_string: "three", replace_all: true }, { old_string: "", new_string: '"four"', extra: null }], extension: [] }, detail: 'file_path: /tmp/review.ts\nextension: []\nEdit 1 replace_all: true\nEdit 2 extra: null\n\nEdit 1\nBefore:\none\ntwo\n\nAfter:\nthree\n\nEdit 2\nBefore:\n\n\nAfter:\n"four"' },
+  { name: "CustomTool", input: { text: 'first\n"second"', empty: "", zero: 0, enabled: false, absent: null, options: { nested: ["value", 1] } }, detail: 'text: first\n"second"\nempty: \nzero: 0\nenabled: false\nabsent: null\noptions: {"nested":["value",1]}' },
+  { name: "Write", input: { file_path: "/tmp/review.ts", content: null }, detail: '{\n  "file_path": "/tmp/review.ts",\n  "content": null\n}' },
+  { name: "MultiEdit", input: { file_path: "/tmp/review.ts", edits: [{ old_string: "one", new_string: 2 }] }, detail: '{\n  "file_path": "/tmp/review.ts",\n  "edits": [\n    {\n      "old_string": "one",\n      "new_string": 2\n    }\n  ]\n}' },
+])("Claude $name approval preserves readable tool input", async ({ name, input, detail }) => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], abort = new AbortController();
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  const permission = fixture.options().canUseTool!(name, input, { signal: abort.signal, toolUseID: "native-tool", decisionReason: "test" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+  const expired = expect(permission).rejects.toThrow("expired");
+  try {
+    expect(entries.find(entry => entry.kind === "interaction")).toMatchObject({ interaction: { kind: "approval", title: `Approve ${name}`, detail, actions: ["allow_once", "reject"] } });
+  } finally { abort.abort(); await expired; await provider.close(); }
+});
+
+test("Claude long Write approval retains metadata before truncating content at a Unicode boundary", async () => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], abort = new AbortController();
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  const prefix = "file_path: /tmp/large\nmode: overwrite\n\nContent:\n";
+  const permission = fixture.options().canUseTool!("Write", { file_path: "/tmp/large", content: "x".repeat(199_999 - prefix.length) + "😀tail", mode: "overwrite" }, { signal: abort.signal, toolUseID: "native-tool", decisionReason: "test" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+  const expired = expect(permission).rejects.toThrow("expired");
+  try {
+    const card = entries.find(entry => entry.kind === "interaction");
+    if (card?.kind !== "interaction" || card.interaction.kind !== "approval") throw new Error("Missing approval");
+    expect(card.interaction.detail.startsWith(prefix)).toBe(true);
+    expect(card.interaction.detail.slice(prefix.length, 199_999).replaceAll("x", "")).toBe("");
+    expect(card.interaction.detail.slice(199_999)).toBe("\n[Output truncated at 200000 characters]");
+    expect(card.interaction.detail.isWellFormed()).toBe(true);
+  } finally { abort.abort(); await expired; await provider.close(); }
+});
+
+test.each(["allow_once", "reject"] as const)("Claude formatted approval leaves native %s behavior unchanged", async action => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  const input = { file_path: "/tmp/review.ts", content: 'first\n"second"\n' };
+  try {
+    const permission = fixture.options().canUseTool!("Write", input, { signal: new AbortController().signal, toolUseID: "native-tool", decisionReason: "test" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+    const card = entries.find(entry => entry.kind === "interaction");
+    if (card?.kind !== "interaction") throw new Error("Missing approval");
+    const response = provider.respond(card.interaction.interactionId, "1", { kind: "approval", action });
+    const result = await permission;
+    if (action === "allow_once") { if (result?.behavior !== "allow") throw new Error("Missing native allow result"); expect(result.updatedInput).toBe(input); }
+    else expect(result).toEqual({ behavior: "deny", message: "User rejected this operation." });
+    expect(entries.filter(entry => entry.kind === "interaction").at(-1)).toMatchObject({ interaction: { state: "pending" } });
+    fixture.emit({ type: "user", uuid: randomUUID(), session_id: provider.nativeSessionId, message: { content: [{ type: "tool_result", tool_use_id: "native-tool", content: action === "allow_once" ? "Written" : "Rejected", is_error: action === "reject" }] } });
+    await expect(response).resolves.toEqual({ disposition: "handled" });
+  } finally { await provider.close(); }
+});
+
 test.each([false, true])("Claude disables control and rejects unconfirmed input when the native iterator ends (error=%s)", async error => {
   const fatal: Error[] = [];
   const fixture = nativeFixture(false), states: import("../../../src/commands/controller/providers/types.js").ProviderState[] = [];

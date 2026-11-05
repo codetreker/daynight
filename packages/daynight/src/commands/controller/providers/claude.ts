@@ -8,6 +8,7 @@ import type { InteractionResponse, SessionInteraction } from "../../../session/p
 import { record, string, NativeRpcError, NativeRpcTimeoutError } from "./native-rpc.js";
 import { ControllerStartupError } from "../startup.js";
 import { nativeEntryId, parseProviderArguments, readable, limited } from "./projection.js";
+import { claudeApprovalDetail } from "./claude-approval-detail.js";
 import { formInteraction, validateResponse } from "./interactions.js";
 import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } from "./types.js";
 
@@ -164,7 +165,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
         if (response.kind !== "question") return { behavior: "deny", message: "User dismissed the question." };
         return { behavior: "allow", updatedInput: { ...toolInput, answers: Object.fromEntries(response.answers.map(a => [interaction.questions.find(q => q.questionId === a.questionId)!.label, [...a.optionIds, ...(a.text ? [a.text] : [])].join(", ")])) } };
       }
-      const response = await ask({ ...base, kind: "approval", title: `Approve ${name}`, detail: limited(readable(toolInput)), actions: ["allow_once", "reject"] }, context.signal, context.toolUseID);
+      const response = await ask({ ...base, kind: "approval", title: `Approve ${name}`, detail: claudeApprovalDetail(name, toolInput), actions: ["allow_once", "reject"] }, context.signal, context.toolUseID);
       return response.kind === "approval" && response.action === "allow_once" ? { behavior: "allow", updatedInput: toolInput } : { behavior: "deny", message: "User rejected this operation." };
     },
     onElicitation: async (request, context) => {
