@@ -15,10 +15,10 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 	s, actor, first := storeTeamFixture(t)
 	ctx := context.Background()
 	_, other, _ := testAuthRecords(t, s)
-	if _, err := s.CreateTeam(ctx, other.UserID, uuid.NewString(), "An invisible Team between visible rows"); err != nil {
+	if _, err := testCreateTeam(s, ctx, other.UserID, uuid.NewString(), "An invisible Team between visible rows"); err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Same visible name")
+	second, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "Same visible name")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 		if len(before.Items) != 2 {
 			t.Fatalf("initial joined list %#v", before)
 		}
-		err = s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+		err = testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 			var err error
 			changed, err = tx.Rename(ctx, actor.UserID, "Changed after snapshot")
 			return err
@@ -167,7 +167,7 @@ func TestTeamRenameAndDeleteSQLFailuresRollbackCompleteLifecycle(t *testing.T) {
 			}
 			mustQueryExec(t, s, `CREATE FUNCTION refuse_team_lifecycle() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'lifecycle failure'; END $$;
     CREATE TRIGGER refuse_team_lifecycle BEFORE `+event+` ON `+triggerTable+` FOR EACH ROW EXECUTE FUNCTION refuse_team_lifecycle()`)
-			err := s.WriteTeam(context.Background(), team.ID, func(tx *TeamTx) error {
+			err := testWriteTeam(s, context.Background(), team.ID, func(tx *TeamTx) error {
 				if operation == "rename" {
 					_, err := tx.Rename(context.Background(), actor.UserID, "Uncommitted")
 					return err

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/google/uuid"
 )
 
@@ -13,7 +14,7 @@ func TestCreateProjectTeamAndIdentity(t *testing.T) {
 	projects, db, _, admin := projectService(t)
 	ctx := context.Background()
 	member, outsider := servicePrincipal(t, db), servicePrincipal(t, db)
-	team := newTestTeam(t, NewTeams(db), admin, "Team")
+	team := newTestTeam(t, teamservice.NewTeams(db), admin, "Team")
 	var personalTeam string
 	if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM teams WHERE personal_user_id=$1`, admin.UserID).Scan(&personalTeam); err != nil {
 		t.Fatal(err)

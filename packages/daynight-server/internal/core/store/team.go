@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -85,36 +86,40 @@ func (s *Snapshot) Teams(ctx context.Context, userID string, page Page) (TeamPag
 	return TeamPage{Items: items, HasMore: more}, nil
 }
 
-func (s *Store) CreateTeam(ctx context.Context, userID, teamID, name string) (model.Team, error) {
+type teamCreationTx struct {
+	tx     pgx.Tx
+	userID string
+}
+
+func (s *Store) CreateTeam(ctx context.Context, userID string, operation func(TeamCreationDAO) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return model.Team{}, queryError("begin Team creation", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin Team creation", err)
 	}
-	var team model.Team
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		var user string
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, userID).Scan(&user); err != nil {
 			return queryError("read Team creator", err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,$2)`, teamID, name); err != nil {
-			return queryError("create Team", err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, userID); err != nil {
-			return queryError("create Team administrator", err)
-		}
-		team, err = readTeam(ctx, tx, userID, teamID)
-		return err
+		return operation(&teamCreationTx{tx: tx, userID: userID})
 	})
-	if err != nil {
-		return model.Team{}, queryError("create Team", err)
-	}
-	return team, nil
+	return teamCompletion("create Team", err)
 }
 
-func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(*TeamTx) error) error {
+func (tx *teamCreationTx) InsertTeam(ctx context.Context, teamID, name string) (model.Team, error) {
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,$2)`, teamID, name); err != nil {
+		return model.Team{}, queryError("create Team", err)
+	}
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, tx.userID); err != nil {
+		return model.Team{}, queryError("create Team administrator", err)
+	}
+	return readTeam(ctx, tx.tx, tx.userID, teamID)
+}
+
+func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(TeamWriteDAO) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return queryError("begin Team write", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin Team write", err)
 	}
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		var id string
@@ -123,11 +128,24 @@ func (s *Store) WriteTeam(ctx context.Context, teamID string, operation func(*Te
 		}
 		return operation(&TeamTx{tx: tx, teamID: teamID})
 	})
-	if err != nil {
-		return queryError("write Team", err)
-	}
-	return nil
+	return teamCompletion("write Team", err)
 }
+
+func teamCompletion(operation string, err error) (Completion, error) {
+	if err == nil {
+		return Completion{Outcome: TransactionCommitted}, nil
+	}
+	var failure *TransactionError
+	outcome := TransactionUnknown
+	if errors.As(err, &failure) {
+		outcome = failure.Outcome
+	}
+	return Completion{Outcome: outcome}, queryError(operation, err)
+}
+
+var _ TeamWriter = (*Store)(nil)
+var _ TeamWriteDAO = (*TeamTx)(nil)
+var _ TeamCreationDAO = (*teamCreationTx)(nil)
 
 func (tx *TeamTx) Team(ctx context.Context, userID string) (model.Team, error) {
 	return readTeam(ctx, tx.tx, userID, tx.teamID)

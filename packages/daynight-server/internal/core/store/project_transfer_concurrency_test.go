@@ -15,7 +15,7 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 		for _, firstCommits := range []bool{false, true} {
 			t.Run(fmt.Sprintf("transferFirst=%t/commit=%t", transferFirst, firstCommits), func(t *testing.T) {
 				s, actor, _, project := membershipFixture(t)
-				target, err := s.CreateTeam(context.Background(), actor.UserID, uuid.NewString(), "Destination")
+				target, err := testCreateTeam(s, context.Background(), actor.UserID, uuid.NewString(), "Destination")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -57,7 +57,7 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 					})
 				}
 				deleteTeam := func(hold bool) error {
-					return s.WriteTeam(ctx, target.ID, func(tx *TeamTx) error {
+					return testWriteTeam(s, ctx, target.ID, func(tx *TeamTx) error {
 						found, err := tx.HasProjects(ctx)
 						if err != nil {
 							return err

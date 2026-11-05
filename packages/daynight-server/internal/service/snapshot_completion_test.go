@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
@@ -23,7 +24,7 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 	task := createTask(t, tasks, principal, project.ID, "Snapshot completion")
 	missing := uuid.NewString()
 	projectSecret := secretutil.Random(invitationPrefix)
-	teamSecret := secretutil.Random(teamInvitationPrefix)
+	teamSecret := secretutil.Random("dnteam_")
 	page := model.PageRequest{Limit: 10}
 	for _, test := range []struct {
 		name    string
@@ -43,13 +44,13 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return NewProjects(db).TransferPreview(ctx, principal, project.ID, missing)
 		}},
 		{"team missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTeams(db).Get(ctx, principal, missing)
+			return teamservice.NewTeams(db).Get(ctx, principal, missing)
 		}},
 		{"team members missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTeams(db).Members(ctx, principal, missing)
+			return teamservice.NewTeams(db).Members(ctx, principal, missing)
 		}},
 		{"team invitation missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTeams(db).InspectInvitation(ctx, principal, teamSecret)
+			return teamservice.NewTeams(db).InspectInvitation(ctx, principal, teamSecret)
 		}},
 		{"membership missing", true, func(ctx context.Context, db *store.Store) (any, error) {
 			return NewMemberships(db).List(ctx, principal, missing)

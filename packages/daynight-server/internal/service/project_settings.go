@@ -5,6 +5,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
 
 type UpdateProjectSettings struct {
@@ -26,7 +27,7 @@ func (s *Projects) UpdateSettings(ctx context.Context, principal model.Principal
 	var project model.Project
 	var refusal *model.Fault
 	err = s.store.WriteProject(ctx, id, func(tx *store.ProjectTx) error {
-		return completeMembershipOperation(func() error {
+		return completion.Capture(func() error {
 			access, err := RequireProjectWrite(ctx, tx, principal)
 			if err != nil {
 				return err

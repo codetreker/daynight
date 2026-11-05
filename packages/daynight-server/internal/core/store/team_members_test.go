@@ -28,7 +28,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 		if original[1].Profile.Name != nil || original[1].Profile.Email != nil || original[1].Profile.AvatarURL != nil {
 			t.Fatalf("nullable profile: %#v", original[1].Profile)
 		}
-		err = s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+		err = testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 			member, err := tx.Member(ctx, other.UserID)
 			if err != nil || member != original[1].Membership {
 				t.Fatalf("member: %#v %v", member, err)
@@ -55,7 +55,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+	err = testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 		count, err := tx.AdminCount(ctx)
 		if err != nil || count != 2 {
 			t.Fatalf("committed admin count %d %v", count, err)
@@ -65,7 +65,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { _, err := tx.Member(ctx, other.UserID); return err })
+	err = testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { _, err := tx.Member(ctx, other.UserID); return err })
 	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("removed membership: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
 			}
 			mustQueryExec(t, s, `CREATE FUNCTION refuse_member_change() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'member failure'; END $$;
  CREATE TRIGGER refuse_member_change BEFORE `+event+` ON team_members FOR EACH ROW EXECUTE FUNCTION refuse_member_change()`)
-			err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+			err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 				if operation == "update" {
 					_, err := tx.SetMemberRole(ctx, actor.UserID, model.ProjectMemberRole)
 					return err
@@ -184,7 +184,7 @@ func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
 func TestTeamMemberCancellationAndUnknownCommit(t *testing.T) {
 	s, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+	err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 		if _, err := tx.SetMemberRole(ctx, actor.UserID, model.ProjectMemberRole); err != nil {
 			return err
 		}
@@ -223,7 +223,7 @@ func TestTeamMemberCancellationAndUnknownCommit(t *testing.T) {
 
 func TestTeamMemberAdminCountCancellationPreservesCause(t *testing.T) {
 	s, _, team := storeTeamFixture(t)
-	err := s.WriteTeam(context.Background(), team.ID, func(tx *TeamTx) error {
+	err := testWriteTeam(s, context.Background(), team.ID, func(tx *TeamTx) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		_, err := tx.AdminCount(ctx)

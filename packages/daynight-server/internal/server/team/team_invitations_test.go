@@ -1,4 +1,4 @@
-package server
+package team
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
 func TestTeamInvitationHTTP(t *testing.T) {
@@ -18,7 +18,7 @@ func TestTeamInvitationHTTP(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
-	teamRoutes(mux, service.NewTeams(h.Database), h.Auth, logger)
+	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	admin, member := h.Login(t, "team-invite-admin"), h.Login(t, "team-invite-member")
 	adminCookies, memberCookies := []*http.Cookie{admin}, []*http.Cookie{member}
@@ -67,7 +67,7 @@ func TestTeamInvitationHTTPRefusalsAndRevoke(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
-	teamRoutes(mux, service.NewTeams(h.Database), h.Auth, logger)
+	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	admin, outsider := h.Login(t, "invite-admin-refusals"), h.Login(t, "invite-outsider-refusals")
 	adminCookies, outsiderCookies := []*http.Cookie{admin}, []*http.Cookie{outsider}

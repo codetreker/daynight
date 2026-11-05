@@ -1,12 +1,12 @@
-package server
+package team
 
 import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func (h *teamHandler) listMembers(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -28,9 +28,9 @@ func (h *teamHandler) listMembers(w http.ResponseWriter, r *http.Request, p mode
 	httpx.WriteJSON(w, r, logger, http.StatusOK, response)
 }
 
-func teamMemberInput(w http.ResponseWriter, r *http.Request, roleRequired bool) (service.ChangeTeamMember, error) {
+func teamMemberInput(w http.ResponseWriter, r *http.Request, roleRequired bool) (coreteam.ChangeTeamMember, error) {
 	if _, err := httpx.QueryValues(r); err != nil {
-		return service.ChangeTeamMember{}, err
+		return coreteam.ChangeTeamMember{}, err
 	}
 	allowed := []string{"version", "expectedUserId"}
 	if roleRequired {
@@ -38,24 +38,24 @@ func teamMemberInput(w http.ResponseWriter, r *http.Request, roleRequired bool) 
 	}
 	fields, err := httpx.DecodeObject(w, r, allowed...)
 	if err != nil {
-		return service.ChangeTeamMember{}, err
+		return coreteam.ChangeTeamMember{}, err
 	}
 	version, err := httpx.VersionInput(fields)
 	if err != nil {
-		return service.ChangeTeamMember{}, err
+		return coreteam.ChangeTeamMember{}, err
 	}
 	expected, err := httpx.RequiredString(fields, "expectedUserId")
 	if err != nil {
-		return service.ChangeTeamMember{}, err
+		return coreteam.ChangeTeamMember{}, err
 	}
 	var role string
 	if roleRequired {
 		role, err = httpx.RequiredString(fields, "role")
 		if err != nil {
-			return service.ChangeTeamMember{}, err
+			return coreteam.ChangeTeamMember{}, err
 		}
 	}
-	return service.ChangeTeamMember{Version: version, ExpectedUserID: expected, Role: model.ProjectRole(role)}, nil
+	return coreteam.ChangeTeamMember{Version: version, ExpectedUserID: expected, Role: model.ProjectRole(role)}, nil
 }
 
 func actorRoleResponse(role *model.ProjectRole) *string {

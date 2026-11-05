@@ -22,7 +22,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	ctx := context.Background()
 	_, member, _ := testAuthRecords(t, s)
 	invitation := storeTeamInvitation(team, admin, "first")
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
 		t.Fatal(err)
 	}
 	var personal string
@@ -70,7 +70,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 		ref, err := tx.InvitationTeam(ctx)
 		if err != nil || ref.ID != team.ID {
 			return errors.New("locked Team reference")
@@ -107,7 +107,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	revoked := storeTeamInvitation(team, admin, "second")
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 		if err := tx.CreateInvitation(ctx, revoked); err != nil {
 			return err
 		}
@@ -123,7 +123,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { return tx.Delete(ctx) }); err != nil {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { return tx.Delete(ctx) }); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -136,7 +136,7 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 	s, admin, team := storeTeamFixture(t)
 	ctx := context.Background()
 	invitation := storeTeamInvitation(team, admin, "fault")
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
 		t.Fatal(err)
 	}
 	// Unique hashes and member keys, and missing tables, must retain rollback evidence.
@@ -157,7 +157,7 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 			return err
 		},
 	} {
-		err := s.WriteTeam(ctx, team.ID, operation)
+		err := testWriteTeam(s, ctx, team.ID, operation)
 		var txErr *TransactionError
 		if !errors.As(err, &txErr) || txErr.Outcome != TransactionNotCommitted {
 			t.Fatalf("database failure lost rollback evidence: %v", err)

@@ -1,4 +1,4 @@
-package server
+package team
 
 import (
 	"context"
@@ -14,8 +14,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/google/uuid"
 )
 
@@ -24,7 +25,7 @@ func TestTeamMembersHTTP(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
-	teamRoutes(mux, service.NewTeams(h.Database), h.Auth, logger)
+	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	admin, member, outsider := h.Login(t, "members-admin"), h.Login(t, "members-member"), h.Login(t, "members-outsider")
 	a, m, o := []*http.Cookie{admin}, []*http.Cookie{member}, []*http.Cookie{outsider}
@@ -152,7 +153,7 @@ func TestTeamMembersHTTP(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	principal := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: au.ID}
-	_, err = service.NewTeams(h.Database).SetMemberRole(canceled, principal, team.ID, au.ID, service.ChangeTeamMember{Version: precise, Role: model.ProjectMemberRole, ExpectedUserID: au.ID})
+	_, err = teamservice.NewTeams(h.Database).SetMemberRole(canceled, principal, team.ID, au.ID, coreteam.ChangeTeamMember{Version: precise, Role: model.ProjectMemberRole, ExpectedUserID: au.ID})
 	if err == nil {
 		t.Fatal("canceled operation succeeded")
 	}
@@ -177,17 +178,17 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
-	teamRoutes(mux, service.NewTeams(h.Database), h.Auth, logger)
+	RegisterRoutes(mux, teamservice.NewTeams(h.Database), h.Auth, logger)
 	h.Handler = mux
 	a, b := h.Login(t, "concurrent-a"), h.Login(t, "concurrent-b")
 	ac, bc := []*http.Cookie{a}, []*http.Cookie{b}
 	au := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", ac, nil, ""), 200)
 	bu := decodeResponse[api.User](t, h.Request("GET", "/api/v1/me", "", bc, nil, ""), 200)
-	s := service.NewTeams(h.Database)
+	s := teamservice.NewTeams(h.Database)
 	pa := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: au.ID}
 	pb := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: bu.ID}
 	for _, remove := range []bool{false, true} {
-		team, err := s.Create(context.Background(), pa, service.CreateTeam{Name: "race", ExpectedUserID: au.ID})
+		team, err := s.Create(context.Background(), pa, coreteam.CreateTeam{Name: "race", ExpectedUserID: au.ID})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,7 +198,7 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 			t.Fatal(err)
 		}
 		joined := decodeResponse[api.TeamInvitationAcceptance](t, h.Request("POST", "/api/v1/team-invitations/accept", jsonBody(t, api.AcceptProjectInvitationRequest{Token: link.Fragment, ExpectedUserID: bu.ID}), bc, nil, h.Origin), 200)
-		promoted, err := s.SetMemberRole(context.Background(), pa, team.ID, bu.ID, service.ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: au.ID})
+		promoted, err := s.SetMemberRole(context.Background(), pa, team.ID, bu.ID, coreteam.ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: au.ID})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +216,7 @@ func TestTeamMembersConcurrentLastAdmin(t *testing.T) {
 				if i == 1 {
 					v = bv
 				}
-				input := service.ChangeTeamMember{Version: v, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
+				input := coreteam.ChangeTeamMember{Version: v, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
 				if remove {
 					_, errs[i] = s.RemoveMember(context.Background(), p, team.ID, p.UserID, input)
 				} else {
