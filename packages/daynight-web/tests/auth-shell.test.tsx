@@ -53,6 +53,7 @@ const defaults = (url: string): Response => {
   if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
   if (url.endsWith("/members")) return json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant()] });
   if (isTaskSync(url)) return graph(url);
+  if (url === `/api/v1/projects/${projectId}`) return json(project());
   if (url.startsWith("/api/v1/projects")) return json({ items: [project()], nextCursor: null });
   throw new Error(`Unexpected request ${url}`);
 };
@@ -72,6 +73,30 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
+  it("binds direct-entry and retained member subtitles to their project through settings navigation", async () => {
+    const second = "00000000-0000-4000-8000-000000000004";
+    const secondProject = { ...project("Project Beta"), id: second };
+    window.history.replaceState(null, "", `/projects/${second}/members`);
+    install((url) => {
+      if (url === `/api/v1/projects/${second}`) return json(secondProject);
+      if (url === `/api/v1/projects/${second}/access`) return json(directAccessFixture(second, userId, "admin"));
+      if (url === `/api/v1/projects/${second}/members`) return json({ actorAccess: directAccessFixture(second, userId, "admin"), items: [] });
+      if (url.endsWith("/invitations")) return json({ items: [] });
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByText("Project Beta · 管理协作成员与加入邀请");
+    act(() => navigate(`/projects/${projectId}`));
+    await screen.findByRole("link", { name: "项目成员" });
+    fireEvent.click(screen.getByRole("link", { name: "项目成员" }));
+    await screen.findByText("私有项目 · 管理协作成员与加入邀请");
+    act(() => navigate(`/projects/${second}/settings`));
+    await screen.findByRole("heading", { name: "Project Beta" });
+    fireEvent.click(within(screen.getByRole("navigation", { name: "项目设置" })).getByRole("link", { name: "项目成员" }));
+    await waitFor(() => expect(screen.getByText("Project Beta · 管理协作成员与加入邀请")).toBeVisible());
+    expect(screen.getByText("私有项目 · 管理协作成员与加入邀请")).not.toBeVisible();
+  });
+
   it("discards a retained project invitation secret when revalidation changes the account", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
     const secret = "dninvite_identity_secret";
