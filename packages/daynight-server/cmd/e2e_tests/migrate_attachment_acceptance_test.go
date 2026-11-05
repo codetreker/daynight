@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
 )
 
-func acceptanceMigrationCommand(t *testing.T, fixture *acceptanceFixture, arguments ...string) service.AttachmentMigrationSummary {
+func acceptanceMigrationCommand(t *testing.T, fixture *acceptanceFixture, arguments ...string) migration.AttachmentMigrationSummary {
 	t.Helper()
 	application := fmt.Sprintf("%s_migration_%d", fixture.schema, len(fixture.applications)+1)
 	fixture.applications = append(fixture.applications, application)
@@ -44,7 +44,7 @@ func acceptanceMigrationCommand(t *testing.T, fixture *acceptanceFixture, argume
 	if err != nil {
 		t.Fatalf("attachment maintenance process failed: %v\n%s", err, stderr.String())
 	}
-	var result service.AttachmentMigrationSummary
+	var result migration.AttachmentMigrationSummary
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.OperationID == "" || result.ManifestPath == "" {
 		t.Fatalf("maintenance stdout is not one complete result: %s, %v", stdout.String(), err)
 	}

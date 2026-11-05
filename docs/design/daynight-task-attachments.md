@@ -275,7 +275,7 @@ operationId、phase、step 及适用的 projectId/taskId 关联。失败日志�
 保持停写直至核验和切换结束。PG advisory lock 只串行同一数据库的维护调用，不能阻止普通业务写入。
 备份及回退的命令由[部署说明](../../deployment/localhost/README.md#attachment-layout-upgrade)拥有。
 
-维护编排位于附件业务包，复用相同的 project/shard/task 前缀函数。普通文件接口保持 Put/Open/Delete，
+维护入口由 `service/attachment` 取得专用维护连接和根句柄；`core/attachment/migration` 拥有记录、清点、校验和恢复状态机，并复用相同的 project/shard/task 前缀函数。根 store 的维护合同提供数据库身份及有序元数据快照，应用组装侧的维护工厂选择具体后端。专用连接从获取 advisory lock 到操作结束始终保持，同一连接执行全部快照。普通文件接口保持 Put/Open/Delete，
 不增加通用 Rename 或让适配器理解 task。维护过程显式打开配置的 os.Root，所有操作相对于该根句柄。
 根内独占 operation 目录、UUID、当前数据库身份与归属/元数据摘要，以及完整文件树共同绑定续作；
 不另造平台 inode 身份要求，也不根据目录名猜测布局已经迁移。

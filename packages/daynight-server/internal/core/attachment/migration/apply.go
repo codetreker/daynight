@@ -1,4 +1,4 @@
-package service
+package migration
 
 import (
 	"context"

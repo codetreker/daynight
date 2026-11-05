@@ -14,10 +14,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func migrationRecordFixture(t *testing.T) (string, string, model.Task, AttachmentMigrationSummary) {
+func migrationRecordFixture(t *testing.T) (string, string, model.Task, migration.AttachmentMigrationSummary) {
 	t.Helper()
 	tasks, database, project, databaseURL, principal := taskService(t)
 	task := createTask(t, tasks, principal, project.ID, "Operation records")
@@ -32,7 +33,7 @@ func migrationRecordFixture(t *testing.T) (string, string, model.Task, Attachmen
 	if _, _, err := database.PutAttachment(context.Background(), model.Attachment{ProjectID: project.ID, TaskID: task.ID, Path: "file.bin", ContentType: "application/octet-stream", SizeBytes: 3}); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	plan, err := runAttachmentMigration(context.Background(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +76,9 @@ func TestAttachmentMigrationRejectsChangedOperationRecords(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			databaseURL, root, task, plan := migrationRecordFixture(t)
-			mutateMigrationRecord(t, filepath.Join(root, attachmentMigrationPrefix+plan.OperationID, test.record), test.change)
-			_, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-			var failure *AttachmentMigrationError
+			mutateMigrationRecord(t, filepath.Join(root, ".attachment-layout-"+plan.OperationID, test.record), test.change)
+			_, err := runAttachmentMigration(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			var failure *migration.AttachmentMigrationError
 			if !errors.As(err, &failure) || failure.Category != "invalid_manifest" {
 				t.Fatalf("changed operation was not rejected: %v", err)
 			}
@@ -91,17 +92,17 @@ func TestAttachmentMigrationRejectsChangedOperationRecords(t *testing.T) {
 
 func TestAttachmentMigrationRecoversPlanBeforeStagePublication(t *testing.T) {
 	databaseURL, root, task, plan := migrationRecordFixture(t)
-	if err := os.Remove(filepath.Join(root, attachmentMigrationPrefix+plan.OperationID, "state.json")); err != nil {
+	if err := os.Remove(filepath.Join(root, ".attachment-layout-"+plan.OperationID, "state.json")); err != nil {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	if _, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "plan", "", logger); err == nil {
+	if _, err := runAttachmentMigration(context.Background(), databaseURL, root, "plan", "", logger); err == nil {
 		t.Fatal("a plan with an unpublished stage was ignored")
 	}
-	if _, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "apply", plan.OperationID, logger); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := runAttachmentMigration(context.Background(), databaseURL, root, "apply", plan.OperationID, logger); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("apply did not preserve the missing stage diagnostic: %v", err)
 	}
-	result, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "resume", plan.OperationID, logger)
+	result, err := runAttachmentMigration(context.Background(), databaseURL, root, "resume", plan.OperationID, logger)
 	if err != nil || result.Phase != "complete" {
 		t.Fatalf("explicit resume did not reconcile the fully persisted plan: %+v %v", result, err)
 	}
@@ -116,7 +117,7 @@ func TestAttachmentMigrationRejectsUnsafeOrIncompleteReceipts(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			databaseURL, root, _, plan := migrationRecordFixture(t)
 			logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-			completed, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "apply", plan.OperationID, logger)
+			completed, err := runAttachmentMigration(context.Background(), databaseURL, root, "apply", plan.OperationID, logger)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -143,7 +144,7 @@ func TestAttachmentMigrationRejectsUnsafeOrIncompleteReceipts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "resume", plan.OperationID, logger); err == nil {
+			if _, err := runAttachmentMigration(context.Background(), databaseURL, root, "resume", plan.OperationID, logger); err == nil {
 				t.Fatal("completed operation trusted an invalid receipt")
 			}
 		})
@@ -154,7 +155,7 @@ func TestAttachmentMigrationRejectsUnsafeOperationPaths(t *testing.T) {
 	for _, name := range []string{"manifest directory", "target symlink", "manifest trailing JSON"} {
 		t.Run(name, func(t *testing.T) {
 			databaseURL, root, task, plan := migrationRecordFixture(t)
-			directory := filepath.Join(root, attachmentMigrationPrefix+plan.OperationID)
+			directory := filepath.Join(root, ".attachment-layout-"+plan.OperationID)
 			manifest := filepath.Join(directory, "manifest.json")
 			switch name {
 			case "manifest directory":
@@ -178,7 +179,7 @@ func TestAttachmentMigrationRejectsUnsafeOperationPaths(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil))); err == nil {
+			if _, err := runAttachmentMigration(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil))); err == nil {
 				t.Fatal("unsafe operation entry was accepted")
 			}
 			if _, err := os.Stat(filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin")); err != nil {
@@ -191,21 +192,21 @@ func TestAttachmentMigrationRejectsUnsafeOperationPaths(t *testing.T) {
 func TestAttachmentMigrationCommandAndRootFailures(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	for _, input := range [][2]string{{"unknown", ""}, {"plan", "00000000-0000-0000-0000-000000000000"}, {"apply", "bad"}, {"resume", ""}} {
-		_, err := MigrateAttachmentLayout(context.Background(), "", "", input[0], input[1], logger)
-		var failure *AttachmentMigrationError
+		_, err := runAttachmentMigration(context.Background(), "", "", input[0], input[1], logger)
+		var failure *migration.AttachmentMigrationError
 		if !errors.As(err, &failure) || failure.Category != "invalid_input" {
 			t.Fatalf("invalid action or ID was not rejected before connecting: %v", err)
 		}
 	}
 	_, _, databaseURL, _ := projectService(t)
 	root := filepath.Join(t.TempDir(), "missing")
-	_, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "plan", "", logger)
+	_, err := runAttachmentMigration(context.Background(), databaseURL, root, "plan", "", logger)
 	if !errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), root) {
 		t.Fatalf("missing root cause was hidden or leaked a host path: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := MigrateAttachmentLayout(ctx, databaseURL, t.TempDir(), "plan", "", logger); !errors.Is(err, context.Canceled) {
+	if _, err := runAttachmentMigration(ctx, databaseURL, t.TempDir(), "plan", "", logger); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled connection lost its cause: %v", err)
 	}
 }
@@ -245,16 +246,16 @@ func TestAttachmentMigrationRejectsContradictoryPersistedInventories(t *testing.
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			databaseURL, root, task, plan := migrationRecordFixture(t)
-			mutateMigrationRecord(t, filepath.Join(root, attachmentMigrationPrefix+plan.OperationID, "manifest.json"), test.change)
-			_, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-			var failure *AttachmentMigrationError
+			mutateMigrationRecord(t, filepath.Join(root, ".attachment-layout-"+plan.OperationID, "manifest.json"), test.change)
+			_, err := runAttachmentMigration(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			var failure *migration.AttachmentMigrationError
 			if !errors.As(err, &failure) || failure.Category != test.category {
 				t.Fatalf("contradictory inventory did not fail safely: %v", err)
 			}
 			if actual, err := os.ReadFile(filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin")); err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
 				t.Fatalf("invalid inventory changed its source: %v %v", actual, err)
 			}
-			if _, err := os.Stat(filepath.Join(root, attachmentMigrationPrefix+plan.OperationID, "source")); !errors.Is(err, fs.ErrNotExist) {
+			if _, err := os.Stat(filepath.Join(root, ".attachment-layout-"+plan.OperationID, "source")); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("invalid inventory moved its source bucket: %v", err)
 			}
 		})
@@ -281,8 +282,8 @@ func TestAttachmentMigrationRejectsUnsupportedDatabaseShapeWithoutMovingFiles(t 
 			if err := os.WriteFile(name, []byte("preserved"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))
-			var failure *AttachmentMigrationError
+			_, err := runAttachmentMigration(context.Background(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			var failure *migration.AttachmentMigrationError
 			if !errors.As(err, &failure) || failure.Category != "database" || errors.Unwrap(err) == nil {
 				t.Fatalf("unsupported source schema did not retain its database error: %v", err)
 			}
@@ -292,215 +293,6 @@ func TestAttachmentMigrationRejectsUnsupportedDatabaseShapeWithoutMovingFiles(t 
 			entries, err := os.ReadDir(root)
 			if err != nil || len(entries) != 1 || entries[0].Name() != attachmentcore.Bucket {
 				t.Fatalf("failed metadata inventory created an operation: %v %v", entries, err)
-			}
-		})
-	}
-}
-
-func TestAttachmentMigrationFilesystemFailuresPreserveExistingContent(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "source"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "source", "preserved"), []byte("source"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "occupied"), []byte("target"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	opened, err := os.OpenRoot(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := false
-	t.Cleanup(func() {
-		if !closed {
-			if err := opened.Close(); err != nil {
-				t.Error(err)
-			}
-		}
-	})
-	m := &attachmentMigration{root: opened, phase: "placing"}
-	assertFailure := func(err error, category string, cause error) {
-		t.Helper()
-		var failure *AttachmentMigrationError
-		if !errors.As(err, &failure) || failure.Category != category || cause != nil && !errors.Is(err, cause) || strings.Contains(err.Error(), root) {
-			t.Fatalf("filesystem failure lost its category/cause or exposed a host path: %v", err)
-		}
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = m.readDirectory(ctx, ".")
-	assertFailure(err, "canceled", context.Canceled)
-	_, err = m.readDirectory(context.Background(), "missing")
-	assertFailure(err, "filesystem", fs.ErrNotExist)
-	_, err = m.readDirectory(context.Background(), "occupied")
-	assertFailure(err, "filesystem", nil)
-	assertFailure(m.syncDirectory("missing"), "filesystem", fs.ErrNotExist)
-	assertFailure(m.makeParents("occupied/child"), "unsafe_entry", nil)
-	assertFailure(m.rename(context.Background(), "source", "occupied"), "target_conflict", nil)
-	assertFailure(m.rename(context.Background(), "missing", "new-target"), "filesystem", fs.ErrNotExist)
-	_, err = m.writeJSON("occupied", attachmentMigrationState{Phase: "planned"}, false)
-	assertFailure(err, "operation_conflict", nil)
-	_, err = m.writeJSON("missing/record.json", attachmentMigrationState{Phase: "planned"}, false)
-	assertFailure(err, "filesystem", fs.ErrNotExist)
-	if err := opened.Close(); err != nil {
-		t.Fatal(err)
-	}
-	closed = true
-	assertFailure(m.rename(context.Background(), "source", "new-target"), "filesystem", nil)
-	_, err = m.writeJSON("record.json", attachmentMigrationState{Phase: "planned"}, false)
-	assertFailure(err, "filesystem", nil)
-	for name, expected := range map[string]string{"source/preserved": "source", "occupied": "target"} {
-		if actual, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(actual) != expected {
-			t.Fatalf("failed filesystem operation modified %s: %q %v", name, actual, err)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(root, "new-target")); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("failed rename created a target: %v", err)
-	}
-}
-
-func TestAttachmentMigrationCanceledHashReaderDoesNotConsumeContent(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	content := strings.NewReader("preserved content")
-	reader := attachmentMigrationReader{ctx: ctx, reader: content}
-	buffer := []byte("unchanged")
-	n, err := reader.Read(buffer)
-	if n != 0 || !errors.Is(err, context.Canceled) || string(buffer) != "unchanged" || content.Len() != len("preserved content") {
-		t.Fatalf("canceled verification consumed content: n=%d err=%v buffer=%q remaining=%d", n, err, buffer, content.Len())
-	}
-}
-
-func TestAttachmentMigrationUnpublishedInitializationFailuresCanBeReplanned(t *testing.T) {
-	for _, scenario := range []struct {
-		name     string
-		step     string
-		category string
-		cause    error
-	}{
-		{"canceled before initialization", "", "canceled", context.Canceled},
-		{"preexisting private directory", "", "filesystem", fs.ErrExist},
-		{"manifest parent disappeared", "plan_initializing", "filesystem", fs.ErrNotExist},
-		{"initial stage occupied", "plan_initializing", "operation_conflict", nil},
-		{"root closed before manifest", "plan_initializing", "filesystem", nil},
-		{"root closed before promotion", "plan_prepared", "filesystem", nil},
-		{"prepared source disappeared", "plan_prepared", "filesystem", fs.ErrNotExist},
-		{"official destination occupied", "plan_prepared", "operation_conflict", nil},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			databaseURL, root, task, original := migrationRecordFixture(t)
-			official := filepath.Join(root, attachmentMigrationPrefix+original.OperationID)
-			data, err := os.ReadFile(filepath.Join(official, "manifest.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var manifest attachmentMigrationManifest
-			if err := json.Unmarshal(data, &manifest); err != nil {
-				t.Fatal(err)
-			}
-			holding := filepath.Join(root, "preserved-previous-plan")
-			if err := os.Rename(official, holding); err != nil {
-				t.Fatal(err)
-			}
-			pending := filepath.Join(root, attachmentMigrationPendingPrefix+original.OperationID)
-			opened, err := os.OpenRoot(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			closed := false
-			t.Cleanup(func() {
-				if !closed {
-					if err := opened.Close(); err != nil {
-						t.Error(err)
-					}
-				}
-			})
-			observed := false
-			logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
-				if event.Step != scenario.step || observed {
-					return
-				}
-				observed = true
-				switch scenario.name {
-				case "manifest parent disappeared":
-					err = os.Remove(pending)
-				case "initial stage occupied":
-					err = os.Mkdir(filepath.Join(pending, "state.json"), 0o700)
-				case "root closed before manifest", "root closed before promotion":
-					err = opened.Close()
-					closed = true
-				case "prepared source disappeared":
-					err = os.RemoveAll(pending)
-				case "official destination occupied":
-					if err = os.Mkdir(official, 0o700); err == nil {
-						err = os.WriteFile(filepath.Join(official, "foreign"), []byte("not owned by initialization"), 0o600)
-					}
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-			})
-			m := &attachmentMigration{root: opened, logger: logger, operation: original.OperationID, phase: "inventory"}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			switch scenario.name {
-			case "canceled before initialization":
-				cancel()
-			case "preexisting private directory":
-				if err := os.Mkdir(pending, 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(pending, "foreign"), []byte("preexisting private data"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			err = m.initializePlan(ctx, manifest)
-			var failure *AttachmentMigrationError
-			if !errors.As(err, &failure) || failure.Category != scenario.category || scenario.cause != nil && !errors.Is(err, scenario.cause) {
-				t.Fatalf("unpublished initialization lost its original failure: %v", err)
-			}
-			if scenario.step != "" && !observed {
-				t.Fatalf("initialization lifecycle boundary %s was not observed", scenario.step)
-			}
-			if closed && !strings.Contains(err.Error(), "unpublished migration directory could not be removed") {
-				t.Fatalf("failed cleanup was hidden: %v", err)
-			}
-			if scenario.name == "official destination occupied" {
-				if actual, err := os.ReadFile(filepath.Join(official, "foreign")); err != nil || string(actual) != "not owned by initialization" {
-					t.Fatalf("failed promotion removed an unknown destination: %q %v", actual, err)
-				}
-				if err := os.RemoveAll(official); err != nil {
-					t.Fatal(err)
-				}
-			} else if _, err := os.Stat(official); !errors.Is(err, fs.ErrNotExist) {
-				t.Fatalf("unpublished initialization exposed an official operation: %v", err)
-			}
-			if scenario.name == "preexisting private directory" {
-				if actual, err := os.ReadFile(filepath.Join(pending, "foreign")); err != nil || string(actual) != "preexisting private data" {
-					t.Fatalf("initialization cleaned a private directory it did not create: %q %v", actual, err)
-				}
-			} else if !closed {
-				if _, err := os.Stat(pending); !errors.Is(err, fs.ErrNotExist) {
-					t.Fatalf("failed initialization retained its owned temporary directory: %v", err)
-				}
-			}
-			actual, err := os.ReadFile(filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin"))
-			if err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
-				t.Fatalf("plan initialization changed legacy bytes: %v %v", actual, err)
-			}
-			retry, err := MigrateAttachmentLayout(t.Context(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))
-			if err != nil || retry.OperationID == original.OperationID || retry.Phase != "planned" {
-				t.Fatalf("a failed unpublished attempt prevented a new plan: %+v %v", retry, err)
-			}
-			retryData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(retry.ManifestPath)))
-			var retryManifest attachmentMigrationManifest
-			if err != nil || json.Unmarshal(retryData, &retryManifest) != nil || retryManifest.DatabaseDigest != manifest.DatabaseDigest {
-				t.Fatalf("initialization failure changed database metadata: %s %v", retryData, err)
-			}
-			if actual, err := os.ReadFile(filepath.Join(holding, "manifest.json")); err != nil || !bytes.Equal(actual, data) {
-				t.Fatalf("initialization cleaned an unrelated root entry: %v", err)
 			}
 		})
 	}
