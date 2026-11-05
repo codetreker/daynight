@@ -411,3 +411,7 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
   .team-member-caption { grid-column: 1 / -1; grid-row: 3; }
 }
 .team-member-row .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.members-project-name { overflow-wrap: anywhere; min-height: 1.5em; }
+.members-project-name-placeholder { display: inline-block; width: min(22rem, 100%); height: 1em; border-radius: 3px; background: var(--line); vertical-align: middle; }
+.members-page-heading > .button { flex-shrink: 0; }

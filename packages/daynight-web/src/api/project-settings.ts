@@ -1,4 +1,4 @@
-import { ApiError, json, read, request, requestId } from "./client";
+import { ApiError, assertResponsePrincipal, json, read, request, requestId, type TaskResponseAdmission } from "./client";
 import { isTaskVersion, stringifyApiJson } from "./json";
 import { project } from "./parse";
 import { decodeProjectJson } from "./project-json";
@@ -13,9 +13,13 @@ const boundProject = (data: unknown, id: string): Project => {
   return value;
 };
 
-export const getProject = (projectId: string, signal: AbortSignal): Promise<Project> => {
+export const getProject = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<Project> => {
   const id = requestId(projectId);
-  return read(`/api/v1/projects/${id}`, signal, (data) => boundProject(data, id), decodeProjectJson);
+  if (admission === undefined) return read(`/api/v1/projects/${id}`, signal, (data) => boundProject(data, id), decodeProjectJson);
+  return request(`/api/v1/projects/${id}`, signal, { headers: { Accept: "application/json" } }).then((response) => {
+    assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+    return json(response, signal, (data) => boundProject(data, id), decodeProjectJson);
+  });
 };
 
 export const saveProjectSettings = async (

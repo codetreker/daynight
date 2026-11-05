@@ -30,13 +30,13 @@ const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', v
 const json = (body: unknown, status = 200) => wireResponse(body, { status, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
 const failure = (status: number) => json({ error: { code: status === 404 ? 'not_found' : 'internal_error', message: 'Failure', requestId: 'management-access' } }, status);
 const mount = (kind: 'members' | 'settings', handler: (url: string, init?: RequestInit) => Response | Promise<Response>) => {
-  const fetcher = vi.fn(async (url: string, init?: RequestInit) => handler(url, init));
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => kind === "members" && url === root ? json(project) : handler(url, init));
   vi.stubGlobal('fetch', fetcher);
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   let access!: ProjectAccessSession;
   const CaptureAccess = () => { access = useProjectAccess(projectId).session; return null; };
   const view = renderWithLocale(<ProjectAccessBoundary projectId={projectId}><CaptureAccess />{kind === 'members'
-    ? <MembersPanel projectId={projectId} projectName="Private directory" user={user} onRemoved={vi.fn()} onUnavailable={vi.fn()} />
+    ? <MembersPanel projectId={projectId} user={user} onRemoved={vi.fn()} onUnavailable={vi.fn()} />
     : <ProjectSettingsPanel projectId={projectId} user={user} />}</ProjectAccessBoundary>, { locale: 'en', taskCache: { scope } });
   return { view, scope, fetcher, access: () => access };
 };

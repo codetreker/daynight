@@ -41,6 +41,17 @@ const submit = () => fireEvent.submit(screen.getByRole("button", { name: "保存
 beforeEach(() => { serverActor = userId; invalidateAuthRequests(); vi.spyOn(document, "hasFocus").mockReturnValue(true); });
 
 describe("project settings transport", () => {
+  it("admits project metadata only for the requested account when admission is supplied", async () => {
+    const mismatch = vi.fn(), signal = new AbortController().signal;
+    const fetcher = install(() => wireResponse(project(), { headers: { 'Daynight-User-ID': userId } }));
+    expect((await getProject(id, signal, { userId, onPrincipalMismatch: mismatch })).name).toBe(project().name);
+    fetcher.mockImplementation(() => Promise.resolve(wireResponse(project(), { headers: { 'Daynight-User-ID': other } })));
+    await expect(getProject(id, signal, { userId, onPrincipalMismatch: mismatch })).rejects.toMatchObject({ code: 'principal_mismatch' });
+    expect(mismatch).toHaveBeenCalledOnce();
+    fetcher.mockImplementation(() => Promise.resolve(wireResponse(project())));
+    await expect(getProject(id, signal, { userId, onPrincipalMismatch: mismatch })).rejects.toMatchObject({ kind: 'protocol' });
+  });
+
   it("reads exact nested versions, sends exact PATCH digits, and permits a same-version no-op", async () => {
     const fetcher = install(); const signal = new AbortController().signal;
     expect((await getProject(id, signal)).settings.version).toBe(9_007_199_254_740_993n);
