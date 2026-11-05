@@ -13,11 +13,13 @@ const time = '2026-10-20T09:00:00Z';
 const personal = (user: string) => user === alice ? personalA : personalB;
 const user = (id: string) => ({ id, personalTeam: { id: personal(id), kind: 'personal', name: null }, name: id === alice ? 'Alice' : 'Bob', email: null, emailVerified: null, avatarUrl: null });
 const team = (id: string, userId: string) => ({ id, kind: 'ordinary', name: id === alpha ? 'Alpha' : 'Beta', version: 1, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
+const longProjectName = 'Infrastructure 跨团队协作 very-long-project-name-without-spaces '.repeat(5).trim();
 const error = { error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } };
 
-type Fixture = { actor: string; detail: 'ok' | '404' | '500' | 'network'; detailReads: string[]; projectQueries: string[]; paginated: boolean; holdDetail: Promise<void> | null };
+type Fixture = { actor: string; detail: 'ok' | '404' | '500' | 'network'; detailReads: string[]; projectQueries: string[]; paginated: boolean; holdDetail: Promise<void> | null; ordinaryName: string | null; projects: 'empty' | 'long' | 'error'; holdProjects: Promise<void> | null };
 const install = async (page: Page): Promise<Fixture> => {
-  const state: Fixture = { actor: alice, detail: 'ok', detailReads: [], projectQueries: [], paginated: false, holdDetail: null };
+  const state: Fixture = { actor: alice, detail: 'ok', detailReads: [], projectQueries: [], paginated: false, holdDetail: null, ordinaryName: null, projects: 'empty', holdProjects: null };
+  const ordinary = (id: string) => ({ ...team(id, state.actor), name: id === alpha && state.ordinaryName !== null ? state.ordinaryName : team(id, state.actor).name });
   await page.route('**/api/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname;
     const headers = { 'Daynight-User-ID': state.actor };
@@ -25,7 +27,7 @@ const install = async (page: Page): Promise<Fixture> => {
     if (path === '/api/v1/me') return send(user(state.actor));
     if (path === '/api/v1/teams') {
       const cursor = new URL(route.request().url()).searchParams.get('cursor');
-      return send(state.paginated ? cursor === null ? { items: [team(beta, state.actor)], nextCursor: 'next' } : { items: [team(alpha, state.actor)], nextCursor: null } : { items: [team(alpha, state.actor), team(beta, state.actor)], nextCursor: null });
+      return send(state.paginated ? cursor === null ? { items: [ordinary(beta)], nextCursor: 'next' } : { items: [ordinary(alpha)], nextCursor: null } : { items: [ordinary(alpha), ordinary(beta)], nextCursor: null });
     }
     if (path === `/api/v1/teams/${alpha}` || path === `/api/v1/teams/${beta}` || path === `/api/v1/teams/${personal(state.actor)}`) {
       state.detailReads.push(path);
@@ -34,13 +36,16 @@ const install = async (page: Page): Promise<Fixture> => {
       if (state.detail === '404') return send(error, 404);
       if (state.detail === '500') return send({ error: { code: 'internal_error', message: 'Unavailable', requestId: '00000000-0000-4000-8000-000000000099' } }, 500);
       const teamId = path.split('/').at(-1)!;
-      return send(teamId === personal(state.actor) ? { ...team(teamId, state.actor), kind: 'personal', name: null } : team(teamId, state.actor));
+      return send(teamId === personal(state.actor) ? { ...team(teamId, state.actor), kind: 'personal', name: null } : ordinary(teamId));
     }
     const memberMatch = /^\/api\/v1\/teams\/([^/]+)\/members$/.exec(path);
     if (memberMatch) return send({ items: [{ ...team(memberMatch[1]!, state.actor).membership, profile: { name: 'Alice', email: null, avatarUrl: null } }] });
     if (path === '/api/v1/projects') {
       state.projectQueries.push(new URL(route.request().url()).search);
-      return send({ items: [], nextCursor: null });
+      await state.holdProjects;
+      if (state.projects === 'error') return send({ error: { code: 'internal_error', message: 'Unavailable', requestId: '00000000-0000-4000-8000-000000000099' } }, 500);
+      const longProject = { id: project, name: longProjectName, repoUrl: 'https://github.com/example/project', createdAt: time, updatedAt: time, ownership: { teamId: personal(state.actor), version: 1 }, settings: { version: 1, executionWarningMinutes: 60 } };
+      return send({ items: state.projects === 'long' ? [longProject] : [], nextCursor: null });
     }
     return send(error, 404);
   });
@@ -50,6 +55,98 @@ const selected = (page: Page, id: string) => page.evaluate((k) => localStorage.g
 const put = (page: Page, id: string, value: string) => page.evaluate(([k, v]) => localStorage.setItem(k!, v!), [key(id), value]);
 const openPicker = (page: Page) => page.locator('details.team-selector summary').click();
 const heading = (page: Page, name: string) => page.getByRole('main').getByRole('heading', { name, exact: true });
+
+for (const locale of ['en-US', 'zh-CN'] as const) for (const narrow of [false, true]) {
+  test.describe(`${locale} ${narrow ? 'narrow' : 'desktop'} Personal sidebar`, () => {
+    test.use({ locale, viewport: narrow ? { width: 390, height: 844 } : { width: 1280, height: 900 } });
+    test('switches by Team identity and keeps navigation continuous', async ({ page }) => {
+      const api = await install(page);
+      const chinese = locale === 'zh-CN';
+      const members = chinese ? 'Team 成员' : 'Team members';
+      const settings = chinese ? 'Team 设置' : 'Team settings';
+      const shared = chinese ? '与我共享' : 'Shared with me';
+      const personalLabel = chinese ? '个人' : 'Personal';
+      const expand = chinese ? '展开侧栏' : 'Expand sidebar';
+      const collapse = chinese ? '折叠侧栏' : 'Collapse sidebar';
+      const nav = page.locator('.sidebar nav');
+      const assertPersonal = async () => {
+        await expect(nav.locator('a').filter({ has: page.locator('span.nav-text') }).filter({ hasText: /^(Team members|Team settings|Team 成员|Team 设置)$/ })).toHaveCount(0);
+        await expect(nav.locator('.sidebar-projects + a')).toHaveAttribute('aria-label', shared);
+      };
+      const open = async () => { if (narrow) await page.getByRole('button', { name: expand, exact: true }).click(); };
+      await page.goto('/projects');
+      await expect(heading(page, personalLabel)).toBeVisible();
+      await open();
+      await assertPersonal();
+      if (!narrow) {
+        await page.getByRole('button', { name: collapse, exact: true }).click();
+        await assertPersonal();
+        await page.getByRole('button', { name: expand, exact: true }).click();
+      }
+      for (const name of ['Personal', '个人']) {
+        api.ordinaryName = name;
+        await openPicker(page);
+        await page.locator(`details.team-selector a[href="/teams/${alpha}"]`).click();
+        await expect(heading(page, name)).toBeVisible();
+        await open();
+        await expect(nav.getByRole('link', { name: members, exact: true })).toHaveAttribute('href', `/teams/${alpha}/members`);
+        await expect(nav.getByRole('link', { name: settings, exact: true })).toHaveAttribute('href', `/teams/${alpha}/settings`);
+        if (!narrow) {
+          await page.getByRole('button', { name: collapse, exact: true }).click();
+          await expect(nav.getByRole('link', { name: members, exact: true })).toBeVisible();
+          await expect(nav.getByRole('link', { name: settings, exact: true })).toBeVisible();
+          await page.getByRole('button', { name: expand, exact: true }).click();
+        }
+        await openPicker(page);
+        await page.locator(`details.team-selector a[href="/teams/${personalA}"]`).click();
+        await expect(heading(page, personalLabel)).toBeVisible();
+        await open();
+        await assertPersonal();
+      }
+    });
+  });
+}
+
+for (const path of [`/projects/${project}`, '/shared-projects', '/workers', '/account']) {
+  test(`hides Personal management links on ${path}`, async ({ page }) => {
+    await install(page);
+    await page.goto(path);
+    await expect(page.locator('details.team-selector summary')).toContainText('Personal');
+    await expect(page.locator('.sidebar nav a[aria-label="Team members"], .sidebar nav a[aria-label="Team settings"]')).toHaveCount(0);
+    expect(new URL(page.url()).pathname).toBe(path);
+  });
+}
+
+test('keeps Personal management links absent throughout project loading, failure, retry and long names', async ({ page }) => {
+  const api = await install(page);
+  const gate = Promise.withResolvers<void>();
+  api.holdProjects = gate.promise;
+  api.projects = 'error';
+  const sidebar = page.locator('.sidebar nav');
+  const absent = async () => {
+    await expect(sidebar.locator('a[aria-label="Team members"], a[aria-label="Team settings"]')).toHaveCount(0);
+    await expect(sidebar.locator('.sidebar-projects + a')).toHaveAttribute('aria-label', 'Shared with me');
+  };
+  try {
+    await page.goto('/projects');
+    await expect(heading(page, 'Personal')).toBeVisible();
+    await expect(sidebar.getByRole('status')).toHaveText('Loading projects');
+    await absent();
+    gate.resolve(); api.holdProjects = null;
+    await expect(sidebar.getByRole('alert')).toContainText('Projects could not be loaded');
+    await absent();
+    api.projects = 'empty';
+    await sidebar.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(sidebar.getByText('No projects yet')).toBeVisible();
+    await absent();
+    api.projects = 'long';
+    await page.getByRole('main').getByRole('button', { name: 'Refresh', exact: true }).click();
+    const projectLink = sidebar.getByRole('link', { name: longProjectName, exact: true });
+    await expect(projectLink).toHaveAttribute('href', `/projects/${project}`);
+    await expect(projectLink).toHaveAttribute('title', longProjectName);
+    await absent();
+  } finally { gate.resolve(); }
+});
 
 test('remembers confirmed Team selection on reload and keeps accounts isolated', async ({ page }) => {
   const api = await install(page);
@@ -110,6 +207,8 @@ for (const suffix of ['members', 'settings']) {
     expect(await selected(page, alice)).toBe(alpha);
     await page.goto(`/teams/${personalA}/${suffix}`);
     await expect(page.locator('details.team-selector summary')).toContainText('Personal');
+    await expect(page.locator('.sidebar nav a[aria-label="Team members"], .sidebar nav a[aria-label="Team settings"]')).toHaveCount(0);
+    await expect(heading(page, suffix === 'members' ? 'Team members' : 'Team settings')).toBeVisible();
     expect(new URL(page.url()).pathname).toBe(`/teams/${personalA}/${suffix}`);
   });
 }
@@ -126,13 +225,21 @@ test('sidebar restoration leaves shared content available during slow and failed
     await expect(page.locator('details.team-selector summary')).toContainText('Loading Teams');
     await expect.poll(() => api.projectQueries.some((query) => query.includes('shared=true'))).toBe(true);
     await expect(page.locator(`a[href="/teams/${personalA}/members"]`)).toHaveCount(0);
+    for (const name of ['Team members', 'Team settings']) {
+      const link = page.locator('.sidebar nav').getByRole('link', { name, exact: true });
+      await expect(link).toHaveAttribute('aria-disabled', 'true');
+      await expect(link).not.toHaveAttribute('href', /./);
+    }
     api.detail = '500'; gate.resolve(); api.holdDetail = null;
     const alert = page.getByRole('alert').filter({ has: page.getByRole('button', { name: 'Retry', exact: true }) });
     await expect(alert).toBeVisible();
     expect(await selected(page, alice)).toBe(alpha);
+    await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team members', exact: true })).toHaveAttribute('aria-disabled', 'true');
     await expect(heading(page, 'Projects shared with me')).toBeVisible();
     api.detail = 'ok'; await alert.getByRole('button', { name: 'Retry', exact: true }).click();
     await expect(page.locator('details.team-selector summary')).toContainText('Alpha');
+    await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team members', exact: true })).toHaveAttribute('href', `/teams/${alpha}/members`);
+    await expect(page.locator('.sidebar nav').getByRole('link', { name: 'Team settings', exact: true })).toHaveAttribute('href', `/teams/${alpha}/settings`);
     expect(new URL(page.url()).pathname).toBe('/shared-projects');
   } finally { gate.resolve(); }
 });

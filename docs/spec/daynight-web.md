@@ -37,7 +37,7 @@
 
 ## 工作空间导航
 
-桌面工作空间侧栏默认展开为 190px，可折叠为 68px 竖条。Team 切换入口选择已加入的 Team 或创建普通 Team；Team 成员与设置入口分别打开 `/teams/{teamId}/members` 和 `/teams/{teamId}/settings`，支持直接访问、重载和普通链接行为。“与我共享”和“我的 Worker”分别进入 `/shared-projects` 与 `/workers`。Worker 列表与详情都保持该入口选中。
+桌面工作空间侧栏默认展开为 190px，可折叠为 68px 竖条。Team 切换入口选择已加入的 Team 或创建普通 Team；确认选择 Personal Team 时，侧栏不显示 Team 成员与设置入口，剩余入口连续排列。选择普通 Team 时，这两个入口分别打开所选 Team 的 `/teams/{teamId}/members` 和 `/teams/{teamId}/settings`，保留普通链接行为；Team 名称不决定其类型。该规则适用于展开、折叠及窄屏导航，也适用于所有共用工作空间侧栏的页面。Personal 的成员和设置地址仍支持直接访问与重载，原有只读和权限规则不变。“与我共享”和“我的 Worker”分别进入 `/shared-projects` 与 `/workers`。Worker 列表与详情都保持该入口选中。
 右上角头像触发账户菜单，其中“账户设置”进入 `/account` 并关闭菜单；展开及折叠侧栏均不显示账户入口。
 触发器具有本地化可访问名称和展开状态，支持键盘打开并访问、激活菜单项。再次点击触发器、
 点击菜单外部、按 Escape 或切换页面均关闭菜单；Escape 关闭后焦点返回触发器。菜单在
