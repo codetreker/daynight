@@ -2051,8 +2051,16 @@ language scenarios remain GET/HEAD-only in the browser; fixture writes use the
 installed CLI or authenticated API request context. The three task-status scenarios
 and `task-status-transitions` separately admit only registered project/task PUT status requests with exact expected
 counts. Six authentication scenarios declare only their exact expected management writes;
-unrelated browser mutations remain failures. The `project-settings` journey
-admits exactly four registered project-settings PATCHes: successful save, stale
+unrelated browser mutations remain failures. The visible `auth-login-session`
+journey names its awaited operations and saves `auth-login-operations` on success
+and failure. The JSON attachment contains only operation labels, status, duration
+and optional error names; authentication traces remain disabled. Owned route and
+provider cleanup actions each have a five-second limit. Interception disable
+failure still attempts CDP detach, and original, cleanup and attachment errors
+remain visible together. The [login diagnostics decision](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
+owns failure preservation and diagnostic privacy.
+
+The `project-settings` journey admits exactly four registered project-settings PATCHes: successful save, stale
 conflict, committed response loss and demoted-member refusal. Other users and
 administrative preparation use authenticated request contexts; a failed read
 reconciliation can be recovered only by an explicit read retry, without a fifth
