@@ -1,8 +1,8 @@
 # Web 任务缓存与增量同步需求
 
-状态：服务端窗口摘要及完整属性、配置、身份响应头和 epoch，以及浏览器 IndexedDB schema 6、原子合并、本地图投影、按需详情和版本化人员内容缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
+状态：服务端窗口摘要及完整属性、配置、身份响应头和 epoch，以及浏览器 IndexedDB schema 7、原子合并、本地图投影、按需详情和版本化人员内容缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
 
-[架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，schema 6 保留该字段的严格消费及早期格式重建规则，并独立持久化人员内容。
+[架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，schema 7 保留该字段的严格消费及早期格式重建规则，并独立持久化人员内容和 Session 记录目录。
 
 ## 已确认范围
 
@@ -42,7 +42,7 @@
 
 ## R6：失败恢复
 
-缓存缺失、schema 不兼容、结构损坏、数据库异常关闭时允许重新装载完整摘要。schema 5 升级到 6 时增加 profiles store，保留已有真实 Project ownership 的任务内容、userFence 和水位；schema 1、2、3、4 升级到 6 时，在同一升级事务中重建不兼容 projects/summaries/details、轮换 userFence、清掉旧水位并增加 profiles，随后读取完整 snapshot。旧摘要缺少 properties 或 assignedTo、旧 Project 缺少 ownership 均不能补默认值。active 与 invalidated manifest 都必须验证归属、生命周期及对应格式；invalidated 的 epoch/project/水位必须全为 null，任务与边计数全为零，不能把残留 epoch 作为增量基线。用户 fence 损坏时，在一个事务中轮换 fence 并清除或失效该用户可重建任务及人员内容，不依赖损坏 fence，也不影响其他用户；旧绑定 scope 和 ticket 不能跨修复发布。IndexedDB 打开、升级、配额、修复及写入失败明确进入现有错误/Retry 状态；失败事务保留原持久状态和允许显示的当前快照，不能当作空项目或同步成功。网络、响应解析及属性读取失败不提交局部摘要或推进水位。本次返回集合中的非法存储属性使整个请求返回 400 invalid_input；数据库查询或事务完成故障仍返回 500 internal_error，后者优先于已发现的属性拒绝。重试先读实际存储。
+缓存缺失、schema 不兼容、结构损坏、数据库异常关闭时允许重新装载完整摘要。schema 7 增加 Session 记录目录 store，兼容 schema 6 的任务与人员内容和生命周期必须保留。schema 5 升级到 6 时增加 profiles store，保留已有真实 Project ownership 的任务内容、userFence 和水位；schema 1、2、3、4 升级到 6 时，在同一升级事务中重建不兼容 projects/summaries/details、轮换 userFence、清掉旧水位并增加 profiles，随后读取完整 snapshot。旧摘要缺少 properties 或 assignedTo、旧 Project 缺少 ownership 均不能补默认值。active 与 invalidated manifest 都必须验证归属、生命周期及对应格式；invalidated 的 epoch/project/水位必须全为 null，任务与边计数全为零，不能把残留 epoch 作为增量基线。用户 fence 损坏时，在一个事务中轮换 fence 并清除或失效该用户可重建任务、人员及 Session 目录内容，不依赖损坏 fence，也不影响其他用户；旧绑定 scope 和 ticket 不能跨修复发布。IndexedDB 打开、升级、配额、修复及写入失败明确进入现有错误/Retry 状态；失败事务保留原持久状态和允许显示的当前快照，不能当作空项目或同步成功。网络、响应解析及属性读取失败不提交局部摘要或推进水位。本次返回集合中的非法存储属性使整个请求返回 400 invalid_input；数据库查询或事务完成故障仍返回 500 internal_error，后者优先于已发现的属性拒绝。重试先读实际存储。
 
 ## R7：计时、项目设置与当前权限
 
@@ -67,7 +67,9 @@ Project 内在字段含必填 ownership，同一 epoch 的 delta 中设置与归
 
 项目同步的可信 `404 not_found`，以及启动 GET 时摘要中已存在的任务或任务写入的同用户可信 not_found，立即撤销捕获项目 generation 的内存准入和正文复用权限。先核对 ticket 的 userFence/cacheGeneration，旧 E1 响应不能清除 E2。未知任务 ID 的 404 只作为该任务局部缺失，避免对不存在地址不断重建整个项目。当前历史的可信 `410 task_deleted` 也只清除对应任务正文并触发项目同步，不能撤回整个项目；完整 snapshot 随删除事务轮换的 epoch 清除旧摘要和详情。删除终态受项目 generation 限定：配套历史恢复轮换 epoch 后，后续已授权的新 generation 快照重新包含活动节点与摘要时，强制 live GET 后可重新打开同 ID 任务。状态、许可、暂停解除、平台、负责人和删除的所有旧历史结果均受操作所有者和历史准入约束，不能修改恢复后的详情、覆盖较新操作反馈或解除其共享写锁；既有身份与项目撤权规则继续遵守捕获 scope/ticket。
 
-已提交写响应的撤权处理归仍存活的身份 scope，即使发起它的详情会话或页面已经释放也必须继续；UI 释放不能跳过可信 not_found，身份 scope 结束仍使旧响应失效。撤权立即生效，持久清理失败也不能使 Retry 从磁盘恢复私有正文、摘要或人员资料；当前身份 scope 内切换项目、卸载重挂、轮询或普通广播均不能恢复本地摘要预览，必须成功在线同步该项目后才可恢复。按 generation 清理保留了较新的完整持久集合，也不构成重新显示的授权。人员内容的持久记录受 userFence 约束；普通任务 epoch 更替可保留内容供新的在线人员清单按 version 验证复用，但项目撤权、注销或身份失效清除所属人员内容，旧响应不得跨当前项目 generation 发布。撤权负向提示只使匹配用户 fence/generation 的其他标签页拒绝旧内容，不授予访问，身份核验暂停期间也可立即处理；存储清理和正向读取仍等待身份 gate。清理只操作 ticket 匹配的持久 generation，不扩展为删除其他历史或新 generation 的承诺。
+已提交写响应的撤权处理归仍存活的身份 scope，即使发起它的详情会话或页面已经释放也必须继续；UI 释放不能跳过可信 not_found，身份 scope 结束仍使旧响应失效。撤权立即生效，持久清理失败也不能使 Retry 从磁盘恢复私有正文、摘要、人员资料或 Session 目录；当前身份 scope 内切换项目、卸载重挂、轮询或普通广播均不能恢复本地摘要预览，必须成功在线同步该项目后才可恢复。按 generation 清理保留了较新的完整持久集合，也不构成重新显示的授权。人员内容的持久记录受 userFence 约束；普通任务 epoch 更替可保留内容供新的在线人员清单按 version 验证复用，但项目撤权、注销或身份失效清除所属人员内容，旧响应不得跨当前项目 generation 发布。撤权负向提示只使匹配用户 fence/generation 的其他标签页拒绝旧内容，不授予访问，身份核验暂停期间也可立即处理；存储清理和正向读取仍等待身份 gate。清理只操作 ticket 匹配的持久 generation，不扩展为删除其他历史或新 generation 的承诺。
+
+Session 记录目录按已认证用户、项目和任务隔离，受 userFence 与 cacheGeneration 约束。成功首页与确认空结果可持久复用，打开或重新激活时仍后台重读，不能用 Task version 判定历史新鲜。确认空目录在后台刷新期间保持隐藏；已有内容在普通失败时保留并提供重试。未知、失败、完整空与仍有 nextCursor 的未完成目录必须区分。缓存不得成为实时 Session 控制或归档正文的授权来源；身份切换、撤权、删除和 generation 变化阻止旧内容及迟到响应重新发布。
 
 ## R9：交互与详情
 

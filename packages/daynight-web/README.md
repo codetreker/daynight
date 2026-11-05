@@ -514,8 +514,10 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 6 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details` and
-`profiles` stores. Upgrading the ownership-complete schema 5 adds profiles while
+schema 7 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Upgrading schema 6 adds the Session
+records store while retaining compatible task and profile data and lifecycle.
+Upgrading the ownership-complete schema 5 adds profiles while
 preserving compatible task records, user fences and watermarks. Upgrades from
 schema 1, 2, 3 or 4 rebuild incompatible projects, summaries and details, rotate
 user fences and clear old epochs/watermarks before a complete snapshot. Missing
@@ -829,6 +831,13 @@ The Session selector and the managed Session recordings section in the attachmen
 sidebar open fixed original executions in the shared reading area. These entries
 have no attachment mutation actions. Ordinary file previews and upload drafts
 retain their state while a recording is selected.
+The shared cache stores successful first pages and confirmed empty catalogues per
+authenticated user, project and task. Opening or reactivating the view refreshes
+the first page even when cached: confirmed empty stays hidden during refresh and
+existing entries remain readable. An incomplete page is not a confirmed empty
+catalogue; failures retain eligible content and offer retry. Task version does
+not establish history freshness. Fences and generations prevent revoked or stale
+results from being republished. This cache grants no live control or archive access.
 Verified complete frames support direct seeking, stepping and playback; partial
 recordings remain labeled and playback stops at every gap until the reader
 explicitly continues. Archive reading establishes no control connection.

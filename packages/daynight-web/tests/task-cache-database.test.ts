@@ -42,7 +42,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(6);
+  expect(TASK_CACHE_SCHEMA).toBe(7);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -110,7 +110,7 @@ it.each([1, 2, 3, 4])("rebuilds schema %i project and task formats before admitt
   expect((await connection.get("projects", [userId, projectId]))!.project).not.toHaveProperty("ownership");
   if (oldVersion < 4) expect((await connection.get("details", [userId, projectId, taskId]))!.detail).not.toHaveProperty("assignedTo");
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(6);
+  expect(TASK_CACHE_SCHEMA).toBe(7);
   expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
   for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
@@ -146,4 +146,29 @@ it("adds persistent profiles to the shipped ownership-bearing schema 5 without r
   expect(await current.get("projects", [userId, projectId])).toEqual(manifest);
   expect(await current.get("summaries", [userId, projectId, taskId])).toEqual(summary);
   expect(await current.get("details", [userId, projectId, taskId])).toEqual(detailRecord);
+});
+
+it("adds session history to schema 6 without changing compatible task and profile data", async () => {
+  const old = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 6, { upgrade(database) {
+    database.createObjectStore("userScopes", { keyPath: "userId" });
+    database.createObjectStore("projects", { keyPath: ["userId", "projectId"] }).createIndex("by-user", "userId");
+    for (const name of ["summaries", "details"] as const) {
+      const store = database.createObjectStore(name, { keyPath: ["userId", "projectId", "taskId"] });
+      store.createIndex("by-user", "userId"); store.createIndex("by-project", ["userId", "projectId"]);
+    }
+    const profiles = database.createObjectStore("profiles", { keyPath: ["userId", "projectId", "profileUserId"] });
+    profiles.createIndex("by-user", "userId"); profiles.createIndex("by-project", ["userId", "projectId"]);
+  } });
+  const userId = "10000000-0000-4000-8000-000000000001", userFence = "20000000-0000-4000-8000-000000000001";
+  const projectId = "30000000-0000-4000-8000-000000000001", taskId = "40000000-0000-4000-8000-000000000001";
+  const detail = detailFixture(projectId, taskId);
+  const detailRow = { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 10, lastUsedAt: 1 };
+  const profileRow = { userId, projectId, profileUserId: taskId, userFence, profile: { userId: taskId, version: "a".repeat(64), name: null, avatarUrl: null } };
+  await old.put("userScopes", { userId, userFence }); await old.put("details", detailRow); await old.put("profiles", profileRow);
+  old.close();
+  const current = await cache().open();
+  expect([...current.objectStoreNames]).toContain("sessionHistory");
+  expect(await current.get("userScopes", userId)).toEqual({ userId, userFence });
+  expect(await current.get("details", [userId, projectId, taskId])).toEqual(detailRow);
+  expect(await current.get("profiles", [userId, projectId, taskId])).toEqual(profileRow);
 });
