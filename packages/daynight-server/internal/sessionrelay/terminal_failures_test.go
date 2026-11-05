@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
 	"github.com/google/uuid"
 )

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"

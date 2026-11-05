@@ -9,7 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 type attachmentCursor struct {
