@@ -5,7 +5,7 @@ import { defineConfig } from 'vite';
 
 const rewrite = (request: IncomingMessage) => {
   const path = request.url?.split('?')[0];
-  if (path === '/projects' || path?.startsWith('/projects/') || path?.startsWith('/teams/') || path === '/shared-projects') request.url = '/tests/navigation/team-preference.html';
+  if (path !== undefined && /^\/(projects|teams|shared-projects|workers|bots|account|test-sessions)(\/|$)/.test(path)) request.url = '/tests/navigation/team-preference.html';
 };
 export default defineConfig({
   root: fileURLToPath(new URL('../..', import.meta.url)),

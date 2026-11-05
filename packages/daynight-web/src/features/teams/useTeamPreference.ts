@@ -9,11 +9,12 @@ import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 type Detail = { readonly id: string; readonly status: "loading" | "ready" | "error"; readonly team?: TeamRef; readonly error?: unknown; readonly storageError?: boolean };
 type State = { readonly key: string | null; readonly detail: Detail };
 type PendingSave = { readonly team: TeamRef; readonly replaces: string | null };
+type PreferenceOptions = { readonly restoreOnEntry?: boolean; readonly preserveOnRevalidation?: boolean; readonly guardUnavailable?: ((teamId: string) => boolean) | undefined };
 export type TeamPreference = ReturnType<typeof useTeamPreference>;
 const PreferenceContext = createContext<TeamPreference | null>(null);
 
-export const TeamPreferenceProvider = ({ personal, routeKey, admission, blocked, preserveOnRevalidation = false, guardUnavailable, children }: { readonly personal: TeamRef; readonly routeKey: string | null; readonly admission: TaskCacheScope; readonly blocked: boolean; readonly preserveOnRevalidation?: boolean; readonly guardUnavailable?: (teamId: string) => boolean; readonly children: ReactNode }) => {
-  const preference = useTeamPreference(personal, routeKey, admission, blocked, preserveOnRevalidation, guardUnavailable);
+export const TeamPreferenceProvider = ({ personal, routeKey, admission, blocked, restoreOnEntry = false, preserveOnRevalidation = false, guardUnavailable, children }: { readonly personal: TeamRef; readonly routeKey: string | null; readonly admission: TaskCacheScope; readonly blocked: boolean; readonly children: ReactNode } & PreferenceOptions) => {
+  const preference = useTeamPreference(personal, routeKey, admission, blocked, { restoreOnEntry, preserveOnRevalidation, guardUnavailable });
   return createElement(PreferenceContext.Provider, { value: preference }, children);
 };
 export const useCurrentTeamPreference = () => {
@@ -25,14 +26,17 @@ export const useCurrentTeamPreference = () => {
 // The key is scoped to the authenticated user; localStorage is already origin-scoped.
 export const teamPreferenceKey = (userId: string) => `daynight.selectedTeam:${userId}`;
 
-export const useTeamPreference = (personal: TeamRef, routeKey: string | null, admission: TaskCacheScope, blocked: boolean, preserveOnRevalidation = false, guardUnavailable?: (teamId: string) => boolean) => {
+export const useTeamPreference = (personal: TeamRef, routeKey: string | null, admission: TaskCacheScope, blocked: boolean, { restoreOnEntry = false, preserveOnRevalidation = false, guardUnavailable }: PreferenceOptions = {}) => {
+  const initialized = useRef(false);
+  const requestKey = routeKey ?? (restoreOnEntry && !initialized.current ? "default" : null);
   const [state, setState] = useState<State>(() => ({ key: null, detail: { id: personal.id, status: "ready", team: personal } }));
   const stateRef = useRef(state); stateRef.current = state;
   const current = useRef<TeamRef>(personal);
   const pendingSave = useRef<PendingSave | null>(null);
   const blockedRef = useRef(blocked); blockedRef.current = blocked;
-  const routeRef = useRef({ key: routeKey, blocked, epoch: 0, navigation: 0 });
-  if (routeRef.current.key !== routeKey || routeRef.current.blocked !== blocked) routeRef.current = { key: routeKey, blocked, epoch: routeRef.current.epoch + 1, navigation: routeRef.current.navigation + (routeRef.current.key === routeKey ? 0 : 1) };
+  const routeRef = useRef({ route: routeKey, key: requestKey, blocked, epoch: 0, navigation: 0 });
+  const navigationChanged = routeRef.current.route !== routeKey || routeRef.current.key !== requestKey;
+  if (navigationChanged || routeRef.current.blocked !== blocked) routeRef.current = { route: routeKey, key: requestKey, blocked, epoch: routeRef.current.epoch + 1, navigation: routeRef.current.navigation + (navigationChanged ? 1 : 0) };
   const epoch = routeRef.current.epoch;
   const navigation = routeRef.current.navigation;
   const savedNavigation = useRef<number | null>(null);
@@ -55,15 +59,15 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
   }, [admission.userId]);
   const retrySave = useCallback(() => { if (pendingSave.current !== null) save(pendingSave.current.team, pendingSave.current.replaces); }, [save]);
   useEffect(() => {
-    if (routeKey === null || blocked) return;
-    if (preserveOnRevalidation && verified.current?.navigation === navigation && verified.current.revision === revision && stateRef.current.key === routeKey && stateRef.current.detail.status === "ready") return;
+    if (requestKey === null || blocked) return;
+    if (preserveOnRevalidation && verified.current?.navigation === navigation && verified.current.revision === revision && stateRef.current.key === requestKey && stateRef.current.detail.status === "ready") return;
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, admission.signal]);
-    const key = routeKey;
+    const key = requestKey;
     const valid = () => !signal.aborted && !admission.isInvalidated && !blockedRef.current && routeRef.current.epoch === epoch;
     const install = (team: TeamRef) => {
       if (!valid()) return;
-      current.current = team; verified.current = { navigation, revision };
+      initialized.current = true; current.current = team; verified.current = { navigation, revision };
       setState({ key, detail: { id: team.id, status: "ready", team } });
     };
     const fail = (id: string, error: unknown, storageError = false) => {
@@ -119,7 +123,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
       }
     })();
     return () => controller.abort();
-  }, [routeKey, epoch, navigation, blocked, revision, admission, personal.id, personal.kind, personal.name, save, retry, preserveOnRevalidation, guardUnavailable]);
+  }, [requestKey, epoch, navigation, blocked, revision, admission, personal.id, personal.kind, personal.name, save, retry, preserveOnRevalidation, guardUnavailable]);
   const acceptTeam = useCallback((team: Team) => {
     if (admission.isInvalidated || current.current.id !== team.id) return;
     current.current = team;
@@ -145,6 +149,6 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     save(personal, id);
     if (key === "default") retry();
   }, [admission, personal, save, retry]);
-  const detail: Detail = routeKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== routeKey ? { id: routeKey === "default" ? current.current.id : routeKey, status: "loading" } : state.detail;
+  const detail: Detail = requestKey === null ? { id: current.current.id, status: "ready", team: current.current } : state.key !== requestKey ? { id: requestKey === "default" ? current.current.id : requestKey, status: "loading" } : state.detail;
   return { detail, retry, saveError, retrySave, acceptTeam, forgetUnavailable, leaveTeam };
 };
