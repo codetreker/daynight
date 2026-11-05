@@ -62,3 +62,5 @@
 @container session-composer (max-width: 360px) {
   .session-controls-toolbar .session-control-trigger:first-child { max-width: 90px; }
 }
+
+.session-composer-input { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; min-width: 0; }
