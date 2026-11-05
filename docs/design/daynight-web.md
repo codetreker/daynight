@@ -142,6 +142,7 @@ Escape 后焦点回到触发器。菜单限制在视口内，适应窄屏、长�
 
 ### Team 管理与共享项目列表
 
+- `ProjectsPage` 的标题和副标题组成信息区，随后是创建和刷新操作；Shared 页面保持只有刷新。项目列表专属 `.project-list-heading` 允许换行，信息区使用 `flex: 1 1 240px`，操作组通过自动左外边距保持靠右。320、390 CSS px 下信息区占据内容宽度，操作组整体落到下一行；空间充足时左右并排，随实际内容宽度和侧栏宽度自适应。长名称在信息区内换行，既有字号、按钮、数据状态、请求和焦点顺序不变。取舍与几何验证边界见[标题换行决策](../../.agents/notes/implemented/bug-fix/2026-11-05-project-list-heading-wrap.md)。
 - `/projects` 是默认 Team 入口；`/teams/{teamId}` 读取指定 Team，`/shared-projects` 使用共享范围。没有记忆时默认使用 `/me.personalTeam`，明确项目与任务链接保持原地址。
 - Team 偏好按当前站点与账号独立保存：`localStorage` 的 `daynight.selectedTeam:<userId>` 只含已确认的 Team UUID，不保存名称、角色或成员资料。认证 scope 内首次显示工作空间时，无论入口是项目、Worker、账户还是共享页面，都恢复记忆并以精确 `GET /teams/{id}` 验证；明确 Team 路由优先使用 URL 中的 ID。一次成功安装选择后，普通导航继续使用当前内存选择；`/projects` 默认入口保留重新读取记忆的语义。独立 Task、附件、邀请与授权入口延后恢复，直到显示工作空间。只有可信 404 清除对应记忆并回 Personal，分页 Team 目录的缺项不代表失权。网络、5xx 或存储读取失败保留记忆并在工作空间提供重试；取消结果不能安装。写入失败保留当前内存选择，提示未保存并提供重试。共享范围不写 Team ID，CLI 默认配置独立。
 - 普通 Team 范围的项目目录等待偏好 ready，避免恢复期间读取初始 Personal 范围；共享目录及明确资源的主体读取独立。侧栏的 Team 项目、成员和设置链接在选择未就绪时不可导航到初始 Personal ID。`WorkspaceSidebar` 使用认证用户的 Personal Team ID 与可见性身份比较，确认 Personal 时不渲染成员和设置入口；普通 Team 不受名称影响，仍使用所选 ID 生成链接。此条件复用于桌面和窄屏导航，不改变直接地址的页面与权限。恢复与失败不改写明确 Project、Task 或附件地址，也不阻塞其主体。可见性取舍见[个人 Team 导航决策](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)。
