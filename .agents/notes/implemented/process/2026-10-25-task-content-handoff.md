@@ -19,7 +19,9 @@ Complete individual descriptions can still form a poor breakdown: independent
 goals can be bundled, routine edits can become fragments, responsibility can
 overlap, and integration or whole-outcome verification can have no owner. Content
 sufficiency alone needs a distinction between the quality of one assignment and
-the coverage and handovers of the complete set.
+the coverage and handovers of the complete set. An assignment can also drift
+from its Goal when it lacks a task-specific contribution, boundary, substantive
+approach or acceptance that demonstrates that contribution.
 
 ## Decision
 
@@ -44,9 +46,18 @@ The [Goal breakdown owner](../../../../packages/daynight/src/commands/skill/skil
 checks the complete candidate set before solution confirmation and the actual
 registered set before solution completion, including scope, integration and
 whole-Goal verification ownership, responsibility gaps and producer/consumer
-agreement. Handoff rechecks only selected-task quality and genuinely required
-sources or contracts. It reports boundary gaps under existing state and
-permission rules; it does not reconstruct the whole Goal or authorize
+agreement. Each proposed and registered Goal delivery task also supplies the
+[delivery brief](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#delivery-task-brief):
+its objective's concrete contribution to the confirmed Goal, scope, substantive
+implementation approach and observable acceptance. Precise readable source
+sections can supply detail; a generic architecture pointer cannot define the
+assignment. Candidate review and registration readback check all four against
+the Goal and applicable solution. An acceptance task's approach defines its
+substantive verification, while session command schedules and debugging remain
+outside task material. Handoff rechecks these selected-task requirements and
+genuinely required sources or contracts; missing approaches and Goal drift are
+content gaps handled under existing state and permission rules. It does not
+reconstruct the whole Goal or authorize
 repartitioning and dependency changes.
 
 The original standard used six categories, including a solution, validation
@@ -55,7 +66,11 @@ made independent consumption explicit and kept stable detail separate from
 execution progress. The [task/session content decision](2026-10-28-task-session-content.md)
 partially supersedes that content model: five definition categories plus current
 and final artifacts replace the universal solution and evidence requirements.
-Task content retains real inputs and outputs, while execution/discussion methods,
+The scoped Goal delivery brief requires a task-local approach without restoring
+a universal plan or separate solution-file requirement; the task/session
+decision retains the distinction between that substantive design and session
+organization.
+Task content retains real inputs, substantive approaches and outputs, while session execution/discussion organization,
 operational authorization and recovery information stay in the session. The
 shared rule governs descriptions, attachments and referenced task material;
 existing entrypoint and creation references apply it without duplicating wording.

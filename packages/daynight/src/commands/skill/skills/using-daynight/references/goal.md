@@ -10,7 +10,7 @@ This file covers only stage progression and Goal-specific requirements.
 | --- | --- | --- |
 | Requirements discussion | Known problem, expected outcome, scope, constraints, open questions, and completion conditions | A complete uploaded and read-back `spec.md` and applicable interactive prototypes; the user explicitly confirms the current spec and directs progression to solution discussion; the required solution task has been registered and verified. |
 | Solution discussion | The confirmed requirements task’s `spec.md` and applicable prototypes, design questions, and completion conditions | Architecture, key decisions, and breakdown; the user confirms the solution, and actual delivery tasks have been registered and read back. |
-| Delivery tasks | Defined responsibilities, required designs and prototypes, contracts, and acceptance criteria | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
+| Delivery tasks | A task-specific objective, scope, implementation approach and acceptance, with required designs, prototypes and contracts | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
 | Final acceptance | Complete confirmed requirements, actual combined results, and acceptance criteria | A conclusion for the whole Goal under [final acceptance](final-acceptance.md). |
 
 Discussions remain `in_progress` without user confirmation; completed prose, agent confidence, successful reviews, and passing CI cannot replace confirmation.
@@ -62,7 +62,27 @@ After the user confirms the solution, perform the registration checks below befo
 
 ## Register the delivery breakdown
 
-Apply the [task quality check](task-content.md#task-quality) to each proposed delivery task, then review the breakdown as a whole before requesting solution confirmation:
+Apply the [task quality check](task-content.md#task-quality) and the delivery brief below to each proposed task, then review the breakdown as a whole before requesting solution confirmation.
+
+### Delivery task brief
+
+Every proposed and registered Goal delivery task must provide four task-specific parts:
+
+| Part | Required content |
+| --- | --- |
+| Objective | The confirmed Goal requirement or outcome this task serves and its concrete contribution to that outcome. |
+| Scope | The behavior and changes it owns, with relevant exclusions and producer/consumer boundaries. |
+| Implementation approach | How it realizes its assigned part of the solution: the substantive method and, where needed, affected components, contracts, sequencing and integration, so the task can proceed without inventing undecided architecture. |
+| Acceptance | Observable success, failure and boundary checks that demonstrate this task's contribution to the Goal. |
+
+These parts may be inline or supplied through precise readable references, without fixed headings or a separate plan file.
+The description must explain this task's contribution and boundary and directly identify the source sections supplying any remaining brief content; a generic whole-Goal or architecture pointer or a copied document packet is insufficient.
+Keep shared detail with its owner. An implementation approach must explain the actual method for this task; "follow the architecture" alone is insufficient.
+For an acceptance task, the approach describes how to check the requirements against the combined delivery. This approach is durable task design, distinct from the session's command schedule, tool activity or debugging plan. Requirements and solution discussions still produce their own designs; those future outputs are not prerequisites for starting the producing stage.
+
+### Check the whole breakdown
+
+Check each brief's objective, scope, implementation approach and acceptance against the confirmed Goal and the solution being reviewed, so no task introduces unrelated work or departs from its assigned contribution.
 
 - Cover the confirmed Goal's required behavior and acceptance, with explicit responsibility for integration and whole-Goal verification. Include a separate acceptance task when it has an independent result.
 - Give each responsibility a clear owner. Resolve omitted work and overlapping or conflicting assignments; keep each task's boundary understandable and reviewable.
@@ -82,7 +102,7 @@ Read actual sources under the content standard; do not invent attachments or cop
 For example, in `architecture -> A -> B`, B declares only A as a direct dependency and inherits the architecture prerequisite through A, but B's description still directly lists the required architecture sources.
 Source indexes do not create additional execution dependencies.
 
-Read back every delivery task and its required inputs, rechecking task quality, whole-breakdown coverage and handovers, architecture indexes, and source readability against the confirmed solution.
+Read back every delivery task and its required inputs, verifying all four brief parts remain consistent with the confirmed Goal, its scope and the accepted solution. Recheck task quality, whole-breakdown coverage and handovers, architecture indexes, and source readability.
 Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
 Keep the solution task in progress while gaps remain; recover partial registration under [write safety](write-safety.md).
 Registration and solution completion do not start delivery or enable automatic-execution permission.

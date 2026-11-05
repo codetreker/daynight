@@ -14,7 +14,7 @@ After an interruption, verify existing resources before creating anything again.
 
 ## Prepare content
 
-Write an outcome-oriented title and a task-specific Markdown description that meet the content standard and current stage requirements.
+Write an outcome-oriented title and a task-specific Markdown description that meet the content standard and current stage requirements. For each Goal delivery task, prepare the required [delivery task brief](goal.md#delivery-task-brief), including its implementation approach and contribution to the Goal.
 Genuinely required sources must be readable, and future outputs must be explicitly assigned to prerequisite tasks.
 Keep shared inputs in their owning tasks; do not copy the full set of material.
 
@@ -35,7 +35,7 @@ Platform requirements must come only from confirmed task needs. Do not add depen
 2. If the task owns attachments, upload and verify their content before adding actual references to the description. Follow [write safety](write-safety.md) for all writes.
 3. Read back the full task, required attachments, and shared inputs to verify task quality, sufficient content, and valid resources.
    Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
-   For Goal delivery items, also apply the [whole-breakdown checks and architecture source index](goal.md#register-the-delivery-breakdown).
+   For Goal delivery items, verify the [four-part brief](goal.md#delivery-task-brief) against the confirmed Goal and accepted solution, and apply the [whole-breakdown checks and architecture source index](goal.md#register-the-delivery-breakdown).
 4. Report the task ID, registration result, and specific gaps.
    After partial success, retain existing IDs and resume unfinished operations; unreadable required sources still mean failure.
 

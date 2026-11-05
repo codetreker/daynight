@@ -13,6 +13,7 @@ daynight task show <task-id> --project <project-id> --json
 
 If it is done, report that it is complete and needs no handoff, then return without an ownership check or further task discovery.
 Read actually required sources under the [task content standard](task-content.md), applying its [task quality check](task-content.md#task-quality), stage requirements, producer and consumer contracts, and the [Goal architecture index](goal.md#register-the-delivery-breakdown).
+For a Goal delivery task, verify its [delivery brief](goal.md#delivery-task-brief): objective, scope, implementation approach and acceptance must remain consistent with the confirmed Goal and accepted solution. A missing approach or departure from that Goal is a content gap.
 Read cited source tasks and upstream or downstream contracts only as genuinely needed to assess the selected task. Report incoherent scope, unsuitable granularity, overlapping responsibility, or missing handovers as specific gaps; this review does not authorize repartitioning tasks or changing dependencies.
 Whole-breakdown coverage follows the Goal breakdown checks; handoff does not discover additional work or reconstruct the entire Goal for a selected task.
 
