@@ -75,5 +75,6 @@ could reduce that cost without weakening revocation.
 
 Storage errors prevent a guarantee of physical erasure or reload recovery.
 Provider native history, exported copies and unreachable browsers remain outside
-this browser contract. The implementation does not enable the complete assistant
-navigation or claim real Worker/Provider integration acceptance.
+this browser contract. The [assistant composition](2026-11-05-assistant-composition.md) owns navigation
+and hosting activation; browser deletion alone does not establish real
+Worker/Provider integration acceptance.

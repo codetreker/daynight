@@ -44,7 +44,7 @@ grant 接收持久前代的 generation、Controller instance、recordId 和 stop
 
 Windows Job 终止是异步的。`stopControllerProcesses` 请求终止后，反复通过 `confirmControllerProcessesStopped` 核对全部已保留的 Controller/native 进程身份及 Job 成员；成员列表先变空不等于原进程均已停止。调用方的原 deadline 是启动新一轮完整确认的预算，轮询不重置该期限，到时不再开始下一轮；已经开始的系统探测沿用既有单次 timeout，因此不承诺严格的总 wall-clock 上界。预算耗尽仍未取得完整停证、权限错误或未知查询结果均保留失败、执行资料与删除责任。
 
-`shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 尚未启用 Bot 调度或 `assistantHost` 广告；调用者的产品组合仍须明确接入这些执行所有者。
+`shutdownWorkerExecutions` 汇总 Task 和 Bot 的执行所有者，等待每项停止尝试并保留失败。Task 退出仍由 coordinator 和原 backend 完成，不把 Bot 停机规则注入 Task 归档及容量逻辑。正式 `runWorker` 接入 Bot 执行所有者和 `assistantHost` 广告，保持 stores 与实例锁直到管理循环和所有停止尝试结束。
 
 ## 精确删除与失败保留
 

@@ -32,7 +32,7 @@ const fixture = (provider: "codex"|"claude"|"copilot" = "codex") => {
   const launch=vi.fn(async(options:any)=>{ ticket=options.ticket; expect(executions.get(current())!.launchSubmission).toBe("not-submitted"); await options.onSubmitting(); expect(executions.get(current())!.launchSubmission).toBe("unknown"); expect(options.env).toEqual(environment); const value=snapshot(ticket); await options.onObserved(value); return value; });
   const observe=vi.fn(async(t:ControllerLaunchTicket)=>snapshot(t));
   const api={register,grant,readSession:vi.fn(async()=>({} as never)),report:vi.fn(async()=>bot),completeDeletion:vi.fn(async()=>{throw new Error("Unexpected deletion report in process fixture");})};
-  const createProcess=(extra: Record<string, unknown> = {})=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit:3,dependencies:{prepareEnvironment,launch,observe,...extra}});
+  const createProcess=(extra: Record<string, unknown> = {}, recoveryLimit: number | (() => number) = 3)=>createBotProcess({homeDirectory:home,packageDirectory:home,store,executions,sessionApi:api,recoveryLimit,dependencies:{prepareEnvironment,launch,observe,...extra}});
   return {home,owner,store,executions,current,register,grant,prepareEnvironment,release,launch,observe,process:createProcess(),createProcess,getBot:()=>bot,getTicket:()=>ticket!};
 };
 
@@ -421,4 +421,14 @@ test("deletion retains a failed preflight probe and its aliases until the origin
   expect(await manager.withDeletion(record, signal, stop => stop())).toBeNull();
   expect(retryCleanup).toHaveBeenCalledTimes(2);
   expect(f.register).not.toHaveBeenCalled(); expect(f.launch).not.toHaveBeenCalled();
+});
+
+test("freezes the current recovery limit only when preparing the original Bot intent", async () => {
+  const f = fixture(); let limit = 7;
+  const process = f.createProcess({}, () => limit), signal = new AbortController().signal;
+  await process.advance(f.current(), signal);
+  expect(f.current().intent!.recoveryLimit).toBe(7);
+  limit = 1; await process.advance(f.current(), signal);
+  expect(f.current().intent!.recoveryLimit).toBe(7);
+  expect(f.launch).toHaveBeenCalledTimes(1);
 });

@@ -343,3 +343,45 @@ func TestTestSessionListShellKeepsAPIProtected(t *testing.T) {
 		}
 	}
 }
+
+func TestUIAssistantDirectLoadAndReloadKeepAPIProtected(t *testing.T) {
+	handler := uiTestHandler(t, io.Discard)
+	request := func(method, path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, path, nil))
+		return response
+	}
+	index := request(http.MethodGet, "/")
+	for _, path := range []string{"/bots", "/bots?private-query=value", "/bots/10000000-0000-0000-0000-000000000001", "/bots/invalid-private-bot"} {
+		t.Run(path, func(t *testing.T) {
+			for range 2 {
+				response := request(http.MethodGet, path)
+				if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), index.Body.Bytes()) || response.Header().Get("Content-Type") != "text/html; charset=utf-8" || response.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("assistant direct load/reload did not return production index: %d %s", response.Code, response.Body.String())
+				}
+			}
+			head := request(http.MethodHead, path)
+			if head.Code != http.StatusOK || head.Body.Len() != 0 {
+				t.Fatalf("assistant HEAD response: %d %s", head.Code, head.Body.String())
+			}
+			for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
+				response := request(method, path)
+				if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" {
+					t.Fatalf("assistant method boundary: %s %d", method, response.Code)
+				}
+			}
+		})
+	}
+	for _, path := range []string{"/bots/", "/bots-list", "/bots/id/extra", "/bots/id/assets/missing.js"} {
+		response := request(http.MethodGet, path)
+		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "<html") {
+			t.Fatalf("unknown assistant route became SPA: %s %d", path, response.Code)
+		}
+	}
+	for _, path := range []string{"/api/v1/me/bots", "/api/v1/me/bots/10000000-0000-0000-0000-000000000001"} {
+		response := request(http.MethodGet, path)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("Content-Type") != "application/json" {
+			t.Fatalf("assistant API lost authentication: %s %d", path, response.Code)
+		}
+	}
+}

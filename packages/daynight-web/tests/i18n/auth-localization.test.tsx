@@ -199,14 +199,15 @@ describe("authentication language changes", () => {
     const pending = deferred<Response>();
     const fetcher = install(() => pending.promise);
     const interaction = userEvent.setup();
-    renderWithLocale(<CreateProjectDialog userId={userId} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />, { locale: "en" });
+    const view = renderWithLocale(<CreateProjectDialog userId={userId} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />, { locale: "en" });
     const dialog = screen.getByRole("dialog", { name: en.auth.createProject.title });
+    expect(within(dialog).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
     const name = within(dialog).getByLabelText(/Project name/);
     const repository = within(dialog).getByLabelText(/Repository URL/);
     await interaction.type(name, "项目 Raw");
     await interaction.type(repository, "https://example.com/raw");
     await interaction.click(within(dialog).getByRole("button", { name: en.auth.createProject.submit }));
-    await interaction.selectOptions(language(within(dialog)), "zh-CN");
+    view.setLocale("zh-CN");
     expect(screen.getByRole("dialog", { name: zhCN.auth.createProject.title })).toBe(dialog);
     expect(within(dialog).getByLabelText(/项目名称/)).toBe(name);
     expect(name).toHaveValue("项目 Raw");
@@ -223,6 +224,18 @@ describe("authentication language changes", () => {
     expect(screen.getByText(zhCN.auth.createProject.unknown)).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls[1]![0]).toBe("/api/v1/projects?limit=50");
+  });
+
+  it("keeps preference failure feedback with the page selector outside project creation", () => {
+    renderWithLocale(<><LanguageSelector /><CreateProjectDialog userId={userId} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} /></>, {
+      locale: "en", issue: { kind: "write", cause: new Error("storage unavailable") },
+    });
+    const dialog = screen.getByRole("dialog");
+    expect(screen.getByText(en.language.preferenceNotice.write)).toBeVisible();
+    expect(screen.getByRole("button", { name: en.common.retrySave })).toBeVisible();
+    expect(within(dialog).queryByText(en.language.preferenceNotice.write)).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: en.common.retrySave })).toBeNull();
+    expect(within(dialog).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
   });
 
   it("keeps an unknown result and rejects a different account's project list", async () => {

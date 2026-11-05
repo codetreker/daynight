@@ -19,7 +19,7 @@ fullscreen modes do not create, copy, move or give the selector separate
 mode-dependent visibility. Overlay headers are not the main page header.
 Existing page-wide fullscreen layout and modal isolation remain in force.
 
-Shared `ManagementDialog` inherits the current language without a local selector
+Shared `ManagementDialog` and `CreateProjectDialog` inherit the current language without a local selector
 or its preference notice and retry. The page's selector continues to own that
 feedback. Language changes still update mounted dialog content without changing
 business state or pending operations. This partially supersedes the placement
@@ -37,14 +37,13 @@ content without a local control.
 
 ## Consequences
 
-The shared management dialog and its callers no longer offer a local language
+The shared management and project creation dialogs no longer offer a local language
 entry. Existing focus isolation, keyboard interaction, page entry and preference
 failure recovery remain owned by their respective surfaces. The
-[graph language entry decision](2026-11-05-graph-language-entry.md) and
-[identity revalidation decision](../bug-fix/2026-11-05-revalidation-language-entry.md)
+[graph language entry decision](2026-11-05-graph-language-entry.md),
+[identity revalidation decision](../bug-fix/2026-11-05-revalidation-language-entry.md),
 and [attachment confirmation decision](2026-11-05-attachment-confirmation-language-entry.md)
-remove those overlays’ duplicate controls. Project creation still contains its
-existing selector and needs a separate change to satisfy the UI principle, without changing the
-locale runtime or moving the retained page entries. The rule does not require
+remove those overlays’ duplicate controls without changing the locale runtime or
+moving the retained page entries. The rule does not require
 the page entry to be active while a modal is open or visible when an entire page
 region is hidden in fullscreen.
