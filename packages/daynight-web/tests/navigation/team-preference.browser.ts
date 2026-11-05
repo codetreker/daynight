@@ -244,6 +244,16 @@ test('selects ordinary Teams with identical names by ID', async ({ page }) => {
   await expect(page).toHaveURL(new RegExp(`/teams/${beta}$`));
 });
 
+test('preserves the raw Team name in the menu beside its avatar', async ({ page }) => {
+  const api = await install(page); api.ordinaryName = '  Alpha\n团队  ';
+  await page.goto('/projects'); await openPicker(page);
+  const link = page.locator(`.team-options a[href="/teams/${alpha}"]`);
+  await expect(link).toBeVisible();
+  expect(await link.locator('.menu-name').textContent()).toBe('  Alpha\n团队  ');
+  await link.click();
+  await expect(page).toHaveURL(new RegExp(`/teams/${alpha}$`));
+});
+
 test('opens a modified Team link in a new tab', async ({ page, context }) => {
   await install(page); await page.goto('/projects');
   const baselinePromise = context.waitForEvent('page', { timeout: 5000 });

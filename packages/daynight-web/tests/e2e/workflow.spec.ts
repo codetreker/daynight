@@ -211,7 +211,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
       await expect(selector.getByRole('status')).toHaveCount(0);
     }
     await expect(teamLink).toBeVisible();
-    expect(await teamLink.textContent()).toBe(teamName);
+    expect(await teamLink.locator('.menu-name').textContent()).toBe(teamName);
     await teamLink.click();
     await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
     const teamHeading = page.getByRole('main').locator('h1');
