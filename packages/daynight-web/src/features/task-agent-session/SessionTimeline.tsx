@@ -9,6 +9,7 @@ import type { InteractionResponse, MessagePart, SessionInteraction, TimelineEntr
 import { sessionRespondGate, hasPendingResponse, type SessionState } from './state';
 import { SessionResourceView } from './SessionResourceView';
 import { SessionInteractionCard } from './SessionInteractionCard';
+import { SessionError } from './SessionError';
 import { useSessionMessages } from './messages';
 import { useSessionHistoryPagination } from './useSessionHistoryPagination';
 import { useTimelineScroll } from '../../ui/useTimelineScroll';
@@ -104,7 +105,7 @@ const SessionEntry = memo(function SessionEntry({ entry, resources, active, canR
         if (entry.code === 'input_cancelled' || entry.code === 'turn_interrupted') return <p className="session-cancellation" role="status">{entry.code === 'input_cancelled' ? labels.inputCancelled : labels.turnInterrupted}</p>;
         const activity = legacySubagentActivity(entry);
         if (activity) return <LazyDetails className="session-tool" summary={<><svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg><strong className="session-tool-name" title={activity.name}>{activity.name}</strong><span className="session-tool-summary">{toolSummary(activity.input)}</span></>}><pre className="session-tool-input" tabIndex={0}>{activity.input}</pre></LazyDetails>;
-        return <div className="session-error" role="alert"><strong>{entry.code}</strong><p>{entry.message}</p></div>;
+        return <SessionError entry={entry} />;
       }
       case 'compaction': return <details className="session-compaction"><summary>{m.compaction}</summary><p>{entry.summary}</p></details>;
       case 'todo': return <section aria-label={m.todo}><ul className="session-todos">{entry.items.map((todo) => <li key={todo.id} data-status={todo.status}><span aria-hidden="true">{todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○'}</span> {todo.text}</li>)}</ul></section>;
