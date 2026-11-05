@@ -1,4 +1,4 @@
-package server
+package attachment
 
 import (
 	"context"
@@ -16,15 +16,15 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 )
 
 type attachmentHandler struct {
-	attachments *service.Attachments
+	attachments *attachmentservice.Attachments
 	logger      *slog.Logger
 }
 
-func attachmentRoutes(mux *http.ServeMux, attachments *service.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &attachmentHandler{attachments: attachments, logger: logger}
 	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
 	mux.HandleFunc("GET "+base+"/attachments", auth.Require(handler.list))

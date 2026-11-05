@@ -1,13 +1,12 @@
-package service
+package attachment
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
-	"strings"
 
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
@@ -15,19 +14,17 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
-const attachmentBucket = "task-attachments"
+type attachmentStore interface {
+	store.SnapshotReader
+	store.AttachmentWriter
+}
 
 type Attachments struct {
-	store *store.Store
+	store attachmentStore
 	files filestorage.Storage
 }
 
-type AttachmentPage struct {
-	Items      []model.Attachment
-	NextCursor *string
-}
-
-func NewAttachments(database *store.Store, files filestorage.Storage) *Attachments {
+func NewAttachments(database attachmentStore, files filestorage.Storage) *Attachments {
 	return &Attachments{store: database, files: files}
 }
 
@@ -52,7 +49,7 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 			return nil
 		}
 		if errors.Is(err, model.ErrNotFound) {
-			missing = attachmentNotFound(err)
+			missing = attachmentcore.NotFound(err)
 			return nil
 		}
 		return err
@@ -70,36 +67,27 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, false, err
 	}
-	address, err := newAttachmentAddress(projectID, taskID, path)
+	address, err := attachmentcore.NewAddress(projectID, taskID, path)
 	if err != nil {
 		return model.Attachment{}, false, err
 	}
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil || !strings.Contains(mediaType, "/") {
-		return model.Attachment{}, false, invalidInput("Attachment content type is invalid.")
+	if err := attachmentcore.ValidateContentType(contentType); err != nil {
+		return model.Attachment{}, false, err
 	}
-	err = s.read(ctx, principal, address.projectID, address.taskID, func(reader store.AttachmentReader) error {
-		conflict, err := reader.AttachmentPathConflict(ctx, address.projectID, address.taskID, address.relativePath)
-		if err != nil {
-			return err
-		}
-		if conflict {
-			return &model.Fault{Code: "path_conflict", Message: "Attachment path conflicts with a file or directory."}
-		}
-		return nil
+	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
+		return attachmentcore.CheckPathConflict(ctx, reader, address)
 	})
 	if err != nil {
 		return model.Attachment{}, false, err
 	}
-	info, err := s.files.Put(ctx, attachmentBucket, address.storagePath, content)
+	info, err := s.files.Put(ctx, attachmentcore.Bucket, address.StoragePath, content)
 	if err != nil {
 		if errors.Is(err, filestorage.ErrPathConflict) {
-			return model.Attachment{}, false, &model.Fault{Code: "path_conflict", Message: "Attachment path conflicts with an existing filesystem name.", Cause: err}
+			return model.Attachment{}, false, attachmentcore.StorageConflict(err)
 		}
 		return model.Attachment{}, false, fmt.Errorf("write attachment content: %w", err)
 	}
-	attachment, created, err := s.store.PutAttachment(ctx, model.Attachment{ProjectID: address.projectID, TaskID: address.taskID,
-		Path: address.relativePath, ContentType: contentType, SizeBytes: info.Size})
+	attachment, created, err := attachmentcore.PutMetadata(ctx, s.store, address, contentType, info.Size)
 	if err != nil {
 		return model.Attachment{}, false, fmt.Errorf("write attachment metadata: %w", err)
 	}
@@ -110,20 +98,20 @@ func (s *Attachments) Open(ctx context.Context, principal model.Principal, proje
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
-	address, err := newAttachmentAddress(projectID, taskID, path)
+	address, err := attachmentcore.NewAddress(projectID, taskID, path)
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
 	var attachment model.Attachment
-	err = s.read(ctx, principal, address.projectID, address.taskID, func(reader store.AttachmentReader) error {
+	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
 		var err error
-		attachment, err = reader.Attachment(ctx, address.projectID, address.taskID, address.relativePath)
+		attachment, err = attachmentcore.Metadata(ctx, reader, address)
 		return err
 	})
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
-	object, err := s.files.Open(ctx, attachmentBucket, address.storagePath)
+	object, err := s.files.Open(ctx, attachmentcore.Bucket, address.StoragePath)
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, fmt.Errorf("open attachment content: %w", err)
 	}
@@ -134,29 +122,53 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
-	address, err := newAttachmentAddress(projectID, taskID, path)
+	address, err := attachmentcore.NewAddress(projectID, taskID, path)
 	if err != nil {
 		return err
 	}
-	err = s.read(ctx, principal, address.projectID, address.taskID, func(reader store.AttachmentReader) error {
-		_, err := reader.Attachment(ctx, address.projectID, address.taskID, address.relativePath)
+	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
+		_, err := attachmentcore.Metadata(ctx, reader, address)
 		return err
 	})
 	if err != nil {
 		return err
 	}
-	if err := s.files.Delete(ctx, attachmentBucket, address.storagePath); err != nil {
+	if err := s.files.Delete(ctx, attachmentcore.Bucket, address.StoragePath); err != nil {
 		return fmt.Errorf("delete attachment content: %w", err)
 	}
-	if err := s.store.DeleteAttachment(ctx, address.projectID, address.taskID, address.relativePath); err != nil {
+	if err := attachmentcore.DeleteMetadata(ctx, s.store, address); err != nil {
 		if errors.Is(err, model.ErrNotFound) {
-			return attachmentNotFound(err)
+			return err
 		}
 		return fmt.Errorf("delete attachment metadata: %w", err)
 	}
 	return nil
 }
 
-func attachmentNotFound(cause error) *model.Fault {
-	return &model.Fault{Code: "not_found", Message: "Attachment was not found.", Cause: cause}
+func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (attachmentcore.Page, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return attachmentcore.Page{}, err
+	}
+	projectID, err := model.CanonicalID(projectID)
+	if err != nil {
+		return attachmentcore.Page{}, err
+	}
+	taskID, err = model.CanonicalID(taskID)
+	if err != nil {
+		return attachmentcore.Page{}, err
+	}
+	query, err := attachmentcore.ListQuery(request, projectID, taskID)
+	if err != nil {
+		return attachmentcore.Page{}, err
+	}
+	var result store.AttachmentPage
+	err = s.read(ctx, principal, projectID, taskID, func(reader store.AttachmentReader) error {
+		var err error
+		result, err = reader.Attachments(ctx, projectID, taskID, query)
+		return err
+	})
+	if err != nil {
+		return attachmentcore.Page{}, err
+	}
+	return attachmentcore.MakePage(result, projectID, taskID)
 }

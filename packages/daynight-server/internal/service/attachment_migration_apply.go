@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"io/fs"
 	"path"
 	"reflect"
@@ -32,7 +33,7 @@ func (m *attachmentMigration) apply(ctx context.Context, resuming bool) (Attachm
 	if err := m.checkSnapshot(ctx, manifest); err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
-	bucket, err := m.inspectDirectory(attachmentBucket)
+	bucket, err := m.inspectDirectory(attachmentcore.Bucket)
 	if err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
@@ -49,7 +50,7 @@ func (m *attachmentMigration) apply(ctx context.Context, resuming bool) (Attachm
 			return AttachmentMigrationSummary{}, m.failure("operation_conflict", "An empty migration has unexpected directory or stage state.", nil)
 		}
 		if bucket {
-			if err := m.verifyTree(ctx, attachmentBucket, manifest, false, true); err != nil {
+			if err := m.verifyTree(ctx, attachmentcore.Bucket, manifest, false, true); err != nil {
 				return AttachmentMigrationSummary{}, err
 			}
 		}
@@ -61,7 +62,7 @@ func (m *attachmentMigration) apply(ctx context.Context, resuming bool) (Attachm
 				return AttachmentMigrationSummary{}, err
 			}
 		}
-		if err := m.verifyTree(ctx, attachmentBucket, manifest, true, true); err != nil {
+		if err := m.verifyTree(ctx, attachmentcore.Bucket, manifest, true, true); err != nil {
 			return AttachmentMigrationSummary{}, err
 		}
 		return m.complete(ctx, manifest, hash, state.Phase == "complete")
@@ -70,13 +71,13 @@ func (m *attachmentMigration) apply(ctx context.Context, resuming bool) (Attachm
 		return AttachmentMigrationSummary{}, m.failure("resume_required", "The migration has started; use resume with this operation ID.", nil)
 	}
 	if bucket && !source && !target && (state.Phase == "planned" || state.Phase == "evacuated") {
-		if err := m.verifyTree(ctx, attachmentBucket, manifest, false, true); err != nil {
+		if err := m.verifyTree(ctx, attachmentcore.Bucket, manifest, false, true); err != nil {
 			return AttachmentMigrationSummary{}, err
 		}
 		if err := m.saveState("evacuated", hash); err != nil {
 			return AttachmentMigrationSummary{}, err
 		}
-		if err := m.rename(ctx, attachmentBucket, m.directory()+"/source"); err != nil {
+		if err := m.rename(ctx, attachmentcore.Bucket, m.directory()+"/source"); err != nil {
 			return AttachmentMigrationSummary{}, err
 		}
 		m.event(ctx, "evacuated", "bucket_evacuated", attachmentMigrationOwner{})
@@ -110,7 +111,7 @@ func (m *attachmentMigration) apply(ctx context.Context, resuming bool) (Attachm
 			continue
 		}
 		sourceName := m.directory() + "/source/" + task.TaskID
-		targetName := m.directory() + "/target/" + attachmentTaskStoragePath(task.ProjectID, task.TaskID)
+		targetName := m.directory() + "/target/" + attachmentcore.TaskStoragePath(task.ProjectID, task.TaskID)
 		source, err := m.inspectDirectory(sourceName)
 		if err != nil {
 			return AttachmentMigrationSummary{}, err
@@ -149,11 +150,11 @@ func (m *attachmentMigration) apply(ctx context.Context, resuming bool) (Attachm
 	if err := m.saveState("published", hash); err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
-	if err := m.rename(ctx, m.directory()+"/target", attachmentBucket); err != nil {
+	if err := m.rename(ctx, m.directory()+"/target", attachmentcore.Bucket); err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
 	m.event(ctx, "published", "bucket_published", attachmentMigrationOwner{})
-	if err := m.verifyTree(ctx, attachmentBucket, manifest, true, false); err != nil {
+	if err := m.verifyTree(ctx, attachmentcore.Bucket, manifest, true, false); err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
 	return m.complete(ctx, manifest, hash, false)
@@ -187,7 +188,7 @@ func (m *attachmentMigration) verifyPlacement(ctx context.Context, manifest atta
 			continue
 		}
 		sourceName := m.directory() + "/source/" + task.TaskID
-		targetName := m.directory() + "/target/" + attachmentTaskStoragePath(task.ProjectID, task.TaskID)
+		targetName := m.directory() + "/target/" + attachmentcore.TaskStoragePath(task.ProjectID, task.TaskID)
 		source, err := m.inspectDirectory(sourceName)
 		if err != nil {
 			return err
@@ -240,7 +241,7 @@ func (m *attachmentMigration) verifyPartialTarget(ctx context.Context, placed, c
 		}
 	}
 	for _, task := range placed.Tasks {
-		prefix := attachmentTaskStoragePath(task.ProjectID, task.TaskID)
+		prefix := attachmentcore.TaskStoragePath(task.ProjectID, task.TaskID)
 		for _, entry := range task.Entries {
 			copy := entry
 			copy.Path = prefix

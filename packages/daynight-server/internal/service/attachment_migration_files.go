@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"io"
 	"io/fs"
 	"os"
@@ -57,7 +58,7 @@ func (m *attachmentMigration) inventory(ctx context.Context, directory string, h
 		}
 		name := directory
 		if relative != "." {
-			if err := filestorage.ValidateAddress(attachmentBucket, relative); err != nil {
+			if err := filestorage.ValidateAddress(attachmentcore.Bucket, relative); err != nil {
 				return m.failure("unsafe_entry", "The attachment inventory contains an invalid relative filename.", err)
 			}
 			name += "/" + relative
@@ -148,7 +149,7 @@ func (m *attachmentMigration) verifyTree(ctx context.Context, directory string, 
 		}
 		prefix := task.TaskID
 		if finalLayout {
-			prefix = attachmentTaskStoragePath(task.ProjectID, task.TaskID)
+			prefix = attachmentcore.TaskStoragePath(task.ProjectID, task.TaskID)
 			for _, parent := range []string{task.ProjectID, task.ProjectID + "/" + task.TaskID[:2]} {
 				if !parents[parent] {
 					expected = append(expected, attachmentMigrationEntry{Path: parent, Kind: "directory"})
