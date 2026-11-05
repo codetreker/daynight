@@ -15,6 +15,7 @@ import { expectStableAutomaticDetailRefresh } from './detail-refresh';
 import { panPoint } from './graph-pan';
 import { verifyPublicExternalDependencyWrites } from './external-dependency-writes';
 import { verifySessionStatus } from './session-status';
+import { verifyStandaloneLayout } from './standalone-layout';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const card = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] .task-node`);
@@ -2038,6 +2039,9 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
   const a = await createTask(request, project.id, { title: `窄屏根 ${'很长的任务标题😀'.repeat(30)}`, description: '长描述 <img src=x>\n'.repeat(40), properties: { pullRequests } });
   await createTask(request, project.id, { title: '后续任务', dependsOn: [a.id] });
   const independent = await createTask(request, project.id, { title: `窄屏独立任务 ${'很长的独立任务标题😀'.repeat(30)}` });
+  await createTask(request, project.id, { title: 'Paused standalone task with a long English title for readable wrapping', requiredPlatform: 'macos', properties: { paused: true } });
+  const blockedStandalone = await createTask(request, project.id, { title: '被阻塞的独立任务 · External prerequisite', dependsOn: [a.id] });
+  await seedExternalDependencies(request, project.id, blockedStandalone, [a.id]);
   await page.setViewportSize({ width: 320, height: 800 });
   await openTaskProject(page, project.id, project.name);
   await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeVisible();
@@ -2169,6 +2173,7 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
   await screenshot(page, info, 'narrow-standalone');
   await page.keyboard.press('Escape');
   await expect(standalone(page, independent.id)).toBeFocused();
+  await verifyStandaloneLayout(page, info);
   await test.step('shows startup storage failures and preserves an explicit save retry on narrow screens', async () => {
     await page.addInitScript(() => {
       const state = window as unknown as { sidebarStorageBlocked: { read: boolean; write: boolean } };
