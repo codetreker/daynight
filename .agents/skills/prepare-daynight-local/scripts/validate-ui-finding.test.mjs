@@ -158,3 +158,34 @@ test("rejects linked images outside the package Markdown subset and treats title
     assert.equal((await validateUiFinding(f.file)).valid, true);
   }
 });
+
+test("resolves inline description links from the attachment root even when its source file is nested", async (t) => {
+  const f = await fixture(t);
+  f.manifest.description = "docs/task.md";
+  f.manifest.prototype = "docs/prototype.html";
+  await f.put(f.manifest.prototype, "<!doctype html><button>Preview</button>");
+  await f.save();
+  await f.put(f.manifest.description, "[Prototype](prototype.html)\n");
+  await assert.rejects(validateUiFinding(f.file), /not in the file inventory: prototype.html/);
+  await f.put(f.manifest.description, "[Prototype](docs/prototype.html)\n[Evidence](evidence/before/evidence.json)\n");
+  assert.equal((await validateUiFinding(f.file)).valid, true);
+});
+
+test("decodes link segments separately and rejects encoded separators and invalid path characters", async (t) => {
+  const f = await fixture(t);
+  f.manifest.prototype = "docs/prototype.html";
+  await f.put(f.manifest.prototype, "<!doctype html><button>Preview</button>");
+  await f.save();
+  for (const href of ["docs%2Fprototype.html", "docs%2fprototype.html", "docs%5Cprototype.html", "docs/%GGprototype.html", "docs/%01prototype.html", "docs/%7Fprototype.html", "docs/%2e%2e/prototype.html"]) {
+    await f.put("task.md", `[Prototype](${href})\n`);
+    await assert.rejects(validateUiFinding(f.file), /Invalid attachment link/);
+  }
+  await f.put("docs/测量 100%.md", "measurement\n");
+  f.manifest.supportingFiles.push("docs/测量 100%.md"); await f.save();
+  await f.put("task.md", "[Prototype](docs/prototype.html)\n[Measurement](docs/%E6%B5%8B%E9%87%8F%20100%25.md#state)\n");
+  assert.equal((await validateUiFinding(f.file)).valid, true);
+  for (const name of ["docs/control\u0001.md", "docs/control\u007f.md", "docs/\ud800.md"]) {
+    f.manifest.supportingFiles = [name]; await f.save();
+    await assert.rejects(validateUiFinding(f.file), /relative path/);
+  }
+});

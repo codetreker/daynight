@@ -13,7 +13,7 @@ function check(condition, message) {
 
 function relativeFile(value) {
   check(typeof value === "string" && value.length > 0, "A file path must be a nonempty relative string.");
-  check(!path.posix.isAbsolute(value) && !value.includes("\\") && !value.includes("\0") && !/^[a-z][a-z0-9+.-]*:/i.test(value), `Not a portable relative path: ${value}`);
+  check(!path.posix.isAbsolute(value) && !/[\\\p{Cc}\p{Cs}]/u.test(value) && !/^[a-z][a-z0-9+.-]*:/i.test(value), `Not a portable relative path: ${value}`);
   check(value.split("/").every((part) => part !== "" && part !== "." && part !== ".."), `Invalid path component: ${value}`);
   return value;
 }
@@ -108,7 +108,14 @@ function localLinks(markdown) {
   }
   for (const match of prose.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]+)>|(\S+))/gm)) links.push(match[1] ?? match[2]);
   return links.filter((link) => !link.startsWith("#") && !/^https?:\/\//i.test(link)).map((link) => {
-    try { return relativeFile(decodeURIComponent(link.split(/[?#]/, 1)[0])); }
+    try {
+      const segments = link.split(/[?#]/, 1)[0].split("/").map((encoded) => {
+        const decoded = decodeURIComponent(encoded);
+        check(!decoded.includes("/"), "Encoded path separators are not attachment segments.");
+        return decoded;
+      });
+      return relativeFile(segments.join("/"));
+    }
     catch (error) { throw new Error(`Invalid attachment link ${link}: ${error.message}`); }
   });
 }
@@ -154,8 +161,8 @@ export async function validateUiFinding(manifestPath) {
   }
 
   for (const link of localLinks(contents.get(manifest.description).toString("utf8"))) {
-    const relative = path.posix.join(path.posix.dirname(manifest.description), link);
-    check(contents.has(relative), `Description attachment link is not in the file inventory: ${relative}`);
+    // The file supplies an inline task description; its links use the task attachment root.
+    check(contents.has(link), `Description attachment link is not in the file inventory: ${link}`);
   }
   return {
     valid: true,

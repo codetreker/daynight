@@ -98,8 +98,10 @@ capture checks the explicit loopback origin and semantic readiness, then compare
 selected state and geometry before and after capture. It labels inconsistent or
 failed attempts and never silently changes screenshot capture into print output.
 The finding-package validator checks one package's declared files, supported
-attachment links and current byte hashes. It does not judge issue independence,
-prototype behavior or publication permission. Production mutations remain in
+attachment links and current byte hashes. Description links resolve from the
+task attachment root, independently of the local Markdown source location, and
+URL decoding preserves the Web consumer's segment boundaries. It does not judge
+issue independence, prototype behavior or publication permission. Production mutations remain in
 the canonical CLI handoff, with readback and unknown-outcome reconciliation;
 neither helper can create or enable a task.
 

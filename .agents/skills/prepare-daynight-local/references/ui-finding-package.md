@@ -61,12 +61,22 @@ observed results. The helper checks manual evidence bytes, not its truth.
 Use inline Markdown links/images, angle brackets around paths with spaces or
 parentheses, or single-line reference definitions in `task.md`. Quoted titles and
 nested text labels are supported; code-span and fenced-code examples are ignored.
-Local attachment links must target inventory files; HTTP(S) links and same-file
-anchors are allowed. This is a constrained package format, not a full Markdown
-parser. Nested images in link labels are rejected: use an independent image and
+Local attachment links must target inventory files from the package root because
+the content becomes an inline task description. Its source file's directory is
+irrelevant: if `description` is `docs/task.md` and the prototype is uploaded as
+`docs/prototype.html`, link to `docs/prototype.html`, not `prototype.html`.
+Preserve package-relative paths when uploading. This follows the Web
+[inline-description resolver](../../../../packages/daynight-web/src/features/task-detail/TaskDetailReading.tsx)
+and [attachment path rules](../../../../packages/daynight-web/src/features/task-detail/attachments/model.ts).
+URL path segments are decoded separately; encoded slashes/backslashes, control
+characters and malformed encodings are rejected. Spaces, Unicode and literal
+percent signs can be encoded within an individual segment.
+HTTP(S) links and same-file anchors are allowed. This is a constrained package
+format, not a full Markdown parser. Nested images in link labels are rejected: use an independent image and
 link instead. Avoid HTML links, multiline reference definitions and executable
-embeds in task material. Prefer a
-self-contained prototype; inspect any external asset dependencies separately.
+embeds in task material. Prefer a self-contained prototype; inspect any external
+asset dependencies separately. Markdown attachments have their own document-relative
+links; this helper validates the file used for the inline description.
 
 An exit code of zero establishes file completeness and a byte inventory. It does
 not establish that the issue is worth fixing, that the package contains only one
