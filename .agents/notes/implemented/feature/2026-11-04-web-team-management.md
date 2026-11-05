@@ -15,8 +15,10 @@ The Team selector opens creation and the workspace exposes a settings route.
 Settings read the actual Team and version; ordinary Team admins can rename or
 request deletion, while members and Personal Team users have read-only settings.
 Deletion requires manually entering the current name and sends the original name
-and precise version. Creation and rename use direct form submission. Identity
-admission and response validation bind each mutation to its actor; uncertain
+and precise version. Creation uses direct form submission; the
+[rename dialog decision](2026-11-05-web-team-rename-dialog.md) owns the settings
+editing interaction. Identity admission and response validation bind each
+mutation to its actor; uncertain
 writes remain unknown and offer reads without replay. Successful creation and
 deletion navigate through the existing account-scoped Team preference.
 Settings retain their draft, confirmation and operation result across same-user
