@@ -21,6 +21,10 @@ Independent Session pages consult the same account coordinator before creating
 clients and throughout client admission. Known Session identities include those
 learned after deletion starts, so navigation to an old URL cannot bypass an
 unconfirmed request by observing a still-active server snapshot.
+Temporary identity checks stop new work without discarding a dispatched request's
+authenticated rejection. That evidence survives until the same account can
+reconcile; actual scope invalidation still discards the response. Otherwise a
+known rejection becomes permanently unknown after a routine focus change.
 
 Confirmed deletion invalidates the target's mounted and retained browser state.
 The account coordinator clears target storage and display preferences even when

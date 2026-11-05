@@ -41,7 +41,7 @@ it('blocks an old URL before creating a client after an unknown DELETE, includin
   expect(f.other.api.current).toHaveBeenCalled(); expect(f.api.current).not.toHaveBeenCalled();
 });
 
-it('closes a live old-URL client synchronously and restores drafts only after definite rejection', async () => {
+it.each([false, true])('closes a live old-URL client and restores drafts after definite rejection (identity pause=%s)', async paused => {
   const f = fixture(), response = Promise.withResolvers<Response>();
   f.fetcher.mockImplementation(async (_url, init) => init?.method === 'DELETE' ? response.promise : botResponse(f.bot));
   render(f.element()); await screen.findByText(`Message ${f.binding.botId}`);
@@ -60,7 +60,16 @@ it('closes a live old-URL client synchronously and restores drafts only after de
   await client.loadOlder(); await client.checkOperation(botId(80)); client.refresh(); client.setDraft('late draft');
   expect([f.api.current, f.api.timeline, f.api.command, f.api.resource, f.api.operation].map(fn => vi.mocked(fn).mock.calls.length)).toEqual(calls);
   expect(keys.every(key => sessionStorage.getItem(key) !== null)).toBe(true);
-  await act(async () => { response.resolve(botError(409, 'version_conflict')); await operation; });
+  await waitFor(() => expect(f.fetcher.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true));
+  const resume = paused ? pauseAuthRequests() : () => {};
+  try {
+    await act(async () => { response.resolve(botError(409, 'version_conflict')); await operation; });
+    if (paused) {
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(f.coordinator.sessionAdmission(f.binding.sessionId)).toBe('blocked');
+      resume(); await act(async () => { await f.coordinator.check(f.bot.id); });
+    }
+  } finally { resume(); }
   await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('retained draft'));
   expect(f.api.command).toHaveBeenCalledOnce();
   expect(f.start.mock.contexts.some(value => value !== client)).toBe(true);
