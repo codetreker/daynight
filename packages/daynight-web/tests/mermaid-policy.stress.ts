@@ -48,6 +48,13 @@ describe('real SDK complexity boundaries', () => {
     }
   });
 
+  it('refuses deep Block layout work with the real parser', async () => {
+    const source = 'block\n' + items(26).map((i) => `block:group${i}`).join('\n') + '\nA\n' + items(26).map(() => 'end').join('\n');
+    await preflightBlock(source, mermaid);
+    const parsed = await mermaid.mermaidAPI.getDiagramFromText(source);
+    expect(() => inspectMermaidDiagram('block', parsed)).toThrow(expect.objectContaining({ issue: 'complexity' }));
+  });
+
   it('does not count unrendered class placeholders or repeated nodes', async () => {
     const source = 'block\n' + items(500).map((i) => `A${i}`).join(' ') + '\nA0\n' + items(501).map((i) => `class missing${i} demo`).join('\n');
     await preflightBlock(source, mermaid);

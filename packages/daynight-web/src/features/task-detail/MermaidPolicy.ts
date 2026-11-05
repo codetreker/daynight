@@ -120,13 +120,26 @@ export const inspectMermaidDiagram = (type: StableMermaidType, parsed: { readonl
         if (node.img || node.type === 'imageSquare') throw new MermaidPolicyError('image');
       }
       const visited = new Set<Record<string, unknown>>();
-      const pending = [...array(getter(db, 'getBlocks'))];
+      const pending = array(getter(db, 'getBlocks')).map((node) => ({ node, calls: 2 }));
+      // Each setBlockSizes call visits every child twice. The synthetic root
+      // runs once, so a node at depth d costs 2^d calls before layout can finish.
+      // The second pass applies sibling dimensions; omitting it changes layout.
+      // https://github.com/mermaid-js/mermaid/blob/1fb7869866dd619168d840291c9c54b4f129758b/packages/mermaid/src/diagrams/block/layout.ts
+      const workLimit = 50_000;
+      let work = 1;
       while (pending.length > 0) {
-        const node = record(pending.pop());
-        if (visited.has(node)) continue;
+        const current = pending.pop()!;
+        const node = record(current.node);
+        if (visited.has(node)) invalidContract();
         visited.add(node);
         budget(visited.size);
-        if (node.children !== undefined) pending.push(...array(node.children));
+        if (current.calls > workLimit - work) throw new MermaidPolicyError('complexity');
+        work += current.calls;
+        if (node.children !== undefined) {
+          const children = array(node.children);
+          if (children.length > 0 && current.calls > workLimit / 2) throw new MermaidPolicyError('complexity');
+          for (const child of children) pending.push({ node: child, calls: current.calls * 2 });
+        }
       }
       budget(array(getter(db, 'getEdges')).length);
       break;

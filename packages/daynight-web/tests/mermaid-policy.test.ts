@@ -75,6 +75,24 @@ A@{ "im\u0067": "https://example.invalid/x.png" } --> B`);
     }
   });
 
+  it('bounds aggregate Block layout work before the renderer runs', () => {
+    const chain = (depth: number) => {
+      let child: Record<string, unknown> = { type: 'square' };
+      for (let i = 1; i < depth; i++) child = { type: 'composite', children: [child] };
+      return child;
+    };
+    const block = (children: unknown[]) => ({ type: 'block', db: { getBlocksFlat: () => [{ id: 'root' }], getBlocks: () => children, getEdges: () => [] } });
+    expect(() => inspectMermaidDiagram('block', block([chain(14)]))).not.toThrow();
+    expect(() => inspectMermaidDiagram('block', block([chain(15)]))).toThrow(expect.objectContaining({ issue: 'complexity' }));
+    // Each branch fits on its own but their combined work does not.
+    expect(() => inspectMermaidDiagram('block', block([chain(14), chain(14)]))).toThrow(expect.objectContaining({ issue: 'complexity' }));
+    const nearLimit = (leaves: number) => [chain(14), chain(13), ...Array.from({ length: leaves }, () => ({ type: 'square' }))];
+    expect(() => inspectMermaidDiagram('block', block(nearLimit(425)))).not.toThrow(); // 49,999 calls including root
+    expect(() => inspectMermaidDiagram('block', block(nearLimit(426)))).toThrow(expect.objectContaining({ issue: 'complexity' })); // 50,001
+    const cycle: Record<string, unknown> = { type: 'composite' }; cycle.children = [cycle];
+    expect(() => inspectMermaidDiagram('block', block([cycle]))).toThrow('Unexpected Mermaid 12.2.0');
+  });
+
   it('counts structures separately and rejects broken SDK contracts', () => {
     const nodes = Array.from({ length: 500 }, () => ({}));
     const parsed = (n: unknown, e: unknown) => ({ type: 'classDiagram', db: { getData: () => ({ nodes: n, edges: e }) } });

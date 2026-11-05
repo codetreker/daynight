@@ -1583,7 +1583,9 @@ packet, kanban and event modeling. Experimental types and third-party plugins
 are not accepted. Each block keeps independent loading/error feedback and
 inspectable source. A source may contain at most 50,000 UTF-16 code units;
 per-type structural budgets limit each counted category to 500. Block expansion
-is checked before parsing, and a pinned SDK patch limits Gantt calendar work to
+is checked before parsing; before rendering, its actual tree is also limited to
+50,000 estimated SDK sizing calls. A deeply nested block can exceed this budget
+even with fewer than 500 nodes. A pinned SDK patch limits Gantt calendar work to
 50,000 actual steps per task compilation. The
 [diagram design](../../docs/design/daynight-task-inspection.md#mermaid-图表)
 owns the counts and implementation constraints.
