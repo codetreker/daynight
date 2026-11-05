@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
+import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
-const fixture = vi.hoisted(() => ({ mode: "ready", requests: "" }));
+import { captureStartupDeadline, stopStartupChildren } from "../../helpers/startup-deadline.js";
+const fixture = vi.hoisted(() => ({ mode: "ready", requests: "", children: [] as ChildProcess[] }));
 vi.mock("node:net", () => ({ createServer: () => {
   const server = new EventEmitter() as EventEmitter & { listen: (endpoint: string, callback: () => void) => void; close: () => void };
   server.listen = (_endpoint, callback) => queueMicrotask(callback); server.close = () => {}; return server;
@@ -23,6 +25,7 @@ vi.mock("../../../src/commands/controller/providers/codex.js", async importOrigi
   return { ...actual, openCodexProvider: (options: ProviderOptions) => actual.openCodexProvider({ ...options,
     executable: path.resolve(import.meta.dirname, "../controller/fixtures/codex-native.mjs"),
     env: { ...options.env, CODEX_TEST_INITIALIZE: fixture.mode, CODEX_TEST_REQUEST_LOG: fixture.requests },
+    onSpawn: child => { fixture.children.push(child); options.onSpawn(child); },
   }) };
 });
 // A real IPC socket is unnecessary for this journal-to-Worker acceptance boundary.
@@ -40,7 +43,7 @@ import { parseCurrentSessionResponse } from "../../../src/session/controller-pro
 import { STARTUP_REPORT_HEADER } from "../../../src/session/startup.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
 const roots: string[] = [], stores: WebExecutionStore[] = [];
-afterEach(async () => { vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { await stopStartupChildren(fixture.children.splice(0)); vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
 type HttpFixtureInput = {
   serverUrl: string; serverToken: string; projectId: string; taskId: string; claimId: string;
@@ -78,8 +81,13 @@ const setup = async (input?: HttpFixtureInput) => {
 test.each(["reject", "timeout"] as const)("real native initialize %s reaches the Worker while relay hello never succeeds", async mode => {
   fixture.mode = mode;
   const f = await setup(); const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const deadline = mode === "timeout" ? captureStartupDeadline() : undefined;
+  const running = runController({ homeDirectory: f.home, provider: "codex", launchId: f.ticket.launchId });
+  let settled = false;
+  void running.finally(() => { settled = true; }).catch(() => {});
   try {
-    await expect(runController({ homeDirectory: f.home, provider: "codex", launchId: f.ticket.launchId })).rejects.toThrow();
+    if (deadline) await deadline.expireAfterRequest(fixture.requests, requests => requests.some(request => JSON.parse(request).method === "initialize"));
+    await expect(running).rejects.toThrow();
     const expected = mode === "reject" ? { state: "failed", reasonCode: "native_rejected" } : { state: "unknown", reasonCode: "native_timeout" };
     expect(readControllerSnapshot(f.journal)).toMatchObject({ startup: expected, nativeSessionId: null, initialInputState: "not_submitted" });
     const paused = f.store.pauseRecovery(f.task, "No original native identity is available.", Date.now(), "native_identity_missing");
@@ -91,7 +99,13 @@ test.each(["reject", "timeout"] as const)("real native initialize %s reaches the
     const requests = (await readFile(fixture.requests, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(requests.map(request => request.method)).toEqual(["initialize"]);
     expect(f.launcher.launch).not.toHaveBeenCalled();
-  } finally { log.mockRestore(); }
+  } finally {
+    try {
+      if (!settled) process.emit("SIGTERM", "SIGTERM");
+      await stopStartupChildren(fixture.children);
+      await running.catch(() => {});
+    } finally { deadline?.restore(); log.mockRestore(); }
+  }
 }, 40_000);
 
 test("real healthy native startup is observed without sending the initial assignment", async () => {
