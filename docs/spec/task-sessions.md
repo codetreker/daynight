@@ -61,6 +61,8 @@ Chatbox 提供文本发送、按原生能力追加、停止当前 turn，以及�
 
 初始 managed prompt 获得原生受理且快照同步完成前，普通网页发送保持禁用，避免用户输入抢先改变任务。初始化期间真实存在的原生审批可单独响应。旧交互、已解决的请求以及换代前的请求不可再次提交。
 
+已处理与已过期的交互卡保留标题和本地化状态，并提供默认折叠的“查看请求内容”（英文 “Show request”）。展开后只读显示审批的原始 detail、问题及选项、表单字段名；不挂载回答控件，也不显示本地输入值或推测协议未记录的回答结果。长内容在限高区域内换行并可用键盘聚焦滚动，窄屏不得横向溢出。折叠与展开沿用时间线的跟随和阅读锚点规则；只读归档同样可以查看这些请求。
+
 图片/文件输入、历史编辑、fork、Team 和跨本机原生历史会话发现不属于基础交付。Daynight 已登记的独立 Test Session 列表由 [Controller 需求](controller-test-sessions.md#session-view)定义。消息内容保留 typed parts 的扩展位置；Timeline 中已有资源按会话权限安全展示，不能将任意本机路径暴露为下载入口。
 
 Copilot 的 model 或 effort 未指定时保留原生默认值，不补造模型或推理档位；Web args 只接受 `--effort low|medium|high|xhigh`。计划审批通过已有 form 提供 `exit_only`、`interactive`、`reject` 与可选 feedback，不启动 autopilot。URL elicitation 与不能投影的二进制资源必须明确报错，不能伪装成完整的可交互内容。

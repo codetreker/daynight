@@ -43,6 +43,29 @@ it.each([false, true])('renders completed history without a live controller (sta
   await expect(f.client.cancel()).rejects.toThrow();
   expect(f.api.command).not.toHaveBeenCalled();
 });
+it.each([false, true])('allows reading resolved and expired requests in archived history (standalone=%s)', async standalone => {
+  const f = fixture('archived', standalone);
+  vi.mocked(f.api.archiveContent).mockResolvedValue({ ...f.archive, entries: [
+    { entryId: '00000007-1111-4111-8111-111111111111', entrySeq: '1', revision: '2', kind: 'interaction', interaction: { interactionId: 'approval', revision: '2', kind: 'approval', title: 'Approve Write', state: 'resolved', detail: 'notes/review.txt\n+ saved request', actions: ['allow_once'] } },
+    { entryId: '00000008-1111-4111-8111-111111111111', entrySeq: '2', revision: '2', kind: 'interaction', interaction: { interactionId: 'question', revision: '2', kind: 'question', title: 'Choose a destination', state: 'expired', canDismiss: true, questions: [{ questionId: 'q', label: 'Destination', options: [{ id: 'eu', label: 'Europe' }], multiple: false, required: true, sensitive: true, allowCustom: true }] } },
+    { entryId: '00000009-1111-4111-8111-111111111111', entrySeq: '3', revision: '2', kind: 'interaction', interaction: { interactionId: 'form', revision: '2', kind: 'form', title: 'Connection settings', state: 'expired', canDismiss: true, fields: [{ fieldId: 'secret', label: 'Access code', type: 'text', sensitive: true, required: true }] } },
+  ] });
+  await f.client.start();
+  const view = render(<SessionView userId={userId} client={f.client} active current />);
+  const disclosures = screen.getAllByText('Show request');
+  expect(disclosures).toHaveLength(3);
+  for (const disclosure of disclosures) {
+    expect(disclosure.closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(disclosure);
+  }
+  expect(screen.getByText('notes/review.txt + saved request')).toBeVisible();
+  expect(screen.getByText('Destination')).toBeVisible();
+  expect(screen.getByText('Europe')).toBeVisible();
+  expect(screen.getByText('Access code')).toBeVisible();
+  expect(view.container.querySelector('.session-interaction input, .session-interaction button, .session-interaction form')).toBeNull();
+  expect(f.api.channel).not.toHaveBeenCalled();
+  expect(f.api.command).not.toHaveBeenCalled();
+});
 it('keeps the archive loading notice until content is ready, then removes it', async () => {
   const f = fixture(); let finish!: (archive: SessionArchive) => void;
   vi.mocked(f.api.archiveContent).mockImplementation(() => new Promise(resolve => { finish = resolve; }));

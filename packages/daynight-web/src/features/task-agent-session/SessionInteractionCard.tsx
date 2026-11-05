@@ -44,7 +44,20 @@ export function SessionInteractionCard({ interaction, enabled, onRespond }: {
   }
   return <section className="session-interaction" tabIndex={-1} aria-label={interaction.title} aria-busy={pending}>
     <h4>{interaction.title}</h4>
-    {interaction.state !== 'pending' || resolved ? <p>{resolved ? m.resolved : m[interaction.state]}</p> : <form onSubmit={submit}>
+    {interaction.state !== 'pending' || resolved ? <>
+      <p className="session-interaction-status">{resolved ? m.resolved : m[interaction.state]}</p>
+      <details className="session-interaction-request">
+        <summary>{m.showRequest}</summary>
+        <div className="session-request-content" role="region" aria-label={m.requestContent} tabIndex={0}>
+          {interaction.kind === 'approval' ? <p className="session-prewrap">{interaction.detail}</p> : null}
+          {interaction.kind === 'question' ? interaction.questions.map(question => <div key={question.questionId}>
+            <p>{question.label}</p>
+            {question.options.length > 0 ? <ul>{question.options.map(option => <li key={option.id}>{option.label}</li>)}</ul> : null}
+          </div>) : null}
+          {interaction.kind === 'form' ? <ul>{interaction.fields.map(field => <li key={field.fieldId}>{field.label}</li>)}</ul> : null}
+        </div>
+      </details>
+    </> : <form onSubmit={submit}>
       <fieldset disabled={disabled}>
         {interaction.kind === 'approval' ? <><p className="session-prewrap">{interaction.detail}</p><div className="session-actions">{interaction.actions.map((action) => <button className="button" type="button" key={action} onClick={() => void respond({ kind: 'approval', action })}>{m[action]}</button>)}</div></> : null}
         {interaction.kind === 'question' ? interaction.questions.map((q) => <fieldset key={q.questionId}><legend>{q.label}{q.required ? ' *' : ''}</legend>

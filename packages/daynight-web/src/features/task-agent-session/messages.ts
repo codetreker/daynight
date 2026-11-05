@@ -1,5 +1,6 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 const en = {
+  showRequest: 'Show request', requestContent: 'Request content',
   sessionStarting: 'Starting session', waitingEnvironment: 'Waiting for the execution environment',
   startupUnconfirmed: 'Startup unconfirmed', startupFailed: 'Startup failed', recoveryBlocked: 'Recovery blocked',
   startupUnconfirmedBlocked: 'Startup unconfirmed; recovery blocked', startupFailedBlocked: 'Startup failed; recovery blocked',
@@ -54,6 +55,7 @@ export const sessionNativeLabels = Object.freeze({
 });
 type SessionMessages = { readonly [K in keyof typeof en]: string };
 const zh: SessionMessages = {
+  showRequest: '查看请求内容', requestContent: '请求内容',
   sessionStarting: '正在启动会话', waitingEnvironment: '等待执行环境连接',
   startupUnconfirmed: '启动未确认', startupFailed: '启动失败', recoveryBlocked: '恢复受阻',
   startupUnconfirmedBlocked: '启动未确认，恢复受阻', startupFailedBlocked: '启动失败，恢复受阻',
