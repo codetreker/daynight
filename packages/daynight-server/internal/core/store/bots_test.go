@@ -135,6 +135,7 @@ func TestBotStorageFailuresRemainErrors(t *testing.T) {
 		func() error { _, err := closed.Bot(ctx, candidate.ID); return err },
 		func() error { return closed.InsertBot(ctx, candidate) },
 		func() error { _, err := closed.DeleteBot(ctx, candidate.ID, 1, model.BotDeletion{}); return err },
+		func() error { _, err := closed.SaveBotDeletion(ctx, candidate.ID, &model.BotDeletion{}); return err },
 		func() error { _, err := snapshot.BotDAO().Bot(ctx, candidate.ID); return err },
 		func() error { return snapshot.BotDAO().BotWorker(ctx, candidate.OwnerUserID, candidate.WorkerID) },
 		func() error {
