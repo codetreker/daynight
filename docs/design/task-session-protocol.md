@@ -135,6 +135,8 @@ Copilot runtime 的 `--allow-all` 与 Session 的工具审批开关不能证明 
 
 审批、问题、MCP form 和计划审批共用现有 typed interaction。callback 返回不等于请求完成；响应保持原生请求身份并等待 matching completed 事件。计划审批 form 保留 `exit_only`、`interactive`、`reject` 及可选 feedback，禁用 autopilot；未知 schema、URL elicitation 和不支持的二进制资源投影为明确错误。原生 `immediate` steer 和这些交互的真实运行效果须分别验收，协议可解析不构成验收结果。
 
+Copilot 审批 `detail` 由 Controller 提取面向决策的原生内容：shell 保留完整命令及原生提供的工作目录、可能访问路径与 URL；文件请求显示路径和可用 diff 或新内容；URL 保留重定向来源；MCP 保留服务器、工具及业务参数。路径审批范围补充到底层操作之后，原生 warning 与 sandbox bypass 请求保留。相同 permission/prompt 内容只展示一次，标题与按钮沿用原生意图和现有动作映射。未知或缺少必要字段的请求回退为可读原生内容，不递归过滤业务参数。正文仍受现有交互协议长度与文本校验约束，超限明确失败，不截断待审批操作。详见[审批正文决策](../../.agents/notes/implemented/bug-fix/2026-11-06-copilot-permission-detail.md)。
+
 `forUri` 对 SDK 表示外部 runtime，因此仅调用 SDK transport stop 不能履行 Controller 的进程清理责任。关闭先向自己拥有的 runtime 发送 `client.rpc.runtime.shutdown`，再有界关闭连接；超时执行 TERM/KILL，并等待真实进程退出。无法证明停止时继续保留执行责任。 原生进程退出或 transport 健康检查失败时，Copilot 先将未完成操作保留为 unknown，再通知 Controller 关闭 provider、relay 与 IPC 并退出；worker 独立确认旧进程边界停止后，按恢复预算用原生 ID 进入下一代。初始化期间的失联先记录失败，取得 provider handle 后再清理，避免 startup 与 shutdown 互等。
 
 依赖声明的窄修补由锁文件和 `patches/` 固定：SDK 的 `SessionDeletedEvent.metadata` 使用 `metadata?: never` 表示该事件不带 metadata；`vscode-jsonrpc` 的 `LinkedMap` 删除与现代 `Map` 接口不符的 `implements Map` 声明。修补不改变运行时代码，也不启用 `skipLibCheck`。`koffi` 固定 3.3.4，使用已发布的平台预编译包并设置 `allowBuilds: false`；不依赖安装脚本另行下载或编译。选择原因与升级条件见[Copilot SDK 决策](../../.agents/notes/implemented/architecture/2026-10-28-copilot-web-sdk-runtime.md)。
