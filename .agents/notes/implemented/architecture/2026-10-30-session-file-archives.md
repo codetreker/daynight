@@ -37,7 +37,13 @@ resynchronizes file updates that survived a rolled-back SQL transaction.
 
 After native stop is confirmed, the launcher uploads one versioned archive to the
 service's existing file-storage abstraction. PostgreSQL stores only identity,
-status, object location, size and checksum. A matching ready receipt permits
+status, object location, size and checksum. The
+[ownership-grouped layout decision](2026-11-05-session-archive-layout.md) replaces
+the direct Session directory arrangement for new writes with project/user
+ownership and UUID shards, while preserving the archive format and lifecycle
+described here. Existing archive files and metadata stay in place, and reads
+continue to use their persisted object paths with the original integrity checks.
+A matching ready receipt permits
 normal Worker worktree cleanup. Failed uploads retain their source and retry
 without restarting the Agent or repeating the task. Historical catch-up attempts
 at most one execution per round and advances an in-process execution cursor on
@@ -129,6 +135,11 @@ fence does not make one instance's cache newer than another instance's committed
 finalization. Preserve durable control identity while reusing live display fields.
 
 ## Consequences
+
+The [terminal v2 contract](2026-11-03-session-v2-terminal-contract.md) extends
+the format with independently renderable frames, explicit gaps, stopped-run
+ownership and ready/unavailable receipts. It preserves the v1 producer and
+reader behavior described here; its schema does not enable a terminal runtime.
 
 Completed Session URLs can render messages, tools and resources without a live
 Controller. The same renderer is used with all write operations disabled, and

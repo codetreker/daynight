@@ -2,12 +2,22 @@ import { useId, useState, useLayoutEffect, type KeyboardEvent, type ReactNode } 
 import type { TaskDetailTab } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
 
+type PanelSlot = ReactNode | ((active: boolean) => ReactNode);
+type TaskDetailPanelsProps = {
+  readonly overview: ReactNode | ((showAttachments: () => void) => ReactNode);
+  readonly steps?: PanelSlot;
+  readonly attachments: PanelSlot;
+  readonly discussion?: PanelSlot;
+  readonly session?: PanelSlot;
+  readonly active?: TaskDetailTab;
+  readonly suspended?: boolean;
+  readonly onChange?: (tab: TaskDetailTab) => void;
+};
 
-
-export const TaskDetailPanels = ({ overview, attachments, session, active: controlledActive, onChange }: { readonly overview: ReactNode | ((showAttachments: () => void) => ReactNode); readonly attachments: ReactNode | ((active: boolean) => ReactNode); readonly session?: ReactNode | ((active: boolean) => ReactNode); readonly active?: TaskDetailTab; readonly onChange?: (tab: TaskDetailTab) => void }) => {
+export const TaskDetailPanels = ({ overview, steps, attachments, discussion, session, active: controlledActive, onChange, suspended = false }: TaskDetailPanelsProps) => {
   const { messages } = useI18n();
   const [localActive, setLocalActive] = useState<TaskDetailTab>('overview');
-  const tabs: readonly TaskDetailTab[] = session === undefined ? ['overview', 'attachments'] : ['overview', 'attachments', 'session'];
+  const tabs: readonly TaskDetailTab[] = ['overview', 'attachments', 'steps', ...(discussion === undefined ? [] : ['discussion'] as const), ...(session === undefined ? [] : ['session'] as const)];
   const requested = controlledActive === undefined ? localActive : controlledActive;
   const active = requested === 'session' && session === undefined ? 'overview' : requested;
   useLayoutEffect(() => { if (active !== requested) { setLocalActive(active); onChange?.(active); } }, [active, requested, onChange]);
@@ -15,13 +25,21 @@ export const TaskDetailPanels = ({ overview, attachments, session, active: contr
   const id = useId();
   const tabId = (tab: TaskDetailTab) => `${id}-tab-${tab}`;
   const panelId = (tab: TaskDetailTab) => `${id}-panel-${tab}`;
-  const labels = { overview: messages.inspection.detail.overview, attachments: messages.inspection.attachments.title, session: 'Session' };
-
+  const reveal = (tab: TaskDetailTab) => document.getElementById(tabId(tab))?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  // The selected font and translated label can widen a tab after native focus.
+  useLayoutEffect(() => { reveal(active); }, [id, active, messages]);
+  const labels = { overview: messages.inspection.detail.overview, steps: messages.inspection.steps.title, attachments: messages.inspection.attachments.title, discussion: messages.inspection.discussion.title, session: 'Session' };
+  const slots = { steps, attachments, discussion, session };
+  const content = (tab: TaskDetailTab) => {
+    if (tab === 'overview') return typeof overview === 'function' ? overview(() => setActive('attachments')) : overview;
+    const slot = slots[tab];
+    return typeof slot === 'function' ? slot(active === tab) : slot;
+  };
   const activate = (tab: TaskDetailTab) => {
     setActive(tab);
     document.getElementById(tabId(tab))!.focus();
+    reveal(tab);
   };
-
   const navigate = (event: KeyboardEvent<HTMLButtonElement>, tab: TaskDetailTab) => {
     let next: TaskDetailTab;
     if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') next = tabs[(tabs.indexOf(tab) + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length]!;
@@ -32,10 +50,10 @@ export const TaskDetailPanels = ({ overview, attachments, session, active: contr
     activate(next);
   };
 
-  return <div className="task-detail-panels">
+  return <div className="task-detail-panels" hidden={suspended} inert={suspended} style={suspended ? { display: 'none' } : undefined}>
     <div className="task-detail-tabs" role="tablist" aria-label={messages.inspection.detail.title}>
       {tabs.map((tab) => <button key={tab} className="task-detail-tab" id={tabId(tab)} role="tab" type="button" aria-selected={active === tab} aria-controls={panelId(tab)} tabIndex={active === tab ? 0 : -1} onClick={() => activate(tab)} onKeyDown={(event) => navigate(event, tab)}>{labels[tab]}</button>)}
     </div>
-    {tabs.map((tab) => <div key={tab} id={panelId(tab)} className={`task-detail-panel task-detail-panel-${tab}`} role="tabpanel" aria-labelledby={tabId(tab)} hidden={active !== tab} inert={active !== tab}>{tab === 'overview' ? typeof overview === 'function' ? overview(() => setActive('attachments')) : overview : tab === 'attachments' ? typeof attachments === 'function' ? attachments(active === 'attachments') : attachments : typeof session === 'function' ? session(active === 'session') : session}</div>)}
+    {tabs.map((tab) => <div key={tab} id={panelId(tab)} className={`task-detail-panel task-detail-panel-${tab}`} role="tabpanel" aria-labelledby={tabId(tab)} hidden={active !== tab} inert={active !== tab}>{content(tab)}</div>)}
   </div>;
 };

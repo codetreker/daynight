@@ -105,7 +105,7 @@ export const runWorkerSetup = async (
   for (const repository of plan.removedRepositories) context.stderr(`Remove from worker selection: ${repository.projectId === undefined ? terminalText(repository.remote) : repository.projectId}\n`);
   if (plan.resetGlobalNativeSettings) context.stderr(`Reset global model and native arguments for the switch to ${agentName(agent)}.\n`);
   for (const repository of plan.resetRepositories) context.stderr(`Reset incompatible native overrides for ${repository.projectId === undefined ? terminalText(repository.remote) : repository.projectId} (${agentName(repository.agent)} → ${agentName(agent)}).\n`);
-  context.stderr("Changes apply at the next worker startup. Existing execution settings remain frozen.\n");
+  context.stderr("These local settings are imported when this Worker first connects to cloud management.\n");
   const save = await prompt.select<boolean>({
     message: "Save this worker configuration?",
     choices: [{ name: "Save", value: true }, { name: "Cancel", value: false }],

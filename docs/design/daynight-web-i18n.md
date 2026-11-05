@@ -22,21 +22,17 @@ packages/daynight-web/
     LocaleProvider.tsx     展示值、偏好错误及保存操作
     LanguageSelector.tsx   共用原生选择器、错误提示与重试
   tests/helpers/renderWithLocale.tsx  显式语言渲染 helper
-  tests/mockups/locale-runtime.html
 ```
-
-隔离的[运行时预览](../../packages/daynight-web/tests/mockups/locale-runtime.html)继续演示多个选择器共享语言与 fixture 状态。实际组件的[任务浏览预览](../../packages/daynight-web/tests/mockups/browsing.html)和[附件预览](../../packages/daynight-web/tests/mockups/attachments.html)均显式挂载 Provider，复用生产组件及样式。这些 fixture 的前端交互不替代真实服务验收。
 
 生产 Application 的公开与认证分支共享常驻 LocaleProvider。messages.landing 拥有
 推广、示例文档与记录、FAQ、公开身份提示和元数据；演示的稳定身份与本地选择不依赖
 语言，切换保留状态与焦点。[公开入口设计](daynight-landing.md)拥有具体组合。
 [AuthenticatedApp](daynight-auth.md) 的 messages.auth 完整英语/简体中文契约拥有
 登录、设备授权、账户、项目创建、成员、邀请、令牌及工作空间 Worker 路由文案。
-messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称。
+messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称；其中 messages.workers.configuration 拥有配置字段、覆盖方式、目标与实际结果、逐项诊断、草稿校验、保存冲突和未知结果核对文案。
 入口在绘制前设置当前语言及与路径对应的推广页、指南或鉴权加载标题；后续页面元数据、
 路由与会话状态按当前目录更新。
-身份变化释放用户内容，但不重建语言 Provider。独立鉴权 fixture 仍显式挂载
-Provider，其内存交互验证与真实 UniAuth 生产验收分别保留证据。
+身份变化释放用户内容，但不重建语言 Provider。真实 UniAuth 生产验收保留对应源码与浏览器环境的证据。
 
 ## 初始语言与偏好
 
@@ -76,7 +72,7 @@ Context 的缺省值明确表示未挂载，缺少 Provider 时 hooks 抛出错�
 
 Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选择语言时先更新本页展示，再尝试保存；失败保留选择并将 issue 更新为 `write`，保留原始 `cause`。`retrySave()` 保存当前语言。任意保存成功均将 issue 清为 `null`，包括启动时产生的读取或无效值错误。展示上下文按 locale 保持稳定，单独更新保存错误不替换其消息与格式化器。
 
-`LanguageSelector` 包含带可见标签 `语言 / Language` 的原生 `select`，选项使用 `English` 与 `简体中文`。每个实例有独立 label 关联，多个实例共享 Provider。错误提示按当前语言从目录映射，不显示原始异常；出现错误时提供本地化的重试保存操作。原生控件保持键盘与焦点行为，语言变化不重建选择器。
+`LanguageSelector` 包含可访问名称为 `语言 / Language` 的原生 `select`，不显示独立标签，选项使用 `English` 与 `简体中文`。共享样式为文本和绘制的箭头分别预留空间，箭头距右边框保持固定间距；各入口复用这一布局。每个实例有独立标识，多个实例共享 Provider。错误提示按当前语言从目录映射，不显示原始异常；出现错误时提供本地化的重试保存操作。原生控件保持键盘与焦点行为，语言变化不重建选择器。
 
 ## 消息与格式化
 
@@ -85,17 +81,19 @@ Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选
 
 固定文本使用字符串；动态文本使用带具名参数的函数，返回完整句子，目录负责语序、标点、单位和复数。调用方不拼接零散英语片段，不提供缺失键时使用另一种语言的静默替代。产品计数消息及格式测试覆盖 0、1 与多项；测试专用消息不进入产品目录。
 
+Session 的指定操作和活动标签从已有英语目录导出只读子集，只在[对应组件位置](task-session-protocol.md#session-view-的阅读与输入状态)读取。该映射是显式产品术语规则，不是缺失翻译时的 fallback。组件保留 LocaleProvider 订阅及周围本地化消息，固定文本使用局部 `lang="en"`；不修改语言偏好、整页语言或共享中文消息值。`SessionDisplayMenu` 的标题、两个模式名、偏好 issue 和保存重试，以及 Conversation 空态都由 `useSessionMessages` 按当前 locale 提供，不进入固定英语子集。偏好只存 mode 与 issue 类别，错误在 render 时翻译；语言改变不创建偏好 store、Session client 或操作。
+
 `getFormats(locale)` 按两种 locale 缓存 `Intl.DateTimeFormat`、`Intl.NumberFormat` 和 `Intl.PluralRules`，提供 `date`、`time`、`dateTime`、`number`、`bytes` 与 `plural`。日期输入接受 `Date`、字符串或数字，沿用本地时区与 `hour12: false`；格式改变不修改输入时间戳。数字按语言分组；字节以精确值加 `B` 展示，不转换为会丢失精度的近似容量。格式化接口保留原生 `Intl` 的输入语义，不增加替代缺失数据的默认值；日期无效时由原生格式化器抛出错误。Worker 的 presentation helper 独立以当前 locale 的 Intl.NumberFormat 将严格 bytes 输入缩放为 B/KiB/MiB/GiB 等 IEC 读数，保留 API 精确值，不改变 getFormats.bytes 的精确 B 行为；相对上报时间使用服务端锚定时间与 Intl.RelativeTimeFormat。
 
 ## 生产界面与生命周期
 
 生产入口在 `createRoot()` 前执行初始解析，再把常驻 Provider 放在应用根部。首屏 HTML `lang` 和标题使用解析结果，后续导航与切换同步更新。Provider 不以 locale 作为 `key`，领域组件也不使用 locale 重置实例。
 
-导航、图浮层标题栏和独立 `TaskDetailPage` 共用 `LanguageSelector`。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、全屏、“…”菜单和关闭入口，新标签链接位于“…”菜单；当前状态菜单与平台切换位于标题下的公共状态行。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。图浮层标题、关闭、全屏及图控件使用同一目录，语言变化保留当前打开状态、同一图实例和焦点。
+主界面导航与独立 `TaskDetailPage` 共用 `LanguageSelector`。共享 `ManagementDialog` 和 `CreateProjectDialog` 继承当前语言，不渲染选择器或其偏好提示与重试；页面入口继续拥有偏好反馈。普通和全屏图浮层均不渲染自己的选择器或偏好反馈。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、全屏、“…”菜单和关闭入口，新标签链接位于“…”菜单；当前状态菜单与平台切换位于标题下的公共状态行。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。图浮层标题、关闭、全屏及图控件使用同一目录，语言变化保留当前打开状态、同一图实例和焦点。
 
 Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻译字符串。语言变化更新资源、版本、时间和 last-confirmed 文案，不改变 Worker ID、hook 的读取依赖、冻结状态或单调锚点，不额外发起请求。普通任务状态和 phase 复用已有目录；机器名、路径和实际版本原样显示。
 
-项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。
+项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。附件删除确认订阅共享语言状态，但不复制语言选择器或偏好提示；页面的既有入口和反馈保留。
 
 图结构与几何继续只依赖 `index/rootId` 和原有布局输入。memoized 的 `TaskNode`、`ChainRow` 和 `DependencyEdges` 在内部订阅展示 Context，更新文案与 ARIA，同时保留节点数据、边路径、视口和初始定位机制。依赖边的昂贵绘制分解以 geometry 为 memo 依赖，语言变化更新可访问文本，同时保留 canonical 路线坐标与绘制片段。React Flow 的无障碍配置由当前消息生成；英文文案必须适配现有节点尺寸。
 
@@ -117,12 +115,13 @@ Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻�
 | 场景 | 验证内容 |
 |---|---|
 | `language-startup-preferences` | 浏览器语言、显式保存、重载与路由、标题和 HTML `lang`，以及用户原始数据。 |
-| `language-state-preservation` | 图节点/边/视口、全屏与模态焦点、PR 页码、附件输入/iframe 身份及内容；待完成上传、覆盖和删除期间切换，每项写入只执行一次。 |
-| `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局。 |
+| `language-state-preservation` | 检查图节点/边/视口、选择及全屏切换；检查全屏与模态焦点，并验证详情页签往返保留 PR 页码、附件输入和 iframe 身份及内容；分别挂起上传、覆盖和删除，验证待完成状态和每项写入次数。 |
+| `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局；图的普通和全屏模式无局部语言入口及占位，长标题、关闭和图操作保持可访问。 |
 
-三个场景使用现有受监控页面与场景级 `en-US` 浏览器 locale，继续由单一 Playwright project 执行一次、零 retry。需要精确比较语言切换前后业务请求数量的隔离阶段控制浏览器时钟，排除独立项目定时器触发；真实周期刷新由 `refresh-staleness` 单独验证。滚动恢复读取实际 `scrollTop`，以测试进程单调时钟观察其连续稳定状态，不依赖受控浏览器定时器。functional inventory、报告聚合与严格预期测试使用相同 annotation；当前每目标 28 个功能场景，
-原生另有五个容量/超限场景，共 33 个；容器 28 个，总计 61 个。三状态使用 task-status、
+三个场景使用现有受监控页面与场景级 `en-US` 浏览器 locale，继续由单一 Playwright project 执行一次、零 retry。需要精确比较语言切换前后业务请求数量的隔离阶段控制浏览器时钟，排除独立项目定时器触发；真实周期刷新由 `refresh-staleness` 单独验证。滚动恢复读取实际 `scrollTop`，以测试进程单调时钟观察其连续稳定状态，不依赖受控浏览器定时器。functional inventory、报告聚合与严格预期测试使用相同 annotation；
+常规验收与 CI 当前要求原生、容器各 29 个功能场景，共 58 个；显式本地压力验收另有
+五个原生容量/超限场景，共 63 个。三状态使用 task-status、
 task-status-conflicts、task-status-recovery、task-status-transitions，状态浏览器写入只允许登记资源的
-精确 PUT status。容量、性能、覆盖率与清理规则保持，当前 inventory 由生产验收脚本验证。
+精确 PUT status。严格覆盖率与清理规则保持；容量及其性能预算由显式本地压力入口拥有，当前所选模式的精确 inventory 由生产验收脚本验证。
 
 组合验收核对相同源码的真实嵌入式服务与生产容器回执，验证完整 L1–L10，包括首屏、持久保存、键盘操作、两种语言的 1440px/320px 视觉、错误恢复、业务请求数量和资源清理。原型、隔离组件、JSDOM 与本地浏览器各有其证据范围，不能替代真实服务和对应源码的生产验收。

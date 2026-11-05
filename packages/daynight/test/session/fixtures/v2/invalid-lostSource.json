@@ -1,0 +1,26 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "receipt",
+  "payload": {
+    "finalizationId": "00000000-0000-4000-8000-000000000014",
+    "disposition": "unavailable",
+    "dispositionDigest": "80b6ac09e6071d6369fd84eb9ac28d7eb1a01ca69b7aaab15526dc98ef090de0",
+    "reason": "ended_before_first_sample",
+    "sha256": null,
+    "byteLength": null,
+    "completeness": null,
+    "evidence": {
+      "recordingEnabled": true,
+      "selectedFrameCount": "0",
+      "registeredFrameCount": "1",
+      "captureError": null
+    }
+  }
+}

@@ -7,14 +7,14 @@
 
 ## 现有结构与职责
 
-[状态服务](../../packages/daynight-server/internal/service/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
+[状态服务](../../packages/daynight-server/internal/service/task/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
 [项目写事务](../../packages/daynight-server/internal/core/store/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
 `updated_at` 随普通编辑变化，不能作为执行起点。
-[任务链图读取服务](../../packages/daynight-server/internal/service/task_graph.go)在只读快照中
-读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task_sync.go)
+[任务链图读取服务](../../packages/daynight-server/internal/service/task/task_graph.go)在只读快照中
+读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task/task_sync.go)
 读取项目摘要。两者都在数据读取后采样数据库 `observedAt`。
 
-Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每五秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
+Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每 15 秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
 最新服务端样本由独立 `GraphSnapshot.observedAt` 保存，因此仅时钟变化时复用图与索引仍能取得新样本。
 [TaskNode](../../packages/daynight-web/src/features/task-graph/TaskNode.tsx) 已将检查任务的主体按钮和打开详情的 Details 按钮分开。
 `GraphIndex` 拥有任务与统计，布局来自投影和展开状态；项目设置与每秒计时不应成为这些计算的输入。
@@ -139,8 +139,9 @@ API 读取沿既有前台身份 guard、AbortController 和 generation，旧响�
 `/projects/:id/settings` 与成员页为同级路由，支持 GET/HEAD 深链接，复用项目导航、面板、表单、错误和权限展示模式。
 ProjectSettingsPanel 按 user/project 键隔离，成员查看权威值，管理员可编辑分钟、保存或取消。保存期间禁用相应写操作。
 草稿与已保存 Project 分开；成功 PATCH 返回完整 Project 后更新权威值，确认的 4xx 拒绝不应用草稿。
-409/403 重新读取 Project 和成员，冲突后展示当前设置与角色，不重发 PATCH；404 或自身成员消失清除私有 Project 和草稿。
-网络、协议或 5xx 错误代表未确认写入，先进入 uncertain 并核对 Project/成员；核对成功后才能再次保存，
+本人角色由共享内存 access 提供，权限刷新保持设置草稿。409/403 重新读取 Project
+和 access，冲突后展示当前设置与角色，不重发 PATCH；确认失权时清除私有 Project 和草稿。
+网络、协议或 5xx 错误代表未确认写入，先进入 uncertain 并核对 Project/access；核对成功后才能再次保存，
 失败保留明确错误、阻止 Save 并提供只读重试。路由离开或 abort 仅取消旧客户端工作，不能证明远端未提交。
 共享 foreground request guard 保留同用户表单与焦点，换号 generation 使旧读写失效。
 
@@ -181,5 +182,5 @@ Goal 子任务行另覆盖两种许可下的分钟推进、45 分钟完成冻结
 
 服务端不增加后台作业或告警扫描器。网页时钟仅属于当前项目页面，错误与取消归现有页面请求所有者；
 浏览器定时器只推进本地显示，不产生逐卡网络请求或遥测。每个任务增加两个可空时间字段，
-每个图增加一个时钟字段，每个项目增加固定大小 settings。图原有节点/边上限、五秒轮询及列表分页保持不变；
+每个图增加一个时钟字段，每个项目增加固定大小 settings。图节点/边上限与列表分页沿用既有约束；计时复用每 15 秒的可见页面 task-sync，不另建轮询；
 设置读取复用 Project，修改仅增加一次显式 PATCH，不新增模型工具或无界历史输出。

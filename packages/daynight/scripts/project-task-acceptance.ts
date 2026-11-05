@@ -1,22 +1,62 @@
+import { execFileSync } from "node:child_process";
 import crossSpawn from "cross-spawn";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { InstalledCliReceipt } from "../test/fixtures/installed-cli.js";
-import type { BudgetProbeReceipt } from "./project-task-budgets.js";
+import type { BudgetProbeReceipt, BudgetProbeSuite } from "./project-task-budgets.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../../..");
 const serverRoot = path.join(repositoryRoot, "packages/daynight-server");
-const receiptPath = path.join(repositoryRoot, ".tmp/project-task-service-evidence.json");
-const coverageArgs = ["run", "github.com/codetreker/go-cov/cmd/go-cov@d6caf2759e330b48d69a543695e37002a48feb1d", "--config", ".go-cov.toml", "--ci", "--coverprofile", ".tmp/coverage.out"];
+const e2ePackage = "github.com/codetreker/daynight/packages/daynight-server/cmd/e2e_tests";
+// The pinned tool uses substring matching for package exclusions. Guard the entire
+// matching directory tree so this selection can never hide production statements.
+// https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/run.go#L195-L202
+const coverageArgs = ["run", "github.com/codetreker/go-cov/cmd/go-cov@d6caf2759e330b48d69a543695e37002a48feb1d", "--config", ".go-cov.toml", "--ci", "--coverprofile", ".tmp/coverage.out", "--exclude-packages", e2ePackage];
+
+type ValidationMode = "all" | "coverage" | "e2e";
+
+export const goValidationArguments = (setting: string | undefined, goFlags?: string) => {
+  if (setting !== undefined && setting !== "true" && setting !== "false") throw new Error("DAYNIGHT_TEST_RACE must be true or false.");
+  const race = setting === undefined || setting === "true";
+  return {
+    coverage: [...coverageArgs, `--race=${race}`],
+    // go-cov omits -race=false, so GOFLAGS must prevent inherited race instrumentation.
+    // https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/run.go#L159-L169
+    coverageGoFlags: race ? goFlags : goFlags === undefined || goFlags === "" ? "-race=false" : `${goFlags} -race=false`,
+    e2e: ["test", `-race=${race}`, "-count=1", "-timeout=10m", "./cmd/e2e_tests"],
+  };
+};
+
+export const coveragePackages = (packages: readonly string[]): string[] => {
+  if (!packages.includes(e2ePackage) || packages.some((name) => name.includes(e2ePackage) && name !== e2ePackage)) {
+    throw new Error("Coverage exclusion must match exactly the cmd/e2e_tests package.");
+  }
+  return packages.filter((name) => name !== e2ePackage);
+};
+
+export const requireTestOnlyE2E = async (directory: string): Promise<void> => {
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) await requireTestOnlyE2E(path.join(directory, entry.name));
+    else if (entry.name.endsWith(".go") && !entry.name.endsWith("_test.go")) {
+      throw new Error("cmd/e2e_tests must remain test-only; production Go files cannot be excluded from coverage.");
+    }
+  }
+};
 
 type CommandReceipt = { command: string; args: readonly string[]; elapsedMs: number; exitCode: number | null; signal: NodeJS.Signals | null };
 type ServiceEvidence = {
   schemaVersion: 1;
+  suite: BudgetProbeSuite;
+  mode: Exclude<ValidationMode, "all">;
+  source?: { revision: string; tree: string; dirty: boolean };
+  packages?: string[];
   passed: boolean;
   installed?: InstalledCliReceipt;
   build?: CommandReceipt;
   goCoverage?: CommandReceipt;
+  goE2E?: CommandReceipt;
   strictCoverage?: CommandReceipt;
   probes: BudgetProbeReceipt[];
   installedFixtureRemoved: boolean;
@@ -65,11 +105,20 @@ const runCommand = async (command: string, args: readonly string[], cwd: string,
   }
 };
 
-export const runProjectTaskAcceptance = async (): Promise<void> => {
+export const runProjectTaskAcceptance = async (suite: BudgetProbeSuite = "deadlines", mode: ValidationMode = "all"): Promise<void> => {
+  if (suite === "stress-budgets" && process.env.CI) throw new Error("CLI resource-budget stress tests run only on local machines.");
+  const goArguments = goValidationArguments(process.env.DAYNIGHT_TEST_RACE, process.env.GOFLAGS);
+  if (mode === "all") {
+    await runProjectTaskAcceptance(suite, "coverage");
+    await runProjectTaskAcceptance("deadlines", "e2e");
+    return;
+  }
+  const receiptPath = path.join(repositoryRoot, mode === "e2e" ? ".tmp/project-task-e2e-evidence.json" : suite === "deadlines" ? ".tmp/project-task-service-evidence.json" : ".tmp/project-task-stress-evidence.json");
   await rm(receiptPath, { force: true });
+  await rm(path.join(serverRoot, mode === "e2e" ? ".tmp/acceptance-evidence.json" : ".tmp/coverage.out"), { force: true });
   const fixtureModule: typeof import("../test/fixtures/installed-cli.js") = await import(new URL("../test/fixtures/installed-cli.ts", import.meta.url).href);
   const budgets: typeof import("./project-task-budgets.js") = await import(new URL("./project-task-budgets.ts", import.meta.url).href);
-  const evidence: ServiceEvidence = { schemaVersion: 1, passed: false, probes: [], installedFixtureRemoved: false, failures: [] };
+  const evidence: ServiceEvidence = { schemaVersion: 1, suite, mode, passed: false, probes: [], installedFixtureRemoved: false, failures: [] };
   const failures: unknown[] = [];
   const fail = (error: unknown): void => { failures.push(error); evidence.failures.push(budgets.describeAcceptanceError(error)); };
   const cancellation = new AbortController();
@@ -81,6 +130,12 @@ export const runProjectTaskAcceptance = async (): Promise<void> => {
   });
   let fixture: Awaited<ReturnType<typeof fixtureModule.createInstalledCli>> | undefined;
   try {
+    const git = (...args: string[]): string => execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8", timeout: 10_000 }).trim();
+    evidence.source = { revision: git("rev-parse", "HEAD"), tree: git("rev-parse", "HEAD^{tree}"), dirty: git("status", "--porcelain") !== "" };
+    await requireTestOnlyE2E(path.join(serverRoot, "cmd/e2e_tests"));
+    const packages = execFileSync("go", ["list", "./..."], { cwd: serverRoot, env: process.env, encoding: "utf8", timeout: 120_000 }).trim().split(/\r?\n/);
+    const productionPackages = coveragePackages(packages);
+    evidence.packages = mode === "e2e" ? [e2ePackage] : productionPackages;
     try { evidence.build = await runCommand("pnpm", ["--dir", repositoryRoot, "build"], repositoryRoot, process.env, fixtureModule.terminateInstalledProcess, cancellation.signal, 120_000); }
     catch (error) {
       if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.build = error.commandReceipt as CommandReceipt;
@@ -89,23 +144,31 @@ export const runProjectTaskAcceptance = async (): Promise<void> => {
     fixture = await fixtureModule.createInstalledCli({ signal: cancellation.signal });
     evidence.installed = fixture.receipt;
     const budgetTokenFile = path.join(fixture.receipt.root, "budget-token.json");
-    const env = { ...process.env, DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT: fixture.receiptPath, DAYNIGHT_TEST_CLI_BUDGET_TOKEN_FILE: budgetTokenFile };
-    try { evidence.goCoverage = await runCommand("go", coverageArgs, serverRoot, env, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
-    catch (error) {
-      if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.goCoverage = error.commandReceipt as CommandReceipt;
-      throw error;
-    }
-    try { evidence.strictCoverage = await runCommand(process.execPath, ["scripts/coverage.mts", ".tmp/coverage.out"], serverRoot, env, fixtureModule.terminateInstalledProcess, cancellation.signal, 10_000); }
-    catch (error) {
-      if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.strictCoverage = error.commandReceipt as CommandReceipt;
-      throw error;
-    }
-    const serverToken = await readBudgetToken(budgetTokenFile);
-    await rm(budgetTokenFile);
-    try { evidence.probes = await budgets.runProductionBudgetProbes(fixture.receipt, repositoryRoot, serverToken, cancellation.signal); }
-    catch (error) {
-      if (error instanceof budgets.BudgetAcceptanceError) evidence.probes = error.receipts;
-      throw error;
+    const env = { ...process.env, DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT: fixture.receiptPath, ...(mode === "coverage" ? { DAYNIGHT_TEST_CLI_BUDGET_TOKEN_FILE: budgetTokenFile } : {}) };
+    if (mode === "e2e") {
+      try { evidence.goE2E = await runCommand("go", goArguments.e2e, serverRoot, env, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
+      catch (error) {
+        if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.goE2E = error.commandReceipt as CommandReceipt;
+        throw error;
+      }
+    } else {
+      try { evidence.goCoverage = await runCommand("go", goArguments.coverage, serverRoot, { ...env, GOFLAGS: goArguments.coverageGoFlags }, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
+      catch (error) {
+        if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.goCoverage = error.commandReceipt as CommandReceipt;
+        throw error;
+      }
+      try { evidence.strictCoverage = await runCommand(process.execPath, ["scripts/coverage.mts", ".tmp/coverage.out"], serverRoot, env, fixtureModule.terminateInstalledProcess, cancellation.signal, 10_000); }
+      catch (error) {
+        if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.strictCoverage = error.commandReceipt as CommandReceipt;
+        throw error;
+      }
+      const serverToken = await readBudgetToken(budgetTokenFile);
+      await rm(budgetTokenFile);
+      try { evidence.probes = await budgets.runBudgetProbes(suite, fixture.receipt, repositoryRoot, serverToken, cancellation.signal); }
+      catch (error) {
+        if (error instanceof budgets.BudgetAcceptanceError) evidence.probes = error.receipts;
+        throw error;
+      }
     }
   } catch (error) {
     fail(error);
@@ -115,7 +178,8 @@ export const runProjectTaskAcceptance = async (): Promise<void> => {
       try { await fixture.cleanup(); evidence.installedFixtureRemoved = true; }
       catch (error) { fail(error); }
     }
-    evidence.passed = evidence.failures.length === 0 && evidence.installedFixtureRemoved && evidence.probes.length === 6 && evidence.probes.every((probe) => probe.passed);
+    const expectedProbes = mode === "e2e" ? [] : budgets.budgetProbeNames(suite);
+    evidence.passed = evidence.failures.length === 0 && evidence.installedFixtureRemoved && evidence.probes.length === expectedProbes.length && expectedProbes.every((name) => evidence.probes.some((probe) => probe.name === name && probe.passed));
     try {
       await mkdir(path.dirname(receiptPath), { recursive: true });
       await writeFile(receiptPath, `${JSON.stringify(evidence, null, 2)}\n`);
@@ -126,6 +190,7 @@ export const runProjectTaskAcceptance = async (): Promise<void> => {
 };
 
 if (import.meta.main) {
-  if (process.argv.length !== 2) throw new Error("Usage: node packages/daynight/scripts/project-task-acceptance.ts");
-  await runProjectTaskAcceptance();
+  const args = process.argv.slice(2);
+  if (args.length > 1 || args[0] !== undefined && !["--coverage", "--e2e", "--stress-budgets"].includes(args[0])) throw new Error("Usage: node packages/daynight/scripts/project-task-acceptance.ts [--coverage|--e2e|--stress-budgets]");
+  await runProjectTaskAcceptance(args[0] === "--stress-budgets" ? "stress-budgets" : "deadlines", args[0] === "--coverage" ? "coverage" : args[0] === "--e2e" ? "e2e" : "all");
 }

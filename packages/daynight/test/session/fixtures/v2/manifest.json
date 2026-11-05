@@ -1,0 +1,939 @@
+{
+  "cases": [
+    {
+      "file": "valid-registration.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-snapshot.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-control.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-request.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-operation.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-result.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-ledger.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-finalization.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-status.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-registration-ack.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-reconnect.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-native-u32.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-native-adapter.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-ready-receipt.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-unavailable-receipt.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-not-enabled-receipt.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-archive.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "valid-partial-archive.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "valid-active-ledger.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-input-16k.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-keys.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-status-pending.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-status-failed.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-status-unavailable.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-version.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-protocol.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-kind.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-content.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-unknown.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-missing.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-uuid.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-negative.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-overflow.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-leadingZero.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-numericSeq.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-nativeControl.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-nativeUuidNotRequired.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-nativeOverflow.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-nativeNegative.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-capability.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-notFull.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-rowCount.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-width.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-height.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-style.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-color.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-ansi.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-timestamp.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-timezone.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-input-over-limit.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-input-escape.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-keys-escape.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-manual-dispatching.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-manual-no-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-lease-epoch.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resume-no-confirmation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-unknown-result.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-provider-accepted.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-receipt-hash.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-lostSource.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-captureError.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-unavailableBody.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-unavailableNoProof.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-finalize-active.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-proof-other-run.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-proof-no-shell.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-missingFile.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-unknownFile.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-otherSegment.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-otherGeneration.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-otherOwner.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-frameHash.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-frameSize.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-frameSequence.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-elapsed.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-duration.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-partialNoGap.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zeroFrames.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-segmentReference.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-duplicateFile.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-duplicateIndex.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-unknownArchive.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-gap-overlap.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-complete-with-gap.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-duplicate.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-nested-duplicate.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-surrogate.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-utf8.bin",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-frame-duplicate.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "valid-multiple-runs-clock-rollback.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "invalid-reordered-segments.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-reordered-index.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-cross-run-segment.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-cross-run-native-change.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "valid-ledger-clock-rollback.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-native-filled-segments.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "invalid-native-id-between-segments.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-native-id-reverted-segment.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-native-id-proof-disagrees.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-reversed-run-ordinal.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-origin-query.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-origin-fragment.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-origin-ipv4-short.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-origin-port-overflow.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-origin-punctuation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-origin-ipv6.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-origin-ipv6-mapped.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-origin-ipv6-mapped-dotted.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-origin-zero-port.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-restart-missing-boundary.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-restart-complete.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-restart-duplicate-boundary.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-restart-wrong-endpoint.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-collector-restart-complete.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-boundary-before-interval.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "valid-empty-first-run.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "valid-empty-final-run.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "valid-consecutive-empty-runs.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "valid-segment-with-no-sample.json",
+      "type": "archive",
+      "valid": true
+    },
+    {
+      "file": "invalid-zero-run-no-evidence.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero-run-selected-content.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero-run-registered-content.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero-run-capture-error.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero-run-wrong-evidence-owner.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero-run-duplicate-evidence.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero-run-evidence-reordered.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-boundary-order.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "invalid-zero-run-error-gap.json",
+      "type": "archive",
+      "valid": false
+    },
+    {
+      "file": "valid-recording-responsibility.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recording-evidence-zero.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recording-evidence-open.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-recording-count-order.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-revision-zero.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-missing-provenance.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-bad-source.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recording-unknown-field.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-renew.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-control-renew-no-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-dispatch.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-control-dispatch-digest.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-control-dispatch-actor.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-ack.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-control-ack-not-durable.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-control-ack-unsettled.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-recovery-prepare.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-consume.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-prepared.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-recovery-consumed.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-recovery-native.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-no-epoch-advance.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-unknown.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-skipped-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-missing-consumed.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-extra-field.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-closing-equals-source.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-closing-regression.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-prepared-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-stale-connection.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-stale-control.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-control-regression.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-skipped-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-recovery-state-consumed-envelope-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-resolve-initial-assignment.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-resume-with-initial-disposition.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-draft.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-missing-disposition.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resume-with-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-unresolved-initial.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-prepared-stop-ledger.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-prepared-stop-boot-change.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "valid-prepared-stop-retained-native.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-prepared-stop-missing-launch.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-missing-daemon.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-null-launch.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-wrong-launch.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-extra-daemon-key.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-daemon-boot.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-daemon-shell-pid.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-agent.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-segments.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-native-enrichment.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-proof-generation.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-proof-terminal.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-prepared-stop-two-shells.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-archive-prepared-final-run.json",
+      "type": "archive",
+      "valid": true
+    }
+  ]
+}

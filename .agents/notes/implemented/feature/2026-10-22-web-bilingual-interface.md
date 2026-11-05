@@ -28,20 +28,27 @@ provides the authenticated branch under that same Provider. The
 adds the public introduction and reactive branch selection; all page owners update
 document metadata on language or route changes.
 Navigation focus remains dependent on the route, so changing a language does
-not refocus the page. The original integration placed the shared selector in the
+not refocus the page. The [global language-entry decision](../simplification/2026-11-05-global-language-entry.md)
+partially supersedes the original placement policy while retaining the language
+runtime and state guarantees. The original integration placed the shared selector in the
 navigation bar, task details and fullscreen graph so modal users could change
 language while the underlying application was inert. The
 [compact-header decision](../simplification/2026-10-24-compact-task-detail-header.md)
 removes the duplicate task-detail selector; details consume the same current
-application locale through the persistent Provider. Navigation and graph-dialog
-headers expose `LanguageSelector` in normal and fullscreen modes; the
-[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) preserves that
-access while the page is inert. The
+application locale through the persistent Provider. The original graph-dialog
+header also exposed `LanguageSelector` in both modes while the page was inert.
+The [graph language entrance decision](../simplification/2026-11-05-graph-language-entry.md)
+removes that duplicate while preserving the graph subscription. Navigation keeps
+its selector. The
 [standalone complete details](../architecture/2026-10-24-standalone-task-detail.md)
 use that same Provider and selector outside the workspace shell, with its own
 localized route title and ordinary browser keyboard behavior.
 
-The two typed catalogs cover all shipped first-party components. `common`
+The two typed catalogs cover all shipped first-party components. The
+[Session operation label decision](../bug-fix/2026-11-04-english-session-operation-labels.md)
+defines a deliberate English-only subset at specific Session control and
+activity positions; surrounding explanations and errors remain localized.
+`common`
 owns task status labels and the request ID label; `workspace`, `graph` and
 `inspection` own their domain messages. The
 [authenticated workspace](2026-10-22-web-auth-workspace.md) extends the same
@@ -76,8 +83,11 @@ native scenarios. The [approval lifecycle](2026-10-22-task-approval-lifecycle.md
 added three approval scenarios per target; the later
 [withdrawal decision](2026-10-23-task-unapprove.md) added one more. The inventory at that delivery
 was twenty-four functional per target and twenty-nine native, fifty-three across both targets,
-retaining all five capacity/limit cases. The existing single project, one worker, zero retries,
-capacity matrix, strict coverage and cleanup gates remain required. The
+retaining all five capacity/limit cases. The existing single project, one worker,
+zero retries, strict coverage and cleanup gates remain required. The
+[local stress decision](../testing/2026-11-03-local-stress-suites.md) subsequently
+places the complete capacity matrix behind explicit local stress acceptance;
+ordinary CI retains the functional language scenarios. The
 [pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md) records the original
 phase-scheduling choices; the [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns current scheduling, requirement mapping and receipt interpretation.
@@ -108,8 +118,9 @@ of language.
 ## Consequences
 
 English and Simplified Chinese use one saved origin-local preference across
-the shipped workspace. Modal controls, errors and asynchronous results follow
-the same language as navigation. Existing per-project browsing formats, URLs,
+the shipped workspace. Except for the explicitly defined Session operation
+labels, modal controls, errors and asynchronous results follow the same language
+as navigation. Existing per-project browsing formats, URLs,
 protocols, user data and attachment execution rules remain intact. This adds
 presentation capability without authentication, CLI, backend or new business
 operations.

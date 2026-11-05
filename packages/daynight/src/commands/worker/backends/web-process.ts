@@ -1,27 +1,29 @@
-import { spawn } from "node:child_process";
-import { open, mkdir, readFile } from "node:fs/promises";
+import { ControllerStartupError } from "../../controller/startup.js";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { prepareControllerIpcEndpoint } from "../../controller/paths.js";
 import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, writeLaunchTicket, type ControllerLaunchTicket } from "../../controller/launch-ticket.js";
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
-import { requestController } from "../../controller/local-client.js";
-import { captureProcessProof } from "../../controller/process-proof.js";
+import { confirmControllerProcessesStopped } from "../../controller/process-proof.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
 import { writeControllerCredential } from "./session-api.js";
+import { createControllerExecutionSerializer, launchControllerProcess } from "./controller-process.js";
+import { controllerCredentialNeedsRefresh } from "./grant-renewal.js";
 export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number }) => {
   const current = (task: LocalTask) => { const latest = options.store.getTask(task); if (latest?.webExecution == null) throw new Error("The web execution identity disappeared."); return latest; };
-  const tails = new Map<string, Promise<void>>();
-  const serialize = async <T>(task: LocalTask, action: () => Promise<T>): Promise<T> => {
-    const key = task.webExecution?.executionId ?? task.claimId;
-    const previous = tails.get(key) ?? Promise.resolve(); let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const tail = previous.then(() => gate);
-    tails.set(key, tail); await previous;
-    try { return await action(); } finally { release(); if (tails.get(key) === tail) tails.delete(key); }
+  const serializeExecution = createControllerExecutionSerializer();
+  const serialize = <T>(task: LocalTask, action: () => Promise<T>): Promise<T> => serializeExecution(task.webExecution?.executionId ?? task.claimId, action);
+  const cleanupStopped = async (task: LocalTask): Promise<boolean> => {
+    if (task.cleanup === null) return false;
+    const execution = task.webExecution!;
+    const saved = readControllerSnapshot(path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"));
+    if (saved !== null && (saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId)) throw new Error("Controller credential renewal has conflicting cleanup evidence.");
+    const proof = saved?.controllerProcess ?? execution.controllerProcess;
+    return proof !== null && await confirmControllerProcessesStopped(proof, saved?.nativeProcesses ?? execution.nativeProcesses);
   };
   const methods = {
     prepare: async (input: LocalTask, prompt: string, signal: AbortSignal): Promise<ControllerLaunchTicket> => {
@@ -56,41 +58,28 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
       let task = current(input); if (task.webExecution!.launchSubmission !== "not-submitted") return;
       // A reusable grant also supports the first hello, including a lost bootstrap handshake.
       await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(task, { ...task.webExecution!, launchSubmission: "unknown" }, signal));
-      const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId);
-      const log = await open(path.join(directory, "controller.log"), "a", 0o600);
+      let submitting = false, acknowledged = false;
       try {
-        signal.throwIfAborted();
-        task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now());
-        const child = spawn(process.execPath, [path.join(options.packageDirectory, "dist", "main.js"), "controller", ticket.provider, "--launch-id", ticket.launchId], { cwd: ticket.cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
-        await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-        child.unref();
-        if (child.pid === undefined) throw new Error("Controller spawn did not establish its process identity.");
-        const proof = await captureProcessProof(child.pid);
-        task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now());
-        const deadline = Date.now() + 30000;
-        while (Date.now() < deadline) {
-          signal.throwIfAborted();
-          let response: Awaited<ReturnType<typeof requestController>> | undefined;
-          try { response = await requestController(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
-          catch { if (child.exitCode !== null || child.signalCode !== null) throw new Error("Controller exited before its authenticated initialization; inspect its private log."); }
-          if (response !== undefined) {
-            options.store.updateWebExecution(task, { launchSubmission: "acknowledged", nativeProcesses: response.snapshot.nativeProcesses }, options.now());
-            return;
-          }
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        throw new Error("Controller startup outcome is unknown; the original process and launch intent are retained.");
-      } finally { await log.close(); }
+        await launchControllerProcess({
+          homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, signal,
+          env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(options.homeDirectory).stateDirectory },
+          onSubmitting: () => { submitting = true; task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now()); },
+          onSpawned: proof => { task = options.store.updateWebExecution(task, { controllerProcess: proof }, options.now()); },
+          onObserved: snapshot => { options.store.updateWebExecution(task, { launchSubmission: "acknowledged", nativeProcesses: snapshot.nativeProcesses }, options.now()); acknowledged = true; },
+        });
+      } catch (error) {
+        if (error instanceof ControllerStartupError) options.store.observeStartup(task, error.observation, options.now());
+        else if (!signal.aborted && submitting && !acknowledged) options.store.observeStartup(task, { state: "unknown", reasonCode: "controller_start_unknown" }, options.now());
+        throw error;
+      }
     },
     refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
       const task = current(input);
-      if (task.webExecution!.launchId !== ticket.launchId || task.cleanup?.agentStopped) return;
-      let expiresAt: unknown; try { expiresAt = (JSON.parse(await readFile(ticket.credentialFile, "utf8")) as { expiresAt: unknown }).expiresAt; } catch { throw new Error("Controller credential state is unavailable; it cannot be silently replaced."); }
-      if (typeof expiresAt !== "string" || !Number.isFinite(Date.parse(expiresAt))) throw new Error("Controller credential expiry is invalid.");
-      if (Date.parse(expiresAt) - options.now() > 120_000) return;
+      if (task.webExecution!.launchId !== ticket.launchId || await cleanupStopped(task)) return;
+      if (!await controllerCredentialNeedsRefresh(ticket.credentialFile, options.now())) return;
       const grant = await options.sessionApi.grant(task, task.webExecution!, signal);
       const latest = current(task);
-      if (latest.webExecution!.launchId !== ticket.launchId || latest.cleanup?.agentStopped) return;
+      if (latest.webExecution!.launchId !== ticket.launchId || await cleanupStopped(latest)) return;
       signal.throwIfAborted();
       await writeControllerCredential(ticket.credentialFile, grant);
     },

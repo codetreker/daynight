@@ -9,6 +9,7 @@ import { WorkerStatusBadge } from '../src/features/workers/WorkerStatusBadge';
 import { formatWorkerBytes, formatWorkerRelative } from '../src/features/workers/presentation';
 import { useWorkers } from '../src/features/workers/useWorkers';
 import { useWorker } from '../src/features/workers/useWorker';
+import { getFormats } from '../src/i18n/formats';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
 vi.mock('../src/features/workers/useWorkers', () => ({ useWorkers: vi.fn() }));
@@ -51,8 +52,27 @@ describe('Worker list presentation', () => {
     expect(screen.getByText('2 tasks · last observed snapshot')).toBeInTheDocument(); expect(screen.getByText('Task information awaiting synchronization')).toBeInTheDocument();
     expect(screen.getAllByText('Linux')).toHaveLength(4); expect(screen.queryByText('Actual CPU model')).toBeNull();
     const link = screen.getByRole('link', { name: 'View worker-1' }); expect(link).toHaveAttribute('href', `/workers/${id(1)}`);
-    expect(within(link).getByText('20 seconds ago')).toHaveAttribute('datetime', report);
+    expect(within(link).getByText(getFormats('en').dateTime(report))).toHaveAttribute('datetime', report);
     fireEvent.click(link); expect(window.location.pathname).toBe(`/workers/${id(1)}`);
+  });
+
+  it.each(['en', 'zh-CN'] as const)('keeps the %s report time fixed across ticks and updates it with a new report', locale => {
+    const oldReport = new Date(now - 6 * 3600_000).toISOString();
+    listState = listed([summary(), { ...summary(2), lastReportedAt: oldReport }]);
+    const view = renderWithLocale(<WorkersPage readEnabled />, { locale });
+    const cards = screen.getAllByRole('link');
+    const onlineTime = within(cards[0]!).getByText(getFormats(locale).dateTime(report));
+    const offlineTime = within(cards[1]!).getByText(getFormats(locale).dateTime(oldReport));
+    expect(onlineTime).toHaveAttribute('datetime', report); expect(offlineTime).toHaveAttribute('datetime', oldReport);
+    listState = { ...listState, serverMilliseconds: Date.parse(report) + 120_000 };
+    view.rerender(<WorkersPage readEnabled />);
+    expect(onlineTime).toHaveTextContent(getFormats(locale).dateTime(report)); expect(offlineTime).toHaveTextContent(getFormats(locale).dateTime(oldReport));
+    expect(within(cards[0]!).getByText('offline')).toBeInTheDocument();
+    const newReport = new Date(now + 60_000).toISOString();
+    listState = { ...listed([{ ...summary(), lastReportedAt: newReport }, { ...summary(2), lastReportedAt: oldReport }]), serverMilliseconds: now + 60_000 };
+    view.rerender(<WorkersPage readEnabled />);
+    expect(within(cards[0]!).getByText(getFormats(locale).dateTime(newReport))).toHaveAttribute('datetime', newReport);
+    expect(within(cards[0]!).getByText('online')).toBeInTheDocument();
   });
 
   it('updates 119/120-second and 72-hour boundaries without replacing the focused card', () => {

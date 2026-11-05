@@ -1,6 +1,8 @@
+import { directAccessFixture } from "./helpers/taskSync";
+import { stringifyWireJson } from "./helpers/wireJson";
 import { describe, expect, it, vi } from "vitest";
 import {
-  decodeAuthJson, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseInvitation,
+  decodeAuthJson, decodeInvitationJson, decodeMembersJson, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseInvitation,
   parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion,
   parseRole, parseToken, parseTokens, parseUser,
 } from "../src/api/auth-parse";
@@ -12,9 +14,16 @@ const tokenId = "40000000-0000-0000-0000-00000000000d";
 const invitationId = "50000000-0000-0000-0000-00000000000e";
 const time = "2026-10-20T12:34:56.123456789Z";
 const expiresAt = "2026-11-20T12:34:56Z";
-const user = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null };
+const user = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: userId, email: null, emailVerified: null, name: null, avatarUrl: null };
 const token = { id: tokenId, name: "CLI access", createdAt: time, expiresAt };
 const member = { projectId, userId, email: null, name: null, avatarUrl: null, role: "member", version: 1n, createdAt: time, updatedAt: time };
+const grant = { projectId, userId, role: member.role, version: member.version, createdAt: time, updatedAt: time };
+const participant = { inheritedFrom: null, userId, profile: { name: null, email: null, avatarUrl: null }, effectiveRole: member.role, directGrant: grant };
+const participantJson = (version: string) => `{"userId":"${userId}","inheritedFrom":null,"profile":{"name":null,"email":null,"avatarUrl":null},"effectiveRole":"member","directGrant":{"projectId":"${projectId}","userId":"${userId}","role":"member","version":${version},"createdAt":"${time}","updatedAt":"${time}"}}`;
+const inspectionJson = (version: string) => {
+  const directGrant = { ...grant, version: BigInt(version) };
+  return stringifyWireJson({ projectId, projectName: "Project", directGrant, access: { ...directAccessFixture(projectId, userId), directGrant } });
+};
 const invitation = { id: invitationId, projectId, createdBy: userId, createdAt: time, expiresAt, consumedBy: null, consumedAt: null, revokedAt: null };
 const memberJson = (version: string) => `{"projectId":"${projectId}","userId":"${userId}","email":null,"name":null,"avatarUrl":null,"role":"member","version":${version},"createdAt":"${time}","updatedAt":"${time}"}`;
 
@@ -36,7 +45,7 @@ describe("authentication configuration and user parsing", () => {
     const profile = { ...user, id: userId.toUpperCase(), email: "", emailVerified: false, name: "", avatarUrl: "" };
     expect(parseUser(profile)).toEqual({ ...profile, id: userId });
     expect(parseUser({ ...user, email: "person@example.com", emailVerified: true, name: "A Person", avatarUrl: "https://example.com/avatar" }))
-      .toMatchObject({ emailVerified: true, name: "A Person" });
+      .toMatchObject({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, emailVerified: true, name: "A Person" });
   });
 
   it.each([
@@ -86,8 +95,8 @@ describe("project membership parsing", () => {
     expect(parseMember(member, projectId, userId)).toEqual(member);
     const admin = { ...member, projectId: projectId.toUpperCase(), userId: userId.toUpperCase(), email: "", name: "Admin", avatarUrl: "", role: "admin", version: 9_223_372_036_854_775_807n };
     expect(parseMember(admin, projectId, userId)).toEqual({ ...admin, projectId, userId });
-    expect(parseMembers({ items: [member, { ...member, userId: otherId }] }, projectId)).toEqual([member, { ...member, userId: otherId }]);
-    expect(parseMembers({ items: [] }, projectId)).toEqual([]);
+    expect(parseMembers({ actorAccess: directAccessFixture(projectId, userId), items: [participant, { ...participant, userId: otherId, directGrant: { ...grant, userId: otherId } }] }, projectId).items).toEqual([participant, { ...participant, userId: otherId, directGrant: { ...grant, userId: otherId } }]);
+    expect(parseMembers({ actorAccess: directAccessFixture(projectId, userId), items: [] }, projectId).items).toEqual([]);
   });
 
   it.each([undefined, null, "owner", "Admin", "", 1])("rejects an unsupported member role %#", (role) => {
@@ -117,8 +126,8 @@ describe("project membership parsing", () => {
   it("rejects responses scoped to another project or user and canonicalized duplicate members", () => {
     expect(() => parseMember({ ...member, projectId: otherId }, projectId, userId)).toThrow("invalid response");
     expect(() => parseMember({ ...member, userId: otherId }, projectId, userId)).toThrow("invalid response");
-    expect(() => parseMembers({ items: [{ ...member, projectId: otherId }] }, projectId)).toThrow("invalid response");
-    expect(() => parseMembers({ items: [member, { ...member, userId: userId.toUpperCase() }] }, projectId)).toThrow("invalid response");
+    expect(() => parseMembers({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, directGrant: { ...grant, projectId: otherId } }] }, projectId)).toThrow("invalid response");
+    expect(() => parseMembers({ actorAccess: directAccessFixture(projectId, userId), items: [participant, { ...participant, userId: userId.toUpperCase() }] }, projectId)).toThrow("invalid response");
     expect(() => parseMembers({}, projectId)).toThrow("invalid response");
   });
 });
@@ -130,10 +139,10 @@ describe("lossless membership JSON decoding", () => {
   });
 
   it("decodes nested list and invitation inspection member versions", async () => {
-    const list = await decodeAuthJson(new Response(`{"items":[${memberJson("9223372036854775807")}]}`));
-    expect(parseMembers(list, projectId)[0]?.version).toBe(9_223_372_036_854_775_807n);
-    const inspection = await decodeAuthJson(new Response(`{"projectId":"${projectId}","projectName":"Project","member":${memberJson("9007199254740993")}}`));
-    expect(parseInvitationInspection(inspection).member?.version).toBe(9_007_199_254_740_993n);
+    const list = await decodeMembersJson(new Response(`{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":[${participantJson("9223372036854775807")}]}`));
+    expect(parseMembers(list, projectId).items[0]?.directGrant?.version).toBe(9_223_372_036_854_775_807n);
+    const inspection = await decodeInvitationJson(new Response(inspectionJson("9007199254740993")));
+    expect(parseInvitationInspection(inspection, userId).directGrant?.version).toBe(9_007_199_254_740_993n);
   });
 
   it("decodes every membership envelope without requiring reviver context support", async () => {
@@ -143,20 +152,20 @@ describe("lossless membership JSON decoding", () => {
     try {
       const root = await decodeAuthJson(new Response(memberJson("9223372036854775807")));
       expect(parseMember(root).version).toBe(9_223_372_036_854_775_807n);
-      const page = await decodeAuthJson(new Response(`{"items":[${memberJson("9007199254740993")}]}`));
-      expect(parseMembers(page, projectId)[0]?.version).toBe(9_007_199_254_740_993n);
-      const inspection = await decodeAuthJson(new Response(`{"projectId":"${projectId}","projectName":"Project","member":${memberJson("9223372036854775807")}}`));
-      expect(parseInvitationInspection(inspection).member?.version).toBe(9_223_372_036_854_775_807n);
+      const page = await decodeMembersJson(new Response(`{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":[${participantJson("9007199254740993")}]}`));
+      expect(parseMembers(page, projectId).items[0]?.directGrant?.version).toBe(9_007_199_254_740_993n);
+      const inspection = await decodeInvitationJson(new Response(inspectionJson("9223372036854775807")));
+      expect(parseInvitationInspection(inspection, userId).directGrant?.version).toBe(9_223_372_036_854_775_807n);
     } finally { parse.mockRestore(); }
   });
 
   it("uses final escaped envelope keys and preserves native nested container semantics", async () => {
-    const page = await decodeAuthJson(new Response(`{"items":{"0":${memberJson("9223372036854775807")}},"\\u0069tems":[${memberJson("1")}]}`));
-    expect(parseMembers(page, projectId)[0]?.version).toBe(1n);
-    const source = `{"items":[${memberJson("9223372036854775807")}],"items":{"0":${memberJson("1")}}}`;
-    expect(await decodeAuthJson(new Response(source))).toEqual(JSON.parse(source));
-    const inspection = await decodeAuthJson(new Response(`{"projectId":"${projectId}","projectName":"Project","member":${memberJson("9223372036854775807")},"\\u006dember":${memberJson("1")}}`));
-    expect(parseInvitationInspection(inspection).member?.version).toBe(1n);
+    const page = await decodeMembersJson(new Response(`{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":{"0":${participantJson("9223372036854775807")}},"\\u0069tems":[${participantJson("1")}]}`));
+    expect(parseMembers(page, projectId).items[0]?.directGrant?.version).toBe(1n);
+    const source = `{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":[${participantJson("9223372036854775807")}],"items":{"0":${participantJson("1")}}}`;
+    expect(await decodeMembersJson(new Response(source))).toEqual({ ...JSON.parse(source), actorAccess: directAccessFixture(projectId, userId) });
+    const inspection = await decodeInvitationJson(new Response(inspectionJson("1")));
+    expect(parseInvitationInspection(inspection, userId).directGrant?.version).toBe(1n);
   });
 
   it.each(["0", "-1", "9223372036854775808", "1.5", "1.0", "1e0", "1E+3", '"1"', "null"])("rejects invalid version lexeme %s after actual JSON decoding", async (numericVersion) => {
@@ -168,6 +177,27 @@ describe("lossless membership JSON decoding", () => {
     await expect(decodeAuthJson(new Response('{"count":2,"name":"unchanged","nested":{"version":1}}')))
       .resolves.toEqual({ count: 2, name: "unchanged", nested: { version: 1 } });
     await expect(decodeAuthJson(new Response('{"version":'))).rejects.toBeInstanceOf(SyntaxError);
+  });
+});
+
+describe("participant roster contract", () => {
+  it("keeps independent effective and stored roles and explicit nullable profiles/grants", () => {
+    const value = { ...participant, inheritedFrom: { team: user.personalTeam, role: "admin" }, effectiveRole: "admin", directGrant: { ...grant, role: "member" } };
+    expect(parseMembers({ actorAccess: directAccessFixture(projectId, userId), items: [value] }, projectId).items[0]).toEqual(value);
+    expect(parseMembers({ actorAccess: directAccessFixture(projectId, userId), items: [{ ...participant, inheritedFrom: { team: user.personalTeam, role: "member" }, directGrant: null }] }, projectId).items[0]?.directGrant).toBeNull();
+  });
+  it.each([
+    member, { ...participant, profile: null }, { ...participant, profile: {} },
+    { ...participant, profile: { ...participant.profile, email: false } },
+    { ...participant, effectiveRole: "owner" }, { ...participant, directGrant: undefined },
+    { ...participant, version: 1n }, { ...participant, directGrant: { ...grant, userId: otherId } },
+    { ...participant, directGrant: { ...grant, projectId: otherId } },
+  ])("rejects legacy, malformed, or source-mismatched participant rows %#", (value) => {
+    expect(() => parseMembers({ actorAccess: directAccessFixture(projectId, userId), items: [value] }, projectId)).toThrow("invalid response");
+  });
+  it.each(["0", "-1", "1.5", "1e0", "9223372036854775808", '\"1\"', "null"])("rejects invalid nested grant version lexemes %s", async (version) => {
+    const decoded = await decodeMembersJson(new Response(`{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":[${participantJson(version)}]}`));
+    expect(() => parseMembers(decoded, projectId)).toThrow("invalid response");
   });
 });
 
@@ -209,17 +239,18 @@ describe("project invitation parsing", () => {
     expect(() => parseCreatedInvitation({ ...invitation, link }, projectId)).toThrowError(/^The server returned an invalid response\.$/);
   });
 
-  it("parses inspection without membership and binds optional membership to the inspected project", () => {
-    expect(parseInvitationInspection({ projectId, projectName: "Project" })).toEqual({ projectId, projectName: "Project" });
-    expect(parseInvitationInspection({ projectId: projectId.toUpperCase(), projectName: "Project", member })).toEqual({ projectId, projectName: "Project", member });
-    expect(() => parseInvitationInspection({ projectId, projectName: "Project", member: { ...member, projectId: otherId } })).toThrow("invalid response");
+  it("parses direct and inherited access and binds the grant to the inspected identity", () => {
+    const empty = { projectId, projectName: "Project", directGrant: null, access: null };
+    const access = { ...directAccessFixture(projectId, userId), directGrant: grant };
+    expect(parseInvitationInspection(empty, userId)).toEqual(empty);
+    expect(parseInvitationInspection({ ...empty, directGrant: grant, access }, userId)).toEqual({ ...empty, directGrant: grant, access });
+    expect(() => parseInvitationInspection({ ...empty, directGrant: { ...grant, userId: otherId }, access }, userId)).toThrow("invalid response");
+    expect(() => parseInvitationInspection({ ...empty, directGrant: grant }, userId)).toThrow("invalid response");
   });
 
-  it.each([
-    undefined, null, [], {}, { projectId, projectName: "" }, { projectId, projectName: "\0" },
-    { projectId: "invalid", projectName: "Project" }, { projectId, projectName: "Project", member: null },
-    { projectId, projectName: "Project", member: undefined }, { projectId, projectName: "Project", member: {} },
-  ])("rejects malformed inspection metadata and explicitly invalid optional members %#", (value) => {
-    expect(() => parseInvitationInspection(value)).toThrow("invalid response");
+  it.each([undefined, null, [], {}, { projectId, projectName: "" }, { projectId, projectName: "Project" },
+    { projectId, projectName: "Project", directGrant: null, access: undefined }, { projectId, projectName: "Project", directGrant: {}, access: null },
+  ])("rejects malformed inspection metadata %#", (value) => {
+    expect(() => parseInvitationInspection(value, userId)).toThrow("invalid response");
   });
 });

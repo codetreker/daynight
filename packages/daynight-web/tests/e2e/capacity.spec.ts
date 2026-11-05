@@ -11,6 +11,10 @@ import { panPoint } from './graph-pan';
 import { captureStableDependencyGeometry, checkDependencyGeometry, type GeometryExpectation } from './dependency-geometry';
 import { expectedBatch, expectedDependencyTopology, expectedNodeHeights, expectedOverview, type ChainTopology } from './visible-topology';
 
+if (process.env.CI !== undefined || process.env.DAYNIGHT_ACCEPTANCE_STRESS !== '1') {
+  throw new Error('Capacity browser tests require explicit local stress acceptance.');
+}
+
 // Repeated DOM snapshots of capacity views add controller work between
 // measured interactions. Dedicated CDP timelines and scenario PNGs retain the
 // rendering evidence alongside Playwright's action and network trace.
@@ -96,7 +100,7 @@ const observeSyncFetches = async (page: Page, projectId: string): Promise<void> 
     // Cache reads can cross IndexedDB tasks before fetch; retain the real polling
     // callback's provenance until its network read consumes it.
     window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (typeof handler !== 'function' || timeout !== 5_000) return nativeInterval(handler, timeout, ...args);
+      if (typeof handler !== 'function' || timeout !== 15_000) return nativeInterval(handler, timeout, ...args);
       return nativeInterval(function (this: Window, ...parameters: unknown[]) {
         pollingCallback += 1;
         return Reflect.apply(handler, this, parameters);
@@ -332,16 +336,17 @@ const stableGeometry = (page: Page) => page.evaluate(captureStableDependencyGeom
 const bodyGeometry = (snapshot: Awaited<ReturnType<typeof stableGeometry>>) => ({ nodes: snapshot.geometry.nodes, paths: snapshot.geometry.paths, pieces: snapshot.geometry.pieces });
 
 const assertInspection = async (page: Page, fixture: CapacityFixture, selectedId: string | null, visible: GeometryExpectation) => {
+  await page.mouse.move(0, 0);
   const tasks = new Map(fixture.tasks.map((task) => [task.id, task]));
   const closure = new Set<string>(selectedId === null ? [] : [selectedId]); const pending = [...closure];
   while (pending.length > 0) for (const id of tasks.get(pending.pop()!)!.dependsOn) if (!closure.has(id)) { closure.add(id); pending.push(id); }
   const geometry = expectedCapacityGeometry(fixture);
   const external = new Set(geometry.nodes.filter((node) => !geometry.memberIds.includes(node.id)).map((node) => node.id));
-  const states = { todo: { label: '待处理', color: 'rgb(114, 126, 144)' }, in_progress: { label: '进行中', color: 'rgb(72, 103, 181)' }, done: { label: '已完成', color: 'rgb(40, 116, 84)' } };
+  const states = { todo: { label: '待处理', color: 'rgb(114, 126, 144)', background: 'rgb(241, 243, 246)' }, in_progress: { label: '进行中', color: 'rgb(72, 103, 181)', background: 'rgb(235, 242, 255)' }, done: { label: '已完成', color: 'rgb(40, 116, 84)', background: 'rgb(234, 246, 239)' } };
   const expected = {
     nodes: fixture.tasks.filter((task) => visible.nodes.some((node) => node.id === task.id)).map((task) => ({
       id: task.id, state: selectedId === null ? 'normal' : task.id === selectedId ? 'selected' : closure.has(task.id) ? 'prerequisite' : 'unrelated', pressed: String(task.id === selectedId),
-      background: selectedId === null ? external.has(task.id) ? 'rgb(246, 247, 250)' : 'rgb(255, 255, 255)' : task.id === selectedId ? 'rgb(240, 239, 255)' : closure.has(task.id) ? 'rgb(247, 246, 255)' : 'rgb(249, 250, 252)',
+      background: states[task.status].background,
       bodyTag: 'BUTTON', bodyType: 'button', bodyPopup: null, detailsTag: 'BUTTON', detailsType: 'button', detailsPopup: 'dialog',
       status: states[task.status].label, statusColor: states[task.status].color, borderColor: states[task.status].color, borderStyle: external.has(task.id) ? 'dashed' : 'solid',
     })).sort((a, b) => a.id.localeCompare(b.id)),
@@ -470,6 +475,38 @@ const measureInteractions = async (page: Page, fixture: CapacityFixture, expansi
   await expect(page.locator(`.react-flow__node[data-id="${batch.id}"] .task-node-body`)).toBeFocused();
   expect(await checkDependencyGeometry(page, batch.expanded, info), 'Explicit expansion paints every newly induced API relation without an edge limit').toEqual({ total: 0, examples: [] });
   await assertInspection(page, fixture, selectedId, batch.expanded);
+  if (repetition === 0 && dataset.scenario === 'capacity-chain') {
+    await page.getByRole('radio', { name: '垂直', exact: true }).click();
+    await expect(page.getByRole('radio', { name: '垂直', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await assertVisibleTopology(page, batch.expanded, full);
+    await assertInspection(page, fixture, selectedId, batch.expanded);
+    expect(await checkDependencyGeometry(page, batch.expanded, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    const detail = page.locator(`.react-flow__node[data-id="${selectedId}"] .task-node-details`);
+    await page.keyboard.press('Tab'); await detail.focus(); await painted(page);
+    await detail.click();
+    await expect(page.locator('.task-detail-dialog')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(detail).toBeFocused();
+    const viewport = page.locator('.react-flow__viewport');
+    const beforeZoom = await viewport.getAttribute('style');
+    await page.getByRole('button', { name: '放大', exact: true }).click();
+    await expect.poll(() => viewport.getAttribute('style')).not.toBe(beforeZoom);
+    const beforePan = await viewport.getAttribute('style'); const point = await panPoint(page);
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    try { await page.mouse.move(point.x + 40, point.y + 24, { steps: 4 }); } finally { await page.mouse.up(); }
+    await expect.poll(() => viewport.getAttribute('style')).not.toBe(beforePan);
+    await page.getByRole('button', { name: '适应画布', exact: true }).click();
+    await assertVisibleTopology(page, batch.expanded, full);
+    await assertInspection(page, fixture, selectedId, batch.expanded);
+    await page.locator('.graph-reset-overview').click();
+    await expect(page.locator('.react-flow__node')).toHaveCount(overview.nodes.length);
+    await assertVisibleTopology(page, overview, full);
+    await assertInspection(page, fixture, selectedId, overview);
+    expect(await checkDependencyGeometry(page, overview, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    await page.getByRole('radio', { name: '水平', exact: true }).click();
+    await expect(page.getByRole('radio', { name: '水平', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await assertVisibleTopology(page, overview, full);
+    await assertInspection(page, fixture, selectedId, overview);
+  }
   await page.locator('.graph-reset-overview').click();
   await expect(page.locator('.react-flow__node')).toHaveCount(overview.nodes.length);
   await visibleGraph(page, fixture.root.id, overview);

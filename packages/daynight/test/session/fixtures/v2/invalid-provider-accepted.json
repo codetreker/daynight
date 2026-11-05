@@ -1,0 +1,16 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "1",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "operation_result",
+  "payload": {
+    "operationId": "00000000-0000-4000-8000-000000000013",
+    "state": "provider_accepted",
+    "errorCode": "input_unknown"
+  }
+}

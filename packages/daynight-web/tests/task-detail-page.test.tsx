@@ -1,12 +1,17 @@
+import * as client from '../src/api/client';
+import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { saveDetail } from '../src/features/task-detail/detail-cache';
+import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
+import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskSessionWorld } from './helpers/taskSessions';
-import { TEST_VIEWER_ID, taskSyncResponse, taskSyncQuery, viewerHeaders } from "./helpers/taskSync";
+import { TEST_VIEWER_ID, taskSyncFromGraph, taskSyncResponse, taskSyncQuery, viewerHeaders } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app/App';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
-import { navigateTaskDetail, taskDetailUrl } from '../src/app/router';
+import { navigateTaskDetail, replaceRoute, taskDetailUrl } from '../src/app/router';
 import { TaskDetailDialog } from '../src/features/task-detail/TaskDetailDialog';
-import type { TaskDetail } from '../src/api/types';
+import type { TaskDetail, TaskSync } from '../src/api/types';
 import { detailFixture, graphFixture, resourceResponse, snapshotFixture } from './helpers/taskDetail';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
@@ -39,6 +44,7 @@ const installed = (initial?: TaskDetail) => {
       }
       return resourceResponse(task, TEST_VIEWER_ID);
     }
+    if (new URL(url, location.origin).pathname.endsWith('/sessions')) return resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID);
     if (url.includes('/attachments?')) return resourceResponse({ items: [...paths].map((path) => ({ path, contentType: 'text/plain', sizeBytes: 12, createdAt: first.createdAt, updatedAt: first.updatedAt })), nextCursor: null });
     if (url.includes('/attachments/files/')) {
       if (options?.method === 'DELETE') { paths.delete(url.split('/attachments/files/')[1]!.split('/').map(decodeURIComponent).join('/')); return new Response(null, { status: 204 }); }
@@ -56,6 +62,56 @@ const moveHistory = async (direction: 'back' | 'forward') => {
 };
 
 describe('standalone full task details', () => {
+  it('keeps a cold cached private body unavailable when a trusted access denial precedes an older delta', async () => {
+    const detail = detailFixture(projectId, taskId, { title: 'Cached private task', description: 'COLD_PRIVATE_DESCRIPTION_MARKER', version: 5n });
+    const graph = graphFixture([detail]);
+    const warm = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    try {
+      const ticket = await warm.beginSync(projectId, warm.signal);
+      await warm.applySync(ticket, taskSyncFromGraph(graph, { versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), warm.signal);
+      await saveDetail(warm, await warm.beginSync(projectId, warm.signal), detail, warm.signal);
+    } finally { warm.dispose(); }
+    const cold = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const oldDelta = Promise.withResolvers<TaskSync>();
+    const freshDetail = Promise.withResolvers<TaskDetail>();
+    const applied = Promise.withResolvers<void>();
+    const readSync = vi.spyOn(client, 'getTaskSync').mockReturnValue(oldDelta.promise);
+    const readDetail = vi.spyOn(client, 'getTask').mockReturnValue(freshDetail.promise);
+    const apply = cold.applySync.bind(cold);
+    vi.spyOn(cold, 'applySync').mockImplementation(async (...args) => { try { return await apply(...args); } finally { applied.resolve(); } });
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === `${root}/access`) return new Response(JSON.stringify({ error: { code: 'not_found', message: 'Denied', requestId: 'trusted-cold-denial' } }), {
+        status: 404, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
+      });
+      throw new Error(`Unexpected request ${url}`);
+    });
+    vi.stubGlobal('fetch', fetcher);
+    let access!: ProjectAccessSession;
+    const CaptureAccess = () => { access = useProjectAccess(projectId).session; return null; };
+    const view = render(<ProjectAccessBoundary projectId={projectId}><CaptureAccess /><TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} /></ProjectAccessBoundary>, { taskCache: { scope: cold } });
+    try {
+      await waitFor(() => expect(readSync).toHaveBeenCalledOnce());
+      expect(cold.getAuthorizedProject(projectId)).toBeNull();
+      expect(screen.queryByText(detail.description)).toBeNull();
+      await act(async () => { fireEvent(window, new Event('focus')); await access.revalidate(); });
+      expect(fetcher).toHaveBeenCalledWith(`${root}/access`, expect.anything());
+      expect(access.snapshot().status).toBe('unavailable');
+      const query = readSync.mock.calls[0]![1];
+      expect(query.epoch).toBeDefined();
+      await act(async () => {
+        oldDelta.resolve(taskSyncFromGraph(graph, { query, versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
+        await applied.promise;
+      });
+      await waitFor(() => {
+        expect(screen.queryByText(detail.description)).toBeNull();
+        expect(screen.getByRole('heading', { name: '项目不存在' })).toBeVisible();
+      });
+      expect(screen.queryByText(detail.description)).toBeNull();
+      expect(cold.getAuthorizedProject(projectId)).toBeNull();
+      expect(readDetail).not.toHaveBeenCalled();
+    } finally { view.unmount(); cold.dispose(); freshDetail.resolve(detail); }
+  });
+
   it('copies the title from the shared header while reading an attachment', async () => {
     const { first } = installed();
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -225,7 +281,7 @@ describe('standalone full task details', () => {
     await screen.findByRole('heading', { name: '独立任务' });
   });
 
-  it('reuses full details after an unchanged five-second graph receipt while retaining the mounted view', async () => {
+  it('reuses full details after an unchanged fifteen-second graph receipt while retaining the mounted view', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const fixture = installed();
     window.history.replaceState(null, '', address());
@@ -233,7 +289,7 @@ describe('standalone full task details', () => {
     const title = await screen.findByRole('heading', { name: '独立任务' });
     const body = document.querySelector('.task-detail-body');
     expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([url]) => new URL(url, location.origin).pathname.endsWith('/task-sync'))).toHaveLength(2));
     expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
     expect(screen.getByRole('heading', { name: '独立任务' })).toBe(title);
@@ -377,7 +433,7 @@ describe('standalone full task details', () => {
     expect(screen.getByRole('heading', { name: '页面不存在' })).toBeVisible();
     expect(fetcher).not.toHaveBeenCalled();
     view.unmount();
-    window.history.replaceState(null, '', address('overview', 'docs/guide.md') + '&authError=login_failed');
+    replaceRoute(address('overview', 'docs/guide.md') + '&authError=login_failed');
     vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/api/v1/me' ? new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } }) : resourceResponse({ providers: ['github'] })));
     const login = vi.fn();
     localeRender(<AuthenticatedApp navigateToLogin={login} />);

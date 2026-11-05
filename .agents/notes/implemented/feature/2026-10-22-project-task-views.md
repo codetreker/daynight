@@ -39,15 +39,20 @@ replaces the badge unit with unfinished tasks. Current components give each
 task one membership; toolbars separately report all filter-matching entries
 against complete category totals, independently of page size.
 
-Each inner category has its own Show all choice and scroll position. Both lists
+The original category decision chose independent Show all choices. The
+[status filter decision](2026-11-05-task-list-status-filter.md) replaces them with
+shared status and assignee conditions over all history. The original category decision
+also chose independent scroll positions to resume each list separately. The
+[shared-scroll decision](../bug-fix/2026-11-03-shared-task-list-scroll.md) replaces
+that behavior: both categories now share the current task-list page offset,
+and category switching does not restore historical offsets. Both lists
 use status-first presentation order with exact newest-first ties, as defined by
 the [status ordering decision](../bug-fix/2026-10-28-project-status-order.md). The [recent browsing and pagination
-decision](2026-10-27-recent-task-pages.md) replaces the unfinished-only default
-with all unfinished work plus recent local-calendar completions, and adds
+decision](2026-10-27-recent-task-pages.md) replaced the unfinished-only default
+with all unfinished work plus recent local-calendar completions, and added
 independent 15-entry task pages under the
 [compact-list decision](../simplification/2026-10-28-compact-task-list.md) without truncating component data. Current page
-numbers remain in memory for the project visit; category, standalone visibility,
-completed-chain visibility and scroll positions keep their independent records. Storage failure leaves in-memory interaction available with a visible
+numbers remain in memory for the project visit; category and the shared task-list offset keep separate records; list filters remain in memory. Storage failure leaves in-memory interaction available with a visible
 persistence notice. Page positions do not persist graph geometry, pan, zoom,
 details or fullscreen. The original category design retained the inline member
 witness or explicit collapse across switches; the [graph-dialog
@@ -67,11 +72,11 @@ decision](../../archived/feature/2026-10-20-task-graph-projection.md); the [chai
 decision](../bug-fix/2026-10-22-task-chain-status.md) continues to own
 aggregate status. Required behavior and current mechanisms belong in the
 [specification](../../../../docs/spec/daynight-web.md) and
-[design](../../../../docs/design/daynight-web.md). The original [interactive
-mockup](../../../../docs/design/mockups/task-views.html) retains the earlier
-inner-category visual baseline; the production-component browsing fixture
-demonstrates current Goal lists, independent graph dialogs and category
-behavior.
+[design](../../../../docs/design/daynight-web.md). The original standalone
+mockup illustrated the earlier inner-category visual baseline. Its repository
+retention is superseded by the [prototype ownership decision](../process/2026-11-03-ui-mockup-ownership.md).
+The production-component browsing fixture also illustrated Goal lists,
+independent graph dialogs and category behavior before removal under that policy.
 
 ## Alternatives
 
@@ -113,8 +118,11 @@ opening initializes its pan and zoom. Keyboard tabs,
 native row actions and active-view focus restoration are
 part of the delivered interaction, including empty and all-completed views.
 The actual-backend `project-view-tabs` scenario runs on native and production
-container targets. Strict inventory validation and the original capacity/limit
-scenarios remain required, following the choices recorded in the
-[acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md).
+container targets. Strict functional inventory validation remains required in
+CI. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains the original complete capacity/limit scenarios behind explicit local
+stress acceptance; the
+[acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md)
+records the original combined scheduling choices.
 The [complete context decision](2026-10-22-complete-prerequisite-context.md) adds
 dense external ancestry without changing tab classification or chain membership.

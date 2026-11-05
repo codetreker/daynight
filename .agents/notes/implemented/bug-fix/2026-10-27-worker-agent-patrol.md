@@ -60,21 +60,23 @@ submission result. Later current observations drive the next decision; there
 is no persistent input ledger or automatic replay of an uncertain write.
 Termination suppresses business pings.
 
-During normal terminal cleanup, after successful submission of a cleanup
-message, a subsequent patrol that observes idle considers that cleanup turn
-finished and proceeds to stop the agent and close its workspace. This observation
-does not require sequence counter advancement or interactive readiness. The pre-notification observation
-and the submission receipt itself do not finish cleanup. Failed or unknown
-notification results preserve their error and the existing ten-minute deadline;
-they do not trigger automatic replay. Actual process-stop confirmation and Git
-ownership checks still precede destructive cleanup.
+Normal terminal cleanup sends an advisory message in one bounded call, then
+uses a fresh idle observation as permission to begin stopping without requiring
+sequence counter advancement or interactive readiness. Idle and the submission
+receipt do not prove resource cleanup; fresh workspace and OS stop observations
+precede destructive Git cleanup. The
+[resource-state decision](../architecture/2026-11-04-worker-resource-state.md)
+removes notification progress storage. Failed or unknown input is not repeated
+within the same call, but an interrupted call can notify the still-live original
+agent again under the same first deadline.
 
 This decision partially supersedes the cleanup completion criterion in the
 [claim record decision](../simplification/2026-10-27-worker-claim-records.md).
 Its original counter requirement aimed to distinguish the requested cleanup
 from an older business turn. The worker now accepts a fresh idle observation
-after successful notification as sufficient for its bounded terminal-cleanup
-phase. The local schema, claim ownership, recovery and restart guarantees remain
+after successful notification as sufficient to start stopping within its bounded
+terminal-cleanup phase. The resource-state decision makes actual absence the
+completion criterion and records the advisory repetition boundary. The local schema, claim ownership, recovery and restart guarantees remain
 with that decision. The [direct shutdown decision](2026-10-28-worker-direct-shutdown.md)
 partially supersedes the original use of this bounded cleanup on worker process
 exit. That original choice allowed agents to remove external temporary resources
@@ -110,7 +112,8 @@ instructions cannot prove that a native agent follows the wait policy; native
 runtime evidence remains distinct from controlled component checks.
 
 Idle has a phase-specific consequence: it wakes an unfinished active assignment
-and finishes an already notified cleanup turn. A fresh idle observation is a
-terminal-cleanup completion signal, not proof that the native model consumed the
-cleanup text. Unknown notification results retain the deadline. The continuation
-observation is process-local, so restarting the worker does not provide exactly-once input.
+and permits stopping during a notified cleanup turn. A fresh idle observation
+is not proof that the native model consumed cleanup text or that resources are
+gone. Unknown notification results retain the first deadline. The continuation
+observation is process-local, and Herdr advisory cleanup notifications can repeat
+after interruption; neither provides exactly-once input across Worker restart.

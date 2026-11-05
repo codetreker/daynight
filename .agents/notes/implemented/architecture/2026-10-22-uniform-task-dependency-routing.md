@@ -24,9 +24,9 @@ per-edge collision repair or raw-port compatibility branches.
 The [Bézier routing decision](2026-10-25-bezier-task-dependency-routing.md)
 replaces that bend geometry with complete cubic curves across column gaps. It
 retains this note's node/route ownership, fixed lateral ports, free-row planning
-and sixteen-unit intermediate clearance. Current routes cross empty gaps with
-horizontal endpoint tangents and cross intermediate columns on horizontal free
-rows. The curve convex hull stays within the empty gap, so avoidance no longer
+and sixteen-unit intermediate clearance. Horizontal routes cross empty gaps with horizontal endpoint tangents and cross
+intermediate columns on horizontal free rows. The [graph direction decision](../feature/2026-11-05-task-graph-direction.md)
+extends those guarantees to vertical layouts with corresponding vertical ports and channels. The curve convex hull stays within the empty gap, so avoidance no longer
 depends on bounded corner radii. Equal rows still coalesce into straight spans.
 
 This uniform-planning decision replaced the raw-Dagre-point retention target in

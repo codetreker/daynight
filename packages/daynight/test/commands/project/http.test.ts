@@ -9,8 +9,12 @@ import type { Project } from "../../../src/api/index.js";
 import { runProjectCommand } from "../../../src/commands/project/command.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
 
+const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const user = { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal", name: null } };
 const id = "abcdefab-1234-5678-90ab-abcdefabcdef";
-const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
+const project: Project = { id, name: "Project 名称", repoUrl: "git@Git.Example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T01:02:03.123456789Z", updatedAt: "2026-10-20T02:03:04.987654321Z" };
+const personalTeam = { id: user.personalTeam.id, kind: "personal", name: null, version: 1n, createdAt: "2026-10-20T01:02:03Z", updatedAt: "2026-10-20T01:02:03Z", membership: { teamId: user.personalTeam.id, userId, role: "admin", version: 1n, createdAt: "2026-10-20T01:02:03Z", updatedAt: "2026-10-20T01:02:03Z" } };
+const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -38,7 +42,7 @@ const fixture = async (serverUrl: string, operationLimits?: { readonly totalMs: 
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: () => home,
     workingDirectory: vi.fn<() => string>(() => { throw new Error("Project commands must not query the working directory"); }),
-    stdoutBytes: vi.fn(async () => {}), stdout: vi.fn<(value: string) => void>(), stderr: vi.fn<(value: string) => void>(),
+    stdoutBytes: vi.fn<(chunk: Uint8Array, signal: AbortSignal) => Promise<void>>(async () => {}), stdout: vi.fn<(value: string) => void>(), stderr: vi.fn<(value: string) => void>(),
   };
   const dependencies = { runServerCommand: (current: Parameters<typeof runServerCommand>[0], command: Parameters<typeof runServerCommand>[1]) => runServerCommand(current, command, { signalEmitter: signals, ...(operationLimits === undefined ? {} : { operationLimits }) }) };
   return { context, dependencies, signals };
@@ -88,19 +92,21 @@ describe("project command over HTTP", () => {
     const bodies: unknown[] = [];
     const url = await server((request, response) => {
       requests++;
+      if (request.url === "/api/v1/me") { response.setHeader("Daynight-User-ID", userId); respond(response, user); return; }
+      if (request.url === `/api/v1/teams/${user.personalTeam.id}`) { response.setHeader("Daynight-User-ID", userId); respond(response, personalTeam); return; }
       if (request.method === "GET") { respond(response, { items: [], nextCursor: null }); return; }
       expect(request.method).toBe("POST"); expect(request.url).toBe("/api/v1/projects");
       let body = "";
       request.setEncoding("utf8");
       request.on("data", (chunk: string) => { body += chunk; });
-      request.on("end", () => { bodies.push(JSON.parse(body)); respond(response, { ...project, name, repoUrl }, 201); });
+      request.on("end", () => { bodies.push(JSON.parse(body)); response.setHeader("Daynight-User-ID", userId); respond(response, creationReceipt({ ...project, name, repoUrl }, userId), 201); });
     });
     const { context, dependencies } = await fixture(url);
-    await runProjectCommand(["create", name, "--repo", repoUrl], context, dependencies);
-    expect(bodies).toEqual([{ name, repoUrl }]);
-    expect(requests).toBe(2);
-    expect(context.stdout).toHaveBeenCalledOnce();
-    expect(context.stdout.mock.calls[0]![0]).toContain(`ID: ${project.id}\nName: ${name}\nRepository: ${repoUrl}\n`);
+    await runProjectCommand(["create", name, "--repo", repoUrl, "--confirm"], context, dependencies);
+    expect(bodies).toEqual([{ name, repoUrl, expectedUserId: userId, teamId: user.personalTeam.id }]);
+    expect(requests).toBe(4);
+    expect(context.stdoutBytes).toHaveBeenCalledOnce();
+    expect(Buffer.from(context.stdoutBytes.mock.calls[0]![0]).toString("utf8")).toContain(`ID: ${project.id}\nName: ${name}\nRepository: ${repoUrl}\n`);
     expect(context.workingDirectory).not.toHaveBeenCalled();
   });
 
@@ -163,4 +169,86 @@ describe("project command over HTTP", () => {
     expect(context.stdout.mock.calls[0]![0]).toContain('"settings":{"version":9007199254740993,"executionWarningMinutes":90}');
     expect(context.workingDirectory).not.toHaveBeenCalled();
   });
+});
+
+describe("project creation Team selection", () => {
+  const ordinaryId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const ordinaryTeam = { ...personalTeam, id: ordinaryId, kind: "ordinary", name: "Team \u001b[31m", membership: { ...personalTeam.membership, teamId: ordinaryId, role: "member" } };
+  const selectedProject = { ...project, ownership: { teamId: ordinaryId, version: 1n } };
+  const receipt = { ...creationReceipt(selectedProject, userId), access: { ...creationReceipt(selectedProject, userId).access, ownerTeam: { id: ordinaryId, kind: "ordinary", name: ordinaryTeam.name }, teamRole: "member", canTransfer: false } };
+
+  it("uses the account default, preserves raw input and checks the creator's direct admin receipt", async () => {
+    const calls: string[] = [];
+    let body: unknown;
+    const url = await server((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/v1/projects?limit=100") { respond(response, { items: [], nextCursor: null }); return; }
+      response.setHeader("Daynight-User-ID", userId);
+      if (request.url === "/api/v1/me") { respond(response, user); return; }
+      if (request.url === `/api/v1/teams/${ordinaryId}`) { respond(response, ordinaryTeam); return; }
+      let text = ""; request.setEncoding("utf8"); request.on("data", (chunk: string) => { text += chunk; });
+      request.on("end", () => { body = JSON.parse(text); respond(response, { ...receipt, name: "  名称\n", repoUrl: "git@git.example:Org/Raw.git" }, 201); });
+    });
+    const { context, dependencies } = await fixture(url);
+    await writeFile(path.join(context.homeDirectory(), ".daynight/config.yml"), `serverUrl: ${url}\nserverToken: fixture-token\nteamDefaults:\n  ${url}:\n    ${userId}: ${ordinaryId}\n`);
+    await runProjectCommand(["create", "  名称\n", "--repo", "git@git.example:Org/Raw.git", "--confirm"], context, dependencies);
+    expect(body).toEqual({ name: "  名称\n", repoUrl: "git@git.example:Org/Raw.git", expectedUserId: userId, teamId: ordinaryId });
+    expect(calls).toEqual(["GET /api/v1/projects?limit=100", "GET /api/v1/me", `GET /api/v1/teams/${ordinaryId}`, "POST /api/v1/projects"]);
+  });
+
+  it("ignores a malformed default for an existing match or explicit Personal selection", async () => {
+    let existing = true;
+    const calls: string[] = [];
+    const url = await server((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/v1/projects?limit=100") { respond(response, { items: existing ? [project] : [], nextCursor: null }); return; }
+      response.setHeader("Daynight-User-ID", userId);
+      if (request.url === "/api/v1/me") { respond(response, user); return; }
+      if (request.url === `/api/v1/teams/${user.personalTeam.id}`) { respond(response, personalTeam); return; }
+      request.resume(); request.on("end", () => respond(response, creationReceipt({ ...project, name: "New" }, userId), 201));
+    });
+    const { context, dependencies } = await fixture(url);
+    await writeFile(path.join(context.homeDirectory(), ".daynight/config.yml"), `serverUrl: ${url}\nserverToken: fixture-token\nteamDefaults:\n  ${url}:\n    ${userId}: invalid\n`);
+    await runProjectCommand(["create", "Existing", "--repo", project.repoUrl], context, dependencies);
+    expect(calls).toEqual(["GET /api/v1/projects?limit=100"]);
+    existing = false;
+    await expect(runProjectCommand(["create", "New", "--repo", project.repoUrl, "--confirm"], context, dependencies)).rejects.toThrow("canonical UUID");
+    await runProjectCommand(["create", "New", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies);
+    expect(calls.filter((call) => call.startsWith("POST"))).toHaveLength(1);
+  });
+
+  it("reports an unknown create outcome with its request ID without replaying", async () => {
+    const calls: string[] = [];
+    let sentId: string | undefined;
+    const url = await server((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/v1/projects?limit=100") { respond(response, { items: [], nextCursor: null }); return; }
+      response.setHeader("Daynight-User-ID", userId);
+      if (request.url === "/api/v1/me") { respond(response, user); return; }
+      if (request.url === `/api/v1/teams/${user.personalTeam.id}`) { respond(response, personalTeam); return; }
+      sentId = request.headers["x-request-id"] as string | undefined;
+      request.resume(); request.on("end", () => { response.destroy(); });
+    });
+    const { context, dependencies } = await fixture(url);
+    const failure: unknown = await runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies).catch((error: unknown) => error);
+    expect(sentId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(String(failure)).toContain(`outcome is unknown (requestId=${sentId})`);
+    expect(calls.filter((call) => call.startsWith("POST"))).toHaveLength(1);
+    expect(context.stdout).not.toHaveBeenCalled();
+    expect(context.stdoutBytes).not.toHaveBeenCalled();
+  });
+
+  it("rejects a changed principal on Team qualification before creation", async () => {
+    const calls: string[] = [];
+    const url = await server((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      if (request.url === "/api/v1/projects?limit=100") { respond(response, { items: [], nextCursor: null }); return; }
+      response.setHeader("Daynight-User-ID", request.url === "/api/v1/me" ? userId : "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+      respond(response, request.url === "/api/v1/me" ? user : personalTeam);
+    });
+    const { context, dependencies } = await fixture(url);
+    await expect(runProjectCommand(["create", "Name", "--repo", project.repoUrl, "--team", "personal", "--confirm"], context, dependencies)).rejects.toThrow();
+    expect(calls.filter((call) => call.startsWith("POST"))).toHaveLength(0);
+  });
+
 });

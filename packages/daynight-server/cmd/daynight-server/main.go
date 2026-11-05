@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 var exit = os.Exit
@@ -27,18 +28,18 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	}
 	config, err := server.LoadConfig(getenv)
 	if err != nil {
-		server.LogFailure(logger, ctx, "configuration", "load", err)
+		httpx.LogFailure(logger, ctx, "configuration", "load", err)
 		return 1
 	}
 	runtime, err := server.Start(ctx, config, logger, func(dependencies server.Dependencies) (http.Handler, error) {
 		return server.New(dependencies, config, logger)
 	})
 	if err != nil {
-		server.LogFailure(logger, ctx, "server", "startup", err)
+		httpx.LogFailure(logger, ctx, "server", "startup", err)
 		return 1
 	}
 	if err := runtime.Run(ctx); err != nil {
-		server.LogFailure(logger, ctx, "server", "shutdown", err)
+		httpx.LogFailure(logger, ctx, "server", "shutdown", err)
 		return 1
 	}
 	return 0

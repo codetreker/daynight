@@ -1,18 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { captureStableDependencyGeometry, expectedDependencyTopology, inspectDependencySnapshot, parseCurve, referenceLength, summarizeGeometryFailures, type DependencySnapshot, type GeometryExpectation } from './e2e/dependency-geometry';
+import { color, d, expected, snapshot } from './dependency-geometry-fixture';
 
-const d = 'M100,50 L188,50 Q200,50 200,62 L200,88 Q200,100 212,100 L238,100 Q250,100 250,88 L250,62 Q250,50 262,50 L300,50';
-const color = 'rgb(171, 178, 199)';
-const expected: GeometryExpectation = { nodes: [{ id: 'source' }, { id: 'target' }], edges: [{ id: 'source->target', source: 'source', target: 'target', external: true }] };
 const compilerInputs = [{ id: 'source->target', points: [{ x: 100, y: 50 }, { x: 200, y: 50 }, { x: 200, y: 100 }, { x: 250, y: 100 }, { x: 250, y: 50 }, { x: 300, y: 50 }] }];
-const snapshot = (): DependencySnapshot => ({
-  nodes: [{ id: 'source', left: 0, top: 0, right: 100, bottom: 100 }, { id: 'target', left: 300, top: 0, right: 400, bottom: 100 }],
-  edges: [{ id: 'source->target', source: 'source', target: 'target', d, external: 'true', stroke: 'none', fill: 'none', color, bodyMatrix: [1, 0, 0, 1, 0, 0], bodyVisible: true, marker: '#arrow', canonicalVisible: true, pieces: [
-    { d, matrix: [1, 0, 0, 1, 0, 0], line: false, phase: 0, dash: '5px, 4px', stroke: color, width: 1.5, cap: 'butt', join: 'miter', hidden: true },
-  ] }],
-  markers: [{ id: 'arrow', orient: 'auto-start-reverse', units: 'strokeWidth', viewBox: '-10 -10 20 20', width: '16', height: '16', refX: '0', refY: '0', points: '-5,-4 0,0 -5,4 -5,-4', stroke: color, fill: color, strokeWidth: 1, cap: 'round', join: 'round' }],
-  declaredPieces: 1, viewport: true, passive: true,
-});
 
 describe('independent production dependency geometry oracle', () => {
   it('accepts smooth complete quadratics and native dashed paint independently of production routes', () => {
@@ -148,6 +138,22 @@ describe('independent production dependency geometry oracle', () => {
     const collision = structuredClone(value); collision.nodes.push({ id: 'obstacle', left: 190, top: 90, right: 210, bottom: 110 });
     expect(inspectDependencySnapshot(collision, { ...expected, nodes: [...expected.nodes, { id: 'obstacle' }] })).toContain('source->target: curve passes through node obstacle');
   });
+  it('independently checks vertical ports, tangents, card overlap and curve clearance', () => {
+    const value = snapshot();
+    value.nodes = [{ id: 'source', left: 0, top: 0, right: 100, bottom: 100 }, { id: 'target', left: 100, top: 300, right: 200, bottom: 400 }];
+    const route = 'M50,100 C50,200 150,200 150,300';
+    value.edges[0]!.d = route; value.edges[0]!.pieces[0]!.d = route;
+    const inputs = [{ id: 'source->target', points: [{ x: 50, y: 100 }, { x: 150, y: 300 }] }];
+    expect(inspectDependencySnapshot(value, expected, inputs, 'vertical')).toEqual([]);
+    const wrongPort = structuredClone(value); wrongPort.edges[0]!.d = route.replace('M50,100', 'M51,100');
+    expect(inspectDependencySnapshot(wrongPort, expected, undefined, 'vertical')).toContain('source->target: wrong fixed top-to-bottom ports');
+    const wrongTangent = structuredClone(value); wrongTangent.edges[0]!.d = route.replace('C50,200', 'C51,200');
+    expect(inspectDependencySnapshot(wrongTangent, expected, undefined, 'vertical').some((failure) => failure.includes('endpoint direction is not vertical'))).toBe(true);
+    const collision = structuredClone(value); collision.nodes.push({ id: 'obstacle', left: 90, top: 190, right: 110, bottom: 210 });
+    expect(inspectDependencySnapshot(collision, { ...expected, nodes: [...expected.nodes, { id: 'obstacle' }] }, undefined, 'vertical')).toContain('source->target: curve passes through node obstacle');
+    const overlap = structuredClone(value); overlap.nodes[1] = { id: 'target', left: 50, top: 50, right: 150, bottom: 150 };
+    expect(inspectDependencySnapshot(overlap, expected, undefined, 'vertical').some((failure) => failure.includes('overlaps'))).toBe(true);
+  });
   it('checks exact cubic dash subcurves and true-arclength gap seams', () => {
     const halfLength = referenceLength(parseCurve('M0,0 C100,0 100,100 200,100')[0]!) / 2;
     const seam = Math.ceil((halfLength - 7) / 9) * 9 + 7; const scale = seam / halfLength;
@@ -196,21 +202,21 @@ describe('independent production dependency geometry oracle', () => {
       (value: DependencySnapshot) => { value.markers[0]!.units = 'userSpaceOnUse'; },
     ]) { const value = snapshot(); mutate(value); expect(inspectDependencySnapshot(value, expected).length).toBeGreaterThan(0); }
   });
-  it('rejects real endpoint gaps on long lines without a length-dependent parameter allowance', () => {
+  it('rejects endpoint gaps across multiple native paint pieces', () => {
     const value = snapshot();
-    value.nodes[1] = { id: 'target', left: 68000100, top: 0, right: 68000200, bottom: 100 };
-    value.edges[0]!.d = 'M100,50 L68000100,50';
+    value.nodes[1] = { id: 'target', left: 16484, top: 0, right: 16584, bottom: 100 };
+    value.edges[0]!.d = 'M100,50 L16484,50';
     const original = value.edges[0]!.pieces[0]!;
     value.edges[0]!.pieces = [];
-    for (let position = 0; position < 68000000;) {
-      const limit = 68000000 - position <= 8192 ? 68000000 : Math.floor((position + 8192 - 7) / 9) * 9 + 7;
+    for (let position = 0; position < 16384;) {
+      const limit = 16384 - position <= 8192 ? 16384 : Math.floor((position + 8192 - 7) / 9) * 9 + 7;
       value.edges[0]!.pieces.push({ ...original, d: `M0,0 L${limit - position},0`, line: true, matrix: [1, 0, 0, 1, 100 + position, 50], phase: position % 9 });
       position = limit;
     }
     value.declaredPieces = value.edges[0]!.pieces.length;
-    const inputs = [{ id: expected.edges[0]!.id, points: [{ x: 100, y: 50 }, { x: 68000100, y: 50 }] }];
+    const inputs = [{ id: expected.edges[0]!.id, points: [{ x: 100, y: 50 }, { x: 16484, y: 50 }] }];
     expect(inspectDependencySnapshot(value, expected, inputs)).toEqual([]);
-    const last = value.edges[0]!.pieces.at(-1)!; last.d = `M0,0 L${68000100 - last.matrix[4]! - 0.1},0`;
+    const last = value.edges[0]!.pieces.at(-1)!; last.d = `M0,0 L${16484 - last.matrix[4]! - 0.1},0`;
     expect(inspectDependencySnapshot(value, expected, inputs).some((failure) => failure.includes('incomplete canonical paint coverage'))).toBe(true);
   });
   it('bounds a quadratic arc independently and handles enormous straight distances without sampling them', () => {

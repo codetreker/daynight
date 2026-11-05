@@ -1,7 +1,9 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { readWorkerClaim } from "../../src/api/task-properties.js";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { chmod, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { Server, ServerResponse } from "node:http";
@@ -9,10 +11,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import crossSpawn from "cross-spawn";
 import { parse } from "yaml";
-import { expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, Task, WorkerClaim } from "../../src/api/types.js";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const id = "a1b2c3d4-1111-4222-8333-123456789abc";
@@ -23,12 +25,13 @@ const ordinaryId = "c1b2c3d4-1111-4222-8333-123456789abc";
 const externalId = "d1b2c3d4-1111-4222-8333-123456789abc";
 const claimId = "e1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
+const personalTeamId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const workerClaim: WorkerClaim = { claimId, state: "active", userId: alternateId, workerId: unrelatedId, machine: { id: alternateId, name: "Worker machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: ordinaryId, phase: "executing", herdr: { session: "w", workspaceId: "original-workspace", paneId: "original-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
-const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time });
-const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: {}, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: personalTeamId, version: 1n }, createdAt: time, updatedAt: time });
+const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: {}, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
-  status: value.status, allowAgents: value.allowAgents, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
+  status: value.status, allowAgents: value.allowAgents, assignedTo: value.assignedTo, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
   dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
 });
 const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "Content-Type": "application/json" }); response.end(stringifyApiJson(value)); };
@@ -41,16 +44,42 @@ type Result = { code: number | null; stdout: string; stderr: string };
 type RequestRecord = { method: string; path: string; body: unknown };
 type Transport = "launcher" | "node-entry";
 
-it("runs the actual installed launcher through native project/task discovery, persistence and failure lifecycles", async () => {
-  const evidencePath = path.join(workspace, ".tmp/project-task-evidence.json");
-  await rm(evidencePath, { force: true });
-  const installed = await createInstalledCli();
-  const { receipt } = installed;
-  const scenarios: string[] = [];
-  const requests: RequestRecord[] = [];
-  const servers: Server[] = [];
-  const children = new Map<ChildProcess, Promise<unknown>>();
-  let failure: unknown;
+const evidencePath = path.join(workspace, ".tmp/project-task-evidence.json");
+const cancellation = new AbortController();
+const scenarios: string[] = [];
+const requests: RequestRecord[] = [];
+const servers: Server[] = [];
+const children = new Map<ChildProcess, Promise<unknown>>();
+let installed: Awaited<ReturnType<typeof createAcceptanceCli>> | undefined;
+let preparationRoot: string | undefined;
+let preparation: Promise<Awaited<ReturnType<typeof createAcceptanceCli>>>;
+let behavior: Promise<void> | undefined;
+let completed = false;
+let failure: unknown;
+
+beforeAll(async () => {
+  preparation = (async () => {
+    const temporary = path.join(workspace, ".tmp");
+    mkdirSync(temporary, { recursive: true });
+    preparationRoot = mkdtempSync(path.join(temporary, "Project task 中文 "));
+    await rm(evidencePath, { force: true });
+    cancellation.signal.throwIfAborted();
+    installed = await createAcceptanceCli({
+      temporaryRoot: preparationRoot, rootDirectory: path.join(preparationRoot, "installed"), signal: cancellation.signal,
+      onSpawn: (child) => {
+        const closed = new Promise<void>((resolve) => child.once("close", () => { children.delete(child); resolve(); }));
+        children.set(child, closed);
+      },
+    });
+    cancellation.signal.throwIfAborted();
+    return installed;
+  })();
+  try { await preparation; }
+  catch (cause) { failure = cause; throw cause; }
+});
+
+const exercise = async (): Promise<void> => {
+  const { receipt } = await preparation;
   const home = path.join(receipt.root, "home");
   const state = path.join(home, ".daynight");
   const outside = path.join(receipt.root, "outside Git");
@@ -72,6 +101,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
   let received: (() => void) | undefined;
   const configure = async (serverUrl: string): Promise<void> => { await mkdir(state, { recursive: true }); await writeFile(path.join(state, "config.yml"), `serverUrl: ${serverUrl}\nserverToken: fixture-token\nreview:\n  repositories: invalid-for-review\n`); };
   const listen = async (): Promise<string> => {
+    cancellation.signal.throwIfAborted();
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on("data", (chunk: Buffer) => { chunks.push(chunk); });
@@ -81,11 +111,26 @@ it("runs the actual installed launcher through native project/task discovery, pe
         requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, body });
         const parts = url.pathname.split("/");
         const projectId = parts[4]!;
+        if (url.pathname === "/api/v1/me") {
+          response.setHeader("Daynight-User-ID", alternateId);
+          send(response, { id: alternateId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: personalTeamId, kind: "personal" as const, name: null } }); return;
+        }
+        if (url.pathname === `/api/v1/teams/${personalTeamId}`) {
+          response.setHeader("Daynight-User-ID", alternateId);
+          send(response, { id: personalTeamId, kind: "personal", name: null, version: 1n, createdAt: time, updatedAt: time, membership: { teamId: personalTeamId, userId: alternateId, role: "admin", version: 1n, createdAt: time, updatedAt: time } }); return;
+        }
         if (url.pathname === "/api/v1/task-properties/schema") {
           send(response, propertySchema); return;
         }
         if (url.pathname === "/api/v1/projects") {
-          if (request.method === "POST") { send(response, { ...project(), ...(body as { name: string; repoUrl: string }) }, 201); return; }
+          if (request.method === "POST") {
+            const input = body as { name: string; repoUrl: string; expectedUserId: string; teamId: string };
+            const created = { ...project(), name: input.name, repoUrl: input.repoUrl };
+            if (input.expectedUserId !== alternateId) { fault(response, "identity_mismatch", "native-project-identity", 409); return; }
+            if (input.teamId !== personalTeamId) { fault(response, "invalid_input", "native-project-team", 400); return; }
+            response.setHeader("Daynight-User-ID", alternateId);
+            send(response, { ...created, access: { projectId: created.id, ownerTeam: { id: created.ownership.teamId, kind: "personal", name: null }, ownership: created.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: created.id, userId: alternateId, role: "admin", version: 1n, createdAt: time, updatedAt: time } } }, 201); return;
+          }
           if (broken === "page" && url.searchParams.has("cursor")) { fault(response, "internal_error", "native-later-page", 500); return; }
           const remaining = url.searchParams.has("cursor") ? projects.slice(1) : projects.slice(0, 1);
           send(response, { items: remaining, nextCursor: !url.searchParams.has("cursor") && projects.length > 1 ? "native page+/=?" : null }); return;
@@ -159,14 +204,27 @@ it("runs the actual installed launcher through native project/task discovery, pe
       });
     });
     servers.push(server);
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
+    const listening = Promise.withResolvers<void>();
+    const cancelListen = (): void => listening.reject(cancellation.signal.reason);
+    server.once("error", listening.reject);
+    cancellation.signal.addEventListener("abort", cancelListen, { once: true });
+    try {
+      if (cancellation.signal.aborted) cancelListen();
+      else server.listen({ port: 0, host: "127.0.0.1", signal: cancellation.signal }, listening.resolve);
+      await listening.promise;
+    } finally {
+      server.removeListener("error", listening.reject);
+      cancellation.signal.removeEventListener("abort", cancelListen);
+    }
+    cancellation.signal.throwIfAborted();
     const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing native acceptance listener.");
     return `http://127.0.0.1:${address.port}`;
   };
   const start = (args: readonly string[], cwd = outside, isolated = false, transport: Transport = "launcher") => {
+    cancellation.signal.throwIfAborted();
     const command = transport === "launcher" ? receipt.launcherPath : receipt.nodePath;
     const commandArguments = transport === "launcher" ? [...args] : [receipt.entryPath, ...args];
-    const child = crossSpawn(command, commandArguments, { cwd, env: { ...environment, ...(isolated ? { NODE_OPTIONS: `--import=${pathToFileURL(path.join(receipt.root, "isolation.mjs")).href}` } : {}) }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    const child = crossSpawn(command, commandArguments, { cwd, env: { ...environment, ...(isolated ? { NODE_OPTIONS: `--import=${pathToFileURL(path.join(receipt.root, "isolation.mjs")).href}`, ...(args[0] === "project" && args[1] === "create" && args.includes("--confirm") ? { DAYNIGHT_TEST_ALLOW_OUTPUT_HELPER: "1" } : {}) } : {}) }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", problem: Error | undefined;
     child.stdout!.setEncoding("utf8"); child.stderr!.setEncoding("utf8");
     child.stdout!.on("data", (value: string) => { stdout += value; }); child.stderr!.on("data", (value: string) => { stderr += value; });
@@ -175,15 +233,25 @@ it("runs the actual installed launcher through native project/task discovery, pe
     children.set(child, closed);
     const result = (async (): Promise<Result> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const outcome = await Promise.race([closed.then((code) => ({ code })), new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 20_000); })]);
-      if (timer !== undefined) clearTimeout(timer);
-      if (outcome === "timeout") {
-        const timeout = new Error(`Installed task command exceeded 20 seconds: ${args[0]} ${args[1]}`);
+      const aborted = Promise.withResolvers<"cancelled">();
+      const cancel = (): void => aborted.resolve("cancelled");
+      cancellation.signal.addEventListener("abort", cancel, { once: true });
+      if (cancellation.signal.aborted) cancel();
+      let outcome: { code: number | null } | "timeout" | "cancelled";
+      try {
+        outcome = await Promise.race([closed.then((code) => ({ code })), aborted.promise, new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 20_000); })]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        cancellation.signal.removeEventListener("abort", cancel);
+      }
+      if (outcome === "timeout" || outcome === "cancelled") {
+        const cause: unknown = outcome === "cancelled" ? cancellation.signal.reason : new Error(`Installed task command exceeded 20 seconds: ${args[0]} ${args[1]}`);
         try { await terminateInstalledProcess(child, closed); }
-        catch (cleanupError) { throw new AggregateError([timeout, cleanupError], "Installed command and cleanup failed."); }
-        throw timeout;
+        catch (cleanupError) { throw new AggregateError([cause, cleanupError], "Installed command and cleanup failed."); }
+        throw cause;
       }
       if (problem !== undefined) throw problem;
+      cancellation.signal.throwIfAborted();
       return { code: outcome.code, stdout, stderr };
     })();
     return { child, result };
@@ -194,7 +262,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
     if (expected !== 0) expect(result.stdout).toBe("");
     return result;
   };
-  const git = (cwd: string, args: readonly string[], input?: string): string => execFileSync("git", ["-C", cwd, ...args], { env: environment, encoding: "utf8", timeout: 20_000, stdio: ["pipe", "pipe", "pipe"], ...(input === undefined ? {} : { input }) }).trim();
+  const git = (cwd: string, args: readonly string[], input?: string): string => { cancellation.signal.throwIfAborted(); return execFileSync("git", ["-C", cwd, ...args], { env: environment, encoding: "utf8", timeout: 20_000, stdio: ["pipe", "pipe", "pipe"], ...(input === undefined ? {} : { input }) }).trim(); };
   const initialize = async (location: string): Promise<void> => {
     await mkdir(location, { recursive: true }); git(location, ["init", "--initial-branch=main"]);
     git(location, ["config", "url.https://git.example/.insteadOf", "fixture:"]); git(location, ["remote", "add", "origin", "fixture:Org/Repo.git"]);
@@ -204,7 +272,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
   const mutations = (): number => requests.filter(({ method }) => method !== "GET").length;
   try {
     await mkdir(outside); await mkdir(home);
-    await writeFile(path.join(receipt.root, "isolation.mjs"), `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,nextResolve){const result=nextResolve(specifier,context);if(['/repository/git.js','/repository/binding.js','/repository/context.js','/commands/review/runtime.js','better-sqlite3','node:child_process'].some(value=>specifier.includes(value)||result.url.includes(value)))throw new Error('Unexpected business import: '+specifier);return result;}});`);
+    await writeFile(path.join(receipt.root, "isolation.mjs"), `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,nextResolve){const result=nextResolve(specifier,context);if(['/repository/git.js','/repository/binding.js','/repository/context.js','/commands/review/runtime.js','better-sqlite3','node:child_process'].some(value=>(value!=='node:child_process'||process.env.DAYNIGHT_TEST_ALLOW_OUTPUT_HELPER!=='1')&&(specifier.includes(value)||result.url.includes(value))))throw new Error('Unexpected business import: '+specifier);return result;}});`);
     expect((await invoke(["task", "--help"], outside, 0, true)).stdout).toContain("Usage: daynight task");
     expect((await invoke(["task", "set-status", "--help"], outside, 0, true)).stdout).toContain("--claim-id <claim-id>");
     await invoke(["task", "set-status", taskId, "done", "--if-version", "9223372036854775808"], outside, 2, true);
@@ -232,11 +300,14 @@ it("runs the actual installed launcher through native project/task discovery, pe
     const explicit = ["--project", id];
     const listed = await invoke(["project", "list", "--json"], outside, 0, true);
     expect(parseApiJson(listed.stdout)).toEqual(projects);
+    const existingProjectAt = requests.length;
     const existingProject = await invoke(["project", "create", "Different name", "--repo", project().repoUrl], outside, 0, true);
     expect(existingProject.stdout).toContain("Project already exists.");
-    const createdProject = await invoke(["project", "create", "Native 名称", "--repo", "https://git.example/Native/New.git"], outside, 0, true);
+    expect(requests.slice(existingProjectAt).every(({ method, path: pathname }) => method === "GET" && pathname.startsWith("/api/v1/projects?"))).toBe(true);
+    expect(requests.slice(existingProjectAt)).toHaveLength(2);
+    const createdProject = await invoke(["project", "create", "Native 名称", "--repo", "https://git.example/Native/New.git", "--confirm"], outside, 0, true);
     expect(createdProject.stdout).toContain("Project created.");
-    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git" });
+    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git", expectedUserId: alternateId, teamId: personalTeamId });
     expect(parseApiJson((await invoke(["project", "show", id, "--json"], outside, 0, true)).stdout)).toEqual(project());
     expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toEqual({ ...task(), version: 9_007_199_254_740_993n });
     const createdTask = await invoke(["task", "create", "--title", "Native task", ...explicit], outside, 0, true);
@@ -310,7 +381,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
     for (const platform of ["windows", "linux", "macos"] as const) {
       const created = await invoke(["task", "create", "--title", "Native platform", "--required-platform", platform, ...explicit], outside, 0, true);
       expect(created.stdout).toContain(`Required platform: ${platform}`);
-      expect(requests.at(-1)!.body).toEqual({ title: "Native platform", requiredPlatform: platform });
+      expect(requests.at(-1)!.body).toEqual({ title: "Native platform", assignedTo: alternateId, requiredPlatform: platform });
       const statusAt = requests.length;
       expect((await invoke(["task", "set-status", taskId, "todo", "--if-version", "9007199254740993", ...explicit], outside, 0, true)).stdout).toContain(`Required platform: ${platform}`);
       expect(requests.slice(statusAt).map(({ method }) => method)).toEqual(["GET", "PUT"]);
@@ -342,8 +413,8 @@ it("runs the actual installed launcher through native project/task discovery, pe
 
     const dependencyCreateAt = requests.length;
     await invoke(["task", "create", "--title", "Mixed prerequisites", "--depends-on", ordinaryId.toUpperCase(), "--external-depends-on", externalId, ...explicit], outside, 0, true);
-    expect(requests.slice(dependencyCreateAt).map(({ method }) => method)).toEqual(["GET", "POST"]);
-    expect(requests.at(-1)!.body).toEqual({ title: "Mixed prerequisites", dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] });
+    expect(requests.slice(dependencyCreateAt).map(({ method }) => method)).toEqual(["GET", "GET", "POST"]);
+    expect(requests.at(-1)!.body).toEqual({ title: "Mixed prerequisites", assignedTo: alternateId, dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] });
     expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toMatchObject({ dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] });
     const dependencyCases = [
       { fields: ["--title", "Preserve prerequisites"], body: { title: "Preserve prerequisites" }, dependsOn: [ordinaryId, externalId], externalDependsOn: [externalId] },
@@ -372,7 +443,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
 
     const pullRequests = [{ url: "", title: "" }, { url: "-arbitrary=a,b", title: " 标题 ,=() " }, { url: "-arbitrary=a,b", title: " 标题 ,=() " }];
     await invoke(["task", "create", "--title", "PR task", ...explicit], outside, 0, true);
-    expect(requests.at(-1)!.body).toEqual({ title: "PR task" });
+    expect(requests.at(-1)!.body).toEqual({ title: "PR task", assignedTo: alternateId });
     expect(properties).toEqual({});
     const valueText = JSON.stringify(pullRequests);
     const setAt = requests.length;
@@ -464,7 +535,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
     // https://github.com/moxystudio/node-cross-spawn/blob/77cd97f3ca7b62c904a63a698fc4a79bf41977d0/lib/parse.js#L38-L62
     const multiline = [{ url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }, { url: "", title: "" }, { url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }];
     await invoke(["task", "create", "--title", "Multiline PR task", ...explicit], outside, 0, true, "node-entry");
-    expect(requests.at(-1)!.body).toEqual({ title: "Multiline PR task" });
+    expect(requests.at(-1)!.body).toEqual({ title: "Multiline PR task", assignedTo: alternateId });
     const multilineValue = JSON.stringify(multiline, null, 2) + "\r\n";
     const multilineVersion = propertyVersion;
     const createdMultiline = await invoke(["task", "set-property", taskId, "pullRequests", multilineValue, ...explicit], outside, 0, true, "node-entry");
@@ -493,8 +564,8 @@ it("runs the actual installed launcher through native project/task discovery, pe
     ].join("\r\n");
     const markdownCreateAt = requests.length;
     await invoke(["task", "create", "--title", "Markdown task", "--description", markdown, ...explicit], outside, 0, true, "node-entry");
-    expect(requests.slice(markdownCreateAt).map(({ method }) => method)).toEqual(["GET", "POST"]);
-    expect(requests.at(-1)!.body).toEqual({ title: "Markdown task", description: markdown });
+    expect(requests.slice(markdownCreateAt).map(({ method }) => method)).toEqual(["GET", "GET", "POST"]);
+    expect(requests.at(-1)!.body).toEqual({ title: "Markdown task", description: markdown, assignedTo: alternateId });
     const readMarkdown = parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout) as Task;
     expect(Buffer.from(readMarkdown.description)).toEqual(Buffer.from(markdown));
     const replacement = "## Replacement 替换\r\n\r\n- Complete field replacement\r\n\r\n[方案与验收](plan.md)\r\n";
@@ -510,8 +581,8 @@ it("runs the actual installed launcher through native project/task discovery, pe
     const brief = markdown;
     const briefCreateAt = requests.length;
     expect((await invoke(["task", "create", "--title", "Packaged Markdown brief", "--description", brief, ...explicit], outside, 0, true, "node-entry")).stdout).toContain("Status: todo");
-    expect(requests.slice(briefCreateAt).map(({ method }) => method)).toEqual(["GET", "POST"]);
-    expect(requests.at(-1)!.body).toEqual({ title: "Packaged Markdown brief", description: brief });
+    expect(requests.slice(briefCreateAt).map(({ method }) => method)).toEqual(["GET", "GET", "POST"]);
+    expect(requests.at(-1)!.body).toEqual({ title: "Packaged Markdown brief", description: brief, assignedTo: alternateId });
     for (const status of ["todo", "in_progress", "done"] as const) {
       const actionAt = requests.length;
       await invoke(["task", "set-status", taskId, status, "--if-version", "9007199254740993", ...explicit], outside, 0, true, "node-entry");
@@ -660,14 +731,54 @@ it("runs the actual installed launcher through native project/task discovery, pe
       expect(result.code).toBe(1); expect(result.stdout).toBe(""); expect(result.stderr).toContain("cancelled"); expect(result.stderr).toContain("unconfirmed"); scenarios.push("actual-posix-sigint-cancels-installed-mutation");
     }
     expect(createHash("sha256").update(await readFile(receipt.entryPath)).digest("hex")).toBe(receipt.entrySha256);
-  } catch (cause) { failure = cause; }
+    cancellation.signal.throwIfAborted();
+  } catch (cause) { failure = cause; throw cause; }
+};
+
+it("runs the actual installed launcher through native project/task discovery, persistence and failure lifecycles", async ({ signal }) => {
+  const cancel = (): void => cancellation.abort(signal.reason);
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+  behavior = exercise();
+  try { await behavior; completed = true; }
+  finally { signal.removeEventListener("abort", cancel); }
+}, 180_000);
+
+afterAll(async () => {
+  cancellation.abort(new Error("Installed project/task acceptance is stopping."));
+  for (const result of await Promise.allSettled([preparation, behavior])) {
+    if (result.status === "rejected" && failure === undefined) failure = result.reason;
+  }
   const cleanup: unknown[] = [];
   for (const [child, closed] of children) { try { await terminateInstalledProcess(child, closed); } catch (cause) { cleanup.push(cause); } }
-  for (const server of servers) { try { server.closeAllConnections(); if (server.listening) await new Promise<void>((resolve, reject) => server.close((cause) => cause === undefined ? resolve() : reject(cause))); } catch (cause) { cleanup.push(cause); } }
-  try { await installed.cleanup(); } catch (cause) { cleanup.push(cause); }
-  let removed = false; try { await lstat(receipt.root); } catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") removed = true; else cleanup.push(cause); }
-  await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: failure === undefined && cleanup.length === 0 && removed, platform: process.platform, nodeVersion: process.version, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256, source: receipt.source }, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { installationRemoved: removed, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+  for (const server of servers) {
+    try {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((cause) => {
+        if (cause === undefined || "code" in cause && cause.code === "ERR_SERVER_NOT_RUNNING") resolve();
+        else reject(cause);
+      }));
+    } catch (cause) { cleanup.push(cause); }
+  }
+  if (installed !== undefined) { try { await installed.cleanup(); } catch (cause) { cleanup.push(cause); } }
+  if (preparationRoot !== undefined) { try { await rm(preparationRoot, { recursive: true, force: true }); } catch (cause) { cleanup.push(cause); } }
+  let removed = false;
+  if (installed !== undefined) {
+    try { await lstat(installed.receipt.root); }
+    catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") removed = true; else cleanup.push(cause); }
+  }
+  let preparationRemoved = preparationRoot === undefined;
+  if (preparationRoot !== undefined) {
+    try { await lstat(preparationRoot); }
+    catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") preparationRemoved = true; else cleanup.push(cause); }
+  }
+  if (children.size !== 0) cleanup.push(new Error("Installed project/task processes did not close."));
+  if (servers.some((server) => server.listening)) cleanup.push(new Error("Installed project/task servers did not close."));
+  const artifact = installed === undefined ? {} : { artifact: { packageVersion: installed.receipt.packageVersion, tarballSha256: installed.receipt.tarballSha256, entrySha256: installed.receipt.entrySha256, source: installed.receipt.source } };
+  try {
+    await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: completed && failure === undefined && cleanup.length === 0 && removed && preparationRemoved, platform: process.platform, nodeVersion: process.version, ...artifact, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { runtimeRemoved: removed, preparationRemoved, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+  } catch (cause) { cleanup.push(cause); }
   if (cleanup.length !== 0) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Installed project/task acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;
   expect(removed).toBe(true);
-}, 180_000);
+});

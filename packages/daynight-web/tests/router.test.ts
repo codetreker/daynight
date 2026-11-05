@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, replaceRoute, taskDetailUrl } from "../src/app/router";
+import { browserNavigation } from '../src/app/navigation';
 
 const taskId = "b0000000-0000-0000-0000-000000000002";
 const projectId = "a0000000-0000-0000-0000-000000000001";
@@ -25,6 +26,11 @@ describe("route parsing", () => {
     expect(parseRoute(task, "?tab=session")).toEqual({ kind: "task", projectId, taskId, tab: "session", path: null });
     expect(taskDetailUrl(projectId, taskId, { tab: "session", path: null })).toBe(`${task}?tab=session`);
     expect(parseRoute(task, "?tab=attachments")).toEqual({ kind: "task", projectId, taskId, tab: "attachments", path: null });
+    expect(parseRoute(task, "?tab=steps")).toEqual({ kind: "task", projectId, taskId, tab: "steps", path: null });
+    expect(taskDetailUrl(projectId, taskId, { tab: "steps", path: null })).toBe(`${task}?tab=steps`);
+    expect(parseRoute(`${task}/attachments/result.md`, "?tab=steps")).toEqual({ kind: "attachment", projectId, taskId, tab: "steps", path: "result.md" });
+    expect(taskDetailUrl(projectId, taskId, { tab: "steps", path: "result.md" })).toBe(`${task}/attachments/result.md?tab=steps`);
+    expect(isLoginReturnPath(`${task}?tab=steps`)).toBe(true);
     expect(parseRoute(`${task}/attachments/docs/a.md`, "?tab=overview")).toEqual({ kind: "attachment", projectId, taskId, tab: "overview", path: "docs/a.md" });
     for (const search of ["?tab=", "?tab=invalid", "?tab=overview&tab=attachments", "?tab=%ZZ"]) expect(parseRoute(task, search)).toEqual({ kind: "notFound" });
     expect(taskDetailUrl(projectId, taskId, { tab: "overview", path: null })).toBe(task);
@@ -73,18 +79,18 @@ describe("Worker account routes", () => {
 describe("navigation", () => {
   it("replaces intermediary authentication entries without adding a history loop", () => {
     const listener = vi.fn();
-    window.addEventListener("popstate", listener);
+    const unsubscribe = browserNavigation().subscribe(listener);
     try {
       const length = window.history.length;
       replaceRoute("/login?returnPath=%2Fprojects");
       expect(window.history.length).toBe(length);
       expect(window.location.pathname).toBe("/login");
       expect(listener).toHaveBeenCalledOnce();
-    } finally { window.removeEventListener("popstate", listener); }
+    } finally { unsubscribe(); }
   });
   it("pushes a same-origin entry and notifies route subscribers", () => {
     const subscriber = vi.fn();
-    window.addEventListener("popstate", subscriber);
+    const unsubscribe = browserNavigation().subscribe(subscriber);
     try {
       const previousLength = window.history.length;
       navigate(`/projects/${projectId}`);
@@ -96,7 +102,7 @@ describe("navigation", () => {
       expect(window.location.pathname).toBe("/projects");
       expect(subscriber).toHaveBeenCalledTimes(2);
     } finally {
-      window.removeEventListener("popstate", subscriber);
+      unsubscribe();
     }
   });
 
@@ -140,10 +146,31 @@ describe("explicit login destinations", () => {
 
   it("rejects duplicate destinations and retains the invitation lifetime only for its effective destination", () => {
     expect(parseLoginReturnPath("?returnPath=%2Fprojects&returnPath=%2Finvitations")).toBeNull();
+    expect(parseAuthRoute("/team-invitations")).toEqual({ kind: "teamInvitations" });
+    expect(isLoginReturnPath("/team-invitations")).toBe(true);
+    expect(invitationLocation("/team-invitations", "")).toBe(true);
+    expect(invitationLocation("/login", "?returnPath=%2Fteam-invitations")).toBe(true);
     expect(invitationLocation("/invitations", "")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Finvitations&authError=login_failed")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Fprojects")).toBe(false);
     expect(invitationLocation("/login", "?returnPath=//elsewhere")).toBe(false);
     expect(invitationLocation("/projects", "?returnPath=%2Finvitations")).toBe(false);
+  });
+});
+
+describe("Team workspace routes", () => {
+  it("parses Team and shared paths and admits them as login destinations", () => {
+    expect(parseAuthRoute(`/teams/${projectId.toUpperCase()}`)).toEqual({ kind: "team", teamId: projectId });
+    expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}`)).toEqual({ kind: "team", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
+    expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
+    expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
+    expect(parseAuthRoute("/shared-projects")).toEqual({ kind: "sharedProjects" });
+    for (const path of [`/teams/${projectId}`, `/teams/${projectId}/settings`, `/teams/${projectId}/members`, "/shared-projects"]) expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: path })}`)).toBe(path);
+    for (const path of ["/teams/", "/teams/invalid", "/teams/%ZZ", "/teams/%2f", `/teams/${projectId}/extra`, `/teams/${projectId}/settings/extra`, `/teams/${projectId}/members/extra`, "/teams/invalid/members", "/teams/invalid/settings", "/shared-projects/"]) {
+      expect(parseAuthRoute(path)).toEqual({ kind: "notFound" });
+      expect(isLoginReturnPath(path)).toBe(false);
+    }
   });
 });

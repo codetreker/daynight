@@ -34,6 +34,7 @@ type TaskPropertySchema struct {
 }
 
 type CreateTaskRequest struct {
+	AssignedTo        *string                `json:"assignedTo,omitempty"`
 	RequiredPlatform  *string                `json:"requiredPlatform,omitempty"`
 	ExternalDependsOn []string               `json:"externalDependsOn,omitempty"`
 	Properties        TaskWritableProperties `json:"properties"`
@@ -43,6 +44,7 @@ type CreateTaskRequest struct {
 }
 
 type UpdateTaskRequest struct {
+	AssignedTo        **string             `json:"assignedTo,omitempty"`
 	RequiredPlatform  **string             `json:"requiredPlatform,omitempty"`
 	ExternalDependsOn *[]string            `json:"externalDependsOn,omitempty"`
 	AllowAgents       *bool                `json:"allowAgents,omitempty"`
@@ -80,6 +82,7 @@ type Task struct {
 	ExternalDependsOn []string       `json:"externalDependsOn"`
 	BlockedBy         []string       `json:"blockedBy"`
 	RequiredPlatform  *string        `json:"requiredPlatform"`
+	AssignedTo        *string        `json:"assignedTo"`
 	AllowAgents       bool           `json:"allowAgents"`
 	Ready             bool           `json:"ready"`
 }

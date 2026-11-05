@@ -1,4 +1,4 @@
-import { formatError } from "../platform/diagnostics.js";
+import { formatError, PublicDiagnosticError } from "../platform/diagnostics.js";
 import { commands, commandTree } from "./commands.js";
 import type { CommandRegistration } from "./commands.js";
 import { UsageError } from "./context.js";
@@ -10,8 +10,8 @@ export const runCli = async (
   context: CliContext,
   registry: readonly CommandRegistration[] = commands,
 ): Promise<number> => {
+  const definition = registry === commands ? commandTree : { ...commandTree, commands: registry };
   try {
-    const definition = registry === commands ? commandTree : { ...commandTree, commands: registry };
     const selection = selectCommand(definition, args);
     if (selection.kind === "help") {
       context.stdout(renderCommandHelp(definition));
@@ -31,6 +31,22 @@ export const runCli = async (
     await command.run(selection.remaining, context);
     return 0;
   } catch (error) {
+    const thread = definition.commands?.find((command) => command.name === "task")?.commands?.find((command) => command.name === "thread");
+    if (error instanceof UsageError && error.grammar !== undefined && thread !== undefined && (error.grammar.definition === thread || thread.commands?.includes(error.grammar.definition))) {
+      const diagnostic = new PublicDiagnosticError(`Invalid Thread command arguments. Run ${error.helpCommand} for usage.`, 2, { cause: error });
+      context.stderr(`${formatError(diagnostic)}\n`);
+      return diagnostic.exitCode;
+    }
+    const step = definition.commands?.find((command) => command.name === "task")?.commands?.find((command) => command.name === "step");
+    if (error instanceof UsageError && error.grammar !== undefined && step !== undefined && (error.grammar.definition === step || step.commands?.includes(error.grammar.definition))) {
+      const diagnostic = new PublicDiagnosticError(`Invalid Step command arguments. Run ${error.helpCommand} for usage.`, 2, { cause: error });
+      context.stderr(`${formatError(diagnostic)}\n`);
+      return diagnostic.exitCode;
+    }
+    if (error instanceof PublicDiagnosticError) {
+      context.stderr(`${formatError(error)}\n`);
+      return error.exitCode;
+    }
     if (error instanceof UsageError) {
       context.stderr(`${formatError(error)} Run ${error.helpCommand} for usage.\n`);
       return 2;

@@ -41,7 +41,7 @@ const confirmStatus = async (button: HTMLElement) => {
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const project = id(100); const parent = id(1); const child = id(2); const standalone = id(3);
 const time = '2026-10-22T00:00:00Z';
-const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: id(number), projectId: project,
+const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: id(number), projectId: project,
   version: 9007199254740993n, title: `Task ${number}`, description: `Complete description ${number}`, properties: { pullRequests: [] },
   status: 'todo', dependsOn, blockedBy: [], ready: true, createdAt: time, updatedAt: time });
 let records: Map<string, TaskDetail>;
@@ -49,10 +49,10 @@ const otherRecords = new Map<string, TaskDetail>();
 const graph = (): TaskGraph => {
   const tasks = [...records.values()].map((task) => {
     const blockedBy = task.dependsOn.filter((dependency) => records.get(dependency)!.status !== 'done');
-    return { requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
+    return { assignedTo: task.assignedTo, requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0, createdAt: time, updatedAt: task.updatedAt };
   });
-  return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: project, name: 'Approval project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time }, tasks,
+  return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: project, name: 'Approval project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time }, tasks,
     summary: { total: tasks.length,
       todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length } };
@@ -149,7 +149,7 @@ describe('status in shared production task details', () => {
     records.set(standalone, changed);
     await act(async () => {
       if (trigger === 'status') mutation.resolve(commit());
-      else await vi.advanceTimersByTimeAsync(5_000);
+      else await vi.advanceTimersByTimeAsync(15_000);
     });
     await waitFor(() => expect(otherReads).toBe(2));
     expect(tab.isConnected).toBe(true);
@@ -233,7 +233,7 @@ describe('status in shared production task details', () => {
     otherRecords.set(otherTask, other);
     const otherGraph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
       project: { ...graph().project, id: otherProject, name: 'Other project' },
-      tasks: [{ requiredPlatform: other.requiredPlatform, allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
+      tasks: [{ assignedTo: other.assignedTo, requiredPlatform: other.requiredPlatform, allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
         dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time }],
       summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
     };

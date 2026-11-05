@@ -1,4 +1,4 @@
-import { readWorkerClaim } from "./task-properties";
+import { readTaskPaused, readWorkerClaim } from "./task-properties";
 import mime from "mime";
 import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
@@ -15,7 +15,6 @@ const serverMessages: Readonly<Record<string, string>> = {
   unauthenticated: "Your session has expired. Please sign in again.",
   forbidden: "You do not have permission to perform this action.",
   version_conflict: "The resource changed. Refresh it before trying again.",
-  last_admin: "The project must retain at least one administrator.",
   invitation_unavailable: "This invitation is no longer available.",
   graph_limit_exceeded: "This project's task graph exceeds the supported size.",
 };
@@ -26,6 +25,8 @@ export class ApiError extends Error {
   readonly code: string;
   readonly requestId: string | null;
   readonly graphLimit: GraphLimitDetails | undefined;
+  readonly serverMessage: string | undefined;
+  readonly stepsLimit: { readonly encodedBytes: number; readonly maxEncodedBytes: number } | undefined;
 
   constructor(
     kind: ApiError["kind"],
@@ -34,6 +35,8 @@ export class ApiError extends Error {
     requestId: string | null = null,
     graphLimit?: GraphLimitDetails,
     cause?: unknown,
+    serverMessage?: string,
+    stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number },
   ) {
     const message = kind === "network"
       ? "Unable to connect to the server. Please try again."
@@ -47,6 +50,8 @@ export class ApiError extends Error {
     this.code = code;
     this.requestId = requestId;
     this.graphLimit = graphLimit;
+    this.serverMessage = serverMessage;
+    this.stepsLimit = stepsLimit;
   }
 }
 
@@ -110,7 +115,7 @@ export const assertResponsePrincipal = (response: Response, expectedUserId: stri
   }
 };
 
-export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}): Promise<Response> => {
+export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void): Promise<Response> => {
   signal.throwIfAborted();
   const generation = authGeneration;
   if (url !== "/api/v1/me" && url !== "/api/v1/auth/logout") {
@@ -121,10 +126,12 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
     }
   }
   let response: Response;
+  // Identity waits must not start a caller's network deadline.
+  onDispatch?.();
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
     const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
-    response = await fetch(url, { ...init, ...(headers ? { headers } : {}), signal, cache: "no-store", credentials: "same-origin", redirect: "error" });
+    response = await fetch(url, { cache: "no-store", ...init, ...(headers ? { headers } : {}), signal, credentials: "same-origin", redirect: "error" });
   } catch (error) {
     signal.throwIfAborted();
     if (isAbortError(error)) throw error;
@@ -137,7 +144,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   return response;
 };
 
-export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text())): Promise<T> => {
+export const json = async <T>(response: Response, signal: AbortSignal, parse: (data: unknown) => T, decode: (response: Response) => Promise<unknown> = async (value) => parseApiJson(await value.text()), includeStepsError = false): Promise<T> => {
   let body: unknown;
   try {
     const contentType = response.headers.get("Content-Type");
@@ -151,8 +158,8 @@ export const json = async <T>(response: Response, signal: AbortSignal, parse: (d
   }
   try {
     if (response.ok) return parse(body);
-    const serverError = parseServerError(body);
-    throw new ApiError("server", response.status, serverError.code, serverError.requestId, serverError.graphLimit);
+    const serverError = parseServerError(body, includeStepsError);
+    throw new ApiError("server", response.status, serverError.code, serverError.requestId, serverError.graphLimit, undefined, serverError.serverMessage, serverError.stepsLimit);
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError("protocol", response.status, "protocol", null, undefined, error);
@@ -168,7 +175,7 @@ export const requestId = (value: string): string => {
   return id;
 };
 
-export const listProjects = (query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal): Promise<ProjectPage> => {
+export const listProjects = (query: { readonly limit?: number; readonly cursor?: string; readonly teamId?: string; readonly shared?: true }, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<ProjectPage> => {
   const parameters = new URLSearchParams();
   if (query.limit !== undefined) {
     if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new ApiError("protocol");
@@ -178,8 +185,18 @@ export const listProjects = (query: { readonly limit?: number; readonly cursor?:
     if (query.cursor === "") throw new ApiError("protocol");
     parameters.set("cursor", query.cursor);
   }
+  if (query.teamId !== undefined && query.shared !== undefined) throw new ApiError("protocol");
+  if (query.teamId !== undefined) parameters.set("teamId", requestId(query.teamId));
+  if (query.shared !== undefined) {
+    if (query.shared !== true) throw new ApiError("protocol");
+    parameters.set("shared", "true");
+  }
   const suffix = parameters.size === 0 ? "" : `?${parameters.toString()}`;
-  return read(`/api/v1/projects${suffix}`, signal, parseProjectPage, decodeProjectPageJson);
+  if (admission === undefined) return read(`/api/v1/projects${suffix}`, signal, parseProjectPage, decodeProjectPageJson);
+  return request(`/api/v1/projects${suffix}`, signal, { headers: { Accept: "application/json" } }).then((response) => {
+    assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+    return json(response, signal, parseProjectPage, decodeProjectPageJson);
+  });
 };
 
 export const getTaskSync = async (
@@ -198,7 +215,7 @@ export const getTaskSync = async (
   const suffix = parameters.size === 0 ? "" : `?${parameters}`;
   const response = await request(`/api/v1/projects/${project}/task-sync${suffix}`, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, expectedUserId, onPrincipalMismatch);
-  return json(response, signal, (value) => parseTaskSync(value, project), decodeTaskGraphJson);
+  return json(response, signal, (value) => parseTaskSync(value, project, expectedUserId), decodeTaskGraphJson);
 };
 
 export type TaskResponseAdmission = {
@@ -207,10 +224,10 @@ export type TaskResponseAdmission = {
   readonly onWriteConfirmed?: () => void;
 };
 
-export const getTask = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskDetail> => {
+export const getTask = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission, correlationId?: string): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
-  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json" } });
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json", ...(correlationId === undefined ? {} : { "X-Request-ID": correlationId }) } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, (data) => parseTaskDetail(data, project, task));
 };
@@ -294,6 +311,27 @@ export const setTaskAgentPermission = async (
   });
 };
 
+export const unpauseTask = async (
+  projectId: string, taskId: string, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<TaskDetail> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
+    method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion, properties: { paused: false } }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, task);
+    if (response.status !== 200 || readTaskPaused(result.properties) !== false || result.version !== exactVersion && result.version !== exactVersion + 1n) {
+      throw new ApiError("protocol", response.status);
+    }
+    return result;
+  });
+};
+
 export const setTaskRequiredPlatform = async (
   projectId: string, taskId: string, requiredPlatform: ExecutionPlatform | null, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<TaskDetail> => {
@@ -309,6 +347,28 @@ export const setTaskRequiredPlatform = async (
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.requiredPlatform !== requiredPlatform || result.version !== exactVersion && result.version !== exactVersion + 1n) {
+      throw new ApiError("protocol", response.status);
+    }
+    return result;
+  });
+};
+
+export const setTaskAssignedTo = async (
+  projectId: string, taskId: string, assignedTo: string | null, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<TaskDetail> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const target = assignedTo === null ? null : requestId(assignedTo);
+  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
+    method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion, assignedTo: target }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, task);
+    if (response.status !== 200 || result.assignedTo !== target || result.version !== exactVersion && result.version !== exactVersion + 1n) {
       throw new ApiError("protocol", response.status);
     }
     return result;

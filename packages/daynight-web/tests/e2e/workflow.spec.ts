@@ -14,6 +14,7 @@ import { expectCenteredTaskDetail, expectTaskDetailScroll } from './detail-dialo
 import { expectStableAutomaticDetailRefresh } from './detail-refresh';
 import { panPoint } from './graph-pan';
 import { verifyPublicExternalDependencyWrites } from './external-dependency-writes';
+import { verifySessionStatus } from './session-status';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const card = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] .task-node`);
@@ -92,7 +93,7 @@ const holdProjectSync = async (page: Page, projectId: string) => {
   };
 };
 const loadAllProjects = async (page: Page): Promise<void> => {
-  await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
   const more = page.getByRole('main').getByRole('button', { name: '加载更多', exact: true });
   for (let count = 0; count < 200; count++) {
@@ -126,16 +127,27 @@ const pauseRefreshClock = async (page: Page): Promise<void> => {
 };
 const nextAutomaticRefresh = async (page: Page, projectId: string): Promise<number> => {
   const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
-  await page.clock.fastForward(5_000);
+  await page.clock.fastForward(15_000);
   return (await response).status();
 };
 
-test('project-list', scenario('project-list'), async ({ page, api: request }, info) => {
+test('project-list', scenario('project-list'), async ({ page, api: request, allowBrowserWrites }, info) => {
   const prefix = `Pagination ${randomUUID()}`;
-  const projects = [];
+  const projects: Awaited<ReturnType<typeof createProject>>[] = [];
   for (let index = 0; index < 51; index++) {
     projects.push(await createProject(request, { name: `${prefix} ${String(index).padStart(2, '0')}` }));
   }
+  const profileResponse = await request.get('/api/v1/me');
+  expect(profileResponse.status()).toBe(200);
+  const profile = await profileResponse.json() as { id: string; personalTeam: { id: string } };
+  const teamName = `  Browser Team ${randomUUID()}  `;
+  const teamResponse = await request.post('/api/v1/teams', { data: { name: teamName, expectedUserId: profile.id } });
+  expect(teamResponse.status()).toBe(201);
+  const team = await teamResponse.json() as { id: string; name: string };
+  expect(team.name).toBe(teamName);
+  const baseURL = info.project.use.baseURL;
+  if (typeof baseURL !== 'string') throw new Error('Project acceptance requires the service origin.');
+  allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
   const listRequests: string[] = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/projects') listRequests.push(request.url()); });
   await page.goto('/projects');
@@ -156,7 +168,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
     await expect(page.getByRole('main').getByRole('alert')).toContainText('更多项目加载失败，已加载的项目仍可查看。');
     await expect(page.getByRole('main').getByRole('button', { name: '重试加载更多', exact: true })).toBeVisible();
     expect(await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')))).toEqual(firstPage);
-    await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   });
   const retried = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -177,12 +189,84 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   const hrefs = await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')));
   expect(new Set(hrefs).size).toBe(hrefs.length);
   expect(listRequests.some((value) => new URL(value).searchParams.has('cursor'))).toBe(true);
-  expect(listRequests.every((value) => new URL(value).searchParams.get('limit') === '50')).toBe(true);
+  expect(listRequests.every((value) => {
+    const query = new URL(value).searchParams;
+    return query.get('limit') === '50' && query.get('teamId') === profile.personalTeam.id && !query.has('shared');
+  })).toBe(true);
   await screenshot(page, info, 'project-list');
   await page.locator(`a.project-card[href="/projects/${projects[50]!.id}"]`).click();
   await expect(page.getByRole('main').getByRole('heading', { name: projects[50]!.name, exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(stat(page, '任务总数')).toHaveText('0');
+
+  await test.step('browses a Team and creates a project in its captured context', async () => {
+    const selector = page.locator('details.team-selector');
+    await selector.locator('summary').click();
+    await expect(selector.getByRole('status')).toHaveCount(0);
+    const teamLink = selector.locator(`a[href="/teams/${team.id}"]`);
+    for (let count = 0; count < 200 && !await teamLink.isVisible(); count++) {
+      const more = selector.getByRole('button', { name: '加载更多 Team', exact: true });
+      await expect(more).toBeVisible();
+      await more.click();
+      await expect(selector.getByRole('status')).toHaveCount(0);
+    }
+    await expect(teamLink).toBeVisible();
+    expect(await teamLink.textContent()).toBe(teamName);
+    await teamLink.click();
+    await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    const teamHeading = page.getByRole('main').locator('h1');
+    await expect(teamHeading).toHaveText(teamName);
+    expect(await teamHeading.textContent()).toBe(teamName);
+    await expect(page.locator('a.project-card')).toHaveCount(0);
+    const rawName = `  Team project ${randomUUID()}  `;
+    const rawRepo = `git@example.org:group/${randomUUID()}.git`;
+    await page.getByRole('button', { name: '＋ 创建项目', exact: true }).click();
+    const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
+    await expect(creation).toContainText(teamName.trim());
+    await creation.getByLabel('项目名称').fill(rawName);
+    await creation.getByLabel('仓库地址').fill(rawRepo);
+    const pending = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects` && response.request().method() === 'POST');
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    const createdResponse = await pending;
+    expect(createdResponse.status()).toBe(201);
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, teamId: team.id, expectedUserId: profile.id });
+    const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string } };
+    expect(created).toMatchObject({ name: rawName, repoUrl: rawRepo, ownership: { teamId: team.id } });
+    await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
+    await expect(page.getByRole('main').locator('h1')).toHaveText(rawName);
+    await page.goto(`/teams/${team.id}`);
+    const projectCard = page.locator(`a.project-card[href="/projects/${created.id}"]`);
+    await expect(projectCard).toBeVisible();
+    expect(await projectCard.locator('.project-name').textContent()).toBe(rawName);
+    expect(await projectCard.locator('.repo span').textContent()).toBe(rawRepo);
+    await expect(page.locator(`a.project-card[href="/projects/${projects[0]!.id}"]`)).toHaveCount(0);
+  });
+
+  await test.step('supports shared links and narrow bilingual navigation', async () => {
+    const shared = page.getByRole('link', { name: '与我共享', exact: true });
+    await expect(shared).toHaveAttribute('href', '/shared-projects');
+    const opened = page.context().waitForEvent('page');
+    await shared.click({ modifiers: ['ControlOrMeta'] });
+    const tab = await opened;
+    try {
+      await expect(tab).toHaveURL(`${baseURL}/shared-projects`);
+      await expect(tab.getByRole('heading', { name: '与我共享的项目', exact: true })).toBeVisible();
+      await expect(tab.getByRole('button', { name: '＋ 创建项目', exact: true })).toHaveCount(0);
+      await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    } finally { await tab.close(); }
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.getByRole('button', { name: /切换 Team/ }).click();
+    const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer.getByRole('link', { name: '与我共享', exact: true })).toBeVisible();
+    await drawer.getByRole('link', { name: '与我共享', exact: true }).click();
+    await expect(page).toHaveURL(`${baseURL}/shared-projects`);
+    await expect(page.getByRole('heading', { name: '与我共享的项目', exact: true })).toBeVisible();
+    await expect(drawer).toHaveCount(0);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+    await expect(page.getByRole('heading', { name: 'Projects shared with me', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Shared with me', exact: true })).toHaveAttribute('href', '/shared-projects');
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
 });
 
 test('project-graph', scenario('project-graph'), async ({ page, api: request, baseURL }, info) => {
@@ -234,7 +318,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     );
     await expect(members.locator('.goal-task-row')).toHaveCount(6);
     const taskRow = page.locator(`#chain-task-${a.id}-${b.id}`);
-    await expect(taskRow.locator('.root-status')).toHaveText('进行中');
+    await expect(taskRow.locator('..').locator('.root-status')).toHaveText('进行中');
     await taskRow.click();
     const detail = page.locator('.task-detail-dialog');
     await expect(detail.locator('.task-detail-title')).toHaveText(b.title);
@@ -273,11 +357,10 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await openChain(page, a.id);
   await expect(root(page, b.id)).toHaveCount(0);
   await expect(root(page, c.id)).toHaveCount(0);
-  await expect(root(page, a.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, a.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
   await expect(page.locator('.react-flow__node')).toHaveCount(7);
-  const completedVisibility = page.getByRole('checkbox', { name: '显示所有', includeHidden: true });
-  await expect(completedVisibility).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: '显示所有', includeHidden: true })).toHaveCount(0);
   await expect(root(page, completed.id)).toHaveCount(0);
   await expect(root(page, independent.id)).toHaveCount(0);
   await expect(page.getByLabel('显示 1 条，共 1 条任务链')).toBeVisible();
@@ -285,10 +368,6 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await viewTab(page, '独立任务').click();
   await expect(standalone(page, independent.id)).toBeVisible();
   await expect(standalone(page, independent.id)).toContainText('待处理');
-  const completedStandaloneVisibility = page.getByRole('checkbox', { name: '显示所有' });
-  await expect(completedStandaloneVisibility).not.toBeChecked();
-  await expect(standalone(page, completed.id)).toBeVisible();
-  await completedStandaloneVisibility.check();
   await expect(standalone(page, completed.id)).toBeVisible();
   await expect(viewTab(page, '任务链').locator('.graph-count-pill')).toHaveText('3');
   await expect(viewTab(page, '独立任务').locator('.graph-count-pill')).toHaveText('1');
@@ -297,18 +376,15 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await page.reload();
   await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
-  await expect(completedStandaloneVisibility).toBeChecked();
   expect(await page.locator('.standalone-row').evaluateAll((items) => items.map((item) => item.id))).toEqual(
     [independent, completed].map(({ id }) => `standalone-task-${id}`),
   );
-  await completedStandaloneVisibility.uncheck();
   await expect(standalone(page, completed.id)).toBeVisible();
   await viewTab(page, '任务链').click();
-  await expect(completedVisibility).not.toBeChecked();
   await expectClosedChain(page, a.id);
   await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'false');
   await openChain(page, a.id);
-  await expect(root(page, a.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, a.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
   await expect(inspectTask(page, a.id).locator('.graph-status')).toHaveText('已完成');
   await expect(page.locator('.task-graph-canvas')).toHaveCount(1);
@@ -321,6 +397,28 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     expect(await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => ({ id: (node as HTMLElement).dataset.id!, height: (node as HTMLElement).style.height })).sort((a, b) => a.id.localeCompare(b.id))), 'Every visible card uses its API-derived compact or expandable height').toEqual(heights);
     expect(await checkDependencyGeometry(page, expected, info), 'Every visible API dependency preserves complete native geometry').toEqual({ total: 0, examples: [] });
   };
+  await test.step('switches real graph geometry while retaining inspection and visible tasks', async () => {
+    const horizontal = page.getByRole('radio', { name: '水平', exact: true });
+    const vertical = page.getByRole('radio', { name: '垂直', exact: true });
+    await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+    const visible = await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id).sort());
+    await inspectTask(page, f.id).click();
+    await expect(inspectTask(page, f.id)).toHaveAttribute('aria-pressed', 'true');
+    await horizontal.focus(); await page.keyboard.press('ArrowRight');
+    await expect(vertical).toBeFocused(); await expect(vertical).toHaveAttribute('aria-checked', 'true');
+    await expect(inspectTask(page, f.id)).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id).sort())).toEqual(visible);
+    expect(await checkDependencyGeometry(page, expectedDependencyTopology(graphSnapshot.tasks, a.id), info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    await page.getByRole('button', { name: '全屏查看', exact: true }).click();
+    await expect(vertical).toHaveAttribute('aria-checked', 'true');
+    expect(await checkDependencyGeometry(page, expectedDependencyTopology(graphSnapshot.tasks, a.id), info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+    await horizontal.click();
+    await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+    await expect(inspectTask(page, f.id)).toHaveAttribute('aria-pressed', 'true');
+    await inspectTask(page, f.id).click();
+    await checkEdges(a.id);
+  });
   await test.step('keeps every static dependency aligned with task nodes through zoom and pan', async () => {
     await checkEdges(a.id);
     const viewport = page.locator('.react-flow__viewport');
@@ -424,6 +522,14 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
       await expect(page.locator(`.task-dependency-edge[data-id="${ancestor.id}->${prerequisite.id}"]`)).toHaveAttribute('data-external', 'false');
       await expect(page.locator(`.task-dependency-edge[data-id="${prerequisite.id}->${sink.id}"]`)).toHaveAttribute('data-external', 'true');
       await expect(page.locator('.task-node-external')).toHaveCount(2);
+      const { graph: contextGraph } = await readProjectSnapshot(request, contextProject.id);
+      const topology = expectedDependencyTopology(contextGraph.tasks, source.id);
+      await page.getByRole('radio', { name: '垂直', exact: true }).click();
+      await expect(page.getByRole('radio', { name: '垂直', exact: true })).toHaveAttribute('aria-checked', 'true');
+      expect(await checkDependencyGeometry(page, topology, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.getByRole('radio', { name: '水平', exact: true }).click();
+      await expect(page.getByRole('radio', { name: '水平', exact: true })).toHaveAttribute('aria-checked', 'true');
       expect(await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).style.height))).toEqual(['96px', '96px', '96px', '96px']);
       await expect(card(page, prerequisite.id).locator('.task-node-expansions')).toHaveCount(0);
       await expect(page.getByText('链内 2 · 外部 2 · 任务 4/4 · 依赖 3/3')).toBeVisible();
@@ -544,9 +650,6 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect(card(page, statusDelivery[2]!.id)).toHaveCount(0);
     await expect(page.locator('.root-toggle')).toHaveCount(3);
     await closeChain(page);
-    const completed = page.getByRole('checkbox', { name: /显示所有/ });
-    await expect(completed).toHaveAccessibleName('显示所有');
-    await completed.check();
     await expect(page.locator('.root-toggle')).toHaveCount(3);
     await expect(root(page, auth[0]!.id).locator('.root-progress-label')).toHaveText('7/7 已完成');
     await expect(root(page, statusDelivery[0]!.id).locator('.root-progress-label')).toHaveText('3/3 已完成');
@@ -638,7 +741,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     const before = await appearance();
     last = await seedExternalDependencies(request, shortcut.id, last, [first.id]);
     const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${shortcut.id}/task-sync`);
-    await page.clock.fastForward(5_000); expect((await response).status()).toBe(200);
+    await page.clock.fastForward(15_000); expect((await response).status()).toBe(200);
     await expect(page.locator(`.task-dependency-edge[data-id="${first.id}->${last.id}"]`)).toHaveAttribute('data-external', 'true');
     await expect(page.locator(`.task-dependency-edge[data-id="${middle.id}->${last.id}"]`)).toHaveAttribute('data-external', 'false');
     await expect(page.locator('.task-node-external')).toHaveCount(0);
@@ -690,9 +793,86 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await page.clock.resume();
   });
 
+  await test.step('persists independent Goal directions and exposes storage failures', async () => {
+    await page.setViewportSize({ width: 1100, height: 800 });
+    const preferenceProject = await createProject(request, { name: `Direction preferences ${randomUUID()}` });
+    const goalA = await createTask(request, preferenceProject.id, { title: '方向偏好 A' });
+    await createTask(request, preferenceProject.id, { title: 'A 后续', dependsOn: [goalA.id] });
+    const goalB = await createTask(request, preferenceProject.id, { title: '方向偏好 B' });
+    await createTask(request, preferenceProject.id, { title: 'B 后续', dependsOn: [goalB.id] });
+    const otherProject = await createProject(request, { name: `Other direction preferences ${randomUUID()}` });
+    const otherGoal = await createTask(request, otherProject.id, { title: '其他项目目标' });
+    await createTask(request, otherProject.id, { title: '其他项目后续', dependsOn: [otherGoal.id] });
+    const keyA = `daynight:graph-direction:${JSON.stringify([preferenceProject.id, goalA.id])}`;
+    const horizontal = () => page.getByRole('radio', { name: '水平', exact: true });
+    const vertical = () => page.getByRole('radio', { name: '垂直', exact: true });
+    await openTaskProject(page, preferenceProject.id, preferenceProject.name);
+    await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await vertical().click();
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    expect(await page.evaluate((key) => localStorage.getItem(key), keyA)).toBe('"vertical"');
+    await closeChain(page); await openChain(page, goalB.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await page.reload(); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page); await openChain(page, goalB.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page);
+    await openTaskProject(page, otherProject.id, otherProject.name);
+    await openChain(page, otherGoal.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await openTaskProject(page, preferenceProject.id, preferenceProject.name);
+    await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await inspectTask(page, goalA.id).click();
+    await expect(inspectTask(page, goalA.id)).toHaveAttribute('aria-pressed', 'true');
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 60_000));
+    const beforeRefresh = (await page.evaluate(captureStableDependencyGeometry)).geometry;
+    expect(await nextAutomaticRefresh(page, preferenceProject.id)).toBe(200);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await expect(inspectTask(page, goalA.id)).toHaveAttribute('aria-pressed', 'true');
+    expect((await page.evaluate(captureStableDependencyGeometry)).geometry).toEqual(beforeRefresh);
+    await page.clock.resume();
+    await horizontal().click(); await closeChain(page); await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+
+    await closeChain(page);
+    await page.evaluate((key) => localStorage.setItem(key, '"diagonal"'), keyA);
+    await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('.graph-preference-notice')).toHaveText('已保存的图方向无效，默认使用水平布局。');
+    await vertical().click(); await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page);
+    await page.evaluate((key) => {
+      const get = Storage.prototype.getItem;
+      Storage.prototype.getItem = function (name) { if (name === key) throw new Error('test read failure'); return get.call(this, name); };
+    }, keyA);
+    await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('.graph-preference-notice')).toHaveText('无法读取已保存的图方向，仍可切换方向。');
+    await vertical().click(); await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await page.reload(); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await page.evaluate((key) => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (name, value) { if (name === key) throw new Error('test write failure'); set.call(this, name, value); };
+    }, keyA);
+    await horizontal().click(); await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('.graph-preference-notice')).toHaveText('无法保存图方向，重新加载后可能无法恢复。');
+    await page.reload(); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+  });
+
   await test.step('writes external classifications through the installed CLI and public API into the same production Web', async () => {
     if (baseURL === undefined) throw new Error('Public dependency acceptance requires the actual service origin.');
     await verifyPublicExternalDependencyWrites(page, request, baseURL, info);
+  });
+  await test.step('reads live Session status annotations and navigates to the matching Session', async () => {
+    if (baseURL === undefined) throw new Error('Session status acceptance requires its service origin.');
+    await verifySessionStatus(page, request, baseURL, info);
   });
 
 });
@@ -739,8 +919,6 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('1/2 已完成');
   await expect(root(page, independent.id)).toHaveCount(0);
   await expect(root(page, completedRoot.id)).toBeVisible();
-  const chainsCompleted = page.getByRole('checkbox', { name: '显示所有' });
-  await chainsCompleted.check();
   await expect(root(page, completedRoot.id)).toBeVisible();
   await expect(viewTab(page, '任务链').locator('.graph-count-pill')).toHaveText('25');
   await graphButton(page, predecessor.id).click();
@@ -792,7 +970,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     const overviewTop = Math.min(120, overviewExtent);
     await page.evaluate((top) => window.scrollTo(0, top), overviewTop);
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(overviewTop);
-    expect(await page.evaluate((id) => JSON.parse(localStorage.getItem(`daynight:task-view-scroll:${id}`)!).chains, project.id)).toBe(540);
+    expect(await page.evaluate((id) => JSON.parse(localStorage.getItem(`daynight:task-list-scroll:${id}`)!), project.id)).toBe(540);
     await activateViewWithoutScrolling(page, '任务列表');
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
     await expectClosedChain(page, predecessor.id);
@@ -884,9 +1062,6 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect(standalonePagination).toContainText('第 16–22 条，共 22 条');
   await standalonePagination.getByRole('button', { name: '上一页', exact: true }).click();
   await expect(standalone(page, independent.id)).toBeVisible();
-  const standaloneCompleted = page.getByRole('checkbox', { name: '显示所有' });
-  await expect(standaloneCompleted).not.toBeChecked();
-  await standaloneCompleted.check();
   await expect(standalone(page, completedIndependent.id)).toHaveCount(0);
   await standalonePagination.getByRole('button', { name: '下一页', exact: true }).click();
   await expect(standalone(page, completedIndependent.id)).toBeVisible();
@@ -918,52 +1093,110 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await page.evaluate(() => window.scrollTo(0, 320));
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
   await activateViewWithoutScrolling(page, '任务链');
-  await expect(chainsCompleted).toBeChecked();
   await expectClosedChain(page, predecessor.id);
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
   await openChain(page, predecessor.id);
   await expect(inspectTask(page, dependent.id)).toBeVisible();
   await closeChain(page);
   await page.evaluate(() => window.scrollTo(0, 540));
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await activateViewWithoutScrolling(page, '独立任务');
-  await expect(standaloneCompleted).toBeChecked();
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
-  await standaloneCompleted.evaluate((checkbox: HTMLInputElement) => checkbox.focus({ preventScroll: true }));
-  await page.keyboard.press('Space');
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await activateViewWithoutScrolling(page, '任务链');
-  await expect(chainsCompleted).toBeChecked();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await activateViewWithoutScrolling(page, '独立任务');
-  await expect(standaloneCompleted).not.toBeChecked();
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
-  const membersUrl = `**/api/v1/projects/${project.id}/members`;
-  let releaseMembers!: () => void;
-  let markMembersRequestStarted!: () => void;
-  const membersResponseGate = new Promise<void>((resolve) => { releaseMembers = resolve; });
-  const membersRequestStarted = new Promise<void>((resolve) => { markMembersRequestStarted = resolve; });
-  await page.route(membersUrl, async (route) => {
-    markMembersRequestStarted();
-    await membersResponseGate;
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
+  await test.step('keeps category switching at the current position and only clamps shorter content', async () => {
+    const scrollTrace = await page.evaluateHandle(() => {
+      const original = window.scrollTo;
+      let calls = 0;
+      window.scrollTo = new Proxy(original, {
+        apply: (target, receiver, arguments_) => {
+          calls++;
+          return Reflect.apply(target, receiver, arguments_);
+        },
+      });
+      return { reset: () => { calls = 0; }, count: () => calls, restore: () => { window.scrollTo = original; } };
+    });
+    const settledPosition = async () => {
+      const position = page.evaluate(() => new Promise<number>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.scrollY)));
+      }));
+      await page.clock.runFor(40);
+      return await position;
+    };
+    try {
+      for (const width of [1100, 390]) {
+        await page.setViewportSize({ width, height: 700 });
+        await page.evaluate(() => window.scrollTo(0, 120));
+        for (const name of ['任务链', '独立任务', '任务链', '独立任务'] as const) {
+          await scrollTrace.evaluate((trace) => trace.reset());
+          await activateViewWithoutScrolling(page, name);
+          expect(await settledPosition()).toBe(120);
+          expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+        }
+        await standalonePagination.getByRole('button', { name: '下一页', exact: true }).click();
+        await expect(page.locator('.standalone-row')).toHaveCount(7);
+        const shortExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+        await activateViewWithoutScrolling(page, '任务链');
+        const longExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+        expect(longExtent).toBeGreaterThan(shortExtent);
+        await page.evaluate((top) => window.scrollTo(0, top), longExtent);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(longExtent);
+        await scrollTrace.evaluate((trace) => trace.reset());
+        await activateViewWithoutScrolling(page, '独立任务');
+        expect(await settledPosition()).toBe(shortExtent);
+        expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+        await activateViewWithoutScrolling(page, '任务链');
+        expect(await settledPosition()).toBe(shortExtent);
+        expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+        await activateViewWithoutScrolling(page, '独立任务');
+        await standalonePagination.getByRole('button', { name: '上一页', exact: true }).click();
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await scrollTrace.evaluate((trace) => trace.reset());
+        await viewTab(page, '任务链').click();
+        expect(await settledPosition()).toBe(0);
+        await viewTab(page, '独立任务').click();
+        expect(await settledPosition()).toBe(0);
+        expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+      }
+    } finally {
+      await scrollTrace.evaluate((trace) => trace.restore());
+      await scrollTrace.dispose();
+    }
+    await page.setViewportSize({ width: 1100, height: 700 });
+    await page.evaluate(() => window.scrollTo(0, 540));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
+    await expect.poll(() => page.evaluate((id) => JSON.parse(localStorage.getItem(`daynight:task-list-scroll:${id}`)!), project.id)).toBe(540);
+  });
+  const initialSyncUrl = (url: URL) => url.pathname === syncPath;
+  let releaseSync!: () => void;
+  let markSyncRequestStarted!: () => void;
+  const syncResponseGate = new Promise<void>((resolve) => { releaseSync = resolve; });
+  const syncRequestStarted = new Promise<void>((resolve) => { markSyncRequestStarted = resolve; });
+  await page.route(initialSyncUrl, async (route) => {
+    markSyncRequestStarted();
+    await syncResponseGate;
     await route.continue();
   });
   try {
     await page.reload();
     await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await membersRequestStarted;
+    await syncRequestStarted;
     await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
-    await expect(standaloneCompleted).not.toBeChecked();
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
     const projectHeading = page.locator('.project-heading');
-    const headingBeforeMembership = await projectHeading.boundingBox();
-    expect(headingBeforeMembership).not.toBeNull();
-    releaseMembers();
+    await expect(projectHeading.locator('.project-title-actions-placeholder')).toHaveCount(1);
+    await expect(page.getByRole('link', { name: '项目设置', exact: true })).toHaveCount(0);
+    const headingBeforeAccess = await projectHeading.boundingBox();
+    expect(headingBeforeAccess).not.toBeNull();
+    releaseSync();
     await expect(page.getByRole('link', { name: '项目设置', exact: true })).toBeVisible();
-    expect(await projectHeading.boundingBox()).toEqual(headingBeforeMembership);
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+    expect(await projectHeading.boundingBox()).toEqual(headingBeforeAccess);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   } finally {
-    releaseMembers();
-    await page.unroute(membersUrl);
+    releaseSync();
+    await page.unroute(initialSyncUrl);
   }
 
   const other = await createProject(request, { name: `Other task views ${randomUUID()}` });
@@ -974,7 +1207,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await openProject(page, project.id, project.name);
   await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
 
   independent = await updateTask(request, project.id, independent.id, { version: independent.version, dependsOn: [predecessor.id] });
   const joinedSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
@@ -1014,7 +1247,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     await page.locator('.sidebar a.nav-button[href="/projects"]').click();
-    await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
     await loadAllProjects(page);
     await page.locator(`a.project-card[href="/projects/${other.id}"]`).click();
     await expect(page.getByRole('heading', { name: other.name, exact: true })).toBeVisible();
@@ -1156,7 +1389,7 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await openChain(page, predecessor.id);
   await expect(stat(page, '已完成')).toHaveText('0');
   await expect(stat(page, '被阻塞')).toHaveText('1');
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('待处理');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('0/2 已完成');
   await expect(inspectTask(page, dependent.id).locator('.graph-blocked-badge')).toBeVisible();
   await pauseRefreshClock(page);
@@ -1182,13 +1415,13 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
     await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toBeDisabled();
     await expect(stat(page, '已完成')).toHaveText('0');
     await expect(stat(page, '被阻塞')).toHaveText('1');
-    await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
+    await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('待处理');
     derivedSync.release();
     expect((await derivedResponse).status()).toBe(200);
   } finally { await derivedSync.close(); }
   await expect(stat(page, '已完成')).toHaveText('1');
   await expect(stat(page, '被阻塞')).toHaveText('0');
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('1/2 已完成');
   await expect(inspectTask(page, predecessor.id).locator('.graph-status')).toHaveText('已完成');
   await expect(dialog.locator('.task-detail-title')).toHaveText(dependent.title);
@@ -1382,12 +1615,11 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await screenshot(page, info, 'refresh-staleness');
   await page.keyboard.press('Escape');
   await finishTask(request, project.id, replaced);
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('进行中');
   expect(await nextAutomaticRefresh(page, project.id)).toBe(200);
   await expect(root(page, predecessor.id)).toBeVisible();
   await expect(page.getByRole('heading', { name: '暂无近期任务链' })).toHaveCount(0);
-  await expect(page.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('已完成');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('2/2 已完成');
   await openChain(page, predecessor.id);
   await expect(inspectTask(page, predecessor.id).locator('.graph-status')).toHaveText('已完成');
@@ -1423,12 +1655,8 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   await expect(page.getByText('完成比例 100%')).toBeVisible();
   await selectTaskList(page);
   await expect(root(page, task.id)).toBeVisible();
-  await expect(page.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
-  // The recovery scenario jumps the browser clock by a year and reloads offline,
-  // so its graph must stay visible independently of the recent-completion window.
-  await page.getByRole('checkbox', { name: '显示所有' }).check();
   await openChain(page, task.id);
-  await expect(root(page, task.id).locator('.root-status')).toHaveText('已完成');
+  await expect(root(page, task.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(inspectTask(page, task.id)).toBeVisible();
   await pauseRefreshClock(page);
   const receipt = await page.locator('.snapshot-time time').getAttribute('datetime');
@@ -1460,7 +1688,7 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   await page.getByRole('button', { name: '放大', exact: true }).click();
   await withDependencyFailure(async () => {
     const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
-    await page.clock.fastForward(5_000);
+    await page.clock.fastForward(15_000);
     const response = await failed;
     expect(response.status()).toBe(500);
     const body = await response.json() as { error: { requestId: string; code: string } };
@@ -1519,7 +1747,7 @@ test('deep-links', scenario('deep-links'), async ({ page, api: request }, info) 
   await page.locator(`a.project-card[href="/projects/${second.id}"]`).click();
   await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   await page.goForward();
   await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible();
 
@@ -1616,10 +1844,13 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   const automation = dialog.getByRole('switch', { name: '自动执行', exact: true });
   const overviewTab = dialog.getByRole('tab', { name: '概览', exact: true });
   const executionPlatform = dialog.getByRole('combobox', { name: '执行平台', exact: true });
+  const assignment = dialog.getByRole('button', { name: '负责人：未分配', exact: true });
   await expect(dialog.getByRole('button', { name: '保存平台', exact: true })).toHaveCount(0);
   const copyTaskId = dialog.getByRole('button', { name: '复制任务 ID', exact: true });
   await page.keyboard.press('Tab');
   await expect(statusAction).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(assignment).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(executionPlatform).toBeFocused();
   await page.keyboard.press('Tab');
@@ -1634,6 +1865,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(automation).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(executionPlatform).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(assignment).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(statusAction).toBeFocused();
   await page.keyboard.press('Shift+Tab');
@@ -1746,9 +1979,6 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(trigger).toBeFocused();
 
   await closeChain(page);
-  const completedVisibility = page.getByRole('checkbox', { name: '显示所有' });
-  await completedVisibility.check();
-  await expect(completedVisibility).toBeChecked();
   let currentTask = b;
   for (const fullscreenMode of [false, true]) {
     await openChain(page, a.id);
@@ -1820,7 +2050,7 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     for (const viewport of [{ width: 390, height: 700 }, { width: 320, height: 360 }]) {
       await page.setViewportSize(viewport);
       await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(60);
-      await expect(sidebar.locator('a.account-nav')).toBeInViewport();
+      await expect(sidebar.locator('a[href="/account"]')).toHaveCount(0);
       const opener = page.getByRole('button', { name: '展开侧栏', exact: true });
       await expect(opener).toBeInViewport();
       const background = await workspace.boundingBox();
@@ -1852,6 +2082,20 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
       await expect(workspace).not.toHaveAttribute('inert', '');
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+      const account = page.getByRole('button', { name: /^账户菜单：/ });
+      await account.click();
+      const menu = page.getByRole('menu');
+      const item = menu.getByRole('menuitem', { name: '账户设置', exact: true });
+      await expect(item).toBeFocused();
+      const bounds = await menu.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(account).toBeFocused();
     }
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
     await page.setViewportSize({ width: 1440, height: 700 });
@@ -1861,13 +2105,18 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await page.setViewportSize({ width: 390, height: 700 });
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
-    await sidebar.locator('a.account-nav').click();
-    await expect(page).toHaveURL(/\/account$/);
+    await sidebar.getByRole('link', { name: '我的项目', exact: true }).click();
+    await expect(page).toHaveURL(/\/projects$/);
     await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
     await expect(workspace).not.toHaveAttribute('inert', '');
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await expect(page.locator('#main-content')).toBeFocused();
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    await page.getByRole('button', { name: /^账户菜单：/ }).click();
+    await page.getByRole('menuitem', { name: '账户设置', exact: true }).click();
+    await expect(page).toHaveURL(/\/account$/);
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(page.locator('#main-content')).toBeFocused();
     await page.setViewportSize({ width: 320, height: 800 });
     await openTaskProject(page, project.id, project.name);
   });

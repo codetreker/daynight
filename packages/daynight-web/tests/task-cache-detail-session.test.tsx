@@ -136,13 +136,16 @@ it("holds newer detail until matching summary, without advancing the project wat
 });
 
 it("rejects a late pre-snapshot response without restoring the private body", async () => {
-  const detail = body(); const scope = await seed([detail]); const live = deferred<Response>(); const fetch = vi.fn().mockReturnValue(live.promise); vi.stubGlobal("fetch", fetch);
+  const detail = body({ description: "Private body from the previous history" }); const scope = await seed([detail]); const live = deferred<Response>(); const fetch = vi.fn().mockReturnValue(live.promise); vi.stubGlobal("fetch", fetch);
   const session = new TaskDetailSessions(scope); sessions.push(session); session.observe(projectId, taskId, node(scope)); session.load(projectId, taskId, 1, "open");
   await waitFor(() => expect(fetch).toHaveBeenCalledOnce()); const transactions = vi.spyOn(scope, "detailTransaction");
+  const parser = await import("../src/api/parse"); const parse = parser.parseTaskDetail; const decoded = deferred<void>();
+  vi.spyOn(parser, "parseTaskDetail").mockImplementation((...args) => { const parsed = parse(...args); decoded.resolve(); return parsed; });
   await apply(scope, [detail], true); live.resolve(resourceResponse(detail, TEST_VIEWER_ID));
-  await waitFor(() => expect(transactions).toHaveBeenCalledOnce());
-  await expect(transactions.mock.results[0]!.value).rejects.toMatchObject({ name: "AbortError" });
-  expect(session.snapshot(projectId, taskId).detail).toBeNull();
+  await decoded.promise;
+  // Drain the decoded response's consumer before inspecting its admission side effects.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0)); await scope.beginSync(projectId, signal());
+  expect(transactions).not.toHaveBeenCalled(); expect(session.snapshot(projectId, taskId).detail).toBeNull();
 });
 
 it("keeps a confirmed remote write distinct from a malformed successful body and reconciles only with GET", async () => {
@@ -574,4 +577,37 @@ it("keeps scope denial retryable after a disposed write's trusted 404 purge fail
   expect(scope.getAuthorizedProject(projectId)).toBeNull(); expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, mutation: { phase: "refused", error: { requestId: "disposed-purge-denied" } } });
   await expect(scope.detailTransaction(ticket, signal(), async () => "private")).rejects.toMatchObject({ name: "AbortError" }); await expect(scope.beginSync(projectId, signal())).rejects.toMatchObject({ category: "storage" });
   fault.mockRestore(); const recovered = await scope.beginSync(projectId, signal()); expect(recovered.epoch).toBeNull(); expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('withdraws a detail through scope suspension and reopening, and fences a late response from the same cache generation', async () => {
+  const detail = body({ description: 'Private cached body' }); const scope = await seed([detail]);
+  const prior = await scope.beginSync(projectId, signal());
+  const stale = deferred<Response>(); const fresh = deferred<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(detail, TEST_VIEWER_ID)).mockReturnValueOnce(stale.promise).mockReturnValueOnce(fresh.promise);
+  vi.stubGlobal('fetch', fetch);
+  const latest = { current: null as ReturnType<typeof useTaskDetail> | null };
+  const observed = node(scope);
+  const Probe = ({ revision }: { readonly revision: number }) => { latest.current = useTaskDetail(projectId, taskId, revision, observed); return null; };
+  const Host = ({ visible, revision }: { readonly visible: boolean; readonly revision: number }) => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider>{visible && <Probe revision={revision} />}</TaskDetailSessionProvider></TaskCacheProvider>;
+  const view = render(<Host visible revision={1} />);
+  await waitFor(() => expect(latest.current?.canSetStatus).toBe(true));
+  expect(latest.current?.detail?.description).toBe(detail.description);
+  act(() => latest.current!.retry()); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  act(() => scope.suspendProject(projectId));
+  expect(latest.current?.detail).toBeNull(); expect(latest.current?.canSetStatus).toBe(false);
+  view.rerender(<Host visible={false} revision={1} />); view.rerender(<Host visible revision={1} />);
+  expect(latest.current?.detail).toBeNull(); expect(latest.current?.canSetStatus).toBe(false);
+  await act(async () => { scope.resumeProject(projectId); await apply(scope, [detail]); });
+  const current = await scope.beginSync(projectId, signal());
+  expect(current.cacheGeneration).toBe(prior.cacheGeneration);
+  expect(current.scopeRevision).not.toBe(prior.scopeRevision);
+  view.rerender(<Host visible revision={2} />);
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+  await act(async () => { stale.resolve(resourceResponse({ ...detail, description: 'Stale old response' }, TEST_VIEWER_ID)); });
+  expect(latest.current?.detail?.description).not.toBe('Stale old response');
+  expect(latest.current?.requiresFreshRead).toBe(true); expect(latest.current?.canSetStatus).toBe(false);
+  await act(async () => { fresh.resolve(resourceResponse(detail, TEST_VIEWER_ID)); });
+  await waitFor(() => expect(latest.current?.canSetStatus).toBe(true));
+  expect(latest.current?.detail?.description).toBe(detail.description);
+  view.unmount();
 });

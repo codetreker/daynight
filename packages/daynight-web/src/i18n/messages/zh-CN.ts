@@ -1,3 +1,4 @@
+import { assignment } from "./zh-CN/assignment";
 import { workers } from "./zh-CN/workers";
 import { workspace } from "./zh-CN/workspace";
 import { graph } from "./zh-CN/graph";
@@ -11,6 +12,7 @@ import { landing } from "./zh-CN/landing";
 import type { Messages } from "../messages";
 
 export const zhCN: Messages = {
+  assignment,
   workspace,
   workers,
   graph,

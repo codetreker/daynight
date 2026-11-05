@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestTaskPropertiesMigrationPreservesExistingResource(t *testing.T) {
@@ -30,12 +30,18 @@ func TestTaskPropertiesMigrationPreservesExistingResource(t *testing.T) {
 		WHERE table_schema=current_schema() AND table_name='tasks' AND column_name='properties')`).Scan(&missing); err != nil || !missing {
 		t.Fatalf("fixture was not an actual old schema: %v, %v", missing, err)
 	}
+	if err := migrate(ctx, pool, schemaMigrations[:31]); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedHistoricalProjectAdmin(ctx, &Store{Pool: pool}, projectID); err != nil {
+		t.Fatal(err)
+	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
 	database := &Store{Pool: pool}
 	task := snapshotTask(t, database, projectID, taskID)
-	if task.Title != "Existing task" || task.Description != "Existing description" || task.Status != core.TaskDone || task.Version != 17 || !task.CreatedAt.Equal(created) || !task.UpdatedAt.Equal(updated) || fixturePullRequests(t, task.Properties) == nil || len(fixturePullRequests(t, task.Properties)) != 0 {
+	if task.Title != "Existing task" || task.Description != "Existing description" || task.Status != model.TaskDone || task.Version != 17 || !task.CreatedAt.Equal(created) || !task.UpdatedAt.Equal(updated) || fixturePullRequests(t, task.Properties) == nil || len(fixturePullRequests(t, task.Properties)) != 0 {
 		t.Fatalf("migration changed old resource: %#v", task)
 	}
 	var applied time.Time

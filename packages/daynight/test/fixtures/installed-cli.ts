@@ -19,6 +19,14 @@ export type InstalledCliReceipt = {
   readonly source: { readonly gitSha: string; readonly gitTreeSha: string; readonly dirty: boolean };
 };
 
+export type InstalledCliOptions = {
+  readonly signal?: AbortSignal;
+  readonly temporaryRoot?: string;
+  readonly rootDirectory?: string;
+  readonly onSpawn?: (child: ChildProcess) => void | Promise<void>;
+  readonly defaultCommandShims?: boolean;
+};
+
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const digest = (content: Uint8Array): string => createHash("sha256").update(content).digest("hex");
 
@@ -59,11 +67,7 @@ export const terminateInstalledProcess = async (child: ChildProcess, closed: Pro
   if (failures.length !== 0) throw new AggregateError(failures, "Owned installation process-tree cleanup failed.");
 };
 
-export const createInstalledCli = async (options: { readonly signal?: AbortSignal; readonly temporaryRoot?: string; readonly rootDirectory?: string; readonly onSpawn?: (child: ChildProcess) => void | Promise<void> } = {}): Promise<{
-  readonly receipt: InstalledCliReceipt;
-  readonly receiptPath: string;
-  cleanup(): Promise<void>;
-}> => {
+export const createInstalledCliRoot = async (options: Pick<InstalledCliOptions, "signal" | "temporaryRoot" | "rootDirectory"> = {}): Promise<string> => {
   const check = (): void => options.signal?.throwIfAborted();
   check();
   const temporary = options.temporaryRoot === undefined ? path.join(workspace, ".tmp") : options.temporaryRoot;
@@ -77,6 +81,17 @@ export const createInstalledCli = async (options: { readonly signal?: AbortSigna
     await mkdir(options.rootDirectory, { mode: 0o700 });
     root = options.rootDirectory;
   }
+  return root;
+};
+
+export const createInstalledCli = async (options: InstalledCliOptions = {}): Promise<{
+  readonly receipt: InstalledCliReceipt;
+  readonly receiptPath: string;
+  cleanup(): Promise<void>;
+}> => {
+  const check = (): void => options.signal?.throwIfAborted();
+  check();
+  const root = await createInstalledCliRoot(options);
   try {
     check();
     await chmod(root, 0o700);
@@ -126,7 +141,9 @@ export const createInstalledCli = async (options: { readonly signal?: AbortSigna
     await pnpm(["pack", "--out", tarballPath], packageDirectory);
     await writeFile(path.join(consumer, "package.json"), `${JSON.stringify({ name: "daynight-project-task-acceptance", private: true, dependencies: { "@codetreker/daynight": `file:${tarballPath.replaceAll("\\", "/")}` } })}\n`);
     check();
-    await pnpm(["install", "--prod", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile", "--store-dir", storeDirectory, "--reporter", "append-only"], consumer);
+    // Standalone consumers avoid repeated whole-file shim inspection; shared acceptance prepares default shims once.
+    // https://github.com/pnpm/pnpm/blob/fe4a0c232384289de82be3d502896ca7e070050c/pnpm11/bins/cmd-shim/src/index.ts#L236-L252
+    await pnpm(["install", "--prod", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile", "--store-dir", storeDirectory, ...(options.defaultCommandShims === true ? [] : ["--config.prefer-symlinked-executables=true"]), "--reporter", "append-only"], consumer);
     const installedPackage = path.join(consumer, "node_modules/@codetreker/daynight");
     check();
     const installed = JSON.parse(await readFile(path.join(installedPackage, "package.json"), "utf8")) as { name: string; version: string; bin: { daynight: string } };

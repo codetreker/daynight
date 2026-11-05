@@ -14,9 +14,10 @@ const localeRender = createLocaleRender("zh-CN");
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
 vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), getTask: vi.fn(), getTaskSync: vi.fn() }));
-vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask }: {
-  index: GraphIndex; representativeIds: readonly string[]; openChainId: string | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void;
+vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession }: {
+  index: GraphIndex; representativeIds: readonly string[]; openChainId: string | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
+  <button onClick={(event) => onOpenSession?.(root, event.currentTarget)}>进入会话 {root}</button>
   <button id={`task-root-${root}`} aria-haspopup="dialog" onClick={(event) => onOpenChain(root, event.currentTarget)}>{index.nodes.get(root)!.titlePreview}</button>
   {openChainId === root && <div role="dialog" id={`task-graph-${root}`} data-testid={`chain-${root}`}>
     <button className="task-chain-close" onClick={onCloseChain}>关闭依赖图</button>
@@ -52,11 +53,11 @@ const seeds: readonly Seed[] = [
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks: GraphTask[] = items.map((seed) => {
     const blockedBy = seed.dependsOn.filter((id) => items.find((item) => item.id === id)?.status !== "done");
-    return { requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
+    return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, createdAt: time, updatedAt: time };
   });
   return { observedAt: "2026-10-20T12:00:00Z",
-    project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id === projectId ? "核心项目" : "另一个项目", repoUrl: "git@github.com:example/project.git", createdAt: time, updatedAt: time }, tasks,
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id === projectId ? "核心项目" : "另一个项目", repoUrl: "git@github.com:example/project.git", createdAt: time, updatedAt: time }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
       done: tasks.filter((task) => task.status === "done").length, inProgress: tasks.filter((task) => task.status === "in_progress").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.status === "todo" && !task.ready).length },
@@ -97,13 +98,22 @@ beforeEach(() => {
   graphRequest.mockReset(); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
-    if (id === X) return { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
+    if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
       id, projectId: project, title: 'New task', description: '文本', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
     return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
   });
 });
 
 describe("project dashboard", () => {
+  it("routes session shortcuts directly to the selected task session tab", async () => {
+    graphRequest.mockResolvedValue(graph());
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    fireEvent.click(await screen.findByRole('button', { name: `进入会话 ${A}` }));
+    expect(window.location.pathname).toBe(`/projects/${projectId}/tasks/${A}`);
+    expect(window.location.search).toBe('?tab=session');
+    expect(screen.queryByLabelText('详情测试外壳')).toBeNull();
+  });
+
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
   beforeEach(() => { rememberRoot(A); });
 

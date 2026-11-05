@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { processIdentity } from './identity.mts';
+import { functionalScenarios } from './inventory.mts';
 import { launchNativeServer, restartContainerServer } from './runner.mts';
 import type { CombinedCommand } from './auth-combined-target.mts';
 import type { RestartReceipt } from './auth-combined.mts';
@@ -135,7 +136,86 @@ test('the thin CLI rejects unknown arguments before starting acceptance', { skip
     const result = await start([cli, '--unknown'], value).done;
     assert.equal(result.timedOut, false);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--apfs \| --cleanup \[run-id\]\]/);
+    assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--apfs\] \[--stress\] \| --cleanup \[run-id\]/);
+    assert.equal(await readFile(value.commands, 'utf8'), '');
+  });
+});
+
+test('stress CLI options reject CI before starting any command or fixture', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    for (const flags of [['--stress'], ['--apfs', '--stress'], ['--stress', '--apfs']]) {
+      const result = await start([cli, ...flags], value).done;
+      assert.equal(result.timedOut, false);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Browser stress acceptance is local-only and cannot run in CI/);
+      assert.equal(await readFile(value.commands, 'utf8'), '');
+      assert.deepEqual((await readdir(value.directory)).sort(), ['bin', 'commands.log']);
+    }
+  });
+});
+
+test('programmatic stress acceptance rejects CI before preparing resources', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    const result = await start(['--input-type=module', '--eval', `
+      import assert from 'node:assert/strict';
+      const { runAcceptance } = await import(${JSON.stringify(runner)});
+      await assert.rejects(runAcceptance(new AbortController(), { stress: true }), /Browser stress acceptance is local-only and cannot run in CI/);
+    `], value).done;
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await readFile(value.commands, 'utf8'), '');
+    assert.deepEqual((await readdir(value.directory)).sort(), ['bin', 'commands.log']);
+  });
+});
+
+test('shard identity and stress combinations fail before any preparation command', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    delete value.env.CI;
+    for (const [options, message] of [
+      [{ stress: true, shard: { current: 1, total: 2 } }, 'cannot be sharded'],
+      [{ shard: { current: 0, total: 2 } }, 'Invalid functional shard'],
+      [{ shard: { current: 1, total: 3 } }, 'Invalid functional shard'],
+    ]) {
+      const result = await start(['--input-type=module', '--eval', `
+        import assert from 'node:assert/strict';
+        const { runAcceptance } = await import(${JSON.stringify(runner)});
+        await assert.rejects(runAcceptance(new AbortController(), ${JSON.stringify(options)}), /${message}/);
+      `], value).done;
+      assert.equal(result.timedOut, false);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(await readFile(value.commands, 'utf8'), '');
+      assert.deepEqual((await readdir(value.directory)).sort(), ['bin', 'commands.log']);
+    }
+  });
+});
+
+test('raw Playwright stress selection rejects CI before test discovery', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    value.env.DAYNIGHT_ACCEPTANCE_STRESS = '1';
+    const config = new URL('../../playwright.config.ts', import.meta.url).href;
+    const result = await start(['--input-type=module', '--eval', `await import(${JSON.stringify(config)})`], value).done;
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Browser stress acceptance is local-only and cannot run in CI/);
+    assert.equal(await readFile(value.commands, 'utf8'), '');
+    assert.deepEqual((await readdir(value.directory)).sort(), ['bin', 'commands.log']);
+  });
+});
+
+test('a raw capacity spec refuses CI even when a caller replaces the Playwright configuration', { skip: process.platform === 'win32' }, async () => {
+  await fixture(async (value) => {
+    value.env.CI = '1';
+    value.env.DAYNIGHT_ACCEPTANCE_STRESS = '1';
+    const config = join(value.directory, 'capacity.config.mts');
+    await writeFile(config, `export default { testDir: ${JSON.stringify(join(packageRoot, 'tests/e2e'))}, testMatch: 'capacity.spec.ts' };`);
+    const playwright = fileURLToPath(import.meta.resolve('@playwright/test/cli'));
+    const result = await start([playwright, 'test', '--config', config, '--list'], value).done;
+    assert.equal(result.timedOut, false);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Capacity browser tests require explicit local stress acceptance/);
     assert.equal(await readFile(value.commands, 'utf8'), '');
   });
 });
@@ -246,13 +326,15 @@ test('recovery refuses a storage path outside its run and preserves storage whil
   });
 });
 
-const earlyContainerCallback = async (value: Fixture, delays = { initializationMs: 0, readinessMs: 0 }) => {
+const earlyContainerCallback = async (value: Fixture, delays = { initializationMs: 0, readinessMs: 0 }, shard?: 1 | 2) => {
   const id = runId();
   const devCiRunId = '20261021123457-1234-56789';
   const directory = join(evidenceRoot, id);
   const containerDirectory = join(directory, 'container');
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha } }));
+  await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha },
+    ...(shard === undefined ? {} : { mode: 'functional', shard: { current: shard, total: 2 },
+      selection: shard === 1 ? functionalScenarios.slice(0, Math.ceil(functionalScenarios.length / 2)) : functionalScenarios.slice(Math.ceil(functionalScenarios.length / 2)) }) }));
   await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'%s\\n\' "$0 $*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nif [ "$1" != ps ]; then exit 91; fi\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
   value.env = { ...value.env, DAYNIGHT_ACCEPTANCE_DIRECTORY: containerDirectory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
     DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
@@ -338,6 +420,38 @@ const earlyContainerCallback = async (value: Fixture, delays = { initializationM
 
 test('an early container callback records readiness and waits for permission before inspecting Chromium', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
   await fixture(async (value) => { await earlyContainerCallback(value); });
+});
+
+test('both sharded callbacks derive selection from their parent and retain the readiness/permission boundary', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  for (const shard of [1, 2] as const) await fixture(async (value) => {
+    await earlyContainerCallback(value, { initializationMs: 0, readinessMs: 0 }, shard);
+  });
+});
+
+test('container callbacks reject malformed shard metadata before Docker or browser preparation', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async (value) => {
+    const id = runId();
+    const directory = join(evidenceRoot, id);
+    await mkdir(directory, { recursive: true });
+    value.env = { ...value.env, DAYNIGHT_ACCEPTANCE_DIRECTORY: join(directory, 'container'),
+      DAYNIGHT_DEV_CI_RUN_ID: '20261021123457-1234-56789', DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
+    try {
+      for (const metadata of [
+        { mode: 'functional', shard: { current: 3, total: 2 } },
+        { mode: 'functional', shard: { current: 1, total: 2 } },
+        { mode: 'functional', selection: functionalScenarios.slice(0, functionalScenarios.length / 2) },
+        { mode: 'stress', shard: { current: 1, total: 2 }, selection: functionalScenarios.slice(0, functionalScenarios.length / 2) },
+      ]) {
+        await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id,
+          source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha }, ...metadata }));
+        const result = await start([cli, '--container'], value).done;
+        assert.equal(result.timedOut, false);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /Invalid functional shard|Functional shard selection|cannot declare a shard selection|requires functional acceptance/);
+        assert.equal(await readFile(value.commands, 'utf8'), '');
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 });
 
 test('callback readiness retains its full budget after delayed initialization', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {

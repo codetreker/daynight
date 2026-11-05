@@ -38,7 +38,10 @@ owns the detailed address and migration contracts.
 The same server executable exposes explicit offline `migrate-attachment-layout`
 plan/apply/resume operations. Maintenance reads only database/root configuration,
 uses read-only database queries and does not start HTTP, authentication or SQL
-schema migration. An operation manifest binds database/schema identity, full
+schema migration. The attachment service assembles a dedicated locked maintenance
+session and a file root; `core/attachment/migration` owns the records and file
+state machine. A database-neutral maintenance contract supplies identity and
+ordered metadata snapshots over that same session. An operation manifest binds database/schema identity, full
 business-row digests, task ownership, root/directory inventory and regular-file
 sizes/SHA-256 values. Known-task unregistered regular files move with their
 whole task tree and are reported without adding metadata. Unknown ownership,
@@ -84,6 +87,11 @@ maintenance leaves existing epochs and all business rows unchanged. The
 owns commands, writer quiescence and restore ordering.
 
 ## Alternatives
+
+**Keep maintenance SQL in the migration state machine.** This would tie file
+recovery and record validation to pgx and prevent the application assembly from
+selecting the maintenance backend independently. The dedicated session remains
+necessary because pooled snapshots would not retain the advisory lock.
 
 **Keep task grouping inside the local adapter.** It would make generic bucket
 storage interpret project/task policy or require an extra backend-only address

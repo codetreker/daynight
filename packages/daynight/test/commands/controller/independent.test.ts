@@ -2,7 +2,17 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import type { TimerOptions } from "node:timers";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+const polling = vi.hoisted(() => ({ requested: [] as number[] }));
+vi.mock("node:timers/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: <T>(milliseconds: number, value?: T, options?: TimerOptions) => {
+    polling.requested.push(milliseconds);
+    return actual.setTimeout(milliseconds === 250 ? 1 : milliseconds, value, options);
+  } };
+});
 const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
@@ -19,14 +29,35 @@ import type { CliContext } from "../../../src/cli/context.js";
 const id = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];
 afterEach(async () => {
+  const requested = polling.requested.splice(0);
   vi.restoreAllMocks(); vi.unstubAllGlobals();
   for (const root of roots.splice(0)) {
     if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(root, id)), { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
   vi.unstubAllEnvs();
+  expect(requested.every(milliseconds => milliseconds === 250)).toBe(true);
 });
 beforeEach(() => vi.clearAllMocks());
+test("preserves native polling values, asynchronous settlement and cancellation", async () => {
+  const value = { polling: "value" };
+  let settled = false;
+  const result = delay(250, value).then(returned => { settled = true; return returned; });
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  expect(await result).toBe(value);
+  for (const cancelBeforeScheduling of [true, false]) {
+    const cancellation = new AbortController(); const reason = new Error("Polling cancelled.");
+    if (cancelBeforeScheduling) cancellation.abort(reason);
+    const failure = delay(250, undefined, { signal: cancellation.signal }).catch(error => error as Error & { code: string });
+    await Promise.resolve();
+    if (!cancelBeforeScheduling) cancellation.abort(reason);
+    expect(await failure).toMatchObject({ name: "AbortError", code: "ABORT_ERR" });
+    expect((await failure as Error).cause).toBe(reason);
+  }
+  expect(polling.requested).toEqual([250, 250, 250]);
+});
+
 const setup = async (prompt: string | null, archiveFailure = false) => {
   // Keep the native socket below the platform limit even inside a task worktree.
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
@@ -226,6 +257,7 @@ test("keeps retrying beyond expired local credentials with bounded backoff and n
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context);
   expect(v.wasRestored()).toBe(true); expect(v.attempts).toHaveLength(9);
   expect(v.attempts.at(-1)! - v.attempts[0]!).toBeGreaterThanOrEqual(240_000);
+  expect(polling.requested).toContain(250);
   const diagnostics = v.err.join("");
   expect(diagnostics).toContain("retry in 1s"); expect(diagnostics).toContain("retry in 30s"); expect(diagnostics).not.toContain("retry in 60s");
   expect(f.spawn).toHaveBeenCalledOnce(); expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);

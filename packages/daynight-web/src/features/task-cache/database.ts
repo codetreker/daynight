@@ -1,9 +1,11 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Project, TaskDetail, TaskSummary } from "../../api/types";
+import type { ProjectPerson } from "../../api/auth-types";
+import type { SessionHistoryItem } from "../../api/terminal-sessions";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 3;
-export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details"] as const;
+export const TASK_CACHE_SCHEMA = 8;
+export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles", "sessionHistory"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {
   readonly userId: string; readonly projectId: string; readonly userFence: string;
@@ -22,11 +24,29 @@ export type DetailRecord = {
   readonly userFence: string; readonly cacheGeneration: string;
   readonly detail: TaskIntrinsicDetail; readonly byteSize: number; readonly lastUsedAt: number;
 };
+export type CachedProfile = Omit<ProjectPerson, "hasProjectAccess">;
+export type ProfileRecord = {
+  readonly userId: string; readonly projectId: string; readonly profileUserId: string;
+  readonly userFence: string; readonly profile: CachedProfile;
+};
+export type SessionHistoryRecord = {
+  readonly userId: string; readonly projectId: string; readonly taskId: string;
+  readonly userFence: string; readonly cacheGeneration: string; readonly requestToken: string;
+  readonly clearedToken: string | null;
+  readonly leaseExpiresAt: number | null; readonly settled: "saved" | "failed" | "cancelled" | null;
+  readonly paginationToken: string | null;
+  readonly page: { readonly items: SessionHistoryItem[]; readonly nextCursor: string | null } | null;
+  readonly confirmedCompleteEmpty: boolean;
+  readonly observedNonEmpty: boolean;
+  readonly byteSize: number; readonly lastUsedAt: number;
+};
 export interface TaskCacheSchema extends DBSchema {
   userScopes: { key: string; value: UserScopeRecord };
   projects: { key: [string, string]; value: ProjectRecord; indexes: { "by-user": string } };
   summaries: { key: [string, string, string]; value: SummaryRecord; indexes: { "by-user": string; "by-project": [string, string] } };
   details: { key: [string, string, string]; value: DetailRecord; indexes: { "by-user": string; "by-project": [string, string] } };
+  profiles: { key: [string, string, string]; value: ProfileRecord; indexes: { "by-user": string; "by-project": [string, string] } };
+  sessionHistory: { key: [string, string, string]; value: SessionHistoryRecord; indexes: { "by-user": string; "by-project": [string, string] } };
 }
 export class TaskCacheError extends Error {
   constructor(readonly category: "storage" | "blocked" | "versionchange" | "closed" | "corrupt", cause?: unknown) {
@@ -61,12 +81,27 @@ export class TaskCacheDatabase {
             store.createIndex("by-user", "userId");
             store.createIndex("by-project", ["userId", "projectId"]);
           }
-        } else {
+        } else if (oldVersion < 5) {
           const rebuild = async () => {
             for (const name of ["projects", "summaries", "details"] as const) await transaction.objectStore(name).clear();
             for await (const cursor of transaction.objectStore("userScopes")) await cursor.update({ userId: cursor.value.userId, userFence: crypto.randomUUID() });
           };
           void rebuild().catch((error: unknown) => { upgradeFailure = error; try { transaction.abort(); } catch { /* The failed upgrade may already be aborted. */ } });
+        }
+        if (!database.objectStoreNames.contains("profiles")) {
+          const profiles = database.createObjectStore("profiles", { keyPath: ["userId", "projectId", "profileUserId"] });
+          profiles.createIndex("by-user", "userId");
+          profiles.createIndex("by-project", ["userId", "projectId"]);
+        }
+        if (!database.objectStoreNames.contains("sessionHistory")) {
+          const history = database.createObjectStore("sessionHistory", { keyPath: ["userId", "projectId", "taskId"] });
+          history.createIndex("by-user", "userId");
+          history.createIndex("by-project", ["userId", "projectId"]);
+        } else if (oldVersion === 7) {
+          void transaction.objectStore("sessionHistory").clear().catch((error: unknown) => {
+            upgradeFailure = error;
+            try { transaction.abort(); } catch { /* The failed upgrade may already be aborted. */ }
+          });
         }
       },
       blocked: () => {

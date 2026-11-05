@@ -4,18 +4,18 @@
 
 ## 目标与范围
 
-Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests、paused 和服务端拥有的只读 worker。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
+Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests、paused 和服务端拥有的只读 worker、sessionStartup。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
 
 | 编号 | 必需行为 |
 |---|---|
 | TP1 | 完整 Task 的 properties 为 JSON 对象，属性可以缺失。新任务未提供属性时为 {}，读取不补默认值。 |
 | TP2 | pullRequests 为有序数组，每项恰有字符串 url 与 title；允许多个、跨仓库和重复项，顺序属于数据。 |
 | TP3 | 保存解码后的原始字符串内容，允许空白、空字符串、控制字符、NUL 和任意 URL 文本，不执行 URL、PR、仓库或标题内容校验。 |
-| TP4 | 创建与 PATCH 支持已定义的可写属性，与普通字段及依赖在任务事务内原子提交。 |
+| TP4 | 创建与 PATCH 支持已定义的可写属性，与普通字段及依赖在任务事务内原子提交；单属性操作保留顶层 assignedTo。 |
 | TP5 | 属性使用任务整体 version；真实变化增加一次版本，语义相等设置或重复删除保留版本和时间，陈旧版本始终冲突。 |
 | TP6 | 属性移除真正删除记录，完整读取省略该键；缺失、空数组和 JSON null 是不同状态。null 仅在值定义允许时合法。 |
 | TP7 | 服务端提供认证的属性定义目录及项目范围的属性读取、设置和移除资源，CLI 用 properties/set-property/remove-property 暴露它们；值解释与属性校验只由服务端负责。 |
-| TP8 | worker 有记录时必须是合法归属对象，没有保留归属时缺失；公共创建、PATCH、属性设置和属性移除均不能写 worker。 |
+| TP8 | worker 有记录时必须是合法归属对象，没有保留归属时缺失；公共创建、PATCH、属性设置和属性移除均不能写 worker 或 sessionStartup。 |
 | TP9 | 完整单项、分页列表、修改结果及 task-sync 的 snapshot/delta 保留全部当前属性；图节点继续使用不含属性的精简投影。 |
 | TP10 | 数据迁移保留既有 PR 字符串、顺序及重复项，保留执行归属与任务元数据；旧空 PR 数组保留，旧 worker:null 转为缺失。 |
 | TP11 | 非法输入或非法存储属性值返回 400 invalid_input；数据库故障及其他内部错误返回 500 internal_error，不返回局部成功或丢弃非法属性。 |
@@ -39,11 +39,15 @@ properties:{} 表示没有属性；properties:{"pullRequests":[]} 则保留一�
 
 PR 项只允许 url/title 两字段，两者均必填。嵌套未知字段、重复 JSON key、缺项或错误类型返回 400 invalid_input。结构校验不增加字符串业务要求。JSON 转义写法、对象键序和缩进不是值的差异；既有解码器对错误 Unicode surrogate 的处理保持已解码的原有语义。
 
+## 启动观察属性
+
+sessionStartup 存在时必须是绑定当前执行身份的合法启动报告，不接受 null。只有原执行所有者经既有 Worker claim 更新和服务端身份校验才能写入；普通创建、编辑、设置与删除均拒绝。新 claim 清除旧报告，完整读取保留属性，消费时仍须检查当前代际。[Task Session 需求](task-sessions.md#启动结果与恢复阻断)拥有分类与兼容要求。
+
 ## 暂停周期 ping
 
 paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
 
-paused:true 只抑制 worker 自动发送的周期 continuation ping，不停止已运行的 agent、不改变任务领取资格或 Task/worker phase，也不阻止初始及待递交 assignment、恢复、终止清理或人工会话交互。解除暂停后，原生观察未改变也能重新适用正常 ping 条件。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有。
+paused:true 只抑制 worker 自动发送的周期 continuation ping，不停止已运行的 agent、不改变任务领取资格或 Task/worker phase，也不阻止初始及待递交 assignment、恢复、终止清理或人工会话交互。解除暂停后，原生观察未改变也能重新适用正常 ping 条件。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有；Web 的暂停发现、展示与精确版本解除入口由[Web 需求](daynight-web.md#暂停展示与解除)拥有，沿用普通 task PATCH 与原有属性语义。
 
 ## 属性 HTTP 资源
 
@@ -68,7 +72,7 @@ PUT 的 valueText 是未经 CLI JSON 解析的原始参数文本：
 
 ## 创建、设置和移除
 
-创建省略 properties 或其中的键时，不创建对应属性行。普通 create/PATCH 仅接受可写定义，提供 worker 即使值为 null 或与现值相同也拒绝。worker 生命周期操作保留所有其他属性，公开属性更新保留 worker。
+创建省略 properties 或其中的键时，不创建对应属性行。普通 create/PATCH 仅接受可写定义，提供 worker 或 sessionStartup 即使值为 null 或与现值相同也拒绝。worker 生命周期操作保留公开属性，新 claim 清除前次执行的 sessionStartup；公开属性更新保留全部只读执行属性。
 
 | 输入或操作 | 结果 |
 |---|---|

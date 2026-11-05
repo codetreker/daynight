@@ -4,7 +4,8 @@ Status: implemented
 
 ## Problem
 
-The complete Web Vitest/V8 command runs near its existing 180-second deadline.
+At worker-count calibration, the complete Web Vitest/V8 command ran near its
+180-second deadline.
 Its worker budget was selected while coverage shared a four-CPU runner with
 Docker preparation. Quality now has a dedicated runner, so retaining that
 contention reserve can leave available CPU unused without reducing the required
@@ -14,9 +15,13 @@ coverage workload.
 
 The coverage child in `scripts/ci.mts quality` receives
 `VITEST_MAX_WORKERS=4`. The Node harness still runs first and retains its own
-180-second deadline. Coverage retains its separate 180-second deadline, `forks`
-pool, per-file isolation, complete product-source inventory, original assertions
-and strict unrounded statement-coverage gate.
+180-second deadline. Vitest/V8 collection has a separate 300-second command deadline;
+the [stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+the final inventory and coverage checker its own 60-second deadline. The `forks`
+pool, per-file isolation, complete product-source inventory and strict unrounded
+statement-coverage gate remain. The [local stress decision](2026-11-03-local-stress-suites.md)
+subsequently separates scale workloads from ordinary discovery while retaining
+compact correctness cases and the same product coverage manifest.
 
 This budget targets the repository's public `ubuntu-latest` quality job. The
 [GitHub runner specification](https://github.com/github/docs/blob/2853a7b4a1bd4e17da2a43cf2c8d7306d7d4a431/data/reusables/actions/supported-github-runners.md#L18-L28)
@@ -61,9 +66,12 @@ fork isolation contract. Worker-count calibration leaves the pool unchanged.
 
 The quality command can use its dedicated standard runner's four CPUs while
 preserving every command, coverage, process-group cleanup and browser gate.
-The browser job still owns its complete native/container/capacity journey with
-one browser worker and zero retries. No shards, input reductions or larger
-allowances are introduced.
+Browser validation retains one worker and zero retries per database. The later
+[case-shard decision](2026-11-04-web-ci-case-shards.md) distributes CI cases across
+two independent browser runners and verifies their complete target union.
+Complete capacity inputs and their original budgets remain in the explicit local
+stress path. The historical worker-count comparison introduced no shards,
+reduced inputs or larger allowances.
 
 More concurrent test processes can increase peak memory and expose shared test
 resources. The configured runner capacity and matched complete-suite comparison

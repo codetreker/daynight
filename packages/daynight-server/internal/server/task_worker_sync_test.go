@@ -15,7 +15,7 @@ import (
 func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Interoperable execution"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Interoperable execution"), map[string]any{"allowAgents": true})
 	baseline := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, syncPath(project.ID), ""), http.StatusOK)
 	epoch, observed := baseline.Epoch, baseline.ObservedAt
 	assertSummary := func(full api.Task) {

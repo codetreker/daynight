@@ -1,3 +1,4 @@
+import { directAccessFixture } from "./helpers/taskSync";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, assertResponsePrincipal, getTaskSync, invalidateAuthRequests, pauseAuthRequests, subscribeUnauthorized } from "../src/api/client";
 import { parseTaskSummary, parseTaskSync } from "../src/api/task-sync";
@@ -8,9 +9,9 @@ const taskId = "20000000-0000-0000-0000-000000000001";
 const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const sync = { mode: "snapshot", epoch, project, observedAt: time, tasks: [task] };
+const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const task = { assignedTo: null, id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, tasks: [task] };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal: string | null = userId) => wireResponse(value, { status, headers: principal === null ? {} : { "Daynight-User-ID": principal } });
 
@@ -30,6 +31,26 @@ it("requests a first snapshot and preserves known empty epochs without inventing
   await getTaskSync(projectId, {}, userId, signal());
   await getTaskSync(projectId, { epoch }, userId, signal());
   expect(fetch.mock.calls.map((call) => call[0])).toEqual([`/api/v1/projects/${projectId}/task-sync`, `/api/v1/projects/${projectId}/task-sync?epoch=${epoch}`]);
+});
+
+describe("assignee version manifest", () => {
+  it("retains content versions and project qualification independently", () => {
+    const versions = [{ userId, version: "a".repeat(64), hasProjectAccess: false }];
+    expect(parseTaskSync({ ...sync, assigneeVersions: versions }, projectId).assigneeVersions).toEqual(versions);
+    expect(parseTaskSync({ ...sync, assigneeVersions: [] }, projectId).assigneeVersions).toEqual([]);
+  });
+
+  it.each([
+    undefined, null, {}, [null],
+    [{ userId, version: "a".repeat(64), hasProjectAccess: true }, { userId, version: "b".repeat(64), hasProjectAccess: false }],
+    [{ userId: "invalid", version: "a".repeat(64), hasProjectAccess: true }],
+    ...[undefined, null, "", "a".repeat(63), "a".repeat(65), "A".repeat(64), "z".repeat(64)].map((version) => [{ userId, version, hasProjectAccess: true }]),
+    [{ userId, version: "a".repeat(64) }],
+    [{ userId, version: "a".repeat(64), hasProjectAccess: "true" }],
+    [{ userId, version: "a".repeat(64), hasProjectAccess: true, name: "Unexpected profile" }],
+  ])("rejects malformed or duplicate versions %#", (assigneeVersions) => {
+    expect(() => parseTaskSync({ ...sync, assigneeVersions }, projectId)).toThrow("invalid response");
+  });
 });
 
 describe("strict summary protocol", () => {
@@ -101,4 +122,10 @@ it("retains complete generic properties and ordinary nested version fields in sy
   expect(result.tasks[0]!.properties.future).toMatchObject({ version: 42 });
   expect(result.tasks[0]!.version).toBe(9_007_199_254_740_993n);
   expect(parseTaskSummary({ ...task, properties: {} }).properties).toEqual({});
+});
+
+
+it("rejects malformed worker claims at the summary decoding boundary", () => {
+  expect(() => parseTaskSummary({ ...task, properties: { worker: null } })).toThrow("invalid response");
+  expect(() => parseTaskSummary({ ...task, properties: { worker: { machine: { name: "host" } } } })).toThrow("invalid response");
 });

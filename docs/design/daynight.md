@@ -1,7 +1,7 @@
 # Daynight 客户端架构设计
 
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
-命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
+命令工具包，支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
 管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`--skill` 输出独立的 CLI 使用手册，`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务
@@ -45,6 +45,13 @@ daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
+daynight task step
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
+daynight task step add <task-id> --title <text> [--id <step-id>] [--description <markdown>] [--status <todo|in_progress|done|skipped>] [--before <step-id> | --after <step-id>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step update <task-id> <step-id> [--title <text>] [--description <markdown>] [--if-version <version>] [--json] [--project <project-id>]
+daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped> [--if-version <version>] [--json] [--project <project-id>]
+daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -95,12 +102,14 @@ src/
     operation.ts
     json.ts
     parse.ts
+    task-steps.ts
     client.ts
   repository/
     index.ts
     identity.ts
     git.ts
     binding.ts
+    discovery-error.ts
     context.ts
   commands/
     skill/
@@ -125,6 +134,14 @@ src/
       definition.ts
       command.ts
       rendering.ts
+      step.ts
+      step-add.ts
+      step-update.ts
+      step-move.ts
+      step-write.ts
+      step-write-errors.ts
+      step-rendering.ts
+      step-diagnostics.ts
       attachment.ts
       attachment-rendering.ts
     project/
@@ -288,8 +305,11 @@ project 操作不读写仓库绑定或 ignore 规则。`rendering.ts` 使用完�
 `commands/server/runtime.ts` 在首次配置读取前建立操作和信号取消源，配置完整时，
 读取、HTTP 和渲染共享期限与字节预算。仅识别出结构化的必要配置缺失时，释放初始
 操作的期限，在同一取消信号下完成引导；保存后的重新读取建立新操作及完整业务
-预算。回调返回 `string | void`：元数据操作返回完整字符串，在最终检查取消和期限后
-一次写 stdout；附件 read 通过 `CliContext.stdoutBytes` 逐段输出并返回 void。
+预算。回调返回字符串、void 或 `ConfirmedMutationOutput`：普通元数据返回完整字符串，
+在最终检查后一次写 stdout；附件 read 通过 `CliContext.stdoutBytes` 逐段输出。
+Thread 与 Step 写入的已确认结果交给现有受限字节输出生命周期，调用方提供
+`failureText(output|cleanup)`，保留各自的安全确认文本与原始原因。输出或清理失败
+不能抹去已确认事实，也不触发业务核对或重放。
 结束时先等待 `closeStdoutBytes` 关闭并回收已创建的输出辅助进程，再移除本次的信号
 监听器并释放操作，清理失败保留原因。SIGINT/SIGTERM 以及 Windows SIGBREAK 均
 进入这一取消源；配置读取接受同一 AbortSignal。Task 复用此执行层；它不控制 Go
@@ -305,6 +325,33 @@ Task 的 definition、command 和 rendering 分别拥有共享语法、操作组
 操作在返回前验证数量不超限、每项确为 ready 且 task ID 不重复。`list` 仍使用完整
 分页。完整的请求、排序和输出机制见
 [project/task 设计](daynight-project-task.md#api-映射与更新机制)。
+
+`task step` 在普通 Task 操作前分派至独立 `step.ts`，组合 list/show 读取及
+Add/Update/Set-status/Move。`step-add.ts`、`step-update.ts` 与 `step-move.ts`
+各自编译参数与输出；`step-write.ts` 的 `executeStepWrite` 共用版本分支、带操作名的
+不可变提交身份和最多一次同操作当前事实读取，`step-write-errors.ts` 保留明确拒绝、
+unknown 与已确认本地失败的事实。
+`step-rendering.ts` 保留服务顺序和全部展示内容，JSON 使用精确 bigint codec，
+文本将控制字符与 bidi 控制符转义为可见文本。`step-diagnostics.ts` 仅输出安全的
+公开服务错误、结构化的项目发现失败及资源/阶段上下文，原始内部原因通过 cause 保留。
+`repository/discovery-error.ts` 只携带不存在/歧义类别与经验证的规范项目 ID；Step
+诊断从该类型生成恢复文本，不公开任意配置、Git、网络或清理错误的消息。
+`api/task-steps.ts` 拥有独立四状态 DTO 的严格资源解析和短 ID 输入正规化；
+客户端直接读取指定 Steps 路径，复用同一 server 操作的配置、认证、取消及字节/期限预算。
+显式 project 不触发项目发现或父 Task GET，帮助在加载这些依赖前完成。
+完整资源解析和渲染后才经 stdoutBytes 在同一取消信号下输出；输出失败可能留下
+部分 stdout，不能据此把不完整 JSON 当作成功资源。
+Add 的独立短 ID 与请求 UUID 在递交前确定；显式版本一次 POST，默认版本
+先 GET Steps 再 POST。完整 201/Location/principal/资源及 +1/目标/新时间/位置核对
+通过后保留 `confirmedMutationId`；同一 transport 标记也服务既有 Thread。
+Update/Set-status 分别提交一次 PATCH/PUT；完整 200 须匹配目标字段及原版本或 +1。
+有预读时验证省略字段、非目标、顺序和 no-op/真实变化的时间分支，显式版本不补加读取。
+Move 提交一次位置 PUT，确认首尾或锚点相邻位置及原版本或 +1；有预读时另核对
+全部记录的内容和时间、非目标相对顺序，以及实际移动或原位置 no-op 的精确版本分支。
+未知写入只在同一仍有效的 ServerSession/Operation 内尝试一次 UUID.r1 GET，
+仍以 unknown 非零退出，报告当前版本与 found/absent，不作历史归因或重放。
+取消或耗尽不创建脱离读取；确认后的清理/输出失败不降为 unknown。
+当前读写契约与输出由[Steps 要求](../spec/daynight-task-steps.md#cli-添加与结果确认)拥有。
 
 Task 的 `attachment.ts` 单独组合单文件上传、完整分页列表、原始读取和删除。
 API 客户端分别消费 JSON、字节流与 204 空响应，字节流不经过 UTF-8/JSON 解析或
@@ -520,11 +567,17 @@ zsh 目录选择、重复安装及启动后的注册与 Tab；使用任务内的
 GitHub Actions 保留原生 Linux、macOS、Windows 的普通测试与既有 review/update
 安装验收，并在独立 Linux 作业中执行补全的真实 shell 验收。独立
 project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
-文件行为；真实 Go/PostgreSQL 流程复用 Go command-package 的 fresh race binary。
-服务验证的编排层只安装一次 CLI，原样执行 Go 覆盖率 gate，再在 Go 默认 10 分钟
-计时器之外运行期限与真实解码字节预算探针。期限场景通过测试侧 preload 使用
-1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；字节场景保留真实
-128/256 MiB 边界和 +1 字节拒绝。职责与证据见
+文件行为；真实 Go/PostgreSQL 流程复用独立 Go 测试包 `cmd/e2e_tests` 的 fresh
+binary，instrumentation 与测试进程的实际 race mode 匹配。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
+直接调用内部函数的测试，两边各自管理测试辅助设施。
+服务验证分为并行的覆盖率与 E2E 作业，各自准备安装后的 CLI；本地完整入口依次运行
+两部分。覆盖率作业保留生产包的 build/vet 与严格 coverage gate，race 在 PR CI 关闭、
+main CI 和本地默认开启，选择与回执由[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。随后在 Go 默认
+10 分钟计时器之外运行预算套件；E2E 作业独立执行完整 `cmd/e2e_tests`。常规 CI
+运行两个期限场景，通过测试侧 preload 使用
+1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；四个完整字节场景通过
+显式本地 `pnpm test:stress:budgets` 运行，保留真实 128/256 MiB 边界和 +1 字节拒绝，
+并在 CI 环境中拒绝。职责与证据见
 [project/task 设计](daynight-project-task.md#验证与交付证据)。
 [仓库验证说明](../../README.md#validation)定义本地及原生 receipt 的源码身份、
 受控 GitHub/Copilot 行为与真实服务验收的证据边界。运行结果随对应 PR 与 CI 保存；

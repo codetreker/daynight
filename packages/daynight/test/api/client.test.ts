@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { performance } from "node:perf_hooks";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createApiClient, createOperation, DEFAULT_OPERATION_LIMITS, OperationError, parseApiJson, parseVersionArgument, stringifyApiJson } from "../../src/api/index.js";
@@ -10,10 +11,11 @@ const taskId = "22222222-2222-2222-2222-222222222222";
 const otherId = "33333333-3333-3333-3333-333333333333";
 const normalId = "44444444-4444-4444-4444-444444444444";
 const time = "2026-10-20T01:02:03.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
+const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
+const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const refusal = (code = "not_found", details?: unknown) => ({ error: { code, message: "Actual server explanation.", requestId: "req-1", ...(details === undefined ? {} : { details }) } });
-const jsonResponse = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: { "Content-Type": "application/json" } });
+const jsonResponse = (value: unknown, status = 200, principal?: string) => new Response(stringifyApiJson(value), { status, headers: { "Content-Type": "application/json", ...(principal === undefined ? {} : { "Daynight-User-ID": principal }) } });
+const creationReceipt = <T extends { id: string; ownership: { teamId: string; version: bigint }; createdAt: string; updatedAt: string }>(value: T, userId: string) => ({ ...value, access: { projectId: value.id, ownerTeam: { id: value.ownership.teamId, kind: "personal", name: null }, ownership: value.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: value.id, userId, role: "admin", version: 1n, createdAt: value.createdAt, updatedAt: value.updatedAt } } });
 const cleanups: (() => void | Promise<void>)[] = [];
 const operation = (limits: Parameters<typeof createOperation>[0] = {}): Operation => {
   const created = createOperation(limits);
@@ -100,6 +102,29 @@ describe("operation-scoped API access", () => {
     await expect(api.listTasks(projectId, { compatiblePlatform })).rejects.toMatchObject({ operation: "task.list", phase: "protocol" });
     await expect(api.listReadyTasks(projectId, 1, { compatiblePlatform })).rejects.toMatchObject({ operation: "task.ready", phase: "protocol" });
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["me", "unassigned", "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"])("preserves assignedTo=%s across every task page", async (assignedTo) => {
+    const principal = assignedTo === "me" ? otherId : undefined;
+    const selected = assignedTo === "unassigned" ? null : assignedTo === "me" ? otherId : assignedTo.toLowerCase();
+    const first = { ...task, assignedTo: selected };
+    const second = { ...first, id: otherId };
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse({ items: [first], nextCursor: "assigned cursor+/=" }, 200, principal))
+      .mockResolvedValueOnce(jsonResponse({ items: [second], nextCursor: null }, 200, principal));
+    await expect(client(fetch).listTasks(projectId, { assignedTo })).resolves.toEqual([first, second]);
+    expect(fetch.mock.calls.map(([url]) => Object.fromEntries(new URL(String(url)).searchParams))).toEqual([
+      { assignedTo: assignedTo.toLowerCase(), limit: "100" },
+      { assignedTo: assignedTo.toLowerCase(), limit: "100", cursor: "assigned cursor+/=" },
+    ]);
+  });
+
+  it.each(["", "invalid", "Me", "all", ` ${otherId}`, null, false, 1, {}, []])("rejects an invalid assignee filter %s before dispatch", (assignedTo) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const api = client(fetch);
+    expect(() => api.listTasks(projectId, { assignedTo } as never)).toThrow("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    expect(() => api.listTaskPage(projectId, { assignedTo, limit: 1 } as never)).toThrow("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([undefined, "", "darwin", "win32", "Linux", true, 1, {}, []])("requires a nullable public platform in task and graph resources: %s", async (requiredPlatform) => {
@@ -251,6 +276,17 @@ describe("operation-scoped API access", () => {
     expect(() => disposed.check()).toThrow("disposed");
   });
 
+  it("reports remaining total bytes while permitting a complete response at the exact limit", () => {
+    const op = operation({ limits: { totalBytes: 5 } });
+    expect(op.remainingBytes()).toBe(5);
+    op.consume(3); expect(op.remainingBytes()).toBe(2);
+    op.consume(2); expect(op.remainingBytes()).toBe(0);
+    expect(() => op.check()).not.toThrow(); expect(op.signal.aborted).toBe(false);
+    op.consume(0); expect(op.remainingBytes()).toBe(0);
+    expect(() => op.consume(1)).toThrow("response byte budget");
+    expect(() => op.remainingBytes()).toThrow("response byte budget");
+  });
+
   it("reads nanosecond timestamps and full Go int64 versions without changing numeric JSON wire shape", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...task, version: 9_223_372_036_854_775_807n }));
     const api = client(fetch);
@@ -265,18 +301,18 @@ describe("operation-scoped API access", () => {
 
   it("uses exact mutation methods and preserves optional fields, empty values and duplicate dependency input", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(jsonResponse(project, 201))
+      .mockResolvedValueOnce(jsonResponse(creationReceipt(project, projectId), 201, projectId))
       .mockResolvedValueOnce(jsonResponse(task, 201))
       .mockResolvedValueOnce(jsonResponse(task, 201))
       .mockResolvedValueOnce(jsonResponse({ ...task, version: 9_007_199_254_740_994n }));
     const api = client(fetch);
-    await api.createProject({ name: "Project", repoUrl: project.repoUrl });
+    await api.createProject({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId });
     await api.createTask(projectId, { title: "Task" });
     await api.createTask(projectId, { title: "Task", description: "", dependsOn: [otherId, otherId] });
     await api.updateTask(projectId, taskId, { version: 9_007_199_254_740_993n, description: "", dependsOn: [] });
     expect(fetch.mock.calls.map((call) => call[1]?.method)).toEqual(["POST", "POST", "POST", "PATCH"]);
     expect(fetch.mock.calls.map((call) => call[1]?.body)).toEqual([
-      JSON.stringify({ name: "Project", repoUrl: project.repoUrl }),
+      JSON.stringify({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId }),
       '{"title":"Task"}',
       JSON.stringify({ title: "Task", description: "", dependsOn: [otherId, otherId] }),
       '{"version":9007199254740993,"description":"","dependsOn":[]}',
@@ -401,7 +437,7 @@ describe("operation-scoped API access", () => {
       response.end("{}");
     });
     const api = createApiClient({ serverUrl: url, operation: operation() });
-    await expect(api.createProject({ name: "Project", repoUrl: project.repoUrl })).rejects.toMatchObject({ status: 307, outcomeUnconfirmed: true });
+    await expect(api.createProject({ name: "Project", repoUrl: project.repoUrl, expectedUserId: projectId })).rejects.toMatchObject({ status: 307, outcomeUnconfirmed: true });
     expect(methods).toEqual(["POST /api/v1/projects"]);
   });
 
@@ -477,13 +513,16 @@ describe("operation-scoped API access", () => {
   });
 
   it("checks the single request deadline after synchronous parsing stalls the timer", async () => {
+    const response = jsonResponse(project);
+    let elapsed = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(performance, "now").mockImplementation(() => elapsed);
     const original = JSON.parse;
     const spy = vi.spyOn(JSON, "parse").mockImplementation((...args: Parameters<typeof JSON.parse>) => {
-      const until = performance.now() + 15;
-      while (performance.now() < until) { /* Keep the deadline timer from running during parsing. */ }
+      elapsed = 15;
       return original(...args);
     });
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(project)), operation({ limits: { requestMs: 10 } })).getProject(projectId)).rejects.toMatchObject({ cause: { kind: "request_timeout" } });
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(response), operation({ limits: { requestMs: 10 } })).getProject(projectId)).rejects.toMatchObject({ phase: "protocol", cause: { kind: "request_timeout" } });
     expect(spy).toHaveBeenCalled();
   });
 
@@ -533,7 +572,7 @@ describe("operation-scoped API access", () => {
   it("rejects an already cancelled operation without calling fetch", async () => {
     const source = new AbortController(); source.abort();
     const fetch = vi.fn<typeof globalThis.fetch>();
-    await expect(client(fetch, operation({ signal: source.signal })).createProject({ name: "P", repoUrl: project.repoUrl })).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "cancelled" } });
+    await expect(client(fetch, operation({ signal: source.signal })).createProject({ name: "P", repoUrl: project.repoUrl, expectedUserId: projectId })).rejects.toMatchObject({ phase: "prepare", outcomeUnconfirmed: false, cause: { kind: "cancelled" } });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -543,8 +582,8 @@ const graph = (): TaskGraph => ({
   project,
   summary: { total: 2, todo: 1, inProgress: 0, done: 1, ready: 1, blocked: 0 },
   tasks: [
-    { id: taskId, titlePreview: "Task", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [otherId], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
-    { id: otherId, titlePreview: "Done", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "done", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+    { id: taskId, titlePreview: "Task", titleTruncated: false, allowAgents: false, requiredPlatform: null, assignedTo: null, status: "todo", dependsOn: [otherId], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+    { id: otherId, titlePreview: "Done", titleTruncated: false, allowAgents: false, requiredPlatform: null, assignedTo: null, status: "done", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
   ],
 });
 
@@ -679,15 +718,36 @@ describe("response DTO contract", () => {
     const wire = stringifyApiJson(value);
     expect(wire).toContain(`"settings":{"version":${version},"executionWarningMinutes":2147483647}`);
     const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(jsonResponse(value, 201))
+      .mockResolvedValueOnce(jsonResponse(creationReceipt(value, projectId), 201, projectId))
       .mockResolvedValueOnce(jsonResponse(value))
       .mockResolvedValueOnce(jsonResponse({ items: [value], nextCursor: null }))
       .mockResolvedValueOnce(jsonResponse(graphValue));
     const api = client(fetch);
-    await expect(api.createProject({ name: value.name, repoUrl: value.repoUrl })).resolves.toEqual(value);
+    await expect(api.createProject({ name: value.name, repoUrl: value.repoUrl, expectedUserId: projectId })).resolves.toEqual(value);
     await expect(api.getProject(projectId)).resolves.toEqual(value);
     await expect(api.listProjects()).resolves.toEqual([value]);
     await expect(api.getTaskGraph(projectId, taskId)).resolves.toEqual(graphValue);
+  });
+
+  it("encodes an explicit team and checks the created ownership and direct grant", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(creationReceipt(project, projectId), 201, projectId));
+    const api = client(fetch);
+    const teamId = project.ownership.teamId;
+    await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId.toUpperCase(), teamId: teamId.toUpperCase() })).resolves.toEqual(project);
+    expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId });
+    const receipt = creationReceipt(project, projectId);
+    for (const mismatch of [{ name: "Different" }, { repoUrl: "https://example.test/other/repo" }]) {
+      fetch.mockResolvedValueOnce(jsonResponse({ ...receipt, ...mismatch }, 201, projectId));
+      await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    }
+    for (const access of [
+      { ...receipt.access, ownership: { ...receipt.access.ownership, version: 2n } },
+      { ...receipt.access, directGrant: null },
+      { ...receipt.access, directGrant: { ...receipt.access.directGrant, userId: otherId } },
+    ]) {
+      fetch.mockResolvedValueOnce(jsonResponse({ ...project, access }, 201, projectId));
+      await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    }
   });
 
   it.each([

@@ -1,9 +1,9 @@
+import { parseSessionStartupReport } from "../../../session/startup.js";
 import path from "node:path";
 import { canonicalId } from "../../../api/parse.js";
 import { normalizeServerUrl } from "../../../config/server.js";
 import type { ExecutionConfiguration as FrozenExecutionConfiguration } from "../types.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, ExecutionSummary } from "./web-types.js";
-import { backendResourcesClosed } from "./web-types.js";
 
 const integer = (value: unknown, name: string, minimum = 0): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw new Error(`${name} must be a safe integer of at least ${minimum}.`);
@@ -52,13 +52,9 @@ const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");
   return { repositoryPath: absolutePath(data.repositoryPath, "Repository path"), commonDirectory: absolutePath(data.commonDirectory, "Git common directory"), worktreePath: absolutePath(data.worktreePath, "Worktree path"), branch: text(data.branch, "Worktree branch") };
 };
-const parseCleanupBaseline = (value: unknown): NonNullable<CleanupState["baseline"]> => {
-  const data = record(value, ["stateChangeSeq", "completionSeq"], "Cleanup completion baseline");
-  return { stateChangeSeq: integer(data.stateChangeSeq, "Cleanup state-change sequence"), completionSeq: integer(data.completionSeq, "Cleanup completion sequence") };
-};
 const parseExecutionSummary = (value: unknown): ExecutionSummary => { if (value !== null) throw new Error("Web execution summaries are derived from fresh remote inventory."); return value as never; };
 const parseWebExecution = (value: unknown): WebExecutionState => {
-  const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
+  const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown", "startupReport"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
   for (const key of ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "initialOperationId"]) id(data[key], key);
   for (const key of ["sessionId", "cleanupOperationId"]) nullable(data[key], entry => id(entry, key));
   version(data.executionGeneration); oneOf(data.launchSubmission, ["not-submitted", "unknown", "acknowledged"], "Controller launch submission");
@@ -70,22 +66,18 @@ const parseWebExecution = (value: unknown): WebExecutionState => {
   data.nativeHome ??= null; nullable(data.nativeHome, entry => absolutePath(entry, "Native profile home"));
   data.summary ??= null; data.initialInputState ??= "unknown"; data.activity ??= "unknown";
   nullable(data.summary, parseExecutionSummary);
+  if (data.startupReport !== undefined) {
+    const report = parseSessionStartupReport(data.startupReport);
+    if (report.sessionId !== data.sessionId || report.executionGeneration !== data.executionGeneration || report.controllerInstanceId !== data.controllerInstanceId) throw new Error("Startup report does not match the Web execution.");
+  }
   oneOf(data.initialInputState, ["not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"], "Initial input state");
   oneOf(data.activity, ["initializing", "idle", "working", "waiting_input", "stopped", "unknown"], "Controller activity");
   return data as WebExecutionState;
 };
 const parseCleanup = (value: unknown): CleanupState => {
-  const web = typeof value === "object" && value !== null && "mode" in value && value.mode === "web";
-  const data = record(value, ["kind", "startedAt", "deadline", "input", "baseline", "result", "error", "agentStopped", "workspaceClosed", "worktreeDeleted", ...(web ? ["mode", "backendResourcesClosed"] : [])], "Cleanup state");
-  if (web && data.workspaceClosed !== null) throw new Error("Web cleanup cannot carry a Herdr workspace closure.");
-  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline"),
-    input: oneOf(data.input, ["not-submitted", "unknown", "submitted", "rejected", "unavailable"], "Cleanup input state"),
-    baseline: nullable(data.baseline, parseCleanupBaseline),
-    result: nullable(data.result, (entry) => oneOf(entry, ["completed", "timed-out", "failed", "unavailable"], "Cleanup result")), error: nullable(data.error, (entry) => text(entry, "Cleanup error")),
-    agentStopped: bool(data.agentStopped, "Agent stopped"), workspaceClosed: web && data.workspaceClosed === null ? null : bool(data.workspaceClosed, "Workspace closed"), ...(web ? { mode: "web" as const, backendResourcesClosed: bool(data.backendResourcesClosed, "Backend resources closed") } : {}), worktreeDeleted: bool(data.worktreeDeleted, "Worktree deleted") };
+  const data = record(value, ["kind", "startedAt", "deadline"], "Cleanup intent");
+  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline") };
   if (result.deadline < result.startedAt || result.deadline - result.startedAt > 600_000) throw new Error("Cleanup deadline must be within ten minutes of its original start.");
-  if ((backendResourcesClosed(result) && !result.agentStopped) || (result.worktreeDeleted && !backendResourcesClosed(result))) throw new Error("Cleanup progress is out of order.");
-  if (result.baseline !== null && result.input !== "submitted") throw new Error("A cleanup completion baseline requires confirmed input submission.");
   return result;
 };
 
@@ -101,7 +93,9 @@ const validate = (task: LocalTask): LocalTask => {
   record(task.resources, ["mode", "worktree", "herdr", "nativeSession"], "Web resources");
   if (task.resources.mode !== "web" || task.resources.herdr !== null || task.nativeExecution !== null || task.control !== null) throw new Error("Web execution contains incompatible backend resources.");
   if (task.resources.nativeSession !== null) { const native = record(task.resources.nativeSession, ["source", "sessionId"], "Native session"); if (native.source !== "controller") throw new Error("The native session does not belong to the Controller."); id(native.sessionId, "Native session ID"); }
-  record(task.recovery, ["count", "pauseReason", "retryAuthorized"], "Recovery state"); integer(task.recovery.count, "Recovery count"); nullable(task.recovery.pauseReason, value => text(value, "Recovery pause")); bool(task.recovery.retryAuthorized, "Recovery authorization");
+  record(task.recovery, ["count", "pauseReason", "retryAuthorized", ...(Object.hasOwn(task.recovery, "reasonCode") ? ["reasonCode"] : [])], "Recovery state"); integer(task.recovery.count, "Recovery count"); nullable(task.recovery.pauseReason, value => text(value, "Recovery pause")); bool(task.recovery.retryAuthorized, "Recovery authorization");
+  if (task.recovery.reasonCode !== undefined) oneOf(task.recovery.reasonCode, ["native_identity_missing", "recovery_limit", "recovery_blocked"], "Recovery reason");
+  if (task.webExecution?.startupReport !== undefined && task.webExecution.startupReport.claimId !== task.claimId) throw new Error("Startup report belongs to another claim.");
   oneOf(task.status, ["pending", "active", "done"], "Web execution state");
   nullable(task.resources.worktree, parseWorktree); nullable(task.cleanup, parseCleanup); nullable(task.webExecution, parseWebExecution);
   return task;

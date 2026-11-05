@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { createByteOutput } from "./byte-output.js";
 import { createTerminalPrompt } from "./prompts.js";
 import type { CliPrompt } from "./prompts.js";
+import type { CommandDefinition } from "./schema.js";
 
 export type CliContext = {
   version: string;
@@ -20,7 +21,7 @@ export type CliCommand = {
 };
 
 export class UsageError extends Error {
-  constructor(message: string, readonly helpCommand = "daynight --help") {
+  constructor(message: string, readonly helpCommand = "daynight --help", readonly grammar?: { readonly definition: CommandDefinition; readonly path: readonly string[] }) {
     super(message);
     this.name = "UsageError";
   }

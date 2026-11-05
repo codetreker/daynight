@@ -13,7 +13,7 @@ optimization alone does not bound their raster cost.
 
 ## Decision
 
-Dagre retains visible-card placement and ordering. The uniform column planner
+At this decision Dagre retained visible-card placement and ordering. The uniform column planner
 retains right-center source ports, left-center target ports and each CanvasNode's
 actual dimensions. Intermediate columns use the nearest free row to the
 interpolated Dagre route intent, with sixteen-unit expanded occupied intervals.
@@ -50,6 +50,8 @@ extending the [stroke bound](../bug-fix/2026-10-22-bounded-dashed-dependency-lin
 to tall cubic passages. Cumulative phase error remains at most 0.025 CSS px at
 maximum 1.8 zoom.
 
+The [graph direction decision](../feature/2026-11-05-task-graph-direction.md) extends the same channel and curve guarantees to top-to-bottom layouts, preserving actual card dimensions and directional ports.
+
 The existing memoized SVG and inspection presentation retain edge identity,
 arrowheads, external classification, accessibility and passive paint pieces.
 Selection, details, pan and zoom reuse compiled geometry; only visible layout
@@ -78,7 +80,9 @@ rather than leaving a single unbounded dashed curve.
 
 The renderer still represents every visible real dependency. Curves can overlap
 or cross other curves; this decision preserves node placement and does not add an
-edge-crossing minimizer. Existing production opening and interaction budgets,
-full capacity inputs and cleanup rules continue to apply. Historical rounded-route
+edge-crossing minimizer. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains production opening and interaction budgets and full capacity inputs in
+explicit local stress suites. Compact routing correctness, complete product
+coverage and cleanup remain part of ordinary CI. Historical rounded-route
 receipts establish only their tested source; cubic browser, geometry and timing
 results require source-bound verification.

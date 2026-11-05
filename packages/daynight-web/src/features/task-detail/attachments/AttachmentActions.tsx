@@ -1,8 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ApiError } from '../../../api/client';
-import { LanguageSelector } from '../../../i18n/LanguageSelector';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { dialogFocusables } from '../focus';
+import { useDraftNavigationDecision } from '../TaskDraftNavigation';
 import '../../../styles/auth.css';
 
 export type AttachmentActionTarget = { readonly path: string; readonly trigger: HTMLButtonElement };
@@ -59,14 +59,22 @@ export const AttachmentActionMenu = ({ target, onDelete, onDismiss }: {
   </div>;
 };
 
-export const AttachmentDeleteDialog = ({ target, busy, error, fallback, onConfirm, onDismiss }: {
+type AttachmentDeleteProps = {
   readonly target: AttachmentActionTarget;
   readonly busy: boolean;
   readonly error: unknown;
   readonly fallback: RefObject<HTMLElement | null>;
   readonly onConfirm: () => void;
   readonly onDismiss: () => void;
-}) => {
+};
+
+export const AttachmentDeleteDialog = (props: AttachmentDeleteProps) => {
+  const decision = useDraftNavigationDecision();
+  useLayoutEffect(() => { if (decision !== null) props.onDismiss(); }, [decision, props.onDismiss]);
+  return decision === null ? <DeleteDialog {...props} /> : null;
+};
+
+const DeleteDialog = ({ target, busy, error, fallback, onConfirm, onDismiss }: AttachmentDeleteProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const id = useId();
@@ -110,7 +118,7 @@ export const AttachmentDeleteDialog = ({ target, busy, error, fallback, onConfir
     const box = event.currentTarget.getBoundingClientRect();
     if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) onDismiss();
   }}>
-    <header className="dialog-header"><h2 id={`${id}-title`}>{m.deleteTitle}</h2><LanguageSelector /></header>
+    <header className="dialog-header"><h2 id={`${id}-title`}>{m.deleteTitle}</h2></header>
     <div className="dialog-body attachment-delete-body" tabIndex={0} role="group" aria-labelledby={`${id}-title`}>
       <p id={`${id}-copy`}>{m.deleteConfirmation}</p>
       <p id={`${id}-path`} className="attachment-delete-path">{target.path}</p>

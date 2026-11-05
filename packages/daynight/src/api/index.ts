@@ -6,3 +6,4 @@ export type { Operation, OperationLimits } from "./operation.js";
 export { canonicalId, ProtocolError, validateAttachmentPath } from "./parse.js";
 export type * from "./types.js";
 export { parseTaskProperties, parseTaskPropertyResource, parseTaskPropertySchema, readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "./task-properties.js";
+export { canonicalStepId } from "./task-steps.js";

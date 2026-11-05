@@ -15,7 +15,7 @@ for (const alias of ["daynight", "dn"]) {
   const launcher = path.resolve(installed, "../../.bin", alias);
   assert.equal(execFileSync(launcher, ["--version"], { encoding: "utf8", timeout: 10_000 }).trim(), manifest.version);
 }
-for (const args of [["--help"], ["task", "--help"], ["skill", "--help"], ["update", "--help"]]) {
+for (const args of [["--help"], ["task", "--help"], ["task", "step", "--help"], ["task", "step", "list", "--help"], ["task", "step", "show", "--help"], ["task", "step", "add", "--help"], ["task", "step", "update", "--help"], ["task", "step", "set-status", "--help"], ["task", "step", "move", "--help"], ["skill", "--help"], ["update", "--help"]]) {
   assert.match(execFileSync(process.execPath, [entry, ...args], { encoding: "utf8", timeout: 10_000 }), /Usage:/);
 }
 
@@ -24,6 +24,12 @@ const { parseApiJson, stringifyApiJson } = await load("dist/api/json.js");
 const versionJson = '{"version":9223372036854775807}';
 assert.equal(parseApiJson(versionJson).version, 9_223_372_036_854_775_807n);
 assert.equal(stringifyApiJson(parseApiJson(versionJson)), versionJson);
+const { parseStepsResource } = await load("dist/api/task-steps.js");
+const stepProject = "11111111-1111-4111-8111-111111111111";
+const stepTask = "22222222-2222-4222-8222-222222222222";
+const emptySteps = parseApiJson(`{"projectId":"${stepProject}","taskId":"${stepTask}","version":9223372036854775807,"steps":[]}`);
+assert.equal(parseStepsResource(emptySteps, stepProject, stepTask).version, 9_223_372_036_854_775_807n);
+
 const { detectSkillAgents } = await load("dist/commands/skill/agents.js");
 assert.ok(Array.isArray(await detectSkillAgents()));
 await load("dist/commands/update/updater.js");

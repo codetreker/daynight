@@ -16,9 +16,10 @@ design deliverables and requested runbooks could disappear from real work.
 ## Decision
 
 The public skill's `references/task-content.md` owns one content boundary: tasks
-describe what must be achieved and delivered; sessions hold how the task is
-executed or discussed. The rule applies to descriptions, attachments and referenced
-task material. A filename or storage location does not determine ownership.
+describe what must be achieved and delivered, including required substantive
+designs and implementation approaches; sessions hold operational work
+organization, command schedules and tool activity. The rule applies to
+descriptions, attachments and referenced task material. A filename or storage location does not determine ownership.
 
 Task definition covers objective and requirements, scope and constraints, required
 inputs and sources, deliverables and actual exchange contracts, and acceptance
@@ -26,13 +27,20 @@ criteria. Current requirements or design drafts, final artifacts, acceptance
 conclusions and material result limitations are stored as they are produced.
 Creation does not require placeholder results or a universal solution,
 implementation plan, verification procedure, confirmation record or evidence
-location. Required upstream design is an input; a design-producing task delivers
-its design. A user-requested migration plan, runbook or testing strategy can
-contain methods because that material is the agreed artifact, not the executor's
+location. The [Goal delivery brief](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#delivery-task-brief)
+requires each proposed and registered Goal delivery task to provide its objective,
+scope, substantive implementation approach and acceptance in relation to the
+Goal. This scoped refinement is recorded by the
+[task-content and handoff decision](2026-10-25-task-content-handoff.md); it does not
+restore a universal plan requirement. Actual methods, including an acceptance
+task's verification approach, are task content when required by this brief;
+session schedules and debugging plans remain operational context. Required
+upstream design is an input; a design-producing task delivers its design. A
+user-requested migration plan, runbook or testing strategy can contain methods because that material is the agreed artifact, not the executor's
 checkpoint.
 
-Execution and discussion plans, steps, tool choices, collaboration, operational
-authorization, review/CI/merge history, progress, blockers and recovery context
+Session execution and discussion organization, command schedules, tool choices,
+collaboration, operational authorization, review/CI/merge history, progress, blockers and recovery context
 remain in the session or its existing local checkpoint. The
 [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md)
 and [task pause decision](../feature/2026-11-02-task-paused-worker-pings.md) keep a
@@ -53,7 +61,10 @@ six mandatory content categories and generic task-local confirmation/evidence
 requirement. Its isolated-reader rationale, single content owner, inline/reference/
 mixed organization, verified shared inputs, Goal architecture index and handoff
 concurrency safeguards remain. The [Goal stage decision](2026-10-24-user-confirmed-goal-discussions.md)
-retains human confirmation and stage transitions. All operation authorization,
+retains human confirmation and stage transitions, qualified by the
+[Goal specification decision](2026-11-02-goal-spec-confirmation.md): the
+requirements task owns complete `spec.md`, and architecture consumes its explicitly
+confirmed current contents through a direct task/path index. All operation authorization,
 exact-version, dependency, claim and delivery gates remain with the existing
 mode protocols; task material does not recreate missing authorization.
 
@@ -83,12 +94,15 @@ those artifacts while excluding the session's plan for producing them.
 
 ## Consequences
 
-Task sufficiency does not depend on an agent execution plan. Missing required
-architecture, prototypes, contracts or acceptance decisions still blocks the
-appropriate stage. Descriptions and attachments remain valid forms and shared
+Task sufficiency does not depend on a session command schedule or debugging
+plan. A Goal delivery task's substantive implementation approach remains
+mandatory, inline or precisely referenced; missing it cannot be excused as
+session-plan separation. Missing required architecture, prototypes, contracts
+or acceptance decisions still blocks the appropriate stage. Descriptions and attachments remain valid forms and shared
 inputs keep their real owners. General content sufficiency imposes neither
-filename bans nor universal primary attachments; managed delivery retains its
-explicit attachment requirements.
+filename bans nor universal primary attachments; Goal requirements retain the
+complete `spec.md` stage output and managed delivery retains its explicit
+attachment requirements.
 
 Session continuity uses existing host state or local checkpoints. The content
 boundary provides no cross-host migration or replacement for missing assignment

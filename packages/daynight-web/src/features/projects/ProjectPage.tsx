@@ -1,6 +1,7 @@
+import { ProjectAccessBoundary } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import type { Project } from "../../api/types";
-import { navigate } from "../../app/router";
+import type { Project, TaskStatus } from "../../api/types";
+import { navigate, taskDetailUrl } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
@@ -10,10 +11,13 @@ import { useOverviewProgress } from "./useOverviewProgress";
 import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
-import { useChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
+import { useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
 import { compareTaskStatus } from "./task-order";
+import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
+import { useProjectAssigneeReceipt } from "../task-assignees/TaskAssignees";
+import { TaskAssigneeFilter, matchesAssignee, type AssigneeFilter } from "../task-assignment/TaskAssigneeFilter";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -34,6 +38,11 @@ const focusVisible = (element: HTMLElement | null | undefined) => {
 
 const ProjectView = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => {
   const graph = useTaskGraph(projectId);
+  const graphOwner = useRef(Symbol());
+  useProjectAssigneeReceipt(projectId, graphOwner.current, graph.snapshot?.revision ?? 0);
+  const viewer = useTaskCacheScope();
+  const [assigneeFilter, setAssigneeFilter] = useState<AssigneeFilter>({ kind: "all" });
+  const [statusFilter, setStatusFilter] = useState<TaskStatus | "all">("all");
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
   const { messages: { workspace: { project: m, projects, app, preferences, overview } }, format } = useI18n();
@@ -55,7 +64,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const snapshot = graph.snapshot;
   const snapshotReady = snapshot !== null;
   const { activeView, onViewChange, issue: tabIssue } = useTaskView(projectId);
-  const { savePosition, issue: scrollIssue } = useTaskViewScroll(projectId, activeView, snapshotReady && section === "tasks");
+  const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks");
   useLayoutEffect(() => {
     if (!snapshotReady) setTasksMounted(false);
     else if (section === "tasks") setTasksMounted(true);
@@ -65,8 +74,6 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     window.scrollTo({ top: overviewPosition.current, behavior: "instant" });
   }, [section, snapshotReady]);
   currentView.current = activeView;
-  const { showAll, onShowAllChange, issue: visibilityIssue } = useChainVisibility(projectId);
-  const { showAll: showAllStandalone, onShowAllChange: onStandaloneVisibilityChange, issue: standaloneIssue } = useStandaloneVisibility(projectId);
   const categories = useMemo(() => {
     if (snapshot === null) return null;
     // Stable status sorting preserves the reversed server order's timestamp precision.
@@ -84,8 +91,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     return { chains, standalone, unfinishedChainTaskCount, unfinishedStandaloneTaskCount };
   }, [snapshot]);
   const progress = useOverviewProgress(snapshot, categories?.chains ?? emptyIds, categories?.standalone ?? emptyIds, snapshotReady);
-  const rootIds = showAll ? categories?.chains ?? emptyIds : progress.chains.map((chain) => chain.taskId);
-  const standaloneIds = showAllStandalone ? categories?.standalone ?? emptyIds : progress.recentStandaloneIds;
+  const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
+    : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
+      (statusFilter === "all" || task.status === statusFilter)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId]);
+  const rootIds = (categories?.chains ?? emptyIds).filter((id) => [...snapshot!.index.components.get(id)!.memberIds].some((member) => matchingTaskIds.has(member)));
+  const standaloneIds = (categories?.standalone ?? emptyIds).filter((id) => matchingTaskIds.has(id));
   const chainPagination = usePagination(rootIds.length);
   const standalonePagination = usePagination(standaloneIds.length);
   const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1), 20);
@@ -93,9 +103,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const pageStandaloneIds = standaloneIds.slice(standalonePagination.start - 1, standalonePagination.end);
   const selectChainPage = (page: number) => { chainPagination.onPageChange(page); setPageNavigation("chains"); };
   const selectStandalonePage = (page: number) => { standalonePagination.onPageChange(page); setPageNavigation("standalone"); };
+  const changeAssigneeFilter = (filter: AssigneeFilter) => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); setAssigneeFilter(filter); };
+  const changeStatusFilter = (filter: TaskStatus | "all") => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); setStatusFilter(filter); };
   const selectOverviewPage = (page: number) => { overviewPagination.onPageChange(page); setPageNavigation("overview"); };
-  const changeChainVisibility = (show: boolean) => { chainPagination.onPageChange(1); onShowAllChange(show); };
-  const changeStandaloneVisibility = (show: boolean) => { standalonePagination.onPageChange(1); onStandaloneVisibilityChange(show); };
   useLayoutEffect(() => {
     if (pageNavigation === null) return;
     const id = pageNavigation === "overview" ? "project-overview-progress" : pageNavigation === "chains" ? "project-chain-list" : "project-standalone-list";
@@ -134,6 +144,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     setNotice(null);
     setDetailSelection({ id, revision: snapshot!.revision });
   }, [snapshot]);
+  const onOpenSession = useCallback((id: string) => {
+    navigate(taskDetailUrl(projectId, id, { tab: "session", path: null }));
+  }, [projectId]);
   const onSelectRelation = useCallback((id: string) => {
     setDetailSelection({ id, revision: snapshot!.revision });
   }, [snapshot]);
@@ -154,9 +167,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
 
   const selectView = useCallback((view: TaskView) => {
     if (view === activeView) return;
-    savePosition();
     onViewChange(view);
-  }, [activeView, savePosition, onViewChange]);
+  }, [activeView, onViewChange]);
 
   const selectSection = useCallback((next: ProjectSection) => {
     if (next === section) return;
@@ -175,10 +187,28 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
 
   const onOverviewNavigate = useCallback((target: OverviewTaskTarget) => {
     setNotice(null);
+    if (snapshot !== null) {
+      const ids = target.kind === "standalone" ? progress.recentStandaloneIds
+        : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
+      const tasks = ids.map((id) => snapshot.index.nodes.get(id)!).filter(Boolean);
+      const assigneeMatches = (task: typeof tasks[number]) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId);
+      const statusMatches = (task: typeof tasks[number]) => statusFilter === "all" || task.status === statusFilter;
+      const covered = target.kind === "standalone" ? tasks.every((task) => assigneeMatches(task) && statusMatches(task))
+        : tasks.some((task) => assigneeMatches(task) && statusMatches(task));
+      if (!covered) {
+        chainPagination.onPageChange(1); standalonePagination.onPageChange(1);
+        if (target.kind === "standalone") {
+          if (!tasks.every(assigneeMatches)) setAssigneeFilter({ kind: "all" });
+          if (!tasks.every(statusMatches)) setStatusFilter("all");
+        } else if (tasks.some(assigneeMatches)) setStatusFilter("all");
+        else if (tasks.some(statusMatches)) setAssigneeFilter({ kind: "all" });
+        else { setAssigneeFilter({ kind: "all" }); setStatusFilter("all"); }
+      }
+    }
     setOverviewTarget(target);
     selectView(target.kind === "chain" ? "chains" : "standalone");
     selectSection("tasks");
-  }, [selectSection, selectView]);
+  }, [selectSection, selectView, snapshot, progress.recentStandaloneIds, assigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange]);
 
   useLayoutEffect(() => {
     if (overviewTarget === null || section !== "tasks") return;
@@ -202,7 +232,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (!focusVisible(document.getElementById(`project-task-tab-${view}`))) focusVisible(document.getElementById("project-section-tab-tasks"));
       return;
     }
-    // Explicit overview navigation runs after the task view restores its saved position.
+    // Explicit overview navigation runs after the task list restores its saved position.
     target.scrollIntoView({ block: overviewTarget.kind === "chain" ? "center" : "start", behavior: "instant" });
     target.focus({ preventScroll: true });
     savePosition();
@@ -232,9 +262,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         <ProjectSectionTabs section={section} onChange={selectSection} />
         <div className="project-section-content">
           {sectionIssue !== null && <p className="snapshot-notice" role="status">{preferences.section[sectionIssue.kind]}</p>}
-          {visibilityIssue !== null && <p className="snapshot-notice" role="status">{preferences.completedChains[visibilityIssue.kind]}</p>}
           {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}
-          {standaloneIssue !== null && <p className="snapshot-notice" role="status">{preferences.standalone[standaloneIssue.kind]}</p>}
           {scrollIssue !== null && <p className="snapshot-notice" role="status">{preferences.scroll[scrollIssue.kind]}</p>}
           {graph.status === "loading" && (
             <section className="state-box" role="status" aria-label={m.loading}>
@@ -261,18 +289,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
-            {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} />}
+            {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} onOpenTask={onOpenTask} />}
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot}
-              activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} active={section === "tasks"}
+              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option></select></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
               unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
-              chains={{ representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
-                onOpenTask, showAll, onShowAllChange: changeChainVisibility,
+              chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
+                onOpenTask, onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
-              standalone={{ taskIds: pageStandaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
-                showAll: showAllStandalone, onShowAllChange: changeStandaloneVisibility,
+              standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }} />}
           </section>
         </div>
@@ -283,4 +310,4 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   );
 };
 
-export const ProjectPage = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => <TaskDetailSessionBoundary><ProjectView key={projectId} projectId={projectId} {...(renderActions === undefined ? {} : { renderActions })} /></TaskDetailSessionBoundary>;
+export const ProjectPage = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => <ProjectAccessBoundary projectId={projectId}><TaskDetailSessionBoundary><ProjectView key={projectId} projectId={projectId} {...(renderActions === undefined ? {} : { renderActions })} /></TaskDetailSessionBoundary></ProjectAccessBoundary>;

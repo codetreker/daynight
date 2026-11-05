@@ -13,7 +13,6 @@
     "acceptance": "pnpm --filter @codetreker/daynight acceptance",
     "check": "pnpm typecheck && pnpm test",
     "daynight": "pnpm --filter @codetreker/daynight exec node dist/main.js",
-    "version:check": "node packages/daynight/scripts/check-version.ts",
     "web:dev": "pnpm --filter @codetreker/daynight-web dev",
     "web:typecheck": "pnpm --filter @codetreker/daynight-web typecheck",
     "web:test:storage-native": "pnpm --filter @codetreker/daynight-web test:storage-native",
@@ -23,6 +22,11 @@
     "web:acceptance:apfs": "pnpm --filter @codetreker/daynight-web test:acceptance:apfs",
     "web:acceptance": "pnpm --filter @codetreker/daynight-web test:acceptance",
     "dev:install": "node scripts/dev-install.mjs",
-    "dev:test": "node --test scripts/dev-install.test.mjs"
+    "dev:test": "node --test scripts/dev-install.test.mjs",
+    "test:stress": "pnpm --filter @codetreker/daynight test:stress",
+    "test:stress:budgets": "pnpm --filter @codetreker/daynight test:stress:budgets",
+    "server:test:stress": "bash packages/daynight-server/scripts/stress.sh",
+    "web:test:stress": "pnpm --filter @codetreker/daynight-web test:stress",
+    "web:acceptance:stress": "pnpm --filter @codetreker/daynight-web test:stress:browser"
   }
 }

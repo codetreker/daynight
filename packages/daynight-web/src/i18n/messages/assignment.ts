@@ -1,0 +1,21 @@
+export type AssignmentMessages = {
+  readonly label: string;
+  readonly unassigned: string;
+  readonly formerMember: string;
+  readonly personLabel: (args: { name: string }) => string;
+  readonly search: string;
+  readonly loading: string;
+  readonly loadFailed: string;
+  readonly retry: string;
+  readonly noPeople: string;
+  readonly all: string;
+  readonly me: string;
+  readonly filter: string;
+  readonly noMatches: string;
+  readonly uncertain: string;
+  readonly checking: string;
+  readonly checkState: string;
+  readonly saveFailed: string;
+  readonly versionConflict: string;
+  readonly assigneeUnavailable: string;
+};

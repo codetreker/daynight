@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse as parseToml } from "smol-toml";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { assertCodexIntegrationHome, createHerdrEnvironment, createHerdrInstance, createHerdrNativeEnvironment, createHerdrVersionObserver, resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
@@ -80,6 +81,110 @@ afterEach(async () => {
 });
 
 describe("private Herdr instance", () => {
+  it.skipIf(process.platform !== "darwin")("runs new isolated panes without user shell startup files while retaining PATH and native homes", async () => {
+    const f = await fixture();
+    const home = path.join(f.root, "native-home"); await mkdir(home);
+    const marker = path.join(home, "startup-ran");
+    await writeFile(path.join(home, ".bashrc"), `printf changed > '${marker}'\nexport PATH=/unrelated\n`);
+    const instance = createHerdrInstance({ paths: f.worker, environment: { ...f.environment, HOME: home }, spawnProcess: f.start, isolatedRun: true });
+    await instance.ensure(operation());
+    const startup = instance.createShellStartup()!;
+    expect(startup.executable).toBe("/bin/bash");
+    expect(await startup.isReady(process.pid)).toBe(false);
+    const config = parseToml(await readFile(instance.paths.configurationFile, "utf8"));
+    expect(config.terminal).toMatchObject({ shell_mode: "non_login", default_shell: expect.any(String) });
+    const terminal = config.terminal as { default_shell: string };
+    const launched = spawnSync(terminal.default_shell, ["-i"], { input: 'printf "%s\\n%s\\nnonce:%s\\n" "$PATH" "$CODEX_HOME" "${DAYNIGHT_HERDR_SHELL_NONCE-unset}"; exit\n', env: { ...process.env, HOME: home, PATH: "/checked/native/bin:/usr/bin:/bin", CODEX_HOME: "/retained/native/home", DAYNIGHT_HERDR_SHELL_NONCE: startup.nonce, PROMPT_COMMAND: "exec /usr/bin/false", PS1: '$(printf INHERITED_PROMPT)', PS2: '$(printf INHERITED_PROMPT)' }, encoding: "utf8", timeout: 10_000 });
+    expect({ status: launched.status, signal: launched.signal, error: launched.error?.message, stdout: launched.stdout, stderr: launched.stderr }).toMatchObject({ status: 0 });
+    expect(launched.stdout).toBe("/checked/native/bin:/usr/bin:/bin\n/retained/native/home\nnonce:unset\n");
+    expect(launched.stderr).not.toContain("INHERITED_PROMPT");
+    expect(existsSync(marker)).toBe(false);
+    expect(await startup.isReady(launched.pid)).toBe(true);
+    expect((await stat(path.join(f.root, "shell-ready", `${startup.nonce}.${launched.pid}`))).mode & 0o777).toBe(0o600);
+    expect((await stat(path.join(f.root, "shell-ready"))).mode & 0o777).toBe(0o700);
+    expect(await startup.isReady(launched.pid + 1)).toBe(false);
+    expect(await instance.createShellStartup()!.isReady(launched.pid)).toBe(false);
+    const bin = path.join(home, "bin"); await mkdir(bin);
+    await writeFile(path.join(bin, "native-provider"), '#!/bin/sh\nprintf checked-executable\n', { mode: 0o700 });
+    const inheritedFunction = spawnSync(terminal.default_shell, ["-i", "-c", "native-provider"], {
+      env: { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, "BASH_FUNC_native-provider%%": "() { printf unchecked-function; }" }, encoding: "utf8", timeout: 10_000,
+    });
+    expect(inheritedFunction.status).toBe(0);
+    expect(inheritedFunction.stdout).toBe("checked-executable");
+    expect(await readdir(path.join(f.root, "shell-ready"))).toEqual([`${startup.nonce}.${launched.pid}`]);
+    await instance.stop(operation());
+  });
+
+  it.skipIf(process.platform !== "darwin")("rejects stale or redirected managed shell readiness files", async () => {
+    const f = await fixture();
+    const instance = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: f.start, isolatedRun: true });
+    await instance.ensure(operation());
+    const startup = instance.createShellStartup()!, pid = 1234;
+    const file = path.join(f.root, "shell-ready", `${startup.nonce}.${pid}`);
+    await writeFile(file, `00000000-0000-4000-8000-000000000000\n${pid}\n`, { mode: 0o600 });
+    expect(await startup.isReady(pid)).toBe(false);
+    await writeFile(file, `${startup.nonce}\n${pid + 1}\n`);
+    expect(await startup.isReady(pid)).toBe(false);
+    await rm(file); const target = path.join(f.root, "redirected-ready"); await writeFile(target, `${startup.nonce}\n${pid}\n`); await symlink(target, file);
+    await expect(startup.isReady(pid)).rejects.toThrow();
+    await instance.stop(operation());
+  });
+
+  it.skipIf(process.platform !== "darwin")("reconnects a legacy isolated daemon without replacing its shell configuration and refuses to restart its directory", async () => {
+    const f = await fixture(); await f.instance.ensure(operation());
+    const legacy = "onboarding = false\n\n[session]\nresume_agents_on_restore = false\n\n[update]\nversion_check = false\nmanifest_check = false\n";
+    await writeFile(f.instance.paths.configurationFile, legacy);
+    const other = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("Must not restart the old daemon"); }, isolatedRun: true });
+    expect(await other.ensure(operation())).toMatchObject({ reconnected: true });
+    expect(await other.connect(operation())).toMatchObject({ reconnected: true });
+    expect(other.createShellStartup()).toBeUndefined();
+    expect(await readFile(f.instance.paths.configurationFile, "utf8")).toBe(legacy);
+    expect(existsSync(path.join(f.root, "shell"))).toBe(false);
+    await f.instance.stop(operation());
+    await expect(other.ensure(operation())).rejects.toThrow("differs from the managed");
+    expect(await readFile(f.instance.paths.configurationFile, "utf8")).toBe(legacy);
+  });
+  it("waits for durable daemon registration before observing readiness", async () => {
+    const setup = await fixture();
+    let captured = 0;
+    const instance = createHerdrInstance({ paths: setup.worker, environment: setup.environment, spawnProcess: setup.start,
+      onDaemonSpawn: async pid => { captured = pid; throw new Error("journal refused"); }, retainOnStartupFailure: true });
+    await expect(instance.ensure(operation())).rejects.toThrow("journal refused");
+    expect(captured).toBeGreaterThan(0);
+    expect(children.at(-1)!.signalCode).toBeNull();
+  });
+  it.skipIf(!existsSync(new URL("../../../dist/commands/worker/herdr/instance.js", import.meta.url)))
+  .each(["registration", "readiness"] as const)("lets the parent exit naturally while retaining its daemon after %s failure", async (failure) => {
+    const f = await fixture(failure === "readiness" ? { FIXTURE_SERVER_VERSION: "0.8.2" } : {});
+    const resultFile = path.join(f.root, "startup-result.json");
+    const instanceUrl = new URL("../../../dist/commands/worker/herdr/instance.js", import.meta.url).href;
+    const operationUrl = new URL("../../../dist/api/operation.js", import.meta.url).href;
+    const source = `import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';import {createHerdrInstance} from ${JSON.stringify(instanceUrl)};import {createOperation} from ${JSON.stringify(operationUrl)};
+const config=JSON.parse(process.argv[1]);let daemonPid;const instance=createHerdrInstance({paths:config.worker,retainOnStartupFailure:true,spawnProcess:(_file,args,options)=>spawn(process.execPath,[config.script,...args],options),onDaemonSpawn:async pid=>{daemonPid=pid;if(config.failure==='registration')throw new Error('journal refused');}});
+const operation=createOperation({limits:{totalMs:5000,requestMs:5000}});try{await instance.ensure(operation);writeFileSync(config.resultFile,JSON.stringify({daemonPid,unexpectedSuccess:true}));}catch(error){writeFileSync(config.resultFile,JSON.stringify({daemonPid,error:error.message}));}finally{operation.dispose();}`;
+    const parent = spawn(process.execPath, ["--input-type=module", "--eval", source, JSON.stringify({ worker: f.worker, script: f.script, resultFile, failure })],
+      { env: f.environment, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    children.push(parent);
+    let stderr = ""; parent.stderr!.on("data", (data: Buffer) => { stderr += data.toString(); });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => parent.once("close", (code, signal) => resolve({ code, signal })));
+    const retained = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("The retained daemon must not be replaced"); } });
+    try {
+      await waitUntil(async () => await present(resultFile) && await present(f.ready));
+      const result = JSON.parse(await readFile(resultFile, "utf8")) as { daemonPid: number; error?: string };
+      expect(result.error).toMatch(failure === "registration" ? /journal refused/ : /protocol 22/);
+      expect(Number(await readFile(f.ready, "utf8"))).toBe(result.daemonPid);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const outcome = await Promise.race([closed, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 2_000); })]);
+        expect(outcome, stderr || "Retained daemon handle prevented the parent from exiting naturally").toEqual({ code: 0, signal: null });
+      } finally { if (timer !== undefined) clearTimeout(timer); }
+      expect(await createHerdrVersionObserver(f.worker).observe(operation())).toBe(failure === "readiness" ? "0.8.2" : "0.9.5");
+    } finally {
+      if (parent.exitCode === null && parent.signalCode === null) { parent.kill("SIGKILL"); await closed; }
+      await retained.stop(operation(2_000));
+    }
+  }, 15_000);
+
   it("observes absence without creating private paths or starting a daemon", async () => {
     const setup = await fixture();
     const absent = { herdrDirectory: path.join(setup.root, "a"), logsDirectory: setup.worker.logsDirectory };

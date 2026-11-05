@@ -1,13 +1,15 @@
+import { wireResponse } from './helpers/wireJson';
 import { readFileSync } from 'node:fs';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
 import { createLocaleRender } from './helpers/renderWithLocale';
+import { personalTeamPage } from './helpers/team';
 const render = createLocaleRender('en');
 const owner = '00000009-1111-4111-8111-111111111111';
 const sessionId = '00000001-1111-4111-8111-111111111111';
 const path = `/test-sessions/${sessionId}`;
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': owner } });
+const json = (body: unknown, status = 200) => wireResponse(body, { status, headers: { 'Daynight-User-ID': owner } });
 it.each([path, '/test-sessions'])('shows login for the protected Test URL %s without requesting sessions and retains the login destination', async (targetPath) => {
   window.history.replaceState(null, '', targetPath);
   const fetch = vi.fn(async (url: string) => url === '/api/v1/me' ? json({ error: { code: 'unauthenticated', message: 'Login required', requestId: 'request' } }, 401) : json({ providers: ['github'] }));
@@ -31,13 +33,14 @@ it('renders the shared session after authentication and removes it on sign-out',
   }
   vi.stubGlobal('WebSocket', Socket);
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-    if (url === '/api/v1/me') return json({ id: owner, name: 'Owner', email: 'owner@example.com', emailVerified: true, avatarUrl: null });
+    if (url === '/api/v1/me') return json({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: owner, name: 'Owner', email: 'owner@example.com', emailVerified: true, avatarUrl: null });
     if (url === `/api/v1/test-sessions/${sessionId}`) return json({ session: snapshot });
     if (url.includes('/timeline?')) return json({ sessionId, historyEpoch: snapshot.historyEpoch, items: [{ kind: 'assistant_message', entryId: '00000012-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Private test conversation' }] }], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
     if (url.endsWith('/commands')) throw new Error('lost acknowledgement');
     if (url === '/api/v1/auth/logout') return new Response(null, { status: 204 });
     if (url === '/api/v1/auth/providers') return json({ providers: ['github'] });
-    if (url === '/api/v1/projects?limit=50') return json({ items: [{ id: '00000020-1111-4111-8111-111111111111', name: 'Session test project', repoUrl: 'https://github.com/example/session-test', settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-28T01:00:00Z', updatedAt: '2026-10-28T01:00:00Z' }], nextCursor: null });
+    if (url.startsWith('/api/v1/teams?')) return json(personalTeamPage(owner));
+    if (url.startsWith('/api/v1/projects?')) return json({ items: [{ ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: '00000020-1111-4111-8111-111111111111', name: 'Session test project', repoUrl: 'https://github.com/example/session-test', settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-28T01:00:00Z', updatedAt: '2026-10-28T01:00:00Z' }], nextCursor: null });
     throw new Error(`Unexpected request ${url}`);
   }));
   render(<AuthenticatedApp />);
@@ -86,14 +89,15 @@ function focusSession() {
   vi.stubGlobal('WebSocket', Socket);
   let meCalls = 0, principal = owner;
   const identityCheck = Promise.withResolvers<Response>();
-  const user = (id: string, name: string) => ({ id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
+  const user = (id: string, name: string) => ({ personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
   const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': principal } });
   const fetcher = vi.fn(async (url: string) => {
     if (url === '/api/v1/me') return ++meCalls === 1 ? response(user(owner, 'Owner')) : identityCheck.promise;
     if (url === `/api/v1/test-sessions/${sessionId}`) return principal === owner ? response({ session: snapshot }) : response({ error: { code: 'forbidden', message: 'Unavailable', requestId: 'request' } }, 403);
     if (url.includes('/timeline?')) return response({ sessionId, historyEpoch: snapshot.historyEpoch, items: [{ kind: 'assistant_message', entryId: '00000012-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Private focus conversation' }] }], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
     if (url === '/api/v1/auth/providers') return response({ providers: ['github'] });
-    if (url === '/api/v1/projects?limit=50') return response({ items: [], nextCursor: null });
+    if (url.startsWith('/api/v1/teams?')) return response(personalTeamPage(principal));
+    if (url.startsWith('/api/v1/projects?')) return response({ items: [], nextCursor: null });
     throw new Error(`Unexpected request ${url}`);
   });
   vi.stubGlobal('fetch', fetcher);
@@ -171,6 +175,6 @@ it.each(['changed', 'expired'] as const)('clears the retained Test Session when 
   expect(textbox.isConnected).toBe(false);
   expect(f.sockets[0]!.close).toHaveBeenCalled();
   expect(Object.keys(window.sessionStorage).filter(key => key.startsWith(`daynight:session-draft:${owner}:`))).toEqual([]);
-  if (outcome === 'changed') expect(await screen.findByRole('link', { name: 'Account settings: Other' })).toBeVisible();
+  if (outcome === 'changed') expect(await screen.findByRole('button', { name: 'Account menu: Other' })).toBeVisible();
   else expect(await screen.findByRole('button', { name: /GitHub/ })).toBeVisible();
 });

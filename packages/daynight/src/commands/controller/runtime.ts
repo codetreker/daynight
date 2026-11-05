@@ -1,3 +1,5 @@
+import { startupFailure } from "./startup.js";
+import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
 import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
@@ -11,6 +13,7 @@ import { openControllerLifecycleStore, type ControllerOperation } from "./lifecy
 import { validateControllerLocalRequest, type ControllerLocalResponse } from "./local-client.js";
 import { captureProcessProof, captureControllerProcessProof } from "./process-proof.js";
 import { createControllerRelay } from "./relay.js";
+import { providerDisplayEntry } from "./provider-display.js";
 import { isCleaningGeneration, observeNativeInput, observeNativeInteraction } from "./recovery.js";
 import { NativeRpcError } from "./providers/native-rpc.js";
 import type { NativeProvider, ProviderOptions } from "./providers/types.js";
@@ -45,7 +48,15 @@ export const runController = async (options: { homeDirectory: string; provider: 
     const s = journal.getSnapshot();
     return { nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
-  const fail = (error: unknown) => { const message = error instanceof Error ? error.message : String(error); diagnostic(message); try { journal.patchSnapshot({ lifecycle: "paused", error: message }); } catch { /* The private log retains a journal failure when disk writes fail. */ } };
+  const fail = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error); diagnostic(message);
+    try {
+      const startup = journal.getSnapshot().startup;
+      // Shutdown may fail after initialization already supplied the decisive observation.
+      const retain = startup !== undefined && startup.state !== "starting" && startup.reasonCode !== "evidence_missing";
+      journal.patchSnapshot({ lifecycle: "paused", error: message, ...(retain ? {} : { startup: startupFailure(error) }) });
+    } catch { /* The private log retains a journal failure when disk writes fail. */ }
+  };
   const dispatch = (operation: ControllerOperation, invoke: () => Promise<unknown>): Promise<ControllerOperation> => {
     const running = active.get(operation.operationId); if (running) return running;
     if (operation.state !== "accepted") return Promise.resolve(operation);
@@ -206,7 +217,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
                 if (!receipt.turnId) throw new Error("Native cleanup turn identity is unknown.");
                 await provider!.waitForTurn(receipt.turnId, action.deadline);
                 return receipt;
-              }), Math.max(1, Math.min(30_000, action.deadline - Date.now())));
+              }), Math.max(1, Math.min(CLEANUP_OPERATION_MS, action.deadline - Date.now())));
               if (operation === null) return;
             }
           }
@@ -228,6 +239,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const signal = () => { void shutdown(); };
   process.once("SIGINT", signal); process.once("SIGTERM", signal);
   startup = (async () => {
+    journal.patchSnapshot({ startup: { state: "starting", reasonCode: "initializing" } });
     journal.patchSnapshot({ controllerProcess: await captureControllerProcessProof(ticket.launchId) });
     if (stopping) return;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { server.off("error", reject); resolve(); }); });
@@ -243,6 +255,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     else if (ticket.provider === "claude") env.CLAUDE_CONFIG_DIR = ticket.nativeHome;
     else env.COPILOT_HOME = ticket.nativeHome;
     const nativeOptions: ProviderOptions = {
+      ...(ticket.instructions === undefined ? {} : { instructions: ticket.instructions }),
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
@@ -267,7 +280,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
       onTimeline: entry => nativeEvent(() => {
-        journal.projectTimeline(entry);
+        journal.projectTimeline(providerDisplayEntry(entry));
         if (entry.kind === "interaction") {
           const id = entry.interaction.interactionId;
           if (cleaning && cleanupInputStarted && !knownInteractions.has(id) && entry.interaction.state === "pending") cleanupInteractions.add(id);
@@ -291,7 +304,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     if (projectionFailure) throw new Error(projectionFailure);
     if (providerFailure) throw new Error(providerFailure);
     if (stopping) return;
-    journal.patchSnapshot({ lifecycle: "ready" }); publishState();
+    journal.patchSnapshot({ lifecycle: "ready", startup: { state: "ready", reasonCode: "ready" } }); publishState();
   })();
   try {
     await startup;

@@ -35,7 +35,11 @@ Web task details share the claim display and withdrawal operation across the
 dialog, standalone page and fullscreen. The display identifies the claiming user,
 machine, agent and phase. Released records are labeled; completed records do not
 appear as current ownership. Project members supply readable identities, while a
-former member remains identified by its real user ID. Confirmation freezes the
+former member remains identified by its real user ID. The caller's owner/admin
+eligibility comes from [current project access](2026-11-03-project-access-projection.md),
+independently of profile loading or failure. Stale or denied access invalidates
+withdrawal confirmation without discarding the profile read's error/retry state.
+Confirmation freezes the
 task, claim and exact version and explains the reset and delayed-stop boundary.
 The existing task session owns submission, returned-resource validation and
 GET-only reconciliation after an uncertain result. Cancel submits nothing, and
@@ -49,7 +53,10 @@ pages compact their auxiliary navigation spacing to keep complete return and
 language controls on one row at 320px in either language, preserving reader space.
 Full identity strings and
 withdrawal controls remain reachable by keyboard
-without collapsing Overview or attachment reading.
+without collapsing Overview or attachment reading. The withdrawal button clears
+the global top scroll margin inside this small scroll owner: a 24px button plus
+12px of scroll margin cannot fit its 32px window. Native keyboard focus must
+reveal the complete button without relying on an unfinished earlier scroll.
 
 Transfer's HTTP endpoint, typed operation, CLI command, target descriptors and
 runtime submission paths are removed. This partially supersedes the
@@ -112,6 +119,12 @@ The six-column simplification subsequently removes both stored forms and the
 migration: each process obtains its own complete inventory before selecting
 terminal cleanup. It retains the force-withdrawal protocol and delayed-stop
 boundary without an alternate local management journal.
+
+**Keep the global button scroll margin in the claim heading.** The margin
+reserves more space than the shortest heading can display, leaving the focused
+withdrawal button clipped. Increasing the heading minimum would take space from
+the reading panels; a local margin override keeps both controls and content
+reachable without changing other pages.
 
 ## Consequences
 

@@ -6,13 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createOperation } from "../../src/api/index.js";
 import type { Operation, Project } from "../../src/api/index.js";
 import { resolveProject } from "../../src/repository/context.js";
+import { ProjectDiscoveryError } from "../../src/repository/discovery-error.js";
 import type { ProjectApi, ProjectBinding } from "../../src/repository/binding.js";
 import { formatError } from "../../src/platform/diagnostics.js";
 
 const id = "11111111-1111-1111-1111-111111111111";
 const otherId = "22222222-2222-2222-2222-222222222222";
 const serverUrl = "http://localhost:8787";
-const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
+const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
 const directories: string[] = [];
 const operations: Operation[] = [];
 afterEach(async () => {
@@ -138,7 +139,10 @@ describe("repository project selection", () => {
   it.each([0, 2])("rejects %i discovery matches without preparing local files", async (count) => {
     const root = await fixture();
     const client = api(count === 0 ? [] : [project, { ...project, id: otherId }]);
-    await expect(resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root })).rejects.toThrow(count === 0 ? "Project does not exist" : `Multiple projects match this repository (${id}, ${otherId})`);
+    const failure = await resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root }).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(ProjectDiscoveryError);
+    expect(failure).toMatchObject({ kind: count === 0 ? "missing" : "ambiguous", projectIds: count === 0 ? [] : [id, otherId] });
+    expect((failure as Error).message).toBe(count === 0 ? "Project does not exist." : `Multiple projects match this repository (${id}, ${otherId}); specify --project <id>.`);
     expect(client.getProject).not.toHaveBeenCalled();
     await expect(readdir(path.join(root, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
   });

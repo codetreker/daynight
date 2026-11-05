@@ -284,9 +284,9 @@ describe("repository Git discovery", () => {
     const tracked = path.join(root, "tracked.txt");
     await writeFile(tracked, "fixture");
     git(root, ["add", "tracked.txt"]);
-    const monitor = path.join(root, "slow fsmonitor");
+    const monitor = path.join(root, "fsmonitor hook");
     const marker = path.join(root, "fsmonitor invoked");
-    await writeFile(monitor, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'invoked');\nsetTimeout(() => {}, 2000);\n`);
+    await writeFile(monitor, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'invoked');\n`);
     await chmod(monitor, 0o755);
     git(root, ["config", "core.fsmonitor", JSON.stringify(monitor)]);
     git(root, ["ls-files", "-z"]);

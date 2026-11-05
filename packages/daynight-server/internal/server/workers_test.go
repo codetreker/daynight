@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/google/uuid"
 )
 
@@ -53,7 +54,7 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 		t.Fatalf("idle or telemetry shape incorrect: %+v", idle)
 	}
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Snapshot-owned task"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Snapshot-owned task"), map[string]any{"allowAgents": true})
 	claim := workerClaimBody(task.Version)
 	claim["workerId"] = id
 	claim["agent"] = "claude"
@@ -100,7 +101,7 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	id := uuid.NewString()
 	path := "/api/v1/me/workers/" + id
-	for _, body := range []string{"", `null`, `[]`, `{}`, `{"state":true}`, `{"machine":null,"machine":null}`, strings.Repeat(" ", maxJSONBody) + "{}", string([]byte{'{', 0xff, '}'})} {
+	for _, body := range []string{"", `null`, `[]`, `{}`, `{"state":true}`, `{"machine":null,"machine":null}`, strings.Repeat(" ", httpx.MaxJSONBody) + "{}", string([]byte{'{', 0xff, '}'})} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, path+"/report", body), http.StatusBadRequest, "invalid_input")
 	}
 	for _, mutate := range []func(map[string]any){

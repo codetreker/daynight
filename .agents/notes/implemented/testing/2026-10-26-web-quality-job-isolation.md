@@ -18,16 +18,20 @@ does not identify a particular CPU or I/O cause or prove transient infrastructur
 
 ## Decision
 
-The existing Web module selector enables two parallel jobs: `verify-web-quality`
-and `verify-web`. Each keeps a 20-minute job bound, and the final `checks` job
-requires both alongside all other selected modules. Shared workflow changes
-retain the existing all-module selection rule. This separates responsibilities,
-not browser scenarios or product scope.
+The isolation decision introduced separate `verify-web-quality` and `verify-web`
+responsibilities. The [case-shard decision](2026-11-04-web-ci-case-shards.md)
+subsequently partitions the browser responsibility into two matrix entries;
+quality remains a separate job. Each entry keeps a 20-minute bound, and the
+existing final `checks` job requires selected Web jobs to succeed and validates
+the complete shard union. Shared workflow changes retain all-module selection.
 
-`scripts/ci.mts` exports `runCi(mode, cancellation, operations?)` for explicit
+`scripts/ci.mts` exports `runCi(mode, cancellation, operations?, shard?)` for explicit
 internal `quality` and `browser` modes. Quality runs
-the canonical Node harness and complete Vitest/V8 plus strict statement checker
-serially, with a separate 180-second deadline for each command. Only the coverage
+the canonical Node harness, complete Vitest/V8 collection and strict statement
+checker serially. Harness has a 180-second deadline and collection has a 300-second deadline; the
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
+final inventory and coverage verification an independent 60-second deadline.
+Only the Vitest/V8
 child receives `VITEST_MAX_WORKERS=4`, calibrated for its dedicated public
 standard Linux runner by the [worker capacity
 decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
@@ -35,8 +39,13 @@ isolation and full product-source manifest remain unchanged.
 
 Browser mode installs pinned Chromium with Linux dependencies under the existing
 600-second bound, then invokes ordinary core acceptance. That runner owns native
-and container preparation, functional browser order, atomic permission release,
-capacity, recovery and cleanup. It has no quality/browser preparation callbacks,
+and container preparation, atomic permission release, recovery and cleanup.
+The [functional target decision](2026-11-04-web-functional-target-overlap.md)
+replaces the original native-before-container functional browser order with
+concurrent isolated targets and a shared CLI cleanup barrier. The [local stress decision](2026-11-03-local-stress-suites.md)
+partially supersedes the original mandatory capacity phase: ordinary CI runs the
+complete functional inventory, while explicit local stress acceptance adds
+capacity after the same preparation and cleanup barriers. It has no quality/browser preparation callbacks,
 empty success phases or readiness-admission observer. Local acceptance continues
 to use its preinstalled browser through the same ordinary core. The existing
 `ready.json` remains diagnostic; it does not grant browser execution.
@@ -47,12 +56,13 @@ when the command leader exited successfully. A command failure, cancellation or
 process-group cleanup failure remains a failure; combined errors are preserved.
 This guard is not replaced by the command leader's exit status.
 
-The container's 900-second permission wait, native-before-container browser
-release, one browser worker, zero retries, complete capacity inputs and all
-geometry/performance thresholds remain unchanged. Within browser acceptance,
-capacity waits for its own preparation, functional phases, complete container
-cleanup and browser recovery. Quality runs on a separate runner and does not
-alter those timing conditions. Artifacts keep their quality or acceptance
+The container keeps its 900-second permission wait and source/run binding.
+Permission now follows native preparation so the independent functional targets
+can overlap; each retains one browser worker and zero retries. Explicit local
+stress acceptance retains complete capacity inputs and all geometry/performance
+thresholds. Its capacity phase waits for preparation, functional phases,
+complete container cleanup and browser recovery. Quality runs on a separate
+runner and does not alter those local timing conditions. Artifacts keep their quality or acceptance
 ownership, source identity and retention policy.
 
 This partially supersedes the unified quality/browser orchestration in the
@@ -81,13 +91,18 @@ that ordinary acceptance does not need. Separate jobs remove that coupling;
 the selected core has no such gate or reader.
 
 **Increase the job or command allowance.** Larger budgets change the validation
-contract without separating the competing responsibilities. Both jobs retain
-20 minutes, and all existing command and functional deadlines remain in force.
+contract without separating the competing responsibilities. The isolation decision kept both jobs at
+20 minutes and preserved their command and functional deadlines. The later
+[stage budget decision](2026-11-04-web-coverage-finalization-budget.md) separately
+bounds final verification and calibrates collection for the larger suite.
 
-**Shard browser scenarios across runners.** Shards duplicate target preparation
-and require new scenario, artifact and permission aggregation. The full native,
-container and capacity journey remains together; only independent quality work
-has a separate job.
+**Shard browser scenarios across runners.** At the time of this choice, shards
+would duplicate target preparation and require scenario/artifact aggregation,
+so the full browser journey remained together and only independent quality work
+received a separate job. Capacity later moved to the explicit local stress path.
+The [case-shard decision](2026-11-04-web-ci-case-shards.md) accepts two independent
+browser runners with validation in the existing final gate; quality isolation
+and its command budgets remain in force.
 
 ## Consequences
 
@@ -100,11 +115,12 @@ wait. Internal CI modes do not add a product CLI or deployment interface.
 This costs a second Node/pnpm setup and a separate quality artifact upload. It
 does not omit tests, weaken the strict coverage comparison, bypass process-group
 cleanup or replace protected merge checks. Wrapper tests cover full commands and
-errors; core tests retain native/container ordering, permission and capacity
-ownership without obsolete quality placeholders.
+errors; core tests retain native/container ordering, permission, optional local
+capacity ownership and cleanup without obsolete quality placeholders.
 
 Isolation does not establish the CPU/I/O cause of an earlier timeout or guarantee
 a faster hosted run. Actual completion and elapsed-time observations remain
 bound to the tested source, workload and runner. The existing deadlines remain
-failure bounds, and unchanged failures are retried only after a transient cause
-is established.
+failure bounds. The [bounded CI retry decision](../process/2026-11-05-bounded-ci-retries.md)
+replaces the original requirement to prove a transient cause before rerunning an
+unchanged failure; isolation itself does not establish that cause.

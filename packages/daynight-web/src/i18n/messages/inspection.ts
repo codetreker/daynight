@@ -1,6 +1,56 @@
+import type { PauseMessages } from "./pause";
 import type { WorkerPhase } from '../../api/types';
 
 export type InspectionMessages = {
+  readonly steps: {
+    readonly title: string; readonly empty: string; readonly noDescription: string;
+    readonly loading: string; readonly refresh: string; readonly retry: string;
+    readonly loadFailed: string; readonly refreshFailed: string; readonly retained: string;
+    readonly networkError: string; readonly protocolError: string; readonly unavailable: string; readonly denied: string; readonly requestFailed: string;
+    readonly count: (count: string) => string;
+    readonly status: Readonly<Record<"todo" | "in_progress" | "done" | "skipped", string>>;
+    readonly created: string; readonly updated: string;
+    readonly pagination: string; readonly previous: string; readonly next: string; readonly page: string;
+    readonly range: (start: string, end: string, total: string) => string;
+    readonly statusMenu: (title: string) => string; readonly statusUnavailable: string;
+    readonly conflict: string; readonly conflictReconciled: string; readonly unknown: string; readonly unknownReconciled: string; readonly checkState: string; readonly checking: string; readonly checkFailed: string;
+    readonly statusRefused: string; readonly statusMissing: string; readonly statusDenied: string;
+    readonly statusExhausted: string; readonly statusCapacity: string; readonly statusInvalid: string;
+    readonly moveMenu: (title: string) => string; readonly moveUnavailable: string; readonly moveUp: string; readonly moveDown: string; readonly moveFirst: string; readonly moveLast: string; readonly moveRelative: string;
+    readonly moveTitle: string; readonly target: string; readonly searchTargets: string; readonly targetPagination: string; readonly targetPage: string; readonly targetResults: string; readonly noTargets: string; readonly targetMissing: string; readonly placement: string; readonly before: string; readonly after: string; readonly cancelMove: string; readonly confirmMove: string;
+    readonly moveConflict: string; readonly moveConflictReconciled: string; readonly moveUnknown: string; readonly moveRefused: string; readonly moveMissing: string; readonly moveInvalid: string;
+    readonly deleteStep: string; readonly deleteTitle: string; readonly deleteQuestion: string; readonly deleteExplanation: string; readonly deleteDraft: string; readonly deleteUnknown: string; readonly deleteConflict: string; readonly deleteConflictReconciled: string; readonly deleteRefused: string; readonly deleteMissing: string; readonly deleteChanged: string;
+    readonly capacityDetails: (encoded: string, maximum: string) => string;
+    readonly add: string; readonly addTitle: string; readonly description: string; readonly initialStatus: string;
+    readonly addBefore: string; readonly addAfter: string; readonly addEnd: string; readonly chooseTarget: string; readonly selectTarget: string; readonly confirmTarget: string; readonly addMissing: string;
+    readonly undoUnavailable: string; readonly editStep: string; readonly returnEditing: string; readonly discardEditQuestion: string; readonly editMissing: string; readonly editUnknown: string; readonly editRefused: string; readonly currentContent: string;
+    readonly edit: string; readonly preview: string; readonly save: string; readonly cancel: string; readonly titleRequired: string;
+    readonly discardTitle: string; readonly discardQuestion: string; readonly discardExplanation: string; readonly discard: string; readonly keep: string;
+    readonly addConflict: string; readonly addConflictReconciled: string; readonly addUnknown: string; readonly addUnknownReconciled: string;
+    readonly addRefused: string; readonly addInvalid: string; readonly addDenied: string;
+    readonly invalidText: string; readonly addedMissing: string; readonly duplicateId: string; readonly chooseId: string;
+  };
+  readonly draftNavigation: {
+    readonly title: string; readonly question: string; readonly explanation: string; readonly discard: string; readonly keep: string; readonly close: string;
+  };
+  readonly pause: PauseMessages;
+  readonly discussion: {
+    readonly title: string; readonly empty: string; readonly loading: string; readonly refresh: string;
+    readonly loadOlder: string; readonly loadNewer: string; readonly viewLatest: string;
+    readonly loadedCount: (count: string) => string; readonly newCount: (count: string) => string;
+    readonly participants: string; readonly timeline: string; readonly composer: string; readonly placeholder: string;
+    readonly accountName: (id: string) => string; readonly agentName: (name: string) => string;
+    readonly reply: (name: string) => string; readonly cancelReply: string; readonly send: string; readonly resend: string;
+    readonly viewReference: string; readonly referenceLoading: string; readonly codeSnippet: string;
+    readonly messageDetails: string; readonly messageAt: (name: string, time: string) => string; readonly closeDetails: string;
+    readonly messageId: string; readonly author: string; readonly accountId: string; readonly source: string;
+    readonly human: string; readonly agent: string; readonly createdAt: string; readonly replyTo: string;
+    readonly claimId: string; readonly workerId: string; readonly body: string;
+    readonly readFailed: string; readonly historyFailed: string; readonly referenceFailed: string;
+    readonly postFailed: string; readonly postUnknown: string; readonly denied: string; readonly deniedExplanation: string;
+    readonly retry: string; readonly table: string; readonly imageUnavailable: string; readonly errorDetails: string;
+    readonly capacity: string; readonly invalidBody: string; readonly markdown: string; readonly dismissFeedback: string;
+  };
   readonly claim: {
     readonly controls: string;
     readonly active: string;
@@ -10,6 +60,9 @@ export type InspectionMessages = {
     readonly phase: Readonly<Record<WorkerPhase, string>>;
     readonly membersLoading: string;
     readonly membersError: string;
+    readonly membersProtocolError: string;
+    readonly membersRecovery: string;
+    readonly openFreshPage: string;
     readonly retryMembers: string;
     readonly formerMember: string;
     readonly withdraw: string;

@@ -21,7 +21,10 @@ transactions and read models. The existing
 [claim foundation](2026-10-24-worker-claim-foundation.md) retains execution
 authority. The [runtime reporting decision](2026-10-28-worker-runtime-reporting.md)
 owns the CLI producer's independent scheduling, read-only collection and
-process-local lifecycle.
+process-local lifecycle. The [cloud configuration decision](2026-11-04-worker-cloud-configuration.md)
+owns independently revisioned desired settings and application observations on
+the same Worker row, with an explicit report extension. It does not change task
+execution authority or the snapshot time-window rules.
 
 A dedicated workers row atomically stores server observation time, validated
 telemetry and a server-normalized task snapshot. Client reports carry task
@@ -35,9 +38,16 @@ ones. An ignored UPSERT is followed by a separate statement that can observe a
 concurrently committed conflict row; a same-statement CTE does not provide that
 visibility guarantee.
 
-Read-only snapshots reapply current project membership and undeleted-task
-visibility to saved task arrays and counts. They retain the recorded status and
-phase even if the current claim later completes or changes. Unknown inventory,
+Reports and read-only snapshots share the store's canonical project access
+relation, merging real owner Team and direct-grant roles under the
+[Personal ownership decision](2026-11-04-personal-project-ownership.md). Both batch
+queries constrain access by the authenticated user without giving Worker code ownership of the
+authorization sources. Report normalization still checks the current account,
+Worker, claim and task state; read-only snapshots reapply current project access
+and undeleted-task visibility to saved task arrays and counts. They retain the recorded status and
+phase even if the current claim later completes or changes. Filtering leaves the
+stored snapshot intact, so regranting access can reveal an undeleted historical
+observation again. Unknown inventory,
 known empty inventory and stale inventory remain distinct. The 120-second
 online rule and 72-hour visibility window have no claim-control side effects.
 
@@ -56,6 +66,11 @@ the service still supplies all authoritative task fields.
 query and consistency policies beyond a current runtime view. A latest row
 satisfies liveness and last-observation behavior without inventing those
 policies; it cannot later reconstruct measurements that were never retained.
+
+**Keep separate direct-membership joins in Worker queries.** That duplicates
+project admission and requires each authorization-source change to find both
+report and readback queries. Using the existing batch relation preserves their
+transaction snapshots and bounded task-ID queries without per-task lookups.
 
 ## Consequences
 

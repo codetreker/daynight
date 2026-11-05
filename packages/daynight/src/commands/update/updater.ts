@@ -55,7 +55,8 @@ export const runUpdateCommand = async (command: UpdateCommand): Promise<string> 
       cwd: command.cwd,
       env: command.environment,
       windowsHide: true,
-      detached: true,
+      // Detached Windows processes cannot write to inherited console handles.
+      detached: process.platform !== "win32",
       stdio: ["inherit", command.output === "capture" ? "pipe" : "inherit", "inherit"],
     });
     let output = "";

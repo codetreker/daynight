@@ -12,6 +12,7 @@ type TaskViewRecord struct {
 	DependsOn         []string       `json:"dependsOn"`
 	ExternalDependsOn []string       `json:"externalDependsOn"`
 	RequiredPlatform  *string        `json:"requiredPlatform"`
+	AssignedTo        *string        `json:"assignedTo"`
 	AllowAgents       bool           `json:"allowAgents"`
 	CreatedAt         time.Time      `json:"createdAt"`
 	UpdatedAt         time.Time      `json:"updatedAt"`
@@ -20,9 +21,11 @@ type TaskViewRecord struct {
 }
 
 type TaskSync struct {
-	Mode       string           `json:"mode"`
-	Epoch      string           `json:"epoch"`
-	Project    Project          `json:"project"`
-	ObservedAt time.Time        `json:"observedAt"`
-	Tasks      []TaskViewRecord `json:"tasks"`
+	Mode             string                `json:"mode"`
+	Epoch            string                `json:"epoch"`
+	Project          Project               `json:"project"`
+	ActorAccess      ProjectAccess         `json:"actorAccess"`
+	ObservedAt       time.Time             `json:"observedAt"`
+	Tasks            []TaskViewRecord      `json:"tasks"`
+	AssigneeVersions []TaskAssigneeVersion `json:"assigneeVersions"`
 }

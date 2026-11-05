@@ -19,7 +19,7 @@ rather than assumptions embedded in a handler.
 pinned UniAuth client, and mounts authentication, membership and all existing
 resource routes. It returns a handler or an error. Startup propagates composition
 failure and closes its acquired listener, file root and database. Resource use
-cases accept an explicit `core.Principal`; ordinary project creation atomically
+cases accept an explicit `model.Principal`; ordinary project creation atomically
 adds its first administrator and ordinary project lists filter membership before
 pagination. The staging aliases `CreatePrivate` and `ListAccessible` are removed.
 There is no anonymous business mode, fixed user or trusted-principal adapter.
@@ -87,8 +87,10 @@ ordinary session authority, relative resources and existing keyboard bridge.
 The [architecture decision](2026-10-22-auth-architecture.md) and
 [attachment decision](../../archived/architecture/2026-10-21-task-attachment-storage-design.md) retain the
 explicit exclusion of preview domains, scoped preview credentials and gateway
-infrastructure. Existing projects remain unassigned until manual membership
-maintenance; no legacy data branch is added.
+infrastructure. Existing projects originally remained unassigned until manual
+membership maintenance. The [Personal ownership decision](2026-11-04-personal-project-ownership.md)
+now migrates valid projects to the earliest-joined current admin's Personal Team
+and rejects zero-admin data; no legacy runtime data branch is added.
 
 ### Real protocol fixtures and private runtime state
 
@@ -118,8 +120,8 @@ The [localhost guide](../../../../deployment/localhost/README.md) owns private
 `.env` preparation. The [dev-ci guide](../../../../deployment/dev-ci/README.md)
 owns toolchains, Linux fixture architecture, reconfiguration and recovery.
 An optional Vite callback proxy uses the same callback setting and existing Go
-API target, matching only the exact path while preserving query bytes; unset
-frontend-only mockups remain independent.
+API target, matching only the exact path while preserving query bytes. An unset
+callback setting adds no callback proxy.
 
 ### Browser evidence privacy
 
@@ -138,8 +140,10 @@ redact credentials.
 
 The ordinary Playwright trace and capacity override are therefore off. Secret
 screens are captured only after closing or masking the one-time value. Existing
-PNG/compositor oracles, custom CDP timing/frame/GC diagnostics, all assertions,
-raw report validators, capacity inputs, deadlines and resource budgets remain.
+PNG/compositor oracles, raw report validators, functional assertions and cleanup
+remain in ordinary CI. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+retains custom capacity CDP timing/frame/GC diagnostics, full inputs and timing
+budgets in explicit local stress mode; trace privacy rules apply in both modes.
 The cost is loss of Playwright action/network trace replay on failures. The
 narrow authenticated Playwright API wrapper replaces request and response-reading
 failures with safe operation/method/path/category/status/request-ID metadata;
@@ -186,7 +190,7 @@ continue to apply.
 Deployment now requires real App configuration and every fixture must acquire
 credentials through the protocol. Current-source validation must cover missing
 config, wrong origins, credential and membership revocation, direct resources,
-provider failures, last-admin/invitation concurrency and complete native/container
+provider failures, grant-version/invitation concurrency and complete native/container
 journeys. The [combined authentication decision](../testing/2026-10-23-authentication-combined-acceptance.md)
 composes normal browser and installed-CLI authority across service restart,
 revocation during admitted IO and actual socket loss. It also owns real UniAuth

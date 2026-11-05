@@ -1,9 +1,9 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), relayClose: vi.fn(), options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
+const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), relayClose: vi.fn(), ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
 vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (value: string) => value, chmod: async () => {}, unlink: async () => {} }));
 vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
-vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null }), controllerExecutionDirectory: () => "/private/controller" }));
+vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller" }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: () => fixture.journal() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: () => fixture.capture(), captureProcessProof: async () => ({ pid: 1 }) }));
 vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> }) => { fixture.relayCallbacks = callbacks; return { flush: async () => {}, close: fixture.relayClose, connected: () => true, authorize: async () => {}, receipt: vi.fn() }; } }));
@@ -15,7 +15,7 @@ const aliasFixture = vi.hoisted(() => ({ environment: undefined as NodeJS.Proces
 vi.mock("../../../src/config/agent-cli-aliases.js", () => ({ readAgentCliAliases: aliasFixture.read }));
 vi.mock("../../../src/cli/agent-cli-aliases.js", () => ({ prepareAgentCliAliases: async (options: { environment: NodeJS.ProcessEnv }) => ({ environment: aliasFixture.environment ?? options.environment, bindings: aliasFixture.environment ? [{ name: "daynight", target: "daynight-dev", executable: "/private/build/daynight-dev" }] : [], directory: null }) }));
 import { runController } from "../../../src/commands/controller/runtime.js";
-afterEach(() => { vi.clearAllMocks(); fixture.options = null; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
+afterEach(() => { vi.clearAllMocks(); fixture.options = null; fixture.ticketOverrides = {}; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
 const setup = () => {
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
@@ -188,4 +188,78 @@ test("stop during alias preparation never starts a native writer afterwards", as
   process.emit("SIGTERM", "SIGTERM"); resolved({});
   await running;
   expect(fixture.open).not.toHaveBeenCalled(); expect(fixture.closed).toBe(true);
+});
+
+
+test.each(["codex", "claude", "copilot"] as const)("passes frozen role options to %s on fresh and resumed starts without sending a user turn", async provider => {
+  for (const resumeNativeSessionId of [null, "original-native"]) {
+    fixture.closed = false; setup(); fixture.provider = provider;
+    fixture.ticketOverrides = { claimId: undefined, testExecutionId: "test", initialInput: "none", initialPrompt: "", instructions: "角色\nKeep native defaults. 😀", resumeNativeSessionId };
+    fixture.journal().patchSnapshot({ initialInputState: "not_required" });
+    const send = vi.fn();
+    fixture.open.mockClear(); fixture.open.mockResolvedValue({ nativeSessionId: "original-native", close: fixture.close, send });
+    const running = runController({ homeDirectory: "/private", provider, launchId: "launch" });
+    try {
+      await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+      await new Promise(resolve => setImmediate(resolve));
+      fixture.relayCallbacks!.onConnection(true);
+      expect(fixture.options).toMatchObject({ instructions: fixture.ticketOverrides.instructions, resumeNativeSessionId, cwd: process.cwd(), model: null, args: [], unattended: false });
+      expect(send).not.toHaveBeenCalled();
+    } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
+  }
+});
+
+test.each(["task", "test"])("omits role options for a legacy %s startup", async scope => {
+  setup();
+  if (scope === "test") fixture.ticketOverrides = { claimId: undefined, testExecutionId: "test", initialInput: "none", initialPrompt: "" };
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    expect(fixture.options).not.toHaveProperty("instructions");
+    expect(fixture.options).toMatchObject({ unattended: scope === "task", model: null, args: [], resumeNativeSessionId: null });
+  } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
+});
+
+
+test("startup rejection is retained separately from shutdown lifecycle", async () => {
+  setup();
+  const { NativeRpcError } = await import("../../../src/commands/controller/providers/native-rpc.js");
+  const error = new NativeRpcError(-32602, "Rejected /private/secret input");
+  fixture.open.mockRejectedValue(error);
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(error);
+    expect(fixture.journal().getSnapshot()).toMatchObject({ startup: { state: "failed", reasonCode: "native_rejected" }, error: error.message });
+  } finally { log.mockRestore(); }
+});
+
+test("startup is not ready until the provider opening promise has completed", async () => {
+  setup(); let opened!: (value: unknown) => void;
+  fixture.open.mockImplementation(() => new Promise(resolve => { opened = resolve; }));
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    const native = fixture.options as { onState(state: unknown): void };
+    native.onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: true } });
+    expect(fixture.journal().getSnapshot().startup).toEqual({ state: "starting", reasonCode: "initializing" });
+    opened({ nativeSessionId: "native", close: fixture.close });
+    await vi.waitFor(() => expect(fixture.journal().getSnapshot().startup).toEqual({ state: "ready", reasonCode: "ready" }));
+  } finally { opened({ nativeSessionId: "native", close: fixture.close }); process.emit("SIGTERM", "SIGTERM"); await running; }
+});
+
+
+test("a subsequent shutdown error cannot replace the original initialization timeout", async () => {
+  setup(); const { NativeRpcTimeoutError } = await import("../../../src/commands/controller/providers/native-rpc.js");
+  const timeout = new NativeRpcTimeoutError("initialize");
+  fixture.open.mockImplementation(async () => {
+    const native = fixture.options as { onFatalError(error: Error): void };
+    native.onFatalError(timeout);
+    throw new Error("Cleanup transport lost /private/profile");
+  });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toThrow("Cleanup transport lost");
+    expect(fixture.journal().getSnapshot().startup).toEqual({ state: "unknown", reasonCode: "native_timeout" });
+  } finally { log.mockRestore(); }
 });

@@ -9,6 +9,8 @@ const descriptionOption: CommandOption = { names: ["--description"], description
 const dependencyOption: CommandOption = { names: ["--depends-on"], description: "Ordinary prerequisite UUID; repeat for the complete ordinary set", value: { name: "task-id", kind: "text" }, repeatable: true };
 const externalDependencyOption: CommandOption = { names: ["--external-depends-on"], description: "External prerequisite UUID; repeat for the complete external set", value: { name: "task-id", kind: "text" }, repeatable: true };
 const dependencyDetails = "Supplying either dependency option replaces every dependency and its classification. --depends-on supplies ordinary prerequisites; --external-depends-on supplies external prerequisites. External-only input keeps only those external prerequisites; ordinary-only input makes every supplied prerequisite ordinary. IDs must be valid UUIDs and occur once across both options. Both kinds block execution until completed.";
+const assignedToOption: CommandOption = { names: ["--assigned-to"], description: "Task assignee UUID", value: { name: "user-id", kind: "text" } };
+const assignedToFilterOption: CommandOption = { names: ["--assigned-to"], description: "Include tasks assigned to this user, me, or unassigned", value: { name: "user-id|me|unassigned", kind: "text" } };
 const statusOption: CommandOption = { names: ["--status"], description: "Task status", value: { name: "status", kind: "text", choices: ["todo", "in_progress", "done"] } };
 const allowAgentsOption: CommandOption = { names: ["--allow-agents"], description: "Automatic-execution permission", value: { name: "true|false", kind: "text", choices: ["true", "false"] } };
 const platformChoices = ["windows", "linux", "macos"] as const;
@@ -25,14 +27,14 @@ export const taskDefinition: CommandDefinition = {
     {
       name: "create",
       description: "Create a todo task with optional dependencies",
-      options: [{ ...titleOption, required: true }, descriptionOption, requiredPlatformOption, dependencyOption, externalDependencyOption, projectOption, helpOption],
-      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}`,
+      options: [{ ...titleOption, required: true }, descriptionOption, assignedToOption, requiredPlatformOption, dependencyOption, externalDependencyOption, projectOption, helpOption],
+      details: `New tasks start in todo with automatic execution disabled. Creating a task does not start execution. Without --assigned-to, the task is assigned to the signed-in account; an explicit UUID overrides this default and must identify a project member. If the current account cannot be read, creation fails without submitting a task. Without --required-platform, execution has no platform restriction. Omitting both dependency options creates a task with no prerequisites.\n${dependencyDetails}`,
     },
     {
       name: "list",
       description: "List unfinished tasks, with in-progress and ready tasks first",
-      options: [{ names: ["--all"], description: "Include completed tasks; conflicts with --status" }, statusOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, listJsonOption, helpOption],
-      details: "By default, exclude done tasks. Use --all for every status or --status for a specific status.\nCombine --ready, --allow-agents and --compatible-platform with the selected statuses using AND. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. All filters apply before pagination; read every page before printing.\nOrder in_progress first, then ready todo, blocked todo, and done tasks; preserve server order within each group.\nText lists omit description, version, and timestamps. --json omits description and preserves every other task field with the same filtering and ordering.",
+      options: [{ names: ["--all"], description: "Include completed tasks; conflicts with --status" }, statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, listJsonOption, helpOption],
+      details: "By default, exclude done tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. All filters apply before pagination; read every page before printing.\nOrder in_progress first, then ready todo, blocked todo, and done tasks; preserve server order within each group.\nText lists omit description, version, and timestamps. --json omits description and preserves every other task field with the same filtering and ordering.",
     },
     {
       name: "ready",
@@ -73,12 +75,13 @@ export const taskDefinition: CommandDefinition = {
       name: "update",
       description: "Atomically update task fields and dependencies",
       arguments: [taskArgument],
-      options: [titleOption, descriptionOption, allowAgentsOption, requiredPlatformOption,
+      options: [titleOption, descriptionOption, assignedToOption,
+        { names: ["--clear-assigned-to"], description: "Remove the task assignee" }, allowAgentsOption, requiredPlatformOption,
         { names: ["--clear-required-platform"], description: "Remove the execution-platform requirement" }, dependencyOption, externalDependencyOption,
         { names: ["--clear-dependencies"], description: "Clear the complete dependency set" },
         versionOption,
         projectOption, helpOption],
-      details: `Provide at least one changed field. --allow-agents changes the automatic-execution permission independently of status. --required-platform sets the execution-platform requirement; --clear-required-platform removes it and conflicts with --required-platform. Omitting both platform options preserves the requirement. Actual permission or platform changes are locked during in_progress; exact-version same-value updates keep version and timestamps. Use daynight task set-status to change status.\n${dependencyDetails}\nOmitting both dependency options preserves all dependencies and classifications. --clear-dependencies clears both sets and conflicts with either dependency option.\nWithout --if-version, read the current version before submitting the update. Conflicts are not retried.`,
+      details: `Provide at least one changed field. --assigned-to sets a project member UUID; --clear-assigned-to sends null and conflicts with setting it. Omitting both preserves the assignee. An actual assignee change disables automatic execution and is refused during in_progress; pure same-assignee updates with the current exact version preserve permission, version and timestamps. --allow-agents changes the automatic-execution permission independently of status. --required-platform sets the execution-platform requirement; --clear-required-platform removes it and conflicts with --required-platform. Omitting both platform options preserves the requirement. Actual permission or platform changes are locked during in_progress; exact-version same-value updates keep version and timestamps. Use daynight task set-status to change status.\n${dependencyDetails}\nOmitting both dependency options preserves all dependencies and classifications. --clear-dependencies clears both sets and conflicts with either dependency option.\nWithout --if-version, read the current version before submitting the update. Conflicts are not retried.`,
     },
     {
       name: "set-status",
@@ -100,6 +103,112 @@ export const taskDefinition: CommandDefinition = {
       arguments: [taskArgument],
       options: [{ names: ["--depends-only"], description: "Print only task IDs and complete dependency sets" }, projectOption, jsonOption, helpOption],
       details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents.\n--depends-only preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
+    },
+    {
+      name: "step",
+      description: "Read and maintain task-owned Steps independently from Sessions",
+      options: [helpOption],
+      commands: [
+        {
+          name: "list",
+          description: "Read every Step in its saved order",
+          arguments: [taskArgument],
+          options: [projectOption, jsonOption, helpOption],
+          details: "Display the parent task version, total count, full Step IDs, statuses and titles. --json preserves the complete collection, including every Markdown description and timestamp. No paging or filtering is applied.",
+        },
+        {
+          name: "show",
+          description: "Read one Task-local Step and its complete Markdown description",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [projectOption, jsonOption, helpOption],
+          details: "Read only the specified Step under this Task. Preserve its full title, description, status and content timestamps; --json returns the complete item resource and exact parent version.",
+        },
+        {
+          name: "add",
+          description: "Add one independent Step and return the complete confirmed collection",
+          arguments: [taskArgument],
+          options: [
+            { ...titleOption, description: "Step title, preserving its original text", required: true },
+            { ...descriptionOption, description: "Step Markdown description; omitted means empty" },
+            { names: ["--status"], description: "Initial Step status: todo, in_progress, done or skipped (default: todo)", value: { name: "status", kind: "text", choices: ["todo", "in_progress", "done", "skipped"] } },
+            { names: ["--id"], description: "Task-local eight-hex ID (default: UUIDv4 first segment)", value: { name: "step-id", kind: "text" } },
+            { names: ["--before"], description: "Insert immediately before this Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--after"], description: "Insert immediately after this Task-local Step", value: { name: "step-id", kind: "text" } },
+            versionOption, projectOption, jsonOption, helpOption,
+          ],
+          details: "Without an anchor, append to the saved order. --before and --after are mutually exclusive. Same titles create independent records; an existing ID is a conflict and is never regenerated or retried. Without --if-version, read the current Steps version before one POST. An explicit project/version performs one POST without parent pre-reads. Unknown results retain the original ID and request UUID; at most one same-operation read observes current facts, never historical attribution or a retry. --json prints only the complete confirmed collection.",
+        },
+        {
+          name: "update",
+          description: "Update a Step title or description and return the complete confirmed collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [
+            { ...titleOption, description: "Replace the Step title, preserving its original text" },
+            { ...descriptionOption, description: "Replace the Step Markdown description; an empty string clears it" },
+            versionOption, projectOption, jsonOption, helpOption,
+          ],
+          details: "Provide --title or --description, or both for one atomic update. Omitted fields keep their values. Titles require at least one non-Unicode-White_Space character; text is never trimmed. Status uses the separate set-status command. Without --if-version, read complete Steps before one PATCH; an explicit project/version performs one PATCH without pre-reads. Same values are no-op, but stale versions still conflict. Success returns the complete confirmed collection; unknown results preserve the original identity and request UUID with no replay.",
+        },
+        {
+          name: "set-status",
+          description: "Set a Step to todo, in_progress, done or skipped",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }, { name: "status", description: "Target Step status", choices: ["todo", "in_progress", "done", "skipped"] }],
+          options: [versionOption, projectOption, jsonOption, helpOption],
+          details: "Any of the four Step states may be set directly, independently from Task status or other Steps. Same status is no-op, but stale versions still conflict. Without --if-version, read complete Steps before one PUT; an explicit project/version performs one PUT without pre-reads. --json prints only the complete confirmed collection. Unknown results preserve the original identity and request UUID with no replay.",
+        },
+        {
+          name: "move",
+          description: "Move one Step and return the complete confirmed collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [
+            { names: ["--before"], description: "Move immediately before another Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--after"], description: "Move immediately after another Task-local Step", value: { name: "step-id", kind: "text" } },
+            { names: ["--first"], description: "Move to the beginning of the saved order" },
+            { names: ["--last"], description: "Move to the end of the saved order" },
+            versionOption, projectOption, jsonOption, helpOption,
+          ],
+          details: "Exactly one of --before, --after, --first or --last is required. Anchors must be another Step in the same Task. Moving to the current position is a no-op; all Step content and timestamps remain unchanged. Without --if-version, read complete Steps before one PUT; an explicit project/version performs one PUT without pre-reads. A confirmed resource must match the requested position and no-op/+1 version. Unknown results retain original identities and request UUID; at most one correlated read observes current facts, without replay. --json prints only the complete confirmed collection.",
+        },
+        {
+          name: "delete",
+          description: "Delete one Step and return the complete confirmed remaining collection",
+          arguments: [taskArgument, { name: "step-id", description: "Exactly eight hexadecimal characters, case-insensitive" }],
+          options: [versionOption, projectOption, jsonOption, helpOption],
+          details: "Remove the specified Task-local record in any Step status. Referenced attachments, PRs and other materials remain. There is no history or restore command. Without --if-version, read the current Steps version before one JSON DELETE. An explicit project/version performs one DELETE without parent pre-reads. Success requires parent version +1 and target absence; --json prints only the complete confirmed remaining collection, including steps: [] after the last deletion. Unknown results preserve the original identity and request UUID; at most one same-operation read reports current facts without attributing absence to this request or replaying it.",
+        },
+      ],
+      details: "Without --project, resolve the current Git origin. An explicit project UUID avoids project or Task pre-reads and works outside a repository. Step IDs are Task-local eight-character identities, not prefixes or display numbers. Run daynight task step <command> --help for usage.",
+    },
+    {
+      name: "thread",
+      description: "Read and append immutable task discussion messages",
+      options: [helpOption],
+      commands: [
+        {
+          name: "read",
+          description: "Read one bounded page of complete messages, oldest first",
+          arguments: [taskArgument],
+          options: [
+            { names: ["--before-id"], description: "Read messages before this task-local message UUID", value: { name: "message-id", kind: "text" } },
+            { names: ["--after-id"], description: "Read messages after this task-local message UUID", value: { name: "message-id", kind: "text" } },
+            { names: ["--count"], description: "Maximum messages, from 1 to 100 (default: 20)", value: { name: "count", kind: "text" } },
+            { names: ["--details"], description: "Include verified Agent execution provenance" }, projectOption, helpOption,
+          ],
+          details: "Without a boundary, read the latest page. --before-id and --after-id are mutually exclusive. Return one page, bounded to 256 KiB of readable text, with complete bodies. Continue history with the first displayed Id; continue after with the last displayed Id. An empty page preserves the supplied boundary. Messages are never partially printed. Text options accept --option=value.",
+        },
+        {
+          name: "post",
+          description: "Append one message with optional same-task reply and Agent provenance",
+          arguments: [taskArgument],
+          options: [
+            { names: ["--body"], description: "Complete message body, preserving whitespace", value: { name: "text", kind: "text" }, required: true },
+            { names: ["--reply-to"], description: "Reply to this task-local message UUID", value: { name: "message-id", kind: "text" } },
+            { names: ["--claim-id"], description: "Identify this account's active Agent claim; never inferred", value: { name: "claim-id", kind: "text" } }, projectOption, helpOption,
+          ],
+          details: "Without --claim-id, post as the authenticated account with Agent=false. The service validates any supplied claim. Use --body=--text for dash-prefixed text. Preserve the original body until the result is known. An interrupted or invalid response may leave the outcome unknown; read the thread before explicitly sending again. Every new post appends a new message. No automatic retries. A post receipt cannot advance a continuous read position. Posting does not change task state or trigger execution.",
+        },
+      ],
+      details: "Message IDs are interpreted within the selected task. Without --project, resolve the current Git origin. Run daynight task thread <command> --help for usage.",
     },
     {
       name: "attachment",

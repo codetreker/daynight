@@ -25,7 +25,7 @@ function fixture(snapshot = initial()) {
   return { scope, api, element, receive: (message: BrowserMessage) => act(() => receive(message)), snapshot };
 }
 describe('production task session panel', () => {
-  it('connects once, renders the real provider receipt, and retains drafts across permission refresh', async () => {
+  it('connects once, accepts input quietly, and retains drafts across permission refresh', async () => {
     const f = fixture(); const view = render(f.element());
     await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
     f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
@@ -33,8 +33,9 @@ describe('production task session panel', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'hello' } });
     vi.mocked(f.api.command).mockImplementation(async (_id, command) => ({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'provider_accepted', providerResult: 'started', error: null }));
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    await screen.findByText('Accepted by provider');
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
+    expect(screen.queryByText('Accepted by provider')).toBeNull();
+    expect(screen.queryByText('Confirmed')).toBeNull();
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unsent draft' } });
     view.rerender(f.element(false));
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
@@ -51,8 +52,9 @@ describe('production task session panel', () => {
     const command = vi.mocked(f.api.command).mock.calls[0]![1];
     vi.mocked(f.api.operation).mockResolvedValue({ protocol: command.protocol, sessionId: command.sessionId, ...sessionBinding(command), executionGeneration: command.executionGeneration, operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'started', error: null });
     fireEvent.click(screen.getByRole('button', { name: 'Check original operation' }));
-    await screen.findByText('Confirmed');
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
+    expect(screen.queryByText('Accepted by provider')).toBeNull();
+    expect(screen.queryByText('Confirmed')).toBeNull();
     expect(screen.queryByText('Lost acknowledgement')).toBeNull();
     expect(f.api.command).toHaveBeenCalledOnce();
     expect(f.api.operation).toHaveBeenCalledWith(f.snapshot.sessionId, command.operationId, expect.any(AbortSignal));
@@ -93,4 +95,65 @@ it('retains a task session channel and draft through a short identity pause, but
   expect(input).toHaveValue('keep draft');
   view.rerender(f.element(false));
   await waitFor(() => expect(close).toHaveBeenCalledOnce());
+});
+
+it('keeps the channel, draft and retained message when changing display mode', async () => {
+  const f = fixture();
+  vi.mocked(f.api.timeline).mockResolvedValue({ sessionId: f.snapshot.sessionId, historyEpoch: f.snapshot.historyEpoch, items: [
+    { kind: 'assistant_message', entryId: 'message', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Retained answer' }] },
+    { kind: 'reasoning', entryId: 'reasoning', entrySeq: '2', revision: '1', text: 'Reasoning text' },
+  ], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+  render(f.element());
+  await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+  const message = await screen.findByText('Retained answer'), input = screen.getByRole('textbox');
+  expect(screen.queryByText('Reasoning')).toBeNull();
+  fireEvent.change(input, { target: { value: 'Unsubmitted draft' } });
+  const calls = vi.mocked(f.api.current).mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Display' }));
+  fireEvent.click(screen.getByRole('menuitemradio', { name: 'Standard' }));
+  expect(screen.getByText('Reasoning')).toBeInTheDocument();
+  expect(screen.getByText('Retained answer')).toBe(message);
+  expect(screen.getByRole('textbox')).toBe(input); expect(input).toHaveValue('Unsubmitted draft');
+  expect(f.api.channel).toHaveBeenCalledOnce(); expect(f.api.current).toHaveBeenCalledTimes(calls);
+  expect(f.api.command).not.toHaveBeenCalled();
+  expect(localStorage.getItem(`daynight.web.session.display.v1:${JSON.stringify([userId, f.snapshot.sessionId])}`)).toBe('"standard"');
+});
+
+it('does not combine a new account with the previous client snapshot before its replacement starts', async () => {
+  const f = fixture(); const rendered = render(f.element());
+  await screen.findByRole('button', { name: 'Display' });
+  vi.mocked(f.api.current).mockImplementation(() => new Promise(() => {}));
+  const nextScope = createTaskCacheScope({ userId: '00000019-1111-4111-8111-111111111111', onIdentityMismatch: vi.fn() }); scopes.push(nextScope);
+  const getItem = vi.spyOn(Storage.prototype, 'getItem');
+  rendered.rerender(<TaskCacheProvider scope={nextScope}><TaskAgentSession projectId={f.snapshot.identity.projectId} taskId={f.snapshot.identity.taskId} claimId={f.snapshot.claimId} active current /></TaskCacheProvider>);
+  expect(getItem.mock.calls.filter(([key]) => key.startsWith('daynight.web.session.display.v1:'))).toEqual([]);
+  expect(screen.queryByRole('button', { name: 'Display' })).toBeNull();
+});
+
+it('retains the live client, channel and draft through Session fullscreen and layered Display Escape', async () => {
+  const f = fixture();
+  render(f.element());
+  await waitFor(() => expect(f.api.channel).toHaveBeenCalledOnce());
+  f.receive({ protocol: f.snapshot.protocol, type: 'snapshot', userId, snapshot: f.snapshot, cursor: 'zero' });
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Fullscreen draft' } });
+  const currentReads = vi.mocked(f.api.current).mock.calls.length;
+  const timelineReads = vi.mocked(f.api.timeline).mock.calls.length;
+  const close = vi.mocked(f.api.channel).mock.results[0]!.value.close;
+  const trigger = screen.getByRole('button', { name: 'Enter Session fullscreen' });
+  fireEvent.click(trigger);
+  expect(screen.getByRole('textbox')).toBe(input);
+  expect(input).toHaveValue('Fullscreen draft');
+  fireEvent.click(screen.getByRole('button', { name: 'Display' }));
+  fireEvent.keyDown(screen.getByRole('menuitemradio', { name: 'Conversation' }), { key: 'Escape' });
+  expect(screen.getByRole('button', { name: 'Exit Session fullscreen' })).toBe(trigger);
+  fireEvent.keyDown(input, { key: 'Escape' });
+  expect(screen.getByRole('button', { name: 'Enter Session fullscreen' })).toBe(trigger);
+  expect(input).toHaveValue('Fullscreen draft');
+  expect(f.api.current).toHaveBeenCalledTimes(currentReads);
+  expect(f.api.timeline).toHaveBeenCalledTimes(timelineReads);
+  expect(f.api.channel).toHaveBeenCalledOnce();
+  expect(close).not.toHaveBeenCalled();
+  expect(f.api.command).not.toHaveBeenCalled();
 });

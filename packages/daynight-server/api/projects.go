@@ -3,8 +3,10 @@ package api
 import "time"
 
 type CreateProjectRequest struct {
-	Name    string `json:"name"`
-	RepoURL string `json:"repoUrl"`
+	Name           string  `json:"name"`
+	RepoURL        string  `json:"repoUrl"`
+	TeamID         *string `json:"teamId,omitempty"`
+	ExpectedUserID string  `json:"expectedUserId"`
 }
 
 type ProjectSettings struct {
@@ -17,13 +19,24 @@ type UpdateProjectSettingsRequest struct {
 	ExecutionWarningMinutes int32 `json:"executionWarningMinutes"`
 }
 
+type ProjectOwnership struct {
+	TeamID  string `json:"teamId"`
+	Version int64  `json:"version"`
+}
+
+type ProjectDocument struct {
+	Project
+	Access ProjectAccess `json:"access"`
+}
+
 type Project struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	RepoURL   string          `json:"repoUrl"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
-	Settings  ProjectSettings `json:"settings"`
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	RepoURL   string           `json:"repoUrl"`
+	CreatedAt time.Time        `json:"createdAt"`
+	UpdatedAt time.Time        `json:"updatedAt"`
+	Settings  ProjectSettings  `json:"settings"`
+	Ownership ProjectOwnership `json:"ownership"`
 }
 
 type ProjectPage struct {
@@ -32,11 +45,16 @@ type ProjectPage struct {
 }
 
 type ErrorDetails struct {
-	TaskIDs   []string `json:"taskIds,omitempty"`
-	NodeCount *int64   `json:"nodeCount,omitempty"`
-	EdgeCount *int64   `json:"edgeCount,omitempty"`
-	MaxNodes  *int64   `json:"maxNodes,omitempty"`
-	MaxEdges  *int64   `json:"maxEdges,omitempty"`
+	Reason          *string  `json:"reason,omitempty"`
+	Position        *int     `json:"position,omitempty"`
+	Length          *int     `json:"length,omitempty"`
+	EncodedBytes    *int64   `json:"encodedBytes,omitempty"`
+	MaxEncodedBytes *int64   `json:"maxEncodedBytes,omitempty"`
+	TaskIDs         []string `json:"taskIds,omitempty"`
+	NodeCount       *int64   `json:"nodeCount,omitempty"`
+	EdgeCount       *int64   `json:"edgeCount,omitempty"`
+	MaxNodes        *int64   `json:"maxNodes,omitempty"`
+	MaxEdges        *int64   `json:"maxEdges,omitempty"`
 }
 
 type Error struct {

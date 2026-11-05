@@ -13,7 +13,7 @@ flowchart LR
   Q --> H
 ```
 
-`api/workers.go` 定义公开 DTO；`internal/server/workers.go` 注册三个认证端点，输入解析拒绝各层未知、重复和错误分支字段。`service.Workers` 处理 principal、规范 UUID、有效报告、账号绑定分页与事务编排。core 的报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存受控 JSONB。
+`api/workers.go` 定义公开 DTO；`internal/server/worker` 注册报告、快照和[配置](daynight-worker-configuration.md)认证端点，输入解析拒绝各层未知、重复和错误分支字段。`service/worker` 选择事务作用域并组合任务清单与项目准入；`core/worker` 处理报告校验、任务匹配、时效及配置规则。报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存受控 JSONB。
 
 机器信息不授予身份。资源由 `(principal.UserID,workerId)` 定位，Cookie 写入的 Origin、PAT、身份响应标头及 no-store 复用既有认证。报告日志使用 `component=worker_report`，关联 user_id、已验证 worker_id、request_id 与处理阶段；正文和原生命令内容不进入日志。
 
@@ -21,17 +21,21 @@ flowchart LR
 
 迁移 `025_worker_snapshots.sql` 创建 workers，包含 user_id、worker_id、created_at、last_seen_at、telemetry 和 task_snapshot。主键为 `(user_id,worker_id)`；`workers_recent(user_id,last_seen_at DESC,worker_id)` 支持账号近期筛选。telemetry、task_snapshot 具有 JSON object 约束，created_at 首次写入后保持不变。
 
-此表没有 FK、历史报告或持久化 online 布尔值。旧 claim 和 task 时间不能证明机器仍在运行，因此迁移不回填快照。任务属性使用独立 task_properties 行，完整 JSON 文本由 Go codec 处理，不经过 PostgreSQL JSON cast。
+[配置迁移](daynight-worker-configuration.md#持久化与表示)在同一 Worker 行增加独立目标及应用观测；不改变本节迁移的原始快照含义。此表没有 FK、历史报告或持久化 online 布尔值。旧 claim 和 task 时间不能证明机器仍在运行，因此迁移不回填快照。任务属性使用独立 task_properties 行，完整 JSON 文本由 Go codec 处理，不经过 PostgreSQL JSON cast。
+
+`telemetry.assistantHost` 使用可选指针存入同一 JSONB，不需要额外表或迁移。HTTP 将允许字段与必填字段分开，保留旧客户端缺字段的准入；提供对象时执行完整的严格解析和服务层校验。整个 telemetry 替换意味着省略扩展会撤销旧能力，不保留过期成功。详情 DTO 显式映射该对象，Web Worker 解析器接受此可选扩展并继续拒绝未知字段；不增加助手入口或修改普通 Worker 展示。
 
 ## 报告事务
 
-`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，按输入 task ID 的主键集合批量读取任务，JOIN 当前成员关系及项目名，排除软删除记录。
+`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，DAO 按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `projectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
 
-按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
+按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码；core 使用 Task 的 claim 规则匹配引用。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
 
 UPSERT 同时写 last_seen_at、telemetry、task_snapshot，只竞争该 Worker 行，并以 `workers.last_seen_at < EXCLUDED.last_seen_at` 拒绝旧 observation。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。
 
 旧写被条件忽略时，RETURNING 没有行。随后在同一 READ COMMITTED 事务发出独立 SELECT 取得当前保存值。INSERT 的冲突判定可能遇到该语句快照中尚不可见的并发提交行；后续语句重新取得快照，避免同语句 CTE 反查仍不可见的情况。事务辅助保留操作、提交与回滚错误链。
+
+显式配置协议在机器观测 upsert 后，继续以同一 Worker 行处理首次候选和应用观测 CAS；该扩展的完整结构与事务由[配置设计](daynight-worker-configuration.md)拥有。观测 CAS 拒绝保留已有配置结果，不把合法机器观测当作失败。
 
 该路径不写 task、claim、task version 或项目状态。报告返回服务端时间与最终保存的 lastReportedAt，不能把迟到旧写当作新观测。响应丢失不证明回滚，客户端后续新报告仍以完整观测收敛。
 
@@ -41,13 +45,15 @@ UPSERT 同时写 last_seen_at、telemetry、task_snapshot，只竞争该 Worker 
 
 列表按稳定 `(created_at,worker_id)` keyset 读取 limit+1 行。service 生成类型为 workers、绑定认证 userId 的 cursor；它不将频繁变化的 last_seen_at 用作游标。近期索引与创建时间排序承担不同职责，实际查询计划用于核对账号近期筛选及分页成本。
 
-每页收集任务快照引用后执行一次当前成员关系与未删除任务的批量查询，再统一过滤任务数组。详情使用同一个过滤机制。计数由过滤后的数组产生；unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。
+每页收集任务快照引用后，使用与上报相同的 `projectAccessRelation` 按认证 userId 批量查询当前可访问且未删除的任务，再核对引用的 projectId 并过滤任务数组。详情使用同一个过滤机制，不逐项查询权限。计数由过滤后的数组产生；unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。
 
 ## 时间与数据含义
 
 在线规则由返回的 observedAt 和 lastReportedAt 派生：差值不足 120 秒为 online；达到 120 秒为 offline。72 小时只控制近期资源可见性。客户端 sampledAt、各 Probe.checkedAt 及 inventory observedAt 是来源时间，不能替代数据库 liveness 时钟。
 
 服务端保存客户端实际提交的工作目录和资源测量，不推断设备名、物理核心或安装情况。字段格式和数值有效不证明采集工具真实运行；消费者应保留采样时间与明确 Probe 状态。taskObservedAt 表示服务端规范化任务快照的时刻，inventoryObservedAt 保留清单原始时刻，stale 状态不将旧任务伪装成刚同步的清单。
+
+`WorkerAssistantHostState` 独立判断助手候选状态：无扩展为 unsupported；机器报告不新鲜为 offline；预检不新鲜为 stale；全部 Provider 失败为 unavailable；至少一个成功为 available。机器和预检使用同一 120 秒上限，拒绝未来时刻，且不互相刷新。函数不修改原 telemetry，创建解析仍需核对具体 Provider 和执行时环境。此判断不授予 Bot 启动权限，也不替代后续真实 Session 同步确认。
 
 ## 验证边界
 

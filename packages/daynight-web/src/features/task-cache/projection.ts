@@ -1,5 +1,5 @@
-import type { Project, TaskGraph, TaskGraphSummary, TaskSummary } from "../../api/types";
-import { sameTaskProperties } from "../../api/task-properties";
+import type { Project, TaskGraph, TaskGraphSummary, TaskSummary, WorkerClaim } from "../../api/types";
+import { readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { buildGraphIndex, type GraphIndex } from "../task-graph/model";
 
 export const compareTimestamps = (left: string, right: string): number => {
@@ -24,17 +24,18 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
   left.id === right.id && left.version === right.version && left.titlePreview === right.titlePreview &&
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
-  left.allowAgents === right.allowAgents && left.requiredPlatform === right.requiredPlatform &&
+  left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&
   sameTaskProperties(left.properties, right.properties) &&
   sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
 export const sameProject = (left: Project, right: Project): boolean =>
   left.id === right.id && left.name === right.name && left.repoUrl === right.repoUrl &&
+  left.ownership.teamId === right.ownership.teamId && left.ownership.version === right.ownership.version &&
   left.settings.version === right.settings.version && left.settings.executionWarningMinutes === right.settings.executionWarningMinutes &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
-export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint> };
+export type TaskProjection = { readonly graph: TaskGraph; readonly index: GraphIndex; readonly versions: ReadonlyMap<string, bigint>; readonly pausedTaskIds: ReadonlySet<string>; readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">> };
 
 export const projectSummaries = (project: Project, summaries: readonly TaskSummary[], observedAt: string): TaskProjection => {
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
@@ -48,6 +49,11 @@ export const projectSummaries = (project: Project, summaries: readonly TaskSumma
     else summary.done++;
     return { ...task, blockedBy, ready };
   });
+  const workerMachines = new Map<string, Pick<WorkerClaim, "state" | "machine">>();
+  for (const task of ordered) {
+    const claim = readWorkerClaim(task.properties);
+    if (claim !== undefined) workerMachines.set(task.id, { state: claim.state, machine: claim.machine });
+  }
   const graph: TaskGraph = { project, observedAt, tasks, summary };
-  return { graph, index: buildGraphIndex(graph), versions: new Map(ordered.map((task) => [task.id, task.version])) };
+  return { graph, index: buildGraphIndex(graph), workerMachines, pausedTaskIds: new Set(ordered.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), versions: new Map(ordered.map((task) => [task.id, task.version])) };
 };

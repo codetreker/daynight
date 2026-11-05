@@ -19,17 +19,17 @@ const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphS
   const tasks: GraphTask[] = seeds.map((seed) => {
     const dependsOn = seed.dependsOn === undefined ? [] : seed.dependsOn;
     const blockedBy = dependsOn.filter((id) => seeds.find((task) => task.id === id)!.status !== "done");
-    return { id: seed.id, titlePreview: `Title ${seed.id}`, titleTruncated: seed.titleTruncated === true, status: seed.status,
+    return { assignedTo: null, id: seed.id, titlePreview: `Title ${seed.id}`, titleTruncated: seed.titleTruncated === true, status: seed.status,
       dependsOn, externalDependsOn: seed.externalDependsOn === undefined ? [] : seed.externalDependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, allowAgents: false, requiredPlatform: null,
       startedAt: null, completedAt: seed.completedAt === undefined ? null : seed.completedAt, createdAt: beforeCutoff, updatedAt: observed };
   });
   const graph: TaskGraph = { observedAt: observed,
-    project: { id: "project", name: "Project", repoUrl: "https://example.com/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: cutoff, updatedAt: observed },
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: "project", name: "Project", repoUrl: "https://example.com/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: cutoff, updatedAt: observed },
     tasks, summary: { total: tasks.length, todo: tasks.filter((task) => task.status === "todo").length,
       inProgress: tasks.filter((task) => task.status === "in_progress").length, done: tasks.filter((task) => task.status === "done").length,
       ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => task.ready === false && task.status === "todo").length } };
-  return { graph, index: buildGraphIndex(graph), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: observed, receivedMonotonic: 0, receivedAt: 0, revision: 1 };
 };
 const categories = ({ index }: GraphSnapshot) => ({
   chainIds: index.representativeIds.toReversed().filter((id) => index.components.get(id)!.memberIds.size > 1),
@@ -218,7 +218,7 @@ describe("shared local calendar clock", () => {
 describe("project overview progress presentation", () => {
   it("offers both navigation targets, explains the recent scope, and keeps project statistics complete in both languages", () => {
     const value = mixed(); const onNavigate = vi.fn();
-    const view = renderWithLocale(<ProjectOverview {...presentation(value)} onNavigate={onNavigate} />, { locale: "zh-CN" });
+    const view = renderWithLocale(<ProjectOverview onOpenTask={vi.fn()} {...presentation(value)} onNavigate={onNavigate} />, { locale: "zh-CN" });
     const region = screen.getByRole("region", { name: "整体进度" });
     const buttons = within(region).getAllByRole("button");
     expect(buttons).toHaveLength(2); expect(buttons[0]).toHaveTextContent("Title root…");
@@ -233,12 +233,12 @@ describe("project overview progress presentation", () => {
   });
 
   it("shows recent work at 100% and reserves empty presentation for no currently eligible rows", () => {
-    const view = renderWithLocale(<ProjectOverview {...presentation(snapshot([]))} onNavigate={vi.fn()} />, { locale: "zh-CN" });
+    const view = renderWithLocale(<ProjectOverview onOpenTask={vi.fn()} {...presentation(snapshot([]))} onNavigate={vi.fn()} />, { locale: "zh-CN" });
     expect(screen.getByRole("heading", { name: "还没有任务" })).toBeTruthy();
-    view.rerender(<ProjectOverview {...presentation(snapshot([{ id: "done", status: "done", completedAt: observedAt }]))} onNavigate={vi.fn()} />);
+    view.rerender(<ProjectOverview onOpenTask={vi.fn()} {...presentation(snapshot([{ id: "done", status: "done", completedAt: observedAt }]))} onNavigate={vi.fn()} />);
     expect(screen.getByRole("region", { name: "整体进度" })).toHaveTextContent("100%");
     expect(document.querySelector(".overview-progress-row")).toHaveAttribute("data-task-status", "done");
-    view.rerender(<ProjectOverview {...presentation(snapshot([{ id: "old", status: "done", completedAt: beforeCutoff }]))} onNavigate={vi.fn()} />);
+    view.rerender(<ProjectOverview onOpenTask={vi.fn()} {...presentation(snapshot([{ id: "old", status: "done", completedAt: beforeCutoff }]))} onNavigate={vi.fn()} />);
     expect(within(screen.getByRole("region", { name: "整体进度" })).queryByRole("button")).toBeNull();
   });
 });

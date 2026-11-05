@@ -13,9 +13,10 @@ const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
 const otherId = "abcdefab-3333-4222-8333-123456789abc";
 const claimId = "abcdefab-4444-4222-8333-123456789abc";
+const accountId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
-const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
+const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const worker: WorkerClaim = { claimId, state: "active", userId: projectId, workerId: otherId, machine: { id: otherId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: otherId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
 type Request = { readonly method: string; readonly path: string; readonly query: URLSearchParams; readonly body: string };
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -31,6 +32,7 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
       const current = { method: request.method!, path: url.pathname, query: url.searchParams, body };
       requests.push(current);
       if (current.path === `/api/v1/projects/${projectId}`) respond(response, project);
+      else if (current.path === "/api/v1/me") respond(response, { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
       else handler(current, response, request);
     });
   });
@@ -197,7 +199,7 @@ describe("task commands over HTTP", () => {
     const writes = f.requests.filter(({ method }) => method === "POST");
     expect(writes).toHaveLength(1);
     expect(writes[0]!.path).toBe(`/api/v1/projects/${projectId}/tasks`);
-    expect(parseApiJson(writes[0]!.body)).toEqual({ title, description: "", dependsOn: [otherId], externalDependsOn: [] });
+    expect(parseApiJson(writes[0]!.body)).toEqual({ title, description: "", assignedTo: accountId, dependsOn: [otherId], externalDependsOn: [] });
     expect(f.context.stdout).toHaveBeenCalledOnce();
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Task created.");
     expect(f.context.stdout.mock.calls[0]![0]).toContain("-Original=title\\n\\u001b[2J");
@@ -278,8 +280,8 @@ describe("task commands over HTTP", () => {
   it("renders complete graph data and exposes graph limit refusal details", async () => {
     let limit = false;
     const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 }, tasks: [
-      { id: taskId, titlePreview: "T".repeat(160), titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
-      { id: otherId, titlePreview: "Dependency", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+      { id: taskId, titlePreview: "T".repeat(160), titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+      { id: otherId, titlePreview: "Dependency", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
     ] };
     const f = await fixture((_request, response) => {
       if (limit) respond(response, { error: { code: "graph_limit_exceeded", message: "Graph is too large", requestId: "graph-limit", details: { nodeCount: 1001, edgeCount: 1, maxNodes: 1000, maxEdges: 5000 } } }, 422);

@@ -44,10 +44,12 @@ Context nodes retain dashed borders and the “外部前置” label. Edge dashe
 only the persisted external marker, independently of node role; ordinary edges
 between context tasks remain solid. Full/visible counts distinguish data from
 display. The initial viewport fits the visible layout at 0.8–1 zoom when possible;
-otherwise it anchors the leftmost rank at 0.8. A representative already in that
-rank retains vertical centering; when context extends further left, the topmost
-upstream task begins at a 32px inset. Pan, zoom, Fit and keyboard reveal keep
-other cards accessible. Selection never reruns initialization.
+otherwise it anchors the upstream rank at 0.8. A representative already in that
+rank is centered on the cross axis; otherwise the outermost upstream task starts
+at a 32px inset. Folded graphs anchor the representative. The [graph direction
+decision](2026-11-05-task-graph-direction.md) applies this policy to both horizontal
+and vertical layouts. Pan, zoom, Fit and keyboard reveal keep other cards
+accessible. Selection never reruns initialization.
 
 This partially supersedes the direct-boundary projection in the
 [projection and layout decision](../../archived/feature/2026-10-20-task-graph-projection.md). That earlier
@@ -62,7 +64,8 @@ owns sibling selection/Details actions and smooth routes on the progressive grap
 The [Markdown description decision](../architecture/2026-10-22-task-description-markdown.md)
 owns shared CommonMark/GFM and root-based attachment navigation.
 
-The production capacity matrix preserves its chain, merge and shared-root graphs
+The explicit local production-browser stress matrix preserves its chain, merge
+and shared-root graphs
 and adds `capacity-external`: 1,000 nodes and 5,000 edges, with two main tasks and
 998 external ancestors. It uses the same five expansions, 3,000ms opening budget,
 300ms local-feedback budgets and independent size refusals. The progressive
@@ -72,7 +75,9 @@ PR134 retained body-open-details and the existing polyline renderer as its
 delivered baseline. Later inspection evidence must separately prove selection
 and curved routes. The new initial upstream task replaces only that dataset's readable
 root condition; existing datasets retain their root-visibility checks. Strict
-inventory validation retains five native capacity/limit scenarios. The later
+inventory validation retains five native capacity/limit scenarios in explicit
+local stress mode, as defined by the [local stress decision](../testing/2026-11-03-local-stress-suites.md).
+Ordinary CI validates the complete functional inventory. The later
 [bilingual interface decision](2026-10-22-web-bilingual-interface.md) expanded
 functional checks to thirteen per target, producing eighteen native and thirteen
 container scenarios at that stage. The

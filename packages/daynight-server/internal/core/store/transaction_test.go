@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestTransactRollbackSurvivesCancellation(t *testing.T) {
@@ -32,6 +33,35 @@ func TestTransactRollbackSurvivesCancellation(t *testing.T) {
 	var count int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM rollback_marker").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("canceled write persisted: %d, %v", count, err)
+	}
+	assertMigrationPoolReusable(t, pool)
+}
+
+func TestReadOnlySnapshotWaitsForCanceledConnectionCleanup(t *testing.T) {
+	pool := emptyPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err := ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, "SELECT pg_sleep(30)"); return err })
+	var failure *TransactionError
+	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) {
+		t.Fatalf("canceled read snapshot: %#v %v", failure, err)
+	}
+	assertMigrationPoolReusable(t, pool)
+}
+
+func TestReadOnlySnapshotPreservesAdditionalCleanupFailure(t *testing.T) {
+	pool := emptyPool(t)
+	tx, err := pool.BeginTx(context.Background(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	cleanup := errors.New("extra cleanup failure")
+	err = transactReadOnly(ctx, &rollbackFailureTx{Tx: tx, failure: cleanup}, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, "SELECT pg_sleep(30)"); return err })
+	var failure *TransactionError
+	if !errors.As(err, &failure) || failure.Phase != "cleanup" || !failure.CleanupFailed || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) || !errors.Is(err, cleanup) {
+		t.Fatalf("additional cleanup failure lost: %#v %v", failure, err)
 	}
 	assertMigrationPoolReusable(t, pool)
 }
@@ -95,4 +125,63 @@ func (tx *rollbackFailureTx) Rollback(ctx context.Context) error {
 	deadline, present := ctx.Deadline()
 	tx.bounded = ctx.Err() == nil && present && time.Until(deadline) > 0 && time.Until(deadline) <= cleanupTimeout
 	return errors.Join(tx.Tx.Rollback(ctx), tx.failure)
+}
+
+func TestTransactCommitKnownnessUsesActualDatabaseCompletion(t *testing.T) {
+	pool := emptyPool(t)
+	if _, err := pool.Exec(context.Background(), "CREATE TABLE commit_marker (id int)"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	lost := errors.New("commit response lost")
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = transact(ctx, &threadCommitResponseLoss{Tx: tx, cause: lost}, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, "INSERT INTO commit_marker VALUES(1)"); return err })
+	var failure *TransactionError
+	if !errors.As(err, &failure) || failure.Phase != "commit" || failure.Outcome != TransactionUnknown || !failure.CommitAttempted || failure.CleanupFailed || !errors.Is(err, lost) {
+		t.Fatalf("unknown commit: %#v %v", failure, err)
+	}
+	if failure.Error() != "transaction commit failed" {
+		t.Fatal("transaction diagnostic exposed its cause")
+	}
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM commit_marker").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("lost receipt did not retain actual commit: %d %v", count, err)
+	}
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = transact(ctx, tx, func(tx pgx.Tx) error { _, _ = tx.Exec(ctx, "SELECT 1/0"); return nil })
+	if !errors.As(err, &failure) || failure.Outcome != TransactionNotCommitted || !failure.CommitAttempted || !errors.Is(err, pgx.ErrTxCommitRollback) {
+		t.Fatalf("explicit rollback: %#v %v", failure, err)
+	}
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup := errors.New("postcommit cleanup error")
+	err = transact(ctx, &rollbackFailureTx{Tx: tx, failure: cleanup}, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, "INSERT INTO commit_marker VALUES(2)"); return err })
+	if !errors.As(err, &failure) || failure.Outcome != TransactionCommitted || failure.Phase != "cleanup" || !failure.CleanupFailed || !errors.Is(err, cleanup) {
+		t.Fatalf("successful commit changed classification: %#v %v", failure, err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM commit_marker").Scan(&count); err != nil || count != 2 {
+		t.Fatalf("postcommit cleanup undid actual commit: %d %v", count, err)
+	}
+}
+
+func TestTransactCancellationBeforeCommitIsConfirmedRollback(t *testing.T) {
+	pool := emptyPool(t)
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err = transact(ctx, tx, func(pgx.Tx) error { cancel(); return nil })
+	var failure *TransactionError
+	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.Canceled) {
+		t.Fatalf("precommit cancellation: %#v %v", failure, err)
+	}
 }

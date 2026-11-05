@@ -14,8 +14,9 @@ take precedence.
   related documents stored in Daynight task descriptions or attachments in
   Chinese. Preserve the required spelling of code, commands, identifiers, paths,
   and API names.
-- Write other repository documents, skills, code, comments, and commit messages
-  in English unless explicitly instructed otherwise.
+- Write the confirmed server organization rules in `docs/daynight-server.md` in
+  Chinese. Write other repository documents, skills, code, comments, and commit
+  messages in English unless explicitly instructed otherwise.
 - Use the user's confirmed task and existing requirements to establish scope.
   A request to investigate or discuss remains read-only unless edits are
   authorized. Skills describe workflows and grant no additional permission.
@@ -43,14 +44,20 @@ take precedence.
   follow its applicable workflow.
 - For a Goal, first create or reuse only its requirements-discussion task and
   enter `in_progress` when the user requests that discussion. After the user
-  confirms the requirements and asks to proceed, complete that task, then create
-  and start the solution or architecture discussion task. Create the actual
+  confirms the complete uploaded `spec.md` and asks to proceed, create or reuse
+  and read back the solution or architecture discussion task with an ordinary
+  dependency on the still-in-progress requirements task. Complete and verify the
+  requirements task before starting that successor discussion. Create the actual
   delivery subtasks and their dependencies only after the user confirms the
   solution. A request to start or advance a discussion authorizes setting that
   discussion task to `in_progress`; it grants no delivery-task execution permission. Discussion completion follows the confirmed Daynight material and
   phase acceptance. Repository delivery retains its own PR and merge requirements.
-- Complete authorized work and its verification. Report observed results and
-  material limitations; keep unverified assumptions distinct from evidence.
+- Complete authorized work and its verification. Before marking a task done,
+  verify both its own results and the actual registration of any required
+  successors within its confirmed scope and existing creation authorization.
+  Registration does not start successor execution; terminal tasks need no
+  invented successor. Report observed results and material limitations; keep
+  unverified assumptions distinct from evidence.
 - Mainline pushes and PR merges require explicit user authorization. Follow the
   session's authorization for commits, branch pushes, and external comments.
 
@@ -63,9 +70,11 @@ the independent Go service belongs in `packages/daynight-server/`. Use Node.js
 24 LTS and pnpm 11.28.6 for the CLI; run `pnpm typecheck`, `pnpm test`, and
 `pnpm build` as applicable. The server uses Go 1.27.2 and PostgreSQL 18.6. From
 its module, run `bash scripts/check.sh` with `DAYNIGHT_TEST_DATABASE_URL` set to
-an isolated PostgreSQL database. Its required gate includes build, vet, race,
-go-cov and unrounded total statement coverage strictly greater than 90%. Add
-tooling only within an authorized task.
+an isolated PostgreSQL database. Its required gate includes build, vet, go-cov
+and unrounded total statement coverage strictly greater than 90%. Race
+instrumentation is enabled for local validation and main CI; PR CI disables it
+through the explicit [race policy](packages/daynight-server/README.md#race-instrumentation).
+Add tooling only within an authorized task.
 
 | Location | Owner |
 |---|---|
@@ -77,6 +86,18 @@ Requirements describe required outcomes. Design documents explain mechanisms
 and the rationale needed to understand them. Notes hold detailed alternatives
 and decision history. Create documents when needed and link to their owners
 without duplicating explanations.
+
+Ship ordinary documentation with its corresponding implementation code in the
+same PR. Open a standalone documentation PR only with explicit user permission;
+permission for one document does not authorize publishing other documents.
+
+Mock UI and interactive prototype artifacts belong in the owning Daynight task
+attachments. Never commit or push UI mockups, `mockui` pages, their resource
+bundles, generated previews, or tests that target them; never include them in a
+repository PR or place them in product or source directories. This includes
+interactive previews composed from production components. Keep local inspection
+copies only in the task worktree's Git-ignored `.tmp/`, remove them after use,
+and save reviewable prototypes as attachments of their owning Daynight task.
 
 Rewrite edited documents as coherent wholes and synchronize related active
 documents in the same change. Preserve historical statements about a decision's
@@ -130,6 +151,8 @@ investigations stay read-only unless recording a proposal is authorized.
 
 ## Writing and review
 
+- Read and follow the [server code organization rules](docs/daynight-server.md)
+  before adding to, modifying, or reviewing daynight-server.
 - Follow the [UI design principles](docs/ui-design.md) when designing, adding,
   modifying, or reviewing UI.
 - Use [prose-standard](.agents/skills/prose-standard/SKILL.md) to preserve
@@ -147,6 +170,11 @@ investigations stay read-only unless recording a proposal is authorized.
 
 ## Validation and delivery
 
+Ordinary change PRs must leave `packages/daynight/package.json` version unchanged.
+Use the [release-daynight skill](.agents/skills/release-daynight/SKILL.md) for
+version selection, any version PR, and the complete CLI publication and
+verification workflow.
+
 Choose checks from the actual files and tooling involved. For skill and document
 changes, validate frontmatter, local links, lifecycle/path agreement, mandatory
 note sections, and skill discovery. Check newly created files as well as
@@ -156,15 +184,24 @@ For code changes, verify observable behavior and relevant failure paths using
 the repository's documented commands. Preserve acceptance criteria and expose
 errors. Run meaningful coverage checks when coverage tooling exists; a green
 check alone does not prove backend, lifecycle, concurrency, or browser behavior.
+CI unit, integration, and other routine test suites must not run stress-test
+cases. Run stress tests separately from these CI suites: slower CI runners make
+these cases expensive and delay PR delivery across the repository.
 
-Diagnose a failing check before retrying. Repeat an unchanged failure only after
-confirming a transient infrastructure cause. Add time bounds to commands that
-may hang and keep output streaming. Summarize actual checks and their limits.
+Inspect failure logs before retrying. Each failed check on the same commit may
+be rerun at most twice beyond its initial run, without first proving a transient
+infrastructure cause. Count retries across sessions, restarts and workflow
+reruns. If both retries fail, diagnose and repair the cause before further
+validation. A passing retry does not establish the root cause or relax required
+checks and acceptance criteria. Add time bounds to commands that may hang, keep
+output streaming, and report retries, observed results and their limits.
 
 Preserve task scope when staging and committing; use the repository's commit
 conventions and default Git identity. Omit AI tool co-author attribution. Keep
-work-branch history and integrate mainline updates by merge when needed. For an
-authorized PR merge, require real successful checks and a linear mainline.
+work-branch history. When a PR has no merge conflicts with `main`, leave its work
+branch unchanged; do not merge `main` merely to bring the branch up to date. Merge
+`main` into the work branch only to resolve conflicts, within the task worktree.
+For an authorized PR merge, require real successful checks and a linear mainline.
 
 ## Discovery
 

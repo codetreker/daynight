@@ -1,3 +1,4 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { chmod, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -6,17 +7,17 @@ import path from "node:path";
 import crossSpawn from "cross-spawn";
 import { parse } from "yaml";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
+import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 type Result = { code: number | null; stdout: string; stderr: string };
 type Action = { waitFor: string; input: string; write?: { file: string; contents: string } } | { waitFor: string; signal: "SIGTERM" };
-let installed: Awaited<ReturnType<typeof createInstalledCli>>;
+let installed: Awaited<ReturnType<typeof createAcceptanceCli>>;
 let sequence = 0;
 const remote = "https://github.com/configuration-acceptance/repository.git";
 const reviewPrompt = "Review repository (HTTPS or SSH GitHub address): ";
 const pathPrompt = "Review clone path (blank for configured default): ";
 
-beforeAll(async () => { installed = await createInstalledCli(); });
+beforeAll(async () => { installed = await createAcceptanceCli(); });
 afterAll(async () => { await installed?.cleanup(); });
 
 const environment = (home: string): NodeJS.ProcessEnv => {

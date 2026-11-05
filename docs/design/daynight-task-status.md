@@ -2,13 +2,13 @@
 
 状态：已实现。本文定义三状态模型、统一状态资源与跨端写入机制。[需求 TS1–TS5](../spec/daynight-task-status.md)拥有完整可观察行为。
 
-状态与事务机制源码依据为 `18c794918ef0506a04bf294dad9cd8058ef2696b`；详情头部继承 `7b426bc0b632e57bb80dea0d5aca35b1e8f71a6e` 已交付的紧凑布局。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-task-status-assignment.md)保存选择与代价；[交互原型](mockups/task-status/index.html)演示生产样式的三状态交互。任务拆分与执行收据由 Daynight 所有。
+状态与事务机制源码依据为 `18c794918ef0506a04bf294dad9cd8058ef2696b`；详情头部继承 `7b426bc0b632e57bb80dea0d5aca35b1e8f71a6e` 已交付的紧凑布局。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-task-status-assignment.md)保存选择与代价。任务拆分与执行收据由 Daynight 所有。
 
 ## 问题与结构选择
 
 原四个公开动作把状态修改绑定到有限前态，并让任务审批成为单独阶段。当前结构仅保留 todo、in_progress、done，默认 todo，任意状态对通过一个 setter 表达。旧 proposed 数据必须迁移，不以解码回退或兼容分支留在运行时。
 
-现有 [task_lifecycle.go](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/service/task_lifecycle.go)已将动作汇入一个事务函数；[Tasks.write](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/service/task.go#L139-L176)拥有锁后成员核验、changed=false 返回和错误传播。保留这些机制，替换公开契约、前态规则与旧状态读取模型。
+`core/task` 负责状态候选、前置与后继约束及版本检查；`service/task` 在 Project 写作用域中核验准入，并协调任务写入和 Session 冻结。同状态请求保留版本和时间，事务完成错误优先于领域拒绝。
 
 | 选择 | 收益 | 代价与结论 |
 |---|---|---|
@@ -78,23 +78,23 @@ Content-Type: application/json
 {"version":123,"status":"in_progress"}
 ```
 
-普通调用接受 version/status；done 目标另可提供 claimId，用于 owner 完成当前 active 执行。其他目标拒绝 claimId，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/server/http.go#L27-L68)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
+普通调用接受 version/status；done 目标另可提供 claimId，用于 owner 完成当前 active 执行。其他目标拒绝 claimId，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](../../packages/daynight-server/internal/server/httpx/http.go)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
 
 成功为 200、no-store 和现有完整 Task。保留 session/PAT、Cookie Origin、成员权限、非成员资源隐藏，以及受认证的 405 路径。普通成员与管理员的状态写入权限相同。删除四个旧动作路由，不重定向或保留别名。
 
 ```go
 type SetTaskStatus struct {
     Version int64
-    Status  core.TaskStatus
+    Status  model.TaskStatus
     ClaimID *string
 }
 
 func (s *Tasks) SetStatus(
     ctx context.Context,
-    principal core.Principal,
+    principal model.Principal,
     projectID, taskID string,
     input SetTaskStatus,
-) (core.Task, error)
+) (model.Task, error)
 ```
 
 服务边界也检查正版本和三状态枚举，直接调用不能绕过 HTTP 校验；随后复用 Tasks.write。锁内顺序为：
@@ -105,7 +105,7 @@ func (s *Tasks) SetStatus(
 4. 对实际改变检查 worker 归属；active 完成匹配 owner/claim，释放与 released 接续使用专用入口。
 5. 实际进入 in_progress/done，要求全部直接前置完成。
 6. done 返回其他状态，要求没有 in_progress/done 直接后继。
-7. 构造完整 TaskWrite，一次写入状态、归属终态、时间、版本和 updatedAt，保留全部其他字段。
+7. 从中性的 currentTaskWrite 构造完整候选，一次写入状态、归属终态、时间、版本和 updatedAt，保留 assignedTo 及全部其他字段。同状态 no-op 可直接返回 current，不将缺失候选交给负责人规则。
 
 事务错误优先于暂存的领域拒绝，提交或回滚失败不能伪装为成功/资源不存在。invalid_transition 仍服务于 in_progress 中禁止实际改变 allowAgents 的既有规则，不因删除动作前态判断而全局删掉。
 
@@ -249,6 +249,6 @@ jq --arg request_id 'RESPONSE_REQUEST_ID' \
 | Web | 三项菜单、双语/320px/长标题、焦点/Escape、确认失效、共享互斥、关闭重开、未知/读取失败 |
 | 真实运行 | 冻结源码后实际安装 CLI、真实 PostgreSQL/认证服务与生产 Web 互读、重启、图/附件/计时一致 |
 
-历史迁移测试使用对应历史前缀，旧状态字面量只在历史夹具中存在，不保留运行时常量。新迁移另测完整当前 schema。适用 CLI typecheck/test/build、Web 现有覆盖率/浏览器门禁、Go check.sh 的 build/vet/race/go-cov 和未舍入总 statement coverage>90% 均保持。
+历史迁移测试使用对应历史前缀，旧状态字面量只在历史夹具中存在，不保留运行时常量。新迁移另测完整当前 schema。适用 CLI typecheck/test/build、Web 现有覆盖率/浏览器门禁、Go check.sh 的 build/vet/go-cov 和未舍入总 statement coverage>90% 均保持；race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认/main 开启、PR 关闭。
 
 文档和原型验证不能替代服务端实现证据。主要风险是遗漏旧状态的读取分支、迁移破坏资料、+1-only 校验、退回计时复活或误把状态当执行权；相应以全层协议切换、真实升级夹具、精确响应分支和单一事务/会话所有者约束。后续若需尝试历史、批量级联或渐进旧协议支持，必须另作存储/一致性/兼容决定。

@@ -1,9 +1,10 @@
+import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { createInstalledCli } from "../fixtures/installed-cli.js";
+
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const packageDirectory = path.join(workspace, "packages/daynight");
@@ -11,7 +12,7 @@ const sqlDirectories = [
   "commands/review/sqlite", "commands/worker/sqlite", "commands/worker/backends/sqlite",
   "commands/controller/sqlite/journal", "commands/controller/sqlite/resume-lease",
 ];
-let fixture: Awaited<ReturnType<typeof createInstalledCli>>;
+let fixture: Awaited<ReturnType<typeof createAcceptanceCli>>;
 let installed: string;
 const files = (directory: string): Record<string, Buffer> => Object.fromEntries(readdirSync(directory, { recursive: true, withFileTypes: true })
   .filter(entry => entry.isFile()).map(entry => {
@@ -25,7 +26,7 @@ const run = (program: string, args: readonly string[], cwd: string) => {
 };
 
 beforeAll(async () => {
-  fixture = await createInstalledCli();
+  fixture = await createAcceptanceCli({ writablePackage: true });
   installed = path.dirname(path.dirname(fixture.receipt.entryPath));
 }, 180_000);
 afterAll(async () => { if (fixture !== undefined) await fixture.cleanup(); });
@@ -38,7 +39,7 @@ it("ships exact SQL resources and initializes and resets every installed store f
     count += Object.keys(source).length;
     expect(files(path.join(installed, "dist", directory))).toEqual(source);
   }
-  expect(count).toBe(11);
+  expect(count).toBe(19);
   const cwd = path.join(fixture.receipt.root, "different caller 中文");
   const databases = path.join(fixture.receipt.root, "databases");
   mkdirSync(cwd); mkdirSync(databases);
@@ -51,8 +52,8 @@ const load = relative => import(pathToFileURL(path.join(installed, "dist", relat
 const { openSqliteDatabase } = await load("platform/sqlite-access.js");
 const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
-  ["commands/worker/store-format.js", "workerStoreFormat", 5, ["projects", "tasks"]],
-  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 1, ["executions"]],
+  ["commands/worker/store-format.js", "workerStoreFormat", 11, ["bot_executions", "bots", "cleanup_schedules", "projects", "tasks"]],
+  ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 3, ["executions", "orchestration_blockers"]],
   ["commands/controller/journal-format.js", "controllerJournalFormat", 6, ["content_index", "execution", "operations", "outbox"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
@@ -80,7 +81,7 @@ for (const [module, name, version, tables] of owners) {
 console.log(JSON.stringify(versions));
 `, [installed, databases], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, 5, 1, 6, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, 11, 3, 6, 1]);
 });
 
 it("rejects a missing installed SQL resource without repository fallback or retained-data changes", () => {
@@ -123,8 +124,8 @@ db.close();
 });
 it("discovers newly added installed migrations and executes them only in filename order", () => {
   const directory = path.join(installed, "dist/commands/worker/sqlite");
-  const first = path.join(directory, "006-create-order-probe.sql");
-  const second = path.join(directory, "007-record-order-probe.sql");
+  const first = path.join(directory, "012-create-order-probe.sql");
+  const second = path.join(directory, "013-record-order-probe.sql");
   expect(existsSync(first)).toBe(false); expect(existsSync(second)).toBe(false);
   const databaseFile = path.join(fixture.receipt.root, "filename-ordered-worker.sqlite");
   const original = new Database(databaseFile);
@@ -146,7 +147,7 @@ store.close();
     expect(result.status, result.stderr).toBe(0);
     const upgraded = new Database(databaseFile, { readonly: true });
     try {
-      expect(upgraded.pragma("user_version", { simple: true })).toBe(7);
+      expect(upgraded.pragma("user_version", { simple: true })).toBe(13);
       expect(upgraded.prepare("SELECT value FROM filename_order_probe").all()).toEqual([{ value: "sorted" }]);
     } finally { upgraded.close(); }
   } finally { rmSync(first, { force: true }); rmSync(second, { force: true }); }

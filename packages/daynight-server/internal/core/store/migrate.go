@@ -89,6 +89,36 @@ var workerSnapshotsSQL string
 //go:embed migrations/027_session_archives.sql
 var sessionArchivesSQL string
 
+//go:embed migrations/028_task_assignment.sql
+var taskAssignmentSQL string
+
+//go:embed migrations/029_task_threads.sql
+var taskThreadsSQL string
+
+//go:embed migrations/030_task_steps.sql
+var taskStepsSQL string
+
+//go:embed migrations/031_terminal_sessions.sql
+var terminalSessionsSQL string
+
+//go:embed migrations/032_personal_project_ownership.sql
+var personalProjectOwnershipSQL string
+
+//go:embed migrations/033_bots.sql
+var botsSQL string
+
+//go:embed migrations/034_worker_configuration.sql
+var workerConfigurationSQL string
+
+//go:embed migrations/035_team_invitations.sql
+var teamInvitationsSQL string
+
+//go:embed migrations/036_bot_defaults.sql
+var botDefaultsSQL string
+
+//go:embed migrations/037_bot_session_binding.sql
+var botSessionBindingSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -124,6 +154,16 @@ var schemaMigrations = []migration{
 	{version: 25, sql: workerSnapshotsSQL},
 	{version: 26, sql: propertyRowsSQL, transform: migratePropertyRows026, transformSource: propertyRowsTransformSource},
 	{version: 27, sql: sessionArchivesSQL},
+	{version: 28, sql: taskAssignmentSQL},
+	{version: 29, sql: taskThreadsSQL},
+	{version: 30, sql: taskStepsSQL},
+	{version: 31, sql: terminalSessionsSQL},
+	{version: 32, sql: personalProjectOwnershipSQL},
+	{version: 33, sql: botsSQL},
+	{version: 34, sql: workerConfigurationSQL},
+	{version: 35, sql: teamInvitationsSQL},
+	{version: 36, sql: botDefaultsSQL},
+	{version: 37, sql: botSessionBindingSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

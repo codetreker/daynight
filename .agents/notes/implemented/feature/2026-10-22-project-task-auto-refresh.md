@@ -12,12 +12,15 @@ preview while it is being used.
 
 ## Decision
 
-An open project synchronizes its task summaries every five seconds while the
-document is visible. The [persistent summary-cache decision](../architecture/2026-10-24-persistent-task-summary-cache.md)
-replaces the original complete-graph transport while preserving this scheduling
-and the complete derived snapshot presented to components. Hiding the document pauses new periodic reads without
-cancelling an active read. Returning to a visible document starts a read
-immediately unless one is already active, and restarts the five-second interval.
+An open project synchronizes its task summaries every fifteen seconds while the
+document is visible. Automatic monitoring originally used a five-second interval;
+the [request-reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md)
+changes that cadence while preserving the trigger and ownership rules. The
+[persistent summary-cache decision](../architecture/2026-10-24-persistent-task-summary-cache.md)
+replaces the original complete-graph transport and retains the complete derived
+snapshot presented to components. Hiding the document pauses new periodic reads
+without cancelling an active read. Returning to a visible document starts a read
+immediately unless one is already active, and restarts the fifteen-second interval.
 Automatic ticks skip an active project sync. Manual refresh cancels the current
 sync read and starts immediately. Navigation and unmount release the timer and
 owned requests; resource identity and request generation continue to reject late
@@ -68,13 +71,14 @@ the [design](../../../../docs/design/daynight-web.md#请求刷新与故障) owns
 component responsibilities. Hook and component validation cover scheduling,
 visibility, request priority, late responses, recovery and retained state. The
 existing production `refresh-staleness` journey covers task changes from the
-real service without manual refresh, retaining the native/container inventory
-and its existing performance and cleanup gates.
+real service without manual refresh, retaining the native/container functional
+inventory and cleanup gates. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
+separately owns the explicit local capacity matrix and its performance budgets.
 
 Attachment and language isolation checks control the browser clock when counting
-requests attributable to an action. Capacity checks keep native browser timers
+requests attributable to an action. Explicit local capacity checks keep native browser timers
 and performance clocks: test-side instrumentation labels each project-sync request as
-an initial read or a five-second callback read, proving collapse/reopen adds no
+an initial read or a fifteen-second callback read, proving collapse/reopen adds no
 read while periodic requests remain observable. This avoids replacing a causal
 guarantee with an absolute request count over a timed workflow. Scroll recovery
 samples actual `scrollTop` until it is stable for 100ms, using a test-process
@@ -98,7 +102,7 @@ preserves that extension without replacing their consistency rules.
 Open project pages observe task changes without navigation or manual input.
 Reads are bounded to visible project pages, serialized and scoped to current
 resources; a slow read can make a successful refresh arrive later than one
-five-second interval. Hidden pages may apply an already active read and obtain
+fifteen-second interval. Hidden pages may apply an already active read and obtain
 fresh data again on return. Automatic cycles update successful receipt time
 without repeatedly showing the manual-refresh busy state.
 
@@ -107,7 +111,7 @@ reuse avoids unnecessary layout work; duplicate summaries also avoid persistent
 writes, broadcast and unchanged-detail GETs. Intrinsic detail reuse and its live
 admission policy belong to the
 [detail-cache decision](../architecture/2026-10-24-task-view-timestamp-window.md). Push transport should be reconsidered if this load
-or the five-second visibility delay becomes material. A live detail and project sync
+or the fifteen-second visibility delay becomes material. A live detail and project sync
 remain independent reads; stale-data detection still offers a full graph refresh.
 The [approval lifecycle](2026-10-22-task-approval-lifecycle.md) separately supplies
 versioned status setting and its shared task sessions. Task descriptors, current read

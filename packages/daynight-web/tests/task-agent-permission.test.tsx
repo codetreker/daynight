@@ -15,10 +15,10 @@ vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAt
 const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
-const project: Project = { id: projectId, name: 'Automatic tasks', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const detail: TaskDetail = { requiredPlatform: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, status: 'todo', version: 9007199254740993n,
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Automatic tasks', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const detail: TaskDetail = { assignedTo: null, requiredPlatform: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, status: 'todo', version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, properties: { pullRequests: [] }, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const graphTask = (value: TaskDetail): GraphTask => ({ id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
+const graphTask = (value: TaskDetail): GraphTask => ({ assignedTo: value.assignedTo, id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
   requiredPlatform: value.requiredPlatform, allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
   startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt });
 let world: ReturnType<typeof createTaskSessionWorld>;
@@ -26,7 +26,7 @@ const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();
 const snapshot = (value: TaskDetail, revision = 1) => {
   const graph: TaskGraph = { observedAt: time, project, tasks: [graphTask(value)], summary: { total: 1,
     todo: value.status === 'todo' ? 1 : 0, inProgress: value.status === 'in_progress' ? 1 : 0, done: value.status === 'done' ? 1 : 0, ready: value.ready ? 1 : 0, blocked: value.status === 'todo' && !value.ready ? 1 : 0 } };
-  const result = { observedAt: time, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  const result = { observedAt: time, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
   snapshotDetails.set(result, [value]);
   return result;
 };

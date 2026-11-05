@@ -1,3 +1,4 @@
+import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import type { Page, TestInfo } from '@playwright/test';
@@ -27,7 +28,7 @@ const save = async (request: AuthenticatedAPI, id: string, version: bigint, minu
 const memberList = async (request: AuthenticatedAPI, id: string) => {
   const response = await request.get(`/api/v1/projects/${id}/members`);
   expect(response.status()).toBe(200);
-  return (await response.json() as { items: { userId: string; role: string; version: number }[] }).items;
+  return parseMembers(await decodeMembersJson(new Response(await response.text())), id);
 };
 const userId = async (request: AuthenticatedAPI): Promise<string> => {
   const response = await request.get('/api/v1/me'); expect(response.status()).toBe(200);
@@ -73,7 +74,7 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
   let loseResponse = false;
   let blockRead = false;
   try {
-    const own = await createProject(api, { name: `执行提醒阈值 Project settings with a long title ${randomUUID()}` });
+    const own = await createProject(bob, { name: `执行提醒阈值 Project settings with a long title ${randomUUID()}` });
     const isolated = await createProject(api, { name: `Independent threshold ${randomUUID()}` });
     evidence.projectId = own.id; evidence.isolatedProjectId = isolated.id;
     const projectPath = `/api/v1/projects/${own.id}`;
@@ -81,10 +82,12 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
     const browserWrites: string[] = [];
     page.on('request', (request) => { if (request.method() === 'PATCH') browserWrites.push(request.url()); });
     allowBrowserWrites([{ method: 'PATCH', url: `${baseURL}${settingsPath}`, count: 4 }]);
-    const invitation = await api.post(`${projectPath}/invitations`, { data: {} }); expect(invitation.status()).toBe(201);
-    const link = (await invitation.json() as { link: string }).link;
-    expect((await bob.post('/api/v1/invitations/accept', { data: { token: new URL(link).hash.slice(1) } })).status()).toBe(200);
     const aliceId = await userId(api); const bobId = await userId(bob);
+    const invitation = await bob.post(`${projectPath}/invitations`, { data: { expectedUserId: bobId } }); expect(invitation.status()).toBe(201);
+    const link = (await invitation.json() as { link: string }).link;
+    expect((await api.post('/api/v1/invitations/accept', { data: { token: new URL(link).hash.slice(1), expectedUserId: aliceId } })).status()).toBe(200);
+    const invitedAlice = (await memberList(bob, own.id)).items.find((member) => member.userId === aliceId)!;
+    expect((await bob.patch(`${projectPath}/members/${aliceId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: invitedAlice.directGrant!.version, role: 'admin', expectedUserId: bobId }) })).status()).toBe(200);
     const exact = 9_007_199_254_740_993n;
     await seedProjectSettingsVersion(own.id, exact);
     const observe = async (label: string, actor = api, id = own.id) => {
@@ -115,7 +118,7 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
     await expect(page.getByRole('status').filter({ hasText: '设置已保存。' })).toBeVisible();
     expect(evidence.writes[0]!.body).toBe('{"version":9007199254740993,"executionWarningMinutes":90}');
     expect(evidence.writes[0]!.response).toContain('"version":9007199254740994');
-    expect(await observe('independent-member-read-after-admin-save', bob)).toEqual({ version: exact + 1n, executionWarningMinutes: 90 });
+    expect(await observe('independent-owner-read-after-direct-admin-save', bob)).toEqual({ version: exact + 1n, executionWarningMinutes: 90 });
     expect(await observe('other-project-remains-default', api, isolated.id)).toEqual({ version: 1n, executionWarningMinutes: 60 });
     await page.reload(); await expect(threshold).toHaveValue('90');
     for (const locale of ['zh-CN', 'en'] as const) {
@@ -151,17 +154,20 @@ test('project-settings', { annotation: { type: 'scenario', description: 'project
     await expect(page.getByRole('status').filter({ hasText: '已读取当前保存设置' })).toBeVisible();
     await expect(threshold).toHaveValue('100'); await expect(threshold).toBeEnabled(); expect(browserWrites).toHaveLength(3);
 
-    const bobMember = (await memberList(api, own.id)).find((member) => member.userId === bobId)!;
-    expect((await api.patch(`${projectPath}/members/${bobId}`, { data: { version: bobMember.version, role: 'admin' } })).status()).toBe(200);
-    const aliceMember = (await memberList(bob, own.id)).find((member) => member.userId === aliceId)!;
-    expect((await bob.patch(`${projectPath}/members/${aliceId}`, { data: { version: aliceMember.version, role: 'member' } })).status()).toBe(200);
+    const bobMember = (await memberList(api, own.id)).items.find((member) => member.userId === bobId)!;
+    expect((await api.patch(`${projectPath}/members/${bobId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: bobMember.directGrant!.version, role: 'member', expectedUserId: aliceId }) })).status()).toBe(200);
+    const ownerAccess = await bob.get(`${projectPath}/access`);
+    expect(ownerAccess.status()).toBe(200);
+    expect(await ownerAccess.json()).toMatchObject({ effectiveRole: 'admin', directGrant: { role: 'member' } });
+    const aliceMember = (await memberList(bob, own.id)).items.find((member) => member.userId === aliceId)!;
+    expect((await bob.patch(`${projectPath}/members/${aliceId}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: aliceMember.directGrant!.version, role: 'member', expectedUserId: bobId }) })).status()).toBe(200);
     await threshold.fill('110'); await submit.click();
     await expect(page.getByRole('status').filter({ hasText: '项目权限已变化' })).toBeVisible();
     await expect(page.getByText('你可以查看此设置，只有项目管理员可以修改。', { exact: true })).toBeVisible();
     await expect(threshold).toHaveValue('100'); await expect(threshold).toBeDisabled(); await expect(submit).toHaveCount(0);
     expect(evidence.writes[3]).toMatchObject({ body: '{"version":9007199254740996,"executionWarningMinutes":110}', status: 403 });
     expect(browserWrites).toHaveLength(4);
-    expect(await observe('denied-member-save-preserves-threshold', bob)).toEqual({ version: exact + 3n, executionWarningMinutes: 100 });
+    expect(await observe('denied-direct-member-save-preserves-threshold', api)).toEqual({ version: exact + 3n, executionWarningMinutes: 100 });
     await page.reload(); await expect(threshold).toHaveValue('100'); await expect(threshold).toBeDisabled(); await expect(submit).toHaveCount(0);
     await page.goto(`/projects/${isolated.id}/settings`); await expect(threshold).toHaveValue('60'); await expect(threshold).toBeEnabled();
     await page.goto(`/projects/${own.id}/settings`); await expect(threshold).toHaveValue('100'); await expect(threshold).toBeDisabled(); expect(browserWrites).toHaveLength(4);

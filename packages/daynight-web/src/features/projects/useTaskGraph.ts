@@ -1,6 +1,8 @@
+import { useProjectAccessSession } from "./ProjectAccess";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getTaskSync, isAbortError } from "../../api/client";
-import type { TaskGraph } from "../../api/types";
+import { pollingInterval } from "../../app/polling";
+import type { TaskGraph, WorkerClaim } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
@@ -9,6 +11,8 @@ import type { CachedProject, SyncTicket, TaskCacheScope } from "../task-cache/pr
 export type GraphSnapshot = {
   readonly graph: TaskGraph;
   readonly index: GraphIndex;
+  readonly pausedTaskIds: ReadonlySet<string>;
+  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
 } & ({
   readonly observedAt: string;
   readonly receivedMonotonic: number;
@@ -34,6 +38,7 @@ const initialState = (projectId: string, scope: TaskCacheScope): GraphState => (
 
 export const useTaskGraph = (projectId: string) => {
   const scope = useTaskCacheScope();
+  const access = useProjectAccessSession(projectId);
   const [state, setState] = useState<GraphState>(() => initialState(projectId, scope));
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
@@ -42,7 +47,7 @@ export const useTaskGraph = (projectId: string) => {
   const publish = useCallback((project: CachedProject) => {
     const sample = receipt.current;
     if (!liveAccess.current || sample === null) return;
-    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, ...sample }, status: "ready", refreshing: false, error: null });
+    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready", refreshing: false, error: null });
   }, [projectId, scope]);
   const request = useCallback(async (automatic = false) => {
     if (automatic && active.current !== null) return;
@@ -67,16 +72,17 @@ export const useTaskGraph = (projectId: string) => {
         if (project !== null && scope.canPreviewProject(projectId)) {
           const localTime = Date.now();
           const receivedMonotonic = performance.now();
-          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, observedAt: null,
+          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, observedAt: null,
             receivedMonotonic, receivedAt: null, revision: 0, localTime };
           setState((previous) => {
             const current = previous.projectId === projectId && previous.scope === scope;
-            return { projectId, scope, snapshot: current && previous.snapshot?.graph === project.graph ? previous.snapshot : snapshot,
+            return { projectId, scope, snapshot: current && previous.snapshot?.graph === project.graph && previous.snapshot.workerMachines === project.workerMachines ? previous.snapshot : snapshot,
               status: "ready", refreshing: current && previous.refreshing, error: current ? previous.error : null };
           });
         }
       }
       const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
+      const accessTicket = access?.beginObservation();
       const response = await getTaskSync(projectId, query, scope.userId, signal, scope.principalMismatch);
       // The monotonic anchor belongs to this response and cannot come from disk or another tab.
       const receivedMonotonic = performance.now();
@@ -88,6 +94,7 @@ export const useTaskGraph = (projectId: string) => {
         changed: result.changedTaskIds.length, duplicate: response.tasks.length - result.changedTaskIds.length,
         cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });
       if (signal.aborted || revision !== generation.current) return;
+      if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess);
       liveAccess.current = true;
       receipt.current = { observedAt: response.observedAt, receivedMonotonic, receivedAt, revision };
       publish(result.project);
@@ -107,7 +114,7 @@ export const useTaskGraph = (projectId: string) => {
         return { projectId, scope, snapshot, status: snapshot === null ? "error" : "ready", refreshing: false, error };
       });
     } finally { if (revision === generation.current) active.current = null; }
-  }, [projectId, scope, publish]);
+  }, [projectId, scope, publish, access]);
 
   useEffect(() => {
     liveAccess.current = false; receipt.current = null;
@@ -115,6 +122,7 @@ export const useTaskGraph = (projectId: string) => {
     const lifetime = new AbortController();
     const unsubscribe = scope.subscribe((event) => {
       if (event.projectId !== projectId) return;
+      if (event.accessRestored === true) { void request(); return; }
       if (event.accessRevoked === true) {
         liveAccess.current = false; receipt.current = null;
         setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error: event.error });
@@ -137,7 +145,7 @@ export const useTaskGraph = (projectId: string) => {
     });
     let timer: ReturnType<typeof setInterval> | null = null;
     const pause = () => { if (timer !== null) clearInterval(timer); timer = null; };
-    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, 5_000); };
+    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, pollingInterval('taskSync')); };
     const onVisibilityChange = () => { resume(); if (document.visibilityState !== "hidden") void request(true); };
     resume(); document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {

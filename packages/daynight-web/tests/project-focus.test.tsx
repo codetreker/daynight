@@ -30,14 +30,14 @@ const rootId = '20000000-0000-0000-0000-000000000001';
 const selectedId = '20000000-0000-0000-0000-000000000002';
 const remainingId = '20000000-0000-0000-0000-000000000003';
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
+const task = (id: string, titlePreview: string, dependsOn: readonly string[] = []): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, blockedBy: dependsOn,
   ready: dependsOn.length === 0, createdAt: timestamp, updatedAt: timestamp,
 });
 const remaining = task(remainingId, '保留任务链');
 const remainingChain = [remaining, task('20000000-0000-0000-0000-000000000004', '保留后续任务', [remainingId])];
 const graph = (tasks = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId]), ...remainingChain]): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
-  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '核心项目', repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp },
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '核心项目', repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp },
   tasks,
   summary: {
     total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
@@ -88,10 +88,11 @@ afterEach(() => {
   document.body.style.overflow = previousOverflow;
 });
 
-const openDialog = async (fullscreen = false) => {
+const openDialog = async (fullscreen = false, filterTodo = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
   await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toBeVisible());
+  if (filterTodo) fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
   fireEvent.click(document.getElementById(`task-chain-graph-${rootId}`)!);
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
@@ -160,7 +161,7 @@ describe('project dialog focus restoration', () => {
       ...item, status: 'done' as const, ready: false, blockedBy: [],
     }));
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...completed, ...remainingChain]));
-    const { trigger, dialog } = await openDialog(true);
+    const { trigger, dialog } = await openDialog(true, true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
     expect(document.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
@@ -177,7 +178,7 @@ describe('project dialog focus restoration', () => {
       ...item, status: 'done' as const, ready: false, blockedBy: [],
     }));
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(keepRemaining ? graph([...completed, ...remainingChain]) : resetSnapshot(graph(completed)));
-    const { trigger, dialog } = await openDialog();
+    const { trigger, dialog } = await openDialog(false, true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
     expect(dialog).toBeVisible();
@@ -185,10 +186,8 @@ describe('project dialog focus restoration', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
     await waitFor(() => expect(keepRemaining ? document.getElementById(`task-root-${remainingId}`)! : screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expectModalReleased();
-    const checkbox = screen.getByRole('checkbox', { name: /^显示所有/ });
     if (!keepRemaining) {
-      fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
-      expect(checkbox).toHaveFocus();
+      fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }

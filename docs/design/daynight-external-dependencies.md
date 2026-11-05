@@ -1,7 +1,6 @@
 # 任务外部依赖与任务链边界架构
 
 本设计落实[外部依赖需求 ED-R1–ED-R8](../spec/daynight-external-dependencies.md)。
-[原型](mockups/external-dependencies/index.html)展示目标视觉和交互，
 [决策记录](../../.agents/notes/implemented/architecture/2026-10-23-external-dependency-design.md)保存方案取舍。
 依赖性质存储、完整读取和 Web 普通分量消费已实现。图的虚线箭头来自显式外部性质，
 链外卡片由上下文角色决定；详情按关系方向显示性质。公开 API 接受显式分类创建及部分 PATCH，CLI 声明普通/外部完整集合；
@@ -221,9 +220,9 @@ Details 继续与检查主体分离，导航只改变所读资源；本范围没
 条目操作打开后，重建索引先查该任务所属分量，再选择该可见多成员分量的当前代表，
 不用要求定位任务仍是代表，也不因代表改变而覆盖仍有效的原任务。
 因此普通边合并或拆分后，仍存在的定位任务可保留所关注的那部分。
-不存在、成为单成员或已被完成筛选隐藏时关闭浮层并清除定位任务；
+不存在、成为单成员或已被列表筛选隐藏时关闭浮层并清除定位任务；
 离开任务列表或任务链类别也清除打开状态，返回和重载均不自动打开。
-独立的类别、完成显示和页面位置记录继续保持原格式。
+类别和共享页面位置记录保持原格式；状态与负责人筛选在本次访问中共享，不持久化。
 
 只有状态或同一拓扑内容刷新时继续保留可见集合、视口和检查。
 `VisibleTaskGraph` 只按代表 rootId 保持呈现生命周期，`GraphVisibility.topologyKey` 则记录有序主成员集合。
@@ -287,7 +286,7 @@ Go 服务与嵌入 Web 一起部署；
 外部节点指向投影外任务的引用。其一层 external 选择由
 [服务端图查询](../spec/daynight-server.md#任务链图查询)拥有，Web 的完整上游闭包不变。
 新校验失败使用现有 Fault 代码和安全消息，数据库与取消保留可解包原因。
-[错误管线](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/server/logging.go#L86-L116)
+[错误管线](../../packages/daynight-server/internal/server/httpx/logging.go)
 通过 `type=operation_error` 记录 `component`、`phase`、`cause`、`error_code`、安全 `diagnostic` 和 `request_id`；
 HTTP 错误响应携带同一 request ID。分类没有新的秘密输入，不记录 token、描述、附件内容、SQL 文本或整份请求。
 
@@ -312,7 +311,7 @@ jq -c --arg rid "$REQUEST_ID" \
 
 下表的容量、几何和性能规则固定于源码 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`；
 功能场景清单采用包含撤销批准、项目设置、执行耗时和自动执行许可场景的源码
-`d02994b22b744ae23eb67965679fb5d9edc84525`。Web 实现和独立整体验收共同引用这些基线。当前[看板验收](daynight-web.md#生产浏览器验收工具)另包含两个目标各自的 task-platform 与 task-detail-page 功能场景；下表保留固定源码的 59 场景基线，当前完整 inventory 为 63 场景，不减少原有检查。
+`d02994b22b744ae23eb67965679fb5d9edc84525`。Web 实现和独立整体验收共同引用这些基线。当前[看板验收](daynight-web.md#生产浏览器验收工具)另包含两个目标各自的 task-platform、task-detail-page、task-assignment、task-assignment-layout 与 task-pause 功能场景；下表保留固定源码的 59 场景基线，当前常规 inventory 为两目标各 32 个功能场景，共 64 个；显式本地压力验收另有五个原生容量场景，共 69 个（原生 37、容器 32）。两种模式都保留独立的 22 项 combined-auth 检查。下表的固定规模、预算和断言在本地压力入口保持，历史 59 场景基线不改写为当前 CI 结果。
 实现需要按新普通分量和显式性质更新预期值，
 但不能通过减少场景、样本、输入规模、可见边断言或放宽阈值完成本目标。
 
@@ -325,7 +324,7 @@ jq -c --arg rid "$REQUEST_ID" \
 | 局部反馈时延 | 每个样本的 `openMs ≤ 3000`，`selectMs`、`detailMs`、`zoomMs`、`panMs` 各 `≤ 300`；[执行断言](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/capacity.spec.ts#L494-L503)和[回执校验](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/performance.mts#L53-L63)均须满足。保留普通与高亮状态中的较差值，分别记录网络、布局、渲染时间；[Details 关闭后立即缩放和平移，再选择检查](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L847-L857)不能插入 reset、fit 或额外等待来改变测量。 |
 | 独立拓扑与几何 | 依据完整 API 数据独立求新 M/P/S，保留[概览、真实诱导边、96/136 高度和 20 邻居批次的独立预期](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/visible-topology.ts#L4-L37)。对每条实际可见边保留节点/边精确覆盖、固定左右端口、水平切向、避开卡片、原生箭头、显式外部 `5/4` 虚线及真实弧长相位检查；[当前贝塞尔路线设计](daynight-task-inspection.md)使用限制在列间空隙的完整三次曲线及水平自由通道，独立检查实际曲线和精确子曲线的完整覆盖。[检查、展开及 reset](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/capacity.spec.ts#L430-L488)继续证明选择不改几何/视口、展开绘制全部新增诱导边、reset 恢复确定概览及焦点。 |
 | CLI 有界操作 | [操作预算](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight/src/api/operation.ts#L10-L15)保持命令总时限 300,000ms、单请求 30,000ms、单响应解码 128MiB、累计 256MiB。新增数组须经过实际安装 CLI 的容量、超限和超时验收，不提高预算来容纳该字段。 |
-| 服务检查与覆盖率 | 运行[现有服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 race、package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
+| 服务检查与覆盖率 | 运行[现有服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；race 采用[当前服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
 | 执行和证据身份 | [Playwright 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/playwright.config.ts#L11-L30)保留单 worker、零重试、单场景 180,000ms、总 900,000ms、断言 10,000ms、动作 15,000ms、导航 30,000ms；[回执约定](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L899-L934)要求准确源码/tree、浏览器、安装产物、进程/容器身份和所有目标清理通过。局部或原型结果不替代这些回执。 |
 
 上述来源拥有完整的数值容差、数据集身份和字段校验。本设计保留其强度，

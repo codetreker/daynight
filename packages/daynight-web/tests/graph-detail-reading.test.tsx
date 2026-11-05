@@ -8,7 +8,7 @@ import type { Attachment, TaskDetail, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { installGraphMeasurements } from './graph-measurements';
-import { browsingProjects } from './mockups/browsing-fixture';
+import { completeContextGraph } from './helpers/graphData';
 
 vi.mock('../src/api/client', async (original) => ({
   ...await original<typeof import('../src/api/client')>(),
@@ -19,7 +19,7 @@ const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<T
 
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
-const graph = browsingProjects['complete-context'];
+const graph = completeContextGraph;
 const rootId = graph.tasks.find((task) => task.titlePreview === '外部上下文 · 链内交付起点')!.id;
 const selectedId = graph.tasks.find((task) => task.titlePreview === '外部前置 · 菱形合流')!.id;
 const detailNode = graph.tasks.find((task) => task.titlePreview === '链内最终交付')!;

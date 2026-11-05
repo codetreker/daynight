@@ -9,12 +9,16 @@ import { attachmentDownloadUrl, attachmentPageUrl, attachmentPreviewUrl } from '
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 import { createProject, createTask, expect, test, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
-import { longConfirmationPath } from '../mockups/attachment-paths';
 import { hasPaintedPdfMarker, readPdfPixels, type PdfPixels } from './pdf-pixels';
 import { attachmentFileButton as fileButton, attachmentFileActions as fileActions } from './attachment-tree';
 
 const exact = (value: string): RegExp => new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 const asset = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
+const longConfirmationPath = Array.from({ length: 4 }, (_, index) => {
+  const prefix = `z${index}-`;
+  const suffix = index === 3 ? '-path-tail-visible.txt' : '';
+  return `${prefix}${'x'.repeat(180 - prefix.length - suffix.length)}${suffix}`;
+}).join('/');
 const selectFile = async (region: Locator, path: string): Promise<void> => {
   await (await fileButton(region, path)).click();
   await expect(region.getByRole('heading', { name: path, exact: true })).toBeVisible();
@@ -112,11 +116,15 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
       await command(args('put', [source, '--path', path]));
     };
     const binary = Buffer.from([0, 255, 1, 128, 13, 10, 200, 0, 254, 42]);
-    const pdf = await readFile(asset('../mockups/files/brief.pdf'));
+    const pdf = await readFile(asset('./attachment-files/brief.pdf'));
     const wideColumns = Array.from({ length: 16 }, (_, index) => `Column ${index + 1}`);
     const wideTable = `| ${wideColumns.join(' | ')} |\n| ${wideColumns.map(() => '---').join(' | ')} |\n| ${wideColumns.map(() => 'Long table content').join(' | ')} |`;
     const longCode = `const attachmentContent = '${'unbroken-source-'.repeat(80)}';`;
     const longPath = `long/${'long-file-name-'.repeat(12)}.txt`;
+    const readingMarkdown = `# Long attachment\n\n${Array.from({ length: 100 }, (_, index) => `## Section ${index + 1}\n\n${'Attachment reading content. '.repeat(10)}`).join('\n\n')}\n`;
+    const readingText = Array.from({ length: 300 }, (_, index) => `${String(index + 1).padStart(4, '0')}  Attachment reading content.\n`).join('');
+    const readingSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="6000" viewBox="0 0 600 6000"><path d="M300 0v6000" stroke="black"/></svg>';
+    const readingHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Long attachment</title><style>body{margin:20px;overflow-wrap:anywhere}section{min-height:200px}</style></head><body><button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button>${Array.from({ length: 30 }, (_, index) => `<section><h2>Reading section ${index + 1}</h2><p>Attachment reading content.</p></section>`).join('')}</body></html>`;
     const seeds = [
       { path: 'docs/design.md', bytes: Buffer.from(`# 附件设计\n\n| 文件 | 状态 |\n| --- | --- |\n| Web | 已连接 |\n\n${wideTable}\n\n\`\`\`js\n${longCode}\n\`\`\`\n\n![项目流程](../images/workflow.svg)\n\n[同名文本](../notes/one/same.txt)\n\n<script>window.attachmentLeak = true</script>\n`) },
       { path: 'notes/one/same.txt', bytes: Buffer.from('First nested text\nSecond line\n') },
@@ -124,21 +132,23 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
       { path: 'empty.txt', bytes: Buffer.alloc(0) },
       { path: encodedPath, bytes: Buffer.from('{\n  \"sameFile\": true\n}\n') },
       { path: 'binary/bytes.bin', bytes: binary },
-      { path: 'images/workflow.svg', bytes: await readFile(asset('../mockups/files/images/workflow.svg')) },
+      { path: 'images/workflow.svg', bytes: await readFile(asset('./attachment-files/images/workflow.svg')) },
       { path: 'reports/brief.pdf', bytes: pdf },
       { path: 'site/index.html', bytes: await readFile(asset('./attachment-files/site/index.html')) },
-      { path: 'site/style.css', bytes: await readFile(asset('../mockups/files/site/style.css')) },
+      { path: 'site/style.css', bytes: await readFile(asset('./attachment-files/site/style.css')) },
       { path: 'site/app.js', bytes: await readFile(asset('./attachment-files/site/app.js')) },
       { path: longPath, bytes: Buffer.from('Long path attachment content\n'.repeat(200)) },
       { path: longConfirmationPath, bytes: Buffer.from('Portable long-path confirmation fixture\n') },
-      { path: 'long/reading.md', bytes: await readFile(asset('../mockups/files/docs/tall.md')) },
-      { path: 'long/reading.txt', bytes: await readFile(asset('../mockups/files/data/tall.txt')) },
-      { path: 'long/reading.svg', bytes: await readFile(asset('../mockups/files/images/tall.svg')) },
-      { path: 'long/reading.html', bytes: await readFile(asset('../mockups/files/site/tall.html')) },
-      { path: 'long/reading.pdf', bytes: await readFile(asset('../mockups/files/tall.pdf')) },
+      { path: 'long/reading.md', bytes: Buffer.from(readingMarkdown) },
+      { path: 'long/reading.txt', bytes: Buffer.from(readingText) },
+      { path: 'long/reading.svg', bytes: Buffer.from(readingSvg) },
+      { path: 'long/reading.html', bytes: Buffer.from(readingHtml) },
+      { path: 'long/reading.pdf', bytes: await readFile(asset('./attachment-files/reading.pdf')) },
       { path: 'site/data.json', bytes: await readFile(asset('./attachment-files/site/data.json')) },
     ];
-    for (const [index, seed] of seeds.entries()) await put(seed.path, seed.bytes, `seed-${index}`);
+    await test.step('Prepare attachment files through the installed CLI', async () => {
+      for (const [index, seed] of seeds.entries()) await put(seed.path, seed.bytes, `seed-${index}`);
+    });
     const listed = JSON.parse(await command(args('list', ['--json']))) as { path: string; sizeBytes: number }[];
     expect(listed.map(({ path }) => path)).toEqual(seeds.map(({ path }) => path).toSorted());
     expect(listed.find(({ path }) => path === 'empty.txt')?.sizeBytes).toBe(0);
@@ -163,7 +173,6 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     });
     // Isolate attachment-triggered reads from the independently tested task polling timer.
     const clockTime = new Date('2030-01-01T00:00:00Z');
-    await page.clock.install({ time: clockTime });
     await page.clock.pauseAt(clockTime);
     await page.goto(`/projects/${project.id}`);
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
@@ -282,231 +291,230 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await expect(attachments.getByRole('heading', { name: 'docs/design.md', exact: true })).toBeVisible();
     await expect(dialog.getByRole('tab', { name: '附件', exact: true })).toHaveAttribute('aria-selected', 'true');
     const readerAttachments = reader.locator('.task-attachments');
-    await expect(readerAttachments.getByRole('navigation', { name: '附件文件', exact: true })).toBeVisible();
-    await expect(readerAttachments.locator('.attachment-tree details[open]')).toHaveCount(1);
-    await expect(readerAttachments.locator('.attachment-actions-trigger[aria-label="更多操作：docs/design.md"]').locator('..').locator('.attachment-file')).toBeVisible();
-    await expect(readerAttachments.locator('.attachment-actions-trigger[aria-label="更多操作：notes/one/same.txt"]').locator('..').locator('.attachment-file')).toBeHidden();
-    const readerSidebar = await readerAttachments.locator('.attachment-sidebar').elementHandle();
-    if (readerSidebar === null) throw new Error('The standalone attachment sidebar is absent.');
-    const readerUpload = readerAttachments.locator('.attachment-upload-disclosure');
-    await readerUpload.locator('summary').click();
-    await readerAttachments.getByRole('textbox', { name: '目标相对路径' }).fill('drafts/reader.txt');
-    await readerUpload.locator('summary').click();
-    const readerLongDirectory = readerAttachments.locator('summary').filter({ hasText: exact('▱ long') }).locator('..');
-    await expect(readerLongDirectory).not.toHaveAttribute('open', '');
-    await readerLongDirectory.locator('summary').first().click();
-    await expect(readerLongDirectory).toHaveAttribute('open', '');
-    await readerLongDirectory.locator('summary').first().click();
-    await expect(readerLongDirectory).not.toHaveAttribute('open', '');
-    await selectFile(readerAttachments, 'notes/one/same.txt');
-    await expect(reader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'notes/one/same.txt'), origin).href);
-    await expect(await fileButton(readerAttachments, 'notes/one/same.txt')).toHaveAttribute('aria-pressed', 'true');
-    await expect(readerAttachments.locator('pre')).toHaveText('First nested text\nSecond line\n');
-    await selectFile(readerAttachments, 'notes/two/same.txt');
-    await expect(reader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'notes/two/same.txt'), origin).href);
-    const readerNotes = readerAttachments.locator('summary').filter({ hasText: exact('▱ notes') }).locator('..');
-    const readerNotesTwo = readerNotes.locator('summary').filter({ hasText: exact('▱ two') }).locator('..');
-    await readerNotes.locator('summary').first().click();
-    await expect(readerNotes).not.toHaveAttribute('open', '');
-    await reader.goBack();
-    await expect(readerAttachments.locator('pre')).toHaveText('First nested text\nSecond line\n');
-    await expect(readerNotes).toHaveAttribute('open', '');
-    await readerNotesTwo.locator('summary').first().click();
-    await expect(readerNotesTwo).not.toHaveAttribute('open', '');
-    await reader.goForward();
-    await expect(readerAttachments.locator('pre')).toHaveText('Second same-name text\n');
-    await expect(readerNotesTwo).toHaveAttribute('open', '');
-    await expect(readerLongDirectory).not.toHaveAttribute('open', '');
-    await expect(readerUpload).not.toHaveAttribute('open', '');
-    await expect(readerAttachments.getByLabel('目标相对路径')).toHaveValue('drafts/reader.txt');
-    expect(await readerSidebar.evaluate((element) => element.isConnected)).toBe(true);
-    await reader.reload();
-    await expect(readerAttachments.locator('pre')).toHaveText('Second same-name text\n');
-    const standaloneUploadPath = 'standalone/reader-upload.txt';
-    const standaloneUploadUrl = new URL(attachmentDownloadUrl(project.id, task.id, standaloneUploadPath), origin).href;
-    await readerUpload.locator('summary').click();
-    await readerAttachments.getByLabel('选择一个文件').setInputFiles({ name: 'reader.txt', mimeType: 'text/plain', buffer: Buffer.from('Standalone shared upload\n') });
-    await readerAttachments.getByRole('textbox', { name: '目标相对路径' }).fill(standaloneUploadPath);
-    await readerAttachments.getByRole('button', { name: '上传文件', exact: true }).click();
-    await expect(readerAttachments.locator('pre')).toHaveText('Standalone shared upload\n');
-    await expect(reader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, standaloneUploadPath), origin).href);
-    expect(await cli.read(args('read', [standaloneUploadPath]))).toEqual(Buffer.from('Standalone shared upload\n'));
-    const standaloneDeletion = await confirmDeletion(reader, readerAttachments, standaloneUploadPath);
-    await standaloneDeletion.getByRole('button', { name: '删除附件', exact: true }).click();
-    await expect(standaloneDeletion).toBeHidden();
-    await expect(readerAttachments.locator('.attachment-file-name').filter({ hasText: exact('reader-upload.txt') })).toHaveCount(0);
-    expect(readerWrites).toEqual([`PUT ${standaloneUploadUrl}`, `DELETE ${standaloneUploadUrl}`]);
-    await selectFile(readerAttachments, 'docs/design.md');
-    for (const method of ['get', 'head'] as const) {
-      const response = await request[method](readerUrl);
-      expect(response.status()).toBe(200);
-      expect(response.headers()['content-type']).toContain('text/html');
-      if (method === 'head') expect(await response.body()).toHaveLength(0);
-      else expect(await response.text()).toContain('<div id="root"></div>');
-    }
-    expect((await request.post(readerUrl)).status()).toBe(405);
-    expect((await request.get(`/projects/${project.id}/tasks/${task.id}/unknown/file.txt`)).status()).toBe(404);
-    const readerScrollEvidence: unknown[] = [];
-    for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
-      await reader.setViewportSize(viewport);
-      const standalonePanes = await readerAttachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll((elements) => elements.map((element) => {
-        const bounds = element.getBoundingClientRect(); return { left: bounds.left, right: bounds.right, top: bounds.top, height: bounds.height };
-      }));
-      expect(standalonePanes[0]!.right).toBeLessThanOrEqual(standalonePanes[1]!.left + 1);
-      expect(standalonePanes[0]!.top).toBe(standalonePanes[1]!.top);
-      expect(standalonePanes[1]!.height).toBeGreaterThan(80);
-      expect(await reader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      for (const extension of ['md', 'txt', 'svg', 'html', 'pdf']) {
-        await reader.goto(attachmentPageUrl(project.id, task.id, `long/reading.${extension}`));
-        await expect(reader.getByRole('heading', { name: `long/reading.${extension}`, exact: true })).toBeVisible();
-        await expect(reader.getByRole('link', { name: '下载', exact: true })).toBeInViewport({ ratio: 1 });
-        await expect(reader.getByRole('combobox', { name: '语言 / Language', exact: true })).toBeInViewport({ ratio: 1 });
-        const body = reader.locator('.attachment-preview-body');
-        if (extension === 'svg') await expect.poll(() => reader.getByRole('img').evaluate((image) => (image as HTMLImageElement).naturalHeight)).toBeGreaterThan(0);
-        const native = extension === 'html' || extension === 'pdf';
-        if (native) {
-          const frame = reader.locator('iframe');
-          await expect(frame).toBeInViewport({ ratio: 1 });
-          const frameBounds = await frame.boundingBox();
-          const bodyBounds = await body.boundingBox();
-          expect(frameBounds!.height).toBeCloseTo(bodyBounds!.height, 0);
-          if (extension === 'html') {
-            await expect(frame.contentFrame().locator('#counter')).toBeVisible();
-            await frame.contentFrame().locator('#counter').click();
-            await expect(frame.contentFrame().locator('#counter')).toHaveText('1');
-            await reader.keyboard.press('Escape');
-            await expect(frame).toBeVisible();
-            expect(await frame.contentFrame().locator('html').evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-          }
-        } else await expect.poll(() => body.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-        const outer = await body.evaluate((element) => {
-          const chain = [];
-          for (let node: Element | null = element; node !== null; node = node.parentElement) chain.push({ className: node.className, height: node.clientHeight, scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY });
-          return chain;
-        });
-        expect(outer.slice(1).filter((entry) => entry.scrollHeight > entry.height + 1)).toEqual([]);
-        if (native) expect(outer[0]!.scrollHeight).toBeLessThanOrEqual(outer[0]!.height + 1);
-        readerScrollEvidence.push({ viewport, extension, outer });
+    await test.step('Verify standalone attachment navigation and writes', async () => {
+      await expect(readerAttachments.getByRole('navigation', { name: '附件文件', exact: true })).toBeVisible();
+      await expect(readerAttachments.locator('.attachment-tree details[open]')).toHaveCount(1);
+      await expect(readerAttachments.locator('.attachment-actions-trigger[aria-label="更多操作：docs/design.md"]').locator('..').locator('.attachment-file')).toBeVisible();
+      await expect(readerAttachments.locator('.attachment-actions-trigger[aria-label="更多操作：notes/one/same.txt"]').locator('..').locator('.attachment-file')).toBeHidden();
+      const readerSidebar = await readerAttachments.locator('.attachment-sidebar').elementHandle();
+      if (readerSidebar === null) throw new Error('The standalone attachment sidebar is absent.');
+      const readerUpload = readerAttachments.locator('.attachment-upload-disclosure');
+      await readerUpload.locator('summary').click();
+      await readerAttachments.getByRole('textbox', { name: '目标相对路径' }).fill('drafts/reader.txt');
+      await readerUpload.locator('summary').click();
+      const readerLongDirectory = readerAttachments.locator('summary').filter({ hasText: exact('▱ long') }).locator('..');
+      await expect(readerLongDirectory).not.toHaveAttribute('open', '');
+      await readerLongDirectory.locator('summary').first().click();
+      await expect(readerLongDirectory).toHaveAttribute('open', '');
+      await readerLongDirectory.locator('summary').first().click();
+      await expect(readerLongDirectory).not.toHaveAttribute('open', '');
+      await selectFile(readerAttachments, 'notes/one/same.txt');
+      await expect(reader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'notes/one/same.txt'), origin).href);
+      await expect(await fileButton(readerAttachments, 'notes/one/same.txt')).toHaveAttribute('aria-pressed', 'true');
+      await expect(readerAttachments.locator('pre')).toHaveText('First nested text\nSecond line\n');
+      await selectFile(readerAttachments, 'notes/two/same.txt');
+      await expect(reader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'notes/two/same.txt'), origin).href);
+      const readerNotes = readerAttachments.locator('summary').filter({ hasText: exact('▱ notes') }).locator('..');
+      const readerNotesTwo = readerNotes.locator('summary').filter({ hasText: exact('▱ two') }).locator('..');
+      await readerNotes.locator('summary').first().click();
+      await expect(readerNotes).not.toHaveAttribute('open', '');
+      await reader.goBack();
+      await expect(readerAttachments.locator('pre')).toHaveText('First nested text\nSecond line\n');
+      await expect(readerNotes).toHaveAttribute('open', '');
+      await readerNotesTwo.locator('summary').first().click();
+      await expect(readerNotesTwo).not.toHaveAttribute('open', '');
+      await reader.goForward();
+      await expect(readerAttachments.locator('pre')).toHaveText('Second same-name text\n');
+      await expect(readerNotesTwo).toHaveAttribute('open', '');
+      await expect(readerLongDirectory).not.toHaveAttribute('open', '');
+      await expect(readerUpload).not.toHaveAttribute('open', '');
+      await expect(readerAttachments.getByLabel('目标相对路径')).toHaveValue('drafts/reader.txt');
+      expect(await readerSidebar.evaluate((element) => element.isConnected)).toBe(true);
+      await reader.reload();
+      await expect(readerAttachments.locator('pre')).toHaveText('Second same-name text\n');
+      const standaloneUploadPath = 'standalone/reader-upload.txt';
+      const standaloneUploadUrl = new URL(attachmentDownloadUrl(project.id, task.id, standaloneUploadPath), origin).href;
+      await readerUpload.locator('summary').click();
+      await readerAttachments.getByLabel('选择一个文件').setInputFiles({ name: 'reader.txt', mimeType: 'text/plain', buffer: Buffer.from('Standalone shared upload\n') });
+      await readerAttachments.getByRole('textbox', { name: '目标相对路径' }).fill(standaloneUploadPath);
+      await readerAttachments.getByRole('button', { name: '上传文件', exact: true }).click();
+      await expect(readerAttachments.locator('pre')).toHaveText('Standalone shared upload\n');
+      await expect(reader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, standaloneUploadPath), origin).href);
+      expect(await cli.read(args('read', [standaloneUploadPath]))).toEqual(Buffer.from('Standalone shared upload\n'));
+      const standaloneDeletion = await confirmDeletion(reader, readerAttachments, standaloneUploadPath);
+      await standaloneDeletion.getByRole('button', { name: '删除附件', exact: true }).click();
+      await expect(standaloneDeletion).toBeHidden();
+      await expect(readerAttachments.locator('.attachment-file-name').filter({ hasText: exact('reader-upload.txt') })).toHaveCount(0);
+      expect(readerWrites).toEqual([`PUT ${standaloneUploadUrl}`, `DELETE ${standaloneUploadUrl}`]);
+      await selectFile(readerAttachments, 'docs/design.md');
+      for (const method of ['get', 'head'] as const) {
+        const response = await request[method](readerUrl);
+        expect(response.status()).toBe(200);
+        expect(response.headers()['content-type']).toContain('text/html');
+        if (method === 'head') expect(await response.body()).toHaveLength(0);
+        else expect(await response.text()).toContain('<div id="root"></div>');
       }
-      await reader.goto(attachmentPageUrl(project.id, task.id, longPath));
-      await expect(reader.getByRole('heading', { name: longPath, exact: true })).toHaveAttribute('title', longPath);
-      await expect(reader.getByRole('link', { name: '下载', exact: true })).toBeInViewport({ ratio: 1 });
-    }
-    await reader.goto(attachmentPageUrl(project.id, task.id, 'site/index.html'));
-    const readerHtml = reader.getByTitle('HTML 预览：site/index.html');
-    await expect(readerHtml.contentFrame().locator('#data')).toHaveText('Attachment same-data journey · in_progress');
-    await expect.poll(() => readerHtml.contentFrame().getByRole('img', { name: 'Project workflow' }).evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-    expect(await readerHtml.contentFrame().locator('body').evaluate((body) => getComputedStyle(body).backgroundColor)).toBe('rgb(246, 247, 252)');
-    await readerHtml.contentFrame().getByRole('button', { name: '完成一个任务' }).click();
-    await expect(readerHtml.contentFrame().locator('#result')).toHaveText('已完成 3 个任务');
-    await reader.goto(attachmentPageUrl(project.id, task.id, 'notes/one/same.txt'));
-    await expect(reader.locator('pre')).toHaveText('First nested text\nSecond line\n');
-    await reader.goto(attachmentPageUrl(project.id, task.id, encodedPath));
-    await expect(reader.locator('pre')).toHaveText('{\n  \"sameFile\": true\n}\n');
-    await reader.reload();
-    await expect(reader.locator('pre')).toHaveText('{\n  \"sameFile\": true\n}\n');
-    await reader.goto(attachmentPageUrl(project.id, task.id, 'binary/bytes.bin'));
-    await expect(reader.getByText('此文件暂不支持预览，请下载后打开。')).toBeVisible();
-    await expect(reader.getByRole('link', { name: '下载' })).toHaveAttribute('href', attachmentDownloadUrl(project.id, task.id, 'binary/bytes.bin'));
-    const [binaryDownload] = await Promise.all([reader.waitForEvent('download'), reader.getByRole('link', { name: '下载' }).click()]);
-    const downloadedPath = await binaryDownload.path();
-    if (downloadedPath === null) throw new Error('The standalone unsupported-file download was not saved.');
-    expect(await readFile(downloadedPath)).toEqual(binary);
-    // The lower-page PDF marker needs a tall paint viewport; compact sizing and
-    // native scroll ownership are verified independently in the viewport matrix.
-    await reader.setViewportSize(openerViewport);
-    await reader.goto(attachmentPageUrl(project.id, task.id, 'reports/brief.pdf'));
-    await paintedPdf(reader, reader.getByTitle('PDF 预览：reports/brief.pdf'), info, pdf, new URL(attachmentPreviewUrl(project.id, task.id, 'reports/brief.pdf'), origin).href, 'standalone-attachments');
-    await reader.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
-    await reader.reload();
-    await expect(reader.getByRole('link', { name: 'Download', exact: true })).toBeVisible();
-    await reader.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
-    // Chromium tabs share native window bounds; return ownership to the opener before closing the resized reader.
-    await reader.setViewportSize(openerViewport);
-    await reader.close();
-    expect(readerErrors).toEqual([]);
-    await page.bringToFront();
-    await info.attach('standalone-attachment-scroll-owners', { body: Buffer.from(JSON.stringify(readerScrollEvidence, null, 2)), contentType: 'application/json' });
-    const scrollEvidence: unknown[] = [];
-    for (const viewport of [{ width: 1440, height: 800 }, { width: 768, height: 800 }, { width: 600, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
-      await page.setViewportSize(viewport);
-      for (const extension of ['md', 'txt', 'svg', 'html', 'pdf']) {
-        await selectFile(attachments, `long/reading.${extension}`);
-        const body = attachments.locator('.attachment-preview-body');
-        const native = extension === 'html' || extension === 'pdf';
-        if (extension === 'svg') await expect.poll(() => attachments.getByRole('img').evaluate((image) => (image as HTMLImageElement).naturalHeight)).toBeGreaterThan(0);
-        await expectCenteredTaskDetail(page, dialog);
-        const panes = await attachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll((elements) => elements.map((element) => {
+      expect((await request.post(readerUrl)).status()).toBe(405);
+      expect((await request.get(`/projects/${project.id}/tasks/${task.id}/unknown/file.txt`)).status()).toBe(404);
+    });
+    const readerScrollEvidence: unknown[] = [];
+    await test.step('Verify standalone attachment formats and viewport layouts', async () => {
+      for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
+        await reader.setViewportSize(viewport);
+        const standalonePanes = await readerAttachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll((elements) => elements.map((element) => {
           const bounds = element.getBoundingClientRect(); return { left: bounds.left, right: bounds.right, top: bounds.top, height: bounds.height };
         }));
-        expect(panes[0]!.right).toBeLessThanOrEqual(panes[1]!.left + 1);
-        expect(panes[0]!.top).toBe(panes[1]!.top);
-        expect(panes[1]!.height).toBeGreaterThan(80);
-        for (const action of ['下载', '在新标签页打开']) await expect(attachments.getByRole('link', { name: action, exact: true })).toBeInViewport({ ratio: 1 });
-        const outer = await body.evaluate((element) => {
-          const chain = [];
-          for (let node: Element | null = element; node !== null && !node.classList.contains('task-detail-backdrop'); node = node.parentElement) chain.push({ className: node.className, height: node.clientHeight, scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY });
-          return chain;
-        });
-        expect(outer.slice(1).filter((entry) => entry.scrollHeight > entry.height + 1)).toEqual([]);
-        if (!native) {
-          expect(outer[0]!.scrollHeight).toBeGreaterThan(outer[0]!.height);
-          const bounds = await body.boundingBox();
-          if (bounds === null) throw new Error('The preview scroll owner has no bounds.');
-          await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-          await page.mouse.wheel(0, 180);
-          await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-          await settleScroll(body);
-          await body.evaluate((element) => { element.scrollTop = 0; });
-          await body.focus();
-          await page.keyboard.press('PageDown');
-          await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-          await settleScroll(body);
-          const position = await body.evaluate((element) => element.scrollTop);
-          const left = attachments.locator('.attachment-sidebar');
-          await left.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-          expect(await body.evaluate((element) => element.scrollTop)).toBe(position);
-          await left.evaluate((element) => { element.scrollTop = 0; });
-        } else {
-          const frame = attachments.locator('iframe');
-          await expect(frame).toBeInViewport({ ratio: 1 });
-          const frameBounds = await frame.boundingBox();
-          const bodyBounds = await body.boundingBox();
-          expect(frameBounds!.height).toBeCloseTo(bodyBounds!.height, 0);
-          expect(outer[0]!.scrollHeight).toBeLessThanOrEqual(outer[0]!.height + 1);
-          if (extension === 'html') {
-            const content = frame.contentFrame();
-            await expect(content.locator('#counter')).toBeVisible();
-            expect(await content.locator('html').evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-            await page.mouse.move(frameBounds!.x + frameBounds!.width / 2, frameBounds!.y + frameBounds!.height / 2);
-            await page.mouse.wheel(0, 180);
-            await expect.poll(() => content.locator('html').evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-            await settleScroll(content.locator('html'));
-            await content.locator('html').evaluate((element) => { element.scrollTop = 0; });
-            await content.locator('#counter').focus();
-            await page.keyboard.press('PageDown');
-            await expect.poll(() => content.locator('html').evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-            await settleScroll(content.locator('html'));
-          }
+        expect(standalonePanes[0]!.right).toBeLessThanOrEqual(standalonePanes[1]!.left + 1);
+        expect(standalonePanes[0]!.top).toBe(standalonePanes[1]!.top);
+        expect(standalonePanes[1]!.height).toBeGreaterThan(80);
+        expect(await reader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        for (const extension of ['md', 'txt', 'svg', 'html', 'pdf']) {
+          await reader.goto(attachmentPageUrl(project.id, task.id, `long/reading.${extension}`));
+          await expect(reader.getByRole('heading', { name: `long/reading.${extension}`, exact: true })).toBeVisible();
+          await expect(reader.getByRole('link', { name: '下载', exact: true })).toBeInViewport({ ratio: 1 });
+          await expect(reader.getByRole('combobox', { name: '语言 / Language', exact: true })).toBeInViewport({ ratio: 1 });
+          const body = reader.locator('.attachment-preview-body');
+          if (extension === 'svg') await expect.poll(() => reader.getByRole('img').evaluate((image) => (image as HTMLImageElement).naturalHeight)).toBeGreaterThan(0);
+          const native = extension === 'html' || extension === 'pdf';
+          if (native) {
+            const frame = reader.locator('iframe');
+            await expect(frame).toBeInViewport({ ratio: 1 });
+            const frameBounds = await frame.boundingBox();
+            const bodyBounds = await body.boundingBox();
+            expect(frameBounds!.height).toBeCloseTo(bodyBounds!.height, 0);
+            if (extension === 'html') {
+              await expect(frame.contentFrame().locator('#counter')).toBeVisible();
+              await frame.contentFrame().locator('#counter').click();
+              await expect(frame.contentFrame().locator('#counter')).toHaveText('1');
+              await reader.keyboard.press('Escape');
+              await expect(frame).toBeVisible();
+              expect(await frame.contentFrame().locator('html').evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+            }
+          } else await expect.poll(() => body.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+          const outer = await body.evaluate((element) => {
+            const chain = [];
+            for (let node: Element | null = element; node !== null; node = node.parentElement) chain.push({ className: node.className, height: node.clientHeight, scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY });
+            return chain;
+          });
+          expect(outer.slice(1).filter((entry) => entry.scrollHeight > entry.height + 1)).toEqual([]);
+          if (native) expect(outer[0]!.scrollHeight).toBeLessThanOrEqual(outer[0]!.height + 1);
+          readerScrollEvidence.push({ viewport, extension, outer });
         }
-        scrollEvidence.push({ viewport, extension, outer, panes });
+        await reader.goto(attachmentPageUrl(project.id, task.id, longPath));
+        await expect(reader.getByRole('heading', { name: longPath, exact: true })).toHaveAttribute('title', longPath);
+        await expect(reader.getByRole('link', { name: '下载', exact: true })).toBeInViewport({ ratio: 1 });
       }
-    }
+    });
+    await test.step('Verify standalone attachment resources and painted PDF', async () => {
+      await reader.goto(attachmentPageUrl(project.id, task.id, 'site/index.html'));
+      const readerHtml = reader.getByTitle('HTML 预览：site/index.html');
+      await expect(readerHtml.contentFrame().locator('#data')).toHaveText('Attachment same-data journey · in_progress');
+      await expect.poll(() => readerHtml.contentFrame().getByRole('img', { name: 'Project workflow' }).evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      expect(await readerHtml.contentFrame().locator('body').evaluate((body) => getComputedStyle(body).backgroundColor)).toBe('rgb(246, 247, 252)');
+      await readerHtml.contentFrame().getByRole('button', { name: '完成一个任务' }).click();
+      await expect(readerHtml.contentFrame().locator('#result')).toHaveText('已完成 3 个任务');
+      await reader.goto(attachmentPageUrl(project.id, task.id, 'notes/one/same.txt'));
+      await expect(reader.locator('pre')).toHaveText('First nested text\nSecond line\n');
+      await reader.goto(attachmentPageUrl(project.id, task.id, encodedPath));
+      await expect(reader.locator('pre')).toHaveText('{\n  \"sameFile\": true\n}\n');
+      await reader.reload();
+      await expect(reader.locator('pre')).toHaveText('{\n  \"sameFile\": true\n}\n');
+      await reader.goto(attachmentPageUrl(project.id, task.id, 'binary/bytes.bin'));
+      await expect(reader.getByText('此文件暂不支持预览，请下载后打开。')).toBeVisible();
+      await expect(reader.getByRole('link', { name: '下载' })).toHaveAttribute('href', attachmentDownloadUrl(project.id, task.id, 'binary/bytes.bin'));
+      const [binaryDownload] = await Promise.all([reader.waitForEvent('download'), reader.getByRole('link', { name: '下载' }).click()]);
+      const downloadedPath = await binaryDownload.path();
+      if (downloadedPath === null) throw new Error('The standalone unsupported-file download was not saved.');
+      expect(await readFile(downloadedPath)).toEqual(binary);
+      // The lower-page PDF marker needs a tall paint viewport; compact sizing and
+      // native scroll ownership are verified independently in the viewport matrix.
+      await reader.setViewportSize(openerViewport);
+      await reader.goto(attachmentPageUrl(project.id, task.id, 'reports/brief.pdf'));
+      await paintedPdf(reader, reader.getByTitle('PDF 预览：reports/brief.pdf'), info, pdf, new URL(attachmentPreviewUrl(project.id, task.id, 'reports/brief.pdf'), origin).href, 'standalone-attachments');
+      await reader.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
+      await reader.reload();
+      await expect(reader.getByRole('link', { name: 'Download', exact: true })).toBeVisible();
+      await reader.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
+      // Chromium tabs share native window bounds; return ownership to the opener before closing the resized reader.
+      await reader.setViewportSize(openerViewport);
+      await reader.close();
+      expect(readerErrors).toEqual([]);
+      await page.bringToFront();
+      await info.attach('standalone-attachment-scroll-owners', { body: Buffer.from(JSON.stringify(readerScrollEvidence, null, 2)), contentType: 'application/json' });
+    });
+    const scrollEvidence: unknown[] = [];
+    await test.step('Verify embedded attachment formats and native scrolling', async () => {
+      for (const viewport of [{ width: 1440, height: 800 }, { width: 768, height: 800 }, { width: 600, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
+        await page.setViewportSize(viewport);
+        for (const extension of ['md', 'txt', 'svg', 'html', 'pdf']) {
+          await selectFile(attachments, `long/reading.${extension}`);
+          const body = attachments.locator('.attachment-preview-body');
+          const native = extension === 'html' || extension === 'pdf';
+          if (extension === 'svg') await expect.poll(() => attachments.getByRole('img').evaluate((image) => (image as HTMLImageElement).naturalHeight)).toBeGreaterThan(0);
+          await expectCenteredTaskDetail(page, dialog);
+          const panes = await attachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll((elements) => elements.map((element) => {
+            const bounds = element.getBoundingClientRect(); return { left: bounds.left, right: bounds.right, top: bounds.top, height: bounds.height };
+          }));
+          expect(panes[0]!.right).toBeLessThanOrEqual(panes[1]!.left + 1);
+          expect(panes[0]!.top).toBe(panes[1]!.top);
+          expect(panes[1]!.height).toBeGreaterThan(80);
+          for (const action of ['下载', '在新标签页打开']) await expect(attachments.getByRole('link', { name: action, exact: true })).toBeInViewport({ ratio: 1 });
+          const outer = await body.evaluate((element) => {
+            const chain = [];
+            for (let node: Element | null = element; node !== null && !node.classList.contains('task-detail-backdrop'); node = node.parentElement) chain.push({ className: node.className, height: node.clientHeight, scrollHeight: node.scrollHeight, overflow: getComputedStyle(node).overflowY });
+            return chain;
+          });
+          expect(outer.slice(1).filter((entry) => entry.scrollHeight > entry.height + 1)).toEqual([]);
+          if (!native) {
+            expect(outer[0]!.scrollHeight).toBeGreaterThan(outer[0]!.height);
+            const bounds = await body.boundingBox();
+            if (bounds === null) throw new Error('The preview scroll owner has no bounds.');
+            await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+            await page.mouse.wheel(0, 180);
+            await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+            await settleScroll(body);
+            await body.evaluate((element) => { element.scrollTop = 0; });
+            await body.focus();
+            await page.keyboard.press('PageDown');
+            await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+            await settleScroll(body);
+            const position = await body.evaluate((element) => element.scrollTop);
+            const left = attachments.locator('.attachment-sidebar');
+            await left.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+            expect(await body.evaluate((element) => element.scrollTop)).toBe(position);
+            await left.evaluate((element) => { element.scrollTop = 0; });
+          } else {
+            const frame = attachments.locator('iframe');
+            await expect(frame).toBeInViewport({ ratio: 1 });
+            const frameBounds = await frame.boundingBox();
+            const bodyBounds = await body.boundingBox();
+            expect(frameBounds!.height).toBeCloseTo(bodyBounds!.height, 0);
+            expect(outer[0]!.scrollHeight).toBeLessThanOrEqual(outer[0]!.height + 1);
+            if (extension === 'html') {
+              const content = frame.contentFrame();
+              await expect(content.locator('#counter')).toBeVisible();
+              expect(await content.locator('html').evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+              await page.mouse.move(frameBounds!.x + frameBounds!.width / 2, frameBounds!.y + frameBounds!.height / 2);
+              await page.mouse.wheel(0, 180);
+              await expect.poll(() => content.locator('html').evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+              await settleScroll(content.locator('html'));
+              await content.locator('html').evaluate((element) => { element.scrollTop = 0; });
+              await content.locator('#counter').focus();
+              await page.keyboard.press('PageDown');
+              await expect.poll(() => content.locator('html').evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+              await settleScroll(content.locator('html'));
+            }
+          }
+          scrollEvidence.push({ viewport, extension, outer, panes });
+        }
+      }
+    });
     await page.setViewportSize({ width: 844, height: 390 });
     await selectFile(attachments, 'long/reading.md');
-    const changeDetailLanguage = async (locale: string): Promise<void> => {
-      const confirmation = await confirmDeletion(page, attachments, 'docs/design.md');
-      await confirmation.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
-      await confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true }).click();
-    };
     await expect(dialog.locator('.task-detail-header').getByRole('combobox')).toHaveCount(0);
-    for (const locale of ['zh-CN', 'en']) {
-      await changeDetailLanguage(locale);
-      const shortScreenshot = info.outputPath(`task-attachments-short-${locale}.png`);
-      await page.screenshot({ path: shortScreenshot, fullPage: false });
-      await info.attach(`task-attachments-short-${locale}`, { path: shortScreenshot, contentType: 'image/png' });
-    }
-    await changeDetailLanguage('zh-CN');
+    const shortScreenshot = info.outputPath('task-attachments-short-zh-CN.png');
+    await page.screenshot({ path: shortScreenshot, fullPage: false });
+    await info.attach('task-attachments-short-zh-CN', { path: shortScreenshot, contentType: 'image/png' });
     await page.setViewportSize({ width: 320, height: 800 });
     await selectFile(attachments, longPath);
     await expect(attachments.getByRole('heading', { name: longPath, exact: true })).toHaveAttribute('title', longPath);
@@ -531,89 +539,91 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await selectFile(attachments, 'images/workflow.svg');
     await expect.poll(() => attachments.getByRole('img').evaluate((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)).toBe(true);
 
-    await selectFile(attachments, 'site/index.html');
-    const html = attachments.getByTitle('HTML 预览：site/index.html');
-    await expect(html).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, 'site/index.html'));
-    await expect(html).not.toHaveAttribute('sandbox');
-    const content = html.contentFrame();
-    await expect(content.locator('#data')).toHaveText('Attachment same-data journey · in_progress');
-    expect(await content.locator('body').evaluate((body) => getComputedStyle(body).backgroundColor)).toBe('rgb(246, 247, 252)');
-    await expect.poll(() => content.getByRole('img', { name: 'Project workflow' }).evaluate((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)).toBe(true);
-    await content.getByRole('button', { name: '完成一个任务' }).click();
-    await expect(content.locator('#result')).toHaveText('已完成 3 个任务');
-    const innerButton = content.getByRole('button', { name: '完成一个任务' });
-    const frameHandle = await html.elementHandle();
-    const input = attachments.getByLabel('选择一个文件');
-    const inputHandle = await input.elementHandle();
-    await uploadSummary.click();
-    await input.setInputFiles({ name: 'unsent.txt', mimeType: 'text/plain', buffer: Buffer.from('Unsent draft') });
-    await attachments.getByRole('textbox', { name: '目标相对路径' }).fill('drafts/unsent.txt');
-    await uploadSummary.click();
-    await expect(input).toBeHidden();
-    const notes = attachments.locator('summary').filter({ hasText: exact('▱ notes') }).locator('..');
-    await notes.locator('summary').first().click();
-    await expect(notes).not.toHaveAttribute('open', '');
-    await innerButton.focus();
-    await dialog.getByRole('tab', { name: '概览', exact: true }).click();
-    await expect(dialog.getByRole('tab', { name: '概览', exact: true })).toBeFocused();
-    await expect(dialog.locator('.task-detail-panel-attachments')).toHaveAttribute('inert', '');
-    await expect(html).toBeHidden();
-    await dialog.getByRole('tab', { name: '附件', exact: true }).click();
-    expect(await frameHandle!.evaluate((element) => element === document.querySelector('.task-attachments iframe'))).toBe(true);
-    expect(await inputHandle!.evaluate((element) => element === document.querySelector('.task-attachments input[type=file]'))).toBe(true);
-    await expect(content.locator('#result')).toHaveText('已完成 3 个任务');
-    await expect(uploadDisclosure).not.toHaveAttribute('open', '');
-    await uploadSummary.click();
-    await expect(attachments.getByRole('textbox', { name: '目标相对路径' })).toHaveValue('drafts/unsent.txt');
-    expect(await input.evaluate((element) => (element as HTMLInputElement).files?.[0]?.name)).toBe('unsent.txt');
-    await expect(notes).not.toHaveAttribute('open', '');
-    await frameHandle!.dispose();
-    await inputHandle!.dispose();
+    await test.step('Verify embedded resource state, focus and painted PDF', async () => {
+      await selectFile(attachments, 'site/index.html');
+      const html = attachments.getByTitle('HTML 预览：site/index.html');
+      await expect(html).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, 'site/index.html'));
+      await expect(html).not.toHaveAttribute('sandbox');
+      const content = html.contentFrame();
+      await expect(content.locator('#data')).toHaveText('Attachment same-data journey · in_progress');
+      expect(await content.locator('body').evaluate((body) => getComputedStyle(body).backgroundColor)).toBe('rgb(246, 247, 252)');
+      await expect.poll(() => content.getByRole('img', { name: 'Project workflow' }).evaluate((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)).toBe(true);
+      await content.getByRole('button', { name: '完成一个任务' }).click();
+      await expect(content.locator('#result')).toHaveText('已完成 3 个任务');
+      const innerButton = content.getByRole('button', { name: '完成一个任务' });
+      const frameHandle = await html.elementHandle();
+      const input = attachments.getByLabel('选择一个文件');
+      const inputHandle = await input.elementHandle();
+      await uploadSummary.click();
+      await input.setInputFiles({ name: 'unsent.txt', mimeType: 'text/plain', buffer: Buffer.from('Unsent draft') });
+      await attachments.getByRole('textbox', { name: '目标相对路径' }).fill('drafts/unsent.txt');
+      await uploadSummary.click();
+      await expect(input).toBeHidden();
+      const notes = attachments.locator('summary').filter({ hasText: exact('▱ notes') }).locator('..');
+      await notes.locator('summary').first().click();
+      await expect(notes).not.toHaveAttribute('open', '');
+      await innerButton.focus();
+      await dialog.getByRole('tab', { name: '概览', exact: true }).click();
+      await expect(dialog.getByRole('tab', { name: '概览', exact: true })).toBeFocused();
+      await expect(dialog.locator('.task-detail-panel-attachments')).toHaveAttribute('inert', '');
+      await expect(html).toBeHidden();
+      await dialog.getByRole('tab', { name: '附件', exact: true }).click();
+      expect(await frameHandle!.evaluate((element) => element === document.querySelector('.task-attachments iframe'))).toBe(true);
+      expect(await inputHandle!.evaluate((element) => element === document.querySelector('.task-attachments input[type=file]'))).toBe(true);
+      await expect(content.locator('#result')).toHaveText('已完成 3 个任务');
+      await expect(uploadDisclosure).not.toHaveAttribute('open', '');
+      await uploadSummary.click();
+      await expect(attachments.getByRole('textbox', { name: '目标相对路径' })).toHaveValue('drafts/unsent.txt');
+      expect(await input.evaluate((element) => (element as HTMLInputElement).files?.[0]?.name)).toBe('unsent.txt');
+      await expect(notes).not.toHaveAttribute('open', '');
+      await frameHandle!.dispose();
+      await inputHandle!.dispose();
 
-    await innerButton.focus();
-    await page.keyboard.press('Tab');
-    await expect(dialog.locator('.task-detail-title')).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: '复制任务标题', exact: true })).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(dialog.locator('.task-detail-fullscreen-toggle')).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: '更多任务操作', exact: true })).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: '关闭任务详情', exact: true })).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toBeFocused();
-    await innerButton.focus();
-    await page.keyboard.press('Shift+Tab');
-    await expect(attachments.getByRole('link', { name: '在新标签页打开', exact: true })).toBeFocused();
-    await innerButton.focus();
-    await page.keyboard.press('Escape');
-    await expectReleased();
-    const freshReader = await page.context().newPage();
-    await freshReader.goto(readerUrl);
-    await expect(freshReader.getByRole('heading', { name: '附件设计', exact: true })).toBeVisible();
-    await freshReader.reload();
-    await expect(freshReader.getByRole('table').first()).toContainText('Web已连接');
-    await freshReader.close();
-    expect(graphReads).toBe(1);
-    expect(detailReads).toBe(1);
-    const secondOpen = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/tasks/${task.id}`);
-    await trigger.click();
-    expect((await secondOpen).status()).toBe(200);
-    expect(await (await secondOpen).finished()).toBeNull();
-    await dialog.getByRole('tab', { name: '附件', exact: true }).click();
-    await expect(attachments.getByRole('heading', { name: `附件 · ${seeds.length}`, exact: true })).toBeVisible();
+      await innerButton.focus();
+      await page.keyboard.press('Tab');
+      await expect(dialog.locator('.task-detail-title')).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(dialog.getByRole('button', { name: '复制任务标题', exact: true })).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(dialog.locator('.task-detail-fullscreen-toggle')).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(dialog.getByRole('button', { name: '更多任务操作', exact: true })).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(dialog.getByRole('button', { name: '关闭任务详情', exact: true })).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toBeFocused();
+      await innerButton.focus();
+      await page.keyboard.press('Shift+Tab');
+      await expect(attachments.getByRole('link', { name: '在新标签页打开', exact: true })).toBeFocused();
+      await innerButton.focus();
+      await page.keyboard.press('Escape');
+      await expectReleased();
+      const freshReader = await page.context().newPage();
+      await freshReader.goto(readerUrl);
+      await expect(freshReader.getByRole('heading', { name: '附件设计', exact: true })).toBeVisible();
+      await freshReader.reload();
+      await expect(freshReader.getByRole('table').first()).toContainText('Web已连接');
+      await freshReader.close();
+      expect(graphReads).toBe(1);
+      expect(detailReads).toBe(1);
+      const secondOpen = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/tasks/${task.id}`);
+      await trigger.click();
+      expect((await secondOpen).status()).toBe(200);
+      expect(await (await secondOpen).finished()).toBeNull();
+      await dialog.getByRole('tab', { name: '附件', exact: true }).click();
+      await expect(attachments.getByRole('heading', { name: `附件 · ${seeds.length}`, exact: true })).toBeVisible();
 
-    await selectFile(attachments, 'reports/brief.pdf');
-    const pdfFrame = attachments.getByTitle('PDF 预览：reports/brief.pdf');
-    await expect(pdfFrame).toBeVisible();
-    await expect(pdfFrame).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, 'reports/brief.pdf'));
-    await paintedPdf(page, pdfFrame, info, pdf, new URL(attachmentPreviewUrl(project.id, task.id, 'reports/brief.pdf'), origin).href);
-    await expectCenteredTaskDetail(page, dialog);
-    await dialog.getByRole('button', { name: '关闭任务详情', exact: true }).click();
-    await expectReleased();
-    expect(graphReads).toBe(1);
-    expect(detailReads).toBe(2);
+      await selectFile(attachments, 'reports/brief.pdf');
+      const pdfFrame = attachments.getByTitle('PDF 预览：reports/brief.pdf');
+      await expect(pdfFrame).toBeVisible();
+      await expect(pdfFrame).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, 'reports/brief.pdf'));
+      await paintedPdf(page, pdfFrame, info, pdf, new URL(attachmentPreviewUrl(project.id, task.id, 'reports/brief.pdf'), origin).href);
+      await expectCenteredTaskDetail(page, dialog);
+      await dialog.getByRole('button', { name: '关闭任务详情', exact: true }).click();
+      await expectReleased();
+      expect(graphReads).toBe(1);
+      expect(detailReads).toBe(2);
+    });
     const thirdOpen = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/tasks/${task.id}`);
     await trigger.click();
     expect((await thirdOpen).status()).toBe(200);
@@ -669,8 +679,8 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await page.keyboard.press('Tab');
     await expect(cancelled.getByRole('button', { name: '删除附件', exact: true })).toBeFocused();
     await page.keyboard.press('Tab');
-    await expect(cancelled.getByRole('combobox', { name: '语言 / Language', exact: true })).toBeFocused();
-    await page.keyboard.press('Tab');
+    await expect(cancelled.getByRole('combobox', { name: '语言 / Language', exact: true })).toHaveCount(0);
+    await expect(cancelled.locator('.locale-notice')).toHaveCount(0);
     await expect(cancelled.locator('.attachment-delete-body')).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(cancelled.getByRole('button', { name: '取消', exact: true })).toBeFocused();
@@ -683,89 +693,116 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await expect(dialog).toBeVisible();
     expect(deletionRequests).toEqual([]);
 
+    const layoutPage = await page.context().newPage();
+    const layoutErrors: string[] = [];
+    const layoutWrites: string[] = [];
+    layoutPage.on('pageerror', (error) => layoutErrors.push(error.name));
+    await layoutPage.route('**/api/v1/**', async (route) => {
+      if (!['GET', 'HEAD'].includes(route.request().method())) {
+        layoutWrites.push(`${route.request().method()} ${route.request().url()}`);
+        await route.abort();
+      } else await route.continue();
+    });
+    await layoutPage.goto(attachmentPageUrl(project.id, task.id, 'docs/design.md'));
+    const layoutAttachments = layoutPage.locator('.task-attachments');
+    const pageLanguage = layoutPage.locator('.task-detail-page-topbar').getByRole('combobox', { name: '语言 / Language', exact: true });
+    await expect(pageLanguage).toBeVisible();
     const menuLayouts: unknown[] = [];
     for (const locale of ['zh-CN', 'en']) {
-      await changeDetailLanguage(locale);
+      await pageLanguage.selectOption(locale);
       for (const viewport of [{ width: 1440, height: 800 }, { width: 768, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
-        await page.setViewportSize(viewport);
-        await (await fileActions(attachments, longPath)).click();
-        const menu = page.getByRole('menu');
+        await layoutPage.setViewportSize(viewport);
+        await (await fileActions(layoutAttachments, longPath)).click();
+        const menu = layoutPage.getByRole('menu');
         await expect(menu).toBeInViewport({ ratio: 1 });
         const menuBounds = await menu.boundingBox();
-        await page.getByRole('menuitem', { name: locale === 'en' ? 'Delete' : '删除', exact: true }).click();
-        const confirmation = page.locator('.attachment-delete-dialog');
+        await layoutPage.getByRole('menuitem', { name: locale === 'en' ? 'Delete' : '删除', exact: true }).click();
+        const confirmation = layoutPage.locator('.attachment-delete-dialog');
         await expect(confirmation).toContainText(longPath);
         await expect(confirmation).toBeInViewport({ ratio: 1 });
         await expect(confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true })).toBeFocused();
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect(await layoutPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         menuLayouts.push({ locale, ...viewport, menu: menuBounds, confirmation: await confirmation.boundingBox() });
-        await page.keyboard.press('Escape');
-        await expect(dialog).toBeVisible();
+        await layoutPage.keyboard.press('Escape');
+        await expect(layoutAttachments).toBeVisible();
+        if (locale === 'en' && viewport.width === 844) {
+          await selectFile(layoutAttachments, 'long/reading.md');
+          const screenshot = info.outputPath('task-attachments-short-en.png');
+          await layoutPage.screenshot({ path: screenshot, fullPage: false });
+          await info.attach('task-attachments-short-en', { path: screenshot, contentType: 'image/png' });
+        }
       }
     }
     const longPathLayouts: unknown[] = [];
-    for (const locale of ['zh-CN', 'en']) {
-      await changeDetailLanguage(locale);
-      for (const viewport of [{ width: 320, height: 780 }, { width: 320, height: 568 }, { width: 844, height: 390 }]) {
-        await page.setViewportSize(viewport);
-        const confirmation = await confirmDeletion(page, attachments, longConfirmationPath);
-        const body = confirmation.locator('.attachment-delete-body');
-        const cancel = confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
-        const submit = confirmation.getByRole('button', { name: locale === 'en' ? 'Delete attachment' : '删除附件', exact: true });
-        await expect(confirmation).toBeInViewport({ ratio: 1 });
-        await expect(cancel).toBeFocused();
-        await expect(confirmation.locator('header,footer')).toHaveCount(2);
-        for (const fixed of [confirmation.locator('header'), confirmation.locator('footer'), cancel, submit]) await expect(fixed).toBeInViewport({ ratio: 1 });
-        const metrics = await confirmation.evaluate((element) => {
-          const body = element.querySelector<HTMLElement>('.attachment-delete-body')!;
-          return { dialogClientHeight: element.clientHeight, dialogScrollHeight: element.scrollHeight, bodyClientHeight: body.clientHeight, bodyScrollHeight: body.scrollHeight, bodyOverflow: getComputedStyle(body).overflowY };
-        });
-        expect(metrics.dialogScrollHeight).toBeLessThanOrEqual(metrics.dialogClientHeight + 1);
-        expect(metrics.bodyOverflow).toMatch(/^(auto|scroll)$/);
-        if (viewport.height <= 568) expect(metrics.bodyScrollHeight).toBeGreaterThan(metrics.bodyClientHeight + 1);
-        await expect.poll(() => pathEdges(confirmation)).toMatchObject({ prefix: true });
-        let wheelTop = 0;
-        let keyboardTop = 0;
-        if (metrics.bodyScrollHeight > metrics.bodyClientHeight + 1) {
-          const bounds = await body.boundingBox();
-          if (bounds === null) throw new Error('The confirmation scroll owner has no bounds.');
-          await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-          await page.mouse.wheel(0, metrics.bodyScrollHeight);
-          await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-          await expect.poll(() => pathEdges(confirmation)).toMatchObject({ tail: true });
-          wheelTop = await body.evaluate((element) => element.scrollTop);
-          await page.keyboard.press('Shift+Tab');
-          await expect(body).toBeFocused();
-          await page.keyboard.press('Home');
-          await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBe(0);
+    await test.step('Verify long attachment deletion layouts and scrolling', async () => {
+      for (const locale of ['zh-CN', 'en']) {
+        await pageLanguage.selectOption(locale);
+        for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 780 }, { width: 320, height: 568 }, { width: 844, height: 390 }]) {
+          await layoutPage.setViewportSize(viewport);
+          const confirmation = await confirmDeletion(layoutPage, layoutAttachments, longConfirmationPath);
+          const body = confirmation.locator('.attachment-delete-body');
+          const cancel = confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
+          const submit = confirmation.getByRole('button', { name: locale === 'en' ? 'Delete attachment' : '删除附件', exact: true });
+          await expect(confirmation).toBeInViewport({ ratio: 1 });
+          await expect(cancel).toBeFocused();
+          await expect(confirmation.locator('header,footer')).toHaveCount(2);
+          for (const fixed of [confirmation.locator('header'), confirmation.locator('footer'), cancel, submit]) await expect(fixed).toBeInViewport({ ratio: 1 });
+          const metrics = await confirmation.evaluate((element) => {
+            const body = element.querySelector<HTMLElement>('.attachment-delete-body')!;
+            return { dialogClientHeight: element.clientHeight, dialogScrollHeight: element.scrollHeight, bodyClientHeight: body.clientHeight, bodyScrollHeight: body.scrollHeight, bodyOverflow: getComputedStyle(body).overflowY };
+          });
+          expect(metrics.dialogScrollHeight).toBeLessThanOrEqual(metrics.dialogClientHeight + 1);
+          expect(metrics.bodyOverflow).toMatch(/^(auto|scroll)$/);
+          if (viewport.height <= 568) expect(metrics.bodyScrollHeight).toBeGreaterThan(metrics.bodyClientHeight + 1);
           await expect.poll(() => pathEdges(confirmation)).toMatchObject({ prefix: true });
-          await page.keyboard.press('End');
-          await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-          await expect.poll(() => pathEdges(confirmation)).toMatchObject({ tail: true });
-          keyboardTop = await body.evaluate((element) => element.scrollTop);
-        } else {
-          await expect.poll(() => pathEdges(confirmation)).toEqual({ prefix: true, tail: true });
-          await page.keyboard.press('Shift+Tab');
+          let wheelTop = 0;
+          let keyboardTop = 0;
+          if (metrics.bodyScrollHeight > metrics.bodyClientHeight + 1) {
+            const bounds = await body.boundingBox();
+            if (bounds === null) throw new Error('The confirmation scroll owner has no bounds.');
+            await layoutPage.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+            await layoutPage.mouse.wheel(0, metrics.bodyScrollHeight);
+            await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+            await expect.poll(() => pathEdges(confirmation)).toMatchObject({ tail: true });
+            wheelTop = await body.evaluate((element) => element.scrollTop);
+            await layoutPage.keyboard.press('Shift+Tab');
+            await expect(body).toBeFocused();
+            await layoutPage.keyboard.press('Home');
+            await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBe(0);
+            await expect.poll(() => pathEdges(confirmation)).toMatchObject({ prefix: true });
+            await layoutPage.keyboard.press('End');
+            await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+            await expect.poll(() => pathEdges(confirmation)).toMatchObject({ tail: true });
+            keyboardTop = await body.evaluate((element) => element.scrollTop);
+          } else {
+            await expect.poll(() => pathEdges(confirmation)).toEqual({ prefix: true, tail: true });
+            await layoutPage.keyboard.press('Shift+Tab');
+            await expect(body).toBeFocused();
+          }
+          await layoutPage.keyboard.press('Tab');
+          await expect(cancel).toBeFocused();
+          await layoutPage.keyboard.press('Shift+Tab');
           await expect(body).toBeFocused();
+          await layoutPage.keyboard.press('Shift+Tab');
+          await expect(submit).toBeFocused();
+          await expect(confirmation.getByRole('combobox', { name: '语言 / Language', exact: true })).toHaveCount(0);
+          await expect(confirmation.locator('.locale-notice')).toHaveCount(0);
+          for (const fixed of [confirmation.locator('header'), confirmation.locator('footer'), cancel, submit]) await expect(fixed).toBeInViewport({ ratio: 1 });
+          expect(await layoutPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          const screenshot = info.outputPath(`attachment-delete-long-path-${locale}-${viewport.width}x${viewport.height}.png`);
+          await layoutPage.screenshot({ path: screenshot, fullPage: false });
+          await info.attach(`attachment-delete-long-path-${locale}-${viewport.width}x${viewport.height}`, { path: screenshot, contentType: 'image/png' });
+          longPathLayouts.push({ locale, ...viewport, pathBytes: Buffer.byteLength(longConfirmationPath), ...metrics, wheelTop, keyboardTop });
+          await cancel.click();
+          await expect(confirmation).toBeHidden();
+          await expect(layoutAttachments).toBeVisible();
         }
-        await page.keyboard.press('Tab');
-        await expect(cancel).toBeFocused();
-        await page.keyboard.press('Shift+Tab');
-        await expect(body).toBeFocused();
-        await page.keyboard.press('Shift+Tab');
-        await expect(confirmation.getByRole('combobox', { name: '语言 / Language', exact: true })).toBeFocused();
-        for (const fixed of [confirmation.locator('header'), confirmation.locator('footer'), cancel, submit]) await expect(fixed).toBeInViewport({ ratio: 1 });
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        const screenshot = info.outputPath(`attachment-delete-long-path-${locale}-${viewport.width}x${viewport.height}.png`);
-        await page.screenshot({ path: screenshot, fullPage: false });
-        await info.attach(`attachment-delete-long-path-${locale}-${viewport.width}x${viewport.height}`, { path: screenshot, contentType: 'image/png' });
-        longPathLayouts.push({ locale, ...viewport, pathBytes: Buffer.byteLength(longConfirmationPath), ...metrics, wheelTop, keyboardTop });
-        await cancel.click();
-        await expect(confirmation).toBeHidden();
-        await expect(dialog).toBeVisible();
       }
-    }
-    await changeDetailLanguage('zh-CN');
+    });
+    await pageLanguage.selectOption('zh-CN');
+    expect(layoutWrites).toEqual([]);
+    expect(layoutErrors).toEqual([]);
+    await layoutPage.close();
     await page.setViewportSize({ width: 1600, height: 1100 });
     expect(deletionRequests).toEqual([]);
     expect(await retainedElement.evaluate((element) => element === document.querySelector('.attachment-preview-body'))).toBe(true);

@@ -1,7 +1,9 @@
+import { stringifyWireJson } from "../helpers/wireJson";
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { readWorkerClaim } from '../../src/api/task-properties';
 import { attachmentDownloadUrl } from '../../src/api/client';
+import { parseUser, decodeMembersJson, parseMembers } from '../../src/api/auth-parse';
 import { attachmentFileButton } from './attachment-tree';
 import type { AuthenticatedAPI } from './authentication';
 import { createProject, createTask, expect, type Task } from './fixtures';
@@ -10,6 +12,36 @@ import { selectTaskList } from './project-view';
 const ownerName = 'Claim owner '.repeat(16) + 'complete';
 const account = `${'account'.repeat(24)}@example.com`;
 const machineName = 'Machine-'.repeat(24) + 'complete';
+
+export const verifyClaimControlFocus = async (heading: Locator, overviewTab: Locator): Promise<void> => {
+  const withdraw = heading.getByRole('button', { name: /^(强制撤回|Force withdraw)$/, exact: true });
+  const expectWithdrawVisible = async (): Promise<void> => {
+    await expect.poll(() => withdraw.evaluate((element) => {
+      const bounds = element.getBoundingClientRect(), region = element.closest('.task-detail-heading')!.getBoundingClientRect();
+      return bounds.top >= region.top - 1 && bounds.bottom <= region.bottom + 1;
+    })).toBe(true);
+  };
+  await overviewTab.focus();
+  await heading.evaluate((element) => { element.scrollTop = 0; });
+  await overviewTab.press('Shift+Tab');
+  await expect(withdraw).toBeFocused();
+  await expectWithdrawVisible();
+
+  await heading.focus();
+  await heading.press('Home');
+  await expect.poll(() => heading.evaluate((element) => element.scrollTop)).toBe(0);
+  await heading.press('End');
+  await expect.poll(() => heading.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
+  if (await heading.evaluate((element) => element.scrollHeight > element.clientHeight + 1)) {
+    await heading.evaluate((element) => { element.scrollTop = 0; });
+    const bounds = (await heading.boundingBox())!;
+    await heading.page().mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await heading.page().mouse.wheel(0, 250);
+    await expect.poll(() => heading.evaluate((element) => Math.abs(element.scrollTop - Math.min(250, element.scrollHeight - element.clientHeight)))).toBeLessThanOrEqual(1);
+  }
+  await withdraw.focus();
+  await expectWithdrawVisible();
+};
 
 const expectIdentityEdges = async (heading: Locator): Promise<void> => {
   for (const selector of ['.task-claim-owner strong', '.task-claim-account', '.task-claim-execution > span:first-child']) {
@@ -39,23 +71,37 @@ const expectIdentityEdges = async (heading: Locator): Promise<void> => {
 
 export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAPI, info: TestInfo): Promise<void> => {
   const project = await createProject(api, { name: 'Claim reading allocation' });
-  const task = await createTask(api, project.id, { title: 'Claim reading allocation', description: Array.from({ length: 60 }, (_, index) => `Paragraph ${index + 1}: the reading panel remains accessible.`).join('\n\n') });
+  const callerResponse = await api.get('/api/v1/me');
+  expect(callerResponse.status()).toBe(200);
+  const caller = await callerResponse.json() as { id: string };
+  expect(callerResponse.headers()['daynight-user-id']).toBe(caller.id);
+  const task = await createTask(api, project.id, { title: 'Claim reading allocation', assignedTo: caller.id, description: Array.from({ length: 60 }, (_, index) => `Paragraph ${index + 1}: the reading panel remains accessible.`).join('\n\n') });
   const path = `/api/v1/projects/${project.id}/tasks/${task.id}`;
-  const enabled = await api.patch(path, { data: { version: task.version, allowAgents: true } });
+  const identity = await api.get('/api/v1/me');
+  expect(identity.status()).toBe(200);
+  const user = parseUser(await identity.json());
+  const assigned = await api.patch(path, { data: { version: task.version, assignedTo: user.id } });
+  expect(assigned.status()).toBe(200);
+  const assignedTask = await assigned.json() as Task;
+  expect(assignedTask).toMatchObject({ assignedTo: user.id, allowAgents: false });
+  const enabled = await api.patch(path, { data: { version: assignedTask.version, allowAgents: true } });
   expect(enabled.status()).toBe(200);
   const enabledTask = await enabled.json() as Task;
+  expect(enabledTask).toMatchObject({ assignedTo: user.id, allowAgents: true });
   const claimId = randomUUID();
   const claimed = await api.post(`${path}/worker-claim`, { headers: { 'Daynight-Worker-Protocol': '2' }, data: { version: enabledTask.version, claimId, workerId: randomUUID(), machine: { id: randomUUID(), name: machineName }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: randomUUID() } });
   expect(claimed.status()).toBe(200);
   const current = await claimed.json() as Task;
+  expect(current.assignedTo).toBe(caller.id);
+  expect(readWorkerClaim(current.properties)!.userId).toBe(caller.id);
   const attachment = await api.put(attachmentDownloadUrl(project.id, task.id, 'docs/guide.md'), { headers: { 'Content-Type': 'text/markdown' }, data: '# Claim reader\n\n' + 'The attachment remains readable.\n\n'.repeat(60) });
   expect(attachment.status()).toBe(201);
   const membersURL = `**/api/v1/projects/${project.id}/members`;
   await page.route(membersURL, async (route) => {
     const response = await api.get(`/api/v1/projects/${project.id}/members`);
-    const body = await response.json() as { items: { userId: string; name: string | null; email: string | null }[] };
+    const body = parseMembers(await decodeMembersJson(new Response(await response.text())), project.id);
     const headers = { ...response.headers() }; delete headers['content-length'];
-    await route.fulfill({ status: response.status(), headers, json: { ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, name: ownerName, email: account } : member) } });
+    await route.fulfill({ status: response.status(), headers, body: stringifyWireJson({ ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, profile: { ...member.profile, name: ownerName, email: account } } : member) }) });
   });
   const layouts: unknown[] = [];
   try {
@@ -80,23 +126,24 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
           await page.setViewportSize(viewport);
           for (const fullscreen of [false, true]) {
             if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
+            await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).focus();
+            await page.keyboard.press('End');
+            const lastTab = root.locator('.task-detail-tabs').getByRole('tab').last();
+            await expect(lastTab).toHaveAttribute('aria-selected', 'true');
+            await expect(lastTab).toBeFocused();
+            await expect.poll(() => lastTab.evaluate((element) => {
+              const tab = element.getBoundingClientRect();
+              const list = element.closest('[role=tablist]')!.getBoundingClientRect();
+              return tab.left >= list.left - 1 && tab.right <= list.right + 1;
+            })).toBe(true);
+            await page.keyboard.press('Home');
             await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).click();
             const overview = root.locator('.task-detail-panel-overview');
             await expect.poll(async () => (await overview.boundingBox())!.height).toBeGreaterThanOrEqual(32);
             const overviewBounds = await overview.boundingBox();
             expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
             await expectIdentityEdges(heading);
-            await heading.focus(); await page.keyboard.press('Home'); await page.keyboard.press('End');
-            if (await heading.evaluate((element) => element.scrollHeight > element.clientHeight + 1)) {
-              await heading.evaluate((element) => { element.scrollTop = 0; });
-              const bounds = (await heading.boundingBox())!;
-              await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-              await page.mouse.wheel(0, 250);
-              await expect.poll(() => heading.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-            }
-            const withdraw = heading.getByRole('button', { name: /^(强制撤回|Force withdraw)$/, exact: true });
-            await withdraw.focus();
-            await expect.poll(() => withdraw.evaluate((element) => { const bounds = element.getBoundingClientRect(), region = element.closest('.task-detail-heading')!.getBoundingClientRect(); return bounds.top >= region.top - 1 && bounds.bottom <= region.bottom + 1; })).toBe(true);
+            await verifyClaimControlFocus(heading, root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }));
             await root.getByRole('tab', { name: /^(附件|Attachments)$/, exact: true }).click();
             await (await attachmentFileButton(root, 'docs/guide.md')).click();
             const preview = root.locator('.attachment-preview-body');

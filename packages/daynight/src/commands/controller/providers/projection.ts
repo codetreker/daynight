@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { record, string } from "./native-rpc.js";
 import type { ProviderEntry } from "./types.js";
+import { codexSubagentActivity } from "../../../session/codex-subagent-activity.js";
 
 // Native item IDs survive reconnects; transport IDs must never create new timeline rows.
 export const nativeEntryId = (session: string, item: string): string => {
@@ -57,6 +58,17 @@ export class CodexProjection {
       // neither displayable text nor evidence that streamed text was removed.
       if (text.trim() === "") return;
       this.content.set(id, text); this.emit({ ...base, kind: "reasoning", text: limited(text) });
+    }
+    else if (type === "subAgentActivity") {
+      const activity = codexSubagentActivity(item)!;
+      this.emit({ ...base, kind: "tool_call", callId: id, name: activity.name, input: limited(activity.input), output: [], status: completed ? "completed" : "running", truncated: activity.input.length > 200_000 });
+    }
+    else if (type === "sleep") {
+      const duration = item.durationMs;
+      const seconds = typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? duration / 1000 : undefined;
+      // New input can end a sleep early; requested duration is not elapsed time.
+      const input = seconds === undefined ? "Wait" : `Wait up to ${seconds} ${seconds === 1 ? "second" : "seconds"} (requested)`;
+      this.emit({ ...base, kind: "tool_call", callId: id, name: "clock.sleep", input, output: [], status: completed ? "completed" : "running", truncated: false });
     }
     else if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageView", "collabAgentToolCall"].includes(type)) {
       const output = readable(item.aggregatedOutput ?? item.result ?? item.error ?? item.changes ?? "");

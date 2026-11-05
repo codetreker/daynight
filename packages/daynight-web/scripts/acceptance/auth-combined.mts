@@ -1,3 +1,5 @@
+import { authCombinedChecks as requiredChecks } from './inventory.mts';
+import type { ProjectParticipant } from "../../src/api/auth-types";
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7,8 +9,8 @@ import { chromium, expect, request as playwrightRequest, type Browser, type Brow
 import { authenticatedAPI, browserFetch, tokenContext, type AuthenticatedAPI } from '../../tests/e2e/authentication.ts';
 import { stringifyApiJson } from '../../src/api/json.ts';
 import { login } from './auth-fixture.mts';
-import { browserInventory, recordBrowserOwnership, recoverBrowsers, type BrowserInventory } from './browser.mts';
-import { createAcceptanceCli, recoverCliProcesses, validateInstalledCli } from './installed-cli.mts';
+import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recoverBrowsers, setBrowserViewport, type BrowserInventory } from './browser.mts';
+import { createAcceptanceCli, validateInstalledCli } from './installed-cli.mts';
 import { command } from './process.mts';
 import { processIdentity, requireGroupStopped, type ProcessIdentity } from './identity.mts';
 import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget, type UploadObservation } from './auth-combined-target.mts';
@@ -35,9 +37,6 @@ export type AuthCombinedOptions = {
   readLogs(run: CombinedCommand): Promise<string>;
 };
 
-const requiredChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
-  'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
-  'admitted-member-removal', 'expired-pat', 'secret-scan'] as const;
 class CombinedFailure extends Error {}
 let launchingBrowser = false;
 export const launchAuthCombinedBrowser = async <T,>(temporaryRoot: string, launch: () => Promise<T>): Promise<T> => {
@@ -99,7 +98,7 @@ const previewUrl = (project: string, task: string, path: string): string => `/ap
 type User = { id: string; name: string; email: string };
 type Project = { id: string; name: string };
 type Task = { id: string; title: string; version: bigint; properties: { pullRequests: { url: string; title: string }[] }; updatedAt: string };
-type Member = { userId: string; role: string; version: bigint };
+type Member = ProjectParticipant;
 type Token = { id: string; token: string };
 type Invitation = { id: string; link: string };
 type Cli = Awaited<ReturnType<typeof createAcceptanceCli>>;
@@ -151,8 +150,15 @@ export const validateAuthCombinedReceipt = (value: unknown, target: CombinedTarg
 const bilingualToken = async (page: Page, context: BrowserContext, origin: string, secrets: Set<string>, signal: AbortSignal): Promise<Token> => {
   await page.goto(`${origin}/account`);
   await page.getByRole('button', { name: 'Access tokens', exact: true }).click();
+  await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
+  await page.getByRole('button', { name: '创建令牌', exact: true }).click();
+  await expect(page.getByRole('dialog').getByLabel('令牌名称', { exact: false })).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+  await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
+  await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
   await page.getByRole('button', { name: 'Create token', exact: true }).click();
   const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
   const name = `Combined CLI ${randomUUID()}`;
   const input = dialog.getByLabel('Token name', { exact: false });
   await input.fill(name);
@@ -187,19 +193,18 @@ const bilingualToken = async (page: Page, context: BrowserContext, origin: strin
   try {
     await dialog.getByRole('button', { name: 'Create token', exact: true }).click();
     const token = await fetched.promise;
-    await dialog.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
-    check(await originalInput.evaluate((element) => element.isConnected), 'Language switching replaced the pending token input.');
-    check(await originalInput.evaluate((element) => (element as HTMLInputElement).value) === name && posts === 1, 'Language switching changed token input or repeated submission.');
+    check(await originalInput.evaluate((element) => element.isConnected), 'The pending token input was replaced.');
+    check(await originalInput.evaluate((element) => (element as HTMLInputElement).value) === name && posts === 1, 'The pending token input changed or submission repeated.');
     release.resolve();
     await finished.promise;
-    const secret = page.getByLabel('一次性访问令牌', { exact: true });
+    const secret = page.getByLabel('One-time access token', { exact: true });
     await expect(secret).toBeVisible();
     check(await secret.inputValue() === token.token, 'Production one-time token field differs from its response.');
     const originalSecret = await secret.elementHandle();
     check(originalSecret !== null, 'The revealed token element is missing.');
-    await page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
-    check(await originalSecret.evaluate((element) => element.isConnected), 'Language switching replaced the revealed token.');
-    check(await originalSecret.evaluate((element) => (element as HTMLTextAreaElement).value) === token.token && posts === 1, 'Language switching changed the token or repeated submission.');
+    await expect(page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+    check(await originalSecret.evaluate((element) => element.isConnected), 'The revealed token was replaced.');
+    check(await originalSecret.evaluate((element) => (element as HTMLTextAreaElement).value) === token.token && posts === 1, 'The revealed token changed or submission repeated.');
     await page.getByRole('dialog').getByRole('button', { name: 'I have saved it, close', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     return token;
@@ -258,7 +263,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 640 }, { width: 320, height: 240 }]) {
-      await page.setViewportSize(viewport);
+      await setBrowserViewport(page, viewport);
       await expect.poll(async () => {
         const box = await detail.boundingBox();
         return box !== null && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1
@@ -281,7 +286,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
         await detail.getByRole('tab', { name: '附件', exact: true }).click();
       }
     }
-    await page.setViewportSize({ width: 1440, height: 1000 });
+    await setBrowserViewport(page, { width: 1440, height: 1000 });
     await (await attachmentFileActions(detail, 'docs/long.md')).click();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('menu')).toHaveCount(0);
@@ -316,7 +321,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
   await (await attachmentFileButton(detail, 'docs/long.md')).click();
   await expect(detail.locator('.attachment-markdown h1')).toHaveText('Fullscreen reading');
   await toggle.click();
-  await page.setViewportSize({ width: 320, height: 240 });
+  await setBrowserViewport(page, { width: 320, height: 240 });
   const markdown = detail.locator('.attachment-preview-body');
   shortReading.markdownHeight = await visibleReadingHeight(markdown);
   shortReading.markdownScroll = await scrollReading(page, markdown);
@@ -324,7 +329,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
-  await page.setViewportSize({ width: 1440, height: 1000 });
+  await setBrowserViewport(page, { width: 1440, height: 1000 });
 
   const reader = await context.newPage();
   try {
@@ -428,7 +433,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   };
   const cli = async (token: string, name: string): Promise<Cli> => {
     secrets.add(token);
-    const client = await createAcceptanceCli(options.target.baseUrl, join(options.directory, name), token, options.installedReceiptPath);
+    const client = await createAcceptanceCli(options.target.baseUrl, join(options.directory, name), token, options.installedReceiptPath, signal);
     clients.push(client); return client;
   };
   const pat = async (api: AuthenticatedAPI, name: string): Promise<Token> => {
@@ -438,27 +443,22 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   const origin = options.target.baseUrl;
   let failure: unknown;
   let abortClose: Promise<void> | undefined;
-  let abortCliRecovery: Promise<void> | undefined;
   const closeOnAbort = (): void => {
     abortClose = browser?.close(); void abortClose?.catch(() => {});
-    if (clients.length > 0) {
-      abortCliRecovery = recoverCliProcesses(options.target.acceptanceDirectory, options.installedReceiptPath, installed);
-      void abortCliRecovery.catch(() => {});
-    }
   };
   signal.addEventListener('abort', closeOnAbort, { once: true });
   try {
     await save();
     signal.throwIfAborted();
     const controls = createAuthCombinedTarget(options.target, run);
-    receipt.browserInventory = await browserInventory(); receipt.browserCleanup = 'pending'; await save();
-    // Playwright creates profiles from the parent os.tmpdir(), while launch env
-    // configures only Chromium. The preceding browser/CLI phase has drained;
-    // concurrent container preparation already runs in a separate process.
-    browser = await launchAuthCombinedBrowser(join(options.target.acceptanceDirectory, '../..'), async () => chromium.launch({
+    receipt.browserInventory = await browserInventory(options.directory); receipt.browserCleanup = 'pending'; await save();
+    // Playwright allocates private profiles from the parent's os.tmpdir().
+    // Chromium's separate socket directory keeps a short relative path for AF_UNIX.
+    const temporaryRoot = browserTemporaryRoot(options.directory);
+    browser = await launchAuthCombinedBrowser(temporaryRoot, async () => chromium.launch({
       headless: true, channel: 'chromium', env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_ACCEPTANCE_DIRECTORY: options.directory },
       ...(process.env.DAYNIGHT_BROWSER_EXECUTABLE === undefined ? {} : { executablePath: process.env.DAYNIGHT_BROWSER_EXECUTABLE }) }));
-    await recordBrowserOwnership(browser, options.directory);
+    await recordBrowserOwnership(browser, options.directory, receipt.browserInventory);
     receipt.browser = { name: browser.browserType().name(), version: browser.version(), platform: process.platform, executableOverride: process.env.DAYNIGHT_BROWSER_EXECUTABLE !== undefined }; await save();
     const aliceContext = await browser.newContext({ baseURL: origin, locale: 'en-US', viewport: { width: 1440, height: 1000 } });
     const bobContext = await browser.newContext({ baseURL: origin, locale: 'en-US', viewport: { width: 1440, height: 1000 } });
@@ -469,11 +469,11 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const bobUser = await request<User>(bob, origin, 'GET', '/api/v1/me', 200);
     check(aliceUser.id !== bobUser.id && aliceUser.email === bobUser.email, 'Normal same-email users did not remain distinct.');
     const a0 = await projectIds(alice, origin), b0 = await projectIds(bob, origin);
-    const shared = await request<Project>(alice, origin, 'POST', '/api/v1/projects', 201, { name: `Combined shared ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}` });
-    const privateProject = await request<Project>(bob, origin, 'POST', '/api/v1/projects', 201, { name: `Combined private ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}` });
+    const shared = await request<Project>(alice, origin, 'POST', '/api/v1/projects', 201, { name: `Combined shared ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}`, expectedUserId: aliceUser.id });
+    const privateProject = await request<Project>(bob, origin, 'POST', '/api/v1/projects', 201, { name: `Combined private ${randomUUID()}`, repoUrl: `https://example.test/combined/${randomUUID()}`, expectedUserId: bobUser.id });
     sameIds(await projectIds(alice, origin), [...a0, shared.id], 'Alice private-project pagination differs.');
     sameIds(await projectIds(bob, origin), [...b0, privateProject.id], 'Bob private-project pagination differs.');
-    const invite = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
+    const invite = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, { expectedUserId: aliceUser.id });
     const inviteToken = new URL(invite.link).hash.slice(1); secrets.add(inviteToken);
     const alicePage = await aliceContext.newPage(), bobPage = await bobContext.newPage();
     for (const page of [alicePage, bobPage]) { page.setDefaultTimeout(15_000); page.setDefaultNavigationTimeout(30_000); }
@@ -487,17 +487,17 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await request(alice, origin, 'GET', `/api/v1/projects/${privateProject.id}`, 404);
     const members = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
     const bobMember = members.items.find((member) => member.userId === bobUser.id);
-    check(bobMember?.role === 'member', 'Invitation did not create a normal member.');
+    check(bobMember?.directGrant?.role === 'member', 'Invitation did not create a normal member.');
     await record('partial-sharing', { aliceId: aliceUser.id, bobId: bobUser.id, sharedProject: shared.id, privateProject: privateProject.id, baselineAlice: a0, baselineBob: b0, pageLimit: 1 });
     const reading = `# Fullscreen reading\n\n${'Browser and installed CLI share this long reading task.\n\n'.repeat(120)}`;
     const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: reading });
     const privateTask = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${privateProject.id}/tasks`, 201, { title: 'Private authority control' });
-    await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, {});
-    await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.version, role: 'admin' });
-    await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.version.toString(), administratorDenial: 403 });
+    await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, { expectedUserId: bobUser.id });
+    await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.directGrant.version, role: 'admin', expectedUserId: bobUser.id });
+    await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.directGrant.version.toString(), administratorDenial: 403 });
     const originalToken = await bilingualToken(bobPage, bobContext, origin, secrets, signal);
     await screenshots(bobPage, 'account-english-after-secret-close');
-    await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['en', 'zh-CN', 'en'] });
+    await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['zh-CN', 'en'] });
     const bobCli = await cli(originalToken.token, 'original-cli');
     const tokenApi = await tokenContext(playwrightRequest, origin, originalToken.token);
     tokenClients.push(tokenApi);
@@ -549,7 +549,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await screenshots(bobPage, 'shared-preview-chinese');
     const fullscreen = await fullscreenPreview(bobPage, bobContext, origin, shared.id, task);
     await record('same-data-cli-browser', { projectId: shared.id, taskId: task.id, taskVersion: snapshot.version.toString(), path: 'shared/data.bin', bytes: binary.length, sha256: hash(binary), propertiesRetained: true, moduleAndRelativeFetch: true, fullscreen });
-    const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
+    const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, { expectedUserId: aliceUser.id });
     const pendingToken = new URL(pending.link).hash.slice(1); secrets.add(pendingToken);
     const memberSnapshot = encode(await request(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200));
     receipt.restart = await options.restartTarget(run, signal); await save();
@@ -602,9 +602,9 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await waitFor(async () => incomplete(await controls.observeUpload(probe(admittedPath)), 1), signal, 'real upload admission');
     check(!admitted.completed && admitted.sentBytes === prefixBytes, 'Admitted upload body was not incomplete.');
     const currentMembers = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
-    const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined, 'Current member is missing before removal.');
+    const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined && currentMember.directGrant !== null, 'Current direct grant is missing before removal.');
     const removalStarted = performance.now();
-    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.version });
+    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.directGrant.version, expectedUserId: aliceUser.id });
     const removalMs = performance.now() - removalStarted;
     check(removalMs < 5_000 && !admitted.completed && admitted.sentBytes === prefixBytes, 'Member removal waited for the held upload IO.');
     const removedDuringIO = await controls.observeUpload(probe(admittedPath));
@@ -660,14 +660,12 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
     const cleanupErrors: string[] = [];
-    try { await abortCliRecovery; } catch { cleanupErrors.push('Cancelled CLI recovery failed.'); }
     for (const upload of uploads) { try { await upload.close(); } catch { cleanupErrors.push('HTTP transfer cleanup failed.'); } }
     for (const client of tokenClients) { try { await client.dispose(); } catch { cleanupErrors.push('API context cleanup failed.'); } }
     for (const context of contexts) { try { await context.close(); } catch { cleanupErrors.push('Browser context cleanup failed.'); } }
     try { await browser?.close(); } catch { cleanupErrors.push('Browser close failed.'); }
     try { await abortClose; } catch { cleanupErrors.push('Cancelled browser close failed.'); }
     for (const client of clients) { try { await client.close(); } catch { cleanupErrors.push('CLI private-home cleanup failed.'); } }
-    try { await recoverCliProcesses(options.target.acceptanceDirectory, options.installedReceiptPath, installed); } catch { cleanupErrors.push('CLI process recovery failed.'); }
     if (receipt.browserInventory !== undefined) {
       try { await recoverBrowsers(options.directory, receipt.browserInventory); receipt.browserCleanup = 'passed'; }
       catch { receipt.browserCleanup = 'failed'; cleanupErrors.push('Browser process/profile recovery failed.'); }

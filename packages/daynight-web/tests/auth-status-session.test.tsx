@@ -1,8 +1,8 @@
 import { selectTaskList } from './helpers/projectViews';
-import { taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
+import { directAccessFixture, taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getAuthConfig, listMembers, logout, me } from '../src/api/auth';
+import { getProjectAccess, getAuthConfig, listMembers, logout, me } from '../src/api/auth';
 import type { CurrentUser } from '../src/api/auth-types';
 import { ApiError, setTaskStatus, getTask, getTaskSync } from '../src/api/client';
 import type { TaskDetail, TaskGraph } from '../src/api/types';
@@ -10,7 +10,7 @@ import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
 vi.mock('../src/api/auth', async (original) => ({ ...await original<typeof import('../src/api/auth')>(),
-  getAuthConfig: vi.fn(), listMembers: vi.fn(), logout: vi.fn(), me: vi.fn(),
+  getProjectAccess: vi.fn(), getAuthConfig: vi.fn(), listMembers: vi.fn(), logout: vi.fn(), me: vi.fn(),
 }));
 vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(),
   getTask: vi.fn(), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
@@ -27,7 +27,7 @@ const confirmStatus = async (button: HTMLElement) => {
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const project = id(100); const otherProject = id(200); const task = id(1); const otherTask = id(2);
 const stamp = '2026-10-22T00:00:00Z';
-const alice: CurrentUser = { id: id(501), name: 'Alice', email: 'alice@example.com', emailVerified: true, avatarUrl: null };
+const alice: CurrentUser = { personalTeam: { id: '00000000-0000-4000-8000-000000000701', kind: 'personal' as const, name: null }, id: id(501), name: 'Alice', email: 'alice@example.com', emailVerified: true, avatarUrl: null };
 const bob: CurrentUser = { ...alice, id: id(502), name: 'Bob', email: 'bob@example.com' };
 let currentUser: CurrentUser;
 let topLevelFocused = true;
@@ -35,7 +35,7 @@ const returnFromAnotherWindow = () => {
   topLevelFocused = false; fireEvent(window, new Event('blur'));
   topLevelFocused = true; fireEvent(window, new Event('focus'));
 };
-const initial = (projectId = project): TaskDetail => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: projectId === project ? task : otherTask, projectId,
+const initial = (projectId = project): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: projectId === project ? task : otherTask, projectId,
   version: 9007199254740993n, title: `${currentUser.name} task ${projectId === project ? 'P' : 'Q'}`, description: `${currentUser.name} reviewed content`,
   properties: { pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp });
 const serverDetails = new Map<string, TaskDetail>();
@@ -47,8 +47,8 @@ const serverDetail = (projectId: string): TaskDetail => {
 };
 const graph = (projectId: string): TaskGraph => {
   const detail = serverDetail(projectId);
-  return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: `${currentUser.name} project ${projectId === project ? 'P' : 'Q'}`, repoUrl: 'https://example.com/repo', createdAt: stamp, updatedAt: stamp },
-    tasks: [{ requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
+  return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: `${currentUser.name} project ${projectId === project ? 'P' : 'Q'}`, repoUrl: 'https://example.com/repo', createdAt: stamp, updatedAt: stamp },
+    tasks: [{ assignedTo: detail.assignedTo, requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
     summary: { total: 1, todo: detail.status === 'todo' ? 1 : 0, inProgress: detail.status === 'in_progress' ? 1 : 0, done: detail.status === 'done' ? 1 : 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
 };
 const deferred = <T,>() => {
@@ -60,7 +60,7 @@ beforeEach(() => {
   serverDetails.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, userId, signal) => {
     expect(userId).toBe(currentUser.id);
-    return taskSyncFromGraph(await graphRequest(projectId, signal), { query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties });
+    return taskSyncFromGraph(await graphRequest(projectId, signal), { actorAccess: directAccessFixture(projectId, currentUser.id), query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties });
   });
 });
 
@@ -72,10 +72,10 @@ beforeEach(() => {
   window.history.replaceState(null, '', `/projects/${project}`);
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } });
   vi.mocked(me).mockReset().mockImplementation(async () => currentUser);
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async (projectId) => directAccessFixture(projectId, currentUser.id));
   vi.mocked(getAuthConfig).mockReset().mockResolvedValue({ providers: ['github'] });
   vi.mocked(logout).mockReset().mockResolvedValue(undefined);
-  vi.mocked(listMembers).mockReset().mockImplementation(async (projectId) => [{ projectId, userId: currentUser.id, role: 'member', version: 1n,
-    name: currentUser.name, email: currentUser.email, avatarUrl: null, createdAt: stamp, updatedAt: stamp }]);
+  vi.mocked(listMembers).mockReset().mockImplementation(async (projectId) => ({ actorAccess: directAccessFixture(projectId, currentUser.id), items: [{ inheritedFrom: null, userId: currentUser.id, profile: { name: currentUser.name, email: currentUser.email, avatarUrl: null }, effectiveRole: 'member', directGrant: { projectId, userId: currentUser.id, role: 'member', version: 1n, createdAt: stamp, updatedAt: stamp } }] }));
   graphRequest.mockReset().mockImplementation(async (projectId) => graph(projectId));
   vi.mocked(getTask).mockReset().mockImplementation(async (projectId, _taskId, _signal, admission) => { expect(admission.userId).toBe(currentUser.id); return serverDetail(projectId); });
   vi.mocked(setTaskStatus).mockReset();

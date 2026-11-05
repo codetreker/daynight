@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -20,7 +20,7 @@ type Page struct {
 }
 
 type ProjectPage struct {
-	Items   []core.Project
+	Items   []model.Project
 	HasMore bool
 }
 
@@ -30,16 +30,17 @@ type WorkerQuery struct {
 }
 
 type TaskQuery struct {
+	AssignedTo         model.TaskAssignmentFilter
 	Page               Page
-	Status             *core.TaskStatus
+	Status             *model.TaskStatus
 	Ready              *bool
 	AllowAgents        *bool
-	CompatiblePlatform *core.TaskPlatform
+	CompatiblePlatform *model.TaskPlatform
 	Worker             *WorkerQuery
 }
 
 type TaskPage struct {
-	Items   []core.Task
+	Items   []model.Task
 	HasMore bool
 }
 
@@ -52,23 +53,37 @@ func pageValues(page Page) (any, any) {
 
 func queryError(phase string, err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = errors.Join(core.ErrNotFound, err)
+		err = errors.Join(model.ErrNotFound, err)
 	}
 	return &Error{Phase: phase, Cause: err}
 }
 
-const projectProjection = `id::text, name, repo_url, created_at, updated_at, settings_version, execution_warning_minutes`
+const projectProjection = `p.id::text, p.name, p.repo_url, p.created_at, p.updated_at, p.settings_version, p.execution_warning_minutes,
+	owner_team.id::text, o.version, o.updated_at`
 
-func scanProject(row pgx.Row) (core.Project, error) {
-	var project core.Project
-	err := row.Scan(&project.ID, &project.Name, &project.RepoURL, &project.CreatedAt, &project.UpdatedAt, &project.Settings.Version, &project.Settings.ExecutionWarningMinutes)
+const projectRelation = `projects p LEFT JOIN project_ownership o ON o.project_id=p.id LEFT JOIN teams owner_team ON owner_team.id=o.team_id`
+
+func scanProject(row pgx.Row) (model.Project, error) {
+	var project model.Project
+	var teamID *string
+	var version *int64
+	var ownershipUpdatedAt *time.Time
+	err := row.Scan(&project.ID, &project.Name, &project.RepoURL, &project.CreatedAt, &project.UpdatedAt, &project.Settings.Version, &project.Settings.ExecutionWarningMinutes,
+		&teamID, &version, &ownershipUpdatedAt)
+	if err != nil {
+		return model.Project{}, err
+	}
+	if teamID == nil || version == nil || ownershipUpdatedAt == nil {
+		return model.Project{}, fmt.Errorf("project ownership is missing")
+	}
+	project.Ownership = model.ProjectOwnership{TeamID: *teamID, Version: *version, UpdatedAt: ownershipUpdatedAt.UTC()}
 	project.CreatedAt = project.CreatedAt.UTC()
 	project.UpdatedAt = project.UpdatedAt.UTC()
 	return project, err
 }
 
 const taskProjection = `t.id::text, t.project_id::text, t.title, t.description,
-	t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, ` + taskDependsOn + `, ` + taskExternalDependsOn + `, ` + taskBlockedBy + `, ` + taskReady
+	t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.assigned_to::text, ` + taskDependsOn + `, ` + taskExternalDependsOn + `, ` + taskBlockedBy + `, ` + taskReady
 
 const taskDependsOn = `ARRAY(SELECT d.depends_on_task_id::text FROM task_dependencies d
 		WHERE d.project_id = t.project_id AND d.task_id = t.id ORDER BY d.depends_on_task_id)`
@@ -86,18 +101,18 @@ const taskReady = `(t.status = 'todo' AND NOT EXISTS (
 	AND NOT EXISTS (SELECT 1 FROM tasks p WHERE p.project_id = d.project_id
 		AND p.id = d.depends_on_task_id AND p.status = 'done')))`
 
-func scanTask(row pgx.Row, trailing ...any) (core.Task, error) {
-	var task core.Task
+func scanTask(row pgx.Row, trailing ...any) (model.Task, error) {
+	var task model.Task
 	destinations := []any{&task.ID, &task.ProjectID, &task.Title, &task.Description, &task.Status,
-		&task.Version, &task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.AllowAgents, &task.RequiredPlatform, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready}
+		&task.Version, &task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready}
 	err := row.Scan(append(destinations, trailing...)...)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if !task.Status.Valid() {
-		return core.Task{}, fmt.Errorf("stored task status is invalid")
+		return model.Task{}, fmt.Errorf("stored task status is invalid")
 	}
-	task.Properties = core.TaskProperties{}
+	task.Properties = model.TaskProperties{}
 	task.CreatedAt = task.CreatedAt.UTC()
 	task.UpdatedAt = task.UpdatedAt.UTC()
 	task.StartedAt = utcTime(task.StartedAt)
@@ -105,9 +120,9 @@ func scanTask(row pgx.Row, trailing ...any) (core.Task, error) {
 	return task, err
 }
 
-func collectTasks(rows pgx.Rows) ([]core.Task, error) {
+func collectTasks(rows pgx.Rows) ([]model.Task, error) {
 	defer rows.Close()
-	tasks := make([]core.Task, 0)
+	tasks := make([]model.Task, 0)
 	for rows.Next() {
 		task, err := scanTask(rows)
 		if err != nil {
@@ -134,7 +149,7 @@ func (row liveTaskRow) Scan(destinations ...any) error {
 		return err
 	}
 	if deletedAt != nil {
-		return core.ErrTaskDeleted
+		return model.ErrTaskDeleted
 	}
 	return nil
 }

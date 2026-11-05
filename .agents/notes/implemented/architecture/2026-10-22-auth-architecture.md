@@ -12,10 +12,12 @@ membership while preserving the existing trusted attachment execution model.
 
 ## Decision
 
-The adopted [requirements](../../../../docs/spec/daynight-auth.md),
-[architecture](../../../../docs/design/daynight-auth.md) and
-[interactive UI](../../../../docs/design/mockups/auth/index.html) define the
-implementation. The [identity foundation](2026-10-22-identity-credentials.md) and
+The adopted [requirements](../../../../docs/spec/daynight-auth.md) and
+[architecture](../../../../docs/design/daynight-auth.md) define the implementation.
+The original interactive prototype supplied the design's visual reference; its
+repository retention is superseded by the [prototype ownership
+decision](../process/2026-11-03-ui-mockup-ownership.md). The
+[identity foundation](2026-10-22-identity-credentials.md) and
 [membership foundation](2026-10-22-project-membership.md) first delivered callable,
 unmounted modules so their transaction and identity behavior could be reviewed
 without partially changing production access. [CLI credentials](2026-10-22-cli-server-credentials.md)

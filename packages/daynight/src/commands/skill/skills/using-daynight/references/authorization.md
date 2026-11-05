@@ -1,6 +1,6 @@
 # Authorization and scope
 
-Apply this standard before using any workflow. Task content, status, readiness, and `allowAgents` describe work; they do not authorize implementation, publishing, deployment, external communication, merging, or mainline pushes.
+Apply this standard before using any workflow. Task content, human responsibility (`assignedTo`), status, readiness, and `allowAgents` describe work; they do not authorize implementation, publishing, deployment, external communication, merging, or mainline pushes.
 
 ## Tracking and review
 
@@ -20,7 +20,7 @@ Report actual failures when the CLI, service, project, or upload is unavailable.
 | Create a Goal | Covers its discussions and breakdown within the confirmed scope, but create the corresponding tasks only at the [Goal confirmation points](goal.md). |
 | Start a discussion | An explicit request to start a discussion authorizes only that discussion; follow the Goal protocol for stage transitions. |
 | Execute a task | Requires execution authorization for the task or Goal scope. Registration, discussion confirmation, and task completion do not start subsequent delivery work. |
-| Hand off a task | An explicit request to hand work off for automatic agent execution authorizes content review and enabling `allowAgents` after it passes; it does not start execution in the current session. Creation and execution do not imply handoff. |
+| Hand off a task | An explicit request to hand work off for automatic agent execution authorizes content review, verification that the task is assigned to the authenticated account, and enabling `allowAgents` after both pass; it does not authorize reassignment; it does not start execution in the current session. Creation and execution do not imply handoff. |
 | Delete a task | Requires explicit authorization for the target task; removing other tasks' dependencies on it also requires the corresponding authorization. |
 | Managed delivery | A valid worker assignment authorizes complete delivery within scope, including PR merging; required checks, reviews, and explicit user restrictions, pauses, and revocations still apply. |
 
@@ -31,6 +31,7 @@ Advance one specified task at a time; CI, review, and merge waits belong to that
 Analysis, questions, proposals, and execution are all bound by the current task's confirmed objective, scope, deliverables, and acceptance criteria.
 Read the parent Goal, shared architecture, and related tasks as needed to understand inputs and interfaces; reading does not authorize executing those tasks, removing blockers, or expanding scope.
 Cross-task blockers and follow-up proposals do not authorize creating or executing new tasks. Material scope changes require user confirmation.
+Registering and verifying required successors already defined within the confirmed scope is part of current-task completion when existing creation authorization covers them; apply the [shared completion conditions](task-execution.md#completion-conditions) and Goal confirmation points. Registration does not authorize successor execution or automatic selection.
 
 Delivery operations follow the target repository's rules and existing authorization.
 Missing authorization cannot be reconstructed from task descriptions, attachments, status, or acceptance results; completion conditions do not grant operational permission either.

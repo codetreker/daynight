@@ -39,7 +39,24 @@ type WorkerVersions struct {
 	Copilot  WorkerProbe[string] `json:"copilot"`
 }
 
+type WorkerAssistantProvider struct {
+	Provider  string   `json:"provider"`
+	Available bool     `json:"available"`
+	Reason    *string  `json:"reason"`
+	Model     *string  `json:"model"`
+	Args      []string `json:"args"`
+}
+
+type WorkerAssistantHost struct {
+	ProtocolVersion int64                     `json:"protocolVersion"`
+	ObservedAt      time.Time                 `json:"observedAt"`
+	DefaultCwd      string                    `json:"defaultCwd"`
+	DefaultProvider string                    `json:"defaultProvider"`
+	Providers       []WorkerAssistantProvider `json:"providers"`
+}
+
 type WorkerTelemetry struct {
+	AssistantHost    *WorkerAssistantHost      `json:"assistantHost,omitempty"`
 	Machine          WorkerMachine             `json:"machine"`
 	Platform         string                    `json:"platform"`
 	WorkingDirectory string                    `json:"workingDirectory"`

@@ -53,6 +53,28 @@ describe("native zsh completion", () => {
     expect(script).toContain("(--path)--path=[Attachment relative path (default\\: source basename)]:relative-path:->text_value");
   });
 
+  it("discovers all delivered Step commands with separate operation options", () => {
+    const step = taskDefinition.commands!.find(({ name }) => name === "step")!;
+    const script = renderZshCompletion(step);
+    expect(script).toContain("'list:Read every Step in its saved order'");
+    expect(script).toContain("'show:Read one Task-local Step and its complete Markdown description'");
+    expect(script).toContain("'add:Add one independent Step and return the complete confirmed collection'");
+    const list = renderZshCompletion(step.commands!.find(({ name }) => name === "list")!);
+    expect(list).not.toContain("--if-version");
+    const add = renderZshCompletion(step.commands!.find(({ name }) => name === "add")!);
+    for (const option of ["--project=", "--title=", "--description=", "--status=", "--id=", "--before=", "--after=", "--if-version="]) expect(add).toContain(option);
+    expect(add).toContain("skipped");
+    expect(script).toContain("'set-status:");
+    expect(script).toContain("'update:");
+    expect(script).toContain("'move:");
+    const move = renderZshCompletion(step.commands!.find(({ name }) => name === "move")!);
+    for (const option of ["--before=", "--after=", "--first", "--last", "--if-version="]) expect(move).toContain(option);
+    const remove = renderZshCompletion(step.commands!.find(({ name }) => name === "delete")!);
+    for (const option of ["--project=", "--if-version=", "--json"]) expect(remove).toContain(option);
+    expect(remove).not.toContain("--title");
+    expect(script).toContain("'delete:");
+  });
+
   it("offers unified status command and three-state filtering without metadata status updates", () => {
     const script = renderZshCompletion(commandTree);
     expect(script).toContain("compdef _daynight 'daynight' 'dn'\n");

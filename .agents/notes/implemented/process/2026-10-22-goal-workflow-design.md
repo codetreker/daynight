@@ -49,9 +49,12 @@ and completed; the stage-produced-output rule still applies.
 Every task description identifies the current task, its responsibility and readable
 sources. Its body and required references jointly provide the task definition
 and existing artifacts under the [task/session content decision](2026-10-28-task-session-content.md);
-a complete description needs no primary attachment unless managed delivery
-requires attachments, as recorded by the
-[reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
+a complete description needs no primary attachment unless the Goal specification
+gate or managed delivery requires one. The
+[Goal specification decision](2026-11-02-goal-spec-confirmation.md) requires the
+requirements task to own complete `spec.md` before confirmation and architecture.
+The [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md)
+owns managed attachment requirements.
 Goal tasks cover their agreed
 whole outcome, while implementation and acceptance tasks retain their own assignments.
 Each detailed explanation has one owner. The original brief-plus-primary-attachment
@@ -61,8 +64,11 @@ plan or a generic confirmation/evidence location.
 
 Materials follow content ownership. Requirements stay with the Goal requirements
 task; architecture owns its design and registered breakdown; implementation and
-acceptance own their agreed artifacts and results. These may be in task bodies
-or required referenced documents. Execution/discussion plans, operational
+acceptance own their agreed artifacts and results. Goal requirements use the
+mandatory `spec.md` attachment; other materials may be in task bodies or required
+referenced documents. Architecture descriptions directly index the requirements
+task, specification and applicable prototypes; the stage reads the accepted
+contents. Execution/discussion plans, operational
 authorization, confirmation exchanges and recovery information remain session context. Every delivery description directly
 identifies the architecture task and each required source, including indirect
 successors whose direct prerequisite is another implementation task. Shared body
@@ -112,7 +118,10 @@ execution/merge authorization. Requirements completion does not complete a Goal.
 The managed execution decision removes autopilot successor selection from the
 current skill. Ordinary run-task still performs one specified stage and its
 explicit user-directed discussion transition; managed execution returns after
-its one assignment without advancing the Goal.
+its one assignment without selecting, starting or executing successor work.
+Registering and reading back already-confirmed required successors under existing
+creation authority is part of the current task's completion gate, including for
+managed execution.
 
 ## Alternatives
 
@@ -155,7 +164,10 @@ The original protocol required two initial tasks and recoverable attachment writ
 with real successor registration before design handover. The successor decision
 delays architecture-task creation until accepted requirements and a user-requested
 transition, and delays delivery-task registration until the user accepts the
-solution. Actual registered outcomes and verified artifacts remain necessary;
+solution. The [specification and completion decision](2026-11-02-goal-spec-confirmation.md)
+requires confirmed necessary successors to be registered and read back while the
+predecessor remains in_progress, before it completes. Successor execution waits
+for completed prerequisites. Actual registered outcomes and verified artifacts remain necessary;
 a future task list or one vague implementation placeholder is insufficient.
 Protocol delivery and independent consumer acceptance have different completion
 evidence and both remain in the same Goal scope. Acceptance can finish without a

@@ -6,7 +6,7 @@ import type { JsonValue, Task } from "../../../src/api/types.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createExecutionDriver, settleWorkerStops } from "../../../src/commands/worker/execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import { createHerdrAgentManager, herdrExecutionAgentName, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
+import { createHerdrAgentManager, HerdrInputBlockedError, herdrExecutionAgentName, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import type { HerdrExecutionContext, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -14,6 +14,7 @@ import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worke
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
+import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 
 const uuid = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const staleId = uuid(8);
@@ -44,6 +45,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const agents: Entry[] = [];
   const environments = new Map<string, Entry>([[binding.paneId, workerEnvironment]]);
   const calls: { method: string; params: Entry }[] = [];
+  const screen = { text: "› Ask Codex to do anything\n\n  GPT-6.1 Terra medium · daynight/task · Context 0% used" };
   const launches: { environment: Entry; args: readonly string[]; paneId: string }[] = [];
   let sequence = 0;
   const executing = new Set<number>();
@@ -74,16 +76,13 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
       return { type: "ok" };
     }
     if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_processes: [{ pid: 100 }] } };
+    if (method === "agent.read") return { type: "pane_read", read: { pane_id: params.target, workspace_id: panes.find(value => value.pane_id === params.target)!.workspace_id, source: "visible", format: "text", text: screen.text, truncated: false } };
     if (method === "agent.start") {
       const pane = panes.find((entry) => entry.pane_id === params.pane_id)!;
       const current: Entry = { ...pane, agent, name: params.name, agent_status: blockedLaunch ? "blocked" : "idle", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 };
       if (launchReference !== undefined) current.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: launchReference };
       agents.push(current); launches.push({ environment: environments.get(String(params.pane_id))!, args: params.args as string[], paneId: String(params.pane_id) });
       return { type: "agent_started", agent: current, argv: [agent, ...params.args as string[]] };
-    }
-    if (method === "agent.read") {
-      const pane = panes.find((entry) => entry.pane_id === params.target)!;
-      return { type: "pane_read", read: { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, source: "visible", format: "text", text: "› Ask Codex to do anything\n\n  GPT-6.1 Sol low · /task\n", revision: 0, truncated: false } };
     }
     if (method === "agent.prompt") {
       const current = agents.find((entry) => entry.pane_id === params.target)!;
@@ -105,7 +104,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const events: WorkerEvent[] = [];
   const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
   const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = {
-    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null,
+    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null,
     version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: owner.claimId, state: "active", userId: uuid(6), workerId: uuid(5), machine: { id: uuid(7), name: "fixture" }, platform: "linux", agent, agentControlMode: "herdr", worktreeId: owner.worktreeId, phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-10-27T00:00:00Z" } },
   };
@@ -113,10 +112,43 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, readTask, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
   const input: ExecutionInput = { task, project, owner, title: "Task execution", configuration };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
-  return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, readTask, remoteTask, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
+  return { root, store, input, context, manager, rpc, resources, events, calls, screen, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, readTask, remoteTask, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
 };
 
 describe("execution from current Herdr resources", () => {
+  it("refuses worktree and native mutations when durable launch provenance is unknown", async () => {
+    const f = await fixture("codex", null);
+    Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => { throw new Error("Original run is stop_unknown"); } } });
+    await expect(f.driver.advance(f.input)).rejects.toThrow("stop_unknown");
+    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+    expect(f.dependencies.git.verifyWorktree).not.toHaveBeenCalled();
+    expect(f.calls).toEqual([]);
+  });
+
+  it("finishes a pending durable stop before applying replacement admission", async () => {
+    const f = await fixture("codex", null);
+    let settled = false;
+    vi.spyOn(f.manager, "pendingStops").mockImplementation(() => settled ? [] : [{ context: f.context, binding: f.binding }]);
+    vi.spyOn(f.manager, "stopAndClose").mockImplementation(async () => {
+      expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
+      settled = true;
+    });
+    Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => { if (!settled) throw new Error("Original stop_intent must finish first"); }, hasPreparedRun: () => true } });
+    await f.driver.advance(f.input);
+    expect(settled).toBe(true); expect(f.launches).toHaveLength(1);
+  });
+
+  it("resumes a durably prepared shell without requiring nonexistent agent stop proof", async () => {
+    const f = await fixture("codex", null);
+    const stop = vi.fn(async () => { throw new Error("A prepared run has not launched an agent"); });
+    Object.assign(f.dependencies.herdr, { lifecycle: { assertCanAdvance: () => {}, hasPreparedRun: () => true, stop } });
+    const result = await f.driver.advance(f.input);
+    expect(result.binding).toEqual(f.binding);
+    expect(f.launches).toHaveLength(1);
+    expect(stop).not.toHaveBeenCalled();
+    expect(f.calls.some(call => call.method === "workspace.close")).toBe(false);
+    expect(f.calls.some(call => call.method === "workspace.create")).toBe(false);
+  });
   it.each(["codex", "copilot"] as const)("replaces a cold inactive %s pane before a NULL-session fresh launch", async (agent) => {
     const f = await fixture(agent, null);
     const result = await f.driver.advance(f.input);
@@ -151,6 +183,35 @@ describe("execution from current Herdr resources", () => {
     const result = await f.driver.advance(f.input);
     expect(result.nativeSession?.sessionId).toBe(staleId);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+  });
+
+  it.each(["codex", "copilot"] as const)("automatically resumes %s after an exit while the replacement shell initializes", async (agent) => {
+    const f = await fixture(agent, savedId);
+    const first = await f.driver.advance(f.input);
+    const originalTask = f.store.getTask(f.input.task);
+    f.agents.splice(0);
+    const exitedPane = f.panes.find((pane) => pane.pane_id === first.binding.paneId)!;
+    exitedPane.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: savedId };
+    const request = f.rpc.request;
+    const busy = new HerdrRpcError("replacement shell is initializing", { method: "agent.start", requestId: "restart", submission: "unknown", code: "agent_pane_busy" });
+    let attempts = 0;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      if (method === "agent.start" && ++attempts === 1) throw busy;
+      if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: [{ pid: 100, name: "bash", argv: ["/bin/bash"] }, { pid: 101, name: "shell-init" }] } };
+      return request(method, params, operation);
+    });
+
+    const recovered = await f.driver.advance(f.input);
+    expect(attempts).toBe(2);
+    expect(recovered.binding.workspaceId).not.toBe(first.binding.workspaceId);
+    expect(recovered.nativeSession?.sessionId).toBe(savedId);
+    expect(f.store.getTask(f.input.task)).toEqual(originalTask);
+    expect(f.launches).toHaveLength(2);
+    expect(f.launches[1]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
+    expect(f.launches[1]!.environment).toEqual(f.expectedNativeEnvironment);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(2);
+    expect(f.dependencies.git.verifyWorktree).toHaveBeenCalledTimes(2);
+    expect(f.dependencies.git.prepareWorktree).not.toHaveBeenCalled();
   });
 
   it.each(["codex", "copilot"] as const)("pings stopped %s turns once and resumes checking after native progress", async (agent) => {
@@ -195,32 +256,9 @@ describe("execution from current Herdr resources", () => {
     expect(f.readTask).toHaveBeenCalledTimes(4);
   });
 
-  it("checks fresh pause state after native readiness waits", async () => {
-    const f = await fixture("codex", staleId);
-    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
-    const request = f.rpc.request;
-    let reads = 0;
-    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
-      const result = await request(method, params, operation);
-      if (method === "agent.read" && ++reads === 1) {
-        expect(f.readTask).not.toHaveBeenCalled();
-        f.remoteTask.properties.paused = true;
-        return { ...result, read: { ...result.read as Entry, text: "initializing" } };
-      }
-      return result;
-    });
-    await f.driver.advance(f.input);
-    expect(reads).toBe(2);
-    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
-    expect(f.readTask).toHaveBeenCalledOnce();
-    delete f.remoteTask.properties.paused;
-    await f.driver.advance(f.input);
-    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
-  });
-
-  it("checks fresh pause state after waiting for workspace serialization", async () => {
-    const f = await fixture("copilot", staleId);
-    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+  it.each(["codex", "copilot"] as const)("checks fresh pause state after waiting for %s workspace serialization", async (agent) => {
+    const f = await fixture(agent, staleId);
+    f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const submit = vi.spyOn(f.manager, "submitPrompt");
@@ -237,6 +275,29 @@ describe("execution from current Herdr resources", () => {
     } finally { release(); operation.dispose(); }
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
     expect(f.readTask).toHaveBeenCalledOnce();
+    delete f.remoteTask.properties.paused;
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it("checks fresh pause state after visible input inspection", async () => {
+    const f = await fixture("codex", staleId);
+    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const request = f.rpc.request;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      const result = await request(method, params, operation);
+      if (method === "agent.read") {
+        expect(f.readTask).not.toHaveBeenCalled();
+        f.remoteTask.properties.paused = true;
+      }
+      return result;
+    });
+    await f.driver.advance(f.input);
+    expect(f.readTask).toHaveBeenCalledOnce();
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toEqual([]);
+    vi.restoreAllMocks(); delete f.remoteTask.properties.paused;
+    await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
   });
 
   it.each(["read failure", "invalid pause"])("exposes %s without sending or consuming the continuation decision", async (failureKind) => {
@@ -329,6 +390,47 @@ describe("execution from current Herdr resources", () => {
     current.completion_seq = 6;
     await f.driver.advance(f.input);
     expect(prompt).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    "Select model\n› 1. GPT-6.1 Terra\n  2. GPT-6.1 Sol\nenter select · esc back",
+    "Select Reasoning Level for GPT-5.5\n› 3. High (current)    Greater reasoning depth for complex problems\nenter default · s session · esc back",
+    "Advanced Reasoning\n› 1. Ultra\nenter apply · s session · esc back",
+    "Configuration\nChanges save automatically\n› Automatic recaps       [ ] Off              Prepare recaps while the terminal is unfocused\nleft/right group · / search · enter toggle · esc clear search/close",
+    "Configuration\nChanges save automatically\n› Automatic recaps       [ ] Off              Prepare recaps while the terminal is unfocused\nleft/right group · / search · enter toggle",
+    "Effects\nConfigure visual effects\n› 1. [ ] Animations                 Animate the welcome screen, working\n                                    indicator, and transitions\n     [-] Composer stars (disabled)  Turn on Animations to show Astra task stars\nenter toggle · esc back",
+    "Keymap\nAll configurable shortcuts.\n› Action 08  Ctrl+8\nleft/right group · enter edit · esc close",
+    ...nativeMenuScreens.map(menu => menu.screen),
+    ...["fwd del", "delete", "⌃x fwd del"].map(key => nativeMenuScreens.find(menu => menu.name === "hooks_browser_handlers")!.screen.replace("esc back", `${key} back`)),
+    "› Viewing sub-agent\n\n ? for shortcuts",
+    "› Viewing sub-agent — direct in\n\n ? for shortcuts",
+    "› Input disabled\n\n ? for shortcuts",
+    "› Input disabled until setup comp\n\n ? for shortcuts",
+  ])("keeps a continuation decision available while a Codex picker reports unchanged idle readiness: %s", async menu => {
+    const f = await fixture("codex", staleId);
+    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    f.screen.text = menu;
+    for (let attempt = 0; attempt < 4; attempt++) await expect(f.driver.advance(f.input)).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toEqual([]);
+    expect(f.readTask).not.toHaveBeenCalled();
+    f.screen.text = "› Custom input placeholder\nGPT-6.1 Terra medium · daynight/task";
+    await f.driver.advance(f.input); await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    expect(f.calls.find(call => call.method === "agent.prompt")!.params.text).toContain("worker's periodic check");
+    expect(f.agents[0]).toMatchObject({ agent_status: "idle", state_change_seq: 10, completion_seq: 3 });
+  });
+
+  it("retains the initial assignment across an open menu and deferred input attempts", async () => {
+    const f = await fixture("codex", null);
+    f.screen.text = "Select model\n› 1. GPT-6.1 Terra\nenter select · esc back";
+    await f.driver.advance(f.input);
+    for (let attempt = 0; attempt < 4; attempt++) await expect(f.driver.advance(f.input)).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toEqual([]);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    f.screen.text = "Unknown layout without a positive composer signal";
+    await f.driver.advance(f.input); await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    expect(f.calls.find(call => call.method === "agent.prompt")!.params.text).toBe("managed assignment");
   });
 
   it("retains an unknown startup input until the live agent progresses", async () => {

@@ -16,13 +16,14 @@ const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine:
 const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
-  requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
+  assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
   properties: { ...(claim === undefined ? {} : { worker: claim }), pullRequests: [] }, createdAt: time, updatedAt: time,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: claim?.state !== "active",
 });
 const project = (id = projectId, repoUrl = "https://github.com/example/repo.git"): Project => ({
-  id, name: "Repository", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time,
+  id, name: "Repository", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time,
 });
+const accessSources = { projectId, ownerTeam: { id: uuid(90), kind: "ordinary", name: "Team" }, ownership: { teamId: uuid(90), version: 9_007_199_254_740_995n }, teamRole: null, canTransfer: false };
 const cleanup: (() => void | Promise<void>)[] = [];
 const respond = (response: ServerResponse, value: unknown, status = 200): void => {
   response.writeHead(status, { "Content-Type": "application/json" });
@@ -35,7 +36,7 @@ const listen = async (handler: (request: IncomingMessage, response: ServerRespon
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     response.setHeader("Daynight-User-ID", userId);
     if (request.url === "/api/v1/me" && options.identity !== false) {
-      respond(response, { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null });
+      respond(response, { id: userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
       return;
     }
     handler(request, response, chunks.length === 0 ? null : parseApiJson(Buffer.concat(chunks).toString("utf8")));
@@ -61,6 +62,32 @@ afterEach(async () => {
 });
 
 describe("worker remote API", () => {
+  it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
+    const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
+    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const desired = { revision: "1", updatedAt: time, value };
+    const configuration = { bootstrap: value, observation: null };
+    const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
+    const serverUrl = await listen((request, response, body) => {
+      const capability = request.headers["daynight-worker-configuration"] as string | undefined;
+      requests.push({ method: request.method, url: request.url, capability, body });
+      if (capability !== undefined) response.setHeader("Daynight-Worker-Configuration", "1");
+      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null }
+        : capability === "1" ? { ...receipt, configuration: { desired, observationRevision: "0", observationAccepted: false } } : receipt);
+    });
+    const remote = await verifiedRemote(serverUrl), operation = operations.createOperation();
+    try {
+      await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired });
+      const opened = vi.spyOn(operations, "createOperation");
+      await expect(remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation)).resolves.toMatchObject({ configuration: { desired } });
+      await remote.report(workerId, { ...workerTelemetry, taskInventory: null }, operation);
+      expect(opened).not.toHaveBeenCalled();
+      expect(requests.map(({ method, capability }) => ({ method, capability }))).toEqual([{ method: "GET", capability: "1" }, { method: "POST", capability: "1" }, { method: "POST", capability: undefined }]);
+      expect(requests[1]!.body).toMatchObject({ configuration, taskInventory: null });
+      expect(requests[2]!.body).not.toHaveProperty("configuration");
+    } finally { operation.dispose(); }
+  });
+
   it("reports through the caller operation with verified identity and a 200 receipt", async () => {
     const requests: { method: string | undefined; url: string | undefined; body: unknown }[] = [];
     const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
@@ -112,8 +139,61 @@ describe("worker remote API", () => {
     await expect(remote.resolveProject({ repoUrl: project().repoUrl, projectId }, signal())).rejects.toThrow("verify its authenticated user");
     await expect(remote.ownInventory([], workerId, signal())).rejects.toThrow("verify its authenticated user");
     await expect(remote.claim(task(), descriptor, signal())).rejects.toThrow("verify its authenticated user");
+    await expect(remote.authorizeControl(projectId, worker.userId, signal())).rejects.toThrow("verify its authenticated user");
     await expect(Array.fromAsync(remote.candidates(projectId, "linux", signal()))).rejects.toThrow("verify its authenticated user");
     expect(requests).toBe(0);
+  });
+
+  it.each([
+    { role: "member", originalUserId: worker.userId },
+    { role: "admin", originalUserId: uuid(80) },
+  ])("authorizes the current $role actor against project access for original owner $originalUserId", async ({ role, originalUserId }) => {
+    const requests: string[] = [];
+    const serverUrl = await listen((request, response) => {
+      requests.push(request.url!);
+      respond(response, { ...accessSources, effectiveRole: role, directGrant: {
+        projectId, userId: worker.userId, role, version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time,
+      } });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, originalUserId, signal())).resolves.toBeUndefined();
+    expect(requests).toEqual([`/api/v1/projects/${projectId}/access`]);
+  });
+
+  it("denies another execution's member operator using the effective access role", async () => {
+    const requests: string[] = [];
+    const serverUrl = await listen((request, response) => {
+      requests.push(request.url!);
+      respond(response, { ...accessSources, effectiveRole: "member", directGrant: {
+        projectId, userId: worker.userId, role: "member", version: 1n, createdAt: time, updatedAt: time,
+      } });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, uuid(80), signal())).rejects.toThrow("original owner or a current project administrator");
+    expect(requests).toEqual([`/api/v1/projects/${projectId}/access`]);
+  });
+
+  it("requires current project access even for the original execution owner", async () => {
+    let requests = 0;
+    const serverUrl = await listen((_request, response) => {
+      requests++;
+      respond(response, { error: { code: "not_found", message: "No current project access.", requestId: "operator-access" } }, 404);
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, worker.userId, signal())).rejects.toMatchObject({ operation: "project.access", status: 404 });
+    expect(requests).toBe(1);
+  });
+
+  it("rejects an operator access response from a changed authenticated account", async () => {
+    let requests = 0;
+    const serverUrl = await listen((_request, response) => {
+      requests++;
+      response.setHeader("Daynight-User-ID", uuid(80));
+      respond(response, { ...accessSources, effectiveRole: "admin", directGrant: null });
+    });
+    const remote = await verifiedRemote(serverUrl);
+    await expect(remote.authorizeControl(projectId, uuid(80), signal())).rejects.toMatchObject({ operation: "project.access", phase: "protocol", outcomeUnconfirmed: false });
+    expect(requests).toBe(1);
   });
 
   it("identifies different accounts even when both own inventories are empty", async () => {
@@ -122,7 +202,7 @@ describe("worker remote API", () => {
       headers.push(request.headers.authorization);
       const owner = request.headers.authorization === "Bearer test-account-a" ? worker.userId : uuid(80);
       response.setHeader("Daynight-User-ID", owner);
-      respond(response, request.url === "/api/v1/me" ? { id: owner, email: null, emailVerified: null, name: null, avatarUrl: null } : { items: [], nextCursor: null });
+      respond(response, request.url === "/api/v1/me" ? { id: owner, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } } : { items: [], nextCursor: null });
     }, { identity: false });
     const first = createWorkerRemote({ serverUrl, serverToken: "test-account-a" });
     const second = createWorkerRemote({ serverUrl, serverToken: "test-account-b" });
@@ -175,7 +255,7 @@ describe("worker remote API", () => {
     const serverUrl = await listen((request, response) => {
       requests.push({ authorization: request.headers.authorization, principal: request.headers["daynight-user-id"] });
       if (request.url === "/api/v1/me") identityQueries++;
-      respond(response, request.url === "/api/v1/me" ? { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null } : { items: [], nextCursor: null });
+      respond(response, request.url === "/api/v1/me" ? { id: worker.userId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } } : { items: [], nextCursor: null });
     }, { identity: false });
     const options = { serverUrl, serverToken: "test-account-a" };
     const remote = createWorkerRemote(options);
@@ -232,7 +312,7 @@ describe("worker remote API", () => {
       const url = new URL(request.url!, "http://localhost"); calls.push(url);
       const second = url.pathname.includes(secondProject);
       const later = url.searchParams.has("cursor");
-      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows" };
+      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows", assignedTo: later ? null : uuid(80) };
       respond(response, { items: [item], nextCursor: second || later ? null : "inventory cursor+/=" });
     });
     const remote = (await verifiedRemote(serverUrl));
@@ -270,14 +350,35 @@ describe("worker remote API", () => {
     const serverUrl = await listen((request, response) => {
       const url = new URL(request.url!, "http://localhost"); urls.push(url);
       const later = url.searchParams.has("cursor");
-      respond(response, { items: later ? [task(uuid(9)), task(uuid(8))] : [task(taskId, { ...worker, state: "released" })], nextCursor: later ? null : "candidate cursor+/=" });
+      const candidates = later ? [task(uuid(9)), task(uuid(8))] : [task(taskId, { ...worker, state: "released" })];
+      respond(response, { items: candidates.map((candidate) => ({ ...candidate, assignedTo: worker.userId })), nextCursor: later ? null : "candidate cursor+/=" });
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
     expect(result.map(({ id }) => id)).toEqual([uuid(9), uuid(8)]);
     expect(urls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", limit: "100" },
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", limit: "100", cursor: "candidate cursor+/=" },
+      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
+      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
     ]);
+  });
+
+  it("selects the authenticated account's candidates before the service page limit", async () => {
+    const candidates = [
+      ...Array.from({ length: 101 }, (_, index) => ({ ...task(uuid(index + 100)), assignedTo: index % 2 === 0 ? null : uuid(80) })),
+      { ...task(uuid(201)), assignedTo: worker.userId },
+      { ...task(uuid(202)), assignedTo: worker.userId },
+    ];
+    const requests: URL[] = [];
+    const serverUrl = await listen((request, response) => {
+      const url = new URL(request.url!, "http://localhost"); requests.push(url);
+      const filtered = url.searchParams.get("assignedTo") === "me" ? candidates.filter(({ assignedTo }) => assignedTo === worker.userId) : candidates;
+      const offset = Number(url.searchParams.get("cursor") ?? "0");
+      const end = offset + Number(url.searchParams.get("limit"));
+      respond(response, { items: filtered.slice(offset, end), nextCursor: end < filtered.length ? String(end) : null });
+    });
+    const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
+    expect(result.map(({ id }) => id)).toEqual([uuid(201), uuid(202)]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.searchParams.get("assignedTo")).toBe("me");
   });
 
   it("never repeats an uncertain claim and lets the next own inventory observe it", async () => {

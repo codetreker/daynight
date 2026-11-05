@@ -1,10 +1,13 @@
 import { selectTaskList } from './project-view';
+import { navigateNativeSelect } from './native-select';
 import type { Locator, Page } from '@playwright/test';
-import { startTask, createProject, createTask, expect, test, updateTask, type Task } from './fixtures';
+import { startTask, createTask, expect, test, updateTask, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
 import { parseApiJson } from '../../src/api/json';
 import { parseServerError, parseTaskDetail } from '../../src/api/parse';
 import { authenticatedAPI, fulfillAuthenticatedResponse } from './authentication';
+
+test.use({ preparationFamily: 'task-controls' });
 
 const scenario = { annotation: { type: 'scenario', description: 'task-platform' } };
 const taskPath = (project: string, task: string): string => `/api/v1/projects/${project}/tasks/${task}`;
@@ -47,8 +50,8 @@ const geometry = async (page: Page): Promise<void> => {
   expect(await detail(page).evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
 };
 
-test('task-platform', scenario, async ({ page, api, allowBrowserWrites }, info) => {
-  const own = await createProject(api, { name: 'Execution platform acceptance' });
+test('task-platform', scenario, async ({ page, api, allowBrowserWrites, controlProject }, info) => {
+  const own = controlProject;
   let task = await createTask(api, own.id, { title: '执行平台：原生环境要求', description: '平台、自动执行与任务状态分别保有原义。' });
   const other = await createTask(api, own.id, { title: '另一个任务', requiredPlatform: 'windows' });
   expect(task.requiredPlatform).toBeNull(); expect(other.requiredPlatform).toBe('windows');
@@ -106,7 +109,7 @@ test('task-platform', scenario, async ({ page, api, allowBrowserWrites }, info) 
     await expect(detail(page).locator('.task-detail-badges .task-platform')).toHaveCount(0);
     await expect(detail(page).getByRole('button', { name: /^(保存平台|Save platform)$/, exact: true })).toHaveCount(0);
     await platform(page).selectOption(''); expect(writes).toHaveLength(0); await expect(confirmation(page)).toHaveCount(0);
-    await platform(page).focus(); await page.keyboard.press('ArrowDown'); await expect(confirmation(page)).toBeVisible();
+    await platform(page).focus(); await navigateNativeSelect(page, 'ArrowDown', 'w'); await expect(confirmation(page)).toBeVisible();
     await expect(platform(page)).toHaveValue(''); expect(writes).toHaveLength(0);
     await page.keyboard.press('Escape'); await expect(confirmation(page)).toHaveCount(0); await expect(platform(page)).toBeFocused();
 

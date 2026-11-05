@@ -14,8 +14,8 @@ vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ Task
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const dependencyId = '20000000-0000-4000-8000-000000000002';
 const time = '2026-10-22T00:00:00Z'; const later = '2026-10-22T00:01:00Z';
-const project: Project = { id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const source = (status: TaskStatus = 'todo'): TaskDetail => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
+const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
+const source = (status: TaskStatus = 'todo'): TaskDetail => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: status === 'todo' ? null : time, completedAt: status === 'done' ? time : null, id: taskId, projectId, title: 'Reviewed task', description: 'Reviewed content',
   status, version: 9007199254740993n, properties: { pullRequests: [] }, dependsOn: [dependencyId], blockedBy: [], ready: status === 'todo', createdAt: time, updatedAt: time });
 const result = (detail: TaskDetail, status: TaskStatus): TaskDetail => detail.status === status ? detail : ({ ...detail, status, version: detail.version + 1n, ready: status === 'todo', updatedAt: later,
   startedAt: status === 'in_progress' ? later : status === 'todo' || detail.status === 'todo' ? null : detail.startedAt, completedAt: status === 'done' ? later : null });
@@ -25,7 +25,7 @@ const snapshot = (detail: TaskDetail, revision = 1): GraphSnapshot => {
   const tasks = [detail, { ...source('done'), id: dependencyId, title: 'Prerequisite', dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false }];
   const graph: TaskGraph = { observedAt: time, project, tasks: tasks.map(({ version: _version, projectId: _project, title, description: _description, properties: _properties, ...task }) => ({ ...task, titlePreview: title, titleTruncated: false })),
     summary: { total: 2, todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, ready: detail.ready ? 1 : 0, blocked: 0 } };
-  const result = { observedAt: time, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  const result = { observedAt: time, graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), receivedMonotonic: performance.now(), receivedAt: 1, revision };
   snapshotDetails.set(result, tasks);
   return result;
 };
@@ -45,7 +45,8 @@ describe('status menu and reviewed confirmation', () => {
     const { dialog, props } = await open(); const opener = within(dialog).getByRole('button', { name: 'To do' });
     expect(opener.closest('.task-detail-header')).toBeNull();
     expect(opener.closest('.task-detail-state-controls')).toContainElement(within(dialog).getByRole('combobox', { name: 'Execution platform' }));
-    expect(opener.parentElement!.nextElementSibling).toContainElement(within(dialog).getByRole('combobox', { name: 'Execution platform' }));
+    expect(opener.parentElement!.nextElementSibling).toContainElement(within(dialog).getByRole('button', { name: 'Assignee: Unassigned' }));
+    expect(opener.closest('.task-detail-status-assignee')!.nextElementSibling).toContainElement(within(dialog).getByRole('combobox', { name: 'Execution platform' }));
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Attachments' })); const draft = within(dialog).getByRole('textbox', { name: 'Attachment draft' }); fireEvent.change(draft, { target: { value: 'Retained review notes' } });
     opener.focus(); let confirmation = select(dialog, 'todo', 'done'); expect(dialog).toHaveAttribute('inert'); expect(within(confirmation).getByText('Reviewed task')).toBeVisible(); expect(within(confirmation).getByRole('button', { name: 'Cancel' })).toHaveFocus();
     fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' })); expect(opener).toHaveFocus(); expect(dialog).not.toHaveAttribute('inert'); expect(draft).toHaveValue('Retained review notes');

@@ -15,19 +15,20 @@ const projectId = "a1b2c3d4-1111-4222-8333-123456789abc";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
 const secondId = "b1b2c3d4-1111-4222-8333-123456789abd";
 const thirdId = "b1b2c3d4-1111-4222-8333-123456789abe";
+const accountId = "a1b2c3d4-1111-4222-8333-123456789abe";
 const time = "2026-10-20T00:00:00.123456789Z";
-const project: Project = { id: projectId, name: "Project 中文", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
+const project: Project = { id: projectId, name: "Project 中文", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
+const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
-  status: value.status, allowAgents: value.allowAgents, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
+  status: value.status, allowAgents: value.allowAgents, assignedTo: value.assignedTo, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
   dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
 });
 const graph = (): TaskGraph => ({
   observedAt: time,
   project,
   summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
-  tasks: [{ id: taskId, titlePreview: "Task 中文", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time }],
+  tasks: [{ id: taskId, titlePreview: "Task 中文", titleTruncated: false, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time }],
 });
 const taskPath = `/api/v1/projects/${projectId}/tasks`;
 const projectPath = `/api/v1/projects/${projectId}`;
@@ -97,6 +98,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
         const captured = { method: request.method!, pathname: url.pathname, query: url.searchParams, bodyText, body: bytes.length === 0 ? null : contentType?.startsWith("application/json") ? parseApiJson(bodyText) : bytes, contentType, bytes };
         requests.push(captured);
         if (captured.method === "GET" && captured.pathname === projectPath) respond(response, project);
+        else if (captured.method === "GET" && captured.pathname === "/api/v1/me") respond(response, { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } });
         else handler(captured, response);
       });
     });
@@ -128,6 +130,67 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 };
 
 const explicit = ["--project", projectId];
+
+describe("compiled Task Thread commands", () => {
+  const accountId = "aabbccdd-1111-4111-8111-111111111111";
+  const messageId = "dddddddd-1111-4111-8111-111111111111";
+  const threadPath = `${taskPath}/${taskId}/thread/messages`;
+  const threadMessage = { id: messageId, author: { userId: accountId, displayName: null, Agent: false }, createdAt: "2026-11-03T10:20:30.000Z", body: "  中文\n\tId: forged\nHas more messages after...\n" };
+
+  it("performs one real HTTP request per explicit read/post and ships help/manual discovery", async () => {
+    const f = await fixture();
+    try {
+      const { requests } = await f.serve((request, response) => {
+        response.setHeader("Daynight-User-ID", accountId);
+        if (request.pathname !== threadPath) { refuse(response, "not_found", "unexpected", 404); return; }
+        if (request.method === "GET") respond(response, { items: [threadMessage], hasMoreBefore: true, hasMoreAfter: true });
+        else respond(response, { ...threadMessage, body: (request.body as { body: string }).body }, 201);
+      });
+      const help = await f.invoke(["thread", "read", "--help"]);
+      expect(help.code, help.stderr).toBe(0); expect(help.stdout).toContain("default: 20");
+      const invalid = await f.invoke(["thread", "read", taskId, "--json", ...explicit]);
+      expect(invalid.code).toBe(2); expect(invalid.stdout).toBe(""); expect(requests).toHaveLength(0);
+      const read = await f.invoke(["thread", "read", taskId, ...explicit]);
+      expect(read.code, read.stderr).toBe(0); expect(read.stderr).toBe("");
+      expect(read.stdout).toContain(`Author: Account (${accountId})`);
+      expect(read.stdout).toContain("Message:\n    中文\n  \tId: forged\n  Has more messages after...\n  ");
+      expect(read.stdout.startsWith("... Has more messages before\n")).toBe(true);
+      expect(read.stdout.endsWith("Has more messages after...\n")).toBe(true);
+      expect(requests).toHaveLength(1); expect(requests[0]!.query.get("count")).toBe("20");
+      const posted = await f.invoke(["thread", "post", taskId, `--body=${threadMessage.body}`, ...explicit]);
+      expect(posted.code, posted.stderr).toBe(0); expect(posted.stderr).toBe("");
+      expect(posted.stdout).toBe(`Message posted.\nId: ${messageId}\n`);
+      expect(requests).toHaveLength(2); expect(requests.map(({ method }) => method)).toEqual(["GET", "POST"]);
+      expect(requests[1]!.body).toEqual({ body: threadMessage.body });
+      expect(requests.every(({ pathname }) => pathname === threadPath)).toBe(true);
+    } finally { await f.close(); }
+  });
+
+  it("keeps unknown and definite POST failures distinct without leaking server text or replaying", async () => {
+    const f = await fixture();
+    try {
+      let mode: "clock" | "unknown" | "invalid" = "clock";
+      const { requests } = await f.serve((_request, response) => {
+        if (mode === "invalid") {
+          response.writeHead(201, { "Content-Type": "application/json", "Daynight-User-ID": accountId });
+          response.end(JSON.stringify(threadMessage).replace('"body":', '"body":"secret Markdown","body":'));
+        } else respond(response, { error: { code: mode === "clock" ? "clock_not_advanced" : "message_outcome_unknown", requestId: "thread-failure", message: "secret Markdown and credentials" } }, 503);
+      });
+      const args = ["thread", "post", taskId, `--body=${threadMessage.body}`, ...explicit];
+      const definite = await f.invoke(args);
+      expect(definite.code).toBe(1); expect(definite.stdout).toBe("");
+      expect(definite.stderr).toContain("code=clock_not_advanced"); expect(definite.stderr).not.toContain("outcome is unknown");
+      for (const next of ["unknown", "invalid"] as const) {
+        mode = next;
+        const unknown = await f.invoke(args);
+        expect(unknown.code).toBe(1); expect(unknown.stdout).toBe("");
+        expect(unknown.stderr).toContain("The posting outcome is unknown.");
+        expect(unknown.stderr).not.toContain("secret"); expect(unknown.stderr).not.toContain("Id: forged");
+      }
+      expect(requests).toHaveLength(3);
+    } finally { await f.close(); }
+  });
+});
 
 const attachmentPath = `${taskPath}/${taskId}/attachments`;
 const attachment = (relativePath: string, bytes: Uint8Array, contentType = "application/octet-stream"): TaskAttachment => ({ path: relativePath, sizeBytes: bytes.byteLength, contentType, createdAt: time, updatedAt: time });
@@ -436,6 +499,7 @@ describe("compiled task commands", () => {
     try {
       let current = task({ requiredPlatform: "windows", description: "Status details", version: 9_007_199_254_740_993n });
       const { requests } = await f.serve((request, response) => {
+        if (request.method === "POST") current = { ...current, assignedTo: (request.body as { assignedTo: string }).assignedTo };
         if (request.method === "PUT") {
           const { status } = request.body as { status: Task["status"] };
           if (current.status !== status) current = { ...current, status, ready: status === "todo", version: current.version + 1n };
@@ -689,11 +753,29 @@ describe("compiled task commands", () => {
     } finally { await f.close(); }
   }, 60_000);
 
+  it("defaults creation to the signed-in account and skips identity lookup for an explicit assignee", async () => {
+    const f = await fixture();
+    try {
+      const { requests } = await f.serve((request, response) => respond(response, task({ assignedTo: (request.body as { assignedTo: string }).assignedTo }), 201));
+      const created = await f.invoke(["create", "--title", "My task", ...explicit]);
+      expect(created.code, created.stderr).toBe(0);
+      expect(created.stdout).toContain(`Assigned to: ${accountId}\n`);
+      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, "GET /api/v1/me", `POST ${taskPath}`]);
+      expect(requests.at(-1)!.body).toEqual({ title: "My task", assignedTo: accountId });
+      requests.length = 0;
+      const assigned = await f.invoke(["create", "--title", "Colleague task", "--assigned-to", secondId.toUpperCase(), ...explicit]);
+      expect(assigned.code, assigned.stderr).toBe(0);
+      expect(assigned.stdout).toContain(`Assigned to: ${secondId}\n`);
+      expect(requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([`GET ${projectPath}`, `POST ${taskPath}`]);
+      expect(requests.at(-1)!.body).toEqual({ title: "Colleague task", assignedTo: secondId });
+    } finally { await f.close(); }
+  });
+
   it("creates, shows, lists and graphs explicit projects without Git or repository imports", async () => {
     const f = await fixture();
     try {
       const title = "Task 中文\n\u001b[31m";
-      const createdTask = task({ title, dependsOn: [secondId], blockedBy: [secondId], ready: false });
+      const createdTask = task({ title, assignedTo: accountId, dependsOn: [secondId], blockedBy: [secondId], ready: false });
       const second = task({ id: secondId, title: "Second" });
       const cursor = "next page+/=?";
       const { requests } = await f.serve((request, response) => {
@@ -707,7 +789,7 @@ describe("compiled task commands", () => {
       expect(created.stdout).toContain("Task created.");
       expect(created.stdout).toContain(taskId);
       expect(created.stdout).toContain("Task 中文\\n\\u001b[31m");
-      expect(requests.find(({ method }) => method === "POST")!.body).toEqual({ title, description: "", dependsOn: [secondId], externalDependsOn: [] });
+      expect(requests.find(({ method }) => method === "POST")!.body).toEqual({ title, description: "", assignedTo: accountId, dependsOn: [secondId], externalDependsOn: [] });
 
       const shown = await f.invoke(["show", taskId.toUpperCase(), "--project", projectId.toUpperCase(), "--json"]);
       expect(shown.code, shown.stderr).toBe(0);
@@ -736,7 +818,7 @@ describe("compiled task commands", () => {
       const current = task({ version: 9_007_199_254_740_993n, dependsOn: [secondId], externalDependsOn: [secondId] });
       const { requests } = await f.serve((request, response) => respond(response, request.method === "GET" ? current : { ...current, ...(request.body as object), version: current.version + 1n }, request.method === "POST" ? 201 : 200));
       const cases = [
-        { args: ["create", "--title", "Mixed", "--depends-on", thirdId.toUpperCase(), "--external-depends-on", secondId], body: { title: "Mixed", dependsOn: [secondId, thirdId], externalDependsOn: [secondId] } },
+        { args: ["create", "--title", "Mixed", "--depends-on", thirdId.toUpperCase(), "--external-depends-on", secondId], body: { title: "Mixed", assignedTo: accountId, dependsOn: [secondId, thirdId], externalDependsOn: [secondId] } },
         { args: ["update", taskId, "--external-depends-on", thirdId], body: { dependsOn: [thirdId], externalDependsOn: [thirdId] } },
         { args: ["update", taskId, "--depends-on", secondId], body: { dependsOn: [secondId], externalDependsOn: [] } },
         { args: ["update", taskId, "--clear-dependencies"], body: { dependsOn: [], externalDependsOn: [] } },
@@ -747,8 +829,8 @@ describe("compiled task commands", () => {
         const update = args[0] === "update";
         const result = await f.invoke([...args, ...(update ? ["--if-version", "9223372036854775807"] : []), ...explicit]);
         expect(result.code, result.stderr).toBe(0);
-        expect(requests.map(({ method }) => method)).toEqual(["GET", update ? "PATCH" : "POST"]);
-        expect(requests[1]!.body).toEqual({ ...(update ? { version: 9_223_372_036_854_775_807n } : {}), ...body });
+        expect(requests.map(({ method }) => method)).toEqual(["GET", ...(update ? [] : ["GET"]), update ? "PATCH" : "POST"]);
+        expect(requests.at(-1)!.body).toEqual({ ...(update ? { version: 9_223_372_036_854_775_807n } : {}), ...body });
       }
     } finally { await f.close(); }
   }, 60_000);
@@ -827,7 +909,7 @@ describe("compiled task commands", () => {
           : { items: [{ ...project, id: thirdId, repoUrl: "https://other.example/Other/Repo" }], nextCursor: "project page two" });
         else if (request.method === "POST") {
           bindingPresentAtMutation = existsSync(path.join(f.caller, ".daynight/project.yml")) && readFileSync(path.join(f.caller, ".gitignore"), "utf8").includes("/.daynight/");
-          respond(response, task(), 201);
+          respond(response, task({ assignedTo: (request.body as { assignedTo: string }).assignedTo }), 201);
         } else respond(response, { items: [task()], nextCursor: null });
       });
       const options = { git: true, cwd: subdirectory, blocked: blockedReview };

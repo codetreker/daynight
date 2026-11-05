@@ -15,16 +15,50 @@ A request can also mix durable task requirements with instructions for the curre
 conversation. Copying both into the task can turn a registration-only arrangement
 into a lasting execution restriction or bury confirmed decisions in discussion history.
 
+Complete individual descriptions can still form a poor Goal breakdown: independent
+goals can be bundled, routine edits can become fragments, responsibility can
+overlap, and integration or whole-outcome verification can have no owner. Content
+sufficiency alone needs a distinction between the quality of one assignment and
+the coverage and handovers of the complete set. An assignment can also drift
+from its Goal when it lacks a task-specific contribution, boundary, substantive
+approach or acceptance that demonstrates that contribution.
+
 ## Decision
 
 The public `using-daynight` bundle has a `handoff <task-id>` mode and one shared
 `references/task-content.md` standard. The description identifies the current
 task, its responsibility and readable sources. Body content, required referenced
 documents and mixed organization meet the same sufficiency test; a complete
-description needs no primary attachment unless managed delivery explicitly
-requires attachments or a separate review file, as recorded by the
+description needs no primary attachment unless the Goal specification gate or
+managed delivery requires one. The
+[Goal specification decision](2026-11-02-goal-spec-confirmation.md) requires the
+requirements task to deliver complete `spec.md`; managed attachments and separate
+review files are recorded by the
 [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
 Each detailed explanation has one owner.
+
+The [Goal protocol](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#register-the-delivery-breakdown)
+owns delivery-task boundaries, briefs and whole-breakdown checks. Each delivery
+task has one independently assessable outcome, with boundaries determined by
+purpose and reviewability. A foundation, migration or acceptance task may have
+its own result while depending on other work. Each proposed and registered
+Goal delivery task supplies the
+[delivery brief](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/goal.md#delivery-task-brief):
+its objective's concrete contribution to the confirmed Goal, scope, substantive
+implementation approach and observable acceptance. Precise readable source
+sections can supply detail; a generic architecture pointer cannot define the
+assignment. An acceptance task's approach defines its substantive verification,
+while session command schedules and debugging remain outside task material.
+
+The Goal protocol checks the complete candidate set before solution confirmation
+and the actual registered set before solution completion. It verifies the four
+brief parts against the Goal and applicable solution, complete scope, integration
+and whole-Goal verification ownership, responsibility gaps and producer/consumer
+agreement. Handoff checks content sufficiency and required sources or contracts;
+for Goal delivery tasks it also checks their brief and boundary under that same
+Goal owner. Missing approaches and Goal drift are content gaps handled under
+existing state and permission rules. Handoff does not reconstruct the whole Goal
+or authorize repartitioning and dependency changes.
 
 The original standard used six categories, including a solution, validation
 methods and a designated task-local confirmation/evidence location. Those choices
@@ -32,7 +66,11 @@ made independent consumption explicit and kept stable detail separate from
 execution progress. The [task/session content decision](2026-10-28-task-session-content.md)
 partially supersedes that content model: five definition categories plus current
 and final artifacts replace the universal solution and evidence requirements.
-Task content retains real inputs and outputs, while execution/discussion methods,
+The scoped Goal delivery brief requires a task-local approach without restoring
+a universal plan or separate solution-file requirement; the task/session
+decision retains the distinction between that substantive design and session
+organization.
+Task content retains real inputs, substantive approaches and outputs, while session execution/discussion organization,
 operational authorization and recovery information stay in the session. The
 shared rule governs descriptions, attachments and referenced task material;
 existing entrypoint and creation references apply it without duplicating wording.
@@ -62,8 +100,11 @@ upstream/downstream contracts. A session execution plan is not a handoff prerequ
 Known, already-confirmed information can organize a not-yet-enabled todo;
 missing decisions remain concrete blockers. A blocked todo may be handed off when
 its design and interfaces are sufficient, while its dependencies still prevent
-execution. Only after review does an exact-observed-version update enable
-`allowAgents`; creation, breakdown, automatic discovery and execution never
+execution. The [account-owned handoff decision](2026-11-04-cli-create-default-assignee.md)
+also requires comparing the explicitly selected task's assignment with the
+independently confirmed authenticated account. Ownership checks do not enumerate
+other tasks; unknown identity remains an unconfirmed prerequisite. Only after content and responsibility review
+does an exact-observed-version update enable `allowAgents`; creation, breakdown, automatic discovery and execution never
 supply that authorization themselves.
 
 Already-enabled tasks receive a read-only re-audit. A failed re-audit preserves
@@ -85,7 +126,7 @@ execution; a changed source triggers review of the affected content. This is a
 best-effort content check, not an atomic snapshot or a permanent certificate.
 Conflicts require a fresh decision, uncertain writes are reconciled by reading,
 and unreadable results remain unconfirmed. Immediate worker claims may produce a
-higher final version or in_progress state. Reports use actual observations and
+higher final version or in_progress state. Reports include actual assignedTo and responsibility conclusions and
 do not attribute another writer's matching permission value to the handoff.
 
 The [skill requirements](../../../../docs/spec/daynight-agent-skill.md) own
@@ -134,12 +175,17 @@ mechanisms rather than infer a certificate from allowAgents.
 
 ## Consequences
 
-One standard controls creation, Goal breakdown, handoff and execution, including
-stage-specific inputs and outputs. This removes the primary-file gate without
-weakening current-stage content, real dependencies, Goal confirmation or direct
-architecture-source indexing. Task inputs and resulting artifacts remain
-findable even when all requirements and design are in the description; session
-continuity does not become task material.
+The shared content standard controls definitions, sources and stage-specific
+inputs and outputs across creation, handoff and execution. The Goal protocol owns
+its delivery briefs, decomposition boundaries and whole-breakdown coverage;
+individual handoff cannot certify complete Goal coverage. Goal decomposition uses
+purpose and reviewability without fixed counts, sizes or a uniform slicing
+pattern. A discussion's future decisions remain its outputs. The content standard
+allows complete inline material while retaining current-stage requirements, real
+dependencies, Goal confirmation and direct architecture-source indexing. Task inputs and resulting artifacts remain
+findable through their actual owners. Ordinary tasks may keep complete content
+in the description; Goal requirements use the mandatory complete specification
+attachment. Session continuity does not become task material.
 
 The flag permits automatic selection but does not certify future document
 versions, pause scheduling or prove execution. Existing true tasks are not

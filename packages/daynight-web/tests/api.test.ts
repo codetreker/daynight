@@ -13,12 +13,12 @@ const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-20T12:34:56.123456Z";
-const project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Core project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
-const task = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Core project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
+const task = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
   id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo", version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const graphTask = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const graphTask = { assignedTo: null, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
   id: taskId, titlePreview: "A task", titleTruncated: false, status: "todo",
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
@@ -26,9 +26,9 @@ const summary = { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 
 const graph = { observedAt: "2026-10-20T12:00:00Z", project, summary, tasks: [graphTask] };
 const sync = taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
 const parsedSync = taskSyncFromGraph(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
-const rawProject = (version: string): string => `${JSON.stringify({ ...project, settings: undefined }).slice(0, -1)},"settings":{"version":${version},"executionWarningMinutes":60}}`;
+const rawProject = (version: string): string => `${stringifyWireJson({ ...project, settings: undefined }).slice(0, -1)},"settings":{"version":${version},"executionWarningMinutes":60}}`;
 const rawGraph = (projectSource: string): string => `${JSON.stringify({ ...graph, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
-const rawSync = (projectSource: string): string => `${JSON.stringify({ ...sync, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
+const rawSync = (projectSource: string): string => `${stringifyWireJson({ ...sync, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
 const signal = (): AbortSignal => new AbortController().signal;
 const response = (value: unknown, status = 200): Response => new Response(stringifyWireJson(value), {
   status, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json; charset=utf-8" }),
@@ -272,7 +272,7 @@ describe("targeted project JSON decoding", () => {
   });
 
   it("preserves whitespace, escaped keys, duplicate-key replacement and unknown nested values", async () => {
-    const fields = JSON.stringify({ ...project, settings: undefined }).slice(0, -1);
+    const fields = stringifyWireJson({ ...project, settings: undefined }).slice(0, -1);
     const source = String.raw`${fields},"settings":null,"\u0073ettings":{"version":1e0,"ver\u0073ion": 9223372036854775807 ,"executionWarningMinutes":60,"unknown":{"version":9007199254740993}},"unknown":{"settings":{"version":9007199254740993}}}`;
     const decoded = await decodeProjectJson(new Response(source)) as Record<string, unknown>;
     const native = JSON.parse(source) as Record<string, unknown>;
@@ -280,7 +280,7 @@ describe("targeted project JSON decoding", () => {
     expect((decoded.settings as Record<string, unknown>).unknown).toEqual((native.settings as Record<string, unknown>).unknown);
     expect(decoded.unknown).toEqual(native.unknown);
     const replaced = `${fields},"settings":{"version":9223372036854775807,"executionWarningMinutes":60},"settings":null}`;
-    expect(await decodeProjectJson(new Response(replaced))).toEqual(JSON.parse(replaced));
+    expect(await decodeProjectJson(new Response(replaced))).toEqual({ ...JSON.parse(replaced), ownership: project.ownership });
     const lastPage = String.raw`{"items":null,"it\u0065ms":[${rawProject('9007199254740993')}],"nextCursor":null}`;
     expect(parseProjectPage(await decodeProjectPageJson(new Response(lastPage))).items[0]?.settings.version).toBe(9_007_199_254_740_993n);
     const lastGraph = `${rawGraph(rawProject('9007199254740993')).slice(0, -1)},"project":null}`;
@@ -312,9 +312,11 @@ describe("API requests", () => {
   it("uses targeted decoders for project creation, project pages and task synchronization", async () => {
     const version = 9_007_199_254_740_993n;
     const source = rawProject(version.toString());
-    const fetcher = vi.fn().mockResolvedValue(new Response(source, { status: 201, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+    const access = { ...taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask: () => 1n }).actorAccess, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { ...sync.actorAccess.directGrant!, role: "admin" } };
+    const creationSource = `${source.slice(0, -1)},"access":${stringifyWireJson(access)}}`;
+    const fetcher = vi.fn().mockResolvedValue(new Response(creationSource, { status: 201, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     vi.stubGlobal("fetch", fetcher);
-    expect((await createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).settings.version).toBe(version);
+    expect((await createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: TEST_VIEWER_ID }, signal(), vi.fn())).settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await listProjects({}, signal())).items[0]?.settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));

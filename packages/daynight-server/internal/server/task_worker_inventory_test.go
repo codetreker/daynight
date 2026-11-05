@@ -27,7 +27,7 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		if fixture.paused != "" {
 			input["properties"] = api.TaskWritableProperties{"paused": json.RawMessage(fixture.paused)}
 		}
-		task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Inventory task"), input)
+		task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Inventory task"), input)
 		body := workerClaimBody(task.Version)
 		if fixture.selected {
 			body["workerId"] = workerID

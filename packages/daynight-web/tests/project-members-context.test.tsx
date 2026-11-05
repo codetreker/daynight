@@ -1,33 +1,34 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listMembers } from '../src/api/auth';
-import type { ProjectMember } from '../src/api/auth-types';
+import type { ProjectParticipant } from '../src/api/auth-types';
 import { ProjectMembersProvider, useProjectMembers } from '../src/features/projects/ProjectMembers';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { TEST_VIEWER_ID } from './helpers/taskSync';
+import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 
 vi.mock('../src/api/auth', async (original) => ({ ...await original<typeof import('../src/api/auth')>(), listMembers: vi.fn() }));
 const projectId = '00000000-0000-4000-8000-000000000100';
 const otherProjectId = '00000000-0000-4000-8000-000000000101';
 const stamp = '2026-10-27T00:00:00Z';
-const member: ProjectMember = { projectId, userId: TEST_VIEWER_ID, name: 'Jianjun', email: null, avatarUrl: null, role: 'admin', version: 1n, createdAt: stamp, updatedAt: stamp };
+const member: ProjectParticipant = { inheritedFrom: null, userId: TEST_VIEWER_ID, profile: { name: 'Jianjun', email: null, avatarUrl: null }, effectiveRole: 'admin', directGrant: { projectId, userId: TEST_VIEWER_ID, role: 'admin', version: 1n, createdAt: stamp, updatedAt: stamp } };
+const memberPage = (items: readonly ProjectParticipant[], project = projectId) => ({ items, actorAccess: directAccessFixture(project) });
 const Probe = ({ label, project = projectId, enabled = true }: { readonly label: string; readonly project?: string; readonly enabled?: boolean }) => {
   const membership = useProjectMembers(project, enabled);
-  return <section aria-label={label}><p>{membership.status}</p>{membership.members.map((item) => <span key={item.userId}>{item.name}</span>)}{membership.error !== null && <span>Member lookup failed</span>}<button onClick={membership.retry}>Retry {label}</button></section>;
+  return <section aria-label={label}><p>{membership.status}</p>{membership.members.map((item) => <span key={item.userId}>{item.profile.name}</span>)}{membership.error !== null && <span>Member lookup failed</span>}<button onClick={membership.retry}>Retry {label}</button></section>;
 };
 beforeEach(() => vi.mocked(listMembers).mockReset());
 afterEach(() => vi.restoreAllMocks());
 
 describe('shared project-member lookup', () => {
   it('shares one principal-bound membership read between the project and task detail consumers', async () => {
-    vi.mocked(listMembers).mockResolvedValue([member]);
+    vi.mocked(listMembers).mockResolvedValue(memberPage([member]));
     renderWithLocale(<ProjectMembersProvider projectId={projectId}><Probe label="project" /><Probe label="task" /></ProjectMembersProvider>, { locale: 'en', taskCache: true });
     expect(await screen.findAllByText('Jianjun')).toHaveLength(2);
     expect(listMembers).toHaveBeenCalledExactlyOnceWith(projectId, expect.any(AbortSignal), expect.objectContaining({ userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function) }));
   });
 
   it('exposes a failed lookup and retries only after an explicit read request', async () => {
-    vi.mocked(listMembers).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([member]);
+    vi.mocked(listMembers).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(memberPage([member]));
     renderWithLocale(<Probe label="task" />, { locale: 'en', taskCache: true });
     expect(await screen.findByText('Member lookup failed')).toBeVisible();
     expect(listMembers).toHaveBeenCalledTimes(1);
@@ -37,7 +38,7 @@ describe('shared project-member lookup', () => {
   });
 
   it('starts a standalone lookup only when a current claim needs member details', async () => {
-    vi.mocked(listMembers).mockResolvedValue([member]);
+    vi.mocked(listMembers).mockResolvedValue(memberPage([member]));
     const view = renderWithLocale(<Probe label="task" enabled={false} />, { locale: 'en', taskCache: true });
     expect(listMembers).not.toHaveBeenCalled();
     view.rerender(<Probe label="task" />);
@@ -46,10 +47,24 @@ describe('shared project-member lookup', () => {
   });
 
   it('keeps a different project lookup separate from an inherited membership snapshot', async () => {
-    vi.mocked(listMembers).mockImplementation(async (project) => project === projectId ? [member] : [{ ...member, projectId: otherProjectId, name: 'Other project' }]);
+    vi.mocked(listMembers).mockImplementation(async (project) => memberPage(project === projectId ? [member] : [{ ...member, profile: { ...member.profile, name: 'Other project' }, directGrant: { ...member.directGrant!, projectId: otherProjectId } }], project));
     renderWithLocale(<ProjectMembersProvider projectId={projectId}><Probe label="task" project={otherProjectId} /></ProjectMembersProvider>, { locale: 'en', taskCache: true });
     expect(await screen.findByText('Other project')).toBeVisible();
     await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Jianjun')).toBeNull();
+  });
+
+  it('does not publish an old project lookup after the provider changes project', async () => {
+    const old = Promise.withResolvers<ReturnType<typeof memberPage>>();
+    vi.mocked(listMembers).mockImplementation((project) => project === projectId ? old.promise : Promise.resolve(memberPage([{ ...member, profile: { ...member.profile, name: 'New project' }, directGrant: { ...member.directGrant!, projectId: otherProjectId } }], otherProjectId)));
+    const view = renderWithLocale(<ProjectMembersProvider projectId={projectId}><Probe label="task" /></ProjectMembersProvider>, { locale: 'en', taskCache: true });
+    await waitFor(() => expect(listMembers).toHaveBeenCalledTimes(1));
+    const oldSignal = vi.mocked(listMembers).mock.calls[0]![1];
+    view.rerender(<ProjectMembersProvider projectId={otherProjectId}><Probe label="task" project={otherProjectId} /></ProjectMembersProvider>);
+    expect(await screen.findByText('New project')).toBeVisible();
+    expect(oldSignal.aborted).toBe(true);
+    await act(async () => old.resolve(memberPage([member])));
+    expect(screen.queryByText('Jianjun')).toBeNull();
+    expect(screen.getByText('New project')).toBeVisible();
   });
 });

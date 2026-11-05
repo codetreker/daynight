@@ -12,10 +12,12 @@ const taskId = "abcdefab-2222-4222-8333-123456789abc";
 const dependencyId = "abcdefab-3333-4222-8333-123456789abc";
 const otherDependencyId = "abcdefab-4444-4222-8333-123456789abc";
 const claimId = "abcdefab-5555-4222-8333-123456789abc";
+const accountId = "abcdefab-6666-4222-8333-123456789abc";
+const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const time = "2026-10-20T00:00:00.123456789Z";
-const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
+const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
+const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
 const propertySchema = { properties: { future: { description: "Future definition", readOnly: false, schema: { type: "string", custom: { version: 7 } } } } };
 const operations: Operation[] = [];
@@ -23,8 +25,22 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
-    getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>(),
-    reportWorker: vi.fn<ApiClient["reportWorker"]>(),
+    previewProjectTransfer: vi.fn(), transferProject: vi.fn(),
+    updateTaskStep: async () => { throw new Error("Unused Step API method"); },
+    setTaskStepStatus: async () => { throw new Error("Unused Step API method"); },
+    moveTaskStep: vi.fn<ApiClient["moveTaskStep"]>(),
+    addTaskStep: vi.fn<ApiClient["addTaskStep"]>(),
+    deleteTaskStep: vi.fn<ApiClient["deleteTaskStep"]>(),
+    listTaskSteps: vi.fn<ApiClient["listTaskSteps"]>(), getTaskStep: vi.fn<ApiClient["getTaskStep"]>(),
+    readTaskThread: vi.fn<ApiClient["readTaskThread"]>(), postTaskThreadMessage: vi.fn<ApiClient["postTaskThreadMessage"]>(),
+    getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>().mockResolvedValue(currentUser),
+    inspectInvitation: vi.fn<ApiClient["inspectInvitation"]>(), acceptInvitation: vi.fn<ApiClient["acceptInvitation"]>(),
+    getTeamCurrentUser: vi.fn<ApiClient["getTeamCurrentUser"]>(), listTeams: vi.fn<ApiClient["listTeams"]>(), getTeam: vi.fn<ApiClient["getTeam"]>(), createTeam: vi.fn<ApiClient["createTeam"]>(), renameTeam: vi.fn<ApiClient["renameTeam"]>(), deleteTeam: vi.fn<ApiClient["deleteTeam"]>(), listTeamProjects: vi.fn<ApiClient["listTeamProjects"]>(),
+    listTeamInvitations: vi.fn<ApiClient["listTeamInvitations"]>(), createTeamInvitation: vi.fn<ApiClient["createTeamInvitation"]>(), revokeTeamInvitation: vi.fn<ApiClient["revokeTeamInvitation"]>(),
+    listTeamMembers: vi.fn<ApiClient["listTeamMembers"]>(), setTeamMemberRole: vi.fn<ApiClient["setTeamMemberRole"]>(), removeTeamMember: vi.fn<ApiClient["removeTeamMember"]>(),
+    getProjectAccess: vi.fn<ApiClient["getProjectAccess"]>(),
+    listBots: vi.fn<ApiClient["listBots"]>(), getBot: vi.fn<ApiClient["getBot"]>(), createBot: vi.fn<ApiClient["createBot"]>(), deleteBot: vi.fn<ApiClient["deleteBot"]>(), listWorkers: vi.fn<ApiClient["listWorkers"]>(), getWorker: vi.fn<ApiClient["getWorker"]>(),
+    reportWorker: vi.fn<ApiClient["reportWorker"]>(), getWorkerConfiguration: vi.fn<ApiClient["getWorkerConfiguration"]>(), reportWorkerConfiguration: vi.fn<ApiClient["reportWorkerConfiguration"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>().mockResolvedValue(propertySchema),
     getTaskProperties: vi.fn<ApiClient["getTaskProperties"]>().mockResolvedValue(propertyResource),
@@ -54,8 +70,8 @@ const fixture = (operation = createOperation()) => {
   const dependencies = {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue(project),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
-      const output = await command({ api, operation, serverUrl: "http://localhost:8787" });
-      operation.check(); if (output !== undefined) current.stdout(output);
+      const output = await command({ api, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } });
+      operation.check(); if (typeof output === "string") current.stdout(output); else if (output !== undefined) current.stdout(output.output);
     }),
   };
   return { context, api, dependencies, operation };
@@ -287,7 +303,7 @@ describe("task request contracts", () => {
   it.each(["windows", "linux", "macos"] as const)("creates and updates an explicit %s platform requirement", async (requiredPlatform) => {
     const f = fixture();
     await runTaskCommand(["create", "--title", "Platform task", "--required-platform", requiredPlatform, "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Platform task", requiredPlatform });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Platform task", assignedTo: accountId, requiredPlatform });
     await runTaskCommand(["update", taskId, `--required-platform=${requiredPlatform}`, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
     expect(f.api.getTask).not.toHaveBeenCalled();
     expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { requiredPlatform, version: 9_223_372_036_854_775_807n });
@@ -361,13 +377,13 @@ describe("task request contracts", () => {
   it("omits optional creation fields and preserves a FEFF-only title", async () => {
     const f = fixture();
     await runTaskCommand(["create", "--title", "\ufeff", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "\ufeff" });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "\ufeff", assignedTo: accountId });
   });
 
   it("normalizes mixed dependency declarations while preserving empty descriptions", async () => {
     const f = fixture();
     await runTaskCommand(["create", "--title=-Title=original", "--description=", "--depends-on", otherDependencyId.toUpperCase(), "--external-depends-on", dependencyId, "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "-Title=original", description: "", dependsOn: [dependencyId, otherDependencyId], externalDependsOn: [dependencyId] });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "-Title=original", description: "", assignedTo: accountId, dependsOn: [dependencyId, otherDependencyId], externalDependsOn: [dependencyId] });
   });
 
   it.each([
@@ -376,7 +392,7 @@ describe("task request contracts", () => {
   ])("replaces both dependency sets for $name creation and updates", async ({ fields, externalDependsOn }) => {
     const f = fixture();
     await runTaskCommand(["create", "--title", "Title", ...fields, "--project", projectId], f.context, f.dependencies);
-    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Title", dependsOn: [dependencyId], externalDependsOn });
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Title", assignedTo: accountId, dependsOn: [dependencyId], externalDependsOn });
     await runTaskCommand(["update", taskId, ...fields, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
     expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, dependsOn: [dependencyId], externalDependsOn });
     expect(f.api.getTask).not.toHaveBeenCalled();
@@ -540,15 +556,110 @@ describe("task output contracts", () => {
     expect(f.context.stdout).toHaveBeenLastCalledWith("[]\n");
   });
 
-  it("renders full values in linear space despite an outlier title or description", () => {
-    const tasks = Array.from({ length: 1_000 }, (_, index) => ({ ...task, id: `${index.toString(16).padStart(8, "0")}-2222-4222-8333-123456789abc`, title: index === 0 ? "T".repeat(4_096) : `Task ${index}` }));
+  it("preserves full titles and descriptions beside a longer task value", () => {
+    const tasks = [task, { ...task, id: "22222222-2222-4222-8333-123456789abc", title: "Long task title ".repeat(4), description: "Long description ".repeat(4) }];
     const output = renderTaskList(tasks);
-    let contentLength = 0;
-    for (const current of tasks) {
-      expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nTitle: ${current.title}\n`);
-      contentLength += current.id.length + current.projectId.length + current.title.length + current.description.length + current.status.length + current.version.toString().length + current.createdAt.length + current.updatedAt.length + `Automatic execution: ${current.allowAgents}\nRequired platform: ${current.requiredPlatform === null ? "any" : current.requiredPlatform}\n`.length;
-    }
-    expect(output.length).toBeLessThanOrEqual(contentLength + 190 * tasks.length);
+    for (const current of tasks) expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nTitle: ${current.title}\nDescription: ${current.description}\n`);
+  });
+});
+
+
+describe("task responsibility options", () => {
+  it.each([
+    ["create", "--title", "Assigned task", "--assigned-to", "me"],
+    ["create", "--title", "Assigned task", "--assigned-to", "unassigned"],
+    ["create", "--title", "Assigned task", "--clear-assigned-to"],
+    ["create", "--title", "Assigned task", "--assigned-to="],
+    ["update", taskId, "--assigned-to", "me"],
+    ["update", taskId, "--assigned-to", "unassigned"],
+    ["update", taskId, "--assigned-to", projectId, "--clear-assigned-to"],
+    ["update", taskId, "--clear-assigned-to", "--clear-assigned-to"],
+    ["list", "--assigned-to="], ["list", "--assigned-to", "ME"],
+    ["list", "--assigned-to", "Unassigned"], ["list", "--assigned-to", "bad"],
+    ["ready", "--assigned-to", projectId],
+  ])("rejects invalid responsibility options before any local or remote preparation: %j", async (...args) => {
+    const f = fixture();
+    await expect(runTaskCommand(args, f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
+    expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
+    expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("assigns default creation to the authenticated account before submitting", async () => {
+    const f = fixture();
+    await runTaskCommand(["create", "--title", "My task", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getCurrentUser).toHaveBeenCalledExactlyOnceWith();
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "My task", assignedTo: accountId });
+    expect(f.api.getCurrentUser.mock.invocationCallOrder[0]!).toBeLessThan(f.api.createTask.mock.invocationCallOrder[0]!);
+  });
+
+  it("preserves an identity failure without submitting an unassigned task", async () => {
+    const f = fixture();
+    const failure = new Error("Current account unavailable");
+    f.api.getCurrentUser.mockRejectedValue(failure);
+    await expect(runTaskCommand(["create", "--title", "My task", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+    expect(f.api.getCurrentUser).toHaveBeenCalledOnce();
+    expect(f.api.createTask).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("stops before creation when cancelled during the identity read", async () => {
+    const cancellation = new AbortController();
+    const f = fixture(createOperation({ signal: cancellation.signal }));
+    f.api.getCurrentUser.mockImplementation(async () => { cancellation.abort(); return currentUser; });
+    await expect(runTaskCommand(["create", "--title", "My task", "--project", projectId], f.context, f.dependencies)).rejects.toThrow("Operation cancelled");
+    expect(f.api.getCurrentUser).toHaveBeenCalledOnce();
+    expect(f.api.createTask).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("sets and clears native assignment using exact versions without task reads", async () => {
+    const f = fixture();
+    f.api.createTask.mockResolvedValue({ ...task, assignedTo: dependencyId });
+    f.api.updateTask.mockResolvedValue({ ...task, assignedTo: dependencyId });
+    await runTaskCommand(["create", "--title", "Assigned task", "--assigned-to", dependencyId.toUpperCase(), "--project", projectId], f.context, f.dependencies);
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Assigned task", assignedTo: dependencyId });
+    await runTaskCommand(["update", taskId, "--assigned-to", dependencyId.toUpperCase(), "--title", "Updated", "--allow-agents", "true", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.updateTask).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: dependencyId, title: "Updated", allowAgents: true, version: 9_223_372_036_854_775_807n });
+    f.api.updateTask.mockResolvedValue(task);
+    await runTaskCommand(["update", taskId, "--clear-assigned-to", "--if-version", "9007199254740993", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.updateTask).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: null, version: 9_007_199_254_740_993n });
+    expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it("retains the existing one-read default version path for an assignment-only update", async () => {
+    const f = fixture();
+    await runTaskCommand(["update", taskId, "--clear-assigned-to", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { assignedTo: null, version: task.version });
+  });
+
+  it.each([dependencyId, "me", "unassigned"])("passes responsibility filter %s before pagination without another identity request", async (assignedTo) => {
+    const f = fixture();
+    await runTaskCommand(["list", "--assigned-to", assignedTo, "--ready", "--allow-agents", "true", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { assignedTo, ready: true, allowAgents: true });
+    expect(f.api.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it.each([null, dependencyId])("renders current assignment %s without changing dependency-only JSON", async (assignedTo) => {
+    const f = fixture();
+    const value = { ...task, assignedTo };
+    f.api.getTask.mockResolvedValue(value); f.api.listTasks.mockResolvedValue([value]); f.api.listReadyTasks.mockResolvedValue([value]);
+    f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, assignedTo })) });
+    for (const args of [["show", taskId], ["list"], ["ready"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
+    for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`Assigned to: ${assignedTo === null ? "unassigned" : assignedTo}\n`);
+    f.context.stdout.mockClear();
+    await runTaskCommand(["graph", taskId, "--depends-only", "--json", "--project", projectId], f.context, f.dependencies);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual([{ id: taskId, dependsOn: [], externalDependsOn: [] }]);
+  });
+
+  it.each(["create", "update", "list"])("advertises the assignment option in %s help", async (command) => {
+    const f = fixture();
+    await runTaskCommand([command, "--help"], f.context, f.dependencies);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("--assigned-to");
+    if (command === "update") expect(f.context.stdout.mock.calls[0]![0]).toContain("--clear-assigned-to");
+    expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
   });
 });
 

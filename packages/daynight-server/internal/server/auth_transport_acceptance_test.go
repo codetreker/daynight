@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
+
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
@@ -126,7 +128,7 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal("compose the production authenticated handler failed")
 	}
-	product.Config.Handler = RequestLogging(logger, handler)
+	product.Config.Handler = httpx.RequestLogging(logger, handler)
 	product.Start()
 	integration := &identityIntegration{server: product, gateway: cut.server.URL, logs: logs,
 		sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{gateway.AppSecret}}

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -22,10 +22,10 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project, other := queryProject(t, s, 1), queryProject(t, s, 2)
-	queryTask(t, s, other.ID, 19, core.TaskTodo)
-	a := queryTask(t, s, project.ID, 10, core.TaskDone)
-	b := queryTask(t, s, project.ID, 11, core.TaskInProgress, a.ID)
-	c := queryTask(t, s, project.ID, 12, core.TaskTodo, a.ID, b.ID)
+	queryTask(t, s, other.ID, 19, model.TaskTodo)
+	a := queryTask(t, s, project.ID, 10, model.TaskDone)
+	b := queryTask(t, s, project.ID, 11, model.TaskInProgress, a.ID)
+	c := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID, b.ID)
 	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456000, time.UTC)
 	mustQueryExec(t, s, `UPDATE tasks SET created_at=$1, updated_at=$1, version=9007199254740993,
 		title=repeat('😀',161), description=repeat('private description',10000) WHERE project_id=$2`, stamp, project.ID)
@@ -36,11 +36,11 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 		BEGIN RAISE EXCEPTION 'private details selected'; END $$;
 		ALTER TABLE tasks RENAME TO task_source;
 		CREATE VIEW tasks AS SELECT id, project_id, title, reject_sync_detail() AS description,
-		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`)
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		all, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].TitlePreview != strings.Repeat("😀", 160) || !all[0].TitleTruncated ||
-			all[0].RequiredPlatform != nil || all[2].RequiredPlatform == nil || *all[2].RequiredPlatform != core.TaskPlatform("linux") || !all[2].AllowAgents ||
+			all[0].RequiredPlatform != nil || all[2].RequiredPlatform == nil || *all[2].RequiredPlatform != model.TaskPlatform("linux") || !all[2].AllowAgents ||
 			!slices.Equal(all[2].DependsOn, []string{a.ID, b.ID}) || !slices.Equal(all[2].ExternalDependsOn, []string{b.ID}) {
 			t.Fatalf("intrinsic projection: %#v, %v", all, err)
 		}
@@ -51,7 +51,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 			{stamp, 3}, {stamp.Add(time.Nanosecond), 1}, {stamp.Add(999 * time.Nanosecond), 1},
 			{stamp.Add(time.Microsecond), 1}, {stamp.Add(time.Microsecond + time.Nanosecond), 0},
 		} {
-			got, err := snapshot.TaskSyncTasks(ctx, project.ID, &test.lower, 160)
+			got, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &test.lower, 160)
 			if err != nil || got == nil || len(got) != test.count {
 				t.Fatalf("lower %s: %#v, %v", test.lower.Format(time.RFC3339Nano), got, err)
 			}
@@ -71,6 +71,9 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	if _, err := pool.Exec(ctx, "INSERT INTO projects(id,name,repo_url) VALUES ($1,'Existing','repo')", queryID(1)); err != nil {
 		t.Fatal(err)
 	}
+	if err := seedHistoricalProjectAdmin(ctx, &Store{Pool: pool}, queryID(1)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, "INSERT INTO tasks(id,project_id,title) VALUES ($1,$2,'Existing task')", queryID(11), queryID(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -88,9 +91,9 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	}
 	s := &Store{Pool: pool}
 	var original string
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		original, err = snapshot.TaskCacheEpoch(ctx, queryID(1))
+		original, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(1))
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -99,8 +102,8 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 		t.Fatal("existing project has no epoch")
 	}
 	other := queryProject(t, s, 2)
-	if err := s.WriteProject(ctx, queryID(1), func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, queryID(11), TaskWrite{Title: "Changed", Status: core.TaskTodo})
+	if err := writeProjectForTest(s, ctx, queryID(1), func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, queryID(11), TaskWrite{Title: "Changed", Status: model.TaskTodo})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -108,20 +111,20 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		current, err := snapshot.TaskCacheEpoch(ctx, queryID(1))
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(1))
 		if err != nil {
 			return err
 		}
-		otherEpoch, err := snapshot.TaskCacheEpoch(ctx, other.ID)
+		otherEpoch, err := snapshot.TaskDAO().TaskCacheEpoch(ctx, other.ID)
 		if err != nil {
 			return err
 		}
 		if current != original || otherEpoch == current {
 			t.Fatalf("epoch changed or shared: %s %s", current, otherEpoch)
 		}
-		_, err = snapshot.TaskCacheEpoch(ctx, queryID(99))
-		if !errors.Is(err, core.ErrNotFound) {
+		_, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, queryID(99))
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("epoch missing cause: %v", err)
 		}
 		return nil
@@ -204,20 +207,20 @@ func TestTaskSyncIndexCheckStaysInFixtureSchema(t *testing.T) {
 func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 	for _, test := range []struct{ name, ddl string }{
 		{"query", "DROP TABLE tasks"},
-		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,allow_agents,required_platform,deleted_at FROM task_source`},
+		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
 		{"invalid status", `ALTER TABLE tasks DROP CONSTRAINT tasks_status_check; UPDATE tasks SET status='invalid'`},
-		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,allow_agents,required_platform,deleted_at FROM task_source`},
+		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := isolatedStore(t)
 			project := queryProject(t, s, 1)
-			queryTask(t, s, project.ID, 11, core.TaskTodo)
+			queryTask(t, s, project.ID, 11, model.TaskTodo)
 			mustQueryExec(t, s, test.ddl)
-			err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-				_, err := snapshot.TaskSyncTasks(context.Background(), project.ID, nil, 160)
+			err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+				_, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
 				return err
 			})
-			if err == nil || errors.Is(err, core.ErrNotFound) || strings.Contains(err.Error(), "private") {
+			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private") {
 				t.Fatalf("sync failure hidden or leaked: %v", err)
 			}
 			if test.name == "iteration" {
@@ -229,12 +232,12 @@ func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 		})
 	}
 	s := isolatedStore(t)
-	var expired *Snapshot
-	if err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error { expired = snapshot; return nil }); err != nil {
+	var expired SnapshotScope
+	if err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error { expired = snapshot; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := expired.TaskSyncTasks(context.Background(), queryID(1), nil, 160)
-	if !errors.Is(err, pgx.ErrTxClosed) || !reflect.DeepEqual(rows, []core.TaskViewRecord(nil)) {
+	rows, err := expired.TaskDAO().TaskSyncTasks(context.Background(), queryID(1), nil, 160)
+	if !errors.Is(err, pgx.ErrTxClosed) || !reflect.DeepEqual(rows, []model.TaskViewRecord(nil)) {
 		t.Fatalf("closed snapshot: %#v %v", rows, err)
 	}
 }

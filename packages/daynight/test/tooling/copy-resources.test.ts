@@ -14,6 +14,8 @@ const sqlDirectories = [
   "commands/review/sqlite",
   "commands/worker/sqlite",
   "commands/worker/backends/sqlite",
+  "commands/worker/herdr/sqlite",
+  "commands/worker/herdr/input-sqlite",
   "commands/controller/sqlite/journal",
   "commands/controller/sqlite/resume-lease",
 ] as const;
@@ -81,6 +83,8 @@ describe("packaged resource copy", () => {
     expect(metadata.name).toBe("daynight");
     expect(typeof metadata.description).toBe("string");
     expect((metadata.description as string).trim()).not.toBe("");
+    expect(manual).toContain("daynight task thread read");
+    expect(manual).toContain("daynight task thread post");
     const localLinks = [...manual.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)].map((match) => match[1]!)
       .filter((target) => !target.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/iu.test(target));
     expect(localLinks).toEqual([]);
@@ -119,12 +123,12 @@ describe("packaged resource copy", () => {
     writeFileSync(f.source(standaloneManual), readFileSync(f.source(standaloneManual), "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
     const copied = f.run();
     expect(copied.status, copied.stderr).toBe(0);
-    expect(readFileSync(f.destination(standaloneManual))).toEqual(readFileSync(f.source(standaloneManual)));
+    expect(readFileSync(f.destination(standaloneManual)).equals(readFileSync(f.source(standaloneManual))), standaloneManual).toBe(true);
     for (const resource of resources) {
       const sourceFiles = files(f.source(resource));
       expect(files(f.destination(resource))).toEqual(sourceFiles);
       for (const relative of sourceFiles) {
-        expect(readFileSync(path.join(f.destination(resource), relative))).toEqual(readFileSync(path.join(f.source(resource), relative)));
+        expect(readFileSync(path.join(f.destination(resource), relative)).equals(readFileSync(path.join(f.source(resource), relative))), path.join(resource, relative)).toBe(true);
       }
     }
     await inspectInstalledSkill(f.destination(bundles[1]));
@@ -169,14 +173,14 @@ describe("packaged resource copy", () => {
       const sourceFiles = files(f.source(bundle));
       expect(files(f.destination(bundle))).toEqual(sourceFiles);
       for (const relative of sourceFiles) {
-        expect(readFileSync(path.join(f.destination(bundle), relative))).toEqual(readFileSync(path.join(f.source(bundle), relative)));
+        expect(readFileSync(path.join(f.destination(bundle), relative)).equals(readFileSync(path.join(f.source(bundle), relative))), path.join(bundle, relative)).toBe(true);
       }
     }
     for (const resource of sqlDirectories) {
       const sourceFiles = files(f.source(resource)).filter((name) => name.endsWith(".sql"));
       expect(files(f.destination(resource))).toEqual(sourceFiles);
       for (const relative of sourceFiles) {
-        expect(readFileSync(path.join(f.destination(resource), relative))).toEqual(readFileSync(path.join(f.source(resource), relative)));
+        expect(readFileSync(path.join(f.destination(resource), relative)).equals(readFileSync(path.join(f.source(resource), relative))), path.join(resource, relative)).toBe(true);
       }
     }
     expect(readFileSync(compiled, "utf8")).toBe("compiled module\n");
@@ -203,7 +207,7 @@ describe("packaged resource copy", () => {
     expect(repeated.stderr).toContain("ERR_FS_CP_EEXIST");
     for (const { resource, files: originalFiles } of original) {
       for (const { relative, content } of originalFiles) {
-        expect(readFileSync(path.join(f.destination(resource), relative))).toEqual(content);
+        expect(readFileSync(path.join(f.destination(resource), relative)).equals(content), path.join(resource, relative)).toBe(true);
       }
     }
     expect(readFileSync(compiled, "utf8")).toBe("installed compiled module\n");

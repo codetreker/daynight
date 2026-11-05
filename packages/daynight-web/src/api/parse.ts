@@ -9,11 +9,12 @@ import type {
   TaskGraph,
   TaskGraphSummary,
 } from "./types";
+import { parseProjectOwnership } from "./team-parse";
 import { isTaskVersion } from "./json";
 
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
-import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
-import { parseTaskProperties, readPullRequests, readWorkerClaim } from "./task-properties";
+import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, status, string, timestamp } from "./validation";
+import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim } from "./task-properties";
 
 const projectSettings = (value: unknown): Project["settings"] => {
   const data = record(value);
@@ -25,11 +26,14 @@ const projectSettings = (value: unknown): Project["settings"] => {
 
 export const project = (value: unknown): Project => {
   const data = record(value);
+  const name = string(data.name);
+  if (!name.isWellFormed() || name.includes("\0") || !/[^\p{White_Space}]/u.test(name)) return malformed();
   return {
     id: id(data.id),
-    name: nonemptyString(data.name),
+    name,
     repoUrl: nonemptyString(data.repoUrl),
     settings: projectSettings(data.settings),
+    ownership: parseProjectOwnership(data.ownership),
     createdAt: timestamp(data.createdAt),
     updatedAt: timestamp(data.updatedAt),
   };
@@ -61,6 +65,7 @@ const graphTask = (value: unknown): GraphTask => {
     blockedBy: ids(data.blockedBy),
     ready: boolean(data.ready),
     allowAgents: boolean(data.allowAgents),
+    assignedTo: nullableId(data.assignedTo),
     requiredPlatform: requiredPlatform(data.requiredPlatform),
     startedAt: nullableTimestamp(data.startedAt),
     completedAt: nullableTimestamp(data.completedAt),
@@ -108,6 +113,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     blockedBy: ids(data.blockedBy),
     ready: boolean(data.ready),
     allowAgents: boolean(data.allowAgents),
+    assignedTo: nullableId(data.assignedTo),
     requiredPlatform: requiredPlatform(data.requiredPlatform),
     startedAt: nullableTimestamp(data.startedAt),
     completedAt: nullableTimestamp(data.completedAt),
@@ -116,6 +122,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
   };
   if (parsed.projectId !== projectId || parsed.id !== taskId) return malformed();
   readPullRequests(parsed.properties);
+  readTaskPaused(parsed.properties);
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
   if (worker?.state === "released" && parsed.status !== "todo") return malformed();
@@ -126,14 +133,21 @@ export type ServerError = {
   readonly code: string;
   readonly requestId: string;
   readonly graphLimit?: GraphLimitDetails;
+  readonly serverMessage?: string;
+  readonly stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number };
 };
 
-export const parseServerError = (value: unknown): ServerError => {
+export const parseServerError = (value: unknown, includeSteps = false): ServerError => {
   const data = record(record(value).error);
   const code = string(data.code);
   const requestId = string(data.requestId);
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(code) || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(requestId)) return malformed();
-  string(data.message);
+  const message = string(data.message);
+  if (includeSteps && code === "steps_limit_exceeded") {
+    const details = record(data.details);
+    return { code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } };
+  }
+  if (includeSteps && code !== "graph_limit_exceeded") return { code, requestId, serverMessage: message };
   if (code !== "graph_limit_exceeded") return { code, requestId };
   const details = record(data.details);
   return {

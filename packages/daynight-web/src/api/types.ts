@@ -1,8 +1,11 @@
+import type { ProjectAccess, ProjectOwnership, ProjectPersonVersion } from "./auth-types";
+
 export type ExecutionPlatform = "windows" | "linux" | "macos";
 
 export type TaskStatus = "todo" | "in_progress" | "done";
 
 export type Project = {
+  readonly ownership: ProjectOwnership;
   readonly id: string;
   readonly name: string;
   readonly repoUrl: string;
@@ -31,6 +34,7 @@ export type GraphTask = {
   readonly blockedBy: readonly string[];
   readonly ready: boolean;
   readonly allowAgents: boolean;
+  readonly assignedTo: string | null;
   readonly requiredPlatform: ExecutionPlatform | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
@@ -96,6 +100,7 @@ export type TaskDetail = {
   readonly blockedBy: readonly string[];
   readonly ready: boolean;
   readonly allowAgents: boolean;
+  readonly assignedTo: string | null;
   readonly requiredPlatform: ExecutionPlatform | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
@@ -129,6 +134,8 @@ export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
 };
 
 export type TaskSync = {
+  readonly assigneeVersions: readonly ProjectPersonVersion[];
+  readonly actorAccess: ProjectAccess;
   readonly mode: "snapshot" | "delta";
   readonly epoch: string;
   readonly project: Project;

@@ -10,14 +10,14 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 const start = '2026-10-20T10:00:00Z';
 const epoch = Date.parse(start);
 const at = (milliseconds: number) => new Date(epoch + milliseconds).toISOString();
-const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({
+const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ assignedTo: null,
   id, titlePreview: id, titleTruncated: false, status: 'done', dependsOn: ['Goal'], externalDependsOn: [],
   blockedBy: [], ready: false, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
   createdAt: start, updatedAt: start, ...changes,
 });
 const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot => {
   const graph: TaskGraph = {
-    project: { id: 'project', name: 'Project', repoUrl: 'https://example.com/repo', createdAt: start, updatedAt: start,
+    project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: 'project', name: 'Project', repoUrl: 'https://example.com/repo', createdAt: start, updatedAt: start,
       settings: { version: 1n, executionWarningMinutes: 1 } },
     observedAt: at(elapsed), tasks: [task('Goal', { dependsOn: [] }), ...tasks],
     summary: { total: tasks.length + 1, todo: tasks.filter((item) => item.status === 'todo').length,
@@ -25,12 +25,12 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
       done: tasks.filter((item) => item.status === 'done').length + 1,
       ready: tasks.filter((item) => item.ready).length, blocked: 0 },
   };
-  return { graph, index: buildGraphIndex(graph), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
+  return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: 0, receivedMonotonic: 0, revision: 1 };
 };
 const noop = () => {};
 const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
-  <ChainList index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
-    onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll onShowAllChange={noop} />
+  <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
+    onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />
 </TaskExecutionClockProvider>;
 const row = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!;
 const duration = (id: string) => row(id).querySelector('time');
@@ -50,10 +50,10 @@ describe('Goal child execution duration', () => {
       task('automatic', { status: 'in_progress', allowAgents: true, startedAt: start }),
       task('completed', { startedAt: start, completedAt: at(2_700_000) })];
     const onOpenTask = vi.fn();
-    const view = renderWithLocale(content(snapshot(tasks), onOpenTask), { locale });
+    const view = renderWithLocale(content(snapshot(tasks), onOpenTask), { locale, taskCache: true });
     expand();
     const running = [row('manual'), row('automatic')];
-    const names = locale === 'en' ? ['manualIn progress', 'automaticIn progress'] : ['manual进行中', 'automatic进行中'];
+    const names = locale === 'en' ? ['manual Assignee: Unassigned Automatic execution off No machine record In progress', 'automatic Assignee: Unassigned Automatic execution on No machine record In progress'] : ['manual 负责人：未分配 自动执行已关闭 暂无执行机器记录 进行中', 'automatic 负责人：未分配 自动执行已开启 暂无执行机器记录 进行中'];
     for (const [index, element] of running.entries()) {
       expect(element).toHaveAccessibleName(names[index]!);
       expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');
@@ -94,7 +94,7 @@ describe('Goal child execution duration', () => {
       task('unknown-start', { completedAt: at(2_700_000) }),
       task('unknown-end', { startedAt: start }),
     ]);
-    const view = renderWithLocale(content(value), { locale: 'zh-CN' });
+    const view = renderWithLocale(content(value), { locale: 'zh-CN', taskCache: true });
     expand();
     expect(view.container.querySelector('time')).toBeNull();
     expect(view.container.querySelectorAll('.goal-task-row')).toHaveLength(4);
@@ -106,7 +106,7 @@ describe('Goal child execution duration', () => {
     const view = renderWithLocale(content(snapshot([
       task('running', { status: 'in_progress', startedAt: start }),
       task('completed', { startedAt: start, completedAt: at(2_700_000) }),
-    ])), { locale: 'en' });
+    ])), { locale: 'en', taskCache: true });
     expand();
     visibility.mockReturnValue('hidden');
     act(() => { document.dispatchEvent(new Event('visibilitychange')); });
@@ -124,7 +124,7 @@ describe('Goal child execution duration', () => {
 
   it('retranslates long durations and follows completion, reset and restart without replacing the task trigger', () => {
     const active = task('active', { status: 'in_progress', startedAt: start, titlePreview: 'A long title '.repeat(20), titleTruncated: true });
-    const view = renderWithLocale(content(snapshot([active], 183_840_000)), { locale: 'zh-CN' });
+    const view = renderWithLocale(content(snapshot([active], 183_840_000)), { locale: 'zh-CN', taskCache: true });
     expand();
     const trigger = row('active');
     trigger.focus();

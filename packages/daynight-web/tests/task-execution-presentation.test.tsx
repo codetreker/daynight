@@ -13,13 +13,13 @@ import { installGraphMeasurements } from "./graph-measurements";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
 const start = "2026-10-20T00:00:00.123456789Z";
-const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [],
+const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({ assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [],
   id, titlePreview: id, titleTruncated: false, status: "done", dependsOn: [], blockedBy: [], ready: false,
   startedAt: null, completedAt: null, createdAt: start, updatedAt: start, ...changes,
 });
 const graph: TaskGraphData = {
   observedAt: "2026-10-20T00:59:59.123Z",
-  project: { id: "project", name: "Project", repoUrl: "https://github.com/example/repo", createdAt: start, updatedAt: start,
+  project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: "project", name: "Project", repoUrl: "https://github.com/example/repo", createdAt: start, updatedAt: start,
     settings: { version: 1n, executionWarningMinutes: 60 } },
   summary: { total: 3, todo: 0, inProgress: 1, done: 2, ready: 0, blocked: 0 },
   tasks: [task("A"), task("B"), task("C", { titlePreview: "A deliberately long shared task title preserving the existing card controls", titleTruncated: true,
@@ -28,7 +28,7 @@ const graph: TaskGraphData = {
 const index = buildGraphIndex(graph);
 const snapshot = (elapsedMilliseconds: number, warningMinutes = 60): GraphSnapshot => ({
   graph: { ...graph, project: { ...graph.project, settings: { version: 1n, executionWarningMinutes: warningMinutes } } },
-  index, observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
+  index, workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
 });
 const noop = () => {};
 const canvas = (value: GraphSnapshot) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
@@ -44,7 +44,7 @@ beforeEach(() => {
 describe("task execution presentation", () => {
   it.each(["en", "zh-CN"] as const)("updates the strict warning boundary without replacing graph controls or layout in %s", async (locale) => {
     const layout = vi.spyOn(layoutModule, "layoutGraph");
-    const view = renderWithLocale(canvas(snapshot(3_599_000)), { locale });
+    const view = renderWithLocale(canvas(snapshot(3_599_000)), { locale, taskCache: true });
     await waitFor(() => expect(view.container.querySelectorAll(".react-flow__edge-path")).toHaveLength(2));
     await waitFor(() => expect(viewport(view.container).style.transform).not.toBe("translate(0px,0px) scale(1)"));
     const card = view.container.querySelector<HTMLElement>(".task-node-in_progress")!;
@@ -103,8 +103,8 @@ describe("task execution presentation", () => {
     const rowIndex = buildGraphIndex(rowGraph);
     const ids = rows.map(({ id }) => id);
     const view = renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(30_000), graph: rowGraph, index: rowIndex }}>
-      <StandaloneList index={rowIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showAll onShowAllChange={noop} />
-    </TaskExecutionClockProvider>, { locale });
+      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={rowIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} />
+    </TaskExecutionClockProvider>, { locale, taskCache: true });
     const running = document.getElementById("standalone-task-running")!;
     const completed = document.getElementById("standalone-task-completed")!;
     const unknown = document.getElementById("standalone-task-unknown")!;
@@ -114,7 +114,8 @@ describe("task execution presentation", () => {
     for (const row of [running, completed]) {
       const metadata = row.querySelector(".root-meta")!;
       expect(metadata.querySelector(".standalone-execution .task-duration")).not.toBeNull();
-      expect(metadata.querySelector(".standalone-execution")!.previousElementSibling).toBe(metadata.querySelector("time"));
+      expect(metadata.querySelector(".standalone-execution")!.previousElementSibling).toBe(metadata.querySelector(".task-assignee-identity"));
+      expect(metadata.querySelector(".task-assignee-identity")!.previousElementSibling).toBe(metadata.querySelector("time"));
       expect(row.querySelector(".root-heading > .standalone-execution")).toBeNull();
     }
     expect(running.querySelector(".task-duration")).toHaveTextContent(locale === "en" ? "< 1 min" : "不足 1 分钟");
@@ -123,7 +124,7 @@ describe("task execution presentation", () => {
     expect(completed).toHaveAccessibleDescription(new RegExp(end.replaceAll(".", "\\.")));
     expect(unknown.querySelector(".task-duration, .task-stuck-label")).toBeNull();
     expect(unknown).not.toHaveAttribute("aria-describedby");
-    const runningName = running.textContent!.replace(/< 1 min|不足 1 分钟/, "");
+    const runningName = running.textContent!.replace(/< 1 min|不足 1 分钟/, "").replace(locale === "en" ? "Unassigned" : "未分配", locale === "en" ? "Assignee: Unassigned" : "负责人：未分配");
     expect(running).toHaveAccessibleName(runningName);
     running.focus();
     monotonic = 3_600_000;
@@ -144,9 +145,9 @@ describe("task execution presentation", () => {
     const manualIndex = buildGraphIndex(manualGraph);
     const content = (elapsed: number) => <TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(elapsed), graph: manualGraph, index: manualIndex }}>
       <TaskGraph index={manualIndex} rootId="A" onOpenTask={noop} />
-      <StandaloneList index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} showAll onShowAllChange={noop} />
+      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} />
     </TaskExecutionClockProvider>;
-    const view = renderWithLocale(content(3_601_000), { locale });
+    const view = renderWithLocale(content(3_601_000), { locale, taskCache: true });
     await waitFor(() => expect(view.container.querySelector(".task-node-in_progress")).not.toBeNull());
     const card = view.container.querySelector<HTMLElement>(".task-node-in_progress")!;
     const row = document.getElementById("standalone-task-C")!;
@@ -169,7 +170,7 @@ describe("task execution presentation", () => {
     const unknownIndex = buildGraphIndex({ ...graph, tasks: [task("unknown-running", { status: "in_progress" }), task("unknown-done", { completedAt: start })],
       summary: { ...graph.summary, total: 2, inProgress: 1, done: 1 } });
     const ids = ["unknown-running", "unknown-done"];
-    const view = renderWithLocale(<StandaloneList index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showAll onShowAllChange={noop} />, { locale });
+    const view = renderWithLocale(<StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} />, { locale, taskCache: true });
     expect(view.container.querySelector(".task-duration, .task-stuck-label")).toBeNull();
   });
 });

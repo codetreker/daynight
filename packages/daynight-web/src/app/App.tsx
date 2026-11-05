@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
+import { useLayoutEffect, useRef, type MouseEvent } from 'react';
+import { useBrowserLocation } from './browser-location';
 import { TaskDetailPage } from '../features/task-detail/TaskDetailPage';
 import { ProjectsPage } from '../features/projects/ProjectsPage';
 import { ProjectsProvider } from '../features/projects/ProjectsProvider';
@@ -16,18 +17,10 @@ const goToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
 
 const AppView = () => {
   const { locale, messages: { workspace: { app: m } } } = useI18n();
-  const [location, setLocation] = useState(() => ({ pathname: window.location.pathname, search: window.location.search }));
+  const location = useBrowserLocation();
   const { pathname, search } = location;
   const content = useRef<HTMLElement>(null);
   const route = parseRoute(pathname, search);
-
-  useEffect(() => {
-    const onNavigate = () => {
-      setLocation({ pathname: window.location.pathname, search: window.location.search });
-    };
-    window.addEventListener('popstate', onNavigate);
-    return () => { window.removeEventListener('popstate', onNavigate); };
-  }, []);
 
   useLayoutEffect(() => { content.current?.focus(); }, [pathname]);
 

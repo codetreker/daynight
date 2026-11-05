@@ -12,8 +12,7 @@ navigation from overview progress into task browsing.
 
 ## Decision
 
-Overview and both task-list categories share one recent projection of the
-complete project index. Every unfinished item remains visible regardless of age.
+Overview uses a recent projection of the complete project index. Every unfinished item remains visible regardless of age.
 Known completions remain for today and the previous six dates in the browser's
 local time zone, with an inclusive midnight boundary. Boundaries are constructed
 directly from local year, month and day at midnight, with calendar-day offsets.
@@ -22,21 +21,21 @@ daylight-saving gap and normalize into an adjacent date before its hours are
 reset. Direct midnight construction preserves the intended date without assuming
 fixed day lengths. Live current time uses the server observation plus monotonic
 elapsed time; local summary previews keep their provisional client-time basis
-until synchronization. A project-owned deadline recalculates both sections at
+until synchronization. A project-owned deadline recalculates Overview at
 local midnight and on visibility recovery.
 
 A Goal is complete only when all ordinary-component members are done. Its latest
 member completion determines recency; the representative and external
 prerequisites cannot substitute for that member set. A known recent completion
 proves the fully done Goal is recent even when older historical members have
-unknown times. Without that evidence it stays available through Show all, and no
+unknown times. Without that evidence it remains accessible in the task lists, and no
 creation or update time is synthesized as a completion time. Retained Goals show
 all children, including older completed children, and keep complete progress.
 
-Each task category's existing completion preference now labels its checkbox
-Show all and switches between the shared recent subset and its full history.
-The existing boolean record remains independent per project and category.
-Overview always uses the recent subset; recent all-done Goals and the standalone
+The original decision used this recent subset as the default for both task lists
+and provided independent Show all preferences. The [status filter decision](2026-11-05-task-list-status-filter.md)
+replaces that list policy with shared status and assignee conditions over all
+history; Overview retains the recent subset. Recent all-done Goals and the standalone
 aggregate remain visible at 100%. The six project statistic cards retain full
 history. The [overview progress decision](2026-10-26-project-overview-progress.md)
 records why standalone progress has a recent denominator and why navigation uses
@@ -91,7 +90,7 @@ structural guarantees without changing service or cache contracts.
 
 ## Consequences
 
-Recent completion remains visible across the overview and both task categories.
+Recent completion remains visible in Overview; the task lists can access all history.
 Different browser time zones can legitimately classify the same timestamp on
 different calendar dates. Unknown historical facts remain accessible explicitly
 without being represented as known recent work.
@@ -105,6 +104,8 @@ a domain graph.
 
 Page changes can unmount rows, so row-local disclosure follows its existing
 reset-on-unmount lifetime. Page retention is limited to the project visit; saved
-category, Show all and scroll preferences preserve their established shapes.
+category preferences preserve their established shapes. The
+[shared-scroll decision](../bug-fix/2026-11-03-shared-task-list-scroll.md) replaces
+the original per-category scroll records with one shared task-list offset.
 Cross-page focus and expiry without new data require behavioral validation in
 addition to isolated range calculations.

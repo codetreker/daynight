@@ -1,0 +1,27 @@
+{
+  "protocol": "daynight.session.v2",
+  "schemaVersion": 2,
+  "projectionVersion": 1,
+  "sessionId": "00000000-0000-4000-8000-000000000006",
+  "claimId": "00000000-0000-4000-8000-000000000007",
+  "executionGeneration": "2",
+  "agentControlMode": "herdr",
+  "contentKind": "terminal_recording",
+  "type": "automation_recovery_state",
+  "payload": {
+    "recoveryId": "00000000-0000-4000-8000-000000000081",
+    "prepareDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceGeneration": "1",
+    "sourceConnectionEpoch": "1",
+    "sourceControlEpoch": "1",
+    "closingControlEpoch": "2",
+    "stopOperationId": "00000000-0000-4000-8000-000000000082",
+    "nativeSessionId": "original-native",
+    "consumed": {
+      "executionGeneration": "2",
+      "connectionEpoch": "2",
+      "controlEpoch": "2",
+      "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+}

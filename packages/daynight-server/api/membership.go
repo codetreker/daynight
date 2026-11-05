@@ -14,17 +14,34 @@ type ProjectMember struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-type ProjectMemberList struct {
-	Items []ProjectMember `json:"items"`
+type ProjectParticipantProfile struct {
+	Name      *string `json:"name"`
+	Email     *string `json:"email"`
+	AvatarURL *string `json:"avatarUrl"`
+}
+
+type ProjectParticipant struct {
+	UserID        string                    `json:"userId"`
+	Profile       ProjectParticipantProfile `json:"profile"`
+	EffectiveRole string                    `json:"effectiveRole"`
+	DirectGrant   *ProjectGrant             `json:"directGrant"`
+	InheritedFrom *ProjectInheritance       `json:"inheritedFrom"`
+}
+
+type ProjectParticipantList struct {
+	Items       []ProjectParticipant `json:"items"`
+	ActorAccess ProjectAccess        `json:"actorAccess"`
 }
 
 type SetProjectMemberRoleRequest struct {
-	Version int64  `json:"version"`
-	Role    string `json:"role"`
+	Version        int64  `json:"version"`
+	Role           string `json:"role"`
+	ExpectedUserID string `json:"expectedUserId"`
 }
 
 type RemoveProjectMemberRequest struct {
-	Version int64 `json:"version"`
+	Version        int64  `json:"version"`
+	ExpectedUserID string `json:"expectedUserId"`
 }
 
 type ProjectInvitation struct {
@@ -52,11 +69,25 @@ type InspectProjectInvitationRequest struct {
 }
 
 type AcceptProjectInvitationRequest struct {
-	Token string `json:"token"`
+	Token          string `json:"token"`
+	ExpectedUserID string `json:"expectedUserId"`
+}
+
+type ProjectInvitationMutationRequest struct {
+	ExpectedUserID string `json:"expectedUserId"`
 }
 
 type ProjectInvitationInspection struct {
 	ProjectID   string         `json:"projectId"`
 	ProjectName string         `json:"projectName"`
-	Member      *ProjectMember `json:"member,omitempty"`
+	DirectGrant *ProjectGrant  `json:"directGrant"`
+	Access      *ProjectAccess `json:"access"`
+}
+
+type ProjectInvitationAcceptance struct {
+	ProjectID   string        `json:"projectId"`
+	DirectGrant ProjectGrant  `json:"directGrant"`
+	Access      ProjectAccess `json:"access"`
+	Joined      bool          `json:"joined"`
+	Consumed    bool          `json:"consumed"`
 }
