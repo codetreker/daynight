@@ -88,8 +88,10 @@ for (const locale of ['zh-CN', 'en']) for (const [width, height] of [[320, 640],
     await info.attach('geometry', { body: JSON.stringify({ viewport: { width, height }, locale, geometry }), contentType: 'application/json' });
     await page.screenshot({ path: info.outputPath('selector.png') });
     const row = toolbar(page), select = row.locator('select'), refresh = row.getByRole('button', { name: /^(Refresh|刷新)$/ });
-    await select.focus(); await navigateNativeSelect(page, 'ArrowDown', '2'); await page.keyboard.press('Enter');
+    await select.focus(); await navigateNativeSelect(page, 'ArrowDown', '2');
     await expect(select).toHaveValue(record.sessionId);
+    // Selection commits through arrows or typeahead; close any native picker before testing Tab.
+    await page.keyboard.press('Escape');
     await expect(page.locator('.terminal-session').getByText(`Saved conversation ${record.sessionId}`, { exact: true })).toBeVisible();
     const selectedGeometry = await singleRow(page);
     expect(selectedGeometry.select).toEqual(geometry.select);
