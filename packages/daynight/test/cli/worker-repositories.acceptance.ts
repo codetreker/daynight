@@ -1,3 +1,4 @@
+import { testIsolation } from "../../scripts/test-bootstrap.js";
 import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -61,7 +62,7 @@ const pipe = (args: string[], home: string): Promise<Result> => capture(crossSpa
 const terminal = async (args: string[], home: string, actions: Action[]): Promise<Result> => {
   const result = await capture(spawn("python3", ["-u", path.join(import.meta.dirname, "review-configuration-pty.py")], {
     cwd: home, detached: true, stdio: ["pipe", "pipe", "pipe"],
-  }), JSON.stringify({ command: [installed.receipt.launcherPath, ...args], cwd: home, environment: environment(home), actions }));
+  }), JSON.stringify({ command: [installed.receipt.launcherPath, ...args], cwd: home, environment: testIsolation.guardedEnvironment(environment(home)), actions }));
   expect(result.code, result.stderr).toBe(0);
   return JSON.parse(result.stdout) as Result;
 };

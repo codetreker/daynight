@@ -69,6 +69,60 @@ that normal chain. The package's existing `files: ["dist"]` rule publishes these
 `daynight` and `dn` keep the same stable JavaScript entry. The
 [SQLite design](design/cli-sqlite-migrations.md#sql-资源与参考结构) owns SQL loading,
 reference metadata and execution ordering.
+
+### CLI test isolation
+
+The ordinary, installed-acceptance and stress Vitest configurations load
+`packages/daynight/scripts/test-bootstrap.ts` before test modules. The shared
+CommonJS preload is `packages/daynight/scripts/test-isolation.cts`.
+`pnpm dev:test` first runs a standalone sentinel regression, then runs the
+development-installer tests with that preload. `pnpm completion:acceptance`
+starts a preloaded Node runner, which passes the guarded environment to Python
+and its shell/CLI children.
+
+Before creating scratch directories, the bootstrap checks canonical temporary
+paths and rejects overlap with retained state. It clears inherited
+`DN_CONFIG_DIR` and native home/configuration overrides, then creates a private
+baseline home, cache, GitHub configuration, Windows application and temporary
+directories under the checkout's `.tmp/cli-tests-*`; native configuration
+defaults follow the isolated home. Individual tests retain their own fixture
+homes and may set an explicit `DN_CONFIG_DIR` inside the allowed temporary
+directories. The standalone regression performs its own canonical-path and
+retained-state checks before preparing sentinels, then launches preloaded probes.
+
+The preload checks mutating Node filesystem calls, writable opens, SQLite
+constructors and SQLite backup destinations before executing them. Open file
+descriptors and `FileHandle` mutations are rechecked, and recursive copies check
+every included destination. Allowed filesystem roots are the checkout's `.tmp/`
+and `packages/daynight/.tmp/`; the original inherited configuration root and
+original homes' `.daynight` directories
+remain protected even when they overlap an allowed root. Inspection checks the
+resolved path through its nearest existing ancestor, so a symbolic link cannot
+redirect a guarded write or cleanup outside those roots. Removing a safe leaf
+symlink is allowed when the operation removes the link itself. Hardlink creation
+requires its source to be inside the allowed roots as well.
+
+Guarded child-process and native-PTY launches restore the isolation metadata and
+append the preload to `NODE_OPTIONS`, including when a fixture constructs a
+restricted environment. Child homes and configuration paths must remain in the
+allowed roots. The Controller's long Unix socket paths have one additional
+permission: the exact short IPC directory derived from a validated fixture state
+root. Native Windows PTYs may access only the pipe names returned by their
+controlled launch. The guard does not grant general write access to `/tmp` or
+Windows pipes. Fixtures capture owned cleanup paths before restoring or changing
+their environment. Each Vitest file removes its registered IPC roots after its
+tests; global teardown and the standalone owning process's exit cleanup remove
+the run's baseline isolation directory and remaining registered IPC roots.
+
+This is a test-infrastructure safeguard for accidental mutations, with no change
+to the installed CLI's path semantics. It is not an operating-system sandbox:
+other native add-ons and non-Node commands require controlled fixture paths,
+and path checks do not prevent a concurrent process from replacing an inspected
+path. The [test-state isolation decision](../.agents/notes/implemented/testing/2026-11-06-cli-test-state-isolation.md)
+owns the mechanism's alternatives and limits.
+
+### CLI test fixtures
+
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte

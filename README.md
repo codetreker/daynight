@@ -438,10 +438,13 @@ full application validation. See the
 ## Validation
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
-installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. Routine CI suites exclude stress
-workloads. Run the corresponding explicit local command when full-scale evidence
-is required:
+installed package. CLI test processes use private home and configuration
+environments, with guarded filesystem and SQLite mutations; the
+[CLI test isolation guide](docs/development.md#cli-test-isolation) owns their
+allowed paths, child-process propagation and limits. Server and Web checks have
+separate commands and require statement coverage strictly greater than 90%.
+Routine CI suites exclude stress workloads. Run the corresponding explicit local
+command when full-scale evidence is required:
 
 | Local workload | Command from the repository root |
 |---|---|
