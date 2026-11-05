@@ -6,8 +6,8 @@
 
 ## 1. 总体方案
 
-服务端实现入口为 `internal/service/task_sync.go` 的 `TaskSync.Get`、
-`internal/core/store/task_sync.go` 及 `internal/server/task_sync.go`；配置在 composition
+服务端实现入口为 `internal/service/task/task_sync.go` 的 `TaskSync.Get`、
+`internal/core/store/task_sync.go` 及 `internal/server/task/task_sync.go`；配置在 composition
 显式传给 `NewTaskSync`。`015_task_sync.sql` 提供 epoch 和更新时间索引。
 浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：可见页面每 15 秒自动读取，隐藏暂停，首次读取、显式刷新和恢复可见立即触发；自动触发遇到活动读取时跳过。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
 
@@ -268,7 +268,7 @@ schema 升级时关闭旧连接；不兼容升级在事务中清除可重建缓�
 | 所有者 | 职责 |
 |---|---|
 | server config、README、部署配置 | 正 duration、默认10s及环境文档 |
-| store/service/task_sync | epoch/index、同快照窗口读取及容量/权限 |
+| store、service/task/task_sync | epoch/index、同快照窗口读取及容量/权限 |
 | server task_sync/auth | 严格 DTO/query、实际用户头与错误 |
 | web api/task-sync | 精确时间/version、网络和身份 gate |
 | task-cache/database、project-cache | 六个 store、生命周期、当前集合合并、人员与 Session 目录持久化、重复去重及发布 |

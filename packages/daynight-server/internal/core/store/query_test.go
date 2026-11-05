@@ -81,7 +81,7 @@ func TestTaskReadersRejectInvalidStoredStatus(t *testing.T) {
 					return err
 				},
 				func(snapshot SnapshotScope) error {
-					_, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, task.ID, 160)
+					_, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, task.ID, testGraphSelection(), 160)
 					return err
 				},
 			} {

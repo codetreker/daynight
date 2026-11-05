@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
 const attachmentBucket = "task-attachments"
@@ -41,7 +42,7 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 		}
 		if _, err := snapshot.TaskDAO().Task(ctx, projectID, taskID); err != nil {
 			if errors.Is(err, model.ErrNotFound) {
-				missing = taskNotFound(err)
+				missing = taskcore.NotFound(err)
 				return nil
 			}
 			return err

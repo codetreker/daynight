@@ -8,7 +8,7 @@
 
 原四个公开动作把状态修改绑定到有限前态，并让任务审批成为单独阶段。当前结构仅保留 todo、in_progress、done，默认 todo，任意状态对通过一个 setter 表达。旧 proposed 数据必须迁移，不以解码回退或兼容分支留在运行时。
 
-现有 [task_lifecycle.go](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/service/task_lifecycle.go)已将动作汇入一个事务函数；[Tasks.write](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/service/task.go#L139-L176)拥有锁后成员核验、changed=false 返回和错误传播。保留这些机制，替换公开契约、前态规则与旧状态读取模型。
+`core/task` 负责状态候选、前置与后继约束及版本检查；`service/task` 在 Project 写作用域中核验准入，并协调任务写入和 Session 冻结。同状态请求保留版本和时间，事务完成错误优先于领域拒绝。
 
 | 选择 | 收益 | 代价与结论 |
 |---|---|---|

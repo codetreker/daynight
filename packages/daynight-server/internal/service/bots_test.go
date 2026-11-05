@@ -1,6 +1,9 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+
 	"context"
 	"errors"
 	"math"
@@ -294,8 +297,8 @@ func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tasks := NewTasks(database)
-	task, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "A task stays independent"})
+	tasks := taskservice.NewTasks(database)
+	task, err := tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "A task stays independent"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -150,7 +150,7 @@ func TestTaskStartAndSnapshotClockFollowTheActualLockWait(t *testing.T) {
 		t.Fatalf("claim used pre-lock transaction time: released %v, task %#v", releaseAt, started)
 	}
 	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, task.ID, 160)
+		tasks, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, task.ID, testGraphSelection(), 160)
 		if err != nil {
 			return err
 		}

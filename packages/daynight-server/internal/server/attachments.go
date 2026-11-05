@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -42,7 +43,7 @@ func attachmentResponse(attachment model.Attachment) api.Attachment {
 }
 
 func (h *attachmentHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
-	projectID, taskID, logger, err := (&taskHandler{logger: h.logger}).resource(request, principal)
+	projectID, taskID, logger, err := taskhttp.TaskResource(request, principal, h.logger)
 	if err == nil && request.PathValue("path") != "" {
 		logger = logger.With("path", request.PathValue("path"))
 	}

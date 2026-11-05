@@ -1,6 +1,9 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -22,7 +25,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func attachmentService(t *testing.T) (*Attachments, *Tasks, *store.Store, *local.Storage, model.Task, model.Principal) {
+func attachmentService(t *testing.T) (*Attachments, *taskservice.Tasks, *store.Store, *local.Storage, model.Task, model.Principal) {
 	t.Helper()
 	tasks, database, project, _, principal := taskService(t)
 	files, err := local.New(t.TempDir())
@@ -54,7 +57,7 @@ func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
 	attachments, tasks, _, files, task, principal := attachmentService(t)
 	ctx := context.Background()
 	prerequisite := createTask(t, tasks, principal, task.ProjectID, "Prerequisite")
-	task = updateTask(t, tasks, principal, task, UpdateTask{DependsOn: pointer([]string{prerequisite.ID}), Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://github.com/example/repository/pull/1"}}...)})
+	task = updateTask(t, tasks, principal, task, taskcore.UpdateTask{DependsOn: pointer([]string{prerequisite.ID}), Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://github.com/example/repository/pull/1"}}...)})
 	empty, err := attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: 50})
 	if err != nil || empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
 		t.Fatalf("empty page: %#v, %v", empty, err)

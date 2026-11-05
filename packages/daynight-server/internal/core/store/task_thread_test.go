@@ -17,19 +17,19 @@ func appendStoredThread(t *testing.T, database *Store, taskID, userID, body stri
 	t.Helper()
 	ctx := context.Background()
 	var message model.ThreadMessage
-	err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		head, err := tx.LockHead(ctx, taskID)
+	err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		head, err := tx.ThreadDAO().LockHead(ctx, taskID)
 		if err != nil {
 			return err
 		}
-		message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: taskID, Author: model.ThreadAuthor{UserID: userID}, Body: body})
+		message, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: taskID, Author: model.ThreadAuthor{UserID: userID}, Body: body})
 		if err != nil {
 			return err
 		}
-		if err := tx.PrepareTimestamp(ctx, &message, head); err != nil {
+		if err := tx.ThreadDAO().PrepareTimestamp(ctx, &message, head); err != nil {
 			return err
 		}
-		return tx.AdvanceHead(ctx, taskID, message.Position())
+		return tx.ThreadDAO().AdvanceHead(ctx, taskID, message.Position())
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,65 +113,65 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	var first, reply model.ThreadMessage
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		presence, err := tx.LockTaskPresence(ctx, project.ID, task.ID)
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		presence, err := tx.TaskDAO().LockTaskPresence(ctx, project.ID, task.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("presence: %#v %v", presence, err)
 		}
-		credential, err := tx.Credential(ctx, principal)
+		credential, err := tx.CredentialDAO().Credential(ctx, principal)
 		if err != nil {
 			return err
 		}
-		access, err := tx.LockProjectAuthorization(ctx, principal, project.ID)
+		access, err := tx.ProjectDAO().LockProjectAuthorization(ctx, principal, project.ID)
 		if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != model.ProjectAdmin ||
 			access.DirectGrant == nil || access.DirectGrant.ProjectID != project.ID || access.DirectGrant.UserID != principal.UserID ||
 			access.DirectGrant.Role != access.Role || access.DirectGrant.Version <= 0 {
 			t.Fatalf("locked authorization: %#v %v", access, err)
 		}
-		name, err := tx.AuthorName(ctx, principal.UserID)
+		name, err := tx.CredentialDAO().AuthorName(ctx, principal.UserID)
 		if err != nil || name != nil {
 			t.Fatalf("nullable author: %#v %v", name, err)
 		}
-		source, err := tx.SourceTask(ctx, project.ID, task.ID)
+		source, err := tx.TaskDAO().SourceTask(ctx, project.ID, task.ID)
 		if err != nil || source.Status != model.TaskDone || len(source.Properties) != 0 {
 			t.Fatalf("minimal source: %#v %v", source, err)
 		}
-		head, err := tx.LockHead(ctx, task.ID)
+		head, err := tx.ThreadDAO().LockHead(ctx, task.ID)
 		if err != nil || head != nil {
 			t.Fatalf("empty head: %#v %v", head, err)
 		}
-		first, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID}, Body: "  immutable\n<>& 中文 😀\t  "})
+		first, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID}, Body: "  immutable\n<>& 中文 😀\t  "})
 		if err != nil {
 			return err
 		}
-		if err := tx.PrepareTimestamp(ctx, &first, head); err != nil {
+		if err := tx.ThreadDAO().PrepareTimestamp(ctx, &first, head); err != nil {
 			return err
 		}
-		valid, err := tx.CredentialValid(ctx, credential)
+		valid, err := tx.CredentialDAO().CredentialValid(ctx, credential)
 		if err != nil || !valid {
 			t.Fatalf("final credential: %v %v", valid, err)
 		}
-		return tx.AdvanceHead(ctx, task.ID, first.Position())
+		return tx.ThreadDAO().AdvanceHead(ctx, task.ID, first.Position())
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		head, err := tx.LockHead(ctx, task.ID)
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		head, err := tx.ThreadDAO().LockHead(ctx, task.ID)
 		if err != nil || head == nil || *head != first.Position() {
 			t.Fatalf("existing head: %#v %v", head, err)
 		}
-		if _, err := tx.ThreadMessage(ctx, task.ID, first.ID); err != nil {
+		if _, err := tx.ThreadDAO().ThreadMessage(ctx, task.ID, first.ID); err != nil {
 			return err
 		}
-		reply, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID, Agent: true,
+		reply, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID, Agent: true,
 			Execution: &model.ThreadExecution{ClaimID: queryID(900), WorkerID: queryID(901), Provider: "codex"}}, Body: "reply", ReplyTo: &first.ID})
 		if err != nil {
 			return err
 		}
-		if err := tx.PrepareTimestamp(ctx, &reply, head); err != nil {
+		if err := tx.ThreadDAO().PrepareTimestamp(ctx, &reply, head); err != nil {
 			return err
 		}
-		return tx.AdvanceHead(ctx, task.ID, reply.Position())
+		return tx.ThreadDAO().AdvanceHead(ctx, task.ID, reply.Position())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -238,17 +238,17 @@ func TestThreadCredentialKindsAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	patPrincipal := model.Principal{Kind: model.PATCredential, UserID: principal.UserID, CredentialID: pat.ID}
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		credential, err := tx.Credential(ctx, patPrincipal)
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		credential, err := tx.CredentialDAO().Credential(ctx, patPrincipal)
 		if err != nil || credential.ExpiresAt != nil {
 			t.Fatalf("non-expiring PAT: %#v %v", credential, err)
 		}
-		valid, err := tx.CredentialValid(ctx, credential)
+		valid, err := tx.CredentialDAO().CredentialValid(ctx, credential)
 		if err != nil || !valid {
 			t.Fatalf("PAT final admission: %v %v", valid, err)
 		}
 		expired := time.Now().Add(-time.Hour)
-		valid, err = tx.CredentialValid(ctx, ThreadCredential{ExpiresAt: &expired})
+		valid, err = tx.CredentialDAO().CredentialValid(ctx, ThreadCredential{ExpiresAt: &expired})
 		if err != nil || valid {
 			t.Fatalf("expired final admission: %v %v", valid, err)
 		}
@@ -272,11 +272,11 @@ func TestThreadRejectedAppendRollsBackCandidateAndLazyHead(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	rejected := errors.New("reject after insertion")
-	err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		if _, err := tx.LockHead(ctx, queryID(1)); err != nil {
+	err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		if _, err := tx.ThreadDAO().LockHead(ctx, queryID(1)); err != nil {
 			return err
 		}
-		if _, err := tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "rejected"}); err != nil {
+		if _, err := tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "rejected"}); err != nil {
 			return err
 		}
 		return rejected
@@ -297,28 +297,31 @@ func TestThreadRejectedAppendRollsBackCandidateAndLazyHead(t *testing.T) {
 func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
-	var closed *ThreadTx
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error { closed = tx; return nil }); err != nil {
+	var closed ThreadScope
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error { closed = tx; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	checks := []func() error{
-		func() error { _, err := closed.LockTaskPresence(ctx, queryID(1), queryID(2)); return err },
+		func() error { _, err := closed.TaskDAO().LockTaskPresence(ctx, queryID(1), queryID(2)); return err },
 		func() error {
-			_, err := closed.Credential(ctx, model.Principal{Kind: model.PATCredential, UserID: queryID(1), CredentialID: queryID(2)})
+			_, err := closed.CredentialDAO().Credential(ctx, model.Principal{Kind: model.PATCredential, UserID: queryID(1), CredentialID: queryID(2)})
 			return err
 		},
 		func() error {
-			_, err := closed.LockProjectAuthorization(ctx, model.Principal{UserID: queryID(1)}, queryID(2))
+			_, err := closed.ProjectDAO().LockProjectAuthorization(ctx, model.Principal{UserID: queryID(1)}, queryID(2))
 			return err
 		},
-		func() error { _, err := closed.AuthorName(ctx, queryID(1)); return err },
-		func() error { _, err := closed.SourceTask(ctx, queryID(1), queryID(2)); return err },
-		func() error { _, err := closed.LockHead(ctx, queryID(1)); return err },
-		func() error { _, err := closed.ThreadMessage(ctx, queryID(1), queryID(2)); return err },
-		func() error { _, err := closed.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1)}); return err },
-		func() error { _, err := closed.CredentialValid(ctx, ThreadCredential{}); return err },
+		func() error { _, err := closed.CredentialDAO().AuthorName(ctx, queryID(1)); return err },
+		func() error { _, err := closed.TaskDAO().SourceTask(ctx, queryID(1), queryID(2)); return err },
+		func() error { _, err := closed.ThreadDAO().LockHead(ctx, queryID(1)); return err },
+		func() error { _, err := closed.ThreadDAO().ThreadMessage(ctx, queryID(1), queryID(2)); return err },
 		func() error {
-			return closed.AdvanceHead(ctx, queryID(1), model.ThreadPosition{CreatedAt: time.Now(), ID: queryID(2)})
+			_, err := closed.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1)})
+			return err
+		},
+		func() error { _, err := closed.CredentialDAO().CredentialValid(ctx, ThreadCredential{}); return err },
+		func() error {
+			return closed.ThreadDAO().AdvanceHead(ctx, queryID(1), model.ThreadPosition{CreatedAt: time.Now(), ID: queryID(2)})
 		},
 	}
 	for index, check := range checks {
@@ -354,11 +357,11 @@ func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 	// Unrelated properties are not source attribution inputs. Reading a worker
 	// must not parse them or make ordinary posting depend on their structure.
 	putTaskPropertyFixture(t, database, reference.TaskID, "unrelated", []byte(`not valid JSON`))
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		if _, err := tx.LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		if _, err := tx.TaskDAO().LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
 			return err
 		}
-		source, err := tx.SourceTask(ctx, project.ID, reference.TaskID)
+		source, err := tx.TaskDAO().SourceTask(ctx, project.ID, reference.TaskID)
 		if err != nil {
 			return err
 		}
@@ -366,10 +369,10 @@ func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 		if source.Status != model.TaskInProgress || len(source.Properties) != 1 || worker == nil || worker.ClaimID != reference.ClaimID || worker.WorkerID != queryID(900) || worker.UserID != principal.UserID || worker.Agent != model.AgentClaude {
 			t.Fatalf("validated worker source: %#v worker=%#v", source, worker)
 		}
-		if _, err := tx.LockTaskPresence(ctx, project.ID, ordinary.ID); err != nil {
+		if _, err := tx.TaskDAO().LockTaskPresence(ctx, project.ID, ordinary.ID); err != nil {
 			return err
 		}
-		source, err = tx.SourceTask(ctx, project.ID, ordinary.ID)
+		source, err = tx.TaskDAO().SourceTask(ctx, project.ID, ordinary.ID)
 		if err != nil || source.Status != model.TaskTodo || len(source.Properties) != 0 {
 			t.Fatalf("absent worker source: %#v %v", source, err)
 		}
@@ -378,11 +381,11 @@ func TestThreadSourceReadsOnlyValidatedWorkerAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	putTaskPropertyFixture(t, database, reference.TaskID, "worker", []byte(`{"claimId":"untrusted private attribution"}`))
-	err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		if _, err := tx.LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
+	err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		if _, err := tx.TaskDAO().LockTaskPresence(ctx, project.ID, reference.TaskID); err != nil {
 			return err
 		}
-		_, err := tx.SourceTask(ctx, project.ID, reference.TaskID)
+		_, err := tx.TaskDAO().SourceTask(ctx, project.ID, reference.TaskID)
 		return err
 	})
 	var transaction *ThreadTransactionError
