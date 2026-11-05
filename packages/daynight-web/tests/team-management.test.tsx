@@ -132,7 +132,11 @@ describe("Team management", () => {
     const dialog = await screen.findByRole("dialog"); fireEvent.change(within(dialog).getByLabelText("Enter the Team name to confirm"), { target: { value: "  Alpha\nTeam  " } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete Team" })); expect(await within(dialog).findByRole("alert")).toHaveTextContent("unknown");
     vi.mocked(getTeam).mockRejectedValue(new ApiError("server", 404, "not_found")); fireEvent.click(within(dialog).getByRole("button", { name: "Check current state" }));
-    await within(dialog).findByText("This Team is unavailable or you do not have access."); expect(deleteTeam).toHaveBeenCalledTimes(1); expect(deleted).not.toHaveBeenCalled();
+    await waitFor(() => expect(dialog.parentElement).toHaveAttribute("hidden"));
+    expect(document.querySelector(".team-settings-page")).toBeNull();
+    expect(screen.getByText("This Team is unavailable or you do not have access.", { selector: ".notice p" })).toBeVisible();
+    expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest("[hidden]"))).toBe(true);
+    expect(deleteTeam).toHaveBeenCalledTimes(1); expect(deleted).not.toHaveBeenCalled();
   });
   it("requires typed name and sends original CRLF and exact version", async () => {
     vi.mocked(deleteTeam).mockImplementation(async (_id, target, _signal, _mismatch, dispatch) => { dispatch(); return { teamId: target.id, deleted: true }; });

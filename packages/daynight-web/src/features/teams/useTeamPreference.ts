@@ -16,7 +16,7 @@ const mergeTeam = (previous: Team | null, incoming: Team): Team => {
   const membership = previous.membership.version > incoming.membership.version ? previous.membership : incoming.membership;
   return { ...detail, membership };
 };
-const forbidden = (error: unknown) => error instanceof ApiError && error.kind === "server" && error.status === 403 && error.code === "forbidden";
+const unavailable = (error: unknown) => error instanceof ApiError && error.kind === "server" && (error.status === 403 && error.code === "forbidden" || error.status === 404 && error.code === "not_found");
 export type TeamPreference = ReturnType<typeof useTeamPreference>;
 const PreferenceContext = createContext<TeamPreference | null>(null);
 
@@ -108,7 +108,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
       }
       // Keep the confirmed snapshot while checking the same target, but show
       // loading for an initial read or a different saved selection.
-      const retainDenied = confirmedWhileDenied.current === id && stateRef.current.key === key && stateRef.current.detail.id === id && stateRef.current.detail.status === "error" && forbidden(stateRef.current.detail.error);
+      const retainDenied = confirmedWhileDenied.current === id && stateRef.current.key === key && stateRef.current.detail.id === id && stateRef.current.detail.status === "error" && unavailable(stateRef.current.detail.error);
       if (!retainDenied && (stateRef.current.key !== key || stateRef.current.detail.status !== "ready" || stateRef.current.detail.id !== id)) {
         setState({ key, detail: { id, status: "loading" } });
       }
@@ -159,9 +159,9 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
     acceptedGeneration.current++;
     const merged = mergeTeam(currentTeam.current, team);
     current.current = merged; currentTeam.current = merged;
-    confirmedWhileDenied.current = stateRef.current.detail.id === team.id && stateRef.current.detail.status === "error" && forbidden(stateRef.current.detail.error) ? team.id : null;
+    confirmedWhileDenied.current = stateRef.current.detail.id === team.id && stateRef.current.detail.status === "error" && unavailable(stateRef.current.detail.error) ? team.id : null;
     setState((previous) => previous.detail.id === team.id
-      ? previous.detail.status === "error" && forbidden(previous.detail.error) ? previous : { ...previous, detail: { id: team.id, status: "ready", team: merged } } : previous);
+      ? previous.detail.status === "error" && unavailable(previous.detail.error) ? previous : { ...previous, detail: { id: team.id, status: "ready", team: merged } } : previous);
     retry();
   }, [admission, retry]);
   const forgetUnavailable = useCallback((id: string): "forgotten" | "changed" | "storage_error" => {

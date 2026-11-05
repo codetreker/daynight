@@ -406,7 +406,7 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(submit).toBeDisabled());
     expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
-  it("isolates a guarded roster on a preference 403 and retains the unknown operation", async () => {
+  it.each([403, 404])("isolates a guarded roster on a preference %s and retains the unknown operation", async (status) => {
     window.history.replaceState(null, "", `/teams/${a}/members`);
     const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()];
     const member = (id: string, role: "admin" | "member") => ({ ...team(a, "Alpha").membership, userId: id, role, profile: { name: id === userId ? "Alice" : "Other", email: null, avatarUrl: null } });
@@ -423,7 +423,7 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(deletes).toBe(1));
     focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
     await waitFor(() => expect(reads).toBe(2), { timeout: 20000 });
-    await act(async () => checks[1]!.resolve(json({ error: { code: "forbidden", message: "denied", requestId: "rq" } }, 403)));
+    await act(async () => checks[1]!.resolve(json({ error: { code: status === 403 ? "forbidden" : "not_found", message: "denied", requestId: "rq" } }, status)));
     const alert = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
     expect(dialog.closest("[hidden]")).not.toBeNull();
     expect(document.querySelector(".team-member-row")).toBeNull();
@@ -459,9 +459,10 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(writes).toBe(1));
     await screen.findByRole("heading", { name: "Unable to load Teams" });
     expect(window.location.pathname).toBe(`/teams/${a}/members`);
-    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(dialog.closest("[hidden]")).not.toBeNull();
+    expect(document.querySelector(".team-member-row")).toBeNull();
     await act(async () => receipt.reject(new TypeError("connection lost")));
-    await within(dialog).findByText(/not confirmed/); expect(writes).toBe(1);
+    expect(await screen.findByText(/invitation change is still unconfirmed/)).toBeVisible(); expect(writes).toBe(1);
   }, 30000);
   it("keeps the management dialog and focused draft visible while identity is pending", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
@@ -522,15 +523,17 @@ describe("Team workspace navigation", () => {
     await act(async () => checks[1]!.resolve(missing()));
     await screen.findByRole("heading", { name: "Unable to load Teams" });
     expect(window.location.pathname).toBe(`/teams/${a}/settings`);
-    expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog);
+    expect(dialog.closest("[hidden]")).not.toBeNull();
+    expect(screen.getByText("Submitting", { selector: "[role=status]" })).toBeVisible();
+    expect(document.querySelector(".team-settings-page")).toBeNull();
     if (outcome === "success") {
       await act(async () => receipt.resolve(json({ teamId: a, deleted: true })));
       await waitFor(() => expect(window.location.pathname).toBe(`/teams/${personal}`));
     } else if (outcome === "lost") {
       await act(async () => receipt.reject(new TypeError("connection lost")));
-      await within(dialog).findByText(/result is unknown/);
+      await waitFor(() => expect(screen.getAllByText(/result is unknown/).some((node) => !node.closest("[hidden]"))).toBe(true));
       await act(async () => checks[0]!.resolve(missing()));
-      expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog);
+      expect(dialog.closest("[hidden]")).not.toBeNull();
       expect(window.location.pathname).toBe(`/teams/${a}/settings`);
       expect(deletes).toBe(1);
     } else {
@@ -577,7 +580,7 @@ describe("Team workspace navigation", () => {
     expect(document.querySelector("summary.team-switch")).toHaveAttribute("aria-label", "Switch Team: Latest");
     await act(async () => { panelRead.resolve(json(team(a, "  Alpha  "))); fresh.resolve(json({ ...team(a, "Latest"), version: 3n })); });
   }, 30000);
-  it("publishes a confirmed rename after a guarded preference 404 while its new read is pending", async () => {
+  it.each([200, 404])("retains a confirmed rename after a guarded preference 404 and handles a new %s read", async (status) => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
     const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()], fresh = Promise.withResolvers<Response>();
     let reads = 0, patches = 0;
@@ -597,13 +600,81 @@ describe("Team workspace navigation", () => {
     await waitFor(() => expect(reads).toBe(2), { timeout: 20000 });
     await act(async () => checks[1]!.resolve(json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404)));
     await screen.findByRole("heading", { name: "Unable to load Teams" });
-    expect(screen.getByRole("dialog", { name: "Edit Team name" })).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "Edit Team name", hidden: true }).closest("[hidden]")).not.toBeNull();
     await act(async () => receipt.resolve(json({ ...team(a, "New name"), version: 2n })));
     await waitFor(() => expect(reads).toBeGreaterThanOrEqual(3));
-    expect(screen.getByText("New name", { selector: ".team-settings-name span" })).toBeVisible();
-    expect(screen.getByText("Saved")).toBeVisible();
+    expect(document.querySelector(".team-settings-page")).toBeNull();
+    expect(screen.queryAllByText(/^(Saved|Team name saved\.)$/).some((node) => !node.closest("[hidden]"))).toBe(true);
     expect(screen.queryByText("Loading Teams", { selector: "[role=status]" })).toBeNull();
-    await act(async () => fresh.resolve(json({ ...team(a, "New name"), version: 2n })));
+    await act(async () => fresh.resolve(status === 200 ? json({ ...team(a, "New name"), version: 2n }) : json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404)));
+    if (status === 200) expect(await screen.findByText("New name", { selector: ".team-settings-name span" })).toBeVisible();
+    else {
+      await waitFor(() => expect(window.location.pathname).toBe("/projects"));
+      expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBeNull();
+      expect(screen.queryAllByText(/^(Saved|Team name saved\.)$/).some((node) => !node.closest("[hidden]"))).toBe(true); expect(patches).toBe(1);
+    }
+  }, 30000);
+  it("retains confirmed rename feedback when the settings read reports 404 first", async () => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const receipt = Promise.withResolvers<Response>(), checks = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()], fresh = Promise.withResolvers<Response>();
+    const missing = () => json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
+    let reads = 0, patches = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return receipt.promise; }
+      if (url === `/api/v1/teams/${a}` && !init?.method && patches > 0) { reads++; return reads <= 2 ? checks[reads - 1]!.promise : fresh.promise; }
+      return undefined;
+    });
+    render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Team name" });
+    fireEvent.change(within(dialog).getByLabelText("Team name"), { target: { value: "New name" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(patches).toBe(1));
+    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 20000 });
+    await act(async () => checks[0]!.resolve(missing()));
+    await waitFor(() => expect(dialog.closest("[hidden]")).not.toBeNull());
+    expect(screen.getByText("Submitting", { selector: "[role=status]" })).toBeVisible();
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(a);
+    await act(async () => receipt.resolve(json({ ...team(a, "New name"), version: 2n })));
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(3));
+    expect(screen.queryAllByText(/^(Saved|Team name saved\.)$/).some((node) => !node.closest("[hidden]"))).toBe(true);
+    await act(async () => fresh.resolve(missing()));
+    await waitFor(() => expect(window.location.pathname).toBe("/projects"));
+    expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBeNull();
+    expect(screen.getByText("Team name saved.").closest("[role=status]")).toHaveTextContent(a); expect(patches).toBe(1);
+  }, 30000);
+  it.each([403, 404])("retains confirmed rename feedback when the later Team read returns %s", async (status) => {
+    window.history.replaceState(null, "", `/teams/${a}/settings`);
+    const fresh = Promise.withResolvers<Response>(); let patches = 0, readsAfterSave = 0;
+    install((url, init) => {
+      if (url === `/api/v1/teams/${a}` && init?.method === "PATCH") { patches++; return json({ ...team(a, "New name"), version: 2n }); }
+      if (url === `/api/v1/teams/${a}` && !init?.method && patches > 0) { readsAfterSave++; return readsAfterSave === 1 ? fresh.promise : json({ ...team(a, "New name"), version: 2n }); }
+      return undefined;
+    });
+    const view = render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole("button", { name: /^Edit$/ }, { timeout: 20000 }));
+    fireEvent.change(screen.getByLabelText("Team name"), { target: { value: "New name" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(readsAfterSave).toBe(1));
+    expect(screen.getByText("Saved")).toBeVisible();
+    expect(screen.queryByText("Team name saved.")).toBeNull();
+    expect(screen.getByText("New name", { selector: ".team-settings-name span" })).toBeVisible();
+    await act(async () => fresh.resolve(json({ error: { code: status === 403 ? "forbidden" : "not_found", message: "unavailable", requestId: "rq" } }, status)));
+    if (status === 404) {
+      await waitFor(() => expect(window.location.pathname).toBe("/projects"));
+      expect(localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBeNull();
+      const notice = screen.getByText("Team name saved.").closest<HTMLElement>("[role=status]")!;
+      expect(notice).toBeVisible(); expect(notice).toHaveTextContent(a);
+      view.setLocale("zh-CN");
+      expect(within(notice).getByText("Team 名称已保存。")).toBeVisible(); expect(notice).toHaveTextContent(a);
+      view.setLocale("en");
+    } else {
+      const alert = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+      expect(window.location.pathname).toBe(`/teams/${a}/settings`);
+      expect(screen.queryAllByText(/^(Saved|Team name saved\.)$/).some((node) => !node.closest("[hidden]"))).toBe(true);
+      fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+      expect(await screen.findByText("New name", { selector: ".team-settings-name span" })).toBeVisible();
+    }
+    expect(screen.queryAllByText(/^(Saved|Team name saved\.)$/).some((node) => !node.closest("[hidden]"))).toBe(true); expect(patches).toBe(1);
   }, 30000);
   it.each(["lost", "success"] as const)("isolates a guarded editor when preference confirms a 403: %s", async (outcome) => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
@@ -636,7 +707,7 @@ describe("Team workspace navigation", () => {
     } else {
       await act(async () => receipt.resolve(json({ ...team(a, "Draft"), version: 2n })));
       await waitFor(() => expect(reads).toBeGreaterThanOrEqual(3));
-      expect(screen.getByText("Saved")).toBeVisible();
+      expect(screen.queryAllByText(/^(Saved|Team name saved\.)$/).some((node) => !node.closest("[hidden]"))).toBe(true);
       expect(screen.getByRole("heading", { name: "Unable to load Teams" })).toBeVisible();
       expect(document.querySelector(".team-settings-page")).toBeNull();
       await act(async () => fresh.resolve(json({ ...team(a, "Draft"), version: 2n })));

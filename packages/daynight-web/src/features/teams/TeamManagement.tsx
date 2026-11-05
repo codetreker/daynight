@@ -103,7 +103,7 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
   const guardCallback = useRef(onGuardChange); guardCallback.current = onGuardChange;
   const guarded = useRef(false);
   const setGuard = (value: boolean) => { if (guarded.current !== value) { guarded.current = value; guardCallback.current?.(value); } };
-  useEffect(() => { setGuard(op.pending || op.result?.kind === "unknown" || preferenceDenied && saved); }, [op.pending, op.result, preferenceDenied, saved]);
+  useEffect(() => { setGuard(op.pending || op.result?.kind === "unknown"); }, [op.pending, op.result]);
   useEffect(() => () => { if (guarded.current) { guarded.current = false; guardCallback.current?.(false); } }, []);
   const unavailableCallback = useRef(onUnavailable); unavailableCallback.current = onUnavailable;
   const deleteButton = useRef<HTMLButtonElement>(null), editButton = useRef<HTMLButtonElement>(null), heading = useRef<HTMLHeadingElement>(null), restoreFocus = useRef(false), restoreEditFocus = useRef(false);
@@ -149,7 +149,7 @@ export const TeamSettingsPanel = ({ teamId, admission, onIdentityMismatch, onUpd
       try { await admission.ready(signal); } catch { return null; }
       if (signal.aborted || admission.isInvalidated) return null;
       const denied = error instanceof ApiError && error.kind === "server" && ((error.status === 403 && error.code === "forbidden") || (error.status === 404 && error.code === "not_found"));
-      if (denied && (error.status !== 404 || !operation.current.guarded())) setAccessDenied(true);
+      if (denied) setAccessDenied(true);
       const unavailableResult = denied && error.status === 404 && !operation.current.guarded() ? unavailableCallback.current?.() : undefined;
       if (unavailableResult !== "forgotten") { setStorageError(unavailableResult === "storage_error"); setReadError(error); }
     } return null; }
