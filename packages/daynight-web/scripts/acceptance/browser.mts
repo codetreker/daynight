@@ -4,7 +4,19 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { findProcesses, isGroupStopped, ownedBrowserProcesses, processArguments, processIdentity, requireGroupStopped, sameProcess, type ProcessIdentity } from './identity.mts';
-import type { Browser } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
+
+export const setBrowserViewport = async (page: Page, viewport: { width: number; height: number }): Promise<void> => {
+  await page.setViewportSize(viewport);
+  if (process.platform !== 'darwin') return;
+  // Headless macOS window bounds can include browser chrome while the emulated
+  // viewport does not. Size native contents without guessing a frame inset.
+  const session = await page.context().newCDPSession(page);
+  try {
+    const { windowId } = await session.send('Browser.getWindowForTarget');
+    await session.send('Browser.setContentsSize', { windowId, ...viewport });
+  } finally { await session.detach(); }
+};
 
 type BrowserExecutableFile = { executable: string; device: string; inode: string };
 export type BrowserOwnership = { directory: string; identity: ProcessIdentity; profile: string; companions: ProcessIdentity[]; executableFile?: BrowserExecutableFile };

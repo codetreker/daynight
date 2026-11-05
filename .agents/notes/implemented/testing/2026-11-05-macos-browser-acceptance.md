@@ -12,6 +12,12 @@ so a sequence that works on one platform can violate a zero-write cancellation
 check on another. Control-click also does not select the same browser action on
 macOS as on Linux.
 
+A headless macOS browser can also expose the requested layout viewport while
+its native content area remains shorter. A wheel event can reach the expected
+DOM element below that native area without scrolling it. Layout bounds and
+event targets alone therefore do not establish that the entire reading area
+can receive native scrolling input.
+
 Browser recovery separately depends on executable identity. Chromium can expose
 a different executable path after creating its macOS code-signing clone. Its
 [clone contract](https://chromium.googlesource.com/chromium/src/+/6b163abaa66e80f1ebdb990fa070a6bd40fe598e/chrome/browser/mac/code_sign_clone_manager.h)
@@ -30,6 +36,13 @@ dispatching application events. Independent language selections leave and return
 to the control to reset its native typeahead prefix. Value, focus, persisted
 locale, confirmation, cancellation and zero-write assertions remain unchanged.
 Modified-link checks use Playwright's platform-aware `ControlOrMeta` modifier.
+
+Explicit viewport changes in combined authentication acceptance synchronize the
+macOS browser's native content size with the emulated viewport through
+`Browser.setContentsSize`. The browser calculates its own window-frame size;
+the driver does not assume a fixed title-bar inset. The requested layout size,
+default hover position, wheel input and scrolling assertions remain unchanged.
+Protocol failures remain failures, and temporary CDP sessions are detached.
 
 macOS browser recovery binds an executable alias to the file identity frozen in
 the selected browser inventory. A hard link can identify the same trusted file;
@@ -67,6 +80,16 @@ merely choosing an option, invalidating cancellation and zero-write checks.
 **Use `selectOption` or open a new page directly.** These operations bypass the
 native keyboard or modified-link behavior being verified. They can prepare
 fixtures but cannot establish those interaction contracts.
+
+**Move wheel input to the top of the reading panel or set `scrollTop`.** These
+approaches avoid the inaccessible input coordinates without making the full
+requested viewport usable. Synchronizing native content size preserves the
+original input and the observed scrolling requirement.
+
+**Wait longer or change product overflow styles.** Waiting for rendering or the
+previous iframe scroll to finish did not fix the isolated input failure. A
+plain scrolling element reproduces it without product styles. Product CSS does
+not own the mismatch between native and emulated browser dimensions.
 
 **Accept any code-signing clone path or skip recovery checks.** A familiar path
 does not establish process ownership. It would weaken protection for unrelated

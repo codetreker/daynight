@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { after } from 'node:test';
 import * as browserModule from './browser.mts';
-import type { Browser } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
 
 const temporaryRoot = fileURLToPath(new URL('../../.tmp/', import.meta.url));
 const runs = new Set<string>();
@@ -374,4 +374,72 @@ test('normally closed pinned Chromium cleans its auto-created profile from the c
     await rm(directory, { recursive: true, force: true });
     if (profile !== undefined) await rm(profile, { recursive: true, force: true });
   }
+});
+
+test('viewport synchronization preserves an emulated resize failure without opening a protocol session', async () => {
+  const failure = new Error('Emulated resize refused.');
+  let contextRead = false;
+  const page = { setViewportSize: async () => { throw failure; }, context: () => { contextRead = true; } } as unknown as Page;
+  await assert.rejects(browserModule.setBrowserViewport(page, { width: 320, height: 240 }), error => error === failure);
+  assert.equal(contextRead, false);
+});
+
+test('macOS viewport synchronization reports native failures and detaches its protocol session', { skip: process.platform !== 'darwin' }, async () => {
+  for (const failedMethod of ['Browser.getWindowForTarget', 'Browser.setContentsSize']) {
+    const failure = new Error('Native contents resize refused.');
+    let detached = false;
+    const page = {
+      setViewportSize: async () => {},
+      context: () => ({ newCDPSession: async () => ({
+        send: async (method: string) => { if (method === failedMethod) throw failure; return { windowId: 17 }; },
+        detach: async () => { detached = true; },
+      }) }),
+    } as unknown as Page;
+    await assert.rejects(browserModule.setBrowserViewport(page, { width: 320, height: 240 }), error => error === failure);
+    assert.equal(detached, true);
+  }
+});
+
+test('pinned Chromium keeps wheel input usable across the entire short viewport without resizing another browser', {
+  skip: process.env.DAYNIGHT_TEST_PINNED_BROWSER !== '1', timeout: 30_000,
+}, async () => {
+  const { chromium, expect } = await import('@playwright/test');
+  const directory = phaseDirectory();
+  const siblingDirectory = phaseDirectory();
+  const browsers: Browser[] = [];
+  const launch = async (directory: string): Promise<Browser> => {
+    const root = browserModule.browserTemporaryRoot(directory);
+    await mkdir(root, { recursive: true });
+    const previous = process.env.TMPDIR;
+    try {
+      process.env.TMPDIR = root;
+      const browser = await chromium.launch({ channel: 'chromium', headless: true,
+        env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_ACCEPTANCE_DIRECTORY: directory } });
+      browsers.push(browser);
+      return browser;
+    } finally { if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous; }
+  };
+  try {
+    const browser = await launch(directory);
+    const sibling = await launch(siblingDirectory);
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const other = await sibling.newPage({ viewport: { width: 800, height: 600 } });
+    const otherSession = await other.context().newCDPSession(other);
+    const previousWindow = await otherSession.send('Browser.getWindowForTarget');
+    try {
+      for (const lowerEdge of [false, true]) {
+        await page.setContent('<!doctype html><style>body{margin:0}#reading{position:absolute;bottom:0;height:135px;width:100%;overflow:auto}</style><div id="reading"><div style="height:1800px">Long reading content</div></div>');
+        await browserModule.setBrowserViewport(page, { width: 320, height: 240 });
+        assert.deepEqual(page.viewportSize(), { width: 320, height: 240 });
+        assert.deepEqual(await page.evaluate(() => ({ width: innerWidth, height: innerHeight })), { width: 320, height: 240 });
+        const owner = page.locator('#reading');
+        assert.equal(await owner.evaluate(element => element.scrollTop), 0);
+        await owner.hover(lowerEdge ? { position: { x: 160, y: 127 } } : {});
+        await page.mouse.wheel(0, 600);
+        await expect.poll(() => owner.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+        assert.deepEqual(await otherSession.send('Browser.getWindowForTarget'), previousWindow);
+        assert.deepEqual(await other.evaluate(() => ({ width: innerWidth, height: innerHeight })), { width: 800, height: 600 });
+      }
+    } finally { await otherSession.detach(); }
+  } finally { await Promise.all(browsers.map(browser => browser.close())); }
 });

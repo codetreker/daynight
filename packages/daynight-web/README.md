@@ -1954,7 +1954,10 @@ Native select keyboard scenarios use character typeahead on macOS and direction
 keys on other browser platforms. They retain value, focus and persistence checks,
 and platform changes still require an explicit confirmation with no write before
 confirmation. Modified-link scenarios use the browser platform's new-tab
-modifier. The [macOS browser acceptance decision](../../.agents/notes/implemented/testing/2026-11-05-macos-browser-acceptance.md)
+modifier. Combined authentication viewport changes also synchronize macOS native
+browser content dimensions with the requested layout viewport so wheel input
+can reach its full reading area. Layout dimensions and scrolling assertions stay
+unchanged. The [macOS browser acceptance decision](../../.agents/notes/implemented/testing/2026-11-05-macos-browser-acceptance.md)
 records these input and recovery boundaries.
 
 Routine `pnpm web:test` does not attach disk images on macOS. It checks storage
