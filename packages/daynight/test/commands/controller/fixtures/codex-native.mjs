@@ -36,6 +36,12 @@ for await (const line of createInterface({input:process.stdin})) {
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
   out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:{id:'user',type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input}}});
+  const approvalCase=JSON.parse(process.env.CODEX_TEST_APPROVAL_CASES ?? '{}')[text];
+  if(approvalCase){
+   waiting=42;out({id:m.id,result:{turn}});
+   for(const event of approvalCase.events ?? [])out(event);
+   out({id:42,method:approvalCase.method,params:{threadId:'native-thread',turnId:turn.id,itemId:'patch',...approvalCase.params}});continue;
+  }
   if(text==='approval'||text==='approval_cancel'||text==='approval_hold'){
    waiting=42;holdResponse=text==='approval_hold';out({id:m.id,result:{turn}});
    out({id:42,method:'item/commandExecution/requestApproval',params:{threadId:'native-thread',turnId:turn.id,itemId:'tool',command:'echo safe',availableDecisions:['accept',text==='approval_cancel'?'cancel':'decline']}});continue;

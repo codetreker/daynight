@@ -3,13 +3,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CodexControls } from "./controls-codex.js";
 import { CodexErrors } from "./codex-errors.js";
+import { codexApprovalDetail } from "./codex-approval-detail.js";
 import { NativeTurns } from "./turns.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import type { InteractionResponse, SessionInteraction } from "../../../session/protocol.js";
 import { NativeRpc, NativeRpcError, record, string, type NativeObject } from "./native-rpc.js";
-import { CodexProjection, nativeEntryId, parseProviderArguments, readable, limited } from "./projection.js";
+import { CodexProjection, nativeEntryId, parseProviderArguments, readable } from "./projection.js";
 import { formInteraction, validateResponse } from "./interactions.js";
 import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } from "./types.js";
 
@@ -24,11 +25,12 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   let turnStartedAt: string | null = null;
   let controls: CodexControls;
   const pending = new Map<string, Pending>(); const turns = new NativeTurns();
+  const approvalItems = new Map<string, NativeObject>();
   const errors = new CodexErrors(options.onTimeline);
   const capabilities = { send: true, steer: true, cancel: true, respond: true };
   const state = () => options.onState({ nativeSessionId: nativeId || null, activity: pending.size ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value } : {}), capabilities: closed ? { send: false, steer: false, cancel: false, respond: false } : capabilities });
   const showInteraction = (value: Pending) => options.onTimeline({ entryId: value.interaction.interactionId, revision: value.interaction.revision, kind: "interaction", interaction: value.interaction });
-  const expire = () => { for (const p of pending.values()) { p.interaction = { ...p.interaction, state: "expired", revision: "2" }; showInteraction(p); p.rejected?.(new Error("Native interaction expired before confirmation.")); } pending.clear(); };
+  const expire = () => { for (const p of pending.values()) { p.interaction = { ...p.interaction, state: "expired", revision: "2" }; showInteraction(p); p.rejected?.(new Error("Native interaction expired before confirmation.")); } pending.clear(); approvalItems.clear(); };
   const request = (message: NativeObject) => {
     const params = record(message.params), method = string(message.method);
     if (!nativeId || params.threadId !== nativeId) { rpc.reject(message.id, "The request does not belong to this session."); return; }
@@ -38,7 +40,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       const decisions = Array.isArray(params.availableDecisions) ? params.availableDecisions : ["accept", "acceptForSession", "decline"];
       const rejection = decisions.includes("decline") ? "decline" : "cancel";
       const actions = (["allow_once", "allow_session", "reject"] as const).filter(action => decisions.includes(action === "allow_once" ? "accept" : action === "allow_session" ? "acceptForSession" : rejection));
-      interaction = { ...base, kind: "approval", title: method.includes("fileChange") ? "Approve file changes" : "Approve command", detail: limited(readable(params)), actions };
+      const item = params.turnId === currentTurnId ? approvalItems.get(string(params.itemId)) : undefined;
+      interaction = { ...base, kind: "approval", title: method.includes("fileChange") ? "Approve file changes" : "Approve command", detail: codexApprovalDetail(method, params, item), actions };
       result = r => { if (r.kind !== "approval") throw new Error("Expected approval response."); return { decision: r.action === "allow_once" ? "accept" : r.action === "allow_session" ? "acceptForSession" : rejection }; };
     } else if (method === "item/tool/requestUserInput") {
       interaction = { ...base, kind: "question", title: "Agent question", canDismiss: false, questions: (Array.isArray(params.questions) ? params.questions : []).map(raw => { const q = record(raw); return { questionId: string(q.id), label: string(q.question), options: (Array.isArray(q.options) ? q.options : []).map(raw => { const o = record(raw); return { id: string(o.label), label: string(o.label) + (o.description ? ` — ${string(o.description)}` : "") }; }), multiple: false, allowCustom: q.isOther !== false, required: true, sensitive: q.isSecret === true }; }) };
@@ -59,9 +62,17 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     const method = string(message.method), p = record(message.params);
     if (p.threadId && nativeId && p.threadId !== nativeId && (method !== "error" || typeof p.threadId === "string")) return;
     if (method === "thread/settings/updated") controls?.observe(p.threadSettings);
-    if (method === "turn/started") { errors.started(); currentTurnId = string(record(p.turn).id); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
+    if (method === "turn/started") { approvalItems.clear(); errors.started(); currentTurnId = string(record(p.turn).id); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
     if (method === "turn/completed") { const turn = record(p.turn); errors.completed(p, nativeId); turns.complete(string(turn.id), turn.status === "completed" ? null : new Error(`Native turn ended with ${string(turn.status)}: ${readable(turn.error)}`)); if (!currentTurnId || record(p.turn).id === currentTurnId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; expire(); state(); } }
-    if (method === "item/started" || method === "item/completed") projectItem(p.item, method === "item/completed");
+    if (method === "item/started" || method === "item/completed") {
+      const item = record(p.item), id = string(item.id);
+      // Approval requests omit file changes; only their matching live item supplies them.
+      if (p.threadId === nativeId && currentTurnId && p.turnId === currentTurnId && id) {
+        if (method === "item/completed") approvalItems.delete(id);
+        else if (item.type === "commandExecution" || item.type === "fileChange") approvalItems.set(id, item);
+      }
+      projectItem(p.item, method === "item/completed");
+    }
     if (method === "item/agentMessage/delta") projection?.delta(string(p.itemId), string(p.delta), "assistant_message");
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") projection?.delta(string(p.itemId), string(p.delta), "reasoning");
     if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") projection?.toolDelta(string(p.itemId), string(p.delta));
