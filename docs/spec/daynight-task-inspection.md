@@ -67,7 +67,7 @@ LR 图保持可阅读的文字尺寸，通过可聚焦的图块局部横向滚�
 
 `/projects/{projectId}/tasks/{taskId}` 默认显示概览；已有
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` 显示同一完整详情，默认激活
-附件并选中文件。`tab=overview|attachments|discussion|session`可明确指定页签；Discussion始终存在，Session不可用时回到概览。没有选中文件的附件
+附件并选中文件。`tab=overview|attachments|steps|discussion|session` 可明确指定页签；Discussion始终存在，Session不可用时回到概览。没有选中文件的附件
 页签使用任务入口加 `?tab=attachments`，已选文件切回概览时可以保留文件路径并使用
 `?tab=overview`，使隐藏附件选择也能恢复。任务、页签与文件状态使用已有合法 ID、
 相对路径和编码约定，无效的页签或文件路径显示不可用状态。登录后返回保留导航查询

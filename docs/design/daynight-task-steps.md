@@ -214,7 +214,7 @@ unknown 冻结共同提交入口，保留原身份、操作和恢复所有权，
 
 ### 已实现的阅读
 
-`TaskDetailPanels` 固定提供概览之后的 Steps slot 和 `tab=steps`，继续使用相同弹窗与独立页、roving tab、hidden/inert、语言和焦点所有者。`TaskDetailSurface` 注入 `TaskStepsPanel`，`TaskDetailReading` 提供共享 Task-root Markdown render/navigation callback；正文与概览沿用同一个 `useAttachments` controller。文件链接从 Task 附件根解析，保留修饰键和既有 URL 策略，不新增附件清单或预览所有者。
+`TaskDetailPanels` 以概览、附件、Steps、可选讨论和可选 Session 的顺序生成页签和面板，同一集合驱动方向键及 Home/End 导航；`tab=steps` 继续使用相同弹窗与独立页、roving tab、hidden/inert、语言和焦点所有者。`TaskDetailSurface` 注入 `TaskStepsPanel`，`TaskDetailReading` 提供共享 Task-root Markdown render/navigation callback；正文与概览沿用同一个 `useAttachments` controller。文件链接从 Task 附件根解析，保留修饰键和既有 URL 策略，不新增附件清单或预览所有者。页签顺序的取舍见[任务详情顺序与记录空态决策](../../.agents/notes/implemented/architecture/2026-11-05-task-detail-order-and-records.md)。
 
 Steps 组件保留按稳定 ID 的多项展开状态及当前页码；服务顺序决定编号，跨页和刷新重排不重绑身份。四状态使用独立消息组，`skipped` 不进入 TaskStatus。状态控件使用四项单选菜单，提交确认前保留原状态；位置菜单提供上下、首尾及相对目标移动。
 

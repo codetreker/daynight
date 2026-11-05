@@ -223,6 +223,7 @@ test.describe('Web language journeys', () => {
     expect(accessResponse.status()).toBe(200);
     expect(await accessResponse.finished()).toBeNull();
     await expect(projectSettingsLink).toHaveCount(1);
+    await expect(attachments.locator('.managed-session-records')).toHaveCount(0);
     const beforeModalSwitch = [...reads];
     await changeDetailLanguage('zh-CN');
     await expect(inspectTask(page, task.id).locator('.graph-status')).toHaveText('待处理');
@@ -233,10 +234,14 @@ test.describe('Web language journeys', () => {
     expect(await taskElement.evaluate((element, id) => element === document.querySelector(`.react-flow__node[data-id="${id}"] button.task-node-body`), task.id)).toBe(true);
     expect(await viewportElement.evaluate((element) => element === document.querySelector('.react-flow__viewport'))).toBe(true);
     expect(await page.locator('.task-dependency-edge path.react-flow__edge-path').evaluateAll((elements) => elements.map((element) => element.getAttribute('d')))).toEqual(paths);
+    expect(reads).toEqual(beforeModalSwitch);
     await dialog.getByRole('tab', { name: '概览', exact: true }).click();
     await expect(dialog.getByRole('combobox', { name: '关联 PR 页码', exact: true })).toHaveValue('1');
     await expect(dialog.locator('.task-detail-pr-title')).toHaveText(['原始 PR 101']);
+    const historyUrl = new URL(`/api/v1/projects/${project.id}/tasks/${task.id}/sessions?limit=50`, baseURL).href;
+    const historyResponse = page.waitForResponse(response => response.url() === historyUrl && response.request().method() === 'GET');
     await dialog.getByRole('tab', { name: '附件', exact: true }).click();
+    expect((await historyResponse).status()).toBe(200);
     await expect(frame).toHaveAttribute('title', `HTML 预览：${htmlPath}`);
     await expect(frame).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, htmlPath));
     expect(await frameElement.evaluate((element) => element === document.querySelector('.task-attachments iframe'))).toBe(true);
@@ -244,7 +249,7 @@ test.describe('Web language journeys', () => {
     expect(await inputElement.evaluate((element) => element === document.querySelector('.task-attachments input[type=file]'))).toBe(true);
     expect(await fileInput.evaluate((element) => (element as HTMLInputElement).files?.[0]?.name)).toBe('original.txt');
     await expect(pathInput).toHaveValue(uploadPath);
-    expect(reads).toEqual(beforeModalSwitch);
+    expect(reads).toEqual([...beforeModalSwitch, `GET ${historyUrl}`]);
 
     let hold: { readonly method: 'PUT' | 'DELETE'; readonly started: ReturnType<typeof deferred>; readonly release: ReturnType<typeof deferred> } | null = null;
     await page.route(uploadUrl, async (route) => {

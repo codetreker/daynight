@@ -17,7 +17,7 @@ type TaskDetailPanelsProps = {
 export const TaskDetailPanels = ({ overview, steps, attachments, discussion, session, active: controlledActive, onChange, suspended = false }: TaskDetailPanelsProps) => {
   const { messages } = useI18n();
   const [localActive, setLocalActive] = useState<TaskDetailTab>('overview');
-  const tabs: readonly TaskDetailTab[] = ['overview', 'steps', 'attachments', ...(discussion === undefined ? [] : ['discussion'] as const), ...(session === undefined ? [] : ['session'] as const)];
+  const tabs: readonly TaskDetailTab[] = ['overview', 'attachments', 'steps', ...(discussion === undefined ? [] : ['discussion'] as const), ...(session === undefined ? [] : ['session'] as const)];
   const requested = controlledActive === undefined ? localActive : controlledActive;
   const active = requested === 'session' && session === undefined ? 'overview' : requested;
   useLayoutEffect(() => { if (active !== requested) { setLocalActive(active); onChange?.(active); } }, [active, requested, onChange]);

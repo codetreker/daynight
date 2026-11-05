@@ -18,17 +18,22 @@ import './terminal-host.css';
 import type { AttachmentRecordSlots } from '../task-detail/attachments/TaskAttachments';
 
 type ScopeProps = { readonly projectId: string; readonly taskId: string; readonly active: boolean };
-function useRecords(projectId: string, taskId: string, active: boolean) {
+function useRecords(projectId: string, taskId: string, active: boolean, refreshEmptyOnActivate = false) {
   const scope = useTaskCacheScope();
   const api = useMemo(() => createTerminalSessionApi(projectId, taskId, scope.userId, scope.principalMismatch), [projectId, taskId, scope]);
   const [page, setPage] = useState<{ items: SessionHistoryItem[]; cursor: string | null }>({ items: [], cursor: null });
   const [error, setError] = useState<unknown>(null); const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0); const [cursor, setCursor] = useState<string | null>(null);
   const loadedRequest = useRef<{ api: TerminalSessionApi; cursor: string | null; revision: number } | null>(null);
+  const wasActive = useRef(false);
   useEffect(() => {
-    if (!active || scope.isInvalidated) return;
-    // Reopening a retained tab preserves its inventory until an explicit refresh.
-    if (loadedRequest.current?.api === api && loadedRequest.current.cursor === cursor && loadedRequest.current.revision === revision) return;
+    if (!active || scope.isInvalidated) { wasActive.current = false; return; }
+    const reopened = !wasActive.current; wasActive.current = true;
+    const loaded = loadedRequest.current?.api === api && loadedRequest.current.cursor === cursor && loadedRequest.current.revision === revision;
+    // Empty inventories have no refresh button, so revisit them on tab activation.
+    const revisitEmpty = refreshEmptyOnActivate && loaded && reopened && page.items.length === 0 && page.cursor === null;
+    if (revisitEmpty && cursor !== null) { setCursor(null); return; }
+    if (loaded && !revisitEmpty) return;
     const controller = new AbortController(); const abort = () => controller.abort(); scope.signal.addEventListener('abort', abort);
     setLoading(true); setError(null);
     void api.history(cursor, controller.signal).then(result => {
@@ -38,8 +43,9 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
     }).catch(cause => { if (!controller.signal.aborted) { setError(cause); if (cause instanceof ApiError && [401, 403, 404, 410].includes(cause.status ?? 0)) setPage({ items: [], cursor: null }); } })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); scope.signal.removeEventListener('abort', abort); };
-  }, [api, scope, active, cursor, revision]);
-  return { api, scope, ...page, error, loading, refresh: () => { setCursor(null); setRevision(value => value + 1); }, more: () => setCursor(page.cursor) };
+  }, [api, scope, active, cursor, revision, refreshEmptyOnActivate]);
+  const confirmedEmpty = loadedRequest.current?.api === api && loadedRequest.current.cursor === cursor && loadedRequest.current.revision === revision && page.items.length === 0 && page.cursor === null && !loading && !error;
+  return { api, scope, ...page, error, loading, confirmedEmpty, refresh: () => { setCursor(null); setRevision(value => value + 1); }, more: () => setCursor(page.cursor) };
 }
 function recordLabel(item: SessionHistoryItem): string {
   return `${item.createdAt.replace('T', ' ').replace(/\.\d+Z$/, 'Z')} · ${item.agentControlMode === 'herdr' ? 'Herdr' : 'Web'}`;
@@ -70,14 +76,14 @@ export function TaskSessionHost({ projectId, taskId, claimId, mode, active, curr
   </div>;
 }
 export function ManagedSessionRecords({ projectId, taskId, active, resetSelection, children }: ScopeProps & { readonly resetSelection?: object; readonly children: (records: AttachmentRecordSlots) => ReactNode }) {
-  const m = useTerminalHostMessages(); const history = useRecords(projectId, taskId, active);
+  const m = useTerminalHostMessages(); const history = useRecords(projectId, taskId, active, true);
   const [selected, setSelected] = useState<SessionHistoryItem | null>(null);
   useLayoutEffect(() => { setSelected(null); }, [resetSelection]);
   const clearSelection = () => setSelected(null);
-  const sidebar = <section className="managed-session-records" aria-label={m.records}>
+  const sidebar = history.confirmedEmpty ? null : <section className="managed-session-records" aria-label={m.records}>
     <div className="terminal-host-toolbar"><h4>{m.records}</h4><button className="button" disabled={history.loading} onClick={history.refresh}>{m.refresh}</button></div>
     {history.error ? <p role="alert" className="session-error">{recordingError(history.error, m)}</p> : null}
-    {history.loading ? <p role="status">{m.loading}</p> : history.items.length === 0 && !history.error ? <p>{m.empty}</p> : null}
+    {history.loading ? <p role="status">{m.loading}</p> : null}
     <ul className="managed-session-list">{history.items.map(item => <li key={item.sessionId}><button className="button" aria-pressed={selected?.sessionId === item.sessionId} onClick={() => setSelected(item)}>{recordLabel(item)} · {m[item.archive.state === 'ready' ? 'readonly' : item.archive.state]}</button></li>)}</ul>
     {history.cursor ? <button className="button" disabled={history.loading} onClick={history.more}>{m.more}</button> : null}
   </section>;
