@@ -12,6 +12,7 @@ import { authenticatedAPI, bearerContext, browserAuthentication, tokenContext, t
 import { executeTask, createProject, createTask, expect, test } from './fixtures';
 import { attachmentFileButton } from './attachment-tree';
 import { verifyScopedInvitationManagement } from './w7-invitations';
+import { runAuthLogin } from './auth-login-diagnostics';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const origin = (info: TestInfo): string => {
@@ -53,84 +54,102 @@ test.afterEach(async ({ context }, info) => {
 test.describe('visible authentication protocol', () => {
   test.use({ authentication: 'visible' });
   test('auth-login-session', scenario('auth-login-session'), async ({ page, context, api: request, allowBrowserWrites }, info) => {
-    const baseURL = origin(info);
-    const project = await createProject(request, { name: `Visible login ${randomUUID()}` });
-    allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/auth/logout`, count: 1 }]);
-    const originalViewport = page.viewportSize();
-    if (originalViewport === null) throw new Error('The responsive header check requires a configured viewport.');
-    const narrowHeaderFits = async (state: string) => {
-      for (const width of [320, 361, 375, 390]) {
-        await page.setViewportSize({ width, height: 844 });
-        await expect(page.locator('.site-header .brand')).toBeVisible();
-        await expectLanguageLayout(page.locator('.site-header select'));
-        await expect(page.locator('.site-header .nav-start')).toBeVisible();
-        const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
-          viewport: window.innerWidth,
-          documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-          controls: [...header.querySelectorAll('a, select')].map((element) => element.getBoundingClientRect())
-            .filter((bounds) => bounds.width > 0 && bounds.height > 0)
-            .map(({ left, right }) => ({ left, right })),
-        }));
-        expect(geometry.viewport, `${state}: the English header is checked at ${width}px`).toBe(width);
-        expect(geometry.documentWidth, `${state} at ${width}px: the page has no horizontal overflow`).toBeLessThanOrEqual(geometry.viewport);
-        expect(geometry.controls.length, `${state} at ${width}px: header controls remain visible`).toBeGreaterThan(1);
-        for (const bounds of geometry.controls) {
-          expect(bounds.left, `${state} at ${width}px: a header control starts inside the viewport`).toBeGreaterThanOrEqual(0);
-          expect(bounds.right, `${state} at ${width}px: a header control ends inside the viewport`).toBeLessThanOrEqual(geometry.viewport);
+    await runAuthLogin({
+      step: (name, action) => test.step(name, action),
+      attach: (operations) => info.attach('auth-login-operations', { body: JSON.stringify(operations, null, 2), contentType: 'application/json' }),
+      cleanupTimeoutMs: 5_000,
+    }, async ({ operation, withCleanup }) => {
+      const baseURL = origin(info);
+      const project = await operation('Create login project', () => createProject(request, { name: `Visible login ${randomUUID()}` }));
+      allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/auth/logout`, count: 1 }]);
+      const originalViewport = page.viewportSize();
+      if (originalViewport === null) throw new Error('The responsive header check requires a configured viewport.');
+      const narrowHeaderFits = async (state: string) => {
+        for (const width of [320, 361, 375, 390]) {
+          await operation(`${state} header ${width}: resize`, () => page.setViewportSize({ width, height: 844 }));
+          await operation(`${state} header ${width}: brand`, () => expect(page.locator('.site-header .brand')).toBeVisible());
+          await operation(`${state} header ${width}: language layout`, () => expectLanguageLayout(page.locator('.site-header select')));
+          await operation(`${state} header ${width}: navigation`, () => expect(page.locator('.site-header .nav-start')).toBeVisible());
+          await operation(`${state} header ${width}: geometry`, async () => {
+            const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
+              viewport: window.innerWidth,
+              documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+              controls: [...header.querySelectorAll('a, select')].map((element) => element.getBoundingClientRect())
+                .filter((bounds) => bounds.width > 0 && bounds.height > 0)
+                .map(({ left, right }) => ({ left, right })),
+            }));
+            expect(geometry.viewport, `${state}: the English header is checked at ${width}px`).toBe(width);
+            expect(geometry.documentWidth, `${state} at ${width}px: the page has no horizontal overflow`).toBeLessThanOrEqual(geometry.viewport);
+            expect(geometry.controls.length, `${state} at ${width}px: header controls remain visible`).toBeGreaterThan(1);
+            for (const bounds of geometry.controls) {
+              expect(bounds.left, `${state} at ${width}px: a header control starts inside the viewport`).toBeGreaterThanOrEqual(0);
+              expect(bounds.right, `${state} at ${width}px: a header control ends inside the viewport`).toBeLessThanOrEqual(geometry.viewport);
+            }
+          });
         }
-      }
-    };
-    const releaseIdentity = Promise.withResolvers<void>();
-    const heldIdentityReads: Promise<void>[] = [];
-    const holdIdentity = (route: Route) => {
-      const pending = releaseIdentity.promise.then(() => route.continue());
-      heldIdentityReads.push(pending);
-      return pending;
-    };
-    await page.setViewportSize({ width: 320, height: 844 });
-    await page.route(`${baseURL}/api/v1/me`, holdIdentity);
-    try {
-      await page.goto('/');
-      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
-      await expect.poll(() => heldIdentityReads.length).toBe(1);
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗');
-      await narrowHeaderFits('Identity pending');
-      releaseIdentity.resolve();
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Sign in ↗');
-      await narrowHeaderFits('Anonymous');
-    } finally {
-      releaseIdentity.resolve();
-      await page.unroute(`${baseURL}/api/v1/me`, holdIdentity);
-      await Promise.all(heldIdentityReads);
-    }
-    const unavailableIdentity = (route: Route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Unavailable', requestId: 'landing-header' } }) });
-    await page.route(`${baseURL}/api/v1/me`, unavailableIdentity);
-    try {
-      await page.goto('/');
-      await expect(page.locator('.site-header .identity-notice')).toBeVisible();
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗');
-      await narrowHeaderFits('Identity unavailable');
-    } finally { await page.unroute(`${baseURL}/api/v1/me`, unavailableIdentity); }
-    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
-    await narrowHeaderFits('Chinese');
-    await picture(page, info, 'language-selector-landing-narrow');
-    await page.setViewportSize(originalViewport);
-    await expectLanguageLayout(page.locator('.site-header select'));
-    await picture(page, info, 'language-selector-landing-desktop');
-    await expect(page.locator('.landing-page')).toBeVisible();
-    await expect(page.locator('.auth-shell')).toHaveCount(0);
-    await page.locator('.landing-page a[href="/login"]').first().click();
-    await expect(page).toHaveURL(`${baseURL}/login`);
-    await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
-    await page.goBack();
-    await expect(page).toHaveURL(`${baseURL}/`);
-    await expect(page.locator('.landing-page')).toBeVisible();
-    const providerSession = await context.newCDPSession(page);
-    let deadline: ReturnType<typeof setTimeout> | undefined;
-    const controlledProvider = new Promise<void>((resolve, reject) => {
-      deadline = setTimeout(() => reject(new Error('The controlled external provider request was not reached.')), 15_000);
-      providerSession.once('Fetch.requestPaused', (event) => {
-        void (async () => {
+      };
+      const releaseIdentity = Promise.withResolvers<void>();
+      const heldIdentityReads: Promise<PromiseSettledResult<void>>[] = [];
+      const holdIdentity = (route: Route) => {
+        const pending = releaseIdentity.promise.then(() => route.continue());
+        heldIdentityReads.push(pending.then(
+          (value) => ({ status: 'fulfilled', value }),
+          (reason: unknown) => ({ status: 'rejected', reason }),
+        ));
+        return pending;
+      };
+      await operation('Resize anonymous landing page', () => page.setViewportSize({ width: 320, height: 844 }));
+      await operation('Hold initial identity response', () => page.route(`${baseURL}/api/v1/me`, holdIdentity));
+      await withCleanup(async () => {
+        await operation('Open landing page with identity pending', () => page.goto('/'));
+        await operation('Select English with identity pending', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en'));
+        await operation('Observe held identity read', () => expect.poll(() => heldIdentityReads.length).toBe(1));
+        await operation('Assert pending identity navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗'));
+        await narrowHeaderFits('Identity pending');
+        releaseIdentity.resolve();
+        await operation('Assert anonymous navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Sign in ↗'));
+        await narrowHeaderFits('Anonymous');
+      }, [
+        { operation: 'Release held identity response', action: async () => { releaseIdentity.resolve(); } },
+        { operation: 'Remove initial identity route', action: () => page.unroute(`${baseURL}/api/v1/me`, holdIdentity) },
+        { operation: 'Drain held identity reads', action: async () => {
+          const results = await Promise.all(heldIdentityReads);
+          const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+          if (failures.length === 1) throw failures[0];
+          if (failures.length > 1) throw new AggregateError(failures, 'Held identity reads failed.');
+        } },
+      ]);
+      const unavailableIdentity = (route: Route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'Unavailable', requestId: 'landing-header' } }) });
+      await operation('Install unavailable identity response', () => page.route(`${baseURL}/api/v1/me`, unavailableIdentity));
+      await withCleanup(async () => {
+        await operation('Reload landing page with identity unavailable', () => page.goto('/'));
+        await operation('Assert unavailable identity notice', () => expect(page.locator('.site-header .identity-notice')).toBeVisible());
+        await operation('Assert unavailable identity navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Sign in / workspace ↗'));
+        await narrowHeaderFits('Identity unavailable');
+      }, [{ operation: 'Remove unavailable identity route', action: () => page.unroute(`${baseURL}/api/v1/me`, unavailableIdentity) }]);
+      await operation('Select Chinese on landing page', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN'));
+      await narrowHeaderFits('Chinese');
+      await operation('Capture narrow landing page', () => picture(page, info, 'language-selector-landing-narrow'));
+      await operation('Restore landing viewport', () => page.setViewportSize(originalViewport));
+      await operation('Assert desktop language layout', () => expectLanguageLayout(page.locator('.site-header select')));
+      await operation('Capture desktop landing page', () => picture(page, info, 'language-selector-landing-desktop'));
+      await operation('Assert anonymous landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+      await operation('Assert landing page has no login shell', () => expect(page.locator('.auth-shell')).toHaveCount(0));
+      await operation('Open explicit login page', () => page.locator('.landing-page a[href="/login"]').first().click());
+      await operation('Assert explicit login URL', () => expect(page).toHaveURL(`${baseURL}/login`));
+      await operation('Assert explicit login heading', () => expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible());
+      await operation('Return from explicit login', () => page.goBack());
+      await operation('Assert returned landing URL', () => expect(page).toHaveURL(`${baseURL}/`));
+      await operation('Assert returned landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+      const providerSession = await operation('Create external provider CDP session', () => context.newCDPSession(page));
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const controlledProvider = Promise.withResolvers<void>();
+      const providerOutcome = controlledProvider.promise.then(
+        () => ({ status: 'passed' as const }),
+        (error: unknown) => ({ status: 'failed' as const, error }),
+      );
+      const handleProviderRequest = (event: { request: { url: string }; requestId: string }) => {
+        void operation('Validate and fulfill external provider request', async () => {
           const upstream = new URL(event.request.url);
           if (upstream.origin !== 'https://github.com' || upstream.pathname !== '/login/oauth/authorize'
             || upstream.searchParams.get('code_challenge_method') !== 'S256') throw new Error('The external provider authorization or PKCE request changed.');
@@ -142,52 +161,69 @@ test.describe('visible authentication protocol', () => {
           target.search = new URLSearchParams({ state, code: `alice:${challenge}` }).toString();
           await providerSession.send('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: 302,
             responseHeaders: [{ name: 'Location', value: target.href }], body: '' });
-        })().then(resolve, reject);
-      });
+        }).then(controlledProvider.resolve, controlledProvider.reject);
+      };
+      providerSession.once('Fetch.requestPaused', handleProviderRequest);
+      // The external provider is controlled; application and gateway redirects use their real handlers.
+      await withCleanup(async () => {
+        await operation('Enable external provider interception', () => providerSession.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] }));
+        await operation('Open private project anonymously', () => page.goto(`/projects/${project.id}`));
+        await operation('Assert private project login heading', () => expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible());
+        await operation('Assert private project return path', () => expect.poll(() => {
+          const target = new URL(page.url());
+          return { pathname: target.pathname, returnPath: target.searchParams.get('returnPath') };
+        }).toEqual({ pathname: '/login', returnPath: `/projects/${project.id}` }));
+        deadline = setTimeout(() => controlledProvider.reject(new Error('The controlled external provider request was not reached.')), 15_000);
+        await Promise.all([
+          operation('Click GitHub login', () => page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click()),
+          operation('Complete controlled external provider', async () => {
+            const outcome = await providerOutcome;
+            if (outcome.status === 'failed') throw outcome.error;
+          }),
+        ]);
+        clearTimeout(deadline);
+        await operation('Assert authenticated project heading', () => expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible());
+        await operation('Assert authenticated project URL', () => expect(page).toHaveURL(`${baseURL}/projects/${project.id}`));
+        await operation('Verify authenticated API session', async () => { expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(200); });
+        await operation('Reload authenticated project', () => page.reload());
+        await operation('Assert reloaded project heading', () => expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible());
+        await operation('Open login while authenticated', () => page.goto('/login'));
+        await operation('Assert authenticated login redirect', () => expect(page).toHaveURL(`${baseURL}/projects`));
+        await operation('Assert personal workspace', () => expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible());
+        await operation('Open authenticated landing page', () => page.goto('/'));
+        await operation('Assert authenticated landing URL', () => expect(page).toHaveURL(`${baseURL}/`));
+        await operation('Assert authenticated landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+        await operation('Resize authenticated landing page', () => page.setViewportSize({ width: 320, height: 844 }));
+        await operation('Select English while authenticated', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en'));
+        await operation('Assert authenticated navigation', () => expect(page.locator('.site-header .nav-start')).toHaveText('Open workspace ↗'));
+        await narrowHeaderFits('Authenticated');
+        await operation('Restore Chinese while authenticated', () => page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN'));
+        await operation('Restore authenticated viewport', () => page.setViewportSize(originalViewport));
+        await operation('Open workspace from landing page', () => page.locator('.landing-page a[href="/projects"]').first().click());
+        await operation('Assert workspace URL', () => expect(page).toHaveURL(`${baseURL}/projects`));
+        await operation('Assert workspace heading', () => expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible());
+        const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
+        const logoutOutcome = signedOut.then((response) => ({ status: 'passed' as const, response }), (error: unknown) => ({ status: 'failed' as const, error }));
+        await operation('Click logout', () => page.getByRole('button', { name: '退出登录', exact: true }).click());
+        await operation('Verify logout response', async () => {
+          const outcome = await logoutOutcome;
+          if (outcome.status === 'failed') throw outcome.error;
+          expect(outcome.response.status()).toBe(204);
+        });
+        await operation('Assert logged out URL', () => expect(page).toHaveURL(`${baseURL}/`));
+        await operation('Assert logged out landing page', () => expect(page.locator('.landing-page')).toBeVisible());
+        await operation('Assert logged out page has no login shell', () => expect(page.locator('.auth-shell')).toHaveCount(0));
+        await operation('Verify logged out API session', async () => { expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(401); });
+        await operation('Capture completed login journey', () => picture(page, info, 'auth-login-session'));
+      }, [
+        { operation: 'Remove external provider observer', action: async () => {
+          clearTimeout(deadline);
+          providerSession.removeListener('Fetch.requestPaused', handleProviderRequest);
+        } },
+        { operation: 'Disable external provider interception', action: () => providerSession.send('Fetch.disable') },
+        { operation: 'Detach external provider CDP session', action: () => providerSession.detach() },
+      ]);
     });
-    // The external provider is controlled; application and gateway redirects use their real handlers.
-    try {
-      await providerSession.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] });
-      await page.goto(`/projects/${project.id}`);
-      await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
-      await expect.poll(() => {
-        const target = new URL(page.url());
-        return { pathname: target.pathname, returnPath: target.searchParams.get('returnPath') };
-      }).toEqual({ pathname: '/login', returnPath: `/projects/${project.id}` });
-      await Promise.all([page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click(), controlledProvider]);
-      await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
-      await expect(page).toHaveURL(`${baseURL}/projects/${project.id}`);
-      expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(200);
-      await page.reload();
-      await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
-      await page.goto('/login');
-      await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
-      await page.goto('/');
-      await expect(page).toHaveURL(`${baseURL}/`);
-      await expect(page.locator('.landing-page')).toBeVisible();
-      await page.setViewportSize({ width: 320, height: 844 });
-      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
-      await expect(page.locator('.site-header .nav-start')).toHaveText('Open workspace ↗');
-      await narrowHeaderFits('Authenticated');
-      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
-      await page.setViewportSize(originalViewport);
-      await page.locator('.landing-page a[href="/projects"]').first().click();
-      await expect(page).toHaveURL(`${baseURL}/projects`);
-      await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
-      const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
-      await page.getByRole('button', { name: '退出登录', exact: true }).click();
-      expect((await signedOut).status()).toBe(204);
-      await expect(page).toHaveURL(`${baseURL}/`);
-      await expect(page.locator('.landing-page')).toBeVisible();
-      await expect(page.locator('.auth-shell')).toHaveCount(0);
-      expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(401);
-      await picture(page, info, 'auth-login-session');
-    } finally {
-      clearTimeout(deadline);
-      await providerSession.send('Fetch.disable');
-      await providerSession.detach();
-    }
   });
 });
 
