@@ -56,7 +56,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const activeRef = useRef(active); activeRef.current = active;
   const guardCallback = useRef(onGuardChange); guardCallback.current = onGuardChange;
   useEffect(() => { guardCallback.current?.(pending || grantIssue !== null && !grantIssue.observed || invitationIssue !== null && !invitationIssue.observed); }, [pending, grantIssue, invitationIssue]);
-  useEffect(() => { if (!onRoute && !grantSubmitting.current && !invitationSubmitting.current && !(grantIssueRef.current && !grantIssueRef.current.observed) && !(invitationIssueRef.current && !invitationIssueRef.current.observed)) setDialog(null); }, [onRoute]);
+  useEffect(() => { if (!onRoute && !grantSubmitting.current && !invitationSubmitting.current && !(grantIssueRef.current && !grantIssueRef.current.observed) && !(invitationIssueRef.current && !invitationIssueRef.current.observed)) setDialog((current) => current?.kind === 'secret' ? current : null); }, [onRoute]);
   const callbacks = useRef({ onUnavailable, onMembershipChange });
   callbacks.current = { onUnavailable, onMembershipChange };
 

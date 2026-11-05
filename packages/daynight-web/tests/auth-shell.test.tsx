@@ -72,6 +72,33 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
+  it("discards a retained project invitation secret when revalidation changes the account", async () => {
+    window.history.replaceState(null, "", `/projects/${projectId}/members`);
+    const secret = "dninvite_identity_secret";
+    const fetcher = vi.fn((url: string, options?: RequestInit) => {
+      if (url === `/api/v1/projects/${projectId}/invitations`) {
+        if (options?.method === "POST") return Promise.resolve(json({ id: otherId, projectId, createdBy: userId, createdAt: now, expiresAt: "2099-10-29T10:00:00Z", consumedAt: null, consumedBy: null, revokedAt: null, link: `${window.location.origin}/invitations#${secret}` }, 201));
+        return Promise.resolve(json({ items: [] }));
+      }
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    const invite = await screen.findByRole("button", { name: "邀请成员" });
+    await waitFor(() => expect(invite).toBeEnabled()); fireEvent.click(invite);
+    const submit = within(screen.getByRole("dialog")).getByRole("button", { name: "创建邀请链接" });
+    await waitFor(() => expect(submit).toBeEnabled()); fireEvent.click(submit);
+    await screen.findByDisplayValue(`${window.location.origin}/invitations#${secret}`);
+    act(() => navigate("/account"));
+    expect(screen.getByDisplayValue(`${window.location.origin}/invitations#${secret}`)).not.toBeVisible();
+    serverUserId = otherId; returnFromAnotherWindow();
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
+    expect(screen.queryByDisplayValue(`${window.location.origin}/invitations#${secret}`)).toBeNull();
+    act(() => navigate(`/projects/${projectId}/members`));
+    await waitFor(() => expect(screen.queryByDisplayValue(`${window.location.origin}/invitations#${secret}`)).toBeNull());
+    expect(fetcher.mock.calls.filter(([url, options]) => url.endsWith("/invitations") && options?.method === "POST")).toHaveLength(1);
+  });
+
   it("loads project navigation once with the project page and keeps the selected project across management routes", async () => {
     const fetcher = install((url) => url === `/api/v1/projects/${projectId}` ? json(project()) : url.endsWith("/invitations") ? json({ items: [] }) : defaults(url));
     render(<AuthenticatedApp />);

@@ -30,7 +30,7 @@ export const TeamInvitations = ({ teamId, teamName, active, onRoute, editable, a
   useEffect(() => { guard.current(op.pending || unknown || issue !== null || action?.kind === 'secret', op.pending || unknown && !memberWithoutManagement); }, [op.pending, unknown, issue, action?.kind, memberWithoutManagement]);
   useEffect(() => { if (unknown && memberWithoutManagement) setAction(null); }, [unknown, memberWithoutManagement]);
   useEffect(() => () => { read.current?.abort(); guard.current(false, false); }, []);
-  useEffect(() => { if (!onRoute && !operation.current.guarded()) setAction(null); }, [onRoute]);
+  useEffect(() => { if (!onRoute && !operation.current.guarded()) setAction((current) => current?.kind === 'secret' ? current : null); }, [onRoute]);
   const load = useCallback(async () => {
     if (!active || !editable) return false;
     read.current?.abort(); const controller = new AbortController(); read.current = controller;

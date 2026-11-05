@@ -84,3 +84,23 @@ it.each([403, 404])('shows a persistent %s invitation denial without repeatedly 
   await screen.findByRole('button', { name: `Revoke invitation ${id}` });
   expect(screen.queryByRole('alert')).toBeNull(); expect(listTeamInvitations).toHaveBeenCalledTimes(3);
 });
+it('retains a displayed secret across navigation until it is explicitly closed', async () => {
+  vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return { ...invitation, link }; });
+  const view = render(panel()); await openInvite();
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
+  expect(await screen.findByDisplayValue(link)).toBeVisible();
+  view.rerender(panel(false, false)); expect(screen.getByDisplayValue(link)).not.toBeVisible();
+  view.rerender(panel()); expect(screen.getByDisplayValue(link)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' }));
+  expect(screen.queryByDisplayValue(link)).toBeNull();
+  view.rerender(panel(false, false)); view.rerender(panel()); expect(screen.queryByDisplayValue(link)).toBeNull();
+  expect(createTeamInvitation).toHaveBeenCalledOnce();
+});
+it('destroys a displayed secret when the identity owner unmounts', async () => {
+  vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return { ...invitation, link }; });
+  const view = render(panel()); await openInvite();
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
+  expect(await screen.findByDisplayValue(link)).toBeVisible();
+  view.rerender(panel(false, false)); view.unmount(); expect(screen.queryByDisplayValue(link)).toBeNull();
+  render(panel()); await screen.findByRole('button', { name: 'Invite member' }); expect(screen.queryByDisplayValue(link)).toBeNull();
+});

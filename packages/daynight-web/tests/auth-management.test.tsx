@@ -331,6 +331,37 @@ describe('authoritative project management', () => {
     await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', user.id, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
   });
 
+  it('retains a confirmed invitation secret across navigation until explicitly closed', async () => {
+    const link = 'https://daynight.test/invitations#once-secret';
+    vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await screen.findByDisplayValue(link);
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    expect(screen.getByDisplayValue(link)).not.toBeVisible();
+    view.rerender(<MembersPanel {...props} active onRoute />);
+    expect(await screen.findByDisplayValue(link)).toBeVisible();
+    await dialogClick('我已保存，关闭');
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
+  it('discards a retained invitation secret when its identity owner unmounts', async () => {
+    const link = 'https://daynight.test/invitations#once-secret';
+    vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await screen.findByDisplayValue(link);
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    view.unmount();
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    members(); await readyMembers();
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
   it('preserves unknown invitation results and requires a fresh catalogue before another action', async () => {
     vi.mocked(auth.createInvitation).mockRejectedValueOnce(new Error('secret-link-error')).mockResolvedValueOnce({ ...invitation, id: 'invitation-b', link: 'https://example.com/invitations#secret' });
     vi.mocked(auth.listInvitations).mockResolvedValue([invitation]);

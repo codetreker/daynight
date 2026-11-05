@@ -161,6 +161,18 @@ for (const observed of [false, true]) test(`an ${observed ? 'observed' : 'unobse
   await expect(page).toHaveURL(new RegExp(`/teams/${teamId}/members$`)); expect(api.invitationWrites).toBe(1);
 });
 
+for (const access of ['admin', 'member', 'unavailable'] as const) test(`a displayed invitation remains available across navigation and ${access}`, async ({ page }) => {
+  const api = await install(page); await start(page); api.invitationSuccess = true;
+  await page.getByRole('button', { name: 'Invite member' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click();
+  const link = page.getByLabel('One-time invitation link'); await expect(link).toBeVisible(); const issued = await link.inputValue();
+  await traverse(page, `/teams/${betaId}/members`); await expect(link).toBeHidden();
+  if (access === 'member') api.members.get(alice)!.role = 'member'; else if (access === 'unavailable') api.members.delete(alice);
+  await traverse(page, `/teams/${teamId}/members`); await expect(link).toBeVisible(); await expect(link).toHaveValue(issued);
+  await page.getByRole('dialog', { name: 'Invitation link created' }).getByRole('button', { name: 'I have saved it, close' }).click();
+  await expect(link).toHaveCount(0); expect(api.invitationWrites).toBe(1);
+});
+
 for (const access of ['member', 'unavailable', 'network'] as const) test(`a confirmed invitation remains visible after navigation and ${access}`, async ({ page }) => {
   const api = await install(page); await start(page); api.invitationSuccess = true;
   const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
