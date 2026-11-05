@@ -1947,7 +1947,7 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     for (const viewport of [{ width: 390, height: 700 }, { width: 320, height: 360 }]) {
       await page.setViewportSize(viewport);
       await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(60);
-      await expect(sidebar.locator('a.account-nav')).toBeInViewport();
+      await expect(sidebar.locator('a[href="/account"]')).toHaveCount(0);
       const opener = page.getByRole('button', { name: '展开侧栏', exact: true });
       await expect(opener).toBeInViewport();
       const background = await workspace.boundingBox();
@@ -1979,6 +1979,20 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
       await expect(workspace).not.toHaveAttribute('inert', '');
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+      const account = page.getByRole('button', { name: /^账户菜单：/ });
+      await account.click();
+      const menu = page.getByRole('menu');
+      const item = menu.getByRole('menuitem', { name: '账户设置', exact: true });
+      await expect(item).toBeFocused();
+      const bounds = await menu.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(account).toBeFocused();
     }
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
     await page.setViewportSize({ width: 1440, height: 700 });
@@ -1988,13 +2002,18 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await page.setViewportSize({ width: 390, height: 700 });
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
-    await sidebar.locator('a.account-nav').click();
-    await expect(page).toHaveURL(/\/account$/);
+    await sidebar.getByRole('link', { name: '我的项目', exact: true }).click();
+    await expect(page).toHaveURL(/\/projects$/);
     await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
     await expect(workspace).not.toHaveAttribute('inert', '');
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await expect(page.locator('#main-content')).toBeFocused();
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    await page.getByRole('button', { name: /^账户菜单：/ }).click();
+    await page.getByRole('menuitem', { name: '账户设置', exact: true }).click();
+    await expect(page).toHaveURL(/\/account$/);
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(page.locator('#main-content')).toBeFocused();
     await page.setViewportSize({ width: 320, height: 800 });
     await openTaskProject(page, project.id, project.name);
   });

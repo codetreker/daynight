@@ -1,6 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { ApiError } from '../../../api/client';
-import { LanguageSelector } from '../../../i18n/LanguageSelector';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { dialogFocusables } from '../focus';
 import { useDraftNavigationDecision } from '../TaskDraftNavigation';
@@ -119,7 +118,7 @@ const DeleteDialog = ({ target, busy, error, fallback, onConfirm, onDismiss }: A
     const box = event.currentTarget.getBoundingClientRect();
     if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) onDismiss();
   }}>
-    <header className="dialog-header"><h2 id={`${id}-title`}>{m.deleteTitle}</h2><LanguageSelector /></header>
+    <header className="dialog-header"><h2 id={`${id}-title`}>{m.deleteTitle}</h2></header>
     <div className="dialog-body attachment-delete-body" tabIndex={0} role="group" aria-labelledby={`${id}-title`}>
       <p id={`${id}-copy`}>{m.deleteConfirmation}</p>
       <p id={`${id}-path`} className="attachment-delete-path">{target.path}</p>

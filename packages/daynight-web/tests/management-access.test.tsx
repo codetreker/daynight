@@ -2,11 +2,17 @@ import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { MembersPanel } from '../src/features/management/MembersPanel';
+import { pauseAuthRequests } from '../src/api/client';
 import { ProjectSettingsPanel } from '../src/features/management/ProjectSettingsPanel';
 import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from '../src/features/projects/ProjectAccess';
+import { useTaskGraph } from '../src/features/projects/useTaskGraph';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
+import { directAccessFixture, taskSyncFromGraph, taskSyncQuery, taskSyncResponse, TEST_VIEWER_ID } from './helpers/taskSync';
+import { detailFixture, graphFixture } from './helpers/taskDetail';
+import { saveDetail } from '../src/features/task-detail/detail-cache';
+import { openDB } from 'idb';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { wireResponse } from './helpers/wireJson';
 
 const projectId = '10000000-0000-4000-8000-000000000001';
@@ -84,12 +90,12 @@ it.each([
       await screen.findByRole('alert');
       await focus(mounted.access());
     }
-    expect(resourceReads).toBe(1);
+    expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
     if (kind === 'settings') expect(await screen.findByLabelText('Alert threshold')).toHaveValue(60);
     else await screen.findByText(oldEmail);
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     if (kind === 'members' && role === 'admin') await waitFor(() => expect(invitationReads).toBeGreaterThan(0));
-    else expect(resourceReads).toBe(1);
+    else expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });
 
@@ -304,11 +310,11 @@ it('marks a superseded grant reconciliation observed only after the replacement 
     if (url === `${root}/access`) return json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
     if (url === `${root}/members`) return ++rosterReads === 2 ? held.promise : json(roster(freshEmail, 'admin'));
     if (url === `${root}/invitations`) return json({ items: [] });
-    if (url === `${root}/members/${otherId}` && init?.method === 'PATCH') return failure(500);
+    if (url === `${root}/grants/${otherId}` && init?.method === 'PUT') return failure(500);
     throw new Error(`Unexpected request ${url}`);
   });
   try {
-    const role = await screen.findByRole('combobox', { name: 'Project role for Collaborator' });
+    const role = await screen.findByRole('combobox', { name: 'Direct grant for Collaborator' });
     await waitFor(() => expect(role).not.toBeDisabled());
     fireEvent.change(role, { target: { value: 'member' } });
     const confirm = screen.getByRole('button', { name: 'Save role' });
@@ -320,7 +326,231 @@ it('marks a superseded grant reconciliation observed only after the replacement 
     await focus(mounted.access());
     await act(async () => { held.resolve(json(roster(oldEmail, 'admin'))); await nextEventLoopTurn(); });
     await waitFor(() => expect(rosterReads).toBe(3));
-    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Project role for Collaborator' })).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Direct grant for Collaborator' })).not.toBeDisabled());
     expect(screen.queryByText(oldEmail)).toBeNull();
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+
+it('fences a peer snapshot created while self-removal is pending, then permits a fresh access recovery', async () => {
+  class Channel {
+    static peers = new Set<Channel>();
+    onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+    constructor(readonly name: string) { Channel.peers.add(this); }
+    postMessage(data: unknown) { for (const peer of Channel.peers) if (peer !== this) queueMicrotask(() => peer.onmessage?.({ data } as MessageEvent<unknown>)); }
+    close() { Channel.peers.delete(this); }
+  }
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const held = Promise.withResolvers<Response>();
+  let removed = false;
+  let deletes = 0;
+  const mounted = mount('members', (url, init) => {
+    if (url === `${root}/access`) return removed ? failure(404) : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
+    if (url === `${root}/members`) return json(roster(oldEmail, 'admin'));
+    if (url === `${root}/invitations`) return json({ items: [] });
+    if (url === `${root}/grants/${TEST_VIEWER_ID}` && init?.method === 'DELETE') { deletes++; return held.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const signal = new AbortController().signal;
+  const taskId = '30000000-0000-4000-8000-000000000001';
+  const task = detailFixture(projectId, taskId, { description: 'private peer detail' });
+  const sync = taskSyncFromGraph(graphFixture([task]), { versionForTask: () => task.version, propertiesForTask: () => task.properties });
+  try {
+    const button = await screen.findByRole('button', { name: 'Remove direct grant for Alice' });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    fireEvent.click(button);
+    const confirm = screen.getByRole('button', { name: 'Remove grant' });
+    await waitFor(() => expect(confirm).not.toBeDisabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(deletes).toBe(1));
+    const before = await peer.beginSync(projectId, signal);
+    const snapshot = await peer.applySync(before, sync, signal);
+    expect(snapshot.project.manifest.cacheGeneration).not.toBe(before.cacheGeneration);
+    const peerTicket = await peer.beginSync(projectId, signal);
+    await saveDetail(peer, peerTicket, task, signal);
+    expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
+    removed = true;
+    await act(async () => { held.resolve(json({ projectId, userId: TEST_VIEWER_ID, deleted: true, actorAccess: null })); });
+    await screen.findByText('Direct grant for Alice removed.');
+    await waitFor(() => expect(peer.getAuthorizedProject(projectId)).toBeNull());
+    const db = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+    try {
+      await waitFor(async () => expect(await db.countFromIndex('summaries', 'by-project', [TEST_VIEWER_ID, projectId])).toBe(0));
+      expect(await db.get('details', [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
+    } finally { db.close(); }
+    expect(deletes).toBe(1);
+    removed = false;
+    await focus(mounted.access());
+    await waitFor(() => expect(mounted.access().snapshot().status).toBe('ready'));
+    expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
+    const fresh = await peer.beginSync(projectId, signal);
+    expect(fresh.cacheGeneration).not.toBe(peerTicket.cacheGeneration);
+    await peer.applySync(fresh, sync, signal);
+    expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
+    expect(deletes).toBe(1);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); peer.dispose(); }
+});
+
+it('keeps a confirmed self-removal receipt when access recovery fails and retries the read without repeating the write', async () => {
+  const held = Promise.withResolvers<Response>();
+  let phase: 'before' | 'offline' | 'restored' = 'before';
+  const heldSync = Promise.withResolvers<Response>();
+  let syncRequests = 0;
+  let deletes = 0;
+  const task = detailFixture(projectId, '30000000-0000-4000-8000-000000000001', { description: 'private cached detail' });
+  const mounted = mount('members', (url, init) => {
+    if (url === `${root}/access`) return phase === 'offline' ? failure(503) : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
+    if (url.startsWith(`${root}/task-sync`)) { syncRequests++; return syncRequests === 1 ? heldSync.promise : taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(new URL(url, location.origin)), versionForTask: () => task.version, propertiesForTask: () => task.properties, viewerId: TEST_VIEWER_ID }); }
+    if (url === `${root}/members`) return json(roster(oldEmail, 'admin'));
+    if (url === `${root}/invitations`) return json({ items: [] });
+    if (url === `${root}/grants/${TEST_VIEWER_ID}` && init?.method === 'DELETE') { deletes++; return held.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    const button = await screen.findByRole('button', { name: 'Remove direct grant for Alice' });
+    await waitFor(() => expect(button).not.toBeDisabled()); fireEvent.click(button);
+    const confirm = screen.getByRole('button', { name: 'Remove grant' });
+    await waitFor(() => expect(confirm).not.toBeDisabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(deletes).toBe(1));
+    const signal = new AbortController().signal;
+    const ticket = await mounted.scope.beginSync(projectId, signal);
+    await mounted.scope.applySync(ticket, taskSyncFromGraph(graphFixture([task]), { versionForTask: () => task.version, propertiesForTask: () => task.properties }), signal);
+    expect(mounted.scope.getAuthorizedProject(projectId)).not.toBeNull();
+    phase = 'offline';
+    await act(async () => { held.resolve(json({ projectId, userId: TEST_VIEWER_ID, deleted: true, actorAccess: null })); });
+    await screen.findByText('Direct grant for Alice removed.');
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
+    expect(mounted.access().snapshot().status).toBe('error');
+    expect(mounted.scope.getAuthorizedProject(projectId)).toBeNull();
+    expect(mounted.scope.canPreviewProject(projectId)).toBe(false);
+    mounted.view.unmount();
+    let graphAccess!: ProjectAccessSession;
+    const GraphProbe = () => { graphAccess = useProjectAccess(projectId).session; const graph = useTaskGraph(projectId); return <div>{graph.snapshot?.graph.tasks.map((item) => item.titlePreview)}</div>; };
+    const graphView = renderWithLocale(<ProjectAccessBoundary projectId={projectId} initialRead><GraphProbe /></ProjectAccessBoundary>, { locale: 'en', taskCache: { scope: mounted.scope } });
+    try {
+      await waitFor(() => expect(syncRequests).toBe(1));
+      expect(screen.queryByText(task.title)).toBeNull();
+      phase = 'restored';
+      await focus(graphAccess);
+      await screen.findByText(task.title);
+      expect(syncRequests).toBe(2);
+      await expect(mounted.scope.applySync(ticket, taskSyncFromGraph(graphFixture([task]), { versionForTask: () => task.version, propertiesForTask: () => task.properties }), signal)).rejects.toMatchObject({ name: 'AbortError' });
+    } finally { graphView.unmount(); }
+    expect(deletes).toBe(1);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+it('ignores a pre-receipt access response that arrives after the confirmed removal and fresh denial', async () => {
+  const heldWrite = Promise.withResolvers<Response>();
+  const heldAccess = Promise.withResolvers<Response>();
+  let phase: 'initial' | 'held' | 'denied' = 'initial';
+  let oldAccessRequested = false;
+  let writes = 0;
+  const mounted = mount('members', (url, init) => {
+    if (url === `${root}/access`) {
+      if (phase === 'held') { oldAccessRequested = true; return heldAccess.promise; }
+      return phase === 'denied' ? failure(404) : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
+    }
+    if (url === `${root}/members`) return json(roster(oldEmail, 'admin'));
+    if (url === `${root}/invitations`) return json({ items: [] });
+    if (url === `${root}/grants/${TEST_VIEWER_ID}` && init?.method === 'DELETE') { writes++; return heldWrite.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    const button = await screen.findByRole('button', { name: 'Remove direct grant for Alice' });
+    await waitFor(() => expect(button).not.toBeDisabled()); fireEvent.click(button);
+    const confirm = screen.getByRole('button', { name: 'Remove grant' });
+    await waitFor(() => expect(confirm).not.toBeDisabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(writes).toBe(1));
+    phase = 'held';
+    let oldRead!: Promise<unknown>;
+    act(() => { oldRead = mounted.access().revalidate(); });
+    await waitFor(() => expect(oldAccessRequested).toBe(true));
+    phase = 'denied';
+    await act(async () => { heldWrite.resolve(json({ projectId, userId: TEST_VIEWER_ID, deleted: true, actorAccess: null })); });
+    await screen.findByText('Direct grant for Alice removed.');
+    await waitFor(() => expect(mounted.access().snapshot()).toMatchObject({ status: 'unavailable', access: null }));
+    await act(async () => { heldAccess.resolve(json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'))); await oldRead; });
+    expect(mounted.access().snapshot()).toMatchObject({ status: 'unavailable', access: null });
+    expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Remove direct grant for Alice' })).toBeNull();
+    expect(writes).toBe(1);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+it('keeps the successful receipt and exposes cleanup failure and retry after removal', async () => {
+  const heldWrite = Promise.withResolvers<Response>();
+  let denied = false;
+  let writes = 0;
+  const mounted = mount('members', (url, init) => {
+    if (url === `${root}/access`) return denied ? failure(404) : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
+    if (url === `${root}/members`) return json(roster(oldEmail, 'admin'));
+    if (url === `${root}/invitations`) return json({ items: [] });
+    if (url === `${root}/grants/${TEST_VIEWER_ID}` && init?.method === 'DELETE') { writes++; return heldWrite.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  const errors: unknown[] = []; mounted.scope.subscribe((event) => { if (event.error !== undefined) errors.push(event.error); });
+  try {
+    const button = await screen.findByRole('button', { name: 'Remove direct grant for Alice' });
+    await waitFor(() => expect(button).not.toBeDisabled()); fireEvent.click(button);
+    const confirm = screen.getByRole('button', { name: 'Remove grant' });
+    await waitFor(() => expect(confirm).not.toBeDisabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(writes).toBe(1));
+    const signal = new AbortController().signal;
+    const taskId = '30000000-0000-4000-8000-000000000001';
+    const task = detailFixture(projectId, taskId, { description: 'private cached detail' });
+    const ticket = await mounted.scope.beginSync(projectId, signal);
+    await mounted.scope.applySync(ticket, taskSyncFromGraph(graphFixture([task]), { versionForTask: () => task.version, propertiesForTask: () => task.properties }), signal);
+    await saveDetail(mounted.scope, await mounted.scope.beginSync(projectId, signal), task, signal);
+    const original = IDBObjectStore.prototype.put;
+    const fault = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === 'projects' && (args[0] as { state?: string }).state === 'invalidated') throw new DOMException('Injected purge failure', 'QuotaExceededError');
+      return original.apply(this, args);
+    });
+    denied = true;
+    await act(async () => { heldWrite.resolve(json({ projectId, userId: TEST_VIEWER_ID, deleted: true, actorAccess: null })); });
+    await screen.findByText('Direct grant for Alice removed.');
+    await waitFor(() => expect(errors).toContainEqual(expect.objectContaining({ category: 'storage' })));
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.getByRole('alert')).toBeVisible();
+    expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
+    expect(screen.getByRole('alert')).toHaveTextContent('The operation could not be completed');
+    const db = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+    try {
+      expect(await db.get('details', [TEST_VIEWER_ID, projectId, taskId])).toBeDefined();
+      fault.mockRestore(); fireEvent.click(retry);
+      await waitFor(async () => expect(await db.get('details', [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined());
+      await waitFor(() => expect(mounted.access().snapshot().status).toBe('unavailable'));
+    } finally { db.close(); }
+    expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
+    expect(writes).toBe(1);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+
+it('does not publish an initial settings resource or allow a save before replacement access is confirmed', async () => {
+  const old = Promise.withResolvers<Response>(), fresh = Promise.withResolvers<Response>();
+  let accessReads = 0, writes = 0;
+  const mounted = mount('settings', (url, init) => {
+    if (url === `${root}/access`) return ++accessReads === 1 ? old.promise : fresh.promise;
+    if (url === root) return json(project);
+    if (url === `${root}/settings` && init?.method === 'PATCH') { writes++; return json(project); }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    await waitFor(() => expect(accessReads).toBe(1));
+    const resume = pauseAuthRequests();
+    fireEvent(window, new Event('focus'));
+    await act(async () => old.resolve(json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'))));
+    expect(screen.queryByLabelText('Alert threshold')).toBeNull();
+    resume();
+    await waitFor(() => expect(accessReads).toBe(2));
+    expect(screen.queryByLabelText('Alert threshold')).toBeNull();
+    expect(writes).toBe(0);
+    await act(async () => fresh.resolve(json(directAccessFixture(projectId, TEST_VIEWER_ID, 'member'))));
+    const field = await screen.findByLabelText('Alert threshold');
+    expect(field).toBeDisabled(); expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
+    expect(writes).toBe(0);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });

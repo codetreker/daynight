@@ -8,7 +8,8 @@ import type { SessionState } from './state';
 import { sessionCancelGate, sessionSendGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 
-export function SessionComposer({ state, connected, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls }: {
+export function SessionComposer({ state, connected, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls }: {
+  readonly sessionNoticeOwned?: boolean; readonly statusDescriptionId?: string;
   readonly state: SessionState; readonly connected: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
   readonly draft?: SessionDraft; readonly onDraftChange?: (text: string) => void;
   readonly settingIntents?: ReadonlyMap<string, SessionSettingIntent>;
@@ -203,7 +204,8 @@ export function SessionComposer({ state, connected, authPaused = false, active =
   const cancelAllowed = cancelReady && !authPaused && !interruptRequested;
   const latest = useRef({ sendAllowed, pending, cancelAllowed, cancelling }); latest.current = { sendAllowed, pending, cancelAllowed, cancelling };
   let notice: string | null = null;
-  if (!connected || state.recoveryRequired || !snapshot?.synchronized) notice = m.synchronizing;
+  if (sessionNoticeOwned) notice = null;
+  else if (!connected || state.recoveryRequired || !snapshot?.synchronized) notice = m.sessionSynchronizing;
   else if (hasPendingControls(state)) notice = m.settingPending;
   else if (hasPendingOperation(state, 'execute_command')) notice = m.operationUnknown;
   else if (hasPendingOperation(state, 'send_message')) notice = m.operationUnknown;
@@ -308,7 +310,7 @@ export function SessionComposer({ state, connected, authPaused = false, active =
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}
     <div className="session-composer-surface">
-    <textarea ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
+    <textarea aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
       if (showCommands && matchingCommands.length && !authPaused) {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
@@ -323,7 +325,7 @@ export function SessionComposer({ state, connected, authPaused = false, active =
         <button type="button" className="session-control-trigger" aria-label={sessionNativeLabels.permissions} lang="en" data-pending={permissionPending || undefined} aria-expanded={controlView === 'permissions'} onClick={() => { setControlView(controlView === 'permissions' ? null : 'permissions'); dismissCommands(true); }}>{sessionNativeLabels.permissions}<span aria-hidden="true"> ▾</span></button>
         <button type="button" className="session-control-trigger" aria-label={m.commands} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
       </div>
-      <SessionActivity snapshot={snapshot} connected={connected} active={active} commandPending={commandPending || hasPendingOperation(state, 'execute_command')} interruptRequested={interruptRequested} interruptPending={cancelling || hasPendingOperation(state, 'cancel')} interruptAllowed={cancelAllowed} onInterrupt={() => void cancel()} />
+      <SessionActivity suppressStatus={sessionNoticeOwned} snapshot={snapshot} connected={connected} active={active} commandPending={commandPending || hasPendingOperation(state, 'execute_command')} interruptRequested={interruptRequested} interruptPending={cancelling || hasPendingOperation(state, 'cancel')} interruptAllowed={cancelAllowed} onInterrupt={() => void cancel()} />
       <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(isCommand ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>
     </div>
     {error ? <p className="session-error" role="alert">{error}</p> : null}

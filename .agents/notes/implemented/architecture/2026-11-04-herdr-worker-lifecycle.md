@@ -96,9 +96,11 @@ of detached orphans or external copies of PTY descriptors. Unknown resources and
 interrupted preparations can require operator resolution. The implementation
 does not silently adopt legacy live runs without the required evidence.
 
-Terminal cleanup releases the execution slot after confirmed stopping and ledger
-publication, but retains the worktree until archive acceptance is implemented.
-Web observation, control and archive capabilities remain false. Input arbitration
-consumes these durable owners; terminal recording and final archive cleanup must do so
-without treating segment metadata as recorded output or local stop proof as a
-final archive receipt.
+The original lifecycle delivery retained worktrees and gated combined web
+capabilities until recording and archive acceptance were available. The
+[recording and finalization decision](2026-11-04-herdr-recording-finalization.md)
+now enables those capabilities and releases execution capacity after durable
+local stop confirmation. An independent archive queue publishes the stopped
+ledger and retains resources until receipt acceptance or explicit operator
+disposition. Segment metadata is not recorded output, and a local stop proof
+is not a final archive receipt.

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { useRef } from 'react';
 import { act, fireEvent, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import type { SessionSnapshot } from '../src/api/types';
@@ -12,7 +13,7 @@ let sequence = 0;
 function fixture() {
   const snapshot: SessionSnapshot = JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8'));
   const userId = `display-user-${++sequence}`;
-  let view: SessionViewState = { historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...emptySessionState(), snapshot, entries: [
+  let view: SessionViewState = { startupReport: null, errorCode: null, environmentConnected: true, historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...emptySessionState(), snapshot, entries: [
     { entryId: 'message', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Keep this message' }] },
     { entryId: 'thought', entrySeq: '2', revision: '1', kind: 'reasoning', text: 'Private reasoning' },
   ] }, archiveState: null, settingIntents: new Map(), draft: { text: 'Keep this draft', revision: '1', submission: null }, status: 'ready', connected: true, authPaused: false, error: 'Connection diagnostic', hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
@@ -50,6 +51,28 @@ it('keeps the same view, composer and draft while fullscreen owns Escape before 
   expect(localStorage.getItem(f.key())).toBeNull();
   rendered.setLocale('zh-CN');
   expect(screen.getByRole('button', { name: '会话全屏' })).toBe(trigger);
+});
+
+it('expands the supplied conversation boundary without fixing or remounting its Session subtree', () => {
+  const f = fixture();
+  function Conversation() {
+    const boundary = useRef<HTMLDivElement>(null);
+    return <div ref={boundary} data-testid="conversation"><button>Assistant name</button>
+      <SessionView client={f.client} userId={f.userId} active current fullscreenBoundary={boundary} />
+    </div>;
+  }
+  render(<Conversation />);
+  const section = screen.getByRole('region', { name: 'Session' }), composer = screen.getByRole('textbox');
+  fireEvent.click(screen.getByRole('button', { name: 'Enter Session fullscreen' }));
+  expect(screen.getByTestId('conversation')).toHaveAttribute('data-session-fullscreen', 'true');
+  expect(section).not.toHaveClass('session-fullscreen');
+  expect(screen.getByRole('textbox')).toBe(composer);
+  act(() => screen.getByRole('button', { name: 'Assistant name' }).focus());
+  expect(screen.getByRole('button', { name: 'Assistant name' })).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Assistant name' }), { key: 'Escape' });
+  expect(screen.getByTestId('conversation')).not.toHaveAttribute('data-session-fullscreen');
+  expect(screen.getByRole('button', { name: 'Enter Session fullscreen' })).toHaveFocus();
+  expect(screen.getByRole('textbox')).toBe(composer);
 });
 
 it.each(['loading', 'not_registered', 'unavailable', 'error'] as const)('retains the same fullscreen exit through %s and recovery', status => {

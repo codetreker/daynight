@@ -9,3 +9,6 @@ export function useSessionDisplayPreference(binding: SessionDisplayBinding, pref
   const snapshot = useSyncExternalStore(preference.subscribe, preference.getSnapshot);
   return { ...snapshot, setMode: preference.setMode, retrySave: preference.retrySave };
 }
+
+/** Forget a deleted or inaccessible Session's display state, including storage failures. */
+export function clearSessionDisplayPreference(binding: SessionDisplayBinding): void { pagePreferences.remove(binding); }

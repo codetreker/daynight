@@ -5,6 +5,7 @@ import { bearerContext, type AuthenticatedAPI } from './authentication';
 import { createProject, createTask, executeTask, expect, finishTask, seedUserProfile, startTask, test } from './fixtures';
 import { closeChain, openChain } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
+import { createWireReceipts } from '../../scripts/acceptance/wire-receipts.mts';
 
 const scenario = { annotation: { type: 'scenario', description: 'task-assignment-layout' } };
 const longName = `Alexandra${'W'.repeat(70)}`;
@@ -79,26 +80,15 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
   const requests: string[][] = [];
   const payloads: { readonly userIds: readonly string[]; readonly bytes: number }[] = [];
   const payloadReads: Promise<void>[] = [];
-  type WireReceipt = { readonly path: string; validator: boolean; wireStatus: number | null; wireBytes: number | null };
-  const wire = new Map<string, WireReceipt>();
-  const validators = new Map<string, boolean>();
+  const wire = createWireReceipts(['/api/v1/me', peoplePath]);
   const network = await page.context().newCDPSession(page);
   await network.send('Network.enable');
   // Routing disables Chromium's HTTP cache, so this phase observes the real network without intercepting requests.
-  network.on('Network.requestWillBeSent', (event) => {
-    const path = new URL(event.request.url).pathname;
-    if (path === '/api/v1/me' || path === peoplePath) wire.set(event.requestId, {
-      path, validator: validators.get(event.requestId) ?? Object.keys(event.request.headers).some((name) => name.toLowerCase() === 'if-none-match'), wireStatus: null, wireBytes: null,
-    });
-  });
-  network.on('Network.requestWillBeSentExtraInfo', (event) => {
-    const validator = Object.keys(event.headers).some((name) => name.toLowerCase() === 'if-none-match');
-    validators.set(event.requestId, validator);
-    const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.validator = validator;
-  });
-  network.on('Network.responseReceivedExtraInfo', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireStatus = event.statusCode; });
-  network.on('Network.loadingFinished', (event) => { const receipt = wire.get(event.requestId); if (receipt !== undefined) receipt.wireBytes = event.encodedDataLength; });
-  const meReceipts = () => [...wire.values()].filter((receipt) => receipt.path === '/api/v1/me');
+  network.on('Network.requestWillBeSent', wire.requestWillBeSent);
+  network.on('Network.requestWillBeSentExtraInfo', wire.requestWillBeSentExtraInfo);
+  network.on('Network.responseReceivedExtraInfo', wire.responseReceivedExtraInfo);
+  network.on('Network.loadingFinished', wire.loadingFinished);
+  const meReceipts = () => wire.receipts().filter((receipt) => receipt.path === '/api/v1/me');
   const expectMe = async (index: number, status: number) => {
     await expect.poll(() => meReceipts()[index]?.wireStatus).toBe(status);
     // Session expiry aborts the active identity fetch after the 401 headers arrive.
@@ -216,12 +206,15 @@ const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: Aut
     await expect(page.getByRole('heading', { name: /^(登录你的工作空间|Sign in to your workspace)$/, exact: true })).toBeVisible();
     await expect(page.getByText(first.title, { exact: true })).toHaveCount(0);
     await Promise.all(payloadReads);
-    await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: [...wire.values()] }), contentType: 'application/json' });
   } finally {
-    page.off('request', observeRequest); page.off('response', observeResponse);
-    await page.clock.resume(); await network.detach();
-    await Promise.all(payloadReads);
-    await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+    try {
+      await info.attach('assignment-people-cache', { body: JSON.stringify({ projectId: project.id, avatarBytes: Buffer.byteLength(avatar), requests, payloads, wire: wire.receipts() }), contentType: 'application/json' });
+    } finally {
+      page.off('request', observeRequest); page.off('response', observeResponse);
+      await page.clock.resume(); await network.detach();
+      await Promise.all(payloadReads);
+      await seedUserProfile(missingProfile.id, { name: missingProfile.name, avatarUrl: missingProfile.avatarUrl });
+    }
   }
 };
 

@@ -45,7 +45,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	if len(entries) != 1 || entries[0]["type"] != "http_request" || entries[0]["route"] != "GET /{$}" || entries[0]["request_id"] != "project-test" {
 		t.Fatalf("UI must reuse exactly one request logger: %+v", entries)
 	}
-	for _, target := range []string{"/team-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/projects", "/projects?private-query=value", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
+	for _, target := range []string{"/team-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/projects", "/projects?private-query=value", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/teams/00000000-0000-4000-8000-000000000099/settings", "/teams/00000000-0000-4000-8000-000000000099/members", "/teams/invalid-private-team/members", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
 		response := projectRequest(handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("product entry did not return the production index: %d", response.Code)
@@ -73,7 +73,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 		"/unknown-private-page", "/team-invitations/child", "/team-invitations/", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
 		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
 		"/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
-		"/teams/", "/teams/id/extra", "/shared-projects/extra",
+		"/teams/", "/teams/id/extra", "/teams/id/settings/extra", "/teams/id/members/extra", "/shared-projects/extra",
 		"/api/unknown-private-route", "/api/v1/projects/id/unknown", "/assets/", "/assets/missing-private.js",
 		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
 	} {
@@ -182,6 +182,7 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 	defer server.Close()
 	for _, target := range []string{
 		"/", "/setup", "/login", "/workers", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker?private-query=value", "/projects", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/projects/00000000-0000-4000-8000-000000000099",
+		"/teams/00000000-0000-4000-8000-000000000099/members",
 		"/projects/00000000-0000-4000-8000-000000000099/members",
 		"/projects/00000000-0000-4000-8000-000000000099/settings",
 		"/projects/00000000-0000-4000-8000-000000000099/tasks/00000000-0000-4000-8000-000000000001",
@@ -339,6 +340,48 @@ func TestTestSessionListShellKeepsAPIProtected(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(target.method, target.path, nil))
 		if response.Code != target.status {
 			t.Fatal(target, response.Code)
+		}
+	}
+}
+
+func TestUIAssistantDirectLoadAndReloadKeepAPIProtected(t *testing.T) {
+	handler := uiTestHandler(t, io.Discard)
+	request := func(method, path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, path, nil))
+		return response
+	}
+	index := request(http.MethodGet, "/")
+	for _, path := range []string{"/bots", "/bots?private-query=value", "/bots/10000000-0000-0000-0000-000000000001", "/bots/invalid-private-bot"} {
+		t.Run(path, func(t *testing.T) {
+			for range 2 {
+				response := request(http.MethodGet, path)
+				if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), index.Body.Bytes()) || response.Header().Get("Content-Type") != "text/html; charset=utf-8" || response.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("assistant direct load/reload did not return production index: %d %s", response.Code, response.Body.String())
+				}
+			}
+			head := request(http.MethodHead, path)
+			if head.Code != http.StatusOK || head.Body.Len() != 0 {
+				t.Fatalf("assistant HEAD response: %d %s", head.Code, head.Body.String())
+			}
+			for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
+				response := request(method, path)
+				if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" {
+					t.Fatalf("assistant method boundary: %s %d", method, response.Code)
+				}
+			}
+		})
+	}
+	for _, path := range []string{"/bots/", "/bots-list", "/bots/id/extra", "/bots/id/assets/missing.js"} {
+		response := request(http.MethodGet, path)
+		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "<html") {
+			t.Fatalf("unknown assistant route became SPA: %s %d", path, response.Code)
+		}
+	}
+	for _, path := range []string{"/api/v1/me/bots", "/api/v1/me/bots/10000000-0000-0000-0000-000000000001"} {
+		response := request(http.MethodGet, path)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("Content-Type") != "application/json" {
+			t.Fatalf("assistant API lost authentication: %s %d", path, response.Code)
 		}
 	}
 }

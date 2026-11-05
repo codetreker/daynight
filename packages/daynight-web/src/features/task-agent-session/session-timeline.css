@@ -21,3 +21,15 @@
 
 .session-history-loading { color: #68758a; font-size: 12px; text-align: center; margin-bottom: 12px; }
 .session-history-error { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+
+.session-diagnostic { margin: 8px 12px; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.session-diagnostic-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin: 0; }
+.session-diagnostic-heading > strong { flex: none; font-size: inherit; font-weight: 600; }
+.session-diagnostic-summary { flex: 1 1 180px; min-width: 0; white-space: normal; }
+.session-diagnostic-retry { color: #68758a; }
+.session-diagnostic-error { color: #9c3d48; }
+.session-diagnostic-details { margin-top: 2px; color: #68758a; font-size: 11px; }
+.session-diagnostic-details > summary { width: fit-content; min-height: 24px; align-content: center; cursor: pointer; }
+.session-diagnostic-details > div { padding-top: 4px; }
+.session-diagnostic-details pre { max-height: 280px; max-width: 100%; margin: 6px 0 0; padding: 10px; overflow: auto; border-radius: 5px; background: #f0f2f6; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+.session-diagnostic-details > summary:focus-visible, .session-diagnostic-details pre:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }

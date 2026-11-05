@@ -1,6 +1,18 @@
-# 助手定义、Session 绑定与准入
+# 助手组合、定义与 Session 准入
 
 [需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `core.Bot`、PostgreSQL store、`service.Bots` 和 HTTP 投影负责；`sessionrelay` 在原有独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
+
+网页选择、详情与全屏组合由[助手管理页面设计](bot-management-web.md)拥有；[助手 Session 设计](bot-session-view.md)拥有共享视图绑定与缓存，不复制本文的服务端生命周期。
+
+## 产品组合
+
+Server 的正式构造入口将同一 Store、文件存储和 `sessionrelay.Service` 注入 Bot 管理与 Worker 生命周期路由。`/bots` 与 `/bots/{botId}` 同时注册为 SPA 页面入口，使直接访问和刷新能加载应用；登录配置将 `/bots` 保留为产品路由，避免自定义认证端点覆盖它。Bot 继续使用原独立 Session 的传输身份与共享 renderer，任务 Session 和独立 Test 不转换成 Bot。
+
+Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行、授权维护、恢复和删除组合为独立管理循环。它不等待项目准备，也不占用 Task coordinator 的执行槽。托管预检与当前有效的全局原生配置共同生成 `assistantHost`；旧 Worker 缺少该报告时，默认解析保留 unsupported。配置先按 Worker 自己的原生控制模式解析，助手采集器再检查 Web 参数兼容性；合法 Herdr 参数若不支持 Web，只将对应助手 Provider 报告为 `unsupported_arguments`，不能阻断普通 Task 状态报告。新配置更新报告和后续首次意图，已有配置与角色按持久身份保持冻结。退出先停止管理循环并汇总所有执行停止结果，再关闭 stores 与释放实例锁；失败不能转成成功。
+
+网页 `AuthenticatedApp` 与全局侧栏共同选择 `/bots` 或 `/bots/{id}`，复用既有身份 scope、`BotsPage`、`BotSessionHost` 和 `SessionView`。导航、关闭聊天、切换选择及详情只改变浏览器展示与连接，不进入 Worker 停止路径。三个 pane 的缓存、定向删除失效和共享阅读恢复继续由各自模块拥有。
+
+组合不增加持久格式：服务端迁移随 Go embed 发布，Worker SQLite SQL 随 CLI 包发布。验证必须覆盖真实安装 CLI 与生产 HTTP、生产 Web 页面及共享 relay，并明确受控 Provider 与真实原生执行的证据边界。整体独立验收不能由模块单测替代。组合取舍见[助手组合决策](../../.agents/notes/implemented/architecture/2026-11-05-assistant-composition.md)。
 
 ## 数据拥有者
 
@@ -68,17 +80,39 @@ Bot 生命周期验证 Worker PAT；共享 Session 继续验证 owner 的当前�
 
 HTTP DTO 将版本及创建序号编码为字符串，并投影实际关联的 sessionId/testExecutionId；尚未登记时两者为 null。删除后整体省略 `BotDefinition`，仅保留最小责任，避免单独漏删某个配置或角色字段。内部数据库对象不直接序列化为管理响应。
 
-## 删除边界
+## CLI 管理与远端观测
 
-删除事务先锁 Bot，核对 owner、原请求身份和当前版本，再存入删除责任。精确重复请求返回原结果；新的删除请求不能覆盖已有责任。达到 int64 上限时拒绝版本递增。
+Bot 命令拥有参数、业务请求身份、资源解析和显示；共享服务命令运行时拥有配置认证、请求预算、取消与输出。CLI 使用现有 `/api/v1/me/bots` 公开管理接口，不经过项目发现，不新增助手专用业务旁路。远端 Worker list/show 在命令分派时与 run、repo 和 claim 控制操作分开，不加载本地 Worker 库存或取得运行锁。
 
-当前管理接口仅支持未绑定 Session 的删除意图，两个清理阶段均保持 pending。已绑定 Session 的公开删除仍被拒绝；已有持久删除准入检查提供共享入口所需的锁序与拒绝语义，但没有承担进程停证、SQL/归档删除或 Worker 私有资料清理。完整删除须按 Bot → Session → archive metadata 顺序记录责任、冻结新读写并清理实际关联资源，不能由列表隐藏推断完成。
+创建在请求前确定 Bot UUID，只向服务端发送名字及显式覆盖；省略字段保持省略，避免客户端默认值改变创建指纹。删除在请求前确定 deletionId，并将显式观察版本作为 ifVersion 字符串发送。Bot 的 int64 字段按十进制字符串校验、传输和输出，与普通 Task 的数字版 JSON 分开处理。成功响应必须与目标资源和请求身份匹配；响应结构不完整不能当作写入已确认。创建重放可以返回原资源的删除责任；服务端拥有原 owner 与请求指纹核对，CLI 对活跃定义比较名字及覆盖项，对最小删除责任只核验其公开身份与结构。两者都检查 principal、目标 Bot ID 和显式 Worker，删除责任不因缺少已清理的定义字段而被误报为未知结果。
 
-Bot 表不保存 Task 关系，删除操作没有 Task 更新 SQL。普通目录、共享 native home、Task worktree 和其它任务均不属于定义删除的副作用。
+已派发写入的传输失败、未知服务结果或无效成功响应保留原业务 ID 和未确认结果。错误投影仅公开操作、资源和请求身份、阶段、HTTP 状态、错误码和白名单内的可操作原因；不转储传输 cause、认证配置或服务端错误正文。显式 show 读取当前资源用于核对，CLI 本身不自动重发写入、更新版本或生成替代请求。创建的业务请求 ID 是 botId，删除的是 deletionId；HTTP 关联 ID 单独保留，避免把日志关联误作幂等依据。
+
+列表按服务端不透明游标读完所有页面，检测重复游标和重复资源身份，之后才统一输出；后页失败时丢弃未完整的显示结果并保留错误。Bot 输出只包含公开 DTO，删除对象整体省略定义；删除完成取决于两个清理阶段，不能由 HTTP 200、列表隐藏或一个阶段完成推导。
+
+Worker 列表保留服务端 observedAt 与完整 items，详情保留 observedAt 与 worker。人类显示从服务端时间计算 120 秒在线阈值，库存 observed/stale/unavailable 独立显示；null 库存不转为零，资源探测错误不转为可用。assistantHost 缺失表示没有托管观测。此读取与 Worker 运行、调度及能力广告无副作用联系，普通远端查询沿用服务端 72 小时窗口。
+
+CLI 消费 [删除与清理事务](#删除与清理事务) 的真实阶段与最终 completed 结果；停证由绑定 Worker 提供，服务端拥有删除屏障与历史清理，命令自身不生成停证或清理历史。命令与错误用法见 [CLI 手册](../../packages/daynight/README.md#bot-management)，选择理由见 [CLI 观测决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-cli-observation.md)。
+
+## 删除与清理事务
+
+公开 DELETE 由同一 `sessionrelay.Service` 处理。事务先通过共享凭据行锁验证 owner PAT 或登录 Session，再锁 Bot，核对 owner、原请求身份和当前版本，再按 `bot_id` 查询并锁定所有实际关联 Session，撤销 grant/连接授权，最后存入删除责任，并在事务完成前用新的当前时间再次验证凭据。精确重放在返回原结果前也执行该检查。凭据行共享锁阻止并发撤销，但不能阻止自然过期；最终检查覆盖 Bot、Session 行锁和写入等待，失效会回滚所有删除与授权变更，提交后才清除缓存。登记、归档上传和清理都使用 Bot → Session → archive metadata 锁序；已获准上传先完成，随后删除屏障生效。删除先提交时旧上传在文件写入前被拒绝。普通 Task 的历史归档流程不改变。
+
+屏障事务单独提交，不与物理删除同生共死。提交后丢弃本实例的 live cache 和 pending content；其它实例在下一次权威读取观察 deletion 或 Session 已不存在时也丢弃对应内容。Controller 的 scope 预查询发生在共享 load 之前，因此该预查询确认 Session 不存在时也清除缓存与等待正文，覆盖只有 Poll 或 Disconnect 到达的旧连接；数据库查询失败本身不等于持久删除。异步正文返回前的二次准入阻止删除后交付迟到内容。进程缓存只服务当前连接，不能恢复持久删除记录。
+
+Worker 完成接口要求有效 PAT、owner、绑定 Worker 和原 deletionId，直接核验原 Session 的 fence、Controller 身份及停证。已连接或曾提交 source/native 身份的执行不能声明 `never_started`。成功回执的规范化 SHA-256 存在 `deletion.receiptDigest` 中，与 Worker completed 结果一起提交。该内部字段不进入管理 DTO；Session 行清理后仍能精确核对重复回执。相同 failed state/code 在验证身份后返回原结果，不推进版本；错误码改变可记录新的失败。失败回执可由有效 completed 回执推进，但 completed 不能被不同回执覆盖。
+
+服务端清理使用新事务，持有 Bot 和所有实际关联 Session 行锁。按 `bot_id` 查齐关联，而非仅相信 `bots.session_id`。逐行核对 owner、独立 scope 和 web backend，再由原 owner 与 Session 的规范化非零 UUID 构造 `sessionarchive.Namespace`，调用 `Storage.DeleteSessionArchives` 清理固定 `session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/`。清理覆盖当前目录中未提交 metadata 的孤立对象，不接受任意 bucket 或前缀；同用户、同分片下其它 Session 保留。逐级目录句柄、文件身份核对和符号链接拒绝保护其它命名空间。既有旧布局归档不转换，也不在当前命名空间的物理清理范围内；旧目录存在不阻止当前清理完成。部分删除、取消或同步失败保持错误，可按相同命名空间重试；不存在也执行目录持久化屏障。地址及清理范围见[共享归档设计](task-session-protocol.md#服务端归档布局)。
+
+SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_operations`、`session_resources`、`session_archives`、`session_recording_evidence`，最后删除 `task_sessions`。前四表没有级联，后两表没有 Session 外键，不能依赖父行删除隐式清理。完成后清空 Bot 的 Session 引用、角色、配置和名字等非责任数据，仅保留 owner/Worker、请求指纹、删除身份及两方结果。各实际阶段变化推进版本，int64 上限拒绝继续递增。
+
+文件删除无法随 SQL 回滚。文件或 SQL 失败时数据库事务回滚，独立事务记录 `server_cleanup_failed`，保留已经提交的屏障与 Worker 回执。再次清理可接受文件已不存在；不得把失败状态覆盖到并发重试已提交的 completed。提交结果未知仍按原身份查询，不把网络失败当作失败确认或新请求授权。
+
+该流程不读写 Task、用户普通目录或 native home。服务端 completed 仅与绑定 Worker 的 completed 回执共同证明可管理范围完成，不证明远端进程的独立观测或 Provider 全局历史擦除。实现取舍见[删除清理决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-history-deletion.md)。
 
 ## 扩展约束
 
-公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。未组合托管能力前不启用完整助手 UI 入口。Provider 实际启动与恢复、角色模板、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。历史清理必须扩展删除事务并保留重复请求对账能力，公开创建返回 pending 不表示完整托管功能可用。
+公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。助手导航与正式 Worker 托管在同一产品组合中启用。Worker 的[角色与 CLI 环境准备](bot-role-environment.md)提供单一版本化模板、持久角色选择和当前认证检查。Provider 实际启动与恢复、首次角色持久化与冻结接入、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
 
 默认与偏好取舍见[默认解析决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-default-resolution.md)。管理定义取舍见[管理定义决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-definition-storage.md)。
 

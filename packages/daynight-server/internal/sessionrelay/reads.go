@@ -32,6 +32,14 @@ func decodeCursor(value string, v sp.Snapshot, kind string) (position, error) {
 	return p, nil
 }
 func (s *Service) Current(ctx context.Context, p core.Principal, project, taskID string) (map[string]any, error) {
+	return s.current(ctx, p, project, taskID, false)
+}
+
+func (s *Service) CurrentWithStartup(ctx context.Context, p core.Principal, project, taskID string) (map[string]any, error) {
+	return s.current(ctx, p, project, taskID, true)
+}
+
+func (s *Service) current(ctx context.Context, p core.Principal, project, taskID string, includeStartup bool) (map[string]any, error) {
 	var out map[string]any
 	err := s.transact(ctx, func(tx pgx.Tx) error {
 		t, err := lockTask(ctx, tx, project, taskID)
@@ -68,6 +76,13 @@ func (s *Service) Current(ctx context.Context, p core.Principal, project, taskID
 			return err
 		}
 		out = map[string]any{"status": "registered", "session": permissions(r, (admin || r.Owner == p.UserID) && active(t, r), s.now())}
+		if includeStartup {
+			out["startupReport"] = nil
+			report := t.StartupReport
+			if report != nil && report.SessionID == r.Snapshot.SessionID && report.ClaimID == r.Snapshot.ClaimID && report.ExecutionGeneration == r.Snapshot.ExecutionGeneration && report.ControllerInstanceID == r.Snapshot.Identity.ControllerInstanceID {
+				out["startupReport"] = report
+			}
+		}
 		return nil
 	})
 	return out, err

@@ -1,7 +1,7 @@
 # daynight-web
 
 The React/TypeScript Web app provides a public product introduction and a private
-workspace. The workspace implements project browsing, account-owned Worker
+workspace. The workspace implements Team creation and settings, project browsing, account-owned Worker
 observations and cloud configuration, cursor pagination, request cancellation,
 runtime API decoding, native browser routing and a pure dependency graph model
 with horizontal layout. Project task views use an IndexedDB summary cache and the
@@ -30,7 +30,7 @@ projects, member and invitation management, CLI device authorization, and person
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
 shows the public introduction, `/setup` selects the zero-API guide, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
-the project index. Business APIs require a browser session or PAT; project
+the project index; `/teams/{teamId}/settings` opens Team settings. Business APIs require a browser session or PAT; project
 resources also require current membership, while Worker resources belong to the
 current account and filter their saved task observations by current project access. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
@@ -39,6 +39,27 @@ The [Web workspace decision](../../.agents/notes/implemented/feature/2026-10-22-
 owns the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 owns production composition and credential-private acceptance.
+
+## Assistants
+
+The authenticated sidebar opens `/bots`; `/bots/{id}` selects a conversation in
+the same management page. Name-only creation uses server-resolved defaults and
+folds optional Worker, ordinary-directory and Agent choices into advanced
+settings. Unsupported, offline or stale Workers retain their actual reasons.
+
+`BotsPage` uses the shared Session View and a bounded cache for stable switching,
+independent drafts and reading positions. The current name opens details without
+rebuilding the conversation; narrow layouts and full screen share the existing
+focus rules. Closing a view does not stop its Worker-owned Agent. List deletion
+uses authoritative cleanup stages and invalidates only the target's known
+conversation state; an old Test URL cannot bypass deletion.
+
+The [management requirements](../../docs/spec/bot-management-web.md) and
+[Session design](../../docs/design/bot-session-view.md) own behavior and identity
+boundaries. Production-page acceptance uses real management HTTP and the shared
+relay; controlled transport evidence does not prove live Provider execution.
+Existing standalone Test sessions remain separate. Webhook/MCP configuration is
+not available.
 
 ## Public product entry
 
@@ -106,28 +127,43 @@ their secret/code context through login and account switching; ordinary logout
 returns to the public homepage only after confirmed success. Failed logout stays
 visible and retryable. Both
 complete catalogs provide its `messages.auth` domain, including accessible names,
-validation, notices and already displayed errors. Login, workspace, invitation, device authorization
-and management dialogs expose the shared language selector; native formatters
+validation, notices and already displayed errors. Login, workspace, invitation and device authorization
+pages expose the shared language selector. Shared management and project creation dialogs inherit the
+current language without their own selector or preference notice; native formatters
 render dates and counts. Language changes retain form inputs, dialog and
 one-time secrets, identity and pending requests without restarting operations.
 It composes the project list, graph, shared task-detail surfaces and My Workers
 list/detail with private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` provides peer My projects and My Workers entries in its
-scrollable upper region. Accessible projects appear as indented links below My
-projects. The project index selects My projects; project, member and settings
-routes select the corresponding project. Both Worker routes select My Workers. Links preserve native
+`WorkspaceSidebar` provides a Team selector, the selected Team's project links,
+Shared with me and My Workers in its scrollable upper region. On a fresh
+workspace entry, the account-scoped Team preference restores independently of
+the current project or global page. Explicit Team routes use their URL's Team;
+ordinary in-page navigation keeps the current choice, including a failed save.
+Returning to `/projects` rereads the saved preference. Standalone task and
+attachment pages defer restoration until the workspace appears. Team-dependent
+links and its project directory wait for a verified selection, while the page's
+own resource and the shared-project directory can load independently. Restoration
+failures expose a workspace retry without replacing the saved choice. Only a
+verified missing Team clears that choice and restores Personal. The
+[browser Team preference decision](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)
+owns storage, identity and recovery behavior. Shared projects stay outside the
+Team's indented list. Project, member and settings routes select
+the corresponding project; both Worker routes select My Workers. Links preserve native
 modified clicks, expose full names through accessible text and titles, and
 truncate long visible names. Project children appear in expanded desktop and
 mobile navigation and are hidden in the folded rail. Initial loading, empty and
 failed reads have localized feedback and retry; Load more traverses subsequent
 pages without removing earlier links on failure.
 
-The existing `/account` entry and sidebar toggle stay in the footer. Desktop widths are
-190px expanded and 68px collapsed. The footer stays reachable on long pages and
-short viewports; icon entries retain accessible names, hover titles and selected
-route styling. The topbar account link keeps its name and behavior.
+The sidebar toggle stays in the footer. Desktop widths are 190px expanded and
+68px collapsed. The footer stays reachable on long pages and short viewports;
+icon entries retain accessible names, hover titles and selected route styling.
+The topbar avatar opens an account menu whose Account settings item navigates to
+`/account`. The localized trigger exposes its expanded state; keyboard access,
+outside-click and Escape dismissal, focus restoration after Escape, and route
+change dismissal keep the menu usable across desktop and narrow viewports.
 
 `useSidebarPreference` saves only a JSON boolean under the origin-local
 `daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
@@ -141,15 +177,16 @@ open state is temporary and never overwrites the desktop choice. The overlay
 contains keyboard focus, isolates the background and shares the reference-counted
 body scroll lock with the graph and task detail. Escape and backdrop dismissal
 restore the opener; route changes use the existing content focus behavior.
-Route changes, the desktop breakpoint, identity verification, blocking recovery
+Route changes, the desktop breakpoint, identity loss, blocking recovery
 and unmount close the overlay and release its own isolation and lock. Normal
-identity verification continues to preserve the content's existing interaction
-policy. Sidebar changes preserve the mounted project, cache, detail and graph
+identity verification keeps the overlay open with its focus containment and
+scroll lock; blocking recovery releases it before the recovery dialog takes focus.
+Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
 [sidebar preference decision](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
 owns these state boundaries; the
-[account navigation decision](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
-owns bottom placement. Cross-tab live updates and server or cross-device
+[account menu decision](../../.agents/notes/implemented/feature/2026-11-04-topbar-account-menu.md)
+owns account entry placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
 Task details expose the versioned automatic-execution permission: one bilingual
@@ -195,10 +232,15 @@ logout and anonymous state dispose it so old results cannot reach a new identity
 and unmount user-owned content; a project 404 stays a resource error. Returning
 from a hidden or unfocused top-level page checks `/me` in the background while
 keeping the workspace visible and interactive. Pending verification preserves
-focus, dialogs, drafts, scroll and embedded documents. Each new qualifying return
+focus, dialogs, the narrow navigation overlay, drafts, scroll and embedded
+documents throughout the wait and recovery reads. Display retention does not
+grant request, publication or mutation permission. Each new qualifying return
 aborts and replaces pending verification, so earlier responses cannot overwrite
 the latest identity decision. A failed check retains state behind the blocking
-retry overlay until a successful check; the same user keeps their forms and view,
+retry overlay until a successful check. The native modal inherits the current language,
+contains no language selector or preference feedback, and cannot be dismissed with
+Escape; recovery attempts to restore focus if the original element remains connected.
+The same user keeps their forms and view,
 while a changed user remounts user-owned content. Previously loaded content stays
 visible until identity loss, a different identity or a verification error is
 confirmed. Leaving the top-level page pauses new API reads and writes before
@@ -213,6 +255,17 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
+Team settings, members and invitations retain loaded content, drafts and open
+confirmations during ordinary identity checks. Same-account recovery rereads them
+in the background; writes require fresh Team, membership and invitation admission.
+A changed selected member role or version invalidates its confirmation. Project
+settings, membership and transfer results retain their original scope and wait for
+admission before publication. Current access is rechecked where required; a
+confirmed settings write awaiting access is reread without replaying it.
+Confirmed one-time invitation receipts remain bound to the original identity and
+available until closed even if resource access changes. Invitation directories
+and new management operations still require current authorization. Actual failures
+and access loss retain their existing handling.
 A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 records this presentation policy. Ordinary same-origin
 iframe focus changes do not count as top-level returns. Requests
@@ -283,7 +336,9 @@ The list uses only the actual summary: machine name, platform, last report time,
 task observation state and currently visible task count. It does not infer an OS
 release or load every detail. `null` task count means information unavailable;
 observed zero means idle. Stale task information retains its observation time.
-The complete collection groups online Workers first while preserving the
+The last report label and localized absolute date and time share one line; the
+time uses the browser time zone and includes seconds. The complete collection
+groups online Workers first while preserving the
 service’s creation-time and Worker ID order within each group. Heartbeats do not
 change that relative order.
 
@@ -403,6 +458,23 @@ collection, reporting and version age. The
 own target/application semantics and form ownership. Component or controlled-browser results
 prove their stated frontend scope; combined Server, CLI and Web acceptance must
 separately establish real reporting, resources, permissions and recovery.
+
+## Project ownership transfer
+
+Project settings show the current owner and offer transfer only to a freshly
+verified owner Team admin. The dialog accepts a Team selected from the paged
+membership list, a UUID, or a same-origin Team page URL. Preview displays the
+target and predicted access before confirmation. The request binds the observed
+ownership and target versions and the authenticated user; conflicts require a
+new preview and confirmation. Direct grants and invitations remain intact.
+
+A validated receipt determines success. Retained access is installed in the
+Project access session; loss of access revokes the matching Task cache generation
+and clears open private views. The source Team is checked by ID for navigation:
+a confirmed 404 goes to Personal, while network errors preserve the success
+notice and offer a retry. A lost response remains unknown, even if a later read
+returns 404; checking current state never replays the transfer. See the
+[transfer decision](../../.agents/notes/implemented/feature/2026-11-05-web-project-transfer.md).
 
 ## Project execution-warning settings
 
@@ -694,7 +766,7 @@ index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
-## Steps reading, status and position
+## Steps reading and writing
 
 Task details always expose Steps after Overview, in both the dialog and standalone
 page. `tab=steps` preserves the tab through direct access, reload and browser
@@ -728,7 +800,17 @@ readback keeps the submission gate closed. Position controls move up, down, to
 either end or relative to a selected Step. The picker filters the complete
 collection by name or ID, mounts at most 100 candidates and retains selection
 across filtering and pages. Confirmed moves locate the actual page and preserve
-expansion and focus by ID. Other Steps write controls are not exposed. At heights up to 500px, a single scrollable tab row reserves
+expansion and focus by ID. The add form appends or inserts before or after a
+selected Step, using the same bounded picker and preserving its anchor by ID.
+A missing anchor or a changed creation time leaves the draft intact and requires
+a new position decision.
+The shared owner validates the complete response, and an unknown result retains
+the original ID for read-only reconciliation. Confirmed additions locate and
+focus the new row. Existing Steps can be edited in the same draft workspace;
+identity and creation time prevent an old draft from updating a replacement.
+Deletion requires confirmation and preserves unrelated Steps and references; a
+deleted edited item requires an explicit draft decision. At heights up to 500px,
+a single scrollable tab row reserves
 reading space; the tab owner reveals its target after focus, selection styling
 and locale updates. At heights up to 600px, pagination scrolls with the list so
 its controls cannot cover the remaining reading area. The [resource requirements](../../docs/spec/daynight-task-steps.md#web-阅读)
@@ -737,7 +819,7 @@ own the complete resource lifecycle and the remaining write architecture.
 
 ## Session display
 
-Task, Test and readable archived Sessions share the Display menu beside Refresh.
+Native timeline Task, Test and readable archived Sessions share the Display menu beside Refresh.
 Conversation is the default and keeps messages, plans, interactions and real
 errors; Standard preserves the complete activity view. The authenticated account
 and verified Session ID select a shared page preference, persisted independently
@@ -748,6 +830,25 @@ entries and reading intent without replaying operations or altering pagination.
 The [requirements](../../docs/spec/task-sessions.md#session-显示模式) own the
 display rules; the [Session design](../../docs/design/task-session-protocol.md#session-显示菜单与入口绑定)
 owns identity binding, menu behavior and preference integration.
+
+## Herdr Sessions and recordings
+
+The task Session host keeps the native Web timeline and dispatches Herdr executions
+to a read-only terminal preview with explicit control acquisition. Hidden terminal
+views close their viewer channel and release the browser lease; Worker recording
+continues independently. Controls become available only after Worker confirmation.
+Unknown initial submission disposition and resuming automatic input require
+separate decisions. Unknown manual input is never automatically resent.
+
+The Session selector and the managed Session recordings section in the attachment
+sidebar open fixed original executions in the shared reading area. These entries
+have no attachment mutation actions. Ordinary file previews and upload drafts
+retain their state while a recording is selected.
+Verified complete frames support direct seeking, stepping and playback; partial
+recordings remain labeled and playback stops at every gap until the reader
+explicitly continues. Archive reading establishes no control connection.
+The [Herdr Session Web design](../../docs/design/herdr-session-web.md) owns
+identity, verification, control and playback behavior.
 
 ## Task discussions
 
@@ -872,8 +973,9 @@ sets HTML `lang` and the route-appropriate introduction, guide or authentication
 loading title before React renders.
 The public page, guide and `AuthenticatedApp` update their document metadata on
 navigation and language changes; the public introduction also updates description
-and share copy. The top bar and graph-dialog header
-expose selectors in both dialog modes using the same saved language. Task details consume the current
+and share copy. The top bar exposes the shared selector; the graph dialog has no
+local selector or preference feedback in either mode and consumes the current
+application locale. Task details consume the current
 application locale through the same Provider; their header contains the task
 title with an adjacent copy icon, fullscreen toggle, More task actions menu and
 close control. Status and assignee share the state-row control group before platform selection. The `…` menu sits immediately left of Close and contains Open in new tab
@@ -1484,7 +1586,7 @@ target or edit the relative path, and upload. Activating the disclosure again
 collapses it while retaining the file, path and validation state. Tab round trips
 retain its expansion; a new project/task starts collapsed. MIME is selected
 from the target path with `mime` 4.1.1. Uploading the same path overwrites that file. Each preview offers Download,
-a neighboring Open in new tab link with an external-link icon. Each left-side file row has a right-side `…` menu. Choose Delete to open a full-path confirmation, then explicitly confirm to submit the single-file request. Cancel is initially focused; menu and confirmation Escape close only their own layer. Pending confirmation blocks duplicate/conflicting writes, while failures remain visible with deliberate retry or cancellation. The confirmation includes the current language selector. Hidden tabs dismiss unsubmitted deletion UI. Successful writes refresh only attachment data.
+a neighboring Open in new tab link with an external-link icon. Each left-side file row has a right-side `…` menu. Choose Delete to open a full-path confirmation, then explicitly confirm to submit the single-file request. Cancel is initially focused; menu and confirmation Escape close only their own layer. Pending confirmation blocks duplicate/conflicting writes, while failures remain visible with deliberate retry or cancellation. The confirmation uses the current locale without its own language selector or preference feedback; existing page controls and feedback remain in their existing locations. Hidden tabs dismiss unsubmitted deletion UI. Successful writes refresh only attachment data.
 They do not change the task version, timestamp or graph snapshot.
 
 The attachment hook owns list, write, selection and preview state for one
@@ -1662,7 +1764,8 @@ or publication fails the build; a failed swap attempts to restore previous asset
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean server builds require this explicit build first. The Go
-`scripts/check.sh` invokes the same command before build/vet/race/go-cov.
+`scripts/check.sh` invokes the same command before build, vet and go-cov; Go race
+instrumentation follows the [server validation policy](../daynight-server/README.md#race-instrumentation).
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
@@ -1697,6 +1800,15 @@ tests/navigation/playwright.config.ts` after installing Chromium. Browser CI
 shard 2 runs all 28 cases before its full-stack acceptance. Its results and failure captures
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
+
+The Bot viewport suite runs the production application, Session host and timeline
+against controlled HTTP and Session API responses. It checks long-history
+scrolling, bounded pagination, visible input and retained reading positions at
+desktop and 390px widths. Run `pnpm --filter @codetreker/daynight-web exec playwright
+test --config tests/navigation/bots-viewport-playwright.config.ts`. Browser CI
+shard 2 also runs this suite; captures are stored in
+`packages/daynight-web/.tmp/acceptance/bots-viewport/`. These fixtures do not
+establish native Worker or Provider behavior.
 
 The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
 fails independently of display rounding. Pure-type declarations contribute zero
@@ -1733,7 +1845,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-36 scenarios, divided into two disjoint sets of 18. Default file-level partitioning
+39 scenarios, divided into disjoint sets of 20 and 19. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -1805,7 +1917,7 @@ fault testing and controlled fixtures each retain their own evidence scope.
 
 ## Production browser acceptance
 
-On a Linux or macOS host, with Go 1.27.2, Docker Engine 28+, Compose 2.20+ and Linux
+On a Linux or macOS host, with Go 1.27.2, Docker Engine 28+, Compose 2.20.2+ and Linux
 containers available, run from the repository root to install the pinned browser
 into the project:
 
@@ -1829,16 +1941,20 @@ rejects a stress selection in CI. Both local modes retain combined authenticatio
 exact source/browser identity and full cleanup; CI runs the two combined journeys
 on shard 2 while every shard performs its owned cleanup.
 
-Selected functional journeys inject shorter named polling intervals before page
-initialization: task synchronization and current-Session summary refreshes still
-use the real service, HTTP responses and normal state publication. The shared
+Selected functional journeys, including assignment reconciliation, inject shorter
+named polling intervals before page initialization: task synchronization and
+current-Session summary refreshes still use the real service, HTTP responses and
+normal state publication. The shared
 polling module keeps the production defaults of fifteen and five seconds;
 unit tests verify those defaults and the shorter schedules. Browser tests change
 only their owned polling periods, preserving request deadlines, freshness,
 execution clocks and real warning-threshold crossing. Cases with controlled
 browser clocks and local capacity measurements retain their own timing setup.
 The [polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)
-owns this separation and its validation limits.
+owns this separation and its validation limits. The isolated dev-ci stack probes
+startup readiness every 250ms while preserving its normal health cadence and real
+readiness gates; the [startup probe decision](../../.agents/notes/implemented/testing/2026-11-04-dev-ci-startup-probes.md)
+owns that deployment timing.
 
 Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
 its normal runtime libraries on Linux; CI installs them with Playwright's
@@ -1906,8 +2022,9 @@ except for one exact registered fixture-file PUT in `refresh-staleness`, which
 holds its upload response across automatic reads to verify retained pending work.
 `task-attachments` and
 `language-state-preservation` allow exact fixture-scoped PUT/DELETE file routes;
-the latter holds each upload, overwrite and deletion while changing language to
-verify one write and retained state. `task-description-markdown` and the other
+the latter checks state preservation during language changes at operable entries
+and separately holds upload, overwrite and deletion to verify pending state and
+write counts. Component tests control locale changes during pending operations. `task-description-markdown` and the other
 language scenarios remain GET/HEAD-only in the browser; fixture writes use the
 installed CLI or authenticated API request context. The three task-status scenarios
 and `task-status-transitions` separately admit only registered project/task PUT status requests with exact expected
@@ -1927,7 +2044,14 @@ loss and GET-only recovery with preserved task materials. The
 `task-assignment-layout` journey covers bilingual 1366px/390px/320px layouts,
 long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
 members, read-only browsing, local filters and complete progress with hidden
-siblings.
+siblings. It also checks persisted changed-or-missing profile reads and real
+current-account HTTP validation without routing that would disable Chromium's
+cache. Its request-ID collector joins independently ordered CDP lifecycle and
+extra-information events before checking the original 200/304/401 wire status,
+outgoing validator and encoded transfer bytes. Missing observations remain
+pending, and the profile/cache attachment records collected receipts on success
+and failure. The [wire receipt decision](../../.agents/notes/implemented/testing/2026-11-05-cdp-wire-receipts.md)
+owns the ordering constraint and regression coverage.
 
 The `task-pause` journey verifies pause discovery in the project overview,
 standalone and chain lists, dependency graph and common detail heading. It admits
@@ -2113,8 +2237,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (72 ordinary cases; local stress adds five native cases
-for 41 native / 36 container, 77 total), current manual/periodic refresh,
+The selected inventory (78 ordinary cases; local stress adds five native cases
+for 44 native / 39 container, 83 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2153,7 +2277,8 @@ the remaining functional scenarios.
 | W11 | Strict raw Go/V8 coverage reports, validated functional browser receipts and the final `checks` result; explicit local stress mode additionally validates complete performance receipts |
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
-| Steps append | `task-step-add`: real-service append and CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
+| Steps add | `task-step-add`: real-service append and relative insertion with CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
+| Steps delete | `task-step-delete`: real-service removal, draft consequences, pagination focus, reference preservation, missing targets and unknown-result readback, bilingual desktop and narrow keyboard behavior |
 | Steps status | `task-step-status`, `task-step-access-retirement`: real-service status transitions, conflict, committed response loss and failed readback, malformed success, child 404 and parent deletion, late dialog receipt, bilingual desktop and narrow keyboard menus |
 | Steps position | `task-step-position`: real-service ordered moves, bounded search and paging, no-op, invalid anchor and self-reference, conflict and lost response, focus, bilingual narrow and touch controls |
 | W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
@@ -2165,8 +2290,8 @@ the remaining functional scenarios.
 | TI8–TI9, TI15 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; TD/LR/Chinese flowcharts, independent failures/source, static image safety, content switches and standalone reload share the three Markdown entries; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
 | TP-V1, TP-V7, TP-V8 | `detail-navigation`, `refresh-staleness`, `keyboard-focus`, `narrow-layout`: real API round trips for empty/NUL/control/long/HTML-looking values and duplicates, complete locally paged lists with bounded row counts, page/collection reset and focus, plain-text unsafe addresses, isolated HTTP(S) navigation, rereading properties and compact graph responses |
 | L1–L4 | `language-startup-preferences`: browser default, saved override, reload, route metadata, shared selectors and unchanged user data |
-| L2, L4–L5 | `language-state-preservation`: graph geometry/viewport, fullscreen and modal focus, PR page, file input and iframe identity; pending upload, overwrite and deletion execute once |
-| L3–L4, L6–L8 | `language-errors-and-narrow`: storage failures/retry, owned-database failure with current-language safe text and unchanged request ID, English/Chinese 1440px/320px graph/dialog/attachment layout |
+| L2, L4–L5 | `language-state-preservation`: graph geometry/viewport and selection across fullscreen changes, fullscreen and modal focus, and PR page, file input and iframe identity across detail tab switches; separately held upload, overwrite and deletion retain pending state and execute once. Component tests cover controlled locale changes in mounted graphs and during pending operations |
+| L3–L4, L6–L8 | `language-errors-and-narrow`: storage failures/retry, owned-database failure with current-language safe text and unchanged request ID, English/Chinese 1440px/320px graph/dialog/attachment layout; graph modes have no local language entry or gap and retain accessible long titles and controls |
 | L9–L10 | Task-attached offline mockup checks, typed catalog/component checks, and complete native/container production receipts with the existing coverage and cleanup gates |
 | Authentication | `auth-login-session`, `auth-project-isolation`, `auth-project-members`, `auth-personal-tokens`, `auth-invitations`, `auth-resource-session`: normal login/logout, private project access, roles and removal, PAT creation/revocation, explicit invitation acceptance, protected files and resource-session loss |
 

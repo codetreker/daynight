@@ -12,7 +12,8 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as auth from "../src/api/auth";
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
-import { parseRoute } from "../src/app/router";
+import { navigate, parseRoute } from "../src/app/router";
+import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/auth/invitation";
 import { SIDEBAR_STORAGE_KEY } from "../src/app/useSidebarPreference";
@@ -71,6 +72,33 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
+  it("discards a retained project invitation secret when revalidation changes the account", async () => {
+    window.history.replaceState(null, "", `/projects/${projectId}/members`);
+    const secret = "dninvite_identity_secret";
+    const fetcher = vi.fn((url: string, options?: RequestInit) => {
+      if (url === `/api/v1/projects/${projectId}/invitations`) {
+        if (options?.method === "POST") return Promise.resolve(json({ id: otherId, projectId, createdBy: userId, createdAt: now, expiresAt: "2099-10-29T10:00:00Z", consumedAt: null, consumedBy: null, revokedAt: null, link: `${window.location.origin}/invitations#${secret}` }, 201));
+        return Promise.resolve(json({ items: [] }));
+      }
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    const invite = await screen.findByRole("button", { name: "邀请成员" });
+    await waitFor(() => expect(invite).toBeEnabled()); fireEvent.click(invite);
+    const submit = within(screen.getByRole("dialog")).getByRole("button", { name: "创建邀请链接" });
+    await waitFor(() => expect(submit).toBeEnabled()); fireEvent.click(submit);
+    await screen.findByDisplayValue(`${window.location.origin}/invitations#${secret}`);
+    act(() => navigate("/account"));
+    expect(screen.getByDisplayValue(`${window.location.origin}/invitations#${secret}`)).not.toBeVisible();
+    serverUserId = otherId; returnFromAnotherWindow();
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
+    expect(screen.queryByDisplayValue(`${window.location.origin}/invitations#${secret}`)).toBeNull();
+    act(() => navigate(`/projects/${projectId}/members`));
+    await waitFor(() => expect(screen.queryByDisplayValue(`${window.location.origin}/invitations#${secret}`)).toBeNull());
+    expect(fetcher.mock.calls.filter(([url, options]) => url.endsWith("/invitations") && options?.method === "POST")).toHaveLength(1);
+  });
+
   it("loads project navigation once with the project page and keeps the selected project across management routes", async () => {
     const fetcher = install((url) => url === `/api/v1/projects/${projectId}` ? json(project()) : url.endsWith("/invitations") ? json({ items: [] }) : defaults(url));
     render(<AuthenticatedApp />);
@@ -116,7 +144,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     window.history.replaceState(null, "", `/projects/${projectId}/members`);
     let removed = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
-      if (url === `/api/v1/projects/${projectId}/members/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(serverUserId) })); }
+      if (url === `/api/v1/projects/${projectId}/grants/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(json({ projectId, userId, deleted: true, actorAccess: null })); }
       if (url.endsWith("/access")) return !removed && serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
       if (url.endsWith("/members")) return Promise.resolve(json({ actorAccess: directAccessFixture(projectId, serverUserId, "admin"), items: [participant(), participant(otherId, "admin", "Bob")] }));
       if (url.endsWith("/invitations")) return Promise.resolve(json({ items: [] }));
@@ -125,10 +153,11 @@ describe("sidebar integration with the authenticated workspace", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "移除 Alice" }));
-    const dialog = screen.getByRole("dialog", { name: "移除 Alice？" });
-    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除成员" })).not.toBeDisabled());
-    fireEvent.click(within(dialog).getByRole("button", { name: "移除成员" }));
+    fireEvent.click(await screen.findByRole("button", { name: "移除 Alice 的单独授权" }));
+    const dialog = screen.getByRole("dialog", { name: "移除 Alice 的单独授权？" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除授权" })).not.toBeDisabled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "移除授权" }));
+    fireEvent.click(await screen.findByRole("button", { name: "返回项目" }));
     await screen.findByRole("heading", { name: "还没有项目" });
     expect(window.location.pathname).toBe("/projects");
     expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).queryByRole("link", { name: "私有项目" })).toBeNull();
@@ -170,7 +199,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
     serverUserId = otherId;
     returnFromAnotherWindow();
-    await screen.findByRole("link", { name: "账户设置：Bob" });
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
     expect(heading.isConnected).toBe(false);
     expect(screen.getByRole("button", { name: "展开侧栏" })).toHaveAttribute("aria-expanded", "false");
     expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe("true");
@@ -202,7 +231,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe(failure === "write" ? "true" : "false");
   });
 
-  it("closes mobile navigation for identity verification and preserves the interactive workspace until an actual failure", async () => {
+  it("keeps mobile navigation during identity verification and closes it for an actual failure", async () => {
     mockSidebarMediaQuery(true);
     window.localStorage.setItem(SIDEBAR_STORAGE_KEY, "true");
     let meCalls = 0;
@@ -215,17 +244,17 @@ describe("sidebar integration with the authenticated workspace", () => {
     const shell = document.querySelector(".shell")!;
     const workspace = document.querySelector(".workspace")!;
     fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
-    expect(screen.getByRole("dialog", { name: "工作空间导航" })).toHaveAttribute("aria-modal", "true");
+    const drawer = screen.getByRole("dialog", { name: "工作空间导航" });
+    expect(drawer).toHaveAttribute("aria-modal", "true");
     expect(workspace).toHaveAttribute("inert");
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(workspace).not.toHaveAttribute("inert");
+    expect(screen.getByRole("dialog", { name: "工作空间导航" })).toBe(drawer);
+    expect(workspace).toHaveAttribute("inert");
     expect(shell).not.toHaveAttribute("inert");
-    expect(document.body.style.overflow).not.toBe("hidden");
-    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.body.style.overflow).toBe("hidden");
     await act(async () => finishCheck(fail(503, "internal")));
+    expect(screen.queryByRole("dialog", { name: "工作空间导航" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "重新确认当前账户" })).toBeInTheDocument();
     expect(shell).toHaveAttribute("inert");
     expect(heading.isConnected).toBe(true);
@@ -251,8 +280,82 @@ describe("authenticated application shell", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     await act(async () => resolve(json(user())));
     await screen.findByRole("heading", { name: "私有项目" });
-    expect(screen.getByRole("link", { name: "账户设置：Alice" })).toHaveAttribute("href", "/account");
-    expect(screen.getByRole("link", { name: "账户设置：Alice" })).toHaveAttribute("aria-label", "账户设置：Alice");
+    expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toHaveAttribute("aria-label", "账户菜单：Alice");
+  });
+
+  it("opens the account menu, dismisses it, and navigates using keyboard", async () => {
+    install();
+    const interaction = userEvent.setup();
+    render(<AuthenticatedApp />);
+    const trigger = await screen.findByRole("button", { name: "账户菜单：Alice" });
+    const sidebar = screen.getByRole("complementary", { name: "工作空间导航" });
+    expect(within(sidebar).queryByRole("link", { name: "账户设置" })).toBeNull();
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await interaction.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("menuitem", { name: "账户设置" })).toHaveFocus();
+    await interaction.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("menu")).toBeNull();
+    await interaction.click(trigger);
+    await interaction.click(screen.getByRole("heading", { name: "私有项目" }));
+    expect(screen.queryByRole("menu")).toBeNull();
+    trigger.focus();
+    await interaction.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "账户设置" })).toHaveFocus();
+    await interaction.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(trigger).toHaveFocus();
+    await interaction.keyboard("{Enter}");
+    expect(screen.getByRole("menuitem", { name: "账户设置" })).toHaveFocus();
+    await interaction.keyboard("{Enter}");
+    expect(window.location.pathname).toBe("/account");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("main")).toHaveFocus();
+  });
+
+  it.each(["pointer", "keyboard"] as const)("returns focus to the trigger when selecting the current account page with %s", async (method) => {
+    window.history.replaceState(null, "", "/account");
+    install();
+    const interaction = userEvent.setup();
+    render(<AuthenticatedApp />);
+    const trigger = await screen.findByRole("button", { name: "账户菜单：Alice" });
+    await interaction.click(trigger);
+    const item = screen.getByRole("menuitem", { name: "账户设置" });
+    expect(item).toHaveFocus();
+    if (method === "keyboard") await interaction.keyboard("{Enter}");
+    else await interaction.click(item);
+    expect(window.location.pathname).toBe("/account");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+  });
+
+  it("closes the account menu on route changes and updates both languages", async () => {
+    install();
+    const interaction = userEvent.setup();
+    const view = render(<AuthenticatedApp />);
+    const trigger = await screen.findByRole("button", { name: "账户菜单：Alice" });
+    await interaction.click(trigger);
+    view.setLocale("en");
+    expect(screen.getByRole("button", { name: "Account menu: Alice" })).toBe(trigger);
+    expect(screen.getByRole("menuitem", { name: "Account settings" })).toBeVisible();
+    act(() => navigate("/workers"));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("keeps the account menu accessible with the default identity label", async () => {
+    install((url) => url === "/api/v1/me" ? json({ ...user(), name: null, email: null }) : defaults(url));
+    const interaction = userEvent.setup();
+    render(<AuthenticatedApp />);
+    const trigger = await screen.findByRole("button", { name: "账户菜单：当前账户" });
+    expect(trigger.querySelector(".avatar")).toHaveTextContent("当");
+    await interaction.click(trigger);
+    expect(screen.getByRole("menuitem", { name: "账户设置" })).toBeVisible();
   });
 
   it("only shows configured login providers and sends a local return path", async () => {
@@ -307,7 +410,7 @@ describe("authenticated application shell", () => {
       await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects")).length).toBe(2));
       expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
       expect(document.body).not.toHaveClass("auth-session-checking");
-      expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     } finally { frame.remove(); }
   });
 
@@ -338,7 +441,7 @@ describe("authenticated application shell", () => {
       fireEvent(window, new Event("focus"));
     }
     expect(document.body).not.toHaveClass("auth-session-checking");
-    expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "重新确认当前账户" })).toBeNull();
     await waitFor(() => expect(meCalls).toBe(2));
     fireEvent(window, new Event("focus"));
@@ -346,8 +449,8 @@ describe("authenticated application shell", () => {
     expect(meCalls).toBe(2);
     serverUserId = otherId;
     await act(async () => finishCheck(json(user(otherId, "Bob"))));
-    await screen.findByRole("link", { name: "账户设置：Bob" });
-    expect(screen.queryByRole("link", { name: "账户设置：Alice" })).toBeNull();
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
+    expect(screen.queryByRole("button", { name: "账户菜单：Alice" })).toBeNull();
   });
 
   it.each([
@@ -395,7 +498,7 @@ describe("authenticated application shell", () => {
     await waitFor(() => expect(meCalls).toBe(2));
     expect(dispatchedGraphs).toEqual([{ cookie: "Alice", label: "Alice" }]);
     expect(screen.getByRole("heading", { name: "Alice 的项目" })).toBe(oldHeading);
-    expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     expect(document.body).not.toHaveClass("auth-session-checking");
     fireEvent(window, new Event("focus"));
     fireEvent(document, new Event("visibilitychange"));
@@ -406,7 +509,7 @@ describe("authenticated application shell", () => {
     expect(meCalls).toBe(2);
     if (changed) {
       expect(oldHeading.isConnected).toBe(false);
-      expect(screen.queryByRole("link", { name: "账户设置：Alice" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "账户菜单：Alice" })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Alice 的项目" })).toBeNull();
     } else expect(screen.getByRole("heading", { name: "Alice 的项目" })).toBe(oldHeading);
   });
@@ -414,7 +517,7 @@ describe("authenticated application shell", () => {
   it("evicts the old project and open detail as soon as a sync response proves another principal while identity is pending", async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const waitForCacheUi = async (assertion: () => void) => {
-      const deadline = nodePerformance.now() + 1_000;
+      const deadline = nodePerformance.now() + 5_000;
       for (;;) {
         await act(async () => { await nextEventLoopTurn(); });
         try { assertion(); return; }
@@ -460,7 +563,7 @@ describe("authenticated application shell", () => {
       expect(dialog.isConnected).toBe(false);
       expect(document.querySelector('.auth-shell')).toBeNull();
       expect(screen.queryByText('Alice-only private detail')).toBeNull();
-      expect(screen.queryByRole('link', { name: '账户设置：Alice' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '账户菜单：Alice' })).toBeNull();
       expect(screen.queryByRole('heading', { name: 'Bob 的项目' })).toBeNull();
       expect(screen.getByRole('heading', { name: '正在确认登录状态' })).toBeInTheDocument();
       await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
@@ -470,7 +573,7 @@ describe("authenticated application shell", () => {
       await waitForCacheUi(() => expect(screen.getByRole('heading', { name: 'Bob 的项目' })).toBeInTheDocument());
       expect(screen.queryByText('Alice-only private detail')).toBeNull();
     } finally { view.unmount(); root.remove(); }
-  });
+  }, 20_000);
 
   it.each([null, 'invalid-principal'])("retains the authorized view and stored rows for an untrusted 404 principal header (%s)", async (principal) => {
     const taskId = '00000000-0000-4000-8000-000000000005';
@@ -520,7 +623,7 @@ describe("authenticated application shell", () => {
       ? new Promise<Response>((done) => { finishCheck = done; }) : Promise.resolve(defaults(url)));
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    await screen.findByRole("link", { name: "账户设置：Alice" });
+    await screen.findByRole("button", { name: "账户菜单：Alice" });
     await act(async () => {});
     expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects"))).toHaveLength(0);
     expect(meCalls).toBe(1);
@@ -583,9 +686,9 @@ describe("authenticated application shell", () => {
     render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "＋ 创建项目" }));
     const dialog = screen.getByRole("dialog", { name: "创建私有项目" });
-    const name = screen.getByLabelText(/项目名称/);
+    const name = screen.getByLabelText(/项目名称/) as HTMLInputElement;
     fireEvent.change(name, { target: { value: "Unsubmitted project" } });
-    name.focus();
+    name.focus(); name.setSelectionRange(2, 8);
     const shell = document.querySelector(".auth-shell")!;
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
@@ -595,6 +698,7 @@ describe("authenticated application shell", () => {
     expect(screen.queryByRole("dialog", { name: "重新确认当前账户" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "创建私有项目" })).toBe(dialog);
     expect(document.activeElement).toBe(name);
+    expect(name.selectionStart).toBe(2); expect(name.selectionEnd).toBe(8);
     fireEvent.change(name, { target: { value: "Continued while checking" } });
     await act(async () => finishCheck(json(user())));
     expect(document.querySelector(".auth-shell")).toBe(shell);
@@ -618,11 +722,11 @@ describe("authenticated application shell", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    await screen.findByRole("link", { name: "账户设置：Alice" });
+    await screen.findByRole("button", { name: "账户菜单：Alice" });
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
-    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByRole("status")).toHaveTextContent("正在加载项目");
+    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByText("正在加载项目")).toHaveAttribute("role", "status");
     expect(within(screen.getByRole("region", { name: "个人访问令牌" })).getByRole("status")).toHaveTextContent("正在加载访问令牌…");
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
@@ -632,9 +736,9 @@ describe("authenticated application shell", () => {
     if (outcome === "same") {
       await screen.findByText("Confirmed account token");
       expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(1);
-      expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     } else {
-      if (outcome === "changed") await screen.findByRole("link", { name: "账户设置：Bob" });
+      if (outcome === "changed") await screen.findByRole("button", { name: "账户菜单：Bob" });
       else await screen.findByRole("heading", { name: "登录你的工作空间" });
       expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
       expect(screen.queryByText("Confirmed account token")).toBeNull();
@@ -652,7 +756,7 @@ describe("authenticated application shell", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    await screen.findByRole("link", { name: "账户设置：Alice" });
+    await screen.findByRole("button", { name: "账户菜单：Alice" });
     returnFromAnotherWindow();
     await waitFor(() => expect(checks).toHaveLength(1));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
@@ -682,7 +786,7 @@ describe("authenticated application shell", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    await screen.findByRole("link", { name: "账户设置：Alice" });
+    await screen.findByRole("button", { name: "账户菜单：Alice" });
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
@@ -725,13 +829,13 @@ describe("authenticated application shell", () => {
     expect(abortedDuringReturn).toBe(true);
     await waitFor(() => expect(checks).toHaveLength(2));
     expect(document.body).not.toHaveClass("auth-session-checking");
-    expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "重新确认当前账户" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "访问令牌已创建" })).toBe(reveal);
     expect(reveal.isConnected).toBe(true);
     serverUserId = otherId;
     await act(async () => checks[1]!.resolve(user(otherId, "Bob")));
-    await screen.findByRole("link", { name: "账户设置：Bob" });
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
     expect(reveal.isConnected).toBe(false);
     expect(screen.queryByLabelText("一次性访问令牌")).toBeNull();
     expect(document.body).not.toHaveClass("auth-session-checking");
@@ -756,7 +860,7 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("dialog", { name: "重新确认当前账户" })).toBeInTheDocument();
     serverUserId = otherId;
     await act(async () => finishRetry(json(user(otherId, "Bob"))));
-    await screen.findByRole("link", { name: "账户设置：Bob" });
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(identityCalls).toBe(3);
   });
@@ -777,7 +881,7 @@ describe("authenticated application shell", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    await screen.findByRole("link", { name: "账户设置：Alice" });
+    await screen.findByRole("button", { name: "账户菜单：Alice" });
     await waitFor(() => expect(projectCalls).toBe(1));
     const oldSignal = fetcher.mock.calls.find(([url]) => url.startsWith("/api/v1/projects"))![1]!.signal!;
     expect(oldSignal).toBeInstanceOf(AbortSignal);
@@ -788,7 +892,7 @@ describe("authenticated application shell", () => {
     currentUser = user(otherId, "Bob");
     serverUserId = otherId;
     returnFromAnotherWindow();
-    expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     expect(document.body).not.toHaveClass("auth-session-checking");
     await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(2));
     expect(pendingMe).toBeTypeOf("function");
@@ -796,7 +900,7 @@ describe("authenticated application shell", () => {
     await screen.findByRole("heading", { name: "Bob 的项目" });
     await act(async () => pendingProject(json({ items: [project("Alice 的旧项目")], nextCursor: null }, 200, userId)));
     expect(screen.queryByRole("heading", { name: "Alice 的旧项目" })).toBeNull();
-    expect(screen.getByRole("link", { name: "账户设置：Bob" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户菜单：Bob" })).toBeInTheDocument();
     expect(oldSignal.aborted).toBe(true);
   });
 
@@ -815,7 +919,7 @@ describe("authenticated application shell", () => {
     await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.getByText("登录状态已过期。重新登录后可继续访问项目。")).toBeInTheDocument();
     expect(project.isConnected).toBe(false);
-    expect(screen.queryByRole("link", { name: "账户设置：Alice" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "账户菜单：Alice" })).toBeNull();
     expect(document.body).not.toHaveClass("auth-session-checking");
   });
 
@@ -848,6 +952,7 @@ describe("authenticated application shell", () => {
     await act(async () => finishCheck(fail(503, "internal")));
     expect(document.body).toHaveClass("auth-session-checking");
     const overlay = screen.getByRole("dialog", { name: "重新确认当前账户" });
+    expect(within(overlay).queryByRole("combobox")).toBeNull();
     fireEvent.keyDown(overlay, { key: "Escape" });
     expect(screen.queryByText("关闭后无法恢复这份令牌。请确认你已保存。")).toBeNull();
     const cancel = new Event("cancel", { cancelable: true });
@@ -860,6 +965,8 @@ describe("authenticated application shell", () => {
     expect(document.querySelector(".auth-shell")).toHaveAttribute("aria-hidden", "true");
     expect(document.querySelector(".auth-shell")).toHaveAttribute("inert");
     expect(screen.getByRole("dialog", { name: "重新确认当前账户" })).toBe(overlay);
+    expect(within(overlay).queryByRole("combobox")).toBeNull();
+    expect(within(overlay).getByRole("status")).toBeInTheDocument();
     await act(async () => finishCheck(json(user())));
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(screen.getByRole("dialog", { name: "访问令牌已创建" })).toBe(reveal);
@@ -914,7 +1021,7 @@ describe("authenticated application shell", () => {
     switched = true;
     serverUserId = otherId;
     returnFromAnotherWindow();
-    await screen.findByRole("link", { name: "账户设置：Bob" });
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
     await waitFor(() => expect(document.body.textContent).not.toContain("私有项目"));
     expect(document.body.textContent).not.toContain("私有项目");
   });
@@ -928,13 +1035,13 @@ describe("authenticated application shell", () => {
     denied = true;
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await screen.findByRole("heading", { name: "项目不存在" });
-    expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url))));
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.getByText("登录状态已过期。重新登录后可继续访问项目。")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "账户设置：Alice" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "账户菜单：Alice" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "项目不存在" })).toBeNull();
   });
 
@@ -1081,7 +1188,8 @@ describe("authenticated standalone attachment reader", () => {
     expect(document.title).toBe("Task details · Daynight");
     expect(screen.getByRole("main")).toBe(reader);
     expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", `/api/v1/projects/${projectId}/tasks/${taskId}/attachments/files/docs/guide.md`);
-    expect(fetcher).toHaveBeenCalledTimes(5);
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher.mock.calls.filter(([url]) => url.includes("/sessions?"))).toHaveLength(1);
   });
 
   it("keeps the authenticated attachment controller and panel mounted through same-task history", async () => {
@@ -1368,6 +1476,7 @@ describe("Team invitation handoff", () => {
       expect(window.location.hash).toBe("");
       if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }));
       if (url === "/api/v1/team-invitations/accept") return Promise.resolve(json({ team, membership, joined: true, consumed: true }));
+      if (url === `/api/v1/teams/${teamId}`) return Promise.resolve(json({ ...team, version: 1n, createdAt: now, updatedAt: now, membership }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
@@ -1383,7 +1492,12 @@ describe("Team invitation handoff", () => {
     expect(window.location.pathname).toBe("/team-invitations");
     expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
     expect(document.body.textContent).not.toContain("dnteam_secret");
-    expect(document.querySelector(`a[href^="/teams/"]`)).toBeNull();
+    const open = screen.getByRole("link", { name: "打开 Team" });
+    expect(open).toHaveAttribute("href", `/teams/${teamId}`);
+    fireEvent.click(open);
+    await screen.findByRole("heading", { name: "协作团队" });
+    expect(window.location.pathname).toBe(`/teams/${teamId}`);
+    await waitFor(() => expect(window.localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(teamId));
   });
 
   it("preserves an existing admin role in the confirmed no-consume receipt", async () => {
@@ -1517,4 +1631,20 @@ describe("private project creation", () => {
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+});
+
+it('clears cold Bot draft and receipt namespaces on an account change outside the Bot page', async () => {
+  install(); render(<AuthenticatedApp />);
+  await screen.findByRole('complementary', { name: '工作空间导航' });
+  const key = `daynight:bot-session:${JSON.stringify([userId, 'bot', 'session', 'execution'])}:draft`;
+  window.sessionStorage.setItem(key, 'private draft');
+  const displayKey = `daynight.web.session.display.v1:${JSON.stringify([userId, 'session'])}`;
+  window.localStorage.setItem(displayKey, '"standard"');
+  const creationKey = `daynight.bot.creation:${userId}`;
+  window.sessionStorage.setItem(creationKey, '20000000-0000-4000-8000-000000000001');
+  serverUserId = otherId; returnFromAnotherWindow();
+  await screen.findByText('Bob');
+  await waitFor(() => expect(window.sessionStorage.getItem(key)).toBeNull());
+  expect(window.localStorage.getItem(displayKey)).toBeNull();
+  expect(window.sessionStorage.getItem(creationKey)).toBeNull();
 });

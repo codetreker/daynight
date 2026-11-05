@@ -28,15 +28,18 @@ provides the authenticated branch under that same Provider. The
 adds the public introduction and reactive branch selection; all page owners update
 document metadata on language or route changes.
 Navigation focus remains dependent on the route, so changing a language does
-not refocus the page. The original integration placed the shared selector in the
+not refocus the page. The [global language-entry decision](../simplification/2026-11-05-global-language-entry.md)
+partially supersedes the original placement policy while retaining the language
+runtime and state guarantees. The original integration placed the shared selector in the
 navigation bar, task details and fullscreen graph so modal users could change
 language while the underlying application was inert. The
 [compact-header decision](../simplification/2026-10-24-compact-task-detail-header.md)
 removes the duplicate task-detail selector; details consume the same current
-application locale through the persistent Provider. Navigation and graph-dialog
-headers expose `LanguageSelector` in normal and fullscreen modes; the
-[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) preserves that
-access while the page is inert. The
+application locale through the persistent Provider. The original graph-dialog
+header also exposed `LanguageSelector` in both modes while the page was inert.
+The [graph language entrance decision](../simplification/2026-11-05-graph-language-entry.md)
+removes that duplicate while preserving the graph subscription. Navigation keeps
+its selector. The
 [standalone complete details](../architecture/2026-10-24-standalone-task-detail.md)
 use that same Provider and selector outside the workspace shell, with its own
 localized route title and ordinary browser keyboard behavior.

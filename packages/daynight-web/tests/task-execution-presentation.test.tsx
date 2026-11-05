@@ -28,7 +28,7 @@ const graph: TaskGraphData = {
 const index = buildGraphIndex(graph);
 const snapshot = (elapsedMilliseconds: number, warningMinutes = 60): GraphSnapshot => ({
   graph: { ...graph, project: { ...graph.project, settings: { version: 1n, executionWarningMinutes: warningMinutes } } },
-  index, pausedTaskIds: new Set<string>(), observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
+  index, workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: new Date(Date.parse(start) + elapsedMilliseconds).toISOString(), receivedAt: 0, receivedMonotonic: 0, revision: 1,
 });
 const noop = () => {};
 const canvas = (value: GraphSnapshot) => <TaskExecutionClockProvider projectId="project" snapshot={value}>

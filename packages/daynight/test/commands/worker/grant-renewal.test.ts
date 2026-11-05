@@ -1,6 +1,8 @@
 import * as timers from "node:timers/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { maintainWorkerControllerGrants } from "../../../src/commands/worker/backends/grant-renewal.js";
+import { controllerCredentialNeedsRefresh, maintainControllerGrants, maintainWorkerControllerGrants } from "../../../src/commands/worker/backends/grant-renewal.js";
 import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 
@@ -94,4 +96,54 @@ it("cancels the native timer before the renewal task finishes", async () => {
   f.cancellation.abort();
   await running;
   expect(f.refreshGrant).toHaveBeenCalledOnce();
+});
+
+
+it("isolates grant failures by execution while healthy executions continue each cycle", async () => {
+  const f = fixture(), refreshed: string[] = [], diagnostics: string[] = [];
+  const running = maintainControllerGrants({
+    list: () => ["broken", "healthy"], key: execution => execution, signal: f.cancellation.signal,
+    refresh: async execution => { if (execution === "broken") throw new Error("denied"); refreshed.push(execution); },
+    onError: message => { diagnostics.push(message); },
+  });
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(refreshed).toEqual(["healthy", "healthy", "healthy"]); expect(diagnostics).toEqual(["denied"]);
+  f.cancellation.abort(); await running;
+});
+
+it("requires a readable valid credential and renews at the two-minute boundary", async () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/grant-renewal"); await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(path.join(base, "h-")), file = path.join(directory, "credential.json");
+  try {
+    await expect(controllerCredentialNeedsRefresh(file, 0)).rejects.toThrow("unavailable");
+    await writeFile(file, JSON.stringify({ expiresAt: "invalid" }));
+    await expect(controllerCredentialNeedsRefresh(file, 0)).rejects.toThrow("invalid");
+    await writeFile(file, JSON.stringify({ expiresAt: new Date(120_001).toISOString() }));
+    expect(await controllerCredentialNeedsRefresh(file, 0)).toBe(false);
+    expect(await controllerCredentialNeedsRefresh(file, 1)).toBe(true);
+    expect(await controllerCredentialNeedsRefresh(file, 120_002)).toBe(true);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+it("keeps each healthy execution on its cadence while one renewal remains in flight, then joins on cancellation", async () => {
+  const f = fixture(), renewed: string[] = [];
+  let release!: () => void;
+  const slow = new Promise<void>(resolve => { release = resolve; });
+  const running = maintainControllerGrants({
+    list: () => ["slow", "healthy"], key: execution => execution, signal: f.cancellation.signal,
+    refresh: async execution => { renewed.push(execution); if (execution === "slow") await slow; },
+    onError: f.onError,
+  });
+  let finished = false;
+  void running.then(() => { finished = true; });
+  try {
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(renewed.filter(key => key === "slow")).toHaveLength(1);
+    expect(renewed.filter(key => key === "healthy")).toHaveLength(4);
+    f.cancellation.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(finished).toBe(false);
+  } finally { f.cancellation.abort(); release(); await running; }
+  expect(finished).toBe(true);
+  expect(renewed.filter(key => key === "slow")).toHaveLength(1);
 });

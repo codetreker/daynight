@@ -1,0 +1,169 @@
+import { expect, test, type Page, type Route } from '@playwright/test';
+
+const userId = '00000000-0000-4000-8000-000000000001';
+const personalId = '00000000-0000-4000-8000-000000000011';
+const teamId = '00000000-0000-4000-8000-000000000021';
+const time = '2026-10-20T09:00:00Z';
+const key = `daynight.selectedTeam:${userId}`;
+const personal = { id: personalId, kind: 'personal', name: null };
+const profile = { id: userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
+const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
+type State = { name: string; version: number; exists: boolean; refusal: string | null; lost: boolean; holdRead?: { started: () => void; wait: Promise<void> }; writes: { method: string; body: Record<string, unknown> }[] };
+const install = async (page: Page): Promise<State> => {
+  const state: State = { name: 'Alpha', version: 1, exists: true, refusal: null, lost: false, writes: [] };
+  const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : state.name, version: state.version, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
+  await page.route('**/api/v1/**', async (route: Route) => {
+    const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
+    const headers = { 'Daynight-User-ID': userId };
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ json: body, status, headers: { ...headers, ...extra } });
+    if (path === '/api/v1/me') return send(profile);
+    if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === '/api/v1/teams' && method === 'GET') return send({ items: state.exists ? [team(teamId)] : [], nextCursor: null });
+    if ((path === '/api/v1/teams' && method === 'POST') || (path === `/api/v1/teams/${teamId}` && (method === 'PATCH' || method === 'DELETE'))) {
+      const body = request.postDataJSON() as Record<string, unknown>; state.writes.push({ method, body });
+      if (state.refusal) return send(error(state.refusal), 409);
+      if (method === 'POST') { state.exists = true; state.name = String(body.name); state.version = 1; }
+      if (method === 'PATCH') { state.name = String(body.name); state.version++; }
+      if (method === 'DELETE') state.exists = false;
+      if (state.lost) return route.abort('failed');
+      if (method === 'DELETE') return send({ teamId, deleted: true });
+      return send(team(teamId), method === 'POST' ? 201 : 200, method === 'POST' ? { Location: `/api/v1/teams/${teamId}` } : {});
+    }
+    if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
+    if (path === `/api/v1/teams/${teamId}`) {
+      const hold = state.holdRead; delete state.holdRead;
+      if (hold) { hold.started(); await hold.wait; }
+      return state.exists ? send(team(teamId)) : send(error('not_found'), 404);
+    }
+    return send(error('not_found'), 404);
+  });
+  return state;
+};
+const selected = (page: Page) => page.evaluate((k) => localStorage.getItem(k), key);
+const openCreate = async (page: Page) => { await page.locator('details.team-selector summary').click(); await page.getByRole('button', { name: 'Create Team', exact: true }).click(); };
+const settings = async (page: Page) => { await page.getByRole('link', { name: 'Team settings' }).click(); await expect(page.getByRole('heading', { name: 'Team settings' })).toBeVisible(); };
+
+test('creates, renames and typed-deletes a Team, preserving raw input and browser preference', async ({ page }) => {
+  const api = await install(page); api.exists = false;
+  await page.goto('/projects'); await openCreate(page);
+  const create = page.getByRole('dialog');
+  await create.getByLabel('Team name').fill('  Alpha\nTeam  ');
+  await create.getByRole('button', { name: 'Create Team' }).click();
+  await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha Team' })).toBeVisible();
+  await expect.poll(() => selected(page)).toBe(teamId);
+  expect(api.writes[0]).toEqual({ method: 'POST', body: { name: '  Alpha\nTeam  ', expectedUserId: userId } });
+  await settings(page);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('dialog').getByLabel('Team name').fill('  Renamed\nTeam  ');
+  await page.getByRole('dialog').getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  expect(api.writes[1]).toEqual({ method: 'PATCH', body: { name: '  Renamed\nTeam  ', version: 1, expectedUserId: userId } });
+  await page.getByRole('button', { name: 'Delete Team' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Enter the Team name to confirm').fill('wrong');
+  await dialog.getByRole('button', { name: 'Delete Team' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('does not match');
+  expect(api.writes).toHaveLength(2);
+  await dialog.getByLabel('Enter the Team name to confirm').fill('  Renamed\nTeam  ');
+  await dialog.getByRole('button', { name: 'Delete Team' }).click();
+  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  await expect.poll(() => selected(page)).toBe(personalId);
+  expect(api.writes[2]).toEqual({ method: 'DELETE', body: { name: '  Renamed\nTeam  ', version: 2, expectedUserId: userId } });
+});
+
+test('cancel and Escape submit nothing; dialogs retain focus on narrow screens in both languages', async ({ page }) => {
+  const api = await install(page); await page.goto('/projects');
+  await openCreate(page); const dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Team name')).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
+  await openCreate(page); await dialog.getByRole('button', { name: 'Cancel' }).click(); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+  const toggle = page.getByRole('button', { name: /展开侧栏/ });
+  await toggle.click(); await page.locator('details.team-selector summary').click(); await page.getByRole('button', { name: '创建 Team', exact: true }).click();
+  await expect(dialog.getByLabel('Team 名称')).toBeFocused();
+  await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+  await expect(dialog.getByRole('heading', { name: '创建 Team' })).toBeVisible();
+  await expect(dialog.getByLabel('Team 名称')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
+});
+
+test('rename dialog restores focus, discards drafts and fits long text in both languages', async ({ page }) => {
+  const api = await install(page); api.name = 'A'.repeat(300);
+  await page.setViewportSize({ width: 375, height: 667 }); await page.goto(`/teams/${teamId}/settings`);
+  const edit = page.getByRole('button', { name: 'Edit', exact: true }); await expect(edit).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await edit.click(); const dialog = page.getByRole('dialog'), name = dialog.getByLabel('Team name');
+  await expect(name).toBeFocused(); await name.fill('Draft');
+  await page.keyboard.press('Shift+Tab'); expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(edit).toBeFocused();
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+  await page.getByRole('button', { name: '修改', exact: true }).click();
+  await expect(dialog.getByLabel('Team 名称')).toHaveValue('A'.repeat(300));
+  await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await dialog.getByRole('button', { name: '取消' }).click(); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
+});
+
+test('nonempty refusal and lost response remain distinct, with no automatic replay', async ({ page }) => {
+  const api = await install(page); await page.goto(`/teams/${teamId}/settings`);
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  api.refusal = 'team_not_empty';
+  await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha'); await dialog.getByRole('button', { name: 'Delete Team' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('still has projects'); expect(api.writes).toHaveLength(1);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  api.refusal = null; api.lost = true;
+  await page.getByRole('button', { name: 'Delete Team' }).click();
+  await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha'); await dialog.getByRole('button', { name: 'Delete Team' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('result is unknown');
+  await dialog.getByRole('button', { name: 'Check current state' }).click();
+  await expect(dialog.getByText('This Team is unavailable or you do not have access.')).toBeVisible();
+  await expect(dialog.getByRole('alert').first()).toContainText('result is unknown');
+  expect(api.writes).toHaveLength(2); await expect(dialog.getByRole('button', { name: 'Delete Team' })).toHaveCount(0);
+});
+
+
+test('Personal settings remain read-only, and a version conflict requires a fresh typed name', async ({ page }) => {
+  const api = await install(page);
+  await page.goto(`/teams/${personalId}/settings`);
+  await expect(page.getByRole('main').getByText('Personal', { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete Team' })).toBeDisabled();
+  expect(api.writes).toHaveLength(0);
+  await page.goto(`/teams/${teamId}/settings`);
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha');
+  api.name = 'New name'; api.version = 2; api.refusal = 'version_conflict';
+  await dialog.getByRole('button', { name: 'Delete Team' }).click();
+  await expect(dialog.getByText('New name')).toBeVisible();
+  await expect(dialog.getByLabel('Enter the Team name to confirm')).toHaveValue('');
+  expect(api.writes).toHaveLength(1);
+  api.refusal = null;
+  await dialog.getByLabel('Enter the Team name to confirm').fill('New name');
+  await dialog.getByRole('button', { name: 'Delete Team' }).click();
+  await expect(page.getByRole('main').getByRole('heading', { name: 'Personal', exact: true })).toBeVisible();
+  expect(api.writes[1]).toEqual({ method: 'DELETE', body: { name: 'New name', version: 2, expectedUserId: userId } });
+});
+
+
+test('Escape restores focus after the delete dialog waits for a fresh Team read', async ({ page }) => {
+  const api = await install(page); await page.goto(`/teams/${teamId}/settings`);
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  api.holdRead = { started: started.resolve, wait: finish.promise };
+  const opener = page.getByRole('button', { name: 'Delete Team' });
+  await opener.click(); await started.promise;
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  finish.resolve();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByLabel('Enter the Team name to confirm')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  expect(api.writes).toHaveLength(0);
+});

@@ -31,6 +31,51 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
+  it('uses saved field values for feedback without rewriting formatted input or inventing application', async () => {
+    const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: { args: ['--project'] } }] };
+    let resource = observed('1', value, [...globals(value), item({ kind: 'projectPreparation', projectId: workerId(3) }, true), item({ kind: 'projectNative', projectId: workerId(3) }, { ...value.native, args: ['--project'] })]);
+    install((_url, init) => {
+      if (init.method === 'PUT') resource = { ...resource, desired: { revision: '2', updatedAt: WORKER_TIME, value: (JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }).value } };
+      return configurationResponse(resource);
+    }, [project(3)]);
+    mount(); await flush();
+    const row = screen.getByRole('heading', { name: 'Project 3' }).closest('article')!;
+    fireEvent.click(within(row).getByText(/Agent settings/));
+    change('Concurrent task limit', '004');
+    change('Startup arguments', '[\n  "--foo"\n]');
+    change('Project 3 · Custom arguments', '[ "--new" ]');
+    const args = input('Startup arguments'); args.focus(); args.setSelectionRange(2, 6);
+    save(); await flush();
+    const nativeFeedback = document.querySelector<HTMLElement>('.native-summary .application-feedback')!;
+    const projectFeedback = within(row).getByText('Project Agent').closest<HTMLElement>('.application-feedback')!;
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(nativeFeedback).getByText('Awaiting application')).toBeInTheDocument();
+    expect(within(projectFeedback).getByText('Awaiting application')).toBeInTheDocument();
+    expect(args).toHaveValue('[\n  "--foo"\n]'); expect(args).toHaveFocus(); expect(args.selectionStart).toBe(2); expect(args.selectionEnd).toBe(6);
+    expect(input()).toHaveValue('004'); expect(input('Project 3 · Custom arguments')).toHaveValue('[ "--new" ]');
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    const saved = resource.desired!.value;
+    resource = observed('2', saved, [...globals(saved, '2'), item({ kind: 'projectPreparation', projectId: workerId(3) }, true, '2'), item({ kind: 'projectNative', projectId: workerId(3) }, { ...saved.native, args: ['--new'] }, '2')], '2');
+    await advance();
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Applied')).toBeInTheDocument();
+    expect(within(nativeFeedback).getByText('Applied')).toBeInTheDocument(); expect(within(projectFeedback).getByText('Applied')).toBeInTheDocument();
+    change('Concurrent task limit', '-');
+    expect(within(document.getElementById('feedback-maxConcurrent')!).getByText('Unsaved')).toBeInTheDocument();
+    expect(within(nativeFeedback).getByText('Applied')).toBeInTheDocument(); expect(within(projectFeedback).getByText('Applied')).toBeInTheDocument();
+  });
+  it('retains edits made while a formatted submission is in flight', async () => {
+    const response = deferred<Response>(); let submitted: WorkerConfigurationValue | null = null;
+    install((_url, init) => {
+      if (init.method === 'PUT') { submitted = (JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }).value; return response.promise; }
+      return configurationResponse(configurationResource());
+    });
+    mount(); await flush(); change('Startup arguments', '[ "--foo" ]'); save(); await flush();
+    change('Startup arguments', '[ "--bar" ]'); const args = input('Startup arguments'); args.focus(); args.setSelectionRange(3, 5);
+    response.resolve(configurationResponse(configurationResource('2', submitted!))); await flush();
+    expect(args).toHaveValue('[ "--bar" ]'); expect(args).toHaveFocus(); expect(args.selectionStart).toBe(3); expect(args.selectionEnd).toBe(5);
+    expect(within(document.querySelector<HTMLElement>('.native-summary')!).getByText('Unsaved')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  });
   it('saves a target without presenting the old actual value as applied', async () => {
     let resource = observed('1', configurationValue(), globals(configurationValue()));
     const writes: unknown[] = [];
@@ -168,11 +213,18 @@ describe('Worker configuration form', () => {
       if (init?.method === 'PUT') resource = configurationResource('2', (JSON.parse(String(init.body)) as { value: WorkerConfigurationValue }).value);
       return configurationResponse(resource);
     }, [project(3)]);
-    mount({ tasks: [task] }); await flush(); fireEvent.click(screen.getByRole('button', { name: 'Remove project Project 3' }));
+    const view = mount({ tasks: [task] }); await flush(); fireEvent.click(screen.getByRole('button', { name: 'Remove project Project 3' }));
     const opener = screen.getByRole('button', { name: 'Save configuration' }); opener.focus(); fireEvent.click(opener);
     let dialog = screen.getByRole('dialog', { name: 'Save configuration and stop execution?' });
     expect(within(dialog).getByRole('link', { name: 'Snapshot task' }).getAttribute('href')).toContain(`/projects/${task.projectId}/tasks/${task.taskId}`);
     expect(within(dialog).getByText(/Task status, claims, worktrees and history remain for manual handling/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole('combobox', { name: '语言 / Language' })).toBeNull();
+    const requests = fetch.mock.calls.length;
+    view.setLocale('zh-CN');
+    expect(screen.getByRole('dialog', { name: '保存配置并停止执行？' })).toBe(dialog);
+    expect(within(dialog).getByRole('link', { name: 'Snapshot task' }).getAttribute('href')).toContain(`/projects/${task.projectId}/tasks/${task.taskId}`);
+    expect(fetch).toHaveBeenCalledTimes(requests);
+    view.setLocale('en');
     fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.queryByRole('dialog')).toBeNull(); expect(opener).toHaveFocus(); expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
     fireEvent.click(opener); dialog = screen.getByRole('dialog'); fireEvent.click(within(dialog).getByRole('button', { name: 'Save configuration' })); await flush();
     expect(resource.desired!.value.projects).toEqual([]); expect(task.status).toBe('in_progress'); expect(task.claimId).toBe(workerDetail().worker.tasks[0]!.claimId);

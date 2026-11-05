@@ -35,8 +35,11 @@ The confirmation owns keyboard events before the outer detail listener. This pre
 focus ownership without a second global overlay coordinator. The confirmation reuses
 `dialogFocusables` to wrap boundary Tab/Shift+Tab explicitly, including pending
 focus on the dialog root; native modal behavior alone can move focus to browser
-UI between the last and first page controls. Current-layer Escape closes only that layer. Confirmation provides its own language selector
-so a pending operation stays accessible while its labels change.
+UI between the last and first page controls. Current-layer Escape closes only that
+layer. The original confirmation included a language selector so a pending
+operation stayed accessible while labels changed. The
+[language-entry decision](../simplification/2026-11-05-attachment-confirmation-language-entry.md)
+removes that copy while preserving shared-locale updates and modal interaction.
 
 Pending confirmation keeps its captured target, shows progress, and blocks
 duplicate or conflicting writes until the request settles. Failure exposes the
