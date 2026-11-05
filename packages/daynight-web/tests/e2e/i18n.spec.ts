@@ -207,7 +207,7 @@ test.describe('Web language journeys', () => {
     const inputElement = await fileInput.elementHandle();
     if (frameElement === null || inputElement === null) throw new Error('Attachment elements are absent.');
     // A permission read after preview focus can await cache admission after HTTP completion.
-    // Settle readiness around the controlled focus observation before measuring locale-only requests.
+    // Settle readiness around the controlled focus observation before measuring tab-switch requests.
     const projectSettingsLink = page.locator(`.project-title-actions a[href="/projects/${project.id}/settings"]`);
     await expect(projectSettingsLink).toHaveCount(1);
     const accessUrl = new URL(`/api/v1/projects/${project.id}/access`, baseURL).href;
