@@ -2,10 +2,12 @@ package server
 
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
@@ -51,7 +53,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(dependencies.Store), auth, logger)
 	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(dependencies.Store), auth, logger)
 	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
-	attachmentRoutes(mux, service.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
+	attachmenthttp.RegisterRoutes(mux, attachmentservice.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
 	relay := newSessionRoutes(sessionrelay.New(dependencies.Store, dependencies.Files), auth, logger)
 	botsRoutes(mux, service.NewBots(dependencies.Store), relay.service, auth, logger)
 	relay.register(mux)
@@ -62,7 +64,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmentPathGuard(mux, logger), relay: relay}, nil
+	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay}, nil
 }
 
 func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger) {

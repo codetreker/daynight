@@ -1,6 +1,7 @@
-package service
+package attachment
 
 import (
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
@@ -86,7 +87,7 @@ func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
 	if zero.SizeBytes != 0 {
 		t.Fatalf("empty size: %d", zero.SizeBytes)
 	}
-	if _, err := files.Put(ctx, attachmentBucket, attachmentTestStoragePath(task, first.Path), strings.NewReader("different physical length")); err != nil {
+	if _, err := files.Put(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, first.Path), strings.NewReader("different physical length")); err != nil {
 		t.Fatal(err)
 	}
 	metadata, object, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, first.Path)
@@ -207,16 +208,16 @@ func TestAttachmentPaginationAndCursorScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var valid attachmentCursor
+	var valid testAttachmentCursor
 	if err := json.Unmarshal(data, &valid); err != nil {
 		t.Fatal(err)
 	}
 	invalid := []string{"", "not-base64", base64.RawURLEncoding.EncodeToString([]byte("{")), base64.RawURLEncoding.EncodeToString(append(data, []byte(" true")...)),
 		base64.RawURLEncoding.EncodeToString([]byte(strings.Replace(string(data), `"version":1`, `"unknown":1,"version":1`, 1)))}
-	for _, change := range []func(*attachmentCursor){
-		func(c *attachmentCursor) { c.Version = 2 }, func(c *attachmentCursor) { c.Kind = "tasks" },
-		func(c *attachmentCursor) { c.ProjectID = other.ID }, func(c *attachmentCursor) { c.TaskID = other.ID },
-		func(c *attachmentCursor) { c.Path = "../bad" },
+	for _, change := range []func(*testAttachmentCursor){
+		func(c *testAttachmentCursor) { c.Version = 2 }, func(c *testAttachmentCursor) { c.Kind = "tasks" },
+		func(c *testAttachmentCursor) { c.ProjectID = other.ID }, func(c *testAttachmentCursor) { c.TaskID = other.ID },
+		func(c *testAttachmentCursor) { c.Path = "../bad" },
 	} {
 		cursor := valid
 		change(&cursor)
@@ -293,7 +294,7 @@ func TestAttachmentStorageFailuresAndMissingPhysicalFile(t *testing.T) {
 	_, _, err = failed.Open(ctx, principal, task.ProjectID, task.ID, "file")
 	assertAttachmentOperationalError(t, err, sentinel)
 	assertAttachmentOperationalError(t, failed.Delete(ctx, principal, task.ProjectID, task.ID, "file"), sentinel)
-	if err := files.Delete(ctx, attachmentBucket, attachmentTestStoragePath(task, "file")); err != nil {
+	if err := files.Delete(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file")); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, "file")
@@ -362,7 +363,7 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 				if !errors.As(err, &databaseError) {
 					t.Fatalf("metadata write error: %v", err)
 				}
-				object, err := files.Open(ctx, attachmentBucket, attachmentTestStoragePath(task, "file"))
+				object, err := files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -391,10 +392,19 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 					t.Fatalf("metadata delete error: %v", err)
 				}
 			}
-			_, err = files.Open(ctx, attachmentBucket, attachmentTestStoragePath(task, "file"))
+			_, err = files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("successful file deletion was hidden: %v", err)
 			}
 		})
 	}
+}
+
+// Cursor fields mirror the public v1 wire format for invalid-input tests.
+type testAttachmentCursor struct {
+	Version   int    `json:"version"`
+	Kind      string `json:"kind"`
+	ProjectID string `json:"projectId"`
+	TaskID    string `json:"taskId"`
+	Path      string `json:"path"`
 }

@@ -1,4 +1,4 @@
-package server
+package attachment
 
 import (
 	"log/slog"
@@ -10,7 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
-func attachmentPathGuard(mux *http.ServeMux, logger *slog.Logger) http.Handler {
+func PathGuard(mux *http.ServeMux, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		segments := strings.Split(request.URL.EscapedPath(), "/")
 		decoded := make([]string, len(segments))

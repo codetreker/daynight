@@ -1,4 +1,4 @@
-package service
+package attachment
 
 import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (

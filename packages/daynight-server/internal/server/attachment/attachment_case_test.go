@@ -1,4 +1,4 @@
-package server
+package attachment_test
 
 import (
 	"errors"

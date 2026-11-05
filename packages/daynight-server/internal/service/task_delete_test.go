@@ -1,6 +1,7 @@
 package service
 
 import (
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
@@ -59,7 +60,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 		(SELECT count(*) FROM task_attachments WHERE task_id=$1)`, task.ID).Scan(&edgeCount, &attachmentCount); err != nil || edgeCount != 1 || attachmentCount != 1 {
 		t.Fatalf("physical evidence removed: %d %d %v", edgeCount, attachmentCount, err)
 	}
-	object, err := files.Open(ctx, attachmentBucket, attachmentTestStoragePath(task, attachment.Path))
+	object, err := files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, attachment.Path))
 	if err != nil {
 		t.Fatal(err)
 	}
