@@ -66,10 +66,12 @@ func terminalFault(code, message string) error { return &service.Fault{Code: cod
 func (h *sessionRoutes) registerTerminalRoutes(mux *http.ServeMux) {
 	for path, method := range map[string]string{
 		sessionBase: "GET", sessionBase + "/{sessionId}/state": "GET",
-		sessionBase + "/{sessionId}/worker-messages":                 "POST",
-		sessionBase + "/{sessionId}/worker-channel":                  "GET",
-		sessionBase + "/{sessionId}/archive/receipt":                 "GET",
-		sessionBase + "/{sessionId}/recording-evidence/{evidenceId}": "GET",
+		sessionBase + "/{sessionId}/worker-messages":                  "POST",
+		sessionBase + "/{sessionId}/worker-channel":                   "GET",
+		sessionBase + "/{sessionId}/archive/receipt":                  "GET",
+		sessionBase + "/{sessionId}/archive/state":                    "GET",
+		sessionBase + "/{sessionId}/recording-evidence/{evidenceId}":  "GET",
+		sessionBase + "/{sessionId}/automation-recovery/{recoveryId}": "GET",
 	} {
 		mux.HandleFunc(method+" "+path, h.auth.Require(h.parameters(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
 			h.failure(w, r, terminalFault("unsupported_protocol", "This endpoint requires daynight.session.v2."))
@@ -162,6 +164,10 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 			if _, err = queryValues(r); err == nil {
 				result, err = h.service.TerminalOperation(r.Context(), p, project, task, id, r.PathValue("operationId"))
 			}
+		case r.PathValue("recoveryId") != "":
+			if _, err = queryValues(r); err == nil {
+				result, err = h.service.TerminalAutomationRecovery(r.Context(), p, project, task, id, r.PathValue("recoveryId"))
+			}
 		case r.PathValue("evidenceId") != "":
 			values, e := queryValues(r, "generation")
 			if e != nil {
@@ -188,6 +194,10 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 		case strings.HasSuffix(path, "/archive/receipt"):
 			if _, err = queryValues(r); err == nil {
 				result, err = h.service.TerminalReceipt(r.Context(), p, project, task, id)
+			}
+		case strings.HasSuffix(path, "/archive/state"):
+			if _, err = queryValues(r); err == nil {
+				result, err = h.service.TerminalArchiveState(r.Context(), p, project, task, id)
 			}
 		case strings.HasSuffix(path, "/archive"):
 			if _, err = queryValues(r); err == nil {
@@ -247,6 +257,8 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 }
 func (h *sessionRoutes) terminalWorkerMessage(ctx context.Context, p core.Principal, project, task, id, epoch string, m v2.Message) (v2.Message, error) {
 	switch m.Type {
+	case "automation_recovery_prepare", "automation_recovery":
+		return h.service.UpdateTerminalRecovery(ctx, p, project, task, id, epoch, m)
 	case "generation_ledger":
 		return h.service.UpdateTerminalLedger(ctx, p, project, task, id, epoch, m)
 	case "finalization":

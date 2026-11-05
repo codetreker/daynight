@@ -212,3 +212,76 @@ it('leaves IME Escape native while a hovered hint is visible', () => {
     expect(outerKey).toHaveBeenCalledTimes(2); expect(outside).toHaveFocus();
   } finally { document.removeEventListener('keydown', outerKey); }
 });
+
+it.each(['ready', 'unavailable', 'failed', 'empty', 'disabled', 'refreshing'] as const)('closes the %s command catalog without changing the draft or invoking a provider operation', async mode => {
+  const props = base();
+  if (mode === 'unavailable') {
+    const { controls: _controls, ...withoutControls } = props.state.snapshot!;
+    props.state = { ...props.state, snapshot: withoutControls };
+  }
+  if (mode === 'failed') props.state = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commandsError: 'Discovery failed' } } };
+  let finish!: () => void;
+  if (mode === 'refreshing') props.onRefreshControls.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+  render(<SessionComposer {...props} authPaused={mode === 'disabled'} />);
+  const input = screen.getByRole('textbox');
+  const draft = mode === 'empty' ? '/not-a-command' : 'Keep\nthis draft';
+  fireEvent.change(input, { target: { value: draft } });
+  if (mode !== 'empty') fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  if (mode === 'refreshing') fireEvent.click(screen.getByRole('button', { name: 'Retry commands' }));
+  const close = screen.getByRole('button', { name: 'Close' });
+  expect(close).toBeEnabled();
+  fireEvent.click(close);
+  expect(screen.queryByRole('listbox')).toBeNull();
+  expect(screen.queryByText('Native commands')).toBeNull();
+  expect(input).toHaveValue(draft); expect(input).toHaveFocus();
+  expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled(); expect(props.onUpdateSetting).not.toHaveBeenCalled();
+  if (mode === 'refreshing') await act(async () => finish());
+});
+
+it.each(['retry', 'option', 'close'] as const)('dismisses the command menu from %s before an outer Escape handler', target => {
+  const props = base(), outer = vi.fn();
+  render(<div onKeyDown={outer}><SessionComposer {...props} /></div>);
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: '/compact' } });
+  const element = target === 'option' ? screen.getByRole('option') : screen.getByRole('button', { name: target === 'close' ? 'Close' : 'Retry commands' });
+  element.focus(); fireEvent.keyDown(element, { key: 'Escape' });
+  expect(screen.queryByRole('listbox')).toBeNull(); expect(outer).not.toHaveBeenCalled();
+  expect(input).toHaveFocus(); expect(input).toHaveValue('/compact');
+  expect(props.onExecuteCommand).not.toHaveBeenCalled(); expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it('keeps command discovery open through IME Escape and closes on the next ordinary Escape', () => {
+  render(<SessionComposer {...base()} />);
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: '/' } });
+  for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+    fireEvent.keyDown(input, { key: 'Escape', ...composition }); expect(screen.getByRole('listbox')).toBeInTheDocument();
+  }
+  fireEvent.compositionStart(input); fireEvent.keyDown(input, { key: 'Escape' }); expect(screen.getByRole('listbox')).toBeInTheDocument();
+  fireEvent.compositionEnd(input); fireEvent.keyDown(input, { key: 'Escape' }); expect(screen.queryByRole('listbox')).toBeNull();
+});
+
+it('dismisses commands on an outside pointer without stealing focus or consuming the target action', () => {
+  const action = vi.fn(); render(<><button onClick={action}>Outside action</button><SessionComposer {...base()} /></>);
+  const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: 'Draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const outside = screen.getByRole('button', { name: 'Outside action' });
+  outside.focus(); fireEvent.pointerDown(outside); fireEvent.click(outside);
+  expect(screen.queryByRole('listbox')).toBeNull(); expect(outside).toHaveFocus(); expect(action).toHaveBeenCalledOnce(); expect(input).toHaveValue('Draft');
+});
+
+it('reveals keyboard selection at both ends of a long catalog without accumulating fractional layout error', () => {
+  render(<SessionComposer {...base()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const body = screen.getByRole('listbox').parentElement!;
+  Object.defineProperties(body, { clientHeight: { value: 181 }, offsetHeight: { value: 181 } });
+  vi.spyOn(body, 'getBoundingClientRect').mockImplementation(() => ({ top: 100, bottom: 281.40625, height: 181.40625, width: 400, x: 0, y: 100, left: 0, right: 400, toJSON() {} }));
+  screen.getAllByRole('option').forEach((option, index) => {
+    Object.defineProperties(option, { offsetTop: { value: index * 500 }, offsetHeight: { value: 200 } });
+    vi.spyOn(option, 'getBoundingClientRect').mockImplementation(() => ({ top: 100 + index * 500 - body.scrollTop, bottom: 300 + index * 500 - body.scrollTop, height: 200, width: 400, x: 0, y: 100 + index * 500 - body.scrollTop, left: 0, right: 400, toJSON() {} }));
+  });
+  const input = screen.getByRole('textbox');
+  fireEvent.keyDown(input, { key: 'ArrowUp' });
+  expect(body.scrollTop).toBe(1500);
+  fireEvent.keyDown(input, { key: 'ArrowDown' });
+  expect(body.scrollTop).toBe(0);
+  expect(input).toHaveFocus();
+});

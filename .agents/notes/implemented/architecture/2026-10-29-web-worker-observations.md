@@ -20,10 +20,13 @@ before either success parsing or 404 handling. The existing TaskCacheScope
 provides only authentication lifetime, foreground readiness and identity-mismatch
 invalidation; Worker observations do not enter project storage or IndexedDB.
 Resource keys and cancellation include Worker ID as well as account lifetime.
+The [configuration editor](2026-11-04-web-worker-configuration-editor.md) uses a
+separate resource and draft owner on the same detail page; absence or expiry of
+a runtime observation cannot retire retained cloud configuration.
 
-One visible page owns a single-flight five-second reader and one one-second
-ticker. A list read traverses all stable cursors privately, then atomically
-publishes the collection. Any failed page retains the previous complete result.
+The visible runtime observation view owns a single-flight five-second reader
+and one one-second ticker. A list read traverses all stable cursors privately,
+then atomically publishes the collection. Any failed page retains the previous complete result.
 The last response's database observation and paired monotonic receipt anchor
 online and recent-visibility calculations independently of browser wall time.
 The saved collection retains the service's ascending `(created_at, worker_id)`
@@ -42,7 +45,8 @@ identify the last confirmation; a warning and retry action require an actual
 read failure, as owned by the
 [quiet recheck decision](../bug-fix/2026-10-30-quiet-worker-rechecks.md).
 An admitted current-account 404
-clears detail; unknown inventory, observed idleness and stale task snapshots
+clears the runtime observation; the configuration resource handles its own read
+result. Unknown inventory, observed idleness and stale task snapshots
 keep their distinct semantics. The
 [Web design](../../../../docs/design/daynight-web.md#我的-worker-列表与详情)
 owns the mechanism, and the

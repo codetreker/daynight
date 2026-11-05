@@ -286,7 +286,7 @@ func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
 
 func TestIdentityHTTPCallbackFailures(t *testing.T) {
 	h := authTestHarness(t)
-	for _, destination := range []string{"/projects/project/tasks/task/attachments/docs/guide.md?tab=overview#details", "/invitations", "/device?user_code=ABCD-EFGH"} {
+	for _, destination := range []string{"/projects/project/tasks/task/attachments/docs/guide.md?tab=overview#details", "/invitations", "/team-invitations", "/device?user_code=ABCD-EFGH"} {
 		for _, mode := range []string{"provider", "protocol-secret", "denied-secret"} {
 			state, binding := h.start(t, destination)
 			values := url.Values{"state": {state}}

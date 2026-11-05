@@ -3,11 +3,15 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
+import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, HerdrInputBlockedError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
+import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
+import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
+import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders.js";
+import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -22,8 +26,72 @@ const claimId = "33333333-3333-4333-8333-333333333333";
 const worktreeId = "44444444-4444-4444-8444-444444444444";
 const nativeId = "55555555-5555-4555-8555-555555555555";
 const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a", args: ["--config", "model_reasoning_effort=low", "--no-alt-screen"] };
-const composerScreen = "  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1 Sol default · /task\n";
-const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_reasoning_selection_popup.snap
+const reasoningMenu = `  Select Reasoning Level for GPT-5.5
+
+
+  1. Low               Fast responses with lighter reasoning
+  2. Medium (default)  Balances speed and reasoning depth for everyday tasks
+› 3. High (current)    Greater reasoning depth for complex problems
+  4. Extra high        Extra high reasoning depth for complex problems
+  5. Persistent        Continue working until put to sleep
+  6. More reasoning…   Max and Ultra consume usage limits faster
+
+  enter default · s session · esc back`;
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/config_panel/snapshots/codex_tui__config_panel__tests__config_Sessions.snap
+const configurationMenu = `
+  Configuration
+  Changes save automatically
+
+   Appearance   Notifications   Input   Sessions   Text selection
+
+› Automatic recaps       [ ] Off              Prepare recaps while the terminal is unfocused
+  Session picker layout  Dense ›              Choose tighter rows or a roomier list when resuming and forking conversations
+  Resume directory       Ask ›                Choose which working directory to use when the current directory and saved session differ
+
+
+
+
+  left/right group · / search · enter toggle · esc clear search/close`;
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/config_panel/snapshots/codex_tui__config_panel__tests__effects_picker.snap
+const effectsMenu = `
+  Effects
+  Configure visual effects
+
+
+› 1. [ ] Animations                 Animate the welcome screen, working
+                                    indicator, and transitions
+     [-] Composer stars (disabled)  Turn on Animations to show Astra task stars
+
+  enter toggle · esc back`;
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__list_selection_view__picker_tests__browser_page_navigation_uses_rows_that_fit.snap
+const keymapMenu = `
+  Keymap
+  All configurable shortcuts.
+
+   All   Common   Customized (3)   Unbound (4)   App
+
+  Type to search shortcuts
+↑
+  Action 01  Ctrl+1
+  Action 02  Ctrl+2
+  Action 03  Ctrl+3
+  Action 04  Ctrl+4
+  Action 05  Ctrl+5
+  Action 06  Ctrl+6
+  Action 07  Ctrl+7
+› Action 08  Ctrl+8
+↓
+  left/right group · enter edit · esc close`;
+// The complete 24×7 frame has wrapped controls and retains its selected action.
+// https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__list_selection_view__picker_tests__short_browser_keeps_header_tabs_search_and_footer.snap
+const keymapNarrowMenu = `
+  Keymap
+   All   Common      ›
+  Type to search short
+› Action 00  Ctrl+0
+  left/right group ·
+  enter edit · esc close`;
 
 const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, readCodexConfig = async (_args: readonly string[], _cwd: string, _operation: Operation): Promise<unknown> => ({ config: {} })) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
@@ -35,6 +103,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
   const tabs: Entry[] = [];
   const calls: { method: string; params: Entry }[] = [];
   const prompts: string[] = [];
+  const screen = { text: "› Ask Codex to do anything\n\n  GPT-6.1 Terra medium · daynight/task · Context 0% used" };
   const processes = new Map<string, number[]>();
   const executing = new Set<number>([200]);
   let next = 0;
@@ -71,10 +140,7 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
     }
     if (method === "agent.start") return { type: "agent_started", agent: launch(params), argv: [kind, ...params.args as string[]] };
     if (method === "agent.prompt") { prompts.push(String(params.text)); return { type: "agent_prompted", agent: structuredClone(agents.find((value) => value.pane_id === params.target)) }; }
-    if (method === "agent.read") {
-      const pane = panes.find((value) => value.pane_id === params.target)!;
-      return { type: "pane_read", read: { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, source: "visible", format: "text", text: composerScreen, revision: 0, truncated: false } };
-    }
+    if (method === "agent.read") return { type: "pane_read", read: { pane_id: params.target, workspace_id: panes.find(value => value.pane_id === params.target)!.workspace_id, source: "visible", format: "text", text: screen.text, truncated: false } };
     if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: (processes.get(String(params.pane_id)) ?? []).map((value) => ({ pid: value, name: value === 100 ? "shell" : kind })) } };
     if (method === "tab.create") {
       const workspace = workspaces.find((value) => value.workspace_id === params.workspace_id)!; const created = addPane(workspace, String(params.label));
@@ -96,11 +162,11 @@ const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspace
     throw new Error(`Unexpected fixture method ${method}`);
   } };
   const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, readCodexConfig, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
-  return { context, manager, workspaces, panes, agents, tabs, calls, prompts, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
+  return { context, manager, workspaces, panes, agents, tabs, calls, prompts, screen, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
   const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-  const result = await f.manager.start(f.context, binding, { configuration: { ...configuration, agent: f.context.agent, args: f.context.agent === "codex" ? configuration.args : ["--allow-all-tools"] }, prompt: "initial" }, operation());
+  const result = await f.manager.start(f.context, binding, { configuration: { ...configuration, agent: f.context.agent, args: f.context.agent === "codex" ? configuration.args : f.context.agent === "copilot" ? ["--allow-all-tools"] : [] }, prompt: "initial" }, operation());
   expect(result.nativeSession?.sessionId).toBe(nativeId); return binding;
 };
 
@@ -154,9 +220,75 @@ describe("native argument ownership", () => {
     expect(() => buildHerdrAgentArguments(configuration, "/task", "prefix")).toThrow("exact original session UUID");
     expect(() => buildHerdrAgentArguments(configuration, "relative")).toThrow("absolute path");
   });
+  it("owns Claude resume and model arguments while refusing print, prompt, and settings overrides", () => {
+    expect(buildHerdrAgentArguments({ agent: "claude", model: "sonnet", args: ["--permission-mode", "default"] }, "/task", nativeId)).toEqual(["--resume", nativeId, "--model", "sonnet", "--permission-mode", "default", "--dangerously-skip-permissions"]);
+    for (const arg of ["--print", "--resume", "--session-id", "--settings", "--setting-sources", "business prompt"]) expect(() => validateHerdrAgentArguments("claude", [arg])).toThrow();
+  });
 });
 
 describe("direct task resource management", () => {
+  it.each(nativeDisabledClips)("retains initial/continuation input on a source-owned clipped disabled field: $visible", async ({ visible }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = `› ${visible}\n\n ? for shortcuts`;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "disabled" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "disabled" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `A historical code sample:\n› ${visible}\n\n› Continue`;
+    await f.manager.submitPrompt(f.context, binding, "continuation after dismissal", operation());
+    expect(f.prompts).toEqual(["continuation after dismissal"]);
+  });
+
+  it.each(nativeKeyDisplays)("keeps input unsent for production $platform key display $spec = $display", async ({ display }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const screen = nativeMenuScreens.find(menu => menu.name === "hooks_browser_handlers")!.screen;
+    f.screen.text = screen.replace("esc back", `${display} back`);
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each(nativeMenuScreens)("keeps initial and continuation input unsent in the native $name menu", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await f.manager.submitPrompt(f.context, binding, "continuation after dismissal", operation());
+    expect(f.prompts).toEqual(["continuation after dismissal"]);
+  });
+
+  it.each(["fork", "restore"])("keeps input unsent for the source-owned session-picker %s action", async action => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = nativeMenuScreens.find(menu => menu.name === "resume_picker_118x30")!.screen
+      .replace("Resume a previous session", action === "fork" ? "Fork a previous session" : "Resume a previous session")
+      .replace("enter resume", `enter ${action}`).replace("esc new", "esc clear search").replace("⌃c quit", "⌃c exit");
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each(narrowSessionPickerScreens)("retains input until the primary-only $action session picker closes", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await expect(f.manager.submitInitialPrompt(f.context, binding, "initial", operation())).resolves.toMatchObject({ submission: "submitted" });
+    await f.manager.submitPrompt(f.context, binding, "continuation", operation());
+    expect(f.prompts).toEqual(["initial", "continuation"]);
+  });
+
+  it.each(expandedNarrowSessionPickerScreens)("retains input on an expanded primary-only $action picker with an inline error", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await f.manager.submitInitialPrompt(f.context, binding, "initial", operation());
+    expect(f.prompts).toEqual(["initial"]);
+  });
+
   it("returns a launched process before its first input or native SessionStart", async () => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method, params) => {
@@ -205,8 +337,6 @@ describe("direct task resource management", () => {
     f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: "replacement", shell_pid: 100, foreground_processes: [] } } : undefined);
     await expect(f.manager.processInfo(f.context, binding, operation())).rejects.toThrow("another pane");
   });
-
-  const visible = (f: Awaited<ReturnType<typeof fixture>>, binding: HerdrTaskBinding, screen: string, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: f.panes.find((pane) => pane.pane_id === binding.paneId)!.tab_id, source: "visible", format: "text", text: screen, revision: 0, truncated: false, ...extra } });
 
   it("creates one workspace with native XDG settings and rediscovers it without receipts", async () => {
     const environment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };
@@ -481,6 +611,48 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]);
   });
 
+  it("rejects a fresh launch when the original shell changes cwd during caller admission", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const otherCwd = path.join(f.context.cwd, "other"); await mkdir(otherCwd);
+    const beforeStart = vi.fn(async () => { f.panes[0]!.cwd = otherCwd; });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart }, operation())).rejects.toMatchObject({
+      action: "agent.start", submission: "not-submitted", message: expect.stringContaining(`cwd is ${otherCwd}; expected`), cause: expect.any(Error),
+    });
+    expect(beforeStart).toHaveBeenCalledOnce();
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("does not retry a definitely rejected launch after the original shell changes cwd", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const otherCwd = path.join(f.context.cwd, "other"); await mkdir(otherCwd);
+    f.hook(async method => {
+      if (method === "pane.process_info") return shellProcesses(binding);
+      if (method === "agent.start") { f.panes[0]!.cwd = otherCwd; throw busyShell(); }
+      return undefined;
+    });
+    await expect(f.manager.launch(f.context, binding, { configuration }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", message: expect.stringContaining(`cwd is ${otherCwd}; expected`) });
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each(["pane_id", "terminal_id"])("does not launch after caller admission replaces the original %s", async field => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart: async () => { f.panes[0]![field] = "replacement"; } }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", cause: expect.any(Error) });
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("preserves a failed final shell observation as a definitely unsubmitted launch", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const failure = new HerdrRpcError("shell snapshot unavailable", { method: "session.snapshot", requestId: "final-shell", submission: "unknown" });
+    let admitted = false;
+    f.hook(async method => { if (method === "session.snapshot" && admitted) throw failure; return undefined; });
+    await expect(f.manager.launch(f.context, binding, { configuration, beforeStart: async () => { admitted = true; } }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", cause: failure });
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(f.prompts).toEqual([]);
+  });
+
   it.each([1, 2])("does not retry a rejected start guard on attempt %s", async rejectedAttempt => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const failure = new HerdrAgentActionError("Original launch target changed.", "agent.start", "rejected", { cause: busyShell() });
@@ -623,14 +795,14 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]);
   });
 
-  it("reports a definitely unsent startup prompt while the current native process is blocked", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-    f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] }; });
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "task" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" }); expect(f.prompts).toEqual([]);
+  it.each(["codex", "claude"] as const)("reports a definitely unsent startup prompt while %s reports blocked", async (kind) => {
+    const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: [kind, ...params.args as string[]] }; });
+    await expect(f.manager.start(f.context, binding, { configuration: { agent: kind, model: null, args: [] }, prompt: "task" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" }); expect(f.prompts).toEqual([]);
   });
 
-  it("can submit a process-local deferred first prompt before SessionStart has reported an ID", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); delete f.agents[0]!.agent_session;
+  it.each(["codex", "claude"] as const)("can submit a deferred first prompt before %s SessionStart has reported an ID", async (kind) => {
+    const f = await fixture(kind); const binding = await launch(f); f.prompts.splice(0); delete f.agents[0]!.agent_session;
     await f.manager.submitPrompt(f.context, binding, "deferred assignment", operation());
     expect(f.prompts).toEqual(["deferred assignment"]);
     f.agents[0]!.interactive_ready = false;
@@ -650,31 +822,198 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
   });
 
-  it("rejects false idle/readiness on a real folder trust screen", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, trustScreen) : undefined);
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "must not accept trust" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" });
-    expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+  it.each(["codex", "claude"] as const)("delivers %s initial and continuation input without a recognized composer or status layout", async (kind) => {
+    const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = "Custom terminal presentation without prompt, model or directory metadata";
+    await f.manager.start(f.context, binding, { configuration: { agent: kind, model: null, args: [] }, prompt: "managed\nassignment" }, operation());
+    f.agents[0]!.agent_status = "idle";
+    await f.manager.submitPrompt(f.context, binding, "continue", operation());
+    expect(f.prompts).toEqual(["managed\nassignment", "continue"]);
+    expect(f.calls.filter((call) => call.method === "agent.read")).toHaveLength(2);
   });
 
-  it.each(["› Ask Codex to do anything", "» Ask Codex to do anything", "› Ask a follow-up question"])("accepts the current native composer %s", async (marker) => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, composerScreen.replace("› Ask Codex to do anything", marker)) : undefined);
-    await f.manager.start(f.context, binding, { configuration, prompt: "exact\ntext" }, operation()); expect(f.prompts).toEqual(["exact\ntext"]);
+  it.each([
+    { agent: "codex" as const, screen: "Select model\n› 1. GPT-6.1 Terra\n  2. GPT-6.1 Sol\n\nenter select · esc back", blocker: "menu" },
+    { agent: "codex" as const, screen: reasoningMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: effectsMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: keymapMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: keymapNarrowMenu, blocker: "menu" },
+    { agent: "codex" as const, screen: keymapMenu.replace("enter edit · esc close", "enter edit shortcut · * custom · - unbound · esc close"), blocker: "menu" },
+    { agent: "codex" as const, screen: "Select model\n› 1. GPT-6.1 Terra\n› Search models\nenter select · esc back", blocker: "menu" },
+    { agent: "codex" as const, screen: "Folder access\nTrust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit", blocker: "menu" },
+    { agent: "codex" as const, screen: "› Input disabled.", blocker: "disabled" },
+    { agent: "codex" as const, screen: "› Viewing sub-agent — direct input is disabled", blocker: "disabled" },
+    { agent: "claude" as const, screen: "Do you trust the files in this folder?\n❯ 1. Yes\n2. No\nEnter to confirm · Esc to cancel", blocker: "menu" },
+    { agent: "claude" as const, screen: "Select model\n❯ Default (recommended)\n  Sonnet\nEnter to set as default · Esc to cancel", blocker: "menu" },
+  ])("retains definitely unsent initial and continuation input for $agent $blocker", async ({ agent, screen, blocker }) => {
+    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration: { agent, model: null, args: [] }, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker, action: "agent.prompt", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
   });
 
-  it("waits through provisional frames during the current operation", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let reads = 0;
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, ++reads < 4 ? "initializing" : composerScreen) : undefined);
-    await f.manager.submitPrompt(f.context, binding, "cleanup", operation()); expect(reads).toBe(4); expect(f.prompts).toEqual(["cleanup"]);
+  it.each([
+    "enter select · esc back",
+    "enter default · s session · esc back",
+    "enter apply · s session · esc back",
+    "f3 default · s session · f2 back",
+    "^j select · ^k back",
+    "ctrl+x enter select · alt+esc back",
+    "enter default ·\ns session · esc back",
+    "enter default · s\nsession · esc back",
+    "Press enter to confirm or esc to go back",
+    "Press f3 to confirm or f2 to cancel",
+    "Press enter to confirm or esc to cancel or ^o to open thread",
+    "enter select · / search · esc back",
+    "s session · esc back",
+    "enter select",
+    "enter toggle · esc back",
+    "f3 toggle · f2 back",
+    "enter toggle",
+    "enter toggle ·\nesc back",
+  ])("recognizes source-owned Codex picker controls: %s", async footer => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = `Select an option\n› 1. Current selection\n  2. Another selection\n\n${footer}`;
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
   });
 
-  it("can skip input after readiness waits without reporting a submission", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let reads = 0; let guarded = 0;
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, ++reads < 3 ? "initializing" : composerScreen) : undefined);
-    const result = await f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => {
-      expect(reads).toBe(3); guarded += 1; return false;
+  it.each([
+    "space toggle · ←/→ reorder · enter save · esc cancel",
+    "space toggle · h/l reorder · f3 save · f2 cancel",
+    "space toggle · ctrl+x ←/ctrl+x → reorder · f3 save · f2 cancel",
+    "space toggle · ←/→ reorder ·\nenter save · esc cancel",
+    "space toggle · enter save · esc cancel",
+    "space toggle · esc cancel",
+    "space toggle · f3 save",
+    "space toggle",
+    "space/enter toggle · esc back",
+    "space/f3 toggle · f2 back",
+    "space/ctrl+x enter toggle · ctrl+k esc back",
+    "space/enter toggle ·\nesc back",
+    "space toggle · enter save/select · esc cancel",
+    "space toggle · f3 save/select · f2 cancel",
+    "space toggle · enter save/select",
+    "space toggle · enter\nsave/select · esc cancel",
+    "space/enter toggle · esc close",
+    "space toggle · enter save · esc save/close",
+  ])("recognizes the shared checkbox controls without a title whitelist: %s", async footer => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = `An arbitrary widget title\n› [x] Selected checkbox\n  [ ] Another checkbox\n${footer}`;
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("retains checkbox ownership when a non-checkbox action has the current selection", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.screen.text = "A checkbox view\n  [x] Existing option\n› Reset all options\nspace toggle · enter save/select · esc cancel";
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([
+    configurationMenu,
+    configurationMenu.replace(" · esc clear search/close", ""),
+    configurationMenu.replace("/ search · enter toggle", "/ search ·\n  enter toggle"),
+    configurationMenu.replace("left/right group · / search · enter toggle · esc clear search/close", "enter test · esc clear search"),
+  ])("blocks initial and continuation input on the actual unnumbered Configuration menu: %s", async screen => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it.each([
+    { agent: "codex" as const, screen: "Input disabled in this business example; press enter to confirm or esc to cancel." },
+    ...["Viewing", "Viewing sub", "Viewing sub-agents", "Viewing sub-agent examples", "Input", "Input disabled in this business example", "Input disabled for test.", "Answer the questions", "Respond to the tool suggestion"].map(text => ({ agent: "codex" as const, screen: `› ${text}\n\n ? for shortcuts` })),
+    { agent: "codex" as const, screen: "Viewing sub-agent — direct input is disabled" },
+    { agent: "codex" as const, screen: "› Ask any custom question\nGPT-6.1 Terra medium · daynight/task" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› Completely custom current composer" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n›✨Custom current prompt marker" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› Continue" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› select" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› apply" },
+    { agent: "codex" as const, screen: "› 1. Historical model\nenter select · esc back\n\n› f3 select" },
+    ...["open", "choose", "close"].map(label => ({ agent: "codex" as const, screen: `› 1. Historical model\nenter select · esc back\n\n› ${label}` })),
+    { agent: "codex" as const, screen: "› 1. Historical reasoning\nenter default ·\ns session · esc back\n› Completely custom current composer" },
+    { agent: "codex" as const, screen: "› 1. Business example\nenter invent · esc back" },
+    { agent: "codex" as const, screen: "› 1. Historical choice\n› Current composer\nenter send ·\nesc cancel" },
+    { agent: "codex" as const, screen: "› 1. Historical choice\n› Current composer\nenter send · esc cancel" },
+    { agent: "codex" as const, screen: "Business prose: enter default · s session · esc back" },
+    { agent: "codex" as const, screen: "Business description of keyboard controls\nspace toggle · ←/→ reorder · enter save · esc cancel" },
+    { agent: "codex" as const, screen: "› [x] A literal checkbox draft\nenter send · esc cancel" },
+    { agent: "codex" as const, screen: "› [x] Old selection\nspace toggle · ←/→ reorder · enter save · esc cancel\n› Continue" },
+    { agent: "codex" as const, screen: "A discussion of checkbox controls\nspace/enter toggle · esc back" },
+    { agent: "codex" as const, screen: "A discussion of saving settings\nspace toggle · enter save/select · esc cancel" },
+    { agent: "codex" as const, screen: "› [x] A literal draft\nenter send · esc cancel" },
+    ...["insert", "return", "page up", "page down", "back tab", "caps lock", "media play", "f25", "λ", "🚀"].map(key => ({ agent: "codex" as const, screen: `A checkbox discussion\n› [x] Existing option\nspace/enter toggle · ${key} back` })),
+    ...["delete", "fwd del", "⌃fwd del"].map(key => ({ agent: "codex" as const, screen: `› 1. Historical model\nenter select · esc back\n› ${key} back` })),
+    { agent: "codex" as const, screen: `${configurationMenu}\n\n› A custom current composer` },
+    { agent: "codex" as const, screen: `${keymapMenu}\n\n› Continue` },
+    { agent: "codex" as const, screen: "› Arbitrary business row\nleft/right group · enter edit · esc close" },
+    { agent: "codex" as const, screen: "› Arbitrary business question\nleft/right group · / search · enter toggle" },
+    { agent: "codex" as const, screen: "Configuration\n› Current composer\nenter send · esc cancel" },
+    { agent: "codex" as const, screen: "Select model\n› Unnumbered business row\nenter select · esc back" },
+    { agent: "claude" as const, screen: "Business prose says esc to cancel, then enter to confirm the example." },
+    { agent: "claude" as const, screen: "❯ 1. Historical choice\nEnter to confirm · Esc to cancel\n\n❯ Completely custom current composer" },
+    { agent: "claude" as const, screen: "Select model\n❯ Default\nEnter to set as default · Esc to cancel\n\n❯ New placeholder without borders" },
+    { agent: "codex" as const, screen: "" },
+  ])("accepts $agent content without an active explicit blocker: $screen", async ({ agent, screen }) => {
+    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.screen.text = screen;
+    await f.manager.start(f.context, binding, { configuration: { agent, model: null, args: [] }, prompt: "managed" }, operation());
+    expect(f.prompts).toEqual(["managed"]);
+  });
+
+  it.each([{ pane_id: "foreign" }, { workspace_id: "foreign" }, { source: "recent" }, { format: "ansi" }, { text: undefined }, { truncated: undefined }, { truncated: true }])("rejects unusable negative-blocker observations %j", async extra => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.hook(async method => method === "agent.read" ? { type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, source: "visible", format: "text", text: "unknown layout", truncated: false, ...extra } } : undefined);
+    await expect(f.manager.submitPrompt(f.context, binding, "continue", operation())).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("retains target changes during visible reads as errors rather than menu waiting", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.hook(async method => {
+      if (method !== "agent.read") return undefined;
+      f.panes[0]!.terminal_id = "replacement";
+      return { type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, source: "visible", format: "text", text: "› 1. GPT\nenter select · esc back", truncated: false } };
     });
+    const error = await f.manager.submitPrompt(f.context, binding, "continue", operation()).catch(error => error);
+    expect(error).toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: { message: "The task pane or terminal identity has changed." } });
+    expect(error).not.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("preserves a failed visible read as a protocol error with its original cause", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    const failure = new HerdrRpcError("read connection lost", { method: "agent.read", requestId: "read", submission: "unknown" });
+    f.hook(async method => { if (method === "agent.read") throw failure; return undefined; });
+    const error = await f.manager.submitPrompt(f.context, binding, "continue", operation()).catch(error => error);
+    expect(error).toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
+    expect(error).not.toBeInstanceOf(HerdrInputBlockedError);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("keeps owned input, resource discovery and stopping independent of live cwd metadata", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    const subdirectory = path.join(f.context.cwd, "packages"); await mkdir(subdirectory);
+    f.panes[0]!.cwd = subdirectory;
+    f.agents[0]!.cwd = path.join(subdirectory, "daynight");
+    expect(await f.manager.prepareWorkspace(f.context, taskTitle, operation())).toEqual(binding);
+    expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ binding, kind: "codex" });
+    expect(await f.manager.listResources(operation())).toMatchObject([{ panes: [{ binding, cwd: f.agents[0]!.cwd }] }]);
+    expect((await f.manager.start(f.context, binding, { configuration, prompt: "must not repeat assignment" }, operation())).binding).toEqual(binding);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    await f.manager.submitPrompt(f.context, binding, "continue in the original agent", operation());
+    expect(f.prompts).toEqual(["continue in the original agent"]);
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(f.workspaces).toEqual([]);
+    expect(f.executing.has(200)).toBe(false);
+  });
+
+  it("can skip input after checking the native agent without reporting a submission", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let guarded = 0;
+    const result = await f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => { guarded += 1; return false; });
     expect(result).toMatchObject({ submission: "skipped", observation: { binding } });
     expect(guarded).toBe(1); expect(f.prompts).toEqual([]);
   });
@@ -691,30 +1030,6 @@ describe("direct task resource management", () => {
     const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); const failure = new Error("fresh task read failed");
     await expect(f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => { throw failure; })).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
     expect(f.prompts).toEqual([]);
-  });
-
-  it("preserves input errors and sends nothing when readiness observation expires", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, "Resuming session…") : undefined);
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation(25))).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", cause: { kind: "deadline" } }); expect(f.prompts).toEqual([]);
-  });
-
-  it.each(["› 1. Yes, proceed\n  2. No\n\nPress enter to confirm or esc to cancel", "Input disabled", "Viewing sub-agent thread"])("keeps current modal or disabled surface interactive: %s", async (screen) => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); f.agents[0]!.agent_status = "working";
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, screen) : undefined);
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
-  });
-
-  it.each([{ pane_id: "foreign" }, { workspace_id: "foreign" }, { tab_id: "foreign" }, { source: "recent" }, { format: "ansi" }, { revision: undefined }, { truncated: undefined }, { truncated: true }, { text: undefined }])("rejects invalid visible native input %j", async (extra) => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); f.agents[0]!.agent_status = "working";
-    f.hook(async (method) => method === "agent.read" ? visible(f, binding, composerScreen, extra) : undefined);
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
-  });
-
-  it("does not input after the pane's terminal changes during a screen observation", async () => {
-    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
-    f.hook(async (method) => { if (method !== "agent.read") return undefined; const result = visible(f, binding, composerScreen); f.panes[0]!.terminal_id = "replacement"; return result; });
-    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
   });
 
   it("retains structured unknown transport failures without manufacturing success", async () => {
@@ -803,26 +1118,26 @@ describe("direct task resource management", () => {
     await expect(f.manager.listResources(operation())).rejects.toThrow("provider differ");
   });
 
-  it("reports unavailable worktree paths before creating anything", async () => {
-    const f = await fixture(); await rm(f.context.cwd, { recursive: true });
-    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation())).rejects.toMatchObject({ submission: "not-submitted", cause: { code: "ENOENT" } }); expect(f.calls).toEqual([]);
+  it("creates an owned workspace when a human workspace uses the same directory", async () => {
+    const f = await fixture();
+    const human = { workspace_id: "human-workspace", label: "Human workspace" };
+    f.workspaces.push(human);
+    f.panes.push({ workspace_id: human.workspace_id, pane_id: "human-pane", terminal_id: "human-terminal", cwd: f.context.cwd });
+    const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    expect(binding.workspaceId).not.toBe(human.workspace_id);
+    expect(f.workspaces).toContainEqual(human);
+    expect(await f.manager.listResources(operation())).toMatchObject([{ owner: { projectId, taskId, claimId, worktreeId }, workspaceId: binding.workspaceId }]);
+    expect(f.calls.filter((call) => call.method === "workspace.create")).toHaveLength(1);
   });
 });
 
-it("launches and resumes Claude only with its original hook identity and visible composer", async () => {
+it("launches and resumes Claude with its original hook identity", async () => {
   const f = await fixture("claude"); const prepared = await f.manager.prepareWorkspace(f.context,taskTitle,operation());
-  f.hook(async method => method === "agent.read" ? { type: "pane_read", read: { pane_id:prepared.paneId,workspace_id:prepared.workspaceId,tab_id:f.panes[0]!.tab_id,source:"visible",format:"text",text:"─────────────────\n❯\n─────────────────\n? for shortcuts",revision:0,truncated:false } } : undefined);
   const config = { agent:"claude" as const, model:"sonnet", args:[] };
   const result = await f.manager.start(f.context,prepared,{ ...prepared,configuration:config,prompt:"managed task",resumeSessionId:nativeId },operation());
   expect(result.kind).toBe("claude"); expect(result.nativeSession?.sessionId).toBe(nativeId);
   expect(f.calls.find(call=>call.method==="agent.start")?.params.args).toEqual(["--resume",nativeId,"--model","sonnet","--dangerously-skip-permissions"]);
   expect(f.prompts).toEqual(["managed task"]);
-});
-it("does not type into Claude trust even when its native hook and OSC state say ready", async () => {
-  const f = await fixture("claude"); const prepared = await f.manager.prepareWorkspace(f.context,taskTitle,operation());
-  f.hook(async method => method === "agent.read" ? { type:"pane_read",read:{pane_id:prepared.paneId,workspace_id:prepared.workspaceId,tab_id:f.panes[0]!.tab_id,source:"visible",format:"text",text:"Do you trust the files in this folder?\n❯ 1. Yes\nEnter to confirm · Esc to cancel",revision:0,truncated:false} } : undefined);
-  await expect(f.manager.start(f.context,prepared,{...prepared,configuration:{agent:"claude",model:null,args:[]},prompt:"business"},operation())).rejects.toMatchObject({promptSubmission:"not-submitted"});
-  expect(f.prompts).toEqual([]);
 });
 
 

@@ -65,12 +65,25 @@ export const createWorkerHerdr = (options: {
 };
 
 export type WorkerHerdrLifecycle = {
+  neverStarted?: {
+    candidates(): HerdrExecutionOwner[];
+    retired(): { owner: HerdrExecutionOwner; cwd: string; agent: import("./types.js").ExecutionConfiguration["agent"] }[];
+    retire(owner: HerdrExecutionOwner, operation: Operation, verifyWorktreeAbsent: (cwd: string) => Promise<void>): Promise<void>;
+  };
+  archive?: import("./herdr/resource-types.js").HerdrArchiveResources;
   registerClaim(context: HerdrExecutionContext, ownerUserId: string): void;
   assertCanAdvance(context: HerdrExecutionContext): void;
   hasPreparedRun(owner: HerdrExecutionOwner): boolean;
   responsibilities(): HerdrExecutionOwner[];
   isStopped(owner: HerdrExecutionOwner): boolean;
   stop(owner: HerdrExecutionOwner, reason: "shutdown" | "terminal", operation: Operation): Promise<void>;
+  cleanup?(owner: HerdrExecutionOwner, prompt: string, operation: Operation): Promise<boolean>;
   close(): void;
 };
-export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & { lifecycle?: WorkerHerdrLifecycle };
+export type WorkerHerdrInput = {
+  state(owner: HerdrExecutionOwner): import("../../session/v2/types.js").SessionV2Payloads["control_state"];
+  control(owner: HerdrExecutionOwner, message: Extract<import("../../session/v2/types.js").SessionV2Message, { type: "control_dispatch" }>, operation: Operation): Promise<import("../../session/v2/types.js").SessionV2Payloads["control_ack"]>;
+  submit(owner: HerdrExecutionOwner, message: Extract<import("../../session/v2/types.js").SessionV2Message, { type: "operation" }>, operation: Operation): Promise<import("../../session/v2/types.js").SessionV2Payloads["operation_result"]>;
+  suspend(owner: HerdrExecutionOwner): void;
+};
+export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & { lifecycle?: WorkerHerdrLifecycle; input?: WorkerHerdrInput };

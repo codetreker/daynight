@@ -2,7 +2,7 @@ import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { describe, expect, it, vi } from "vitest";
 import {
-  decodeAuthJson, decodeMembersJson, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseInvitation,
+  decodeAuthJson, decodeInvitationJson, decodeMembersJson, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseInvitation,
   parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion,
   parseRole, parseToken, parseTokens, parseUser,
 } from "../src/api/auth-parse";
@@ -20,6 +20,10 @@ const member = { projectId, userId, email: null, name: null, avatarUrl: null, ro
 const grant = { projectId, userId, role: member.role, version: member.version, createdAt: time, updatedAt: time };
 const participant = { inheritedFrom: null, userId, profile: { name: null, email: null, avatarUrl: null }, effectiveRole: member.role, directGrant: grant };
 const participantJson = (version: string) => `{"userId":"${userId}","inheritedFrom":null,"profile":{"name":null,"email":null,"avatarUrl":null},"effectiveRole":"member","directGrant":{"projectId":"${projectId}","userId":"${userId}","role":"member","version":${version},"createdAt":"${time}","updatedAt":"${time}"}}`;
+const inspectionJson = (version: string) => {
+  const directGrant = { ...grant, version: BigInt(version) };
+  return stringifyWireJson({ projectId, projectName: "Project", directGrant, access: { ...directAccessFixture(projectId, userId), directGrant } });
+};
 const invitation = { id: invitationId, projectId, createdBy: userId, createdAt: time, expiresAt, consumedBy: null, consumedAt: null, revokedAt: null };
 const memberJson = (version: string) => `{"projectId":"${projectId}","userId":"${userId}","email":null,"name":null,"avatarUrl":null,"role":"member","version":${version},"createdAt":"${time}","updatedAt":"${time}"}`;
 
@@ -137,8 +141,8 @@ describe("lossless membership JSON decoding", () => {
   it("decodes nested list and invitation inspection member versions", async () => {
     const list = await decodeMembersJson(new Response(`{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":[${participantJson("9223372036854775807")}]}`));
     expect(parseMembers(list, projectId).items[0]?.directGrant?.version).toBe(9_223_372_036_854_775_807n);
-    const inspection = await decodeAuthJson(new Response(`{"projectId":"${projectId}","projectName":"Project","member":${memberJson("9007199254740993")}}`));
-    expect(parseInvitationInspection(inspection).member?.version).toBe(9_007_199_254_740_993n);
+    const inspection = await decodeInvitationJson(new Response(inspectionJson("9007199254740993")));
+    expect(parseInvitationInspection(inspection, userId).directGrant?.version).toBe(9_007_199_254_740_993n);
   });
 
   it("decodes every membership envelope without requiring reviver context support", async () => {
@@ -150,8 +154,8 @@ describe("lossless membership JSON decoding", () => {
       expect(parseMember(root).version).toBe(9_223_372_036_854_775_807n);
       const page = await decodeMembersJson(new Response(`{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":[${participantJson("9007199254740993")}]}`));
       expect(parseMembers(page, projectId).items[0]?.directGrant?.version).toBe(9_007_199_254_740_993n);
-      const inspection = await decodeAuthJson(new Response(`{"projectId":"${projectId}","projectName":"Project","member":${memberJson("9223372036854775807")}}`));
-      expect(parseInvitationInspection(inspection).member?.version).toBe(9_223_372_036_854_775_807n);
+      const inspection = await decodeInvitationJson(new Response(inspectionJson("9223372036854775807")));
+      expect(parseInvitationInspection(inspection, userId).directGrant?.version).toBe(9_223_372_036_854_775_807n);
     } finally { parse.mockRestore(); }
   });
 
@@ -160,8 +164,8 @@ describe("lossless membership JSON decoding", () => {
     expect(parseMembers(page, projectId).items[0]?.directGrant?.version).toBe(1n);
     const source = `{"actorAccess":${stringifyWireJson(directAccessFixture(projectId, userId))},"items":[${participantJson("9223372036854775807")}],"items":{"0":${participantJson("1")}}}`;
     expect(await decodeMembersJson(new Response(source))).toEqual({ ...JSON.parse(source), actorAccess: directAccessFixture(projectId, userId) });
-    const inspection = await decodeAuthJson(new Response(`{"projectId":"${projectId}","projectName":"Project","member":${memberJson("9223372036854775807")},"\\u006dember":${memberJson("1")}}`));
-    expect(parseInvitationInspection(inspection).member?.version).toBe(1n);
+    const inspection = await decodeInvitationJson(new Response(inspectionJson("1")));
+    expect(parseInvitationInspection(inspection, userId).directGrant?.version).toBe(1n);
   });
 
   it.each(["0", "-1", "9223372036854775808", "1.5", "1.0", "1e0", "1E+3", '"1"', "null"])("rejects invalid version lexeme %s after actual JSON decoding", async (numericVersion) => {
@@ -235,17 +239,18 @@ describe("project invitation parsing", () => {
     expect(() => parseCreatedInvitation({ ...invitation, link }, projectId)).toThrowError(/^The server returned an invalid response\.$/);
   });
 
-  it("parses inspection without membership and binds optional membership to the inspected project", () => {
-    expect(parseInvitationInspection({ projectId, projectName: "Project" })).toEqual({ projectId, projectName: "Project" });
-    expect(parseInvitationInspection({ projectId: projectId.toUpperCase(), projectName: "Project", member })).toEqual({ projectId, projectName: "Project", member });
-    expect(() => parseInvitationInspection({ projectId, projectName: "Project", member: { ...member, projectId: otherId } })).toThrow("invalid response");
+  it("parses direct and inherited access and binds the grant to the inspected identity", () => {
+    const empty = { projectId, projectName: "Project", directGrant: null, access: null };
+    const access = { ...directAccessFixture(projectId, userId), directGrant: grant };
+    expect(parseInvitationInspection(empty, userId)).toEqual(empty);
+    expect(parseInvitationInspection({ ...empty, directGrant: grant, access }, userId)).toEqual({ ...empty, directGrant: grant, access });
+    expect(() => parseInvitationInspection({ ...empty, directGrant: { ...grant, userId: otherId }, access }, userId)).toThrow("invalid response");
+    expect(() => parseInvitationInspection({ ...empty, directGrant: grant }, userId)).toThrow("invalid response");
   });
 
-  it.each([
-    undefined, null, [], {}, { projectId, projectName: "" }, { projectId, projectName: "\0" },
-    { projectId: "invalid", projectName: "Project" }, { projectId, projectName: "Project", member: null },
-    { projectId, projectName: "Project", member: undefined }, { projectId, projectName: "Project", member: {} },
-  ])("rejects malformed inspection metadata and explicitly invalid optional members %#", (value) => {
-    expect(() => parseInvitationInspection(value)).toThrow("invalid response");
+  it.each([undefined, null, [], {}, { projectId, projectName: "" }, { projectId, projectName: "Project" },
+    { projectId, projectName: "Project", directGrant: null, access: undefined }, { projectId, projectName: "Project", directGrant: {}, access: null },
+  ])("rejects malformed inspection metadata %#", (value) => {
+    expect(() => parseInvitationInspection(value, userId)).toThrow("invalid response");
   });
 });

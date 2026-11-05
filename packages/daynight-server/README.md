@@ -6,7 +6,7 @@ loopback-only HTTP binding, connection validation, structured request logs, canc
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
 executable serves Team lifecycle, project, task, task-chain graph, task-summary synchronization
-and account-owned Worker snapshot routes together with the embedded task dashboard.
+and account-owned Worker snapshot/configuration routes together with the embedded task dashboard.
 Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
 are grouped by project and the first two canonical task UUID characters; an
@@ -69,14 +69,29 @@ missing user rows fail the whole roster instead of disappearing. Inherited-only
 participants have a null grant, while any direct grant retains its own real
 role, version and timestamps. Legacy role PATCH requires `expectedUserId`, stored role and the exact
 grant version, and returns `ProjectGrant`; DELETE requires the actor and version
-and retains 204. The actor guard precedes domain SQL and reports 409
-`identity_mismatch`. Invitation result DTOs retain their existing contract.
+and retains 204. `PUT /api/v1/projects/{projectId}/grants/{userId}` accepts
+`{version:null|positive int64,role,expectedUserId}`: null requires no existing
+grant, while a positive version must match the stored grant. A new grant target
+must already have effective Project access. The 200 response contains `grant`
+and nullable `actorAccess`. DELETE on the same path accepts a positive version
+and expectedUserId and returns `{projectId,userId,deleted:true,actorAccess}`.
+The access projection reflects the actor after the mutation in the transaction;
+null means the confirmed operation removed their access. Effective admins may
+manage their own and other admins' grants, including the last direct admin.
+Mismatched existence/version returns 409 `version_conflict`; a target without
+Project access returns 404 `not_found`. The actor guard precedes domain SQL and
+reports 409 `identity_mismatch`. A commit whose result cannot be confirmed
+returns 503 `write_outcome_unknown`; a later read establishes current facts, not
+the original outcome, and callers must not automatically replay the write.
+Invitation inspection returns the current direct grant and effective access; acceptance
+returns the real grant, post-write access and joined/consumed flags. Create, revoke
+and accept bind `expectedUserId` before domain SQL.
 Worker administrator checks consume access, while claim ownership and acquisition
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
-every project, task, graph, attachment and Worker snapshot route. The production Web entry separates
+every project, task, graph, attachment and Worker route. The production Web entry separates
 the public introduction at `/`, the zero-API guide at `/setup`, and the existing
 `AuthenticatedApp` lifecycle for `/login`, `/projects` and private pages.
 `daynight login` uses Daynight device authorization to obtain
@@ -370,7 +385,7 @@ return `Daynight-User-ID` from the admitted principal, including empty mutations
 and later resource errors. Failed authentication does not emit that header;
 caller-supplied values are not echoed. An unmatched route has an empty route template.
 UI and API requests use the same logging wrapper. Exact `/device`, `/account`,
-`/invitations`, `/`, `/login`, `/projects`, `/workers`, `/workers/{workerId}`, `/setup`,
+`/invitations`, `/team-invitations`, `/`, `/login`, `/projects`, `/workers`, `/workers/{workerId}`, `/setup`,
 `/projects/{projectId}`, `/projects/{projectId}/members`,
 `/projects/{projectId}/settings`, `/projects/{projectId}/tasks/{taskId}` and
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` page shapes return
@@ -425,9 +440,30 @@ to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
 
+### Race instrumentation
+
+`DAYNIGHT_TEST_RACE` selects race instrumentation for both coverage and E2E
+orchestration. The only accepted values are literal `true` and `false`; an absent
+value enables it for ordinary local validation, while empty or invalid values
+fail before fixture preparation. The two Go workflow jobs set it explicitly:
+PR events use `false`, and main push events use `true`.
+
+The orchestrator passes explicit `--race=<value>` to `go-cov` and
+`-race=<value>` to `go test`; the checked-in `.go-cov.toml` keeps its enabled
+local default. Disabled coverage also appends `-race=false` to its inherited
+`GOFLAGS`, retaining other flags; enabled coverage leaves them unchanged. The E2E
+package builds its service with the actual test binary's race mode, including direct `go test -race` invocations, and records that mode as
+`raceEnabled` in `.tmp/acceptance-evidence.json`. The orchestration receipts retain
+the actual coverage and E2E command arguments. Build, vet, functional and
+concurrency cases, atomic statement coverage and all coverage thresholds run in
+both modes. The [Go validation timing decision](../../.agents/notes/implemented/testing/2026-11-04-go-validation-timing.md)
+records the event policy and its limits.
+
+### Coverage and E2E responsibilities
+
 Coverage mode builds the executable, runs `go vet`, expires project-local Go test
-results so database changes cannot be hidden by cached coverage, and runs
-race-enabled package tests through `go-cov` pinned to commit
+results so database changes cannot be hidden by cached coverage, and runs package
+tests with the selected race mode through `go-cov` pinned to commit
 `d6caf2759e330b48d69a543695e37002a48feb1d`. The checked-in `.go-cov.toml`
 requires at least 85% coverage per production package and 80% per function,
 with critical blocks enforced and no production exclusions. The Node orchestrator
@@ -445,9 +481,10 @@ normally issued PAT producer, followed by the two deadline probes and installed
 fixture cleanup. It writes `.tmp/project-task-service-evidence.json` at the
 repository root and `.tmp/coverage.out` in this module.
 
-E2E mode runs `go test -race -count=1 -timeout=10m ./cmd/e2e_tests`. Its own packed
-and installed CLI belongs to that run; the package freshly builds a race-enabled
-server and retains every process, concurrency, error-path and cleanup assertion.
+E2E mode runs `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests` with the
+selected race mode. Its own packed and installed CLI belongs to that run; the
+package freshly builds a server with matching instrumentation and retains every
+process, concurrency, error-path and cleanup assertion.
 It writes this module's `.tmp/acceptance-evidence.json` and the repository-root
 `.tmp/project-task-e2e-evidence.json`, which records command results, installed
 artifact identity and installed-fixture removal. Deadline probes and their PAT
@@ -772,6 +809,31 @@ to both rows and counts. Completion or reassignment
 does not erase an otherwise visible historical observation. Liveness and recent
 visibility do not control claims or task state.
 
+## Worker cloud configuration
+
+The account owns a desired configuration and a separately versioned application
+observation on its existing Worker row. The [contract](../../docs/spec/daynight-worker-configuration.md)
+defines exact fields and refusals; the [design](../../docs/design/daynight-worker-configuration.md)
+defines row transactions and representation.
+
+| Method | Path | Result |
+|---|---|---|
+| `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | Desired settings, observation revision and retained application results |
+| `PUT` | `/api/v1/me/workers/{workerId}/configuration` | Exact-revision replacement of an initialized target |
+
+Clients opt into configuration exchange on the report endpoint with
+`Daynight-Worker-Configuration: 1`. The first valid local candidate creates an
+absent target; later candidates cannot overwrite it. Target edits and machine
+application reports have separate CAS revisions. Partial outcomes preserve real
+applied values and closed failure metadata; a target save does not claim that
+the machine applied it. Reports without the marker keep their original format.
+
+Configuration reads do not use the snapshot recent window or renew liveness.
+The authenticated account owns admission; active task claims are not a
+configuration prerequisite. No task fields, acquisition constraints or recovery
+semantics change. This service validates and exchanges settings; native
+preparation and resource stopping remain machine-side runtime responsibilities.
+
 ## Team lifecycle API
 
 The authenticated Team API creates ordinary Teams and reads the caller's joined
@@ -812,6 +874,65 @@ own the complete public contract. The
 [Team transaction design](../../docs/design/daynight-auth.md#team-元数据与生命周期事务)
 owns existence locking, completion classification and independent versions.
 
+## Team membership API
+
+`GET /api/v1/teams/{teamId}/members` returns `{items}` only to current Team
+members. Each item contains the real membership fields and
+`profile:{name,email,avatarUrl}` with nullable fields. A missing canonical user
+fails the entire read. Project grants do not grant directory access.
+
+An admin changes an existing role with `PATCH /api/v1/teams/{teamId}/members/{userId}`
+and `{version,role,expectedUserId}`; the response is `{membership,actorRole}`.
+An admin or the member removes the relationship with DELETE at the same path
+and `{version,expectedUserId}`; the response is
+`{teamId,userId,removed:true,actorRole}`. The actor role is null after self-exit.
+Personal membership is immutable. A stale membership version fails even for a
+same-role request, and the final admin cannot be demoted or removed. Membership
+changes do not alter Project grants. The actor check precedes domain SQL, and
+unknown commit results must be reconciled without automatic replay.
+
+The [authentication requirements](../../docs/spec/daynight-auth.md#team-生命周期)
+own the full behavior and refusals.
+
+## Team invitation API
+
+Current Team admins create, list and revoke invitations at
+`/api/v1/teams/{teamId}/invitations`. Create and revoke bind `expectedUserId`
+before domain SQL; Personal Teams reject creation. Creation returns a one-time
+`/team-invitations#<secret>` link. Metadata lists never contain the secret.
+Invitations expire after seven days and grant member once.
+
+Authenticated recipients inspect and accept through POST bodies at
+`/api/v1/team-invitations/inspect` and `/api/v1/team-invitations/accept`.
+Acceptance also binds `expectedUserId` and returns the actual membership and
+joined/consumed flags. Existing members retain their role without consuming the
+invitation. New membership and consumption commit together; revocation shares
+the Team and invitation locks. Deletion removes invitations in the same
+transaction. Invalid, expired, consumed, revoked or deleted targets all return
+`invitation_unavailable`. The [authentication requirements](../../docs/spec/daynight-auth.md#team-邀请)
+and [design](../../docs/design/daynight-auth.md#数据与并发) own the contract.
+
+## Project transfer API
+
+`POST /api/v1/projects/{projectId}/transfer-preview` accepts `targetTeamId` and
+returns source and target Team references, target metadata version, ownership
+and nullable predicted `actorRole`. `POST /api/v1/projects/{projectId}/transfer`
+accepts `ownership:{teamId,version}`, `targetTeam:{id,version}` and
+`expectedUserId`; only the current owner Team admin can use either operation.
+The target need not include the actor. A confirmed receipt contains `projectId`,
+`changed`, `sourceTeam`, `ownerTeam`, `ownership` and nullable `actorAccess`.
+Same-owner requests verify both versions and leave the Project unchanged.
+Actual transfers retain grants and invitations. Stale versions return
+`version_conflict`; an unconfirmed commit returns `write_outcome_unknown`.
+A lost receipt followed by 404 cannot establish success or authorize replay.
+
+The transaction locks Project, ownership, then source and target Teams in UUID
+order. Team deletion checks ownership in a fresh statement after its Team lock.
+Transfer logs use `component=project_transfer`, resource IDs, phase, outcome,
+error code and duration; names and credentials are excluded. The
+[requirements](../../docs/spec/daynight-auth.md#项目归属转移) and
+[design](../../docs/design/daynight-auth.md#数据与并发) own the complete contract.
+
 ## Project API
 
 | Method | Path | Result |
@@ -821,9 +942,14 @@ owns existence locking, completion classification and independent versions.
 | `GET` | `/api/v1/projects/{projectId}` | `200`, project |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | `200`, full project with saved settings |
 
-Creation accepts `name` and `repoUrl`, locks and validates the caller's real
-Personal Team, then atomically writes Project, ownership and creator direct admin
-grant. Canonical login UPSERT, Personal initialization and session creation share
+Creation accepts `name`, `repoUrl`, required `expectedUserId` and optional
+`teamId`. The expected user must match the principal before domain SQL. The
+caller must be a current member of the target Team; omitting it selects the
+caller's Personal Team. Creation locks the Team and atomically writes Project,
+ownership and creator direct admin grant; the response includes access projected
+in that transaction. An unconfirmed commit returns
+`write_outcome_unknown` and must not be replayed automatically. Canonical login
+UPSERT, Personal initialization and session creation share
 one transaction; repeat and concurrent login reuse the unique Team and validate
 its owner admin. Authentication does not repair broken Personal state. Internal
 Project reads require real ownership and report integrity errors for a missing
@@ -1245,8 +1371,9 @@ messages but refuse access through their task resource.
 Writes use canonical `store.LockProjectAuthorization` with Task share,
 credential share, real ownership share, owner-Team-member share, direct-grant
 share and head update locks in that order. Only existing source rows are locked;
-admission merges current source facts after waits and keeps ownership and sources
-stable through commit. At least one real source must still admit the writer.
+admission reads the stable owner Team in a new statement after the ownership lock,
+merges current source facts after waits and keeps ownership and sources stable
+through commit. At least one real source must still admit the writer.
 A missing ownership row is an integrity error. It acquires no Project row lock
 or profile projection. The final credential-expiry check follows all waits
 and encoding. Ordinary resource and Session admission keep their existing
@@ -1505,9 +1632,9 @@ for only this suite, including Web, UniAuth and installed CLI preparation. With
 sessions/PATs and explicit membership;
 installed commands use private origin-matched PAT configuration. Authentication
 and authorization remain on the production resource path. The E2E package's
-`TestMain` freshly builds a race-enabled server, starts only owned loopback
-children against isolated real PostgreSQL schemas, and checks HTTP workflows, restart persistence, competing
-mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
+`TestMain` freshly builds a server with the test binary's race mode, starts only
+owned loopback children against isolated real PostgreSQL schemas, and checks HTTP
+workflows, restart persistence, competing mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
 cancellation, graceful/forced SIGTERM,
 migration failures and simultaneous startup. This signal acceptance runs in the
 Ubuntu Go E2E CI job. Independent scenario subtests run with at most four concurrent
@@ -1555,7 +1682,7 @@ Thread scenario also verifies the [discussion contract](../../docs/spec/daynight
 | V5: revisions and no-ops | Workflow/refusal scenarios and `concurrent_same_version`; actual changes compete on one version and matching semantic no-ops retain fields/timestamps |
 | V6: listing and HTTP contract | `refusals_scopes_filters_and_cursors`, [HTTP tests](internal/server/tasks_test.go) and service tests cover tied keysets, scoped filters, initialized empty resources, DTOs and error mapping |
 | V7: transactions and lifecycle | Partial-failure, cancellation, graceful/forced-signal, unsupported/failed-migration-history, concurrent-startup and `installed_cli_pre_lifecycle_migration_restart` scenarios; owning store tests prove finer snapshot and cross-migration interleavings |
-| V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
+| V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the [event-specific race policy](#race-instrumentation), raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
 | Task Steps: installed CLI Add | [`installed_cli_task_steps_add` and `installed_cli_task_steps_add_unknown`](cmd/e2e_tests/task_steps_cli_add_acceptance_test.go) cover options, saved placement, explicit one-POST/default GET+POST budgets, exact identities/versions, known refusals and current-fact-only observation after a real committed Add loses its response |

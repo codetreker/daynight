@@ -766,3 +766,42 @@ it.each(["completed", "deadline", "cancelled", "startup-deadline"] as const)("us
     else expect(await result).toMatchObject({ name: "TimeoutError" });
   }
 });
+
+
+it("reports persisted startup uncertainty while paused without launching and preserves revision on unchanged observation", async () => {
+  const f = await fixture();
+  const source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  source.snapshot.startup = { state: "unknown", reasonCode: "native_timeout" };
+  source.snapshot.error = "Native initialize response timed out; result is unknown.";
+  const paused = f.store.pauseRecovery(source.task, "Original launch has no proven native identity.", 6);
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
+  const first = backend.observeStartupReport(paused);
+  expect(first).toMatchObject({ schemaVersion: 1, claimId: paused.claimId, revision: "1", startup: { state: "unknown", reasonCode: "native_timeout" }, recovery: { state: "blocked", reasonCode: "recovery_blocked" } });
+  expect(backend.observeStartupReport(paused)).toEqual(first);
+  expect(f.store.getTask(paused)?.recovery).toEqual(paused.recovery);
+  expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
+  source.snapshot.startup = { state: "failed", reasonCode: "native_rejected" };
+  expect(backend.observeStartupReport(paused)?.revision).toBe("2");
+});
+
+it("does not consume another generation's startup evidence", async () => {
+  const f = await fixture();
+  const source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  source.snapshot.startup = { state: "ready", reasonCode: "ready" };
+  source.snapshot.controllerInstanceId = randomUUID();
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
+  expect(backend.observeStartupReport(source.task)?.startup).toEqual({ state: "unknown", reasonCode: "evidence_missing" });
+  expect(f.store.getTask(source.task)?.resources.nativeSession).toBeNull();
+});
+
+
+it("does not report a stopped incomplete initialization as still starting", async () => {
+  const f = await fixture();
+  const source = await cleanupSource(f, f.store.getTask(f.identity)!);
+  source.snapshot.startup = { state: "starting", reasonCode: "initializing" };
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 10 });
+  expect(backend.observeStartupReport(source.task)?.startup).toEqual({ state: "unknown", reasonCode: "controller_start_unknown" });
+});

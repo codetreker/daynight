@@ -34,7 +34,7 @@ Documentation exclusions and unaffected-module skipping retain their existing
 semantics.
 
 The complete local `bash scripts/check.sh` entrypoint runs coverage followed by
-E2E. Coverage owns build, vet, race-enabled `go-cov`, critical-block enforcement,
+E2E. Coverage owns build, vet, `go-cov`, critical-block enforcement,
 package/function thresholds and the exact total statement comparison. The Node
 orchestrator excludes only the full import path of the test-only `cmd/e2e_tests`
 package from `go-cov` execution. The pinned tool matches exclusions by substring,
@@ -49,11 +49,15 @@ The coverage installation also supports `internal/server` authentication
 assertions. That package produces the normally issued PAT consumed by the two
 installed-CLI deadline probes; their private credential handoff and cleanup stay
 with the producer. E2E has its own installation and runs the complete test-only
-package with race detection, `-count=1` and a ten-minute timeout, retaining fresh
+package with `-count=1` and a ten-minute timeout, retaining fresh
 server builds, source and artifact provenance, refusal paths, concurrent writes
 and cleanup assertions. Neither job transfers credentials or live resources to
-the other. Routine CI excludes stress tests; the explicit local stress-budget
-entrypoint still runs complete coverage and E2E validation with full-byte probes
+the other. The [Go validation timing decision](2026-11-04-go-validation-timing.md)
+partially supersedes the original always-race CI policy: both jobs select race
+instrumentation explicitly, disabled for PR events and enabled for main pushes.
+Local validation enables it by default, and E2E child binaries match their test
+binary's actual instrumentation. Routine CI excludes stress tests; the explicit
+local stress-budget entrypoint still runs complete coverage and E2E validation with full-byte probes
 in the coverage phase.
 
 The server guide owns

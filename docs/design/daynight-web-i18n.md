@@ -29,7 +29,7 @@ packages/daynight-web/
 语言，切换保留状态与焦点。[公开入口设计](daynight-landing.md)拥有具体组合。
 [AuthenticatedApp](daynight-auth.md) 的 messages.auth 完整英语/简体中文契约拥有
 登录、设备授权、账户、项目创建、成员、邀请、令牌及工作空间 Worker 路由文案。
-messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称。
+messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称；其中 messages.workers.configuration 拥有配置字段、覆盖方式、目标与实际结果、逐项诊断、草稿校验、保存冲突和未知结果核对文案。
 入口在绘制前设置当前语言及与路径对应的推广页、指南或鉴权加载标题；后续页面元数据、
 路由与会话状态按当前目录更新。
 身份变化释放用户内容，但不重建语言 Provider。真实 UniAuth 生产验收保留对应源码与浏览器环境的证据。
@@ -72,7 +72,7 @@ Context 的缺省值明确表示未挂载，缺少 Provider 时 hooks 抛出错�
 
 Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选择语言时先更新本页展示，再尝试保存；失败保留选择并将 issue 更新为 `write`，保留原始 `cause`。`retrySave()` 保存当前语言。任意保存成功均将 issue 清为 `null`，包括启动时产生的读取或无效值错误。展示上下文按 locale 保持稳定，单独更新保存错误不替换其消息与格式化器。
 
-`LanguageSelector` 包含带可见标签 `语言 / Language` 的原生 `select`，选项使用 `English` 与 `简体中文`。每个实例有独立 label 关联，多个实例共享 Provider。错误提示按当前语言从目录映射，不显示原始异常；出现错误时提供本地化的重试保存操作。原生控件保持键盘与焦点行为，语言变化不重建选择器。
+`LanguageSelector` 包含可访问名称为 `语言 / Language` 的原生 `select`，不显示独立标签，选项使用 `English` 与 `简体中文`。共享样式为文本和绘制的箭头分别预留空间，箭头距右边框保持固定间距；各入口复用这一布局。每个实例有独立标识，多个实例共享 Provider。错误提示按当前语言从目录映射，不显示原始异常；出现错误时提供本地化的重试保存操作。原生控件保持键盘与焦点行为，语言变化不重建选择器。
 
 ## 消息与格式化
 

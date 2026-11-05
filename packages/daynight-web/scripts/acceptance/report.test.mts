@@ -48,13 +48,13 @@ const stressNativeNames = [...functionalNames, ...capacityNames];
 const scenario = (name: string): Scenario => ({ name, title: name, durationMs: 12, screenshots: [`/owned/${name}.png`] });
 
 test('keeps functional and explicit local stress inventory totals distinct', () => {
-  assert.equal(functionalNames.length, 32);
-  assert.equal(functionalNames.length * 2, 64);
-  assert.equal(stressNativeNames.length, 37);
-  assert.equal(stressNativeNames.length + functionalNames.length, 69);
+  assert.equal(functionalNames.length, 38);
+  assert.equal(functionalNames.length * 2, 76);
+  assert.equal(stressNativeNames.length, 43);
+  assert.equal(stressNativeNames.length + functionalNames.length, 81);
 });
 
-test('verifies exactly thirty-two functional scenarios for the container target', () => {
+test('verifies the complete functional inventory for the container target', () => {
   const scenarios = readReport(report([...functionalNames]), functionalNames);
   assert.equal(scenarios.length, functionalNames.length);
   assert.deepEqual(scenarios.map(({ name }) => name), functionalNames);
@@ -92,7 +92,7 @@ test('requires the platform journey in each complete target report', () => {
   assert.throws(() => aggregateScenarios([withoutPlatform.map(scenario), capacityNames.map(scenario)], stressNativeNames), /Required acceptance scenario missing: task-platform/);
 });
 
-for (const name of ['task-assignment', 'task-assignment-layout'] as const) {
+for (const name of ['task-assignment', 'task-assignment-layout', 'task-step-status', 'task-step-access-retirement', 'task-step-position', 'task-step-add', 'task-step-edit', 'task-step-delete'] as const) {
   test(`requires the ${name} journey in each complete target report`, () => {
     const incomplete = functionalNames.filter((candidate) => candidate !== name);
     assert.throws(() => readReport(report(incomplete), functionalNames), new RegExp(`Required acceptance scenario missing: ${name}`));
@@ -131,7 +131,8 @@ test('rejects an empty aggregate and duplicate required scenario names', () => {
 const githubSha = 'a'.repeat(40);
 const gitTreeSha = 'b'.repeat(40);
 const shardReceipt = (current: 1 | 2, sha = githubSha, tree = gitTreeSha) => {
-  const selection = current === 1 ? functionalNames.slice(0, 16) : functionalNames.slice(16);
+  const midpoint = Math.ceil(functionalNames.length / 2);
+  const selection = current === 1 ? functionalNames.slice(0, midpoint) : functionalNames.slice(midpoint);
   const targets = (['native', 'container'] as const).map((target, index) => {
     const baseUrl = `http://127.0.0.1:${current * 10_000 + index + 1}`;
     return { target, baseUrl, result: 'passed', scenarios: selection.map(scenario), phases: [{

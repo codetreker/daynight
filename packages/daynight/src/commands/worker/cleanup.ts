@@ -18,7 +18,10 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
     try {
       const lifecycle = deps.herdr.lifecycle;
       if (lifecycle !== undefined) {
-        await cleanupOperation(operation => lifecycle.stop(input.owner, deleteWorktree ? "terminal" : "shutdown", operation), signal);
+        if (deleteWorktree && lifecycle.cleanup) {
+          const notified = await cleanupOperation(operation => lifecycle.cleanup!(input.owner, workerCleanupPrompt(input.owner, deadline), operation), signal);
+          if (!notified) deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup prompt was skipped or unconfirmed because the original input surface was not safely available; controlled stopping still completed." });
+        } else await cleanupOperation(operation => lifecycle.stop(input.owner, deleteWorktree ? "terminal" : "shutdown", operation), signal);
         if (!lifecycle.isStopped(input.owner)) throw new Error("The original Herdr run stop is not confirmed; its resources are retained.");
         deps.emit({ kind: "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: "Stopped the original Herdr run; its worktree and local source remain until archive finalization permits cleanup." });
         return;

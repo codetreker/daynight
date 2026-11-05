@@ -53,7 +53,7 @@ describe('Goal child execution duration', () => {
     const view = renderWithLocale(content(snapshot(tasks), onOpenTask), { locale, taskCache: true });
     expand();
     const running = [row('manual'), row('automatic')];
-    const names = locale === 'en' ? ['manualAssignee: UnassignedIn progress', 'automaticAssignee: UnassignedIn progress'] : ['manual负责人：未分配进行中', 'automatic负责人：未分配进行中'];
+    const names = locale === 'en' ? ['manual Assignee: Unassigned Automatic execution off No machine record In progress', 'automatic Assignee: Unassigned Automatic execution on No machine record In progress'] : ['manual 负责人：未分配 自动执行已关闭 暂无执行机器记录 进行中', 'automatic 负责人：未分配 自动执行已开启 暂无执行机器记录 进行中'];
     for (const [index, element] of running.entries()) {
       expect(element).toHaveAccessibleName(names[index]!);
       expect(element.querySelector('time')).toHaveTextContent(locale === 'en' ? '< 1 min' : '不足 1 分钟');

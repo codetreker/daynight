@@ -4,6 +4,7 @@ import { Application } from "../src/app/Application";
 import { navigate } from "../src/app/router";
 import { invitationStorageKey } from "../src/features/auth/invitation";
 import { renderWithLocale } from "./helpers/renderWithLocale";
+import { personalTeamPage } from "./helpers/team";
 
 vi.mock("../src/features/landing/LandingPage", () => ({ LandingPage: () => <main><h1>Public product introduction</h1></main> }));
 
@@ -13,6 +14,7 @@ const anonymous = () => json({ error: { code: "unauthenticated", message: "Sign 
 const mount = (navigateToLogin = vi.fn()) => renderWithLocale(<Application navigateToLogin={navigateToLogin} />, { locale: "en" });
 const defaultResponse = (url: string) => {
   if (url === "/api/v1/me") return json(user);
+  if (url.startsWith("/api/v1/teams?")) return json(personalTeamPage(user.id));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url.startsWith("/api/v1/projects")) return json({ items: [], nextCursor: null });
   throw new Error(`Unexpected entry request: ${url}`);
@@ -75,12 +77,38 @@ describe("public and authenticated entry ownership", () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
     const fetcher = vi.fn((url: string) => Promise.resolve(url === '/api/v1/invitations/inspect'
-      ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project' }) : defaultResponse(url)));
+      ? json({ projectId: '00000000-0000-4000-8000-000000000010', projectName: 'Invited project', directGrant: null, access: null }) : defaultResponse(url)));
     vi.stubGlobal('fetch', fetcher);
     mount();
     await screen.findByRole('button', { name: 'Accept invitation and join' });
     expect(fetcher).toHaveBeenCalledWith('/api/v1/invitations/inspect', expect.objectContaining({ body: JSON.stringify({ token: 'memory-only-invitation' }) }));
     expect(location.hash).toBe('');
+  });
+
+  it("removes a Team secret from navigation state and captures the same link reopened in this tab", async () => {
+    const secret = "dnteam_reopened";
+    const teamId = "00000000-0000-4000-8000-000000000010";
+    const team = { id: teamId, kind: "ordinary", name: "Example Team" };
+    const membership = { teamId, userId: user.id, role: "member", version: 1, createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+    window.history.replaceState(null, "", `/team-invitations#${secret}`);
+    let inspections = 0;
+    const fetcher = vi.fn((url: string) => {
+      if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(++inspections === 1 ? json({ team, membership: null }) : json({ error: { code: "invitation_unavailable", message: "unavailable", requestId: "entry" } }, 404));
+      if (url === "/api/v1/team-invitations/accept") return Promise.resolve(json({ team, membership, joined: true, consumed: true }));
+      return Promise.resolve(defaultResponse(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    expect(window.location.hash).toBe("");
+    expect(JSON.stringify(window.history.state)).not.toContain(secret);
+    fireEvent.click(await screen.findByRole("button", { name: "Accept invitation and join" }));
+    await screen.findByRole("heading", { name: "You joined this Team" });
+    window.location.hash = secret;
+    await screen.findByRole("heading", { name: "Invitation unavailable" });
+    expect(inspections).toBe(2);
+    expect(window.location.hash).toBe("");
+    expect(JSON.stringify(window.history.state)).not.toContain(secret);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(1);
   });
 
   it("preserves a direct attachment and selected tab through the independent login entry", async () => {
@@ -116,12 +144,12 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(defaultResponse(url))));
     mount();
     await act(async () => navigate("/login"));
-    await screen.findByRole("heading", { name: "Projects" });
+    await screen.findByRole("heading", { name: "Personal" });
     expect(window.location.pathname).toBe("/projects");
     await historyMove("back");
     expect(screen.getByRole("heading", { name: "Public product introduction" })).toBeVisible();
     await historyMove("forward");
-    await screen.findByRole("heading", { name: "Projects" });
+    await screen.findByRole("heading", { name: "Personal" });
   });
 
   it("retains invitation context after a failed callback reaches the explicit login page", async () => {
@@ -130,7 +158,7 @@ describe("public and authenticated entry ownership", () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/me" ? anonymous() : defaultResponse(url))));
     const login = vi.fn(); mount(login);
     fireEvent.click(await screen.findByRole("button", { name: "Sign in with GitHub" }));
-    expect(screen.getByText("Sign in through UniAuth to review your project invitation.")).toBeVisible();
+    expect(screen.getByText("Sign in through UniAuth to review your invitation.")).toBeVisible();
     expect(screen.getByText(/Sign-in was not completed/)).toBeVisible();
     expect(window.sessionStorage.getItem(invitationStorageKey)).not.toBeNull();
     expect(window.location.search).not.toContain("authError");
@@ -140,11 +168,11 @@ describe("public and authenticated entry ownership", () => {
   it("returns successful normal logout to the public homepage", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url === "/api/v1/auth/logout" ? new Response(null, { status: 204 }) : defaultResponse(url))));
     mount();
-    await screen.findByRole("heading", { name: "Projects" });
+    await screen.findByRole("heading", { name: "Personal" });
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
     await screen.findByRole("heading", { name: "Public product introduction" });
     expect(window.location.pathname).toBe("/");
-    expect(screen.queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Personal" })).toBeNull();
   });
 
   it.each(["invitation", "device"])("keeps the %s target and temporary context while switching accounts", async (flow) => {
@@ -152,7 +180,7 @@ describe("public and authenticated entry ownership", () => {
     window.history.replaceState(null, "", destination + (flow === "invitation" ? "#pending-invitation" : ""));
     const fetcher = vi.fn((url: string) => Promise.resolve(
       url === "/api/v1/auth/logout" ? new Response(null, { status: 204 })
-        : url === "/api/v1/invitations/inspect" ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project" })
+        : url === "/api/v1/invitations/inspect" ? json({ projectId: "00000000-0000-4000-8000-000000000010", projectName: "Invited project", directGrant: null, access: null })
           : url === "/api/v1/auth/device/inspect" ? json({ userCode: "BCDFG-HJKLM", expiresAt: new Date(Date.now() + 600_000).toISOString(), status: "pending" })
             : defaultResponse(url)
     ));

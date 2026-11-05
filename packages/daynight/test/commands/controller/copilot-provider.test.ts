@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { startupFailure } from "../../../src/commands/controller/startup.js";
+import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
 import type { ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 const sdk = vi.hoisted(() => ({ construct: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
 const processMock = vi.hoisted(() => ({ spawn: vi.fn() }));
@@ -30,6 +33,94 @@ function setup() {
 }
 beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+
+const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
+test.each([-32099, -32098, -32097, -32096])("Copilot SDK local transport error %s remains unknown", async code => {
+  fixture.client.createSession.mockRejectedValue(new ResponseError(code, "Local transport failed"));
+  const error = await openCopilotProvider(fixture.options).catch(error => error);
+  expect(startupFailure(error)).toEqual({ state: "unknown", reasonCode: "native_transport_unknown" });
+});
+
+test.each(["reject", "timeout"])("Copilot cleanup failure preserves the original startup %s without asserting stopped", async mode => {
+  fixture.client.createSession.mockRejectedValue(mode === "reject" ? new ResponseError(-32602, "Native initialization rejected") : new NativeRpcTimeoutError("session.create"));
+  fixture.child.kill.mockImplementation(() => { throw new Error("Fixture stop failed"); });
+  const diagnostics: string[] = [];
+  const error = await openCopilotProvider({ ...fixture.options, onDiagnostic: message => diagnostics.push(message) }).catch(error => error);
+  expect(startupFailure(error)).toEqual(mode === "reject" ? { state: "failed", reasonCode: "native_rejected" } : { state: "unknown", reasonCode: "native_timeout" });
+  expect(diagnostics.some(message => /stop|cleanup/i.test(message))).toBe(true);
+  expect(fixture.states.some(state => state.activity === "stopped")).toBe(false);
+  expect(fixture.child.signalCode).toBeNull();
+});
+
+test("Copilot late session creation after startup timeout cannot issue disconnect RPCs", async () => {
+  vi.useFakeTimers();
+  let settle!: (native: typeof fixture.native) => void;
+  fixture.client.createSession.mockImplementation(() => new Promise(resolve => { settle = resolve; }));
+  const pending = openCopilotProvider(fixture.options).catch(error => error);
+  await vi.waitFor(() => expect(fixture.client.createSession).toHaveBeenCalledOnce());
+  await vi.advanceTimersByTimeAsync(30_001);
+  expect(startupFailure(await pending)).toEqual({ state: "unknown", reasonCode: "native_timeout" });
+  settle(fixture.native); await Promise.resolve(); await Promise.resolve();
+  expect(fixture.native.disconnect).not.toHaveBeenCalled();
+  expect(fixture.client.forceStop).toHaveBeenCalledOnce();
+});
+
+test.each([false, true])("Copilot appends the exact role without an initial user turn (resume=%s)", async resume => {
+  const instructions = "  Daynight 助手\nKeep native defaults. 😀 e\u0301\n", id = resume ? randomUUID() : null;
+  const setApproveAll = vi.fn(async () => ({ success: true }));
+  Object.assign(fixture.native.rpc.permissions, { setApproveAll });
+  const provider = await openCopilotProvider({ ...fixture.options, instructions, resumeNativeSessionId: id });
+  try {
+    expect(fixture.config().systemMessage).toEqual({ mode: "append", content: instructions });
+    expect(fixture.config()).not.toHaveProperty("model");
+    expect(fixture.config()).not.toHaveProperty("reasoningEffort");
+    expect(provider.nativeSessionId).toBe(id ?? fixture.config().sessionId);
+    expect(fixture.native.send).not.toHaveBeenCalled();
+    expect(fixture.states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null });
+    expect(fixture.entries.some(entry => entry.kind === "user_message")).toBe(false);
+    expect(fixture.native.rpc.permissions.configure).not.toHaveBeenCalled();
+    expect((fixture.config().onPermissionRequest as () => unknown)()).toEqual({ kind: "no-result" });
+    if (resume) {
+      expect(fixture.client.createSession).not.toHaveBeenCalled();
+      expect(setApproveAll).not.toHaveBeenCalled();
+    } else expect(setApproveAll).toHaveBeenCalledWith({ enabled: false });
+    expect(processMock.spawn.mock.calls[0]![1]).not.toContain("--allow-all");
+  } finally { await provider.close(); }
+});
+
+test.each([false, true])("Copilot leaves legacy sessions without a system message (resume=%s)", async resume => {
+  const provider = await openCopilotProvider({ ...fixture.options, resumeNativeSessionId: resume ? randomUUID() : null });
+  try {
+    expect(fixture.config()).not.toHaveProperty("systemMessage");
+    expect(fixture.native.send).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
+test.each([false, true])("Copilot roles preserve explicit creation settings and native resume settings (resume=%s)", async resume => {
+  const provider = await openCopilotProvider({ ...fixture.options, instructions: "Role", model: "selected-model", args: ["--effort", "high"], resumeNativeSessionId: resume ? randomUUID() : null });
+  try {
+    expect(fixture.config().systemMessage).toEqual({ mode: "append", content: "Role" });
+    if (resume) {
+      expect(fixture.config()).not.toHaveProperty("model");
+      expect(fixture.config()).not.toHaveProperty("reasoningEffort");
+    } else expect(fixture.config()).toMatchObject({ model: "selected-model", reasoningEffort: "high" });
+  } finally { await provider.close(); }
+});
+
+test.each([false, true])("Copilot role startup failures preserve the error and stop the owned runtime (resume=%s)", async resume => {
+  const error = new Error("Native role configuration rejected");
+  const opening = resume ? fixture.client.resumeSession : fixture.client.createSession;
+  opening.mockRejectedValue(error);
+  await expect(openCopilotProvider({ ...fixture.options, instructions: "Role", resumeNativeSessionId: resume ? randomUUID() : null })).rejects.toBe(error);
+  expect(fixture.native.send).not.toHaveBeenCalled();
+  expect(fixture.client.rpc.runtime.shutdown).not.toHaveBeenCalled();
+  expect(fixture.client.stop).not.toHaveBeenCalled();
+  expect(fixture.client.forceStop).toHaveBeenCalledOnce();
+  expect(fixture.child.kill).toHaveBeenCalledWith("SIGTERM");
+  expect(fixture.child.signalCode).toBe("SIGTERM");
+  expect(fixture.states.at(-1)?.activity).toBe("stopped");
+  if (resume) expect(fixture.client.createSession).not.toHaveBeenCalled();
+});
 
 test("Copilot owns a token-authenticated local runtime, preserves private profile and stops its child", async () => {
   const provider = await openCopilotProvider(fixture.options);
@@ -67,7 +158,7 @@ test.each(["missing", "wrong_id", "wrong_cwd", "in_use", "remote"])("Copilot exa
 test("Copilot rechecks native identity and directory after opening", async () => {
   fixture.native.rpc.metadata.snapshot.mockResolvedValue({ sessionId: "wrong", workingDirectory: process.cwd(), alreadyInUse: false, isRemote: false });
   await expect(openCopilotProvider(fixture.options)).rejects.toThrow(/identity|directory/i);
-  expect(fixture.native.disconnect).toHaveBeenCalled(); expect(fixture.child.kill).toHaveBeenCalled();
+  expect(fixture.native.disconnect).not.toHaveBeenCalled(); expect(fixture.child.kill).toHaveBeenCalled();
 });
 
 test("Copilot delivers early native events and final messages upsert their streamed identity", async () => {

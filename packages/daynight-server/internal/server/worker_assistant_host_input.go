@@ -1,0 +1,85 @@
+package server
+
+import (
+	"bytes"
+	"encoding/json"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+)
+
+func workerAssistantHostInput(raw json.RawMessage) (*core.WorkerAssistantHost, error) {
+	fields, err := workerObject(raw, "assistantHost", "protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers")
+	if err != nil {
+		return nil, err
+	}
+	host := &core.WorkerAssistantHost{}
+	host.ProtocolVersion, err = workerIntegerInput(fields["protocolVersion"])
+	if err != nil {
+		return nil, err
+	}
+	host.ObservedAt, err = workerTimeInput(fields, "observedAt")
+	if err != nil {
+		return nil, err
+	}
+	host.DefaultCwd, err = requiredString(fields, "defaultCwd")
+	if err != nil {
+		return nil, err
+	}
+	provider, err := requiredString(fields, "defaultProvider")
+	if err != nil {
+		return nil, err
+	}
+	host.DefaultProvider = core.WorkerAgent(provider)
+	var providers []json.RawMessage
+	if json.Unmarshal(fields["providers"], &providers) != nil || providers == nil {
+		return nil, invalidInput("assistantHost.providers must be an array")
+	}
+	host.Providers = make([]core.WorkerAssistantProvider, 0, len(providers))
+	for _, raw := range providers {
+		provider, err := workerAssistantProviderInput(raw)
+		if err != nil {
+			return nil, err
+		}
+		host.Providers = append(host.Providers, provider)
+	}
+	return host, nil
+}
+
+func workerAssistantProviderInput(raw json.RawMessage) (core.WorkerAssistantProvider, error) {
+	var provider core.WorkerAssistantProvider
+	fields, err := workerObject(raw, "assistantHost.providers", "provider", "available", "reason", "model", "args")
+	if err != nil {
+		return provider, err
+	}
+	name, err := requiredString(fields, "provider")
+	if err != nil {
+		return provider, err
+	}
+	provider.Provider = core.WorkerAgent(name)
+	if bytes.Equal(bytes.TrimSpace(fields["available"]), []byte("null")) || json.Unmarshal(fields["available"], &provider.Available) != nil {
+		return provider, invalidInput("assistantHost provider available must be a boolean")
+	}
+	for name, destination := range map[string]**string{"reason": &provider.Reason, "model": &provider.Model} {
+		if bytes.Equal(bytes.TrimSpace(fields[name]), []byte("null")) {
+			continue
+		}
+		value, err := requiredString(fields, name)
+		if err != nil {
+			return provider, err
+		}
+		*destination = &value
+	}
+	var args []json.RawMessage
+	if json.Unmarshal(fields["args"], &args) != nil || args == nil {
+		return provider, invalidInput("assistantHost provider args must be an array")
+	}
+	provider.Args = make([]string, 0, len(args))
+	for _, raw := range args {
+		value, err := requiredString(map[string]json.RawMessage{"argument": raw}, "argument")
+		if err != nil {
+			return provider, err
+		}
+		provider.Args = append(provider.Args, value)
+	}
+	return provider, nil
+}

@@ -49,7 +49,7 @@ const fixture = async (count: 0 | 2) => {
   const dependencies: TaskCommandDependencies = {
     resolveProject,
     runServerCommand: async (current, command) => {
-      const output = await command({ api, operation, serverUrl });
+      const output = await command({ api, operation, serverUrl, serverConfiguration: { serverUrl } });
       if (typeof output === "string") current.stdout(output);
     },
   };

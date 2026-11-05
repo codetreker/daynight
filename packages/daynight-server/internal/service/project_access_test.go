@@ -56,7 +56,7 @@ func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
 	_, err = NewProjects(nil).Access(ctx, principal, "invalid")
 	requireFault(t, err, "invalid_input")
 	projects, database, databaseURL, admin := projectService(t)
-	project, err := projects.Create(ctx, admin, CreateProject{Name: "Completion precedence", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, admin, CreateProject{ExpectedUserID: admin.UserID, Name: "Completion precedence", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}

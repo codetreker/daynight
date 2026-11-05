@@ -25,8 +25,9 @@ const ordinaryId = "c1b2c3d4-1111-4222-8333-123456789abc";
 const externalId = "d1b2c3d4-1111-4222-8333-123456789abc";
 const claimId = "e1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
+const personalTeamId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const workerClaim: WorkerClaim = { claimId, state: "active", userId: alternateId, workerId: unrelatedId, machine: { id: alternateId, name: "Worker machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: ordinaryId, phase: "executing", herdr: { session: "w", workspaceId: "original-workspace", paneId: "original-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
-const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time });
+const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: personalTeamId, version: 1n }, createdAt: time, updatedAt: time });
 const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: {}, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
@@ -111,13 +112,25 @@ const exercise = async (): Promise<void> => {
         const parts = url.pathname.split("/");
         const projectId = parts[4]!;
         if (url.pathname === "/api/v1/me") {
-          send(response, { id: alternateId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } }); return;
+          response.setHeader("Daynight-User-ID", alternateId);
+          send(response, { id: alternateId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: personalTeamId, kind: "personal" as const, name: null } }); return;
+        }
+        if (url.pathname === `/api/v1/teams/${personalTeamId}`) {
+          response.setHeader("Daynight-User-ID", alternateId);
+          send(response, { id: personalTeamId, kind: "personal", name: null, version: 1n, createdAt: time, updatedAt: time, membership: { teamId: personalTeamId, userId: alternateId, role: "admin", version: 1n, createdAt: time, updatedAt: time } }); return;
         }
         if (url.pathname === "/api/v1/task-properties/schema") {
           send(response, propertySchema); return;
         }
         if (url.pathname === "/api/v1/projects") {
-          if (request.method === "POST") { send(response, { ...project(), ...(body as { name: string; repoUrl: string }) }, 201); return; }
+          if (request.method === "POST") {
+            const input = body as { name: string; repoUrl: string; expectedUserId: string; teamId: string };
+            const created = { ...project(), name: input.name, repoUrl: input.repoUrl };
+            if (input.expectedUserId !== alternateId) { fault(response, "identity_mismatch", "native-project-identity", 409); return; }
+            if (input.teamId !== personalTeamId) { fault(response, "invalid_input", "native-project-team", 400); return; }
+            response.setHeader("Daynight-User-ID", alternateId);
+            send(response, { ...created, access: { projectId: created.id, ownerTeam: { id: created.ownership.teamId, kind: "personal", name: null }, ownership: created.ownership, effectiveRole: "admin", teamRole: "admin", canTransfer: true, directGrant: { projectId: created.id, userId: alternateId, role: "admin", version: 1n, createdAt: time, updatedAt: time } } }, 201); return;
+          }
           if (broken === "page" && url.searchParams.has("cursor")) { fault(response, "internal_error", "native-later-page", 500); return; }
           const remaining = url.searchParams.has("cursor") ? projects.slice(1) : projects.slice(0, 1);
           send(response, { items: remaining, nextCursor: !url.searchParams.has("cursor") && projects.length > 1 ? "native page+/=?" : null }); return;
@@ -211,7 +224,7 @@ const exercise = async (): Promise<void> => {
     cancellation.signal.throwIfAborted();
     const command = transport === "launcher" ? receipt.launcherPath : receipt.nodePath;
     const commandArguments = transport === "launcher" ? [...args] : [receipt.entryPath, ...args];
-    const child = crossSpawn(command, commandArguments, { cwd, env: { ...environment, ...(isolated ? { NODE_OPTIONS: `--import=${pathToFileURL(path.join(receipt.root, "isolation.mjs")).href}` } : {}) }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    const child = crossSpawn(command, commandArguments, { cwd, env: { ...environment, ...(isolated ? { NODE_OPTIONS: `--import=${pathToFileURL(path.join(receipt.root, "isolation.mjs")).href}`, ...(args[0] === "project" && args[1] === "create" && args.includes("--confirm") ? { DAYNIGHT_TEST_ALLOW_OUTPUT_HELPER: "1" } : {}) } : {}) }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", problem: Error | undefined;
     child.stdout!.setEncoding("utf8"); child.stderr!.setEncoding("utf8");
     child.stdout!.on("data", (value: string) => { stdout += value; }); child.stderr!.on("data", (value: string) => { stderr += value; });
@@ -259,7 +272,7 @@ const exercise = async (): Promise<void> => {
   const mutations = (): number => requests.filter(({ method }) => method !== "GET").length;
   try {
     await mkdir(outside); await mkdir(home);
-    await writeFile(path.join(receipt.root, "isolation.mjs"), `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,nextResolve){const result=nextResolve(specifier,context);if(['/repository/git.js','/repository/binding.js','/repository/context.js','/commands/review/runtime.js','better-sqlite3','node:child_process'].some(value=>specifier.includes(value)||result.url.includes(value)))throw new Error('Unexpected business import: '+specifier);return result;}});`);
+    await writeFile(path.join(receipt.root, "isolation.mjs"), `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,nextResolve){const result=nextResolve(specifier,context);if(['/repository/git.js','/repository/binding.js','/repository/context.js','/commands/review/runtime.js','better-sqlite3','node:child_process'].some(value=>(value!=='node:child_process'||process.env.DAYNIGHT_TEST_ALLOW_OUTPUT_HELPER!=='1')&&(specifier.includes(value)||result.url.includes(value))))throw new Error('Unexpected business import: '+specifier);return result;}});`);
     expect((await invoke(["task", "--help"], outside, 0, true)).stdout).toContain("Usage: daynight task");
     expect((await invoke(["task", "set-status", "--help"], outside, 0, true)).stdout).toContain("--claim-id <claim-id>");
     await invoke(["task", "set-status", taskId, "done", "--if-version", "9223372036854775808"], outside, 2, true);
@@ -287,11 +300,14 @@ const exercise = async (): Promise<void> => {
     const explicit = ["--project", id];
     const listed = await invoke(["project", "list", "--json"], outside, 0, true);
     expect(parseApiJson(listed.stdout)).toEqual(projects);
+    const existingProjectAt = requests.length;
     const existingProject = await invoke(["project", "create", "Different name", "--repo", project().repoUrl], outside, 0, true);
     expect(existingProject.stdout).toContain("Project already exists.");
-    const createdProject = await invoke(["project", "create", "Native 名称", "--repo", "https://git.example/Native/New.git"], outside, 0, true);
+    expect(requests.slice(existingProjectAt).every(({ method, path: pathname }) => method === "GET" && pathname.startsWith("/api/v1/projects?"))).toBe(true);
+    expect(requests.slice(existingProjectAt)).toHaveLength(2);
+    const createdProject = await invoke(["project", "create", "Native 名称", "--repo", "https://git.example/Native/New.git", "--confirm"], outside, 0, true);
     expect(createdProject.stdout).toContain("Project created.");
-    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git" });
+    expect(requests.at(-1)!.body).toEqual({ name: "Native 名称", repoUrl: "https://git.example/Native/New.git", expectedUserId: alternateId, teamId: personalTeamId });
     expect(parseApiJson((await invoke(["project", "show", id, "--json"], outside, 0, true)).stdout)).toEqual(project());
     expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toEqual({ ...task(), version: 9_007_199_254_740_993n });
     const createdTask = await invoke(["task", "create", "--title", "Native task", ...explicit], outside, 0, true);

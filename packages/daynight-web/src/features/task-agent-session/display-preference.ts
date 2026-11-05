@@ -7,7 +7,7 @@ export type SessionDisplayPreferenceSnapshot = {
   readonly mode: SessionDisplayMode;
   readonly issue: SessionDisplayPreferenceIssue | null;
 };
-export type SessionDisplayPreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
+export type SessionDisplayPreferenceStorage = Pick<Storage, 'getItem' | 'setItem'> & Partial<Pick<Storage, 'removeItem'>>;
 export type SessionDisplayPreference = {
   readonly getSnapshot: () => SessionDisplayPreferenceSnapshot;
   readonly subscribe: (listener: () => void) => () => void;
@@ -16,6 +16,7 @@ export type SessionDisplayPreference = {
 };
 export type SessionDisplayPreferenceStore = {
   readonly get: (binding: SessionDisplayBinding) => SessionDisplayPreference;
+  readonly remove: (binding: SessionDisplayBinding) => void;
 };
 
 const defaultSnapshot: SessionDisplayPreferenceSnapshot = Object.freeze({ mode: DEFAULT_SESSION_DISPLAY_MODE, issue: null });
@@ -43,10 +44,13 @@ function readPreference(key: string, getStorage: () => SessionDisplayPreferenceS
   return Object.freeze({ mode: DEFAULT_SESSION_DISPLAY_MODE, issue: issues.invalid });
 }
 
-function createPreference(key: string, getStorage: () => SessionDisplayPreferenceStorage): SessionDisplayPreference {
-  let snapshot = readPreference(key, getStorage);
+type OwnedPreference = SessionDisplayPreference & { invalidate(): void };
+function createPreference(key: string, getStorage: () => SessionDisplayPreferenceStorage, initial?: SessionDisplayPreferenceSnapshot): OwnedPreference {
+  let snapshot = initial ?? readPreference(key, getStorage);
+  let invalidated = false;
   const listeners = new Set<() => void>();
   const save = (mode: SessionDisplayMode) => {
+    if (invalidated) return;
     const previous = snapshot;
     // Storage failure must never roll back the reader's current in-memory choice.
     snapshot = Object.freeze({ mode, issue: previous.issue });
@@ -58,6 +62,7 @@ function createPreference(key: string, getStorage: () => SessionDisplayPreferenc
     for (const listener of listeners) listener();
   };
   return {
+    invalidate: () => { invalidated = true; snapshot = defaultSnapshot; for (const listener of listeners) listener(); },
     getSnapshot: () => snapshot,
     subscribe: listener => {
       listeners.add(listener);
@@ -76,14 +81,21 @@ function createPreference(key: string, getStorage: () => SessionDisplayPreferenc
 export function createSessionDisplayPreferenceStore(
   getStorage: () => SessionDisplayPreferenceStorage = () => window.localStorage,
 ): SessionDisplayPreferenceStore {
-  const preferences = new Map<string, SessionDisplayPreference>();
+  const preferences = new Map<string, OwnedPreference>();
+  const removed = new Set<string>();
   return {
+    remove: binding => {
+      if (binding === null) return;
+      const key = `daynight.web.session.display.v1:${JSON.stringify([binding.userId, binding.sessionId])}`;
+      preferences.get(key)?.invalidate(); preferences.delete(key); removed.add(key);
+      try { getStorage().removeItem?.(key); } catch { /* The invalidated in-memory entry cannot revive a saved preference. */ }
+    },
     get: binding => {
       if (binding === null) return inactivePreference;
       const key = `daynight.web.session.display.v1:${JSON.stringify([binding.userId, binding.sessionId])}`;
       let preference = preferences.get(key);
       if (preference === undefined) {
-        preference = createPreference(key, getStorage);
+        preference = createPreference(key, getStorage, removed.has(key) ? defaultSnapshot : undefined);
         preferences.set(key, preference);
       }
       return preference;

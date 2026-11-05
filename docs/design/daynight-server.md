@@ -150,6 +150,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 | Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、可空用户 UUID `assignedTo`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
+| WorkerConfiguration | 同一账号 Worker 行上的独立目标版本、值、应用观测版本与最近结果；[配置设计](daynight-worker-configuration.md) |
 
 `TaskDependency` 的方向是“`taskId` 依赖 `dependsOnTaskId`”。project 拥有任务及依赖
 图；不同 project 可以关联相同仓库地址，`repoUrl` 不作为 project 唯一键。当前 API
@@ -308,8 +309,11 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `GET /api/v1/me/workers` | 近期 Worker 摘要、当前可见任务计数及稳定 cursor |
 | `GET /api/v1/projects/{projectId}/task-assignees` | 同一读取快照中的项目成员与保留负责人目录或限定ID解析 |
 | `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
+| `GET, PUT /api/v1/me/workers/{workerId}/configuration` | 独立于任务状态的目标 CAS 与实际应用观测，查询不续活 |
 
-创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的
+创建 project 的输入为 `name`、`repoUrl`、必填 `expectedUserId` 和可选 `teamId`；
+目标成员检查与事务锁由[鉴权架构](daynight-auth.md#数据与并发)拥有；成功返回 Project 与同事务 access。
+创建 task 的输入为 `title`、可省略的
 `description`、`dependsOn`、`externalDependsOn`、`requiredPlatform`、`assignedTo` 与 `properties`；省略描述表示空字符串，省略依赖和
 属性表示没有对应行，完整属性对象为空时返回 {}。创建成功
 返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create/PATCH 不能提供 properties.worker，PR 更新保留它。
@@ -519,7 +523,7 @@ HTTP 测试验证路由、DTO、错误映射、project 范围查找、分页筛�
 生命周期测试还覆盖连接失败、有界关闭和日志脱敏。测试不以模拟 store 替代数据库
 行为；最终交付必须给出需求 V1–V10 的全部验收证据。
 
-实现交付的验证包含 `go vet`、启用 race 的测试及 `go-cov --ci`。覆盖率配置位于 Go
+实现交付的验证包含 `go vet`、完整测试及 `go-cov --ci`。race 在本地默认和 main CI 开启，PR CI 关闭；[服务端验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有显式选择与回执语义。覆盖率配置位于 Go
 模块内的 `.go-cov.toml`，总计门槛严格大于 90%、每包至少 85%、每函数至少 80%，critical
 路径保持默认阻断。`go-cov` 的 total 配置仍使用 90；同一原始 coverage profile
 再按唯一代码块的语句数执行 `covered * 10 > total * 9` 精确检查，拒绝零语句和
@@ -545,15 +549,17 @@ server selector，在各自 runner 与 PostgreSQL 服务上并行执行，分别
 也选择两个 Go job。具体路径与失败行为由[仓库 CI 路由](../../README.md#ci-selection)
 拥有，取舍见[服务 CI 输入决策](../../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)。
 
-覆盖率阶段保留 build、vet、race、固定版本 `go-cov` 与 strict raw profile 检查。
+覆盖率阶段保留 build、vet、按事件选择的 race instrumentation、固定版本 `go-cov` 与 strict raw profile 检查。`DAYNIGHT_TEST_RACE` 只接受 `true`/`false`，缺席时本地默认开启；工作流对 PR 传 `false`，main push 传 `true`。编排显式传 `--race=<value>`，不改变生产覆盖率范围、atomic mode 或任何门槛。
 编排层把 `cmd/e2e_tests` 的完整 module import path 传给 `--exclude-packages`，
 使该纯测试包不再在覆盖率阶段执行。由于固定工具按子串匹配，编排层先通过
 `go list ./...` 确认该匹配仅命中精确的 E2E 包，任何同名扩展或嵌套包都失败，
 并递归拒绝该目录中的非 `_test.go` Go 源文件，防止排除生产语句。生产覆盖率的
 范围和所有门槛保持。
 
-E2E 阶段以 `go test -race -count=1 -timeout=10m ./cmd/e2e_tests` 完整执行
-独立测试包。其 `TestMain` 每次构建新的 race binary，通过真实 HTTP、PostgreSQL、
+E2E 阶段以 `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests` 完整执行
+独立测试包，沿用同一显式 race 选择。其 `TestMain` 根据测试 binary 的实际 race build tag
+构建相同 instrumentation 的服务 binary，并在进程回执中记录 `raceEnabled`；直接本地
+`go test -race` 也保持匹配。通过真实 HTTP、PostgreSQL、
 信号和进程重启执行验收。`go test ./...` 仍能发现此包。主命令包测试自行管理临时
 存储与轻量辅助函数，单独选择该包时不触发 E2E 构建、源码身份核验或证据初始化；
 其中直接运行服务的测试仍需真实 PostgreSQL 和 UniAuth。测试包归属与选择方式见

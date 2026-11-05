@@ -8,7 +8,7 @@ import (
 
 var envelopeSchema = fields{"protocol": literal(Protocol), "schemaVersion": literal(float64(2)), "projectionVersion": literal(float64(1)), "type": func(v any) bool { _, ok := v.(string); return ok }, "sessionId": uuid, "claimId": uuid, "executionGeneration": positive, "agentControlMode": enums("herdr", "web"), "contentKind": enums("terminal_recording", "native_timeline"), "payload": func(any) bool { return true }}
 var leaseSchema = fields{"leaseId": uuid, "holderUserId": uuid, "browserClientId": uuid, "controlEpoch": positive, "expiresAt": timestamp}
-var action = enums("acquire_control", "renew_control", "release_control", "resume_automation", "paste", "keys")
+var action = enums("acquire_control", "renew_control", "release_control", "resolve_initial_assignment", "resume_automation", "paste", "keys")
 var keys = enums("Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "Ctrl+C", "Ctrl+D", "Ctrl+U")
 
 // DecodeMessage validates the complete union, including receipt digest integrity.
@@ -77,6 +77,12 @@ func DecodeMessage(data []byte) (Message, error) {
 	switch out.Type {
 	case "registration":
 		out.Payload, err = decodeValue[Registration](p)
+	case "automation_recovery_prepare":
+		out.Payload, err = decodeValue[AutomationRecoveryPrepare](p)
+	case "automation_recovery":
+		out.Payload, err = decodeValue[AutomationRecovery](p)
+	case "automation_recovery_state":
+		out.Payload, err = decodeValue[AutomationRecoveryState](p)
 	case "registration_ack":
 		out.Payload, err = decodeValue[RegistrationAck](p)
 	case "snapshot":
@@ -150,12 +156,14 @@ func validPayload(kind string, v any, generation string) bool {
 		}
 		c := mapAt(m["capabilities"])
 		return (m["mode"] == "register") == (m["connectionEpoch"] == nil) && !(c["control"] == true && c["observe"] == false)
+	case "automation_recovery_prepare", "automation_recovery", "automation_recovery_state":
+		return validAutomationRecovery(kind, v, generation)
 	case "registration_ack":
 		return object(v, fields{"registrationId": uuid, "connectionEpoch": positive})
 	case "snapshot":
 		return object(v, fields{"connectionEpoch": positive, "segmentId": uuid, "segmentOrdinal": positive, "binding": nested(bindingSchema), "frame": validFrame, "recorded": boolean})
 	case "control_state":
-		if !object(v, fields{"connectionEpoch": positive, "controlEpoch": positive, "state": enums("automation", "manual", "suspended", "closing", "closed"), "lease": nullable(nested(leaseSchema)), "initialAssignment": enums("pending", "dispatching", "transport_completed", "unknown", "unconfirmed"), "availableActions": arrayOf(action, 0, 6, "$"), "unavailableReason": nullable(errorCode)}) {
+		if !object(v, fields{"connectionEpoch": positive, "controlEpoch": positive, "state": enums("automation", "manual", "suspended", "closing", "closed"), "lease": nullable(nested(leaseSchema)), "initialAssignment": enums("pending", "dispatching", "transport_completed", "unknown", "unconfirmed"), "availableActions": arrayOf(action, 0, 7, "$"), "unavailableReason": nullable(errorCode)}) {
 			return false
 		}
 		if (m["state"] == "manual") != (m["lease"] != nil) {
@@ -178,11 +186,14 @@ func validPayload(kind string, v any, generation string) bool {
 		}
 		return true
 	case "control_request":
-		if !object(v, fields{"operationId": uuid, "connectionEpoch": positive, "controlEpoch": positive, "action": enums("acquire_control", "renew_control", "release_control", "resume_automation"), "browserClientId": uuid, "leaseId": nullable(uuid), "draftHandled": boolean, "initialUnknownDisposition": nullable(enums("delivered_continue"))}) {
+		if !object(v, fields{"operationId": uuid, "connectionEpoch": positive, "controlEpoch": positive, "action": enums("acquire_control", "renew_control", "release_control", "resolve_initial_assignment", "resume_automation"), "browserClientId": uuid, "leaseId": nullable(uuid), "draftHandled": boolean, "initialUnknownDisposition": nullable(enums("delivered_continue"))}) {
 			return false
 		}
+		if m["action"] == "resolve_initial_assignment" {
+			return m["leaseId"] == nil && m["draftHandled"] == false && m["initialUnknownDisposition"] == "delivered_continue"
+		}
 		if m["action"] == "resume_automation" {
-			return m["draftHandled"] == true
+			return m["leaseId"] == nil && m["draftHandled"] == true && m["initialUnknownDisposition"] == nil
 		}
 		return m["draftHandled"] == false && m["initialUnknownDisposition"] == nil && ((m["action"] == "acquire_control") == (m["leaseId"] == nil))
 	case "control_dispatch":

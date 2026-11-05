@@ -53,11 +53,11 @@ describe('localized task graph presentation', () => {
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
       openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en', taskCache: true });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
-    expect(view.container.querySelector('#task-root-A .root-status')).toHaveTextContent('To do');
+    expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('#task-root-A .root-progress-label')).toHaveTextContent('0/2 completed');
     expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite' })).toBeVisible();
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
-    expect(view.container.querySelector('#task-root-A .root-status')).toHaveTextContent('待处理');
+    expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('待处理');
     expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞' })).toBe(selected);
     expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置' })).toBeVisible();
     expect(layout).toHaveBeenCalledTimes(1);

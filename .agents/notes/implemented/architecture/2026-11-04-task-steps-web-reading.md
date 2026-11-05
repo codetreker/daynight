@@ -33,8 +33,8 @@ the existing new-generation recovery policy remains available.
 
 No Steps response enters the TaskDetail LRU or IndexedDB. The last active reader
 releases the complete collection, pending admission and owned read controller.
-Scope retirement synchronously clears these resources. The view retains only
-stable expanded IDs and a page number while hidden.
+Scope retirement synchronously clears these resources. The view retains
+stable expanded IDs, a page number and its local draft while hidden.
 
 The existing detail surface supplies the Steps panel to `TaskDetailReading`,
 which owns one Task-root Markdown renderer and attachment controller. This keeps
@@ -71,11 +71,10 @@ tab reachability and the existing reading-height guarantees.
 
 ## Consequences
 
-The browser reads Steps without requiring a Session or enabling new write
-operations. Adding forms, draft protection and Steps mutations remains separate
-work; their affordable extension depends on retaining the same submission owner,
-Task-root renderer and stable row IDs. The current view does not introduce a
-second mutation lifecycle or temporary editing controls.
+The original reader did not require a Session or enable write operations. The
+[status write decision](2026-11-04-task-steps-web-status.md) and
+[append form decision](2026-11-04-task-steps-web-add.md) extend the same
+submission owner, Task-root renderer and stable row IDs.
 
 Pagination bounds mounted rows, not resource decoding or memory while active.
 Reopening the tab reads again after releasing the prior collection. API, session,

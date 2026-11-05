@@ -44,7 +44,7 @@ func (s *attachmentRecordedStorage) Delete(ctx context.Context, bucket, path str
 func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 	ctx := t.Context()
 	tasks, database, project, _, principal := taskService(t)
-	otherProject, err := NewProjects(database).Create(ctx, principal, CreateProject{Name: "Other attachment project", RepoURL: "host:other-attachments"})
+	otherProject, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other attachment project", RepoURL: "host:other-attachments"})
 	if err != nil {
 		t.Fatal(err)
 	}

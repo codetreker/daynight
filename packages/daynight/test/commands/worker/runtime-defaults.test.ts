@@ -32,6 +32,9 @@ describe("worker startup configuration defaults", () => {
     { label: "an empty configuration mapping", source: "{}\n" },
     { label: "an empty worker mapping", source: "worker: {}\n" },
     { label: "partial worker settings without repositories", source: "worker:\n  maxConcurrent: 2\n  agent: codex\n" },
+    { label: "a stale managed scalar", source: "worker:\n  maxConcurrent: 0\n" },
+    { label: "a stale managed project selection", source: "worker:\n  repositories: null\n" },
+    { label: "a stale managed native tuple", source: "worker:\n  agent: unknown\n  args: false\n" },
   ])("reaches authentication with $label and preserves the user's files", async ({ source }) => {
     const { homeDirectory, paths, before } = await fixture(source);
     const messages: string[] = [];
@@ -44,9 +47,9 @@ describe("worker startup configuration defaults", () => {
 
   it.each([
     { source: "worker: null\n", message: "worker must be a mapping" },
-    { source: "worker:\n  maxConcurrent: 0\n", message: "worker.maxConcurrent must be a positive safe integer" },
-    { source: "worker:\n  repositories: null\n", message: "worker.repositories must be a sequence" },
-  ])("rejects invalid configuration before authentication: $source", async ({ source, message }) => {
+    { source: "worker:\n  agentControlMode: invalid\n", message: "worker.agentControlMode must be herdr or web" },
+    { source: "worker:\n  repositoryRoot: false\n", message: "worker.repositoryRoot must be nonempty text" },
+  ])("rejects invalid local-owned configuration before authentication: $source", async ({ source, message }) => {
     const { homeDirectory, paths, before } = await fixture(source);
     await expect(runWorker({ homeDirectory, packageDirectory, version: "0.26.1", workingDirectory: homeDirectory })).rejects.toThrow(message);
     expect((await readdir(homeDirectory, { recursive: true })).sort()).toEqual(before);

@@ -24,7 +24,7 @@ export const WorkersPage = ({ readEnabled }: { readonly readEnabled: boolean }) 
             <div className="worker-card-top"><span className="worker-machine-icon"><WorkerIcon /></span><WorkerStatusBadge online={isWorkerOnline(worker, serverMilliseconds!)} stale={state.stale} /></div>
             <h2 className="worker-name">{worker.machine.name}</h2><p className="worker-platform">{platform.names[worker.platform]}</p>
             <p className="worker-workload"><WorkerTaskSummary worker={worker} serverMilliseconds={serverMilliseconds!} stale={state.stale} /></p>
-            <div className="worker-card-footer"><div>{m.lastReported}<span className="worker-last-time"><WorkerTimestamp value={worker.lastReportedAt} serverMilliseconds={serverMilliseconds!} /></span></div>
+            <div className="worker-card-footer"><div className="worker-last-report">{m.lastReported} <span className="worker-last-time"><WorkerTimestamp value={worker.lastReportedAt} /></span></div>
               <span className="worker-open" aria-hidden="true">{m.viewDetails} <span>→</span></span></div>
           </a>
         </li>)}</ul><p className="list-footer">{m.recentDetail}</p>

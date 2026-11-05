@@ -14,6 +14,7 @@ import { expectCenteredTaskDetail, expectTaskDetailScroll } from './detail-dialo
 import { expectStableAutomaticDetailRefresh } from './detail-refresh';
 import { panPoint } from './graph-pan';
 import { verifyPublicExternalDependencyWrites } from './external-dependency-writes';
+import { verifySessionStatus } from './session-status';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const card = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] .task-node`);
@@ -92,7 +93,7 @@ const holdProjectSync = async (page: Page, projectId: string) => {
   };
 };
 const loadAllProjects = async (page: Page): Promise<void> => {
-  await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
   const more = page.getByRole('main').getByRole('button', { name: '加载更多', exact: true });
   for (let count = 0; count < 200; count++) {
@@ -130,12 +131,23 @@ const nextAutomaticRefresh = async (page: Page, projectId: string): Promise<numb
   return (await response).status();
 };
 
-test('project-list', scenario('project-list'), async ({ page, api: request }, info) => {
+test('project-list', scenario('project-list'), async ({ page, api: request, allowBrowserWrites }, info) => {
   const prefix = `Pagination ${randomUUID()}`;
-  const projects = [];
+  const projects: Awaited<ReturnType<typeof createProject>>[] = [];
   for (let index = 0; index < 51; index++) {
     projects.push(await createProject(request, { name: `${prefix} ${String(index).padStart(2, '0')}` }));
   }
+  const profileResponse = await request.get('/api/v1/me');
+  expect(profileResponse.status()).toBe(200);
+  const profile = await profileResponse.json() as { id: string; personalTeam: { id: string } };
+  const teamName = `  Browser Team ${randomUUID()}  `;
+  const teamResponse = await request.post('/api/v1/teams', { data: { name: teamName, expectedUserId: profile.id } });
+  expect(teamResponse.status()).toBe(201);
+  const team = await teamResponse.json() as { id: string; name: string };
+  expect(team.name).toBe(teamName);
+  const baseURL = info.project.use.baseURL;
+  if (typeof baseURL !== 'string') throw new Error('Project acceptance requires the service origin.');
+  allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/projects`, count: 1 }]);
   const listRequests: string[] = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/projects') listRequests.push(request.url()); });
   await page.goto('/projects');
@@ -156,7 +168,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
     await expect(page.getByRole('main').getByRole('alert')).toContainText('更多项目加载失败，已加载的项目仍可查看。');
     await expect(page.getByRole('main').getByRole('button', { name: '重试加载更多', exact: true })).toBeVisible();
     expect(await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')))).toEqual(firstPage);
-    await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   });
   const retried = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -177,12 +189,84 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   const hrefs = await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')));
   expect(new Set(hrefs).size).toBe(hrefs.length);
   expect(listRequests.some((value) => new URL(value).searchParams.has('cursor'))).toBe(true);
-  expect(listRequests.every((value) => new URL(value).searchParams.get('limit') === '50')).toBe(true);
+  expect(listRequests.every((value) => {
+    const query = new URL(value).searchParams;
+    return query.get('limit') === '50' && query.get('teamId') === profile.personalTeam.id && !query.has('shared');
+  })).toBe(true);
   await screenshot(page, info, 'project-list');
   await page.locator(`a.project-card[href="/projects/${projects[50]!.id}"]`).click();
   await expect(page.getByRole('main').getByRole('heading', { name: projects[50]!.name, exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(stat(page, '任务总数')).toHaveText('0');
+
+  await test.step('browses a Team and creates a project in its captured context', async () => {
+    const selector = page.locator('details.team-selector');
+    await selector.locator('summary').click();
+    await expect(selector.getByRole('status')).toHaveCount(0);
+    const teamLink = selector.locator(`a[href="/teams/${team.id}"]`);
+    for (let count = 0; count < 200 && !await teamLink.isVisible(); count++) {
+      const more = selector.getByRole('button', { name: '加载更多 Team', exact: true });
+      await expect(more).toBeVisible();
+      await more.click();
+      await expect(selector.getByRole('status')).toHaveCount(0);
+    }
+    await expect(teamLink).toBeVisible();
+    expect(await teamLink.textContent()).toBe(teamName);
+    await teamLink.click();
+    await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    const teamHeading = page.getByRole('main').locator('h1');
+    await expect(teamHeading).toHaveText(teamName);
+    expect(await teamHeading.textContent()).toBe(teamName);
+    await expect(page.locator('a.project-card')).toHaveCount(0);
+    const rawName = `  Team project ${randomUUID()}  `;
+    const rawRepo = `git@example.org:group/${randomUUID()}.git`;
+    await page.getByRole('button', { name: '＋ 创建项目', exact: true }).click();
+    const creation = page.getByRole('dialog', { name: '创建项目', exact: true });
+    await expect(creation).toContainText(teamName.trim());
+    await creation.getByLabel('项目名称').fill(rawName);
+    await creation.getByLabel('仓库地址').fill(rawRepo);
+    const pending = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects` && response.request().method() === 'POST');
+    await creation.getByRole('button', { name: '创建项目', exact: true }).click();
+    const createdResponse = await pending;
+    expect(createdResponse.status()).toBe(201);
+    expect(createdResponse.request().postDataJSON()).toEqual({ name: rawName, repoUrl: rawRepo, teamId: team.id, expectedUserId: profile.id });
+    const created = await createdResponse.json() as { id: string; name: string; repoUrl: string; ownership: { teamId: string } };
+    expect(created).toMatchObject({ name: rawName, repoUrl: rawRepo, ownership: { teamId: team.id } });
+    await expect(page).toHaveURL(`${baseURL}/projects/${created.id}`);
+    await expect(page.getByRole('main').locator('h1')).toHaveText(rawName);
+    await page.goto(`/teams/${team.id}`);
+    const projectCard = page.locator(`a.project-card[href="/projects/${created.id}"]`);
+    await expect(projectCard).toBeVisible();
+    expect(await projectCard.locator('.project-name').textContent()).toBe(rawName);
+    expect(await projectCard.locator('.repo span').textContent()).toBe(rawRepo);
+    await expect(page.locator(`a.project-card[href="/projects/${projects[0]!.id}"]`)).toHaveCount(0);
+  });
+
+  await test.step('supports shared links and narrow bilingual navigation', async () => {
+    const shared = page.getByRole('link', { name: '与我共享', exact: true });
+    await expect(shared).toHaveAttribute('href', '/shared-projects');
+    const opened = page.context().waitForEvent('page');
+    await shared.click({ modifiers: ['Control'] });
+    const tab = await opened;
+    try {
+      await expect(tab).toHaveURL(`${baseURL}/shared-projects`);
+      await expect(tab.getByRole('heading', { name: '与我共享的项目', exact: true })).toBeVisible();
+      await expect(tab.getByRole('button', { name: '＋ 创建项目', exact: true })).toHaveCount(0);
+      await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
+    } finally { await tab.close(); }
+    await page.setViewportSize({ width: 320, height: 700 });
+    await page.getByRole('button', { name: /切换 Team/ }).click();
+    const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer.getByRole('link', { name: '与我共享', exact: true })).toBeVisible();
+    await drawer.getByRole('link', { name: '与我共享', exact: true }).click();
+    await expect(page).toHaveURL(`${baseURL}/shared-projects`);
+    await expect(page.getByRole('heading', { name: '与我共享的项目', exact: true })).toBeVisible();
+    await expect(drawer).toHaveCount(0);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+    await expect(page.getByRole('heading', { name: 'Projects shared with me', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Shared with me', exact: true })).toHaveAttribute('href', '/shared-projects');
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
 });
 
 test('project-graph', scenario('project-graph'), async ({ page, api: request, baseURL }, info) => {
@@ -234,7 +318,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     );
     await expect(members.locator('.goal-task-row')).toHaveCount(6);
     const taskRow = page.locator(`#chain-task-${a.id}-${b.id}`);
-    await expect(taskRow.locator('.root-status')).toHaveText('进行中');
+    await expect(taskRow.locator('..').locator('.root-status')).toHaveText('进行中');
     await taskRow.click();
     const detail = page.locator('.task-detail-dialog');
     await expect(detail.locator('.task-detail-title')).toHaveText(b.title);
@@ -273,7 +357,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await openChain(page, a.id);
   await expect(root(page, b.id)).toHaveCount(0);
   await expect(root(page, c.id)).toHaveCount(0);
-  await expect(root(page, a.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, a.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
   await expect(page.locator('.react-flow__node')).toHaveCount(7);
   const completedVisibility = page.getByRole('checkbox', { name: '显示所有', includeHidden: true });
@@ -308,7 +392,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await expectClosedChain(page, a.id);
   await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'false');
   await openChain(page, a.id);
-  await expect(root(page, a.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, a.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
   await expect(inspectTask(page, a.id).locator('.graph-status')).toHaveText('已完成');
   await expect(page.locator('.task-graph-canvas')).toHaveCount(1);
@@ -693,6 +777,10 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await test.step('writes external classifications through the installed CLI and public API into the same production Web', async () => {
     if (baseURL === undefined) throw new Error('Public dependency acceptance requires the actual service origin.');
     await verifyPublicExternalDependencyWrites(page, request, baseURL, info);
+  });
+  await test.step('reads live Session status annotations and navigates to the matching Session', async () => {
+    if (baseURL === undefined) throw new Error('Session status acceptance requires its service origin.');
+    await verifySessionStatus(page, request, baseURL, info);
   });
 
 });
@@ -1079,7 +1167,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     await page.locator('.sidebar a.nav-button[href="/projects"]').click();
-    await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
     await loadAllProjects(page);
     await page.locator(`a.project-card[href="/projects/${other.id}"]`).click();
     await expect(page.getByRole('heading', { name: other.name, exact: true })).toBeVisible();
@@ -1221,7 +1309,7 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await openChain(page, predecessor.id);
   await expect(stat(page, '已完成')).toHaveText('0');
   await expect(stat(page, '被阻塞')).toHaveText('1');
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('待处理');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('0/2 已完成');
   await expect(inspectTask(page, dependent.id).locator('.graph-blocked-badge')).toBeVisible();
   await pauseRefreshClock(page);
@@ -1247,13 +1335,13 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
     await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toBeDisabled();
     await expect(stat(page, '已完成')).toHaveText('0');
     await expect(stat(page, '被阻塞')).toHaveText('1');
-    await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
+    await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('待处理');
     derivedSync.release();
     expect((await derivedResponse).status()).toBe(200);
   } finally { await derivedSync.close(); }
   await expect(stat(page, '已完成')).toHaveText('1');
   await expect(stat(page, '被阻塞')).toHaveText('0');
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('进行中');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('1/2 已完成');
   await expect(inspectTask(page, predecessor.id).locator('.graph-status')).toHaveText('已完成');
   await expect(dialog.locator('.task-detail-title')).toHaveText(dependent.title);
@@ -1447,12 +1535,12 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await screenshot(page, info, 'refresh-staleness');
   await page.keyboard.press('Escape');
   await finishTask(request, project.id, replaced);
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('进行中');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('进行中');
   expect(await nextAutomaticRefresh(page, project.id)).toBe(200);
   await expect(root(page, predecessor.id)).toBeVisible();
   await expect(page.getByRole('heading', { name: '暂无近期任务链' })).toHaveCount(0);
   await expect(page.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('已完成');
+  await expect(root(page, predecessor.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('2/2 已完成');
   await openChain(page, predecessor.id);
   await expect(inspectTask(page, predecessor.id).locator('.graph-status')).toHaveText('已完成');
@@ -1493,7 +1581,7 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   // so its graph must stay visible independently of the recent-completion window.
   await page.getByRole('checkbox', { name: '显示所有' }).check();
   await openChain(page, task.id);
-  await expect(root(page, task.id).locator('.root-status')).toHaveText('已完成');
+  await expect(root(page, task.id).locator('..').locator('.root-status')).toHaveText('已完成');
   await expect(inspectTask(page, task.id)).toBeVisible();
   await pauseRefreshClock(page);
   const receipt = await page.locator('.snapshot-time time').getAttribute('datetime');
@@ -1584,7 +1672,7 @@ test('deep-links', scenario('deep-links'), async ({ page, api: request }, info) 
   await page.locator(`a.project-card[href="/projects/${second.id}"]`).click();
   await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '个人', exact: true })).toBeVisible();
   await page.goForward();
   await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible();
 
@@ -1890,7 +1978,7 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     for (const viewport of [{ width: 390, height: 700 }, { width: 320, height: 360 }]) {
       await page.setViewportSize(viewport);
       await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(60);
-      await expect(sidebar.locator('a.account-nav')).toBeInViewport();
+      await expect(sidebar.locator('a[href="/account"]')).toHaveCount(0);
       const opener = page.getByRole('button', { name: '展开侧栏', exact: true });
       await expect(opener).toBeInViewport();
       const background = await workspace.boundingBox();
@@ -1922,6 +2010,20 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
       await expect(workspace).not.toHaveAttribute('inert', '');
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+      const account = page.getByRole('button', { name: /^账户菜单：/ });
+      await account.click();
+      const menu = page.getByRole('menu');
+      const item = menu.getByRole('menuitem', { name: '账户设置', exact: true });
+      await expect(item).toBeFocused();
+      const bounds = await menu.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(account).toBeFocused();
     }
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
     await page.setViewportSize({ width: 1440, height: 700 });
@@ -1931,13 +2033,18 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await page.setViewportSize({ width: 390, height: 700 });
     await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
-    await sidebar.locator('a.account-nav').click();
-    await expect(page).toHaveURL(/\/account$/);
+    await sidebar.getByRole('link', { name: '我的项目', exact: true }).click();
+    await expect(page).toHaveURL(/\/projects$/);
     await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
     await expect(workspace).not.toHaveAttribute('inert', '');
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await expect(page.locator('#main-content')).toBeFocused();
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    await page.getByRole('button', { name: /^账户菜单：/ }).click();
+    await page.getByRole('menuitem', { name: '账户设置', exact: true }).click();
+    await expect(page).toHaveURL(/\/account$/);
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(page.locator('#main-content')).toBeFocused();
     await page.setViewportSize({ width: 320, height: 800 });
     await openTaskProject(page, project.id, project.name);
   });

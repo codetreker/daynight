@@ -73,7 +73,7 @@ const parseLease = (value: unknown): SessionV2Lease => {
   const o = exact(value, ["leaseId", "holderUserId", "browserClientId", "controlEpoch", "expiresAt"]);
   return { leaseId: uuidValue(o.leaseId), holderUserId: uuidValue(o.holderUserId), browserClientId: uuidValue(o.browserClientId), controlEpoch: seq(o.controlEpoch), expiresAt: timestamp(o.expiresAt) };
 };
-const actions: readonly SessionV2Action[] = ["acquire_control", "renew_control", "release_control", "resume_automation", "paste", "keys"];
+const actions: readonly SessionV2Action[] = ["acquire_control", "renew_control", "release_control", "resolve_initial_assignment", "resume_automation", "paste", "keys"];
 export const SESSION_V2_KEYS: readonly SessionV2Key[] = ["Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "Ctrl+C", "Ctrl+D", "Ctrl+U"];
 const completeness = (value: unknown) => choice(value, ["complete", "partial"]);
 const unavailableReason = (value: unknown) => choice(value, ["recording_not_enabled", "ended_before_first_sample"]);
@@ -105,18 +105,41 @@ const parsePayload = <K extends keyof SessionV2Payloads>(kind: K, value: unknown
         if ((mode === "register") !== (connectionEpoch === null) || (capabilities.control && !capabilities.observe)) return fail();
         return { registrationId: uuidValue(o.registrationId), mode, owner: parseSessionV2Owner(o.owner), binding: parseTerminalBinding(o.binding), connectionEpoch, capabilities };
       }
+      case "automation_recovery_prepare": {
+        const o = exact(value, ["recoveryId", "connectionEpoch", "controlEpoch", "closingControlEpoch", "stopOperationId", "binding", "initialAssignment"]);
+        const binding = parseTerminalBinding(o.binding), controlEpoch = seq(o.controlEpoch), closingControlEpoch = seq(o.closingControlEpoch);
+        if (binding.nativeSessionId === null || BigInt(closingControlEpoch) <= BigInt(controlEpoch)) return fail();
+        return { recoveryId: uuidValue(o.recoveryId), connectionEpoch: seq(o.connectionEpoch), controlEpoch, closingControlEpoch, stopOperationId: uuidValue(o.stopOperationId), binding, initialAssignment: literal(o.initialAssignment, "transport_completed") };
+      }
+      case "automation_recovery": {
+        const o = exact(value, ["recoveryId", "connectionEpoch", "controlEpoch", "previousGeneration", "stopOperationId", "binding"]);
+        const previousGeneration = seq(o.previousGeneration), binding = parseTerminalBinding(o.binding);
+        if (binding.nativeSessionId === null || BigInt(previousGeneration) + 1n !== BigInt(base.executionGeneration)) return fail();
+        return { recoveryId: uuidValue(o.recoveryId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), previousGeneration, stopOperationId: uuidValue(o.stopOperationId), binding };
+      }
+      case "automation_recovery_state": {
+        const o = exact(value, ["recoveryId", "prepareDigest", "sourceGeneration", "sourceConnectionEpoch", "sourceControlEpoch", "closingControlEpoch", "stopOperationId", "nativeSessionId", "consumed"]);
+        const sourceConnectionEpoch = seq(o.sourceConnectionEpoch), sourceGeneration = seq(o.sourceGeneration), sourceControlEpoch = seq(o.sourceControlEpoch), closingControlEpoch = seq(o.closingControlEpoch);
+        const consumed = nullable(o.consumed, raw => { const c = exact(raw, ["executionGeneration", "connectionEpoch", "controlEpoch", "requestDigest"]); return { executionGeneration: seq(c.executionGeneration), connectionEpoch: seq(c.connectionEpoch), controlEpoch: seq(c.controlEpoch), requestDigest: hash(c.requestDigest) }; });
+        if (BigInt(closingControlEpoch) <= BigInt(sourceControlEpoch) || (consumed ? BigInt(consumed.executionGeneration) !== BigInt(sourceGeneration) + 1n || consumed.executionGeneration !== base.executionGeneration || BigInt(consumed.connectionEpoch) <= BigInt(sourceConnectionEpoch) || BigInt(consumed.controlEpoch) <= BigInt(closingControlEpoch) : sourceGeneration !== base.executionGeneration)) return fail();
+        return { recoveryId: uuidValue(o.recoveryId), prepareDigest: hash(o.prepareDigest), sourceGeneration, sourceConnectionEpoch, sourceControlEpoch, closingControlEpoch, stopOperationId: uuidValue(o.stopOperationId), nativeSessionId: nativeText(o.nativeSessionId), consumed };
+      }
       case "registration_ack": { const o = exact(value, ["registrationId", "connectionEpoch"]); return { registrationId: uuidValue(o.registrationId), connectionEpoch: seq(o.connectionEpoch) }; }
       case "snapshot": { const o = exact(value, ["connectionEpoch", "segmentId", "segmentOrdinal", "binding", "frame", "recorded"]); return { connectionEpoch: seq(o.connectionEpoch), segmentId: uuidValue(o.segmentId), segmentOrdinal: seq(o.segmentOrdinal), binding: parseTerminalBinding(o.binding), frame: parseTerminalFrame(o.frame), recorded: bool(o.recorded) }; }
       case "control_state": {
         const o = exact(value, ["connectionEpoch", "controlEpoch", "state", "lease", "initialAssignment", "availableActions", "unavailableReason"]);
-        const parsed: SessionV2Payloads["control_state"] = { connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), state: choice(o.state, ["automation", "manual", "suspended", "closing", "closed"]), lease: nullable(o.lease, parseLease), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), availableActions: unique(list(o.availableActions, v => choice(v, actions), 6), v => v), unavailableReason: nullable(o.unavailableReason, errorCode) };
+        const parsed: SessionV2Payloads["control_state"] = { connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), state: choice(o.state, ["automation", "manual", "suspended", "closing", "closed"]), lease: nullable(o.lease, parseLease), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), availableActions: unique(list(o.availableActions, v => choice(v, actions), actions.length), v => v), unavailableReason: nullable(o.unavailableReason, errorCode) };
         if ((parsed.state === "manual") !== (parsed.lease !== null) || parsed.lease && parsed.lease.controlEpoch !== parsed.controlEpoch || ["closing", "closed"].includes(parsed.state) && parsed.availableActions.length || parsed.state !== "manual" && parsed.availableActions.some(a => a === "paste" || a === "keys") || parsed.state === "automation" && ["unknown", "unconfirmed"].includes(parsed.initialAssignment) || parsed.state === "manual" && parsed.initialAssignment === "dispatching") return fail();
         return parsed;
       }
       case "control_request": {
         const o = exact(value, ["operationId", "connectionEpoch", "controlEpoch", "action", "browserClientId", "leaseId", "draftHandled", "initialUnknownDisposition"]);
-        const p: SessionV2Payloads["control_request"] = { operationId: uuidValue(o.operationId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), action: choice(o.action, ["acquire_control", "renew_control", "release_control", "resume_automation"]), browserClientId: uuidValue(o.browserClientId), leaseId: nullable(o.leaseId, uuidValue), draftHandled: bool(o.draftHandled), initialUnknownDisposition: nullable(o.initialUnknownDisposition, v => literal(v, "delivered_continue")) };
-        if (p.action === "resume_automation" ? !p.draftHandled : p.draftHandled || p.initialUnknownDisposition !== null || (p.action === "acquire_control") !== (p.leaseId === null)) return fail();
+        const p: SessionV2Payloads["control_request"] = { operationId: uuidValue(o.operationId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), action: choice(o.action, ["acquire_control", "renew_control", "release_control", "resolve_initial_assignment", "resume_automation"]), browserClientId: uuidValue(o.browserClientId), leaseId: nullable(o.leaseId, uuidValue), draftHandled: bool(o.draftHandled), initialUnknownDisposition: nullable(o.initialUnknownDisposition, v => literal(v, "delivered_continue")) };
+        if (p.action === "resolve_initial_assignment") {
+          if (p.leaseId !== null || p.draftHandled || p.initialUnknownDisposition !== "delivered_continue") return fail();
+        } else if (p.action === "resume_automation") {
+          if (p.leaseId !== null || !p.draftHandled || p.initialUnknownDisposition !== null) return fail();
+        } else if (p.draftHandled || p.initialUnknownDisposition !== null || (p.action === "acquire_control") !== (p.leaseId === null)) return fail();
         return p;
       }
       case "control_dispatch": {
@@ -170,7 +193,7 @@ export const parseSessionV2Message = (value: unknown): SessionV2Message => {
   const o = exact(value, ["protocol", "schemaVersion", "projectionVersion", "type", "sessionId", "claimId", "executionGeneration", "agentControlMode", "contentKind", "payload"]);
   if (o.protocol !== SESSION_V2_PROTOCOL || o.schemaVersion !== 2 || o.projectionVersion !== 1) return fail("unsupported_protocol");
   const base: SessionV2Envelope = { protocol: SESSION_V2_PROTOCOL, schemaVersion: 2, projectionVersion: 1, sessionId: uuidValue(o.sessionId), claimId: uuidValue(o.claimId), executionGeneration: seq(o.executionGeneration) };
-  const kind = choice(o.type, ["registration", "registration_ack", "snapshot", "control_state", "control_request", "control_dispatch", "control_ack", "recording_responsibility", "recording_evidence", "operation", "operation_result", "generation_ledger", "finalization", "archive_status", "receipt", "native_snapshot"]);
+  const kind = choice(o.type, ["registration", "registration_ack", "automation_recovery_prepare", "automation_recovery", "automation_recovery_state", "snapshot", "control_state", "control_request", "control_dispatch", "control_ack", "recording_responsibility", "recording_evidence", "operation", "operation_result", "generation_ledger", "finalization", "archive_status", "receipt", "native_snapshot"]);
   if (kind === "native_snapshot") {
     if (o.agentControlMode !== "web" || o.contentKind !== "native_timeline") return fail("unsupported_content_kind");
     return { ...base, agentControlMode: "web", contentKind: "native_timeline", type: kind, payload: parsePayload(kind, o.payload, base) };

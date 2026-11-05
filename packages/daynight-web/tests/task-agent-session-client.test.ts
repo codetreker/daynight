@@ -261,7 +261,8 @@ it('retains the loaded offline view until the same execution can load its new lo
   vi.mocked(f.api.timeline).mockRejectedValue(new ApiError('server', 503, 'controller_offline'));
   await f.client.start();
   f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: reconnected, cursor: 'new-zero' });
-  await vi.waitFor(() => expect(f.client.snapshot().status).toBe('error'));
+  expect(f.client.snapshot().status).toBe('ready');
+  expect(f.api.timeline).toHaveBeenCalledOnce();
   expect(f.client.snapshot().connected).toBe(false);
   expect(f.client.snapshot().state.entries).toEqual([entry]);
   await expect(f.client.send('cannot send offline')).rejects.toThrow();

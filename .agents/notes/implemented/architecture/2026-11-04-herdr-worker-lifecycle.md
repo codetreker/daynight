@@ -35,9 +35,17 @@ supplement the audit token because exec changes its pidversion without ending
 the original birth instance.
 
 Shutdown closes the run and its segments while retaining the claim and Session.
-A confirmed stop, known native conversation and confirmed initial input permit
-another generation. Reconnection changes the connection epoch and starts a
+A confirmed stop, known native conversation and confirmed or explicitly resolved
+initial input permit another generation; the [input arbitration decision](2026-11-04-herdr-input-arbitration.md)
+keeps human-owned input suspended and preserves the original unknown receipt. Reconnection changes the connection epoch and starts a
 segment with an explicit gap. Uncertain input is never automatically replayed.
+An automatic known-menu or disabled-input rejection with no native write clears
+only the current admission and preserves initial pending state when applicable.
+The typed waiting result survives input-journal serialization, while any
+possible write retains unknown-result protection. Daily automatic/cleanup
+inspection supplies no empty-composer fact; explicit handback and clean recovery
+retain the resume-only empty-field requirement described by the input design.
+
 Stop proof, segment closure and ledger acknowledgement are separately recoverable
 boundaries. Without a committed stop intent, emergency signaling cannot produce
 a durable stopped result after restart.
@@ -88,9 +96,11 @@ of detached orphans or external copies of PTY descriptors. Unknown resources and
 interrupted preparations can require operator resolution. The implementation
 does not silently adopt legacy live runs without the required evidence.
 
-Terminal cleanup releases the execution slot after confirmed stopping and ledger
-publication, but retains the worktree until archive acceptance is implemented.
-Web observation, control and archive capabilities remain false. Input arbitration,
-terminal recording and final archive cleanup must consume these durable owners
-without treating segment metadata as recorded output or local stop proof as a
-final archive receipt.
+The original lifecycle delivery retained worktrees and gated combined web
+capabilities until recording and archive acceptance were available. The
+[recording and finalization decision](2026-11-04-herdr-recording-finalization.md)
+now enables those capabilities and releases execution capacity after durable
+local stop confirmation. An independent archive queue publishes the stopped
+ledger and retains resources until receipt acceptance or explicit operator
+disposition. Segment metadata is not recorded output, and a local stop proof
+is not a final archive receipt.
