@@ -55,6 +55,12 @@ Escape stops propagation while retaining its native default action. Display and
 keyboard hints retain their inner-layer priority. Outside pointer dismissal
 leaves focus and default behavior to the clicked target.
 
+Non-IME Shift+Tab from the input synchronously removes the command menu before
+the browser and outer focus boundaries calculate reverse focus order. It leaves
+the default action and propagation intact, without restoring input focus or
+changing the draft. This dismissal is independent of connection, catalog and
+operation availability; ordinary Tab retains candidate confirmation.
+
 The [slash submission decision](2026-11-05-session-slash-submission.md) separates
 default highlighting from explicit candidate selection and retains selected
 command identity across argument edits and dismissal. Menu closure still only
@@ -78,6 +84,12 @@ height but requires separate placement and clipping constraints as the Session,
 input and viewport resize. Keeping one flex layout makes the browser allocate
 remaining space. Measuring intrinsic minimum controls and the metadata
 reservation does not introduce another independently positioned panel.
+
+**Only exclude Shift+Tab from command confirmation.** The menu buttons precede
+the input in document order, so retaining the menu can move focus into a
+candidate. Asynchronous dismissal can also leave outer focus handlers inspecting
+controls that will disappear. Synchronous removal preserves the existing browser
+and modal navigation without introducing a separate focus traversal algorithm.
 
 ## Consequences
 

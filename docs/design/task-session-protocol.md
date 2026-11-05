@@ -306,7 +306,7 @@ composer 的表单保留提交、快捷键和设置面板的所有权；内部�
 
 viewport 高度不超过 500px 时，composer、菜单与 Session header 减少纵向留白，独立页同时收紧 topbar、内容区与页标题的留白，其中认证独立页 content 的底部 padding 为 8px，给基本控件和可点击目录区域让出空间。这个密度调整不替代实际容器的 flex 约束与最小尺寸测量。
 
-关闭菜单不经过控制权限或原生操作 gate，也不改写草稿。关闭按钮、命令开关与普通 Escape 收起目录；显式关闭恢复 textarea 焦点并使用 `preventScroll`。菜单在 active 时向最近的 `.task-agent-session` 注册原生冒泡 keydown 监听，没有 Session 容器时使用 form，使标题栏焦点也先经过命令菜单的 Escape 处理。监听尊重已消费的事件；IME Escape 只停止传播而不阻止默认行为，普通 Escape 才阻止默认行为并关闭菜单。Display 打开时让出该监听，快捷键提示的既有 capture 监听保持更高优先级；表单处理仍覆盖自身的设置面板与命令关闭。外部 pointer 只收起目录，不恢复输入焦点、不阻止事件默认行为，使被点击控件继续获得焦点并执行自身操作。失活、关闭或卸载移除菜单拥有的监听。布局与关闭机制的取舍见[命令菜单空间与关闭决策](../../.agents/notes/implemented/bug-fix/2026-11-04-session-command-menu.md)。
+关闭菜单不经过控制权限或原生操作 gate，也不改写草稿。 textarea 的非 IME Shift+Tab 在命令确认分支之前处理，使用 `flushSync` 同步收起候选 DOM，然后保留事件默认行为和传播。浏览器与外层焦点边界依据收起后的控件计算反向顺序，不会进入刚隐藏的候选；这个路径不调用恢复输入焦点的关闭回调，也不依赖连接、候选数量或执行 gate。普通 Tab、Enter 分类和 IME 保护仍由原有分支处理。关闭按钮、命令开关与普通 Escape 收起目录；显式关闭恢复 textarea 焦点并使用 `preventScroll`。菜单在 active 时向最近的 `.task-agent-session` 注册原生冒泡 keydown 监听，没有 Session 容器时使用 form，使标题栏焦点也先经过命令菜单的 Escape 处理。监听尊重已消费的事件；IME Escape 只停止传播而不阻止默认行为，普通 Escape 才阻止默认行为并关闭菜单。Display 打开时让出该监听，快捷键提示的既有 capture 监听保持更高优先级；表单处理仍覆盖自身的设置面板与命令关闭。外部 pointer 只收起目录，不恢复输入焦点、不阻止事件默认行为，使被点击控件继续获得焦点并执行自身操作。失活、关闭或卸载移除菜单拥有的监听。布局与关闭机制的取舍见[命令菜单空间与关闭决策](../../.agents/notes/implemented/bug-fix/2026-11-04-session-command-menu.md)。
 
 阅读与草稿决策的替代方案和限制见[Session 阅读与草稿决策](../../.agents/notes/implemented/bug-fix/2026-10-28-session-reading-and-draft-ownership.md)。
 
