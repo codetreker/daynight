@@ -67,12 +67,12 @@ describe('Worker list presentation', () => {
     listState = { ...listState, serverMilliseconds: Date.parse(report) + 120_000 };
     view.rerender(<WorkersPage readEnabled />);
     expect(onlineTime).toHaveTextContent(getFormats(locale).dateTime(report)); expect(offlineTime).toHaveTextContent(getFormats(locale).dateTime(oldReport));
-    expect(within(cards[0]!).getByText('offline')).toBeInTheDocument();
+    expect(within(cards[0]!).getByText(locale === 'zh-CN' ? '离线' : 'offline')).toBeInTheDocument();
     const newReport = new Date(now + 60_000).toISOString();
     listState = { ...listed([{ ...summary(), lastReportedAt: newReport }, { ...summary(2), lastReportedAt: oldReport }]), serverMilliseconds: now + 60_000 };
     view.rerender(<WorkersPage readEnabled />);
     expect(within(cards[0]!).getByText(getFormats(locale).dateTime(newReport))).toHaveAttribute('datetime', newReport);
-    expect(within(cards[0]!).getByText('online')).toBeInTheDocument();
+    expect(within(cards[0]!).getByText(locale === 'zh-CN' ? '在线' : 'online')).toBeInTheDocument();
   });
 
   it('updates 119/120-second and 72-hour boundaries without replacing the focused card', () => {
