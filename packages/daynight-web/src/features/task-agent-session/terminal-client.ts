@@ -14,6 +14,7 @@ type Pending = { command: TrackedCommand; generation: number; startedAt: number 
 // Native conversation identity may be enriched without changing the execution target.
 export const sameTerminalFence = (a: TerminalSessionState, b: TerminalSessionState) => a.sessionId === b.sessionId && a.claimId === b.claimId && a.executionGeneration === b.executionGeneration && a.connectionEpoch === b.connectionEpoch && canonicalSessionJson({ ...a.binding, nativeSessionId: null }) === canonicalSessionJson({ ...b.binding, nativeSessionId: null });
 const terminal = (state: SessionV2Payloads['operation_result']['state']) => state === 'transport_completed' || state === 'rejected' || state === 'unknown';
+const admissionRefusals = ['input_busy', 'stale_fence', 'lease_expired', 'automation_suspended'] as const;
 
 /** Owns one visible viewer, never a native attach or an automatic input retry. */
 export class TerminalSessionClient {
@@ -197,6 +198,14 @@ export class TerminalSessionClient {
     } catch (error) {
       if (this.live(pending.generation) && this.pendingOperation === pending) {
         if (error instanceof ApiError && ([401, 403, 404, 410].includes(error.status ?? 0) || error.code === 'principal_mismatch')) { this.invalidate(error); return; }
+        // These command-route refusals precede insertion into the relay operation ledger.
+        const refusal = error instanceof ApiError && error.kind === 'server' && error.status === 409 ? admissionRefusals.find(code => code === error.code) : undefined;
+        if (refusal !== undefined) {
+          if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
+          this.pendingOperation = null; this.persist(null);
+          this.publish({ pending: false, result: { operationId: command.payload.operationId, state: 'rejected', errorCode: refusal }, error });
+          void this.refresh(); return;
+        }
         this.markUnknown(pending, error);
       }
     } finally { this.forget(controller); }

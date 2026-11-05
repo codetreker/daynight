@@ -66,6 +66,8 @@ lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`re
 
 进程替代、身份读取失败、未证明的资源、普通运行缺失原 shell/native 证明、准备运行缺失原 daemon/shell 或未提交事实，以及停止未确认时保持 `stop_unknown`。不向替代实例发信号，不删除工作区，不启动替代运行。boot 变化通过独立的 boot 证明判定原进程不再存活，不能写成同一 boot 内 PID 消失的结论。
 
+重开遇到 `close_requested` 时保留已提交的停止 operation ID 和原因；正常恢复仍提高控制 fence，但停止重试不再次递增 controlEpoch、不回退到 `stop_intent`，也不把该阶段视为停止证明；继续对原 daemon、shell 和已登记 agent 执行完整身份验证与独占停止，再提交原代次证明。实际停止已完成但证明尚未落盘的运行由同一路径收敛；原身份变化或不可读仍保持 `stop_unknown`。
+
 journal 无法落盘时只依据已有证明尝试受控停止，并报告结果未确认；不能写成功状态。没有持久停止意图而原 daemon 在同一 boot 已消失时，重启不能补写意图来追认完整停止。pane 消失、内存 Map 为空或进程命令行变化也不是停止证明。已持久确认停止但封段或同步中断时，重试只补收尾，不重新停止或启动 agent。
 
 准备停止确认后仍封闭实际录制责任并同步原 ledger。纯准备且零帧的终态执行使用实际零计数和无 captureError 的 unavailable/ended_before_first_sample，不生成 ready 空归档；前代有录制时保留其原帧和该代 unavailableRuns。服务端在 ledger 与 recording evidence/snapshot 的两个到达顺序上均拒绝准备证明关联非零 selected/registered 或已观察内容。新 proof 变体要求支持它的 server/Web reader；旧 reader 拒绝时，未确认的同步、归档与 worktree 责任继续保留。

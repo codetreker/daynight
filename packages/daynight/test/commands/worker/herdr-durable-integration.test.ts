@@ -728,6 +728,38 @@ describe("durable Herdr facade with real SQLite", () => {
     await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
     expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
   });
+  it.each([false, true])("reconciles original stopping after the final stop journal commit fails, native: %s", async native => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); if (native) await f.start(binding);
+    const original = f.read().runs[0]!;
+    const exec = Database.prototype.exec;
+    const failure = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+      if (this.name.endsWith("herdr-executions.sqlite") && sql === "BEGIN IMMEDIATE" && f.read().runs[0]!.phase === "close_requested") throw new Error("final stop journal unavailable");
+      return exec.call(this, sql);
+    });
+    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("final stop journal unavailable"); failure.mockRestore();
+    const pending = f.read();
+    expect(pending.runs[0]).toMatchObject({ phase: "close_requested", run: { stopProof: null } });
+    expect(f.observed.get(original.daemon!.pid)).toBe("exited");
+    f.reopen(); const recoveredEpoch = f.read().controlEpoch;
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    const stopped = f.read();
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+    expect(stopped.controlEpoch).toBe(recoveredEpoch);
+    expect(stopped.runs[0]).toMatchObject({ phase: "stopped_confirmed", daemon: original.daemon, processes: original.processes, stopOperationId: pending.runs[0]!.stopOperationId });
+    expect(stopped.runs[0]!.run.stopProof!.recordId).toBe(pending.runs[0]!.stopOperationId);
+    expect(f.events.filter(event => event === "stop")).toHaveLength(2);
+    expect(f.launches).toHaveLength(native ? 1 : 0);
+  });
+  it.each([false, true])("retains unknown stopping when a recovered close request observes a changed identity, native: %s", async native => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); if (native) await f.start(binding);
+    f.mutateRecord(draft => { const run = draft.runs[0]!; run.phase = "stop_intent"; run.stopOperationId = uuid(90); run.stopReason = "shutdown"; });
+    f.mutateRecord(draft => { draft.runs[0]!.phase = "close_requested"; });
+    const original = f.read().runs[0]!; f.observed.set(original.daemon!.pid, "changed");
+    f.reopen(); await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/stop_unknown/i);
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    expect(f.read().runs[0]).toMatchObject({ phase: "stop_unknown", daemon: original.daemon, processes: original.processes, stopOperationId: original.stopOperationId, run: { stopProof: null } });
+    expect(f.launches).toHaveLength(native ? 1 : 0);
+  });
   it("recovers segment closure and ledger publication before preparing a successor", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     const exec = Database.prototype.exec;

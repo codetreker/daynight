@@ -148,7 +148,7 @@ describe('terminal client control ownership', () => {
 
   it('keeps an absent receipt unknown after independently verifying the original Session', async () => {
     const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();
-    vi.mocked(h.api.command).mockRejectedValue(new ApiError('server', 409, 'input_busy')); await h.client.paste('not accepted');
+    vi.mocked(h.api.command).mockRejectedValue(new Error('lost response')); await h.client.paste('outcome uncertain');
     const command = vi.mocked(h.api.command).mock.calls[0]![2];
     vi.mocked(h.api.operation).mockRejectedValue(new ApiError('server', 404, 'not_found')); await h.client.checkOperation();
     expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', pending: false, error: null, result: { operationId: command.payload.operationId, state: 'unknown' } });
@@ -157,6 +157,30 @@ describe('terminal client control ownership', () => {
     h.client.acknowledgeUnknown(); expect(h.client.getSnapshot().unknownAcknowledged).toBe(true);
     await h.client.paste('new intentional input'); expect(h.api.command).toHaveBeenCalledTimes(2);
     expect(vi.mocked(h.api.command).mock.calls[1]![2].payload.operationId).not.toBe(command.payload.operationId); h.client.close();
+  });
+  it.each(['input_busy', 'stale_fence', 'lease_expired', 'automation_suspended'])('retains explicit admission refusal %s without an unknown gate or automatic retry', async code => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.publish();
+    vi.mocked(h.api.command).mockRejectedValueOnce(new ApiError('server', 409, code));
+    await h.client.control('acquire_control');
+    const first = vi.mocked(h.api.command).mock.calls[0]![2];
+    expect(h.client.getSnapshot()).toMatchObject({ pending: false, result: { operationId: first.payload.operationId, state: 'rejected', errorCode: code } });
+    expect(window.sessionStorage.getItem(`daynight:terminal-operation:${owner.ownerUserId}:${r.claimId}`)).toBeNull();
+    await h.client.checkOperation(); await vi.advanceTimersByTimeAsync(2000);
+    expect(h.api.operation).not.toHaveBeenCalled(); expect(h.api.command).toHaveBeenCalledOnce();
+    await h.client.control('acquire_control');
+    expect(h.api.command).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(h.api.command).mock.calls[1]![2].payload.operationId).not.toBe(first.payload.operationId);
+    h.client.close();
+  });
+  it.each([
+    new ApiError('server', 409, 'input_unknown'), new ApiError('server', 409, 'operation_conflict'),
+    new ApiError('server', 500, 'input_busy'), new ApiError('protocol', 409, 'input_busy'),
+  ])('keeps unproven refusal %s unknown and blocks subsequent input', async error => {
+    vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.publish();
+    vi.mocked(h.api.command).mockRejectedValue(error); await h.client.control('acquire_control');
+    expect(h.client.getSnapshot().result?.state).toBe('unknown');
+    expect(window.sessionStorage.getItem(`daynight:terminal-operation:${owner.ownerUserId}:${r.claimId}`)).not.toBeNull();
+    await h.client.control('acquire_control'); expect(h.api.command).toHaveBeenCalledOnce(); h.client.close();
   });
   it('ignores a failed old receipt query after acknowledgement and a new operation', async () => {
     const h = harness(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.manual();

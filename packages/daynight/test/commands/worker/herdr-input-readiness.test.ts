@@ -191,3 +191,10 @@ it("does not grant manual input to unknown or pending completed observations", a
     await expect(f.inspect("manual")).rejects.toMatchObject({ code: "automation_suspended" });
   } finally { f.operation.dispose(); }
 });
+
+
+it.each([0, 1001])("rejects actual PTY width %s without a fallback geometry", async width => {
+  const f = fixture(width);
+  try { await expect(f.inspect()).rejects.toMatchObject({ code: "invalid_payload" }); }
+  finally { f.operation.dispose(); }
+});

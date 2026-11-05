@@ -68,7 +68,10 @@ cleanup is conditional on the preceding automation state and input safety;
 otherwise controlled stopping proceeds without an advisory prompt.
 
 Strict AttachTerminal uses the original terminal ID and a verified protocol
-profile. Read-only native TTY queries establish actual geometry; layout
+profile. Read-only native TTY queries establish actual geometry. The
+[direct geometry decision](../bug-fix/2026-11-05-herdr-native-input-geometry.md)
+replaces the original external-command implementation while preserving every
+input admission check; layout
 rectangles and observer frame dimensions do not. Every Input frame rechecks
 admission, including the Enter after a complete paste. Detach establishes only
 transport completion, and does not release the durable manual state.

@@ -10,7 +10,10 @@ requires a shell and an agent. A preparation that never reaches native launch
 cannot supply the latter, even when its original resources have stopped. It
 therefore retains an execution slot and cannot finalize its recording. After the
 closing phase overwrites `prepared`, absence alone cannot recover the lost fact
-that no native launch was submitted.
+that no native launch was submitted. A crash after `close_requested` can also
+leave the original resources stopped without a committed proof. Restarting the
+stop sequence by reverting to `stop_intent` violates the monotonic lifecycle and
+prevents that original responsibility from ever converging.
 
 ## Decision
 
@@ -27,6 +30,13 @@ resource scope. It cannot contain an agent or a capture segment. Ordinary proofs
 retain their exact JSON shape and mandatory shell and agent identities. Neither
 proof allows uncertain input to be replayed, and preparation proofs cannot grant
 another native generation or automation recovery.
+
+A recovered `close_requested` run preserves its committed stop operation and
+reason without incrementing the control epoch again during stopping. The normal
+recovery fence still advances when the lifecycle is reopened. It repeats the original process verification and exclusive
+stop before committing a proof; it does not rewind the lifecycle or infer
+stopping from the phase. Changed or unreadable original identities still retain
+`stop_unknown`. This applies to preparation and native runs alike.
 
 The service checks preparation proofs against recording content in both write
 orders and before finalization. A later nonzero recording report cannot turn an
@@ -53,6 +63,12 @@ fact preserve that distinction without fabricating an agent identity.
 **Register a run only after native launch.** This changes registration, crash
 recovery and recording ownership, and cannot settle preparations already
 registered under the existing sequence.
+
+**Permit `close_requested` to revert to `stop_intent`.** The close request already
+records the stop authority. Rewinding that boundary would hide repeated intent
+creation and control-epoch changes instead of making the existing operation
+recoverable. Preserving the phase still requires the full original process
+check; it is not permission to skip stopping.
 
 ## Consequences
 

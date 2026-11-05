@@ -20,6 +20,8 @@ Task Session 使用共同任务入口，当前 web 执行保留 native timeline�
 
 提交与后续回执查询共用从提交开始计算的 10 秒截止时间，pending 时主动检查也不延长它。超时中止请求并保留 unknown；即使底层传输没有响应取消，页面也会结束等待。unknown 后的显式回执检查使用新的 10 秒只读窗口，不重启原操作或自动重发。
 
+经过身份和正文校验的提交响应若为 HTTP 409，且错误码为 `input_busy`、`stale_fence`、`lease_expired` 或 `automation_suspended`，表示该新操作在服务端操作账本写入前被明确拒绝。客户端显示 rejected、清除该 pending 身份并刷新当前控制状态；不查询不存在的回执，也不自动重试。用户之后另行操作时使用新的 operationId，并继续接受当前权限、lease 和 fence 检查。其他错误、未知冲突、正文校验失败和丢失响应仍保持 unknown；回执查询失败不能套用这项提交拒绝规则。
+
 回执查询的 404 可能表示操作尚未写入，不能单独证明 Session 已失效。客户端在同一读取窗口内核对原 sessionId 的状态；原 Session 可访问时保留 unknown 和人工核对入口，不经 current 重定向。原 Session 的实际访问拒绝仍关闭查看与控制能力。迟到结果必须同时匹配查询代次、原操作和当前执行绑定，不能覆盖新操作。
 
 未知初始提交使用 `resolve_initial_assignment` 记录人工处置，仍保持 suspended。`resume_automation` 是另一项显式确认，要求用户已处理终端草稿；它不能夹带未知初始提交处置。确认绑定打开时的运行身份与 control epoch，未知结果确认还绑定原 operationId；提交时重新核对当前客户端状态。控制身份或原操作改变后必须重新确认，正常画面更新和原生身份补齐不取消同一上下文的确认。旧环境未公布相应动作时，页面不尝试替代控制。

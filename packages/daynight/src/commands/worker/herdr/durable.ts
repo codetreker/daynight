@@ -491,7 +491,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         update(owner, draft => { current(draft).phase = "stop_unknown"; current(draft).error = "The original daemon disappeared without a durable stop intent."; });
         throw new Error("Herdr stop_unknown: absence without a durable stop intent cannot prove controlled resource shutdown.");
       }
-      try { record = update(owner, draft => { const r = current(draft); r.phase = "stop_intent"; r.stopReason ??= reason; r.stopOperationId ??= randomUUID(); r.admission = null; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); if (draft.initialAssignment === "dispatching") draft.initialAssignment = "unknown"; }); }
+      // A recovered close request already owns the stop intent and control fence.
+      // Preserve that boundary while rechecking its original process identities.
+      if (run.phase !== "close_requested") try { record = update(owner, draft => { const r = current(draft); r.phase = "stop_intent"; r.stopReason ??= reason; r.stopOperationId ??= randomUUID(); r.admission = null; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); if (draft.initialAssignment === "dispatching") draft.initialAssignment = "unknown"; }); }
       catch (journalError) {
         // A failed journal cannot authorize a durable stop conclusion, even if emergency signaling succeeds.
         if (run.daemon !== null) await native.stopExclusiveRun({ daemon: run.daemon, processes: run.processes }, operation);

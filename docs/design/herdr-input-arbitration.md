@@ -62,7 +62,7 @@ Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 sourc
 
 paste 使用独立、完整的 bracketed-paste Input frame；Enter 为另一帧，每帧之前重新核对准入。仅支持 Session v2 的有限按键白名单，不接收任意转义字节、mouse 或 resize。单批 paste 最多 16 KiB UTF-8，总时限 10 秒。自动 prompt 同样受此上限限制，超限不截断。
 
-API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `process_info` 获取 shell PID/TTY；本机缺失 TTY 字段时，通过原 shell 的 `ps -o tty=` 读取，再只读执行 `stty -f <tty> size`。原进程出生身份与 API/client 两个 socket peer 在读取和写入准入时再次核对，尺寸或 TTY 变化拒绝。实际 attach 仍可能重应用尺寸或恢复 pending agent，因此 launchPending、未知 native 状态与非受管 foreground 禁止输入。拒绝结果只说明没有写 Input，不代表 attach 没有副作用；Detach 也不保证恢复旧尺寸。
+API layout 或观察帧不能证明实际 PTY 尺寸。Worker 从原 pane 的 `process_info` 获取 shell PID/TTY；本机缺失 TTY 字段时，macOS 通过 `proc_pidinfo(PROC_PIDTBSDINFO)` 读取原 shell 的控制终端设备号，再用 `devname_r` 解析为受支持的 `/dev/ttys数字` 路径；短读、PID 不符、无控制终端或不支持的名称均拒绝。尺寸查询以只读、`O_NOCTTY`、`O_NONBLOCK`、`O_NOFOLLOW` 打开该路径，核对 fd 为字符设备，仅调用 `TIOCGWINSZ` 读取 rows/columns，并在 finally 关闭。查询前后检查原操作取消；没有 `ps`/`stty` 子进程，不 attach、不设置尺寸或 termios，读不到实际值时不猜测或缓存替代。机制与替代代价见[直接几何查询决策](../../.agents/notes/implemented/bug-fix/2026-11-05-herdr-native-input-geometry.md)。原进程出生身份与 API/client 两个 socket peer 在读取和写入准入时再次核对，尺寸或 TTY 变化拒绝。实际 attach 仍可能重应用尺寸或恢复 pending agent，因此 launchPending、未知 native 状态与非受管 foreground 禁止输入。拒绝结果只说明没有写 Input，不代表 attach 没有副作用；Detach 也不保证恢复旧尺寸。
 
 ## 连接与停止
 
