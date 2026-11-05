@@ -1,13 +1,14 @@
-import { isAbortError, requestId } from '../../api/client';
+import { ApiError, isAbortError, requestId } from '../../api/client';
 import { canonicalId } from '../../api/parse';
 import { parseSessionHistory, type SessionHistoryItem } from '../../api/terminal-sessions';
 import { TaskCacheError, type ProjectRecord, type SessionHistoryRecord } from '../task-cache/database';
 import type { SyncTicket, TaskCacheScope } from '../task-cache/project-cache';
 
-export type CachedSessionHistory = { items: SessionHistoryItem[]; nextCursor: string | null };
+export type SessionHistoryPage = { items: SessionHistoryItem[]; nextCursor: string | null };
+export type CachedSessionHistory = SessionHistoryPage & { confirmedCompleteEmpty: boolean };
 export const SESSION_HISTORY_CACHE_LIMITS = { records: 32, totalBytes: 2 * 1024 * 1024, recordBytes: 256 * 1024 } as const;
 export const SESSION_HISTORY_LEASE_MS = 30_000;
-const sizeOf = (page: CachedSessionHistory | null): number => page === null ? 0 : new TextEncoder().encode(JSON.stringify(page)).byteLength;
+const sizeOf = (page: SessionHistoryPage | null): number => page === null ? 0 : new TextEncoder().encode(JSON.stringify(page)).byteLength;
 
 function validate(row: SessionHistoryRecord, ticket: SyncTicket, manifest: ProjectRecord): SessionHistoryRecord {
   try {
@@ -17,8 +18,12 @@ function validate(row: SessionHistoryRecord, ticket: SyncTicket, manifest: Proje
       (row.leaseExpiresAt !== null && (!Number.isSafeInteger(row.leaseExpiresAt) || row.leaseExpiresAt < 0)) ||
       (row.settled !== null && row.settled !== 'saved' && row.settled !== 'failed' && row.settled !== 'cancelled') ||
       (row.leaseExpiresAt !== null && row.settled !== null) ||
+      (row.paginationToken !== null && (typeof row.paginationToken !== 'string' || canonicalId(row.paginationToken) !== row.paginationToken)) ||
+      typeof row.confirmedCompleteEmpty !== 'boolean' || typeof row.observedNonEmpty !== 'boolean' || row.confirmedCompleteEmpty && row.observedNonEmpty ||
       !Number.isSafeInteger(row.lastUsedAt) || row.lastUsedAt < 0 || !Number.isSafeInteger(row.byteSize) || row.byteSize < 0) throw new Error('Invalid session history ownership.');
     const page = row.page === null ? null : parseSessionHistory(row.page);
+    if (row.confirmedCompleteEmpty && (page === null || page.items.length !== 0 || page.nextCursor === null)) throw new Error('Invalid complete empty history proof.');
+    if (row.observedNonEmpty && (page === null || page.items.length !== 0 || page.nextCursor === null)) throw new Error('Invalid non-empty history observation.');
     if (row.byteSize !== sizeOf(page) || row.byteSize > SESSION_HISTORY_CACHE_LIMITS.recordBytes) throw new Error('Invalid session history size.');
     return { ...row, page };
   } catch (error) { throw new TaskCacheError('corrupt', error); }
@@ -43,7 +48,7 @@ export const readCachedSessionHistory = async (scope: TaskCacheScope, ticket: Sy
     if (row === undefined || !summaries.has(taskId)) return null;
     const valid = validate(row, ticket, manifest);
     await store.put({ ...valid, lastUsedAt: Date.now() });
-    return valid.page;
+    return valid.page === null ? null : { ...valid.page, confirmedCompleteEmpty: valid.confirmedCompleteEmpty };
   }));
   return scope.isHistoryUncertain(ticket, taskId) ? null : page;
 };
@@ -57,7 +62,8 @@ export const getSessionHistoryToken = async (scope: TaskCacheScope, ticket: Sync
   }));
 };
 
-export const readSessionHistoryPaginationState = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, signal: AbortSignal): Promise<{ token: string; refreshing: boolean; page: CachedSessionHistory | null } | null> => {
+export type SessionHistoryPaginationState = { token: string; paginationToken: string | null; refreshing: boolean; page: SessionHistoryPage | null; confirmedCompleteEmpty: boolean };
+export const readSessionHistoryPaginationState = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, signal: AbortSignal): Promise<SessionHistoryPaginationState | null> => {
   taskId = requestId(taskId);
   if (scope.isHistoryUncertain(ticket, taskId)) return null;
   const state = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
@@ -65,7 +71,23 @@ export const readSessionHistoryPaginationState = async (scope: TaskCacheScope, t
     const row = await store.get([scope.userId, ticket.projectId, taskId]);
     if (row === undefined) return null;
     const valid = validate(row, ticket, manifest);
-    return { token: valid.requestToken, refreshing: valid.leaseExpiresAt !== null && valid.leaseExpiresAt > Date.now(), page: valid.page };
+    return { token: valid.requestToken, paginationToken: valid.paginationToken, refreshing: valid.leaseExpiresAt !== null && valid.leaseExpiresAt > Date.now(), page: valid.page, confirmedCompleteEmpty: valid.confirmedCompleteEmpty };
+  }));
+  return scope.isHistoryUncertain(ticket, taskId) ? null : state;
+};
+
+export const beginSessionHistoryPagination = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, signal: AbortSignal): Promise<SessionHistoryPaginationState | null> => {
+  taskId = requestId(taskId);
+  if (scope.isHistoryUncertain(ticket, taskId)) return null;
+  const state = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
+    if (!summaries.has(taskId)) return null;
+    const row = await store.get([scope.userId, ticket.projectId, taskId]);
+    if (row === undefined) return null;
+    const valid = validate(row, ticket, manifest);
+    if (valid.leaseExpiresAt !== null || valid.page === null) return { token: valid.requestToken, paginationToken: valid.paginationToken, refreshing: true, page: valid.page, confirmedCompleteEmpty: valid.confirmedCompleteEmpty };
+    const paginationToken = crypto.randomUUID();
+    await store.put({ ...valid, paginationToken });
+    return { token: valid.requestToken, paginationToken, refreshing: false, page: valid.page, confirmedCompleteEmpty: valid.confirmedCompleteEmpty };
   }));
   return scope.isHistoryUncertain(ticket, taskId) ? null : state;
 };
@@ -108,7 +130,8 @@ export const beginSessionHistoryRefresh = async (scope: TaskCacheScope, ticket: 
     const leaseExpiresAt = now + SESSION_HISTORY_LEASE_MS;
     await store.put({ userId: scope.userId, projectId: ticket.projectId, taskId, userFence: manifest.userFence,
       cacheGeneration: manifest.cacheGeneration, requestToken, clearedToken: existing?.clearedToken ?? null,
-      leaseExpiresAt, settled: null, page: existing?.page ?? null, byteSize: existing?.byteSize ?? 0, lastUsedAt: now });
+      leaseExpiresAt, settled: null, paginationToken: null, page: existing?.page ?? null, confirmedCompleteEmpty: existing?.confirmedCompleteEmpty ?? false, observedNonEmpty: existing?.observedNonEmpty ?? false,
+      byteSize: existing?.byteSize ?? 0, lastUsedAt: now });
     return { kind: 'lease' as const, token: requestToken, acquired: true, expiresAt: leaseExpiresAt };
   }));
   if (result.kind === 'rotate') {
@@ -122,15 +145,17 @@ export const beginSessionHistoryRefresh = async (scope: TaskCacheScope, ticket: 
 };
 
 // The marker proves a denial to other tabs and invalidates earlier request tokens.
-export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal): Promise<boolean> => {
+export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, expectedPaginationToken?: string): Promise<boolean> => {
   taskId = requestId(taskId);
   if (expectedToken !== null) expectedToken = requestId(expectedToken);
+  if (expectedPaginationToken !== undefined) expectedPaginationToken = requestId(expectedPaginationToken);
   let clearedToken: { kind: 'stale' } | { kind: 'overflow' } | { kind: 'cleared'; marker: string };
   try { clearedToken = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest) => {
     const rows = (await store.index('by-project').getAll([scope.userId, ticket.projectId])).map(row => validate(row, ticket, manifest));
     if (rows.length > SESSION_HISTORY_CACHE_LIMITS.records || rows.reduce((sum, row) => sum + row.byteSize, 0) > SESSION_HISTORY_CACHE_LIMITS.totalBytes) throw new TaskCacheError('corrupt');
     const existing = rows.find(row => row.taskId === taskId);
-    if ((existing?.requestToken ?? null) !== expectedToken || existing?.leaseExpiresAt !== null && existing?.leaseExpiresAt !== undefined && existing.leaseExpiresAt <= Date.now()) return { kind: 'stale' as const };
+    if ((existing?.requestToken ?? null) !== expectedToken || expectedPaginationToken !== undefined && existing?.paginationToken !== expectedPaginationToken ||
+      existing?.leaseExpiresAt !== null && existing?.leaseExpiresAt !== undefined && existing.leaseExpiresAt <= Date.now()) return { kind: 'stale' as const };
     const others = rows.filter(row => row.taskId !== taskId).sort((a, b) => a.lastUsedAt - b.lastUsedAt || a.taskId.localeCompare(b.taskId));
     let count = others.length + 1;
     for (const evicted of others) {
@@ -142,12 +167,12 @@ export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTic
     const marker = crypto.randomUUID();
     await store.put({ userId: scope.userId, projectId: ticket.projectId, taskId, userFence: manifest.userFence,
       cacheGeneration: manifest.cacheGeneration, requestToken: crypto.randomUUID(), clearedToken: marker,
-      leaseExpiresAt: null, settled: 'cancelled', page: null, byteSize: 0, lastUsedAt: Date.now() });
+      leaseExpiresAt: null, settled: 'cancelled', paginationToken: null, page: null, confirmedCompleteEmpty: false, observedNonEmpty: false, byteSize: 0, lastUsedAt: Date.now() });
     return { kind: 'cleared' as const, marker };
   })); }
   catch (error) {
     if (!isAbortError(error)) {
-      try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal)) return false; }
+      try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal, false, expectedPaginationToken)) return false; }
       catch { /* The original storage error remains the actionable failure. */ }
     }
     throw error;
@@ -157,7 +182,7 @@ export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTic
     try { return await scope.rotateSessionHistoryGeneration(ticket, SESSION_HISTORY_CACHE_LIMITS.records, signal); }
     catch (error) {
       if (!isAbortError(error)) {
-        try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal)) return false; }
+        try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal, false, expectedPaginationToken)) return false; }
         catch { /* The original storage error remains the actionable failure. */ }
       }
       throw error;
@@ -167,9 +192,10 @@ export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTic
   return true;
 };
 
-export const saveSessionHistory = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, page: CachedSessionHistory, requestToken: string, signal: AbortSignal): Promise<boolean> => {
+export const saveSessionHistory = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, page: SessionHistoryPage, requestToken: string, signal: AbortSignal, confirmedCompleteEmpty?: boolean): Promise<boolean> => {
   taskId = requestId(taskId); requestToken = requestId(requestToken);
   const parsed = parseSessionHistory(page); const byteSize = sizeOf(parsed);
+  if (confirmedCompleteEmpty === true && (parsed.items.length !== 0 || parsed.nextCursor === null)) throw new ApiError('protocol');
   const result = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
     if (!summaries.has(taskId)) return { saved: false, changed: false };
     const rows = (await store.index('by-project').getAll([scope.userId, ticket.projectId])).map(row => validate(row, ticket, manifest));
@@ -177,7 +203,7 @@ export const saveSessionHistory = async (scope: TaskCacheScope, ticket: SyncTick
     const existing = rows.find(row => row.taskId === taskId);
     if (existing === undefined || existing.requestToken !== requestToken || existing.leaseExpiresAt === null || existing.leaseExpiresAt <= Date.now() ||
       !scope.canSaveHistoryAfterUncertain(ticket, taskId, requestToken)) return { saved: false, changed: false };
-    let storedPage: CachedSessionHistory | null = byteSize <= SESSION_HISTORY_CACHE_LIMITS.recordBytes ? parsed : null;
+    let storedPage: SessionHistoryPage | null = byteSize <= SESSION_HISTORY_CACHE_LIMITS.recordBytes ? parsed : null;
     let storedBytes = storedPage === null ? 0 : byteSize;
     const others = rows.filter(row => row.taskId !== taskId).sort((a, b) => a.lastUsedAt - b.lastUsedAt || a.taskId.localeCompare(b.taskId));
     let bytes = others.reduce((sum, row) => sum + row.byteSize, storedBytes);
@@ -187,13 +213,36 @@ export const saveSessionHistory = async (scope: TaskCacheScope, ticket: SyncTick
       await store.delete([scope.userId, ticket.projectId, row.taskId]); bytes -= row.byteSize;
     }
     if (bytes > SESSION_HISTORY_CACHE_LIMITS.totalBytes) { storedPage = null; storedBytes = 0; }
-    await store.put({ ...existing, clearedToken: null, leaseExpiresAt: null, settled: 'saved', page: storedPage, byteSize: storedBytes, lastUsedAt: Date.now() });
+    const emptyProof = storedPage !== null && (confirmedCompleteEmpty ?? (JSON.stringify(existing.page) === JSON.stringify(storedPage) && existing.confirmedCompleteEmpty));
+    const observedNonEmpty = storedPage !== null && confirmedCompleteEmpty === false && storedPage.items.length === 0 && storedPage.nextCursor !== null;
+    await store.put({ ...existing, clearedToken: null, leaseExpiresAt: null, settled: 'saved', page: storedPage, confirmedCompleteEmpty: emptyProof, observedNonEmpty, byteSize: storedBytes, lastUsedAt: Date.now() });
     return { saved: true, changed: JSON.stringify(existing.page) !== JSON.stringify(storedPage) };
   }));
   if (!result.saved || !scope.canSaveHistoryAfterUncertain(ticket, taskId, requestToken)) return false;
   scope.clearHistoryUncertain(ticket, taskId, requestToken);
   scope.sessionHistorySettled(ticket, taskId, requestToken, 'saved', signal);
   return true;
+};
+
+export const setSessionHistoryCompleteEmpty = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, firstPage: SessionHistoryPage, token: string, paginationToken: string, completeEmpty: boolean | null, signal: AbortSignal): Promise<boolean> => {
+  taskId = requestId(taskId); token = requestId(token); paginationToken = requestId(paginationToken);
+  const parsed = parseSessionHistory(firstPage);
+  if (completeEmpty && (parsed.items.length !== 0 || parsed.nextCursor === null)) throw new ApiError('protocol');
+  const result = await recover(scope, ticket, signal, () => scope.sessionHistoryTransaction(ticket, signal, async (store, manifest, summaries) => {
+    if (!summaries.has(taskId) || !scope.canSaveHistoryAfterUncertain(ticket, taskId, token)) return { saved: false, changed: false };
+    const row = await store.get([scope.userId, ticket.projectId, taskId]);
+    if (row === undefined) return { saved: false, changed: false };
+    const valid = validate(row, ticket, manifest);
+    if (valid.requestToken !== token || valid.paginationToken !== paginationToken || valid.leaseExpiresAt !== null || JSON.stringify(valid.page) !== JSON.stringify(parsed)) return { saved: false, changed: false };
+    if (completeEmpty === null) return { saved: true, changed: false };
+    if (completeEmpty && valid.observedNonEmpty) return { saved: false, changed: false };
+    const observedNonEmpty = !completeEmpty && parsed.items.length === 0 && parsed.nextCursor !== null;
+    if (valid.confirmedCompleteEmpty === completeEmpty && valid.observedNonEmpty === observedNonEmpty) return { saved: true, changed: false };
+    await store.put({ ...valid, confirmedCompleteEmpty: completeEmpty, observedNonEmpty, settled: 'saved' });
+    return { saved: true, changed: true };
+  }));
+  if (result.changed) scope.sessionHistorySettled(ticket, taskId, token, 'saved', signal);
+  return result.saved;
 };
 
 export const releaseSessionHistoryRefresh = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, token: string, outcome: 'failed' | 'cancelled', signal: AbortSignal): Promise<boolean> => {

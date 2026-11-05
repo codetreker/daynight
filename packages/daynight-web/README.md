@@ -514,9 +514,11 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 7 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Upgrading schema 6 adds the Session
-records store while retaining compatible task and profile data and lifecycle.
+schema 8 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Upgrading schema 7 clears its Session
+records, which lack the complete-empty proof, and preserves compatible project,
+task, profile and lifecycle data. Upgrading schema 6 adds the Session records
+store while retaining compatible task and profile data and lifecycle.
 Upgrading the ownership-complete schema 5 adds profiles while
 preserving compatible task records, user fences and watermarks. Upgrades from
 schema 1, 2, 3 or 4 rebuild incompatible projects, summaries and details, rotate
@@ -834,8 +836,12 @@ retain their state while a recording is selected.
 The shared cache stores successful first pages and confirmed empty catalogues per
 authenticated user, project and task. Opening or reactivating the view refreshes
 the first page even when cached: confirmed empty stays hidden during refresh and
-existing entries remain readable. An incomplete page is not a confirmed empty
-catalogue; failures retain eligible content and offer retry. Task version does
+existing entries remain readable. An empty first page with a continuation does
+not by itself confirm an empty catalogue. Exhausting later pages establishes a
+separate persisted empty proof while retaining the original first page and cursor.
+Refreshing a confirmed empty catalogue follows an empty first page through its
+continuations until a record appears or the catalogue is exhausted. Failures
+retain eligible content and offer retry. Task version does
 not establish history freshness. Fences and generations guard revoked or stale
 results; complete storage failure can conservatively hide a newer result or lose
 a denial across a restart after all tabs close, as described in the

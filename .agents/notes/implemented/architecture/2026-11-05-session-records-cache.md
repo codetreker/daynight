@@ -19,8 +19,13 @@ reactivating the view uses eligible content and refreshes the first page in the
 background for both empty and nonempty catalogues. Content state is independent
 of refresh and failure: an exhausted empty result stays hidden while refreshing,
 existing entries remain readable, and an error has a recovery path without
-being stored as an empty result. An empty page with a next cursor remains
-incomplete. Equivalent results preserve reading and selection state.
+being stored as an empty result. An empty first page with a next cursor alone
+remains incomplete. Exhausting all subsequent pages establishes a separate
+persisted complete-empty proof while retaining the original first page and
+cursor. When a confirmed empty catalogue is refreshed and the first page is
+empty with a continuation, the background read follows later pages until a
+record appears or the catalogue is exhausted. Equivalent results preserve
+reading and selection state.
 
 The cache uses the existing user fence and project generation lifecycle and
 bounded retention. A per-task lease coordinates simultaneous refreshes across
@@ -66,7 +71,9 @@ the directory is current.
 
 Both empty and nonempty results can be reused after reload while activation still
 issues a history request. Cached metadata consumes bounded local storage and
-requires lifecycle checks and schema migration. Offline or failed refresh can
+requires lifecycle checks and schema migration. Schema 8 discards the old
+Session catalogue format while preserving compatible project, task and profile
+data. Offline or failed refresh can
 leave the last valid directory stale; the visible error and retry path distinguish
 that state from a successful empty response. Existing pagination, fixed execution
 identity, attachment previews and live Session controls retain their owners.

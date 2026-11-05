@@ -8,6 +8,7 @@ import type { SessionHistoryItem } from '../src/api/terminal-sessions';
 import { ApiError } from '../src/api/client';
 import { ManagedSessionRecords } from '../src/features/task-agent-session/TaskSessionHost';
 import { beginSessionHistoryRefresh, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
+import * as historyCache from '../src/features/task-agent-session/session-history-cache';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 
 vi.mock('../src/api/terminal-sessions', async (original) => ({ ...(await original<typeof import('../src/api/terminal-sessions')>()), createTerminalSessionApi: vi.fn() }));
@@ -276,4 +277,231 @@ it('withdraws another scope when storage opening fails before an unreserved 403 
   await act(async () => finishOld({ items: [second], nextCursor: null }));
   expect(within(screen.getByTestId('first')).queryByRole('button', { name: /Herdr/ })).toBeNull();
   failedOpen.mockRestore();
+});
+
+async function waitForCompleteEmpty(scope: ReturnType<typeof createTaskCacheScope>) {
+  const ticket = await scope.beginSync(projectId, sig());
+  await waitFor(async () => {
+    const row = await scope.sessionHistoryTransaction(ticket, sig(), store => store.get([scope.userId, projectId, taskId]));
+    expect((row as unknown as { confirmedCompleteEmpty?: boolean } | undefined)?.confirmedCompleteEmpty).toBe(true);
+  });
+}
+
+it('keeps a fully paginated empty directory hidden through remount, delayed cache read and refresh', async () => {
+  const scope = await seed(); const api = fixture();
+  api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' }).mockResolvedValueOnce({ items: [], nextCursor: null });
+  const view = render(surface(scope, 'only'));
+  fireEvent.click(await screen.findByRole('button', { name: 'Load earlier records' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull());
+  await waitForCompleteEmpty(scope);
+  view.unmount();
+  const reopened = await anotherScope();
+  let releaseCache!: () => void;
+  const gate = new Promise<void>(resolve => { releaseCache = resolve; });
+  const transaction = reopened.sessionHistoryTransaction.bind(reopened);
+  const delayed = vi.spyOn(reopened, 'sessionHistoryTransaction').mockImplementationOnce((async (...args: Parameters<typeof transaction>) => {
+    await gate; return transaction(...args);
+  }) as typeof reopened.sessionHistoryTransaction);
+  let finishRefresh!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  api.history.mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve; }));
+  render(surface(reopened, 'reopened'));
+  await waitFor(() => expect(delayed).toHaveBeenCalled());
+  expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
+  await act(async () => releaseCache());
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(3));
+  expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
+  await act(async () => finishRefresh({ items: [], nextCursor: null }));
+  expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
+});
+
+it('revalidates later pages when a confirmed empty directory still has an empty first page with a cursor', async () => {
+  const scope = await seed(); const api = fixture();
+  api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' }).mockResolvedValueOnce({ items: [], nextCursor: null });
+  const view = render(surface(scope, 'only'));
+  fireEvent.click(await screen.findByRole('button', { name: 'Load earlier records' }));
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull());
+  await waitForCompleteEmpty(scope);
+  view.unmount();
+  const reopened = await anotherScope();
+  let finishFirst!: (value: { items: SessionHistoryItem[]; nextCursor: string }) => void;
+  let finishLater!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  api.history.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishLater = resolve; }));
+  render(surface(reopened, 'reopened'));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(3));
+  expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
+  await act(async () => finishFirst({ items: [], nextCursor: 'next' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(4));
+  expect(api.history.mock.calls[3]![0]).toBe('next');
+  expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
+  await act(async () => finishLater({ items: [second], nextCursor: null }));
+  expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+});
+
+it('publishes a newly discovered later-page recording to both consumers of a confirmed empty directory', async () => {
+  channelSetup(); const first = await seed(); const secondScope = await anotherScope(); const api = fixture();
+  api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' }).mockResolvedValueOnce({ items: [], nextCursor: null });
+  const initial = render(surface(first, 'initial'));
+  fireEvent.click(await screen.findByRole('button', { name: 'Load earlier records' }));
+  await waitForCompleteEmpty(first); initial.unmount();
+  let finishFirst!: (value: { items: SessionHistoryItem[]; nextCursor: string }) => void;
+  let finishLater!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  api.history.mockImplementation(async cursor => cursor === null ? { items: [], nextCursor: 'next' } : { items: [second], nextCursor: null });
+  api.history.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishLater = resolve; }));
+  const leases = vi.spyOn(historyCache, 'beginSessionHistoryRefresh');
+  render(<>{surface(first, 'first')}{surface(secondScope, 'second')}</>);
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(3));
+  await waitFor(async () => {
+    const results = await Promise.all(leases.mock.results.map(result => result.value));
+    expect(results.some(result => result?.kind === 'lease' && !result.acquired)).toBe(true);
+  });
+  expect(screen.queryAllByRole('region', { name: 'Session recordings' })).toHaveLength(0);
+  await act(async () => finishFirst({ items: [], nextCursor: 'next' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(4));
+  expect(screen.queryAllByRole('region', { name: 'Session recordings' })).toHaveLength(0);
+  await act(async () => finishLater({ items: [second], nextCursor: null }));
+  expect(await within(screen.getByTestId('first')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+  expect(await within(screen.getByTestId('second')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+});
+
+it('discards a continuation when a newer token wins before the empty-proof transaction', async () => {
+  channelSetup(); const first = await seed(); const other = await anotherScope(); const api = fixture();
+  api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' });
+  let finishOld!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  api.history.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+  render(surface(first, 'first'));
+  fireEvent.click(await screen.findByRole('button', { name: 'Load earlier records' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  const original = historyCache.setSessionHistoryCompleteEmpty;
+  let releaseProof!: () => void;
+  const gate = new Promise<void>(resolve => { releaseProof = resolve; });
+  const pending = vi.spyOn(historyCache, 'setSessionHistoryCompleteEmpty').mockImplementationOnce(async (...args) => { await gate; return original(...args); });
+  await act(async () => finishOld({ items: [second], nextCursor: null }));
+  await waitFor(() => expect(pending).toHaveBeenCalled());
+  const ticket = await other.beginSync(projectId, sig());
+  const lease = (await beginSessionHistoryRefresh(other, ticket, taskId, sig()))!;
+  if (lease.kind !== 'lease' || !lease.acquired) throw new Error('Expected the newer refresh lease.');
+  await act(async () => { expect(await saveSessionHistory(other, ticket, taskId, { items: [item], nextCursor: null }, lease.token, sig())).toBe(true); });
+  await act(async () => releaseProof());
+  expect(await screen.findByRole('button', { name: /2026-11-03.*Herdr/ })).toBeVisible();
+  expect(screen.queryByRole('button', { name: /2026-11-02.*Herdr/ })).toBeNull();
+});
+
+it('discards an older nonempty continuation after another consumer confirms the same inventory empty', async () => {
+  channelSetup(); const first = await seed(); const secondScope = await anotherScope();
+  const apiA = fixture();
+  apiA.history.mockImplementation(async cursor => cursor === null ? { items: [], nextCursor: 'next' } : { items: [], nextCursor: null });
+  let finishOld!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  apiA.history.mockImplementationOnce(async () => ({ items: [], nextCursor: 'next' }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+  const apiB = { ...apiA, history: vi.fn(async (cursor: string | null, _signal: AbortSignal) => cursor === null ? { items: [] as SessionHistoryItem[], nextCursor: 'next' as string | null } : { items: [], nextCursor: null }) };
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(apiA as never).mockReturnValueOnce(apiB as never);
+  const view = render(<>{surface(first, 'first')}</>);
+  await within(screen.getByTestId('first')).findByRole('button', { name: 'Load earlier records' });
+  view.rerender(<>{surface(first, 'first')}{surface(secondScope, 'second')}</>);
+  const secondMore = await within(screen.getByTestId('second')).findByRole('button', { name: 'Load earlier records' });
+  await waitFor(() => expect(secondMore).toBeEnabled());
+  const firstMore = within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' });
+  await waitFor(() => expect(firstMore).toBeEnabled());
+  fireEvent.click(firstMore);
+  await waitFor(() => expect(apiA.history).toHaveBeenCalledTimes(2));
+  fireEvent.click(secondMore);
+  await waitFor(() => expect(apiB.history).toHaveBeenCalledWith('next', expect.any(AbortSignal)));
+  await waitForCompleteEmpty(secondScope);
+  await act(async () => finishOld({ items: [second], nextCursor: null }));
+  await waitFor(() => expect(within(screen.getByTestId('first')).queryByRole('region', { name: 'Session recordings' })).toBeNull());
+  expect(within(screen.getByTestId('second')).queryByRole('region', { name: 'Session recordings' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /2026-11-02.*Herdr/ })).toBeNull();
+});
+
+it('keeps the newer continuation running and offers retry when concurrent pagination supersedes the older request', async () => {
+  channelSetup(); const first = await seed(); const secondScope = await anotherScope();
+  const apiA = fixture();
+  apiA.history.mockImplementation(async cursor => cursor === null ? { items: [item], nextCursor: 'next' } : { items: [second], nextCursor: null });
+  const apiB = { ...apiA, history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: 'next' as string | null })) };
+  let finishOld!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  let finishNew!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  apiA.history.mockResolvedValueOnce({ items: [item], nextCursor: 'next' })
+    .mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+  apiB.history.mockResolvedValueOnce({ items: [item], nextCursor: 'next' })
+    .mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve; }));
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(apiA as never).mockReturnValueOnce(apiB as never);
+  const view = render(<>{surface(first, 'first')}</>);
+  await within(screen.getByTestId('first')).findByRole('button', { name: 'Load earlier records' });
+  view.rerender(<>{surface(first, 'first')}{surface(secondScope, 'second')}</>);
+  const firstMore = within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' });
+  const secondMore = await within(screen.getByTestId('second')).findByRole('button', { name: 'Load earlier records' });
+  await waitFor(() => { expect(firstMore).toBeEnabled(); expect(secondMore).toBeEnabled(); });
+  fireEvent.click(firstMore); await waitFor(() => expect(apiA.history).toHaveBeenCalledTimes(2));
+  fireEvent.click(secondMore); await waitFor(() => expect(apiB.history).toHaveBeenCalledTimes(2));
+  await act(async () => finishOld({ items: [second], nextCursor: null }));
+  expect(await within(screen.getByTestId('first')).findByRole('alert')).toBeVisible();
+  expect(apiA.history).toHaveBeenCalledTimes(2);
+  expect(apiB.history.mock.calls[1]![1].aborted).toBe(false);
+  await act(async () => finishNew({ items: [second], nextCursor: null }));
+  expect(await within(screen.getByTestId('second')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+  const retry = within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' });
+  expect(retry).toBeEnabled(); fireEvent.click(retry);
+  expect(await within(screen.getByTestId('first')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+  await waitFor(() => expect(within(screen.getByTestId('first')).queryByRole('alert')).toBeNull());
+});
+
+it('ignores a stale continuation denial after another scope successfully loads a newer page', async () => {
+  channelSetup(); const first = await seed(); const secondScope = await anotherScope();
+  const apiA = fixture();
+  apiA.history.mockImplementation(async cursor => cursor === null ? { items: [item], nextCursor: 'next' } : { items: [second], nextCursor: null });
+  const apiB = { ...apiA, history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: 'next' as string | null })) };
+  let rejectOld!: (reason: Error) => void;
+  let finishNew!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  apiA.history.mockResolvedValueOnce({ items: [item], nextCursor: 'next' })
+    .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject; }));
+  apiB.history.mockResolvedValueOnce({ items: [item], nextCursor: 'next' })
+    .mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve; }));
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(apiA as never).mockReturnValueOnce(apiB as never);
+  const view = render(<>{surface(first, 'first')}</>);
+  await within(screen.getByTestId('first')).findByRole('button', { name: 'Load earlier records' });
+  view.rerender(<>{surface(first, 'first')}{surface(secondScope, 'second')}</>);
+  const firstMore = within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' });
+  const secondMore = await within(screen.getByTestId('second')).findByRole('button', { name: 'Load earlier records' });
+  await waitFor(() => { expect(firstMore).toBeEnabled(); expect(secondMore).toBeEnabled(); });
+  fireEvent.click(firstMore); await waitFor(() => expect(apiA.history).toHaveBeenCalledTimes(2));
+  fireEvent.click(secondMore); await waitFor(() => expect(apiB.history).toHaveBeenCalledTimes(2));
+  await act(async () => finishNew({ items: [second], nextCursor: null }));
+  expect(await within(screen.getByTestId('second')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+  await act(async () => rejectOld(new ApiError('server', 403)));
+  await waitFor(() => expect(within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' })).toBeEnabled());
+  expect(within(screen.getByTestId('second')).getByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+  expect(screen.queryByText('You no longer have permission to access this Session.')).toBeNull();
+  expect(within(screen.getByTestId('first')).getByRole('button', { name: /2026-11-03.*Herdr/ })).toBeVisible();
+});
+
+it('keeps a newer continuation in flight when the older continuation returns 403', async () => {
+  channelSetup(); const first = await seed(); const secondScope = await anotherScope();
+  const apiA = fixture();
+  apiA.history.mockImplementation(async cursor => cursor === null ? { items: [item], nextCursor: 'next' } : { items: [second], nextCursor: null });
+  const apiB = { ...apiA, history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: 'next' as string | null })) };
+  let rejectOld!: (reason: Error) => void;
+  let finishNew!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  apiA.history.mockResolvedValueOnce({ items: [item], nextCursor: 'next' })
+    .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject; }));
+  apiB.history.mockResolvedValueOnce({ items: [item], nextCursor: 'next' })
+    .mockImplementationOnce(() => new Promise(resolve => { finishNew = resolve; }));
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(apiA as never).mockReturnValueOnce(apiB as never);
+  const view = render(<>{surface(first, 'first')}</>);
+  await within(screen.getByTestId('first')).findByRole('button', { name: 'Load earlier records' });
+  view.rerender(<>{surface(first, 'first')}{surface(secondScope, 'second')}</>);
+  const firstMore = within(screen.getByTestId('first')).getByRole('button', { name: 'Load earlier records' });
+  const secondMore = await within(screen.getByTestId('second')).findByRole('button', { name: 'Load earlier records' });
+  await waitFor(() => { expect(firstMore).toBeEnabled(); expect(secondMore).toBeEnabled(); });
+  fireEvent.click(firstMore); await waitFor(() => expect(apiA.history).toHaveBeenCalledTimes(2));
+  fireEvent.click(secondMore); await waitFor(() => expect(apiB.history).toHaveBeenCalledTimes(2));
+  await act(async () => rejectOld(new ApiError('server', 403)));
+  expect(await within(screen.getByTestId('first')).findByRole('alert')).toBeVisible();
+  expect(screen.queryByText('You no longer have permission to access this Session.')).toBeNull();
+  expect(apiA.history).toHaveBeenCalledTimes(2);
+  expect(apiB.history.mock.calls[1]![1].aborted).toBe(false);
+  await act(async () => finishNew({ items: [second], nextCursor: null }));
+  expect(await within(screen.getByTestId('second')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
 });

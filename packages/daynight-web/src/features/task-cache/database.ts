@@ -4,7 +4,7 @@ import type { ProjectPerson } from "../../api/auth-types";
 import type { SessionHistoryItem } from "../../api/terminal-sessions";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 7;
+export const TASK_CACHE_SCHEMA = 8;
 export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details", "profiles", "sessionHistory"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {
@@ -34,7 +34,10 @@ export type SessionHistoryRecord = {
   readonly userFence: string; readonly cacheGeneration: string; readonly requestToken: string;
   readonly clearedToken: string | null;
   readonly leaseExpiresAt: number | null; readonly settled: "saved" | "failed" | "cancelled" | null;
+  readonly paginationToken: string | null;
   readonly page: { readonly items: SessionHistoryItem[]; readonly nextCursor: string | null } | null;
+  readonly confirmedCompleteEmpty: boolean;
+  readonly observedNonEmpty: boolean;
   readonly byteSize: number; readonly lastUsedAt: number;
 };
 export interface TaskCacheSchema extends DBSchema {
@@ -94,6 +97,11 @@ export class TaskCacheDatabase {
           const history = database.createObjectStore("sessionHistory", { keyPath: ["userId", "projectId", "taskId"] });
           history.createIndex("by-user", "userId");
           history.createIndex("by-project", ["userId", "projectId"]);
+        } else if (oldVersion === 7) {
+          void transaction.objectStore("sessionHistory").clear().catch((error: unknown) => {
+            upgradeFailure = error;
+            try { transaction.abort(); } catch { /* The failed upgrade may already be aborted. */ }
+          });
         }
       },
       blocked: () => {

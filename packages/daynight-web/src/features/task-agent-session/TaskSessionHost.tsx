@@ -4,7 +4,7 @@ import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { createTerminalSessionApi, parseSessionHistory, type SessionHistoryItem, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory } from './session-history-cache';
+import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, setSessionHistoryCompleteEmpty } from './session-history-cache';
 import { TaskAgentSession } from './TaskAgentSession';
 import { TerminalSessionView } from './TerminalSessionView';
 import { TerminalRecordingView } from './TerminalRecordingView';
@@ -54,7 +54,7 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
         setState(old => old.owner === owner ? { ...old, page: null, first: null, error: new ApiError('server', 403), checking: false, denied: true } : old);
         const observedSuccess = successSequence.current;
         const superseded = () => successSequence.current !== observedSuccess;
-        void scope.beginSync(projectId, scope.signal).then(ticket => scope.inspectHistoryUncertain(ticket, taskId, expected, scope.signal)).then(result => {
+        void scope.beginSync(projectId, scope.signal).then(ticket => scope.inspectHistoryUncertain(ticket, taskId, expected, scope.signal, event.sessionHistoryUncertain?.expectedPaginationToken)).then(result => {
           if (superseded() || !result.current || scope.isInvalidated) return;
           const retryStarted = result.refreshing || retryPending.current || newerOwned;
           blocked.current = !retryStarted;
@@ -152,29 +152,33 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
       void readCachedSessionHistory(scope, ticket, taskId, signal).then(cached => {
         if (!cached || observed !== readSequence || !valid()) return;
         const first = { items: cached.items, cursor: cached.nextCursor };
-        update(old => samePage(old.first, first) ? old : { ...old, page: first, first, checking: false });
+        const page = cached.confirmedCompleteEmpty ? { items: [], cursor: null } : first;
+        update(old => samePage(old.first, first) && !cached.confirmedCompleteEmpty ? old : { ...old, page, first, checking: false });
       }).catch(() => { /* Cache notifications are hints, not access grants. */ });
     });
     void (async () => {
       let token: string | null = null;
       let pagination: Awaited<ReturnType<typeof readSessionHistoryPaginationState>> = null;
       const requestedFirst = stateRef.current.first;
+      let knownEmpty = stateRef.current.owner === owner && stateRef.current.page !== null && stateRef.current.page.items.length === 0 && stateRef.current.page.cursor === null;
       try {
         ticket = await scope.beginSync(projectId, signal);
         if (request.cursor !== null) {
-          pagination = await readSessionHistoryPaginationState(scope, ticket, taskId, signal);
+          pagination = await beginSessionHistoryPagination(scope, ticket, taskId, signal);
           admitted = true; guard.current.generation = ticket.cacheGeneration;
           if (pagination && (pagination.refreshing || pagination.page === null || !samePage(requestedFirst, { items: pagination.page.items, cursor: pagination.page.nextCursor }))) {
             setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return;
           }
         }
         else {
-          if (stateRef.current.owner !== owner || stateRef.current.page === null) {
+          {
             const cached = await readCachedSessionHistory(scope, ticket, taskId, signal);
             admitted = true; guard.current.generation = ticket.cacheGeneration;
             if (cached && valid()) {
-              const page = { items: cached.items, cursor: cached.nextCursor };
-              update(old => ({ ...old, page, first: page, checking: false }));
+              const first = { items: cached.items, cursor: cached.nextCursor };
+              knownEmpty = cached.confirmedCompleteEmpty || first.items.length === 0 && first.cursor === null || knownEmpty && samePage(stateRef.current.first, first);
+              const page = cached.confirmedCompleteEmpty ? { items: [], cursor: null } : first;
+              update(old => ({ ...old, page: cached.confirmedCompleteEmpty ? page : samePage(old.first, first) && old.page !== null ? old.page : page, first, checking: false }));
             }
           }
           while (valid()) {
@@ -201,9 +205,11 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
             if (lease.kind === 'lease' && completed?.token === lease.token && completed.outcome === 'saved') {
               const cached = await readCachedSessionHistory(scope, ticket, taskId, signal);
               if (cached) {
+                if (knownEmpty && cached.items.length === 0 && cached.nextCursor !== null && !cached.confirmedCompleteEmpty) continue;
                 const first = { items: cached.items, cursor: cached.nextCursor };
                 retryPending.current = false; successSequence.current++;
-                update(old => ({ ...old, page: samePage(old.first, first) ? old.page : first, first, checking: false, loading: false, error: null, denied: false }));
+                const page = cached.confirmedCompleteEmpty ? { items: [], cursor: null } : first;
+                update(old => ({ ...old, page: cached.confirmedCompleteEmpty ? page : samePage(old.first, first) ? old.page : first, first, checking: false, loading: false, error: null, denied: false }));
                 return;
               }
             }
@@ -226,11 +232,26 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
       update(old => ({ ...old, checking: false, loading: true, error: null }));
       try {
         const requestSignal = leaseExpiresAt === null ? signal : AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, leaseExpiresAt - Date.now()))]);
-        const result = await api.history(request.cursor, requestSignal);
+        const initialResult = await api.history(request.cursor, requestSignal);
+        let result = initialResult;
+        let completeProof: boolean | undefined;
+        if (request.cursor === null && knownEmpty && result.items.length === 0 && result.nextCursor !== null) {
+          const visited = new Set<string>();
+          while (result.items.length === 0 && result.nextCursor !== null) {
+            if (visited.has(result.nextCursor)) throw new ApiError('protocol');
+            visited.add(result.nextCursor);
+            result = await api.history(result.nextCursor, requestSignal);
+            if (!valid()) return;
+          }
+          completeProof = result.items.length === 0 && result.nextCursor === null;
+        }
         if (!valid()) return;
         if (request.cursor !== null && ticket && pagination) {
           try {
             const latest = await readSessionHistoryPaginationState(scope, ticket, taskId, signal);
+            if (latest && !latest.refreshing && latest.token === pagination.token && latest.paginationToken !== pagination.paginationToken) {
+              update(old => ({ ...old, loading: false, error: new Error('Session history pagination was superseded.') })); return;
+            }
             if (!latest || latest.refreshing || latest.token !== pagination.token || latest.page === null || !samePage(requestedFirst, { items: latest.page.items, cursor: latest.page.nextCursor })) {
               update(old => ({ ...old, loading: false })); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return;
             }
@@ -238,7 +259,7 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
         }
         if (request.cursor === null && ticket && token) {
           try {
-            if (!await saveSessionHistory(scope, ticket, taskId, result, token, signal)) { update(old => ({ ...old, loading: false })); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return; }
+            if (!await saveSessionHistory(scope, ticket, taskId, initialResult, token, signal, completeProof)) { update(old => ({ ...old, loading: false })); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return; }
             ownedToken = null; ownedRefresh.current = null;
           } catch (error) {
             if (isAbortError(error)) return;
@@ -247,12 +268,26 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
             /* Storage failure must not discard a valid response. */
           }
         }
+        if (request.cursor !== null && ticket && pagination && pagination.paginationToken && requestedFirst && requestedFirst.items.length === 0 && requestedFirst.cursor !== null) {
+          const existingItems = stateRef.current.page?.items ?? [];
+          try {
+            if (!await setSessionHistoryCompleteEmpty(scope, ticket, taskId, { items: requestedFirst.items, nextCursor: requestedFirst.cursor }, pagination.token, pagination.paginationToken,
+              result.items.length !== 0 || existingItems.length !== 0 ? false : result.nextCursor === null ? true : null, signal)) {
+              const latest = await readSessionHistoryPaginationState(scope, ticket, taskId, signal);
+              if (latest && !latest.refreshing && latest.token === pagination.token && latest.paginationToken !== pagination.paginationToken) {
+                update(old => ({ ...old, loading: false, error: new Error('Session history pagination was superseded.') })); return;
+              }
+              update(old => ({ ...old, loading: false })); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return;
+            }
+          } catch (error) { if (isAbortError(error)) return; }
+        }
         if (!valid()) return;
         ++readSequence; retryPending.current = false; if (request.cursor === null) successSequence.current++;
-        const first = { items: result.items, cursor: result.nextCursor };
+        const first = { items: initialResult.items, cursor: initialResult.nextCursor };
+        const refreshedPage = { items: result.items, cursor: result.nextCursor };
         update(old => {
           if (request.cursor === null) {
-            return { ...old, page: samePage(old.first, first) ? old.page : first, first, loading: false, checking: false, error: null, denied: false };
+            return { ...old, page: completeProof !== undefined ? refreshedPage : samePage(old.first, first) ? old.page : first, first, loading: false, checking: false, error: null, denied: false };
           }
           if (requestedFirst === null || !samePage(old.first, requestedFirst)) return { ...old, loading: false };
           const items = old.page?.items ?? [];
@@ -266,10 +301,20 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
           if (observed) await scope.reportHistoryUncertain(observed, taskId, null, scope.signal, true).catch(() => {});
         }
         if (denied && ticket) {
-          try { if (!await clearSessionHistory(scope, ticket, taskId, request.cursor === null ? token : pagination?.token ?? null, signal)) { update(old => ({ ...old, loading: false })); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return; } }
+          try {
+            if (!await clearSessionHistory(scope, ticket, taskId, request.cursor === null ? token : pagination?.token ?? null, signal, request.cursor === null ? undefined : pagination?.paginationToken ?? undefined)) {
+              if (pagination) {
+                const latest = await readSessionHistoryPaginationState(scope, ticket, taskId, signal);
+                if (latest && !latest.refreshing && latest.token === pagination.token && latest.paginationToken !== pagination.paginationToken) {
+                  update(old => ({ ...old, loading: false, error: new Error('Session history pagination was superseded.') })); return;
+                }
+              }
+              update(old => ({ ...old, loading: false })); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); return;
+            }
+          }
           catch (cause) { if (isAbortError(cause)) return; }
         } else if (ticket && pagination) {
-          try { const latest = await readSessionHistoryPaginationState(scope, ticket, taskId, signal); if (!latest || latest.refreshing || latest.token !== pagination.token) { update(old => ({ ...old, loading: false })); return; } }
+          try { const latest = await readSessionHistoryPaginationState(scope, ticket, taskId, signal); if (!latest || latest.refreshing || latest.token !== pagination.token || latest.paginationToken !== pagination.paginationToken) { update(old => ({ ...old, loading: false })); return; } }
           catch (cause) { if (isAbortError(cause)) return; }
         }
         retryPending.current = false;

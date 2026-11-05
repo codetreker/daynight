@@ -2,7 +2,7 @@ import { openDB, type IDBPDatabase } from 'idb';
 import { afterEach, expect, it, vi } from 'vitest';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
-import { beginSessionHistoryRefresh, clearSessionHistory, getSessionHistoryToken, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, SESSION_HISTORY_CACHE_LIMITS } from '../src/features/task-agent-session/session-history-cache';
+import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, getSessionHistoryToken, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, setSessionHistoryCompleteEmpty, SESSION_HISTORY_CACHE_LIMITS } from '../src/features/task-agent-session/session-history-cache';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 
@@ -43,7 +43,7 @@ it('retains confirmed and incomplete empty pages across scopes and rejects super
   expect(await saveSessionHistory(scope, ticket, taskId(1), incomplete, newer, signal())).toBe(true);
   expect(await saveSessionHistory(scope, ticket, taskId(1), empty, second.token, signal())).toBe(false);
   clock.mockRestore();
-  expect(await readCachedSessionHistory(reopened, reopenedTicket, taskId(1), signal())).toEqual(incomplete);
+  expect(await readCachedSessionHistory(reopened, reopenedTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: false });
 });
 
 it('releases failed and cancelled leases and prevents their late responses from winning', async () => {
@@ -65,11 +65,114 @@ it('provides an atomic pagination snapshot that changes across a concurrent refr
   const scope = await seed(); const ticket = await scope.beginSync(projectId, signal());
   const initial = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
   await saveSessionHistory(scope, ticket, taskId(1), incomplete, initial.token, signal());
-  expect(await readSessionHistoryPaginationState(scope, ticket, taskId(1), signal())).toEqual({ token: initial.token, refreshing: false, page: incomplete });
+  expect(await readSessionHistoryPaginationState(scope, ticket, taskId(1), signal())).toEqual({ token: initial.token, paginationToken: null, refreshing: false, page: incomplete, confirmedCompleteEmpty: false });
   const next = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
-  expect(await readSessionHistoryPaginationState(scope, ticket, taskId(1), signal())).toEqual({ token: next.token, refreshing: true, page: incomplete });
+  expect(await readSessionHistoryPaginationState(scope, ticket, taskId(1), signal())).toEqual({ token: next.token, paginationToken: null, refreshing: true, page: incomplete, confirmedCompleteEmpty: false });
   await saveSessionHistory(scope, ticket, taskId(1), empty, next.token, signal());
-  expect(await readSessionHistoryPaginationState(scope, ticket, taskId(1), signal())).toEqual({ token: next.token, refreshing: false, page: empty });
+  expect(await readSessionHistoryPaginationState(scope, ticket, taskId(1), signal())).toEqual({ token: next.token, paginationToken: null, refreshing: false, page: empty, confirmedCompleteEmpty: false });
+});
+
+it('retains a complete-empty proof separately from the original first-page cursor and fences stale pagination', async () => {
+  const scope = await seed(); const ticket = await scope.beginSync(projectId, signal());
+  const first = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  await saveSessionHistory(scope, ticket, taskId(1), incomplete, first.token, signal());
+  const firstPagination = (await beginSessionHistoryPagination(scope, ticket, taskId(1), signal()))!.paginationToken!;
+  expect(await setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), incomplete, first.token, firstPagination, true, signal())).toBe(true);
+  const reopened = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(reopened);
+  const otherTicket = await reopened.beginSync(projectId, signal());
+  expect(await readCachedSessionHistory(reopened, otherTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: true });
+  const next = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  expect(await setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), incomplete, first.token, firstPagination, true, signal())).toBe(false);
+  await saveSessionHistory(scope, ticket, taskId(1), incomplete, next.token, signal());
+  expect(await readCachedSessionHistory(reopened, otherTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: true });
+  const nextPagination = (await beginSessionHistoryPagination(scope, ticket, taskId(1), signal()))!.paginationToken!;
+  expect(await setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), incomplete, next.token, nextPagination, null, signal())).toBe(true);
+  expect(await readCachedSessionHistory(reopened, otherTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: true });
+  expect(await setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), incomplete, next.token, nextPagination, false, signal())).toBe(true);
+  expect(await readCachedSessionHistory(reopened, otherTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: false });
+  expect(await setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), incomplete, next.token, nextPagination, true, signal())).toBe(false);
+  const later = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  await saveSessionHistory(scope, ticket, taskId(1), incomplete, later.token, signal(), true);
+  expect(await readCachedSessionHistory(reopened, otherTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: true });
+  const changed = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  await saveSessionHistory(scope, ticket, taskId(1), empty, changed.token, signal());
+  expect(await readCachedSessionHistory(reopened, otherTicket, taskId(1), signal())).toEqual({ ...empty, confirmedCompleteEmpty: false });
+  await expect(setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), empty, changed.token, nextPagination, true, signal())).rejects.toMatchObject({ kind: 'protocol' });
+});
+
+it('rejects pagination responses superseded by a newer pagination request', async () => {
+  const scope = await seed(); const ticket = await scope.beginSync(projectId, signal());
+  const lease = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  await saveSessionHistory(scope, ticket, taskId(1), incomplete, lease.token, signal());
+  const older = (await beginSessionHistoryPagination(scope, ticket, taskId(1), signal()))!;
+  const newer = (await beginSessionHistoryPagination(scope, ticket, taskId(1), signal()))!;
+  expect(older.paginationToken).not.toBe(newer.paginationToken);
+  expect(await setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), incomplete, lease.token, newer.paginationToken!, true, signal())).toBe(true);
+  expect(await setSessionHistoryCompleteEmpty(scope, ticket, taskId(1), incomplete, lease.token, older.paginationToken!, false, signal())).toBe(false);
+  expect(await readCachedSessionHistory(scope, ticket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: true });
+  expect(await clearSessionHistory(scope, ticket, taskId(1), lease.token, signal(), older.paginationToken!)).toBe(false);
+  expect(await scope.reportHistoryUncertain(ticket, taskId(1), lease.token, signal(), false, older.paginationToken!)).toBe(false);
+  expect(await readCachedSessionHistory(scope, ticket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: true });
+  expect(await clearSessionHistory(scope, ticket, taskId(1), lease.token, signal(), newer.paginationToken!)).toBe(true);
+  expect(await readCachedSessionHistory(scope, ticket, taskId(1), signal())).toBeNull();
+});
+
+it('binds a storage-failure denial hint to the current pagination request', async () => {
+  const scope = await seed(); const ticket = await scope.beginSync(projectId, signal());
+  const lease = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  await saveSessionHistory(scope, ticket, taskId(1), incomplete, lease.token, signal());
+  const older = (await beginSessionHistoryPagination(scope, ticket, taskId(1), signal()))!.paginationToken!;
+  const newer = (await beginSessionHistoryPagination(scope, ticket, taskId(1), signal()))!.paginationToken!;
+  const events = vi.fn(); scope.subscribe(events);
+  const { IDBObjectStore } = await import('fake-indexeddb'); const original = IDBObjectStore.prototype.put;
+  const fault = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'sessionHistory') throw new DOMException('Injected quota', 'QuotaExceededError');
+    return original.apply(this, args);
+  });
+  expect(await clearSessionHistory(scope, ticket, taskId(1), lease.token, signal(), older)).toBe(false);
+  await expect(clearSessionHistory(scope, ticket, taskId(1), lease.token, signal(), newer)).rejects.toMatchObject({ category: 'storage' });
+  expect(events).toHaveBeenCalledWith({ projectId, sessionHistoryUncertain: { taskId: taskId(1), expectedToken: lease.token, expectedPaginationToken: newer } });
+  fault.mockRestore();
+});
+
+it('ignores a cross-tab denial hint for an older pagination request', async () => {
+  class Channel {
+    static instances: Channel[] = [];
+    onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+    constructor() { Channel.instances.push(this); }
+    postMessage() {}
+    close() { Channel.instances = Channel.instances.filter(item => item !== this); }
+  }
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const first = await seed(); const ticket = await first.beginSync(projectId, signal());
+  const lease = mustLease(await beginSessionHistoryRefresh(first, ticket, taskId(1), signal()));
+  await saveSessionHistory(first, ticket, taskId(1), incomplete, lease.token, signal());
+  const second = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(second);
+  const otherTicket = await second.beginSync(projectId, signal());
+  await readCachedSessionHistory(second, otherTicket, taskId(1), signal());
+  const old = (await beginSessionHistoryPagination(first, ticket, taskId(1), signal()))!.paginationToken!;
+  const current = (await beginSessionHistoryPagination(first, ticket, taskId(1), signal()))!.paginationToken!;
+  const events = vi.fn(); second.subscribe(events);
+  const send = (paginationToken: string) => Channel.instances.at(-1)!.onmessage?.({ data: {
+    userId: TEST_VIEWER_ID, projectId, userFence: ticket.userFence, cacheGeneration: ticket.cacheGeneration,
+    sessionHistoryUncertain: { taskId: taskId(1), expectedToken: lease.token, expectedPaginationToken: paginationToken },
+  } } as MessageEvent<unknown>);
+  send(old); await new Promise(resolve => setTimeout(resolve, 20));
+  expect(events).not.toHaveBeenCalled();
+  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: false });
+  send(current);
+  await vi.waitFor(() => expect(events).toHaveBeenCalledWith({ projectId, sessionHistoryUncertain: { taskId: taskId(1), expectedToken: lease.token, expectedPaginationToken: current } }));
+  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toBeNull();
+});
+
+it('rejects a complete-empty proof when the persisted first page does not support it', async () => {
+  const scope = await seed(); const ticket = await scope.beginSync(projectId, signal());
+  const lease = mustLease(await beginSessionHistoryRefresh(scope, ticket, taskId(1), signal()));
+  await saveSessionHistory(scope, ticket, taskId(1), empty, lease.token, signal());
+  const db = await inspect(); const row = (await db.get('sessionHistory', [TEST_VIEWER_ID, projectId, taskId(1)]))!;
+  await db.put('sessionHistory', { ...row, confirmedCompleteEmpty: true });
+  await expect(readCachedSessionHistory(scope, ticket, taskId(1), signal())).rejects.toMatchObject({ category: 'corrupt' });
+  expect(await db.getAll('sessionHistory')).toEqual([]);
 });
 
 it('isolates users and tasks and refuses a ticket after snapshot replacement', async () => {
@@ -98,7 +201,7 @@ it('surfaces quota failure without replacing the previously committed directory'
   });
   await expect(saveSessionHistory(scope, ticket, taskId(1), incomplete, token, signal())).rejects.toMatchObject({ category: 'storage' });
   fault.mockRestore();
-  expect(await readCachedSessionHistory(scope, ticket, taskId(1), signal())).toEqual(empty);
+  expect(await readCachedSessionHistory(scope, ticket, taskId(1), signal())).toEqual({ ...empty, confirmedCompleteEmpty: false });
 });
 
 it('fences old content in both tabs if a trusted denial cannot be persisted', async () => {
@@ -116,7 +219,7 @@ it('fences old content in both tabs if a trusted denial cannot be persisted', as
   await saveSessionHistory(first, ticket, taskId(1), incomplete, initial.token, signal());
   const second = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(second);
   const otherTicket = await second.beginSync(projectId, signal());
-  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual(incomplete);
+  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual({ ...incomplete, confirmedCompleteEmpty: false });
   const events = vi.fn(); second.subscribe(events); Channel.messages = [];
   const pending = mustLease(await beginSessionHistoryRefresh(first, ticket, taskId(1), signal()));
   const { IDBObjectStore } = await import('fake-indexeddb'); const originalPut = IDBObjectStore.prototype.put;
@@ -140,11 +243,11 @@ it('fences old content in both tabs if a trusted denial cannot be persisted', as
   const saved = Channel.messages.find(value => typeof value === 'object' && value !== null && 'sessionHistorySettled' in value &&
     (value as { sessionHistorySettled: { token: string } }).sessionHistorySettled.token === retry.token)!;
   Channel.deliver(saved);
-  await vi.waitFor(async () => expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual(empty));
+  await vi.waitFor(async () => expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual({ ...empty, confirmedCompleteEmpty: false }));
   events.mockClear(); Channel.deliver(hint);
   await new Promise(resolve => setTimeout(resolve, 20));
   expect(events).not.toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryUncertain: expect.anything() }));
-  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual(empty);
+  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual({ ...empty, confirmedCompleteEmpty: false });
   const originalGet = IDBObjectStore.prototype.get;
   const readFault = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
     if (this.name === 'sessionHistory') throw new DOMException('Denied', 'SecurityError');
@@ -194,11 +297,11 @@ it('broadcasts an unbound denial using an observed ticket when beginSync cannot 
   await releaseSessionHistoryRefresh(first, ticket, taskId(1), pending.token, 'cancelled', signal());
   const retry = mustLease(await beginSessionHistoryRefresh(first, ticket, taskId(1), signal()));
   expect(await saveSessionHistory(first, ticket, taskId(1), empty, retry.token, signal())).toBe(true);
-  expect(await readCachedSessionHistory(first, ticket, taskId(1), signal())).toEqual(empty);
+  expect(await readCachedSessionHistory(first, ticket, taskId(1), signal())).toEqual({ ...empty, confirmedCompleteEmpty: false });
   expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toBeNull();
   const secondRetry = mustLease(await beginSessionHistoryRefresh(second, otherTicket, taskId(1), signal()));
   expect(await saveSessionHistory(second, otherTicket, taskId(1), empty, secondRetry.token, signal())).toBe(true);
-  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual(empty);
+  expect(await readCachedSessionHistory(second, otherTicket, taskId(1), signal())).toEqual({ ...empty, confirmedCompleteEmpty: false });
 });
 
 it('clears on denial and fences outstanding responses, generation changes and user scope cleanup', async () => {
@@ -307,7 +410,7 @@ it('delivers verified clear and generation hints to a cache preview without gran
   await saveSessionHistory(first, ticket, taskId(1), empty, token, signal());
   const preview = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(preview);
   let previewTicket = await preview.beginSync(projectId, signal());
-  expect(await readCachedSessionHistory(preview, previewTicket, taskId(1), signal())).toEqual(empty);
+  expect(await readCachedSessionHistory(preview, previewTicket, taskId(1), signal())).toEqual({ ...empty, confirmedCompleteEmpty: false });
   expect(preview.getAuthorizedProject(projectId)).toBeNull();
   expect(preview.isSessionHistoryTicketCurrent(previewTicket)).toBe(true);
   const events = vi.fn(); preview.subscribe(events); Channel.messages = [];

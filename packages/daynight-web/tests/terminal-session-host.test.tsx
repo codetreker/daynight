@@ -9,7 +9,7 @@ import { ApiError } from '../src/api/client';
 import { beginSessionHistoryRefresh, readCachedSessionHistory, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
 import { createTaskCacheScope, TaskCacheProvider, TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 vi.mock('../src/api/terminal-sessions', () => ({ createTerminalSessionApi: vi.fn(), parseSessionHistory: (value: unknown) => value }));
-vi.mock('../src/features/task-agent-session/session-history-cache', () => ({ beginSessionHistoryRefresh: vi.fn(), readCachedSessionHistory: vi.fn(), saveSessionHistory: vi.fn(), clearSessionHistory: vi.fn(async () => true), getSessionHistoryToken: vi.fn(async () => null), isSessionHistoryClearCurrent: vi.fn(async () => ({ current: true, refreshing: false })), readSessionHistoryPaginationState: vi.fn(async () => null), releaseSessionHistoryRefresh: vi.fn(async () => true) }));
+vi.mock('../src/features/task-agent-session/session-history-cache', () => ({ beginSessionHistoryRefresh: vi.fn(), readCachedSessionHistory: vi.fn(), saveSessionHistory: vi.fn(), beginSessionHistoryPagination: vi.fn(async () => null), setSessionHistoryCompleteEmpty: vi.fn(async () => true), clearSessionHistory: vi.fn(async () => true), getSessionHistoryToken: vi.fn(async () => null), isSessionHistoryClearCurrent: vi.fn(async () => ({ current: true, refreshing: false })), readSessionHistoryPaginationState: vi.fn(async () => null), releaseSessionHistoryRefresh: vi.fn(async () => true) }));
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => <div>Native timeline</div> }));
 beforeEach(() => {
   vi.spyOn(TaskCacheScope.prototype, 'isSessionHistoryTicketCurrent').mockReturnValue(true);
@@ -83,14 +83,14 @@ describe('unified Session and managed records', () => {
   });
   it('does not expose the empty section while a cache read and subsequent refresh are delayed', async () => {
     const api = fixture();
-    let finishCache!: (value: { items: never[]; nextCursor: null }) => void;
+    let finishCache!: (value: { items: never[]; nextCursor: null; confirmedCompleteEmpty: boolean }) => void;
     let finishNetwork!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
     vi.mocked(readCachedSessionHistory).mockImplementationOnce(() => new Promise(resolve => { finishCache = resolve; }));
     api.history.mockImplementationOnce(() => new Promise(resolve => { finishNetwork = resolve; }) as never);
     render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     await waitFor(() => expect(readCachedSessionHistory).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
-    await act(async () => finishCache({ items: [], nextCursor: null }));
+    await act(async () => finishCache({ items: [], nextCursor: null, confirmedCompleteEmpty: false }));
     await waitFor(() => expect(api.history).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('region', { name: 'Session recordings' })).toBeNull();
     await act(async () => finishNetwork({ items: [record], nextCursor: null }));
@@ -100,7 +100,7 @@ describe('unified Session and managed records', () => {
     const api = fixture();
     let finishNetwork!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
     const updated = { ...record, archive: { ...record.archive, state: 'failed' as const } };
-    vi.mocked(readCachedSessionHistory).mockResolvedValueOnce({ items: [record], nextCursor: null });
+    vi.mocked(readCachedSessionHistory).mockResolvedValueOnce({ items: [record], nextCursor: null, confirmedCompleteEmpty: false });
     api.history.mockImplementationOnce(() => new Promise(resolve => { finishNetwork = resolve; }) as never);
     render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     const button = await screen.findByRole('button', { name: /Herdr/ });
@@ -115,7 +115,7 @@ describe('unified Session and managed records', () => {
   });
   it('retains a cached empty result after a refresh failure and exposes a retry', async () => {
     const api = fixture();
-    vi.mocked(readCachedSessionHistory).mockResolvedValueOnce({ items: [], nextCursor: null });
+    vi.mocked(readCachedSessionHistory).mockResolvedValueOnce({ items: [], nextCursor: null, confirmedCompleteEmpty: false });
     api.history.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ items: [record], nextCursor: null });
     render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     expect(await screen.findByRole('alert')).toBeVisible();
@@ -125,7 +125,7 @@ describe('unified Session and managed records', () => {
   });
   it('keeps cached records readable on refresh failure and recovers on retry', async () => {
     const api = fixture();
-    vi.mocked(readCachedSessionHistory).mockResolvedValueOnce({ items: [record], nextCursor: null });
+    vi.mocked(readCachedSessionHistory).mockResolvedValueOnce({ items: [record], nextCursor: null, confirmedCompleteEmpty: false });
     api.history.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ items: [record], nextCursor: null });
     render(<ManagedSessionRecords projectId={projectId} taskId={taskId} active>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>);
     expect(await screen.findByRole('alert')).toBeVisible();
