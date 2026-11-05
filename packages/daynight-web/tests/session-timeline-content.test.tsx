@@ -24,6 +24,95 @@ it('uses a readable command label while keeping the complete input available on 
   await expand(view.container.querySelector('details')!);
   expect(view.container.querySelector('.session-tool-input')?.textContent).toBe(input);
 });
+it.each([
+  ['commandExecution', '/bin/zsh -lc date', 'date'],
+  ['commandExecution', 'sh -c echo', 'echo'],
+  ['commandExecution', 'sh -c ./bin/check_v1.2-rc:+@%,', './bin/check_v1.2-rc:+@%,'],
+  ['commandExecution', "sh -c echo' ok'", 'echo ok'],
+  ['commandExecution', "sh -c 'echo 'hello", 'echo hello'],
+  ['commandExecution', `sh -c ec"ho"' ok'`, 'echo ok'],
+  ['commandExecution', String.raw`sh -c echo\ ok`, 'echo ok'],
+  ['commandExecution', "/bin/zsh -lc 'find . -maxdepth 1 -type f | wc -l'", 'find . -maxdepth 1 -type f | wc -l'],
+  ['commandExecution', String.raw`/bin/bash -lc "printf '%s\\n' \"hello\" && echo \$HOME"`, String.raw`printf '%s\n' "hello" && echo $HOME`],
+  ['commandExecution', String.raw`/usr/bin/dash -c 'printf '\''hello'\'''`, "printf 'hello'"],
+  ['commandExecution', `ksh -c 'printf '"'"'hello'"'"''`, "printf 'hello'"],
+  ['commandExecution', String.raw`sh -c "printf '\q'"`, String.raw`printf '\q'`],
+  ['commandExecution', 'sh -c "echo first\\\nsecond"', 'echo firstsecond'],
+  ['commandExecution', '  bash\t-lc\t\'echo first\nsecond\'  ', 'echo first second'],
+  ['commandExecution', "sh -c ''", ''],
+  ['commandExecution', `bash -lc 'sh -c "echo nested"'`, 'sh -c "echo nested"'],
+  ['Bash', JSON.stringify({ command: "bash -lc 'git status --short'", description: 'Read status' }), 'git status --short'],
+  ['bash', JSON.stringify({ cmd: "sh -c 'printf done'" }), 'printf done'],
+])('shows the command inside the shell wrapper for %s without changing expanded input', async (name, input, summary) => {
+  const view = show([{ kind: 'tool_call', entryId: '1', entrySeq: '1', revision: '1', callId: 'c', name, input, output: [], status: 'completed', truncated: false }]);
+  expect(view.container.querySelector('.session-tool-summary')?.textContent).toBe(summary);
+  await expand(view.container.querySelector('details')!);
+  expect(view.container.querySelector('.session-tool-input')?.textContent).toBe(input);
+});
+it.each([
+  'git status --short',
+  'sh -c',
+  'sh -c echo argument',
+  'sh -c $HOME',
+  'sh -c $(pwd)',
+  'sh -c `pwd`',
+  'sh -c ~',
+  'sh -c =date',
+  'sh -c *.sh',
+  'sh -c ?.sh',
+  'sh -c [ab].sh',
+  'sh -c {a,b}',
+  'sh -c date;pwd',
+  'sh -c date|cat',
+  'sh -c date>output',
+  "sh -c 'echo ok' argument",
+  "sh -c 'echo ok' && echo extra",
+  "sh -c 'echo ok' > output",
+  "sh -c 'echo ok'; echo extra",
+  "sh -c 'echo ok' # comment",
+  "sh -c 'echo ok' unquoted' suffix'",
+  "sh -c 'unterminated",
+  'sh -c "unterminated',
+  'sh -c "echo trailing\\',
+  "sh -c 'echo ok'\\",
+  'sh -c "echo $HOME"',
+  'sh -c "echo $(pwd)"',
+  'sh -c "echo `pwd`"',
+  "sh -c $'echo ANSI'",
+  "sh -c $\"echo translated\"",
+  "sh -l -c 'echo flags'",
+  "bash -xec 'echo flags'",
+  "env sh -c 'echo environment'",
+  "fish -c 'echo fish'",
+  "/tmp/sh -c 'echo unknown'",
+])('keeps uncertain or compound shell invocations intact: %s', (input) => {
+  const view = show([{ kind: 'tool_call', entryId: '1', entrySeq: '1', revision: '1', callId: 'c', name: 'commandExecution', input, output: [], status: 'completed', truncated: false }]);
+  expect(view.container.querySelector('.session-tool-summary')?.textContent).toBe(input);
+});
+it.each([
+  ['search', "sh -c 'query text'", "sh -c 'query text'"],
+  ['search', JSON.stringify({ query: "sh -c 'query text'" }), "sh -c 'query text'"],
+  ['commandExecution', JSON.stringify({ description: "sh -c 'description text'" }), "sh -c 'description text'"],
+  ['Read', JSON.stringify({ file_path: '/bin/sh -c', command: 123, path: 'ignored' }), '/bin/sh -c'],
+  ['Bash', JSON.stringify({ command: 'echo first', cmd: 'echo second' }), 'echo first'],
+  ['Bash', JSON.stringify({ command: 123, cmd: "sh -c 'echo second'" }), 'echo second'],
+  ['Bash', JSON.stringify({ command: '', cmd: 'ignored' }), ''],
+  ['unknown', '{"other":"value"}', '{"other":"value"}'],
+  ['unknown', '["value"]', '["value"]'],
+  ['unknown', 'null', 'null'],
+  ['unknown', '"value"', '"value"'],
+  ['unknown', 'plain\n parameters\t here', 'plain parameters here'],
+])('preserves JSON field selection and non-command summaries for %s', (name, input, summary) => {
+  const view = show([{ kind: 'tool_call', entryId: '1', entrySeq: '1', revision: '1', callId: 'c', name, input, output: [], status: 'completed', truncated: false }]);
+  expect(view.container.querySelector('.session-tool-summary')?.textContent).toBe(summary);
+});
+it('applies the existing summary limit after removing the wrapper', async () => {
+  const input = `sh -c 'echo ${'x'.repeat(200)}'`;
+  const view = show([{ kind: 'tool_call', entryId: '1', entrySeq: '1', revision: '1', callId: 'c', name: 'commandExecution', input, output: [], status: 'completed', truncated: false }]);
+  expect(view.container.querySelector('.session-tool-summary')?.textContent).toBe(`echo ${'x'.repeat(174)}…`);
+  await expand(view.container.querySelector('details')!);
+  expect(view.container.querySelector('.session-tool-input')?.textContent).toBe(input);
+});
 async function expand(details: HTMLDetailsElement) { details.open = true; fireEvent(details, new Event('toggle')); await waitFor(() => expect(details.querySelector('pre, .markdown-content')).not.toBeNull()); }
 it('preserves raw tool output with keyboard access and an identifiable failure', async () => {
   const output = '# literal\n*literal*\n  indented\n' + 'last\n'.repeat(500);
