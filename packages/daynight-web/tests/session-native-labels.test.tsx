@@ -47,12 +47,12 @@ it.each([
     expect(view.container.querySelector('.session-composer-activity [aria-live]')).toBeNull();
   }
 });
-it('keeps the archived header English while its body follows the locale', () => {
+it('keeps the ready archive status only in the English header across locales', () => {
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(snapshot({ lifecycle: 'archived' }))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Completed · Read-only history');
-  expect(screen.getByText('已结束 · 只读历史')).toBeVisible();
+  expect(screen.queryByText('已结束 · 只读历史')).toBeNull();
   view.setLocale('en');
-  expect(screen.getAllByText('Completed · Read-only history')).toHaveLength(2);
+  expect(screen.getAllByText('Completed · Read-only history')).toHaveLength(1);
   expect(screen.queryByRole('textbox')).toBeNull();
 });
 it('keeps unknown operation receipts localized independently of the activity label', () => {
