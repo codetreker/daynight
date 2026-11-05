@@ -2,7 +2,8 @@ import { sameStartupReport, type SessionStartupReport } from '../../../../daynig
 import { liveHistoryAllowed } from './presentation';
 import type { SessionArchive, SessionArchiveStatus } from '../../../../daynight/src/session/archive';
 import { ApiError, isAbortError } from '../../api/client';
-import type { BotSessionBinding, SessionApi, SessionChannel } from '../../api/sessions';
+import { IndependentSessionReadDenied, type BotSessionBinding, type SessionApi, type SessionChannel } from '../../api/sessions';
+import { clearSessionDisplayPreference } from './useSessionDisplayPreference';
 import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
 import type { BrowserMessage, TimelinePage } from '../../../../daynight/src/session/controller-protocol';
 import { applySessionEvent, emptySessionState, hydrateSession, mergeTimeline, hasPendingResponse, sessionCancelGate, sessionRespondGate, sessionSendGate, sessionControlGate, type SessionState } from './state';
@@ -289,7 +290,7 @@ export class TaskSessionClient {
       });
     } catch (error) {
       if (generation !== this.connectionGeneration || !this.owned() || isAbortError(error)) return;
-      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
+      if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
       if (!(this.paused() ? await this.admit() : this.admitted()) || generation !== this.connectionGeneration) return;
       this.publish({ startupReport: null, connected: false, status: 'error', error: message(error), errorCode: errorCode(error) }); this.schedule();
     }
@@ -313,7 +314,7 @@ export class TaskSessionClient {
   }
   private scheduleObservation(generation: number): void {
     if (this.observationTimer !== null) clearTimeout(this.observationTimer);
-    if (this.options.testSessionId !== undefined || !this.owned() || this.view.state.snapshot?.lifecycle !== 'active') return;
+    if (!this.owned() || !this.view.state.snapshot || this.options.testSessionId === undefined && this.view.state.snapshot.lifecycle !== 'active') return;
     this.observationTimer = setTimeout(() => { this.observationTimer = null; void this.observeCurrent(generation); }, 3000);
   }
   private async observeCurrent(generation: number): Promise<void> {
@@ -339,13 +340,18 @@ export class TaskSessionClient {
       }
       if (this.currentErrorVisible) { this.publish({ error: null, status: 'ready' }); this.restoreHistoryFailure(this.view.state.snapshot!); }
       const selected = this.view.state.snapshot!;
-      if (selected.lifecycle !== 'active') { this.beginArchive(selected); return; }
+      if (selected.lifecycle !== 'active') {
+        // Independent archives remain subject to Bot deletion. Revalidate their
+        // authority without fetching immutable content again on every poll.
+        if (this.options.testSessionId !== undefined && this.archive !== null) return;
+        this.beginArchive(selected); return;
+      }
       if (!this.historyAllowed(selected)) { this.cancelOlder(); this.publish({ connected: false, loadingOlder: false }); }
       else if (this.channelAuthenticated && !this.hydrating && !this.hydrated) this.startHydration(selected, generation);
       else if (this.channelAuthenticated && this.hydrated && !this.hydrating && !this.view.state.recoveryRequired && BigInt(this.view.state.lastEventSeq) >= BigInt(this.replayThrough)) this.publish({ connected: true });
     } catch (error) {
       if (!currentRequest() || isAbortError(error)) return;
-      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
+      if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
       if (!(await this.admit(request.signal)) || !currentRequest()) return;
       const replaceError = this.currentErrorVisible || !this.view.error || this.view.errorCode === 'controller_offline';
       this.currentReadFailure = { message: message(error), code: errorCode(error) };
@@ -458,9 +464,11 @@ export class TaskSessionClient {
       this.publish({ archiveState: 'ready', state, status: 'ready', connected: false, error: null });
     } catch (error) {
       if (!this.owned() || generation !== this.connectionGeneration || isAbortError(error)) return;
-      if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
+      if (error instanceof IndependentSessionReadDenied || error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) { this.invalidate(error); return; }
       if (!(await this.admit()) || generation !== this.connectionGeneration) return;
       this.publish({ archiveState: 'failed', error: message(error), errorCode: errorCode(error), connected: false });
+    } finally {
+      if (this.options.testSessionId !== undefined && this.owned() && generation === this.connectionGeneration && this.timer === null) this.scheduleObservation(generation);
     }
   }
   private validatePage(page: TimelinePage, snapshot: SessionSnapshot) {
@@ -666,6 +674,7 @@ export class TaskSessionClient {
     if (this.invalidated || this.lifetime.signal.aborted) return;
     this.invalidated = true;
     const sessionId = this.view.state.snapshot?.sessionId ?? this.options.testSessionId;
+    if (sessionId) clearSessionDisplayPreference({ userId: this.options.userId, sessionId });
     try {
       const storage = this.options.storage;
       const operationPrefix = sessionId ? `daynight:session-operations:${this.options.userId}:${sessionId}:` : null;

@@ -18,6 +18,9 @@ native contracts. A page cache owns at most three mounted panes and retains only
 serialized draft/receipt state plus the shared detached reading bookmark after
 LRU eviction. Identity validity remains independent of visible selection.
 
+The [browser deletion decision](2026-11-05-bot-browser-deletion.md) adds reversible
+blocking and shares revocation across cache remounts in one account scope.
+
 Eviction closes transport and releases heavy state; revocation invalidates saved
 state and prevents stale selections reopening it. Bot and account cleanup cover
 cold namespaces even when a new page cache has never selected the old binding.
@@ -64,7 +67,8 @@ confirmed-boundary fallback preserve that distinction without another protocol.
 Three panes bound heavy browser state; lightweight drafts, receipts and bookmarks
 still grow with distinct visited bindings. There is no cross-page bookmark
 database or replay queue. Browser storage denial cannot prove physical erasure;
-page-local tombstones prevent old values from reappearing during that page.
+account-scope tombstones prevent old values from reappearing across cache remounts
+within the document.
 
 List, creation, details, deletion orchestration and public navigation compose
 these interfaces separately. They must keep the cache above selection and

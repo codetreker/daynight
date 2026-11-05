@@ -7,6 +7,10 @@ import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, p
 import { assertSessionFence, parseSessionCommand, type SessionCommand, type SessionOperation } from '../../../daynight/src/session/protocol';
 
 export type SessionChannel = { close(): void };
+/** An authenticated independent-current read rejected continued access, not an operation fence. */
+export class IndependentSessionReadDenied extends ApiError {
+  constructor(error: ApiError) { super('server', error.status, error.code, error.requestId, undefined, error); this.name = 'IndependentSessionReadDenied'; }
+}
 export type BotSessionBinding = {
   readonly ownerUserId: string;
   readonly botId: string;
@@ -38,7 +42,7 @@ export function createBotSessionApi(binding: BotSessionBinding, onPrincipalMisma
 }
 function createIndependentSessionApi(sessionId: string, userId: string, onPrincipalMismatch: () => void, testExecutionId?: string): SessionApi {
   const root = `/api/v1/test-sessions/${requestId(sessionId)}`;
-  return createBoundSessionApi(root, (id) => {
+  const api = createBoundSessionApi(root, (id) => {
     if (id !== sessionId) throw new ApiError('protocol');
     return root;
   }, userId, onPrincipalMismatch, (value) => {
@@ -46,6 +50,15 @@ function createIndependentSessionApi(sessionId: string, userId: string, onPrinci
     if (session.sessionId !== sessionId || !session.testExecutionId || session.identity.ownerUserId !== userId || testExecutionId !== undefined && session.testExecutionId !== testExecutionId) throw new ApiError('protocol');
     return { status: 'registered', session };
   });
+  return { ...api, current: async signal => {
+    try { return await api.current(signal); }
+    catch (error) {
+      // This read carries no mutable version/fence. A Bot deletion barrier uses
+      // resource_conflict here, including access through a retained Test URL.
+      if (error instanceof ApiError && error.kind === 'server' && error.status === 409 && error.code === 'resource_conflict') throw new IndependentSessionReadDenied(error);
+      throw error;
+    }
+  } };
 }
 function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => string, userId: string, onPrincipalMismatch: () => void, parseCurrent: (value: unknown) => CurrentSessionResponse, currentHeaders: Readonly<Record<string, string>> = {}): SessionApi {
   async function get<T>(url: string, signal: AbortSignal, parse: (value: unknown) => T, init: RequestInit = {}, expectedStatus = 200): Promise<T> {

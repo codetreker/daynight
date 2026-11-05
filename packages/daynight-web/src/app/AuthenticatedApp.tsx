@@ -1,3 +1,4 @@
+import { clearPendingBotDeletions } from '../features/bots/deletion-coordinator';
 import { clearPendingBotCreation } from '../features/bots/pending-creation';
 import { BotsPage } from '../features/bots/BotsPage';
 import { useBotMessages } from '../features/bots/messages';
@@ -9,6 +10,7 @@ import { clearSessionDisplayPreference } from '../features/task-agent-session/us
 function clearPrivateSessionState(userId: string): void {
   clearSessionDrafts(userId);
   clearPendingBotCreation(userId);
+  clearPendingBotDeletions(userId);
   for (const sessionId of clearBotSessionStorage(userId)) clearSessionDisplayPreference({ userId, sessionId });
 }
 import { TestSessionPage } from '../features/task-agent-session/TestSessionPage';

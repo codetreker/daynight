@@ -35,3 +35,20 @@
 .bot-details-toggle span { color: var(--muted); }
 .bot-conversation[data-session-fullscreen="true"] { position: fixed; z-index: 40; top: var(--session-viewport-top, 0px); left: var(--session-viewport-left, 0px); width: var(--session-viewport-width, 100%); height: var(--session-viewport-height, 100dvh); padding: 16px; overflow: hidden; background: var(--bg, #fff); }
 .bot-conversation[data-session-fullscreen="true"] .bot-conversation-heading { margin-bottom: 12px; }
+
+.bot-list-item { position: relative; }
+.bot-list-item > a { padding-right: 48px; }
+.bot-more { position: absolute; right: 2px; top: 8px; min-width: 40px; min-height: 40px; font-weight: 700; }
+.bot-action-menu { position: fixed; inset: auto; margin: 0; min-width: 160px; max-width: calc(100vw - 16px); padding: 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: inherit; box-shadow: 0 8px 24px #17244726; }
+.bot-action-menu button { width: 100%; min-height: 40px; padding: 8px 12px; border: 0; border-radius: 4px; background: transparent; color: #a63838; text-align: left; font: inherit; cursor: pointer; }
+.bot-action-menu button:hover, .bot-action-menu button:focus-visible { background: #fff0ee; }
+.bot-delete-dialog { max-width: min(440px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; }
+.bot-delete-dialog::backdrop { background: #18223a55; }
+.bot-delete-dialog .dialog-body { line-height: 1.6; }
+.bot-deletions { max-height: 40%; overflow: auto; }
+.bot-deletion-status { margin: 12px 0; overflow-wrap: anywhere; font-size: 13px; }
+.bot-deletion-status p { margin: 8px 0; }
+.bot-deletion-status dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; }
+.bot-deletion-status dd { margin: 0; }
+.bot-deletion-status .button { margin: 4px 6px 0 0; }
+.bot-selected-deletion { display: block; }

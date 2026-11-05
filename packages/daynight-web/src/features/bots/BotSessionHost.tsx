@@ -13,7 +13,7 @@ export function useBotSessionCache(): BotSessionCache {
   const scope = useTaskCacheScope();
   const cache = useMemo(() => {
     let storage: Storage | null = null; try { storage = window.sessionStorage; } catch { /* The cache still retains lightweight state in memory. */ }
-    return new BotSessionCache({ userId: scope.userId, isCurrent: () => !scope.isInvalidated, isPaused: authRequestsPaused, onPrincipalMismatch: scope.principalMismatch, storage });
+    return new BotSessionCache({ userId: scope.userId, identityScope: scope, isCurrent: () => !scope.isInvalidated, isPaused: authRequestsPaused, onPrincipalMismatch: scope.principalMismatch, storage });
   }, [scope]);
   useEffect(() => {
     const abort = () => cache.invalidate();
@@ -33,9 +33,10 @@ export function BotSessionHost({ cache, binding, active = true, fullscreenBounda
   readonly fullscreenBoundary?: RefObject<HTMLElement | null>;
 }) {
   const panes = useSyncExternalStore(cache.subscribe, cache.snapshot), m = useSessionMessages();
+  const guardRevision = useSyncExternalStore(cache.subscribe, cache.guardSnapshot);
   const key = binding ? botSessionKey(binding) : null;
   const current = cache.isCurrent();
-  useLayoutEffect(() => { cache.select(binding); }, [cache, key, current]);
+  useLayoutEffect(() => { cache.select(binding); }, [cache, key, current, guardRevision]);
   const selected = current && panes.some(pane => pane.key === key);
   return <section className="bot-session-host" aria-label={m.title}>
     {!selected ? <p className="session-empty" role="status">{current ? m.loading : m.unavailable}</p> : null}
