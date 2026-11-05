@@ -33,7 +33,8 @@ own the observable commands and failures. The
 server filtering and cursor scope; all-accessible Project discovery remains
 independent of Team defaults.
 The [CLI lifecycle decision](2026-11-04-cli-team-lifecycle.md) owns remote Team
-lifecycle writes and their confirmation.
+lifecycle writes and their confirmation. The [Project selection decision](2026-11-05-cli-project-team-selection.md)
+uses the same target resolution only after repository discovery finds no match.
 
 ## Alternatives
 

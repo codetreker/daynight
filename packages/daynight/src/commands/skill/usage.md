@@ -13,14 +13,19 @@ subcommand's `--help` for its exact options.
 
 ```bash
 daynight project create "Example project"
-daynight project create "Example project" --repo https://github.com/owner/repo.git
+daynight project create "Example project" --repo https://github.com/owner/repo.git --team personal --confirm
 daynight project list --json
 daynight project show <project-id> --json
 ```
 
 Creation uses the current Git worktree's origin unless `--repo` is supplied;
-an explicit repository works outside Git. A unique equivalent repository returns
-its existing project; multiple matches require choosing the intended project ID.
+an explicit repository works outside Git. It searches all accessible projects.
+A unique equivalent repository returns its existing project without resolving a
+Team or asking for confirmation; multiple matches require choosing the intended
+project ID. Only a new project uses explicit `--team <uuid|personal>`, the current
+service/account default, or Personal if no default is configured. Invalid or
+inaccessible defaults fail. New creation asks for confirmation unless `--confirm`
+is supplied; noninteractive creation requires `--confirm`.
 Task commands normally resolve the current origin to its project. Add
 `--project <project-id>` to a task operation to select one explicitly, including
 outside Git. Project and task IDs are complete UUIDs. A Step ID is exactly eight hexadecimal

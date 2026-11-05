@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import { renderWithLocale } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
+import type { AttachmentRecordSlots } from '../src/features/task-detail/attachments/TaskAttachments';
 import type { GraphTask, Project, TaskDetail, TaskGraph } from '../src/api/types';
 import { stringifyApiJson } from '../src/api/json';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
@@ -18,6 +19,7 @@ const snapshotDetails = new WeakMap<GraphSnapshot, readonly TaskDetail[]>();
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({
   TaskAttachmentsPanel: ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => <section aria-label="附件" data-project-id={projectId} data-task-id={taskId}><input aria-label="附件草稿" defaultValue="" /></section>,
 }));
+vi.mock('../src/features/task-agent-session/TaskSessionHost', async original => ({ ...await original<typeof import('../src/features/task-agent-session/TaskSessionHost')>(), ManagedSessionRecords: ({ children }: { children: (records: AttachmentRecordSlots) => ReactNode }) => children({ sidebar: null, preview: null, clearSelection: () => {} }) }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;

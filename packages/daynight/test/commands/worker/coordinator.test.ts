@@ -2445,6 +2445,24 @@ describe("applied cloud runtime configuration", () => {
     await f.coordinator.shutdown();
   });
 
+  it("retains an in-flight grant as pending when its project is removed from the cloud target", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (candidate, descriptor) => { await pending; return f.grant(candidate, descriptor); });
+    const ticking = f.coordinator.tick();
+    try {
+      await eventually(() => expect(f.remote.claim).toHaveBeenCalledOnce());
+      f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1 });
+      release(); await ticking;
+      expect(f.store.listUnfinishedTasks()).toEqual([expect.objectContaining({ projectId: f.project.projectId, status: "pending" })]);
+      expect(f.grants.size).toBe(1);
+      expect(f.store.listUnfinishedTasks()[0]!.claimId).toBe([...f.grants.keys()][0]);
+      expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+      expect(f.tasks.start).not.toHaveBeenCalled();
+    } finally { release(); await ticking; await f.coordinator.shutdown(); }
+  });
+
   it("retains an in-flight grant as pending when its selected project becomes unready", async () => {
     const f = await fixture();
     let release!: () => void;

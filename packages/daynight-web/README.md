@@ -409,6 +409,23 @@ own target/application semantics and form ownership. Component or controlled-bro
 prove their stated frontend scope; combined Server, CLI and Web acceptance must
 separately establish real reporting, resources, permissions and recovery.
 
+## Project ownership transfer
+
+Project settings show the current owner and offer transfer only to a freshly
+verified owner Team admin. The dialog accepts a Team selected from the paged
+membership list, a UUID, or a same-origin Team page URL. Preview displays the
+target and predicted access before confirmation. The request binds the observed
+ownership and target versions and the authenticated user; conflicts require a
+new preview and confirmation. Direct grants and invitations remain intact.
+
+A validated receipt determines success. Retained access is installed in the
+Project access session; loss of access revokes the matching Task cache generation
+and clears open private views. The source Team is checked by ID for navigation:
+a confirmed 404 goes to Personal, while network errors preserve the success
+notice and offer a retry. A lost response remains unknown, even if a later read
+returns 404; checking current state never replays the transfer. See the
+[transfer decision](../../.agents/notes/implemented/feature/2026-11-05-web-project-transfer.md).
+
 ## Project execution-warning settings
 
 `/projects/{projectId}/settings` is a sibling of the members page, linked from
@@ -751,7 +768,7 @@ own the complete resource lifecycle and the remaining write architecture.
 
 ## Session display
 
-Task, Test and readable archived Sessions share the Display menu beside Refresh.
+Native timeline Task, Test and readable archived Sessions share the Display menu beside Refresh.
 Conversation is the default and keeps messages, plans, interactions and real
 errors; Standard preserves the complete activity view. The authenticated account
 and verified Session ID select a shared page preference, persisted independently
@@ -762,6 +779,25 @@ entries and reading intent without replaying operations or altering pagination.
 The [requirements](../../docs/spec/task-sessions.md#session-显示模式) own the
 display rules; the [Session design](../../docs/design/task-session-protocol.md#session-显示菜单与入口绑定)
 owns identity binding, menu behavior and preference integration.
+
+## Herdr Sessions and recordings
+
+The task Session host keeps the native Web timeline and dispatches Herdr executions
+to a read-only terminal preview with explicit control acquisition. Hidden terminal
+views close their viewer channel and release the browser lease; Worker recording
+continues independently. Controls become available only after Worker confirmation.
+Unknown initial submission disposition and resuming automatic input require
+separate decisions. Unknown manual input is never automatically resent.
+
+The Session selector and the managed Session recordings section in the attachment
+sidebar open fixed original executions in the shared reading area. These entries
+have no attachment mutation actions. Ordinary file previews and upload drafts
+retain their state while a recording is selected.
+Verified complete frames support direct seeking, stepping and playback; partial
+recordings remain labeled and playback stops at every gap until the reader
+explicitly continues. Archive reading establishes no control connection.
+The [Herdr Session Web design](../../docs/design/herdr-session-web.md) owns
+identity, verification, control and playback behavior.
 
 ## Task discussions
 
@@ -1958,7 +1994,14 @@ loss and GET-only recovery with preserved task materials. The
 `task-assignment-layout` journey covers bilingual 1366px/390px/320px layouts,
 long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
 members, read-only browsing, local filters and complete progress with hidden
-siblings.
+siblings. It also checks persisted changed-or-missing profile reads and real
+current-account HTTP validation without routing that would disable Chromium's
+cache. Its request-ID collector joins independently ordered CDP lifecycle and
+extra-information events before checking the original 200/304/401 wire status,
+outgoing validator and encoded transfer bytes. Missing observations remain
+pending, and the profile/cache attachment records collected receipts on success
+and failure. The [wire receipt decision](../../.agents/notes/implemented/testing/2026-11-05-cdp-wire-receipts.md)
+owns the ordering constraint and regression coverage.
 
 The `task-pause` journey verifies pause discovery in the project overview,
 standalone and chain lists, dependency graph and common detail heading. It admits

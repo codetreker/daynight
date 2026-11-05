@@ -660,7 +660,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode });
           registerClaim(granted);
           options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
-          if (canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
+          if (selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);
           return;
         } catch (error) {
           if (isWorkerCancellation(error, normalSignal)) throw error;

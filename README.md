@@ -88,17 +88,20 @@ to `https://daynight.cc` by default.
 From a Git repository with an `origin` remote:
 
 ```bash
-daynight project create "My project"
+daynight project create "My project" --confirm
 daynight task create --title "Improve installation instructions" \
   --description "Document prerequisites and verify the setup commands."
 daynight task list
 daynight task ready
 ```
 
-`project create` returns the existing project when exactly one matches the
-repository; otherwise it creates a project or reports an ambiguous match. Task
-commands discover the project from the repository. Use `--project <project-id>`
-to select one explicitly. Open the Web app to browse the same tasks and progress.
+`project create` returns the existing project when exactly one accessible project
+matches the repository, and reports multiple matches as ambiguous. Only a new
+project uses `--team <uuid|personal>`, the configured default Team, or Personal
+when no default exists. Omit `--confirm` for interactive confirmation; a
+noninteractive creation requires it. Task commands discover the project from the
+repository. Use `--project <project-id>` to select one explicitly. Open the Web
+app to browse the same tasks and progress.
 
 Read project and task usage from the installed package:
 

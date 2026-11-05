@@ -19,6 +19,11 @@ const install = async (page: Page): Promise<State> => {
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.exists ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
+    if (path === `/api/v1/teams/${teamId}` && method === 'PATCH') {
+      state.writes++;
+      if (state.lost) return route.abort('failed');
+      return send(team(teamId));
+    }
     if (path === `/api/v1/teams/${teamId}` && method === 'DELETE') {
       state.writes++; state.exists = false;
       if (state.lost) return route.abort('failed');
@@ -30,7 +35,7 @@ const install = async (page: Page): Promise<State> => {
   });
   return state;
 };
-const start = async (page: Page) => { await page.goto(`/teams/${teamId}/settings`); await expect(page.getByLabel('Team name')).toHaveValue('Alpha'); };
+const start = async (page: Page) => { await page.goto(`/teams/${teamId}/settings`); await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible(); };
 const openDelete = async (page: Page) => { await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog'); await expect(dialog.getByLabel('Enter the Team name to confirm')).toBeVisible(); return dialog; };
 const foreground = async (page: Page, state: State) => {
   const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
@@ -44,9 +49,11 @@ const foreground = async (page: Page, state: State) => {
 
 test('retains a settings draft and typed confirmation across same-user verification', async ({ page }) => {
   const state = await install(page); await start(page);
-  await page.getByLabel('Team name').fill('Unsubmitted draft');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('dialog').getByLabel('Team name').fill('Unsubmitted draft');
   const first = await foreground(page, state);
-  first.finish(); await expect(page.getByLabel('Team name')).toHaveValue('Unsubmitted draft'); await first.other.close();
+  first.finish(); await expect(page.getByRole('dialog').getByLabel('Team name')).toHaveValue('Unsubmitted draft'); await first.other.close();
+  await page.keyboard.press('Escape');
   const dialog = await openDelete(page);
   const name = dialog.getByLabel('Enter the Team name to confirm'); await name.fill('Al');
   const second = await foreground(page, state);
@@ -68,6 +75,18 @@ test('preserves unknown through same-user verification without replay', async ({
   await expect(dialog.getByRole('alert').first()).toContainText('result is unknown');
   expect(state.writes).toBe(1); await expect(dialog.getByRole('button', { name: 'Delete Team' })).toHaveCount(0);
   await check.other.close();
+});
+
+test('preserves an unknown rename across same-user verification and closing the dialog', async ({ page }) => {
+  const state = await install(page); await start(page); state.lost = true;
+  const edit = page.getByRole('button', { name: 'Edit', exact: true }); await edit.click();
+  const dialog = page.getByRole('dialog'); await dialog.getByLabel('Team name').fill('New name');
+  await dialog.getByRole('button', { name: 'Save changes' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('result is unknown');
+  const check = await foreground(page, state); check.finish();
+  await expect(dialog.getByRole('alert').first()).toContainText('result is unknown');
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(edit).toBeDisabled(); expect(state.writes).toBe(1); await check.other.close();
 });
 
 test('does not navigate on a 404 while the committed delete receipt is delayed', async ({ page }) => {

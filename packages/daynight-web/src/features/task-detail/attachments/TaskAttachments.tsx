@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError, attachmentPageUrl, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { AttachmentActionMenu, AttachmentDeleteDialog, type AttachmentActionTarget } from './AttachmentActions';
@@ -24,8 +24,15 @@ type TaskAttachmentsProps = {
 
 export type AttachmentNavigation = { readonly invalid: boolean };
 export type AttachmentTreeReveal = { readonly path: string | null };
+export type AttachmentRecordSlots = {
+  readonly sidebar: ReactNode;
+  readonly preview: ReactNode | null;
+  readonly clearSelection: () => void;
+};
+
 type TaskAttachmentsPanelProps = Omit<TaskAttachmentsProps, 'api'> & {
   readonly attachments: AttachmentController;
+  readonly records?: AttachmentRecordSlots;
   readonly navigation?: AttachmentNavigation | null;
   readonly reveal?: AttachmentTreeReveal;
   readonly onInteract?: () => void;
@@ -81,7 +88,7 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, 
   </ul>;
 };
 
-export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, navigation, reveal, onInteract, keyboardOwner, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
+export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, urls, navigation, reveal, onInteract, keyboardOwner, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
   const { messages, format } = useI18n();
   const m = messages.inspection.attachments;
   const headingId = useId();
@@ -128,6 +135,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, nav
     if (navigation !== undefined && navigation !== null) previewPane.current!.focus();
   }, [navigation]);
   const select = (path: string) => {
+    records?.clearSelection();
     onInteract?.();
     attachments.select(path);
     onSelect?.(path);
@@ -141,6 +149,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, nav
     }
     onInteract?.();
     if (await attachments.put(path, file)) {
+      records?.clearSelection();
       onSelect?.(path);
       setFile(null);
       setPath('');
@@ -152,6 +161,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, nav
     <section className="task-attachments" aria-labelledby={headingId}>
       <div className="attachment-split">
         <aside className="attachment-sidebar">
+          {records?.sidebar}
           <div className="attachment-section-heading">
             <h4 id={headingId}>{attachments.complete ? m.heading({ count: format.number(attachments.items.length) }) : m.title}</h4>
             <button className="button" type="button" disabled={attachments.loading || busy} onClick={attachments.reload}>{m.refresh}</button>
@@ -165,7 +175,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, nav
             </div>
           )}
           {attachments.complete && attachments.items.length === 0 && <p className="attachment-state">{m.empty}</p>}
-          {attachments.items.length > 0 && <nav className="attachment-files" aria-label={m.files}><FileTree nodes={attachmentTree(attachments.items)} expanded={expanded} onDirectoryToggle={toggleDirectory} selectedPath={attachments.selectedPath} onSelect={select} busy={busy} actionPath={action?.kind === 'menu' ? action.path : null} onActions={(target) => { onInteract?.(); setAction(action?.kind === 'menu' && action.path === target.path ? null : { ...target, kind: 'menu', scope }); }} /></nav>}
+          {attachments.items.length > 0 && <nav className="attachment-files" aria-label={m.files}><FileTree nodes={attachmentTree(attachments.items)} expanded={expanded} onDirectoryToggle={toggleDirectory} selectedPath={records?.preview == null ? attachments.selectedPath : null} onSelect={select} busy={busy} actionPath={action?.kind === 'menu' ? action.path : null} onActions={(target) => { onInteract?.(); setAction(action?.kind === 'menu' && action.path === target.path ? null : { ...target, kind: 'menu', scope }); }} /></nav>}
           <details className="attachment-upload-disclosure">
             <summary>{m.upload}</summary>
             <form className="attachment-upload" onSubmit={(event) => { void upload(event); }}>
@@ -187,6 +197,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, nav
           </details>
         </aside>
         <div className="attachment-preview-pane" ref={previewPane} tabIndex={-1} role="group" aria-label={m.preview}>
+          <div className="attachment-file-preview" hidden={records?.preview != null} inert={records?.preview != null}>
           {navigation?.invalid === true ? <div className="attachment-preview-body"><p className="attachment-state attachment-error" role="alert">{m.invalidReference}</p></div> : selected === undefined ? <div className="attachment-preview-body attachment-preview-empty">
             {attachments.selectedPath === null ? <p className="attachment-state">{m.choosePreview}</p> : attachments.error !== null ? <div className="attachment-state attachment-error" role="alert">
               <ErrorMessage error={attachments.error} message={attachments.items.length === 0 ? m.listError : m.incompleteList} />
@@ -204,6 +215,8 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, nav
               <AttachmentPreview key={`${selected.path}/${selected.updatedAt}`} attachment={selected} preview={attachments.preview} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, selected.path) : urls.preview(selected.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} />
             </section>
           )}
+          </div>
+          {records?.preview != null ? <div className="attachment-record-preview">{records.preview}</div> : null}
         </div>
       </div>
       {active && action?.scope === scope && action.kind === 'menu' && !busy && <AttachmentActionMenu target={action} onDismiss={dismissMenu} onDelete={() => setAction({ ...action, kind: 'confirm' })} />}
