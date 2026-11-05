@@ -1849,6 +1849,12 @@ checks, timeouts, errors and explicit options. DOM tests keep their existing
 waits. The [state polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-controller-state-polling.md)
 records the cadence and its limits.
 
+Step panel DOM tests retain the full pagination fixtures and resolve visible
+controls by role and accessible name within their current row, form, toolbar,
+pagination or confirmation dialog. Whole-page counts retain document-wide scope.
+The [query ownership decision](../../.agents/notes/implemented/testing/2026-11-05-step-panel-query-owners.md)
+records the retained accessibility, draft and focus proof and its cost boundary.
+
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
 admission independently of Steps forms and HTTP writes, including indexed
