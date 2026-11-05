@@ -67,6 +67,23 @@ export const parseConfigurationDraft = (draft: ConfigurationDraft): ParsedConfig
 export const configurationValuesEqual = (left: WorkerConfigurationValue, right: WorkerConfigurationValue): boolean =>
   JSON.stringify(parseWorkerConfigurationValue(left)) === JSON.stringify(parseWorkerConfigurationValue(right));
 export const configurationDraftsEqual = (left: ConfigurationDraft, right: ConfigurationDraft): boolean => JSON.stringify(left) === JSON.stringify(right);
+export const configurationFieldChanges = (draft: ConfigurationDraft, desired: WorkerConfigurationValue, errors: ParsedConfigurationDraft['errors']) => {
+  // Isolate each native tuple so an unrelated invalid field cannot hide its saved state.
+  const baseline = { ...draftFromValue(desired), projects: [] };
+  const native = parseConfigurationDraft({ ...baseline, native: draft.native }).value?.native;
+  const projects = new Map(desired.projects.map(project => [project.projectId, project.nativeOverrides]));
+  return {
+    maxConcurrent: errors.maxConcurrent !== undefined || Number(draft.maxConcurrent) !== desired.maxConcurrent,
+    pollIntervalMs: errors.pollIntervalMs !== undefined || Number(draft.pollIntervalMs) !== desired.pollIntervalMs,
+    recoveryLimit: errors.recoveryLimit !== undefined || Number(draft.recoveryLimit) !== desired.recoveryLimit,
+    native: native === undefined || JSON.stringify(native) !== JSON.stringify(desired.native),
+    projects: new Map(draft.projects.map(project => {
+      const expected = projects.get(project.projectId);
+      const overrides = parseConfigurationDraft({ ...baseline, projects: [project] }).value?.projects[0]?.nativeOverrides;
+      return [project.projectId, expected === undefined || overrides === undefined || JSON.stringify(overrides) !== JSON.stringify(expected)];
+    })),
+  };
+};
 export const resolvedProjectNative = (global: WorkerConfigurationNative, overrides: WorkerConfigurationOverrides): WorkerConfigurationNative => {
   const sameAgent = overrides.agent === undefined || overrides.agent === global.agent;
   return { agent: overrides.agent === undefined ? global.agent : overrides.agent,
