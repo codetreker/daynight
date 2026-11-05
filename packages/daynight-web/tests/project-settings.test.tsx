@@ -98,7 +98,7 @@ describe("project settings form", () => {
   it("disables controls while loading and guards synchronous duplicate submissions", async () => {
     const saving = deferred<Response>(); const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project()));
     mount(); await ready(); change(); submit(); fireEvent.submit(screen.getByRole("button", { name: "正在保存…" }).closest("form")!);
-    expect(screen.getByLabelText("提醒阈值")).toBeDisabled(); expect(screen.getByRole("button", { name: "取消" })).toBeDisabled(); expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
+    expect(screen.getByLabelText("提醒阈值")).toBeDisabled(); expect(screen.getByRole("button", { name: "取消" })).toBeDisabled(); await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
     await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n)))); await screen.findByText("设置已保存。");
   });
 
@@ -110,11 +110,75 @@ describe("project settings form", () => {
     field.focus();
     const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
     expect(field).not.toBeDisabled(); expect(document.activeElement).toBe(field);
-    expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存设置" })).not.toBeDisabled();
     change("96"); expect(field).toHaveValue(96);
     resume(); await act(async () => permission.resolve(json(members())));
     await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).not.toBeDisabled());
-    expect(field).toHaveValue(96);
+    expect(screen.getByLabelText("提醒阈值")).toBe(field); expect(document.activeElement).toBe(field); expect(field).toHaveValue(96);
+  });
+
+  it("waits for identity and access revalidation before saving exactly once", async () => {
+    const permission = deferred<Response>(); let holdPermission = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? json(project(95, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    mount(); await ready(); change("95");
+    const field = screen.getByLabelText("提醒阈值"); field.focus();
+    const initialProjectReads = fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/projects/${id}`) && !init.method).length;
+    const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
+    expect(screen.getByLabelText("提醒阈值")).toBe(field); expect(document.activeElement).toBe(field);
+    const form = screen.getByRole("button", { name: "保存设置" }).closest("form")!;
+    fireEvent.submit(form); fireEvent.submit(form);
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+    resume();
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1));
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+    expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith(`/projects/${id}`) && !init.method)).toHaveLength(initialProjectReads);
+    await act(async () => permission.resolve(json(members())));
+    await screen.findByText("设置已保存。");
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
+    expect(fetcher.mock.calls.find(([, init]) => init.method === "PATCH")![1].body).toBe('{"version":9007199254740993,"executionWarningMinutes":95}');
+  });
+
+  it("waits for the new access check after a blocked identity recovery", async () => {
+    const old = deferred<Response>(), fresh = deferred<Response>(); let phase: "initial" | "old" | "fresh" = "initial";
+    const fetcher = install((url, init) => init.method === "PATCH" ? json(project(95, 9_007_199_254_740_994n)) : url.endsWith("/members") ? phase === "old" ? old.promise : phase === "fresh" ? fresh.promise : json(members()) : json(project()));
+    const view = mount(); await ready(); change("95");
+    phase = "old"; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access"))).toHaveLength(2));
+    const resume = pauseAuthRequests(); submit();
+    view.rerender(<ProjectSettingsPanel projectId={id} user={user} active={false} />);
+    await act(async () => { old.resolve(json(members())); });
+    phase = "fresh"; resume();
+    await act(async () => { await Promise.resolve(); });
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+    view.rerender(<ProjectSettingsPanel projectId={id} user={user} active />);
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access"))).toHaveLength(3));
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+    await act(async () => fresh.resolve(json(members("member"))));
+    await screen.findByText(/只有项目管理员可以修改/);
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+  });
+
+  it.each(["member", "missing"])("does not save after a pending access check reports %s", async (result) => {
+    const permission = deferred<Response>(); let holdPermission = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? json(project(90, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    mount(); await ready(); change();
+    holdPermission = true; fireEvent(window, new Event("focus"));
+    submit();
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+    await act(async () => permission.resolve(result === "member" ? json(members("member")) : fail(404, "not_found")));
+    if (result === "member") await screen.findByText(/只有项目管理员可以修改/);
+    else await screen.findAllByText("项目不存在或你没有访问权限。");
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
+  });
+
+  it("does not dispatch a queued save after its project generation ends", async () => {
+    const permission = deferred<Response>(); let holdPermission = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? json(project(90, 9_007_199_254_740_994n)) : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    const view = mount(); await ready(); change();
+    holdPermission = true; fireEvent(window, new Event("focus")); submit();
+    view.unmount();
+    await act(async () => permission.resolve(json(members())));
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
   });
 
   it("retains a confirmed save when permission recovery fails and reads before enabling another save", async () => {
@@ -218,6 +282,7 @@ describe("project settings form", () => {
 
   it("aborts a pending mutation on project navigation and ignores its late response", async () => {
     const saving = deferred<Response>(); const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project())); const view = mount(); await ready(); change(); submit();
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init.method === "PATCH")).toBe(true));
     const signal = fetcher.mock.calls.find(([, init]) => init.method === "PATCH")![1].signal as AbortSignal;
     view.rerender(<ProjectSettingsPanel projectId={other} user={user} />); expect(signal.aborted).toBe(true); expect(screen.queryByDisplayValue("90")).toBeNull(); await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n)))); expect(screen.queryByText("设置已保存。")).toBeNull();
   });

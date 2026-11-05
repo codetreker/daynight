@@ -61,6 +61,9 @@ it("retains an unknown transfer across route changes without replaying it", asyn
   const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(within(reopened).getByRole("alert")).toHaveTextContent("transfer result is unknown");
   expect(within(reopened).queryByRole("button", { name: "Confirm transfer" })).toBeNull();
+  expect(within(reopened).getByRole("button", { name: "Close" })).toBeEnabled();
+  fireEvent.click(within(reopened).getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
   expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
 });
 
@@ -110,6 +113,9 @@ it("retains a definite rejection that arrives after leaving the settings page", 
   act(() => navigate(`/projects/${projectId}/settings`));
   const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(within(reopened).getByRole("alert")).toHaveTextContent("request-denied");
+  expect(within(reopened).getByRole("button", { name: "Cancel" })).toBeEnabled();
+  fireEvent.click(within(reopened).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
   expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
 });
 

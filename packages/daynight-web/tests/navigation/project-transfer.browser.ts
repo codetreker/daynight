@@ -16,11 +16,12 @@ type State = {
   directOnly: boolean; actorLost: boolean; loseResponse: boolean; conflict: boolean;
   retainAccess: boolean; transferred: boolean; sourceRead: 'ok' | 'missing' | 'network';
   forbidden: boolean; hold: Promise<void> | null;
+  holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdTeams: Promise<void> | null; paginated: boolean;
   targetVersion: bigint; requests: string[]; writes: string[]; previews: string[];
 };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
+  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
   const ownership = { teamId: sourceId, version: 1n };
   const grant = { projectId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time };
   const access = () => state.transferred ? { projectId, ownerTeam: target, ownership: { teamId: targetId, version: 2n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: grant } : { projectId, ownerTeam: source, ownership, effectiveRole: 'admin', teamRole: state.directOnly ? null : 'admin', canTransfer: !state.directOnly, directGrant: state.directOnly || state.retainAccess ? grant : null };
@@ -30,8 +31,12 @@ const install = async (page: Page): Promise<State> => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
     state.requests.push(`${method} ${path}`);
     const send = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Daynight-User-ID': actorId }, body: JSON.stringify(body, (_key, value: unknown) => typeof value === 'bigint' ? rawJson.rawJSON(value.toString()) : value) });
-    if (path === '/api/v1/me') return send(profile);
-    if (path === '/api/v1/teams') return send({ items: [team(personal), team(source)], nextCursor: null });
+    if (path === '/api/v1/me') { if (state.holdMe !== null) await state.holdMe; return send(profile); }
+    if (path === '/api/v1/teams') {
+      if (state.holdTeams !== null) await state.holdTeams;
+      const cursor = new URL(request.url()).searchParams.get('cursor');
+      return state.paginated ? cursor === null ? send({ items: [team(personal), team(source)], nextCursor: 'next' }) : send({ items: [team(target)], nextCursor: null }) : send({ items: [team(personal), team(source)], nextCursor: null });
+    }
     if (path === `/api/v1/teams/${personalId}`) return send(team(personal));
     if (path === `/api/v1/teams/${sourceId}`) {
       if (state.sourceRead === 'network') return route.abort('failed');
@@ -39,7 +44,7 @@ const install = async (page: Page): Promise<State> => {
       return send(team(source));
     }
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === `/api/v1/projects/${projectId}/access`) return state.actorLost ? send(error('not_found'), 404) : send(access());
+    if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess !== null) await state.holdAccess; return state.actorLost ? send(error('not_found'), 404) : send(access()); }
     if (path === `/api/v1/projects/${projectId}`) return state.actorLost ? send(error('not_found'), 404) : send(project);
     if (path === `/api/v1/projects/${projectId}/transfer-preview`) {
       state.previews.push(request.postData()!);
@@ -81,6 +86,82 @@ const preview = async (page: Page, targetValue = targetId) => {
   await expect(dialog.getByRole('button', { name: 'Confirm transfer' })).toBeEnabled();
   return dialog;
 };
+
+const leaveAndReturn = async (page: Page): Promise<Page> => {
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach();
+  await other.bringToFront(); await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  await page.bringToFront();
+  return other;
+};
+
+for (const locale of ['en-US', 'zh-CN'] as const) {
+  test(`background identity and access checks retain settings and transfer interaction (${locale})`, async ({ page }, testInfo) => {
+    const state = await install(page); state.paginated = true;
+    await page.setViewportSize(locale === 'en-US' ? { width: 1280, height: 900 } : { width: 390, height: 844 });
+    await start(page);
+    if (locale === 'zh-CN') await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const field = page.locator('.project-settings-panel input');
+    await field.fill('95'); await field.focus();
+    await field.evaluate((element) => { (window as unknown as { retainedField: Element }).retainedField = element; });
+    const before = await field.boundingBox();
+    const me = Promise.withResolvers<void>(), accessGate = Promise.withResolvers<void>();
+    state.holdMe = me.promise; state.holdAccess = accessGate.promise;
+    const meCount = state.requests.filter((value) => value === 'GET /api/v1/me').length;
+    const accessCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length;
+    const firstOther = await leaveAndReturn(page);
+    await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/me').length).toBeGreaterThan(meCount);
+    const checkSettings = async () => {
+      await expect(field).toBeVisible(); await expect(field).toBeFocused(); await expect(field).toHaveValue('95');
+      expect(await field.evaluate((element) => element === (window as unknown as { retainedField: Element }).retainedField)).toBe(true);
+      expect(await field.boundingBox()).toEqual(before);
+    };
+    await checkSettings();
+    await firstOther.close();
+    me.resolve();
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(accessCount);
+    await checkSettings();
+    accessGate.resolve(); state.holdMe = null; state.holdAccess = null;
+    await expect(page.locator('.project-settings-panel button[type=submit]')).toBeEnabled();
+    await checkSettings();
+
+    await page.getByRole('button', { name: locale === 'en-US' ? 'Transfer project' : '转移项目', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    const targetInput = dialog.locator('#transfer-target');
+    const choices = dialog.locator('#transfer-known');
+    await dialog.getByRole('button', { name: locale === 'en-US' ? 'Load more' : '加载更多' }).click();
+    await choices.selectOption(targetId);
+    await targetInput.focus(); await targetInput.evaluate((element: HTMLInputElement) => { element.setSelectionRange(3, 10); (window as unknown as { retainedInput: Element }).retainedInput = element; });
+    const dialogBox = await dialog.boundingBox();
+    const secondMe = Promise.withResolvers<void>(), secondAccess = Promise.withResolvers<void>(), teamsGate = Promise.withResolvers<void>();
+    state.holdMe = secondMe.promise; state.holdAccess = secondAccess.promise; state.holdTeams = teamsGate.promise;
+    const previousMe = state.requests.filter((value) => value === 'GET /api/v1/me').length;
+    const previousAccess = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length;
+    const previousTeams = state.requests.filter((value) => value === 'GET /api/v1/teams').length;
+    const secondOther = await leaveAndReturn(page);
+    await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/me').length).toBeGreaterThan(previousMe);
+    const checkDialog = async () => {
+      await expect(dialog).toBeVisible(); await expect(targetInput).toBeFocused(); await expect(targetInput).toHaveValue(targetId); await expect(choices).toHaveValue(targetId);
+      expect(await targetInput.evaluate((element: HTMLInputElement) => ({ same: element === (window as unknown as { retainedInput: Element }).retainedInput, start: element.selectionStart, end: element.selectionEnd }))).toEqual({ same: true, start: 3, end: 10 });
+      expect(await dialog.boundingBox()).toEqual(dialogBox);
+    };
+    await checkDialog();
+    await page.screenshot({ path: testInfo.outputPath(`project-check-${locale}.png`) });
+    secondMe.resolve();
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(previousAccess);
+    await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/teams').length).toBeGreaterThan(previousTeams);
+    await checkDialog();
+    secondAccess.resolve(); state.holdMe = null; state.holdAccess = null;
+    await checkDialog();
+    teamsGate.resolve(); state.holdTeams = null;
+    await expect(dialog.locator('#transfer-known')).toBeEnabled();
+    await checkDialog();
+    expect(state.writes).toHaveLength(0); expect(state.previews).toHaveLength(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await secondOther.close();
+  });
+}
 
 test('project-only admin cannot transfer and the existing alert setting remains usable', async ({ page }) => {
   const state = await install(page); state.directOnly = true;

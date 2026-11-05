@@ -22,6 +22,48 @@ const target = { id: "00000000-0000-4000-8000-000000000702", kind: "ordinary" as
 const access = { ...directAccessFixture(projectId, TEST_VIEWER_ID, "admin"), teamRole: "admin" as const, canTransfer: true, directGrant: null };
 const json = (body: unknown) => new Response(stringifyWireJson(body), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) });
 
+it.each(["same", "demoted", "ownership"] as const)("keeps the transfer dialog stable while access is checked and gates submission for %s access", async (outcome) => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  let session!: ProjectAccessSession;
+  const CaptureAccess = () => { session = useProjectAccess(projectId).session; return null; };
+  const pending = Promise.withResolvers<Response>();
+  let hold = false;
+  const fetcher = vi.fn(async (url: string) => {
+    if (url === `/api/v1/projects/${projectId}/access`) return hold ? pending.promise : json(access);
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return json({ sourceTeam: source, targetTeam: { ...target, version: 1n }, ownership: access.ownership, actorRole: "admin" });
+    if (url === `/api/v1/projects/${projectId}/transfer`) return json({ projectId, changed: true, sourceTeam: source, ownerTeam: target, ownership: { teamId: target.id, version: 2n }, actorAccess: access });
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    createLocaleRender("en")(<ProjectAccessBoundary projectId={projectId} initialRead><CaptureAccess /><ProjectOwnership projectId={projectId} projectName="Project" active /></ProjectAccessBoundary>, { taskCache: { scope } });
+    const opener = await screen.findByRole("button", { name: "Transfer project" });
+    await waitFor(() => expect(opener).toBeEnabled()); fireEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+    const input = within(dialog).getByLabelText("Team ID or link") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: target.id } });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled()); fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    input.focus(); input.setSelectionRange(2, 5);
+    hold = true;
+    const reads = fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
+    act(() => { void session.revalidate(); });
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access"))).toHaveLength(reads + 1));
+    expect(session.snapshot().refreshing).toBe(true);
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(input).toHaveFocus(); expect(input.selectionStart).toBe(2); expect(input.selectionEnd).toBe(5);
+    expect(input).toHaveValue(target.id); expect(confirm).toBeEnabled();
+    fireEvent.click(confirm); fireEvent.click(confirm);
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(0);
+    hold = false;
+    const fresh = outcome === "demoted" ? { ...access, teamRole: "member", effectiveRole: "member", canTransfer: false } : outcome === "ownership" ? { ...access, ownership: { ...access.ownership, version: access.ownership.version + 1n } } : { ...access, ownership: { ...access.ownership } };
+    await act(async () => pending.resolve(json(fresh)));
+    if (outcome === "same") await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1));
+    else { await waitFor(() => expect(session.snapshot().refreshing).toBe(false)); expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(0); }
+  } finally { scope.dispose(); }
+});
+
 it("withdraws an open Task and its persisted cache after a confirmed transfer without actor access", async () => {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const sessions = new TaskDetailSessions(scope), signal = new AbortController().signal;

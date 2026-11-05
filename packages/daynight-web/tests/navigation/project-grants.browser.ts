@@ -15,10 +15,10 @@ const actorGrant = grant(actorId, 'admin', 1n);
 const actorAccess = { projectId, ownerTeam: owner, ownership: { teamId, version: 1n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: actorGrant };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
-type State = { targetGrant: ReturnType<typeof grant> | null; actorLost: boolean; writes: { method: string; path: string; body: string }[]; requests: string[] };
+type State = { targetGrant: ReturnType<typeof grant> | null; actorLost: boolean; holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdMembers: Promise<void> | null; holdInvitations: Promise<void> | null; withInvitation: boolean; writes: { method: string; path: string; body: string }[]; requests: string[] };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { targetGrant: null, actorLost: false, writes: [], requests: [] };
+  const state: State = { targetGrant: null, actorLost: false, holdMe: null, holdAccess: null, holdMembers: null, holdInvitations: null, withInvitation: false, writes: [], requests: [] };
   const members = () => ({ actorAccess, items: [
     { userId: actorId, profile: { name: 'Alice', email: null, avatarUrl: null }, effectiveRole: 'admin', inheritedFrom: null, directGrant: actorGrant },
     { userId: targetId, profile: { name: 'Bob', email: null, avatarUrl: null }, effectiveRole: 'admin', inheritedFrom: { team: owner, role: 'admin' }, directGrant: state.targetGrant },
@@ -27,13 +27,16 @@ const install = async (page: Page): Promise<State> => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
     state.requests.push(`${method} ${path}`);
     const send = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', headers: { 'Daynight-User-ID': actorId }, body: JSON.stringify(body, (_key, value: unknown) => typeof value === 'bigint' ? rawJson.rawJSON(value.toString()) : value) });
-    if (path === '/api/v1/me') return send(profile);
+    if (path === '/api/v1/me') { if (state.holdMe !== null) await state.holdMe; return send(profile); }
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ ...personal, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: actorId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
-    if (path === `/api/v1/projects/${projectId}/access`) return state.actorLost ? send(error('not_found'), 404) : send(actorAccess);
-    if (path === `/api/v1/projects/${projectId}/members`) return send(members());
-    if (path === `/api/v1/projects/${projectId}/invitations`) return send({ items: [] });
+    if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess !== null) await state.holdAccess; return state.actorLost ? send(error('not_found'), 404) : send(actorAccess); }
+    if (path === `/api/v1/projects/${projectId}/members`) { if (state.holdMembers !== null) await state.holdMembers; return send(members()); }
+    if (path === `/api/v1/projects/${projectId}/invitations`) {
+      if (state.holdInvitations !== null) await state.holdInvitations;
+      return send({ items: state.withInvitation ? [{ id: '00000000-0000-4000-8000-000000000051', projectId, createdBy: actorId, createdAt: time, expiresAt: '2099-10-20T09:00:00Z', consumedAt: null, consumedBy: null, revokedAt: null }] : [] });
+    }
     if (path.startsWith(`/api/v1/projects/${projectId}/grants/`)) {
       const body = request.postData()!; state.writes.push({ method, path, body });
       if (path.endsWith(actorId) && method === 'DELETE') { state.actorLost = true; return send({ projectId, userId: actorId, deleted: true, actorAccess: null }); }
@@ -55,6 +58,74 @@ const start = async (page: Page) => {
   await expect(page.getByRole('heading', { name: 'Project members' })).toBeVisible();
   await expect(page.getByLabel('Direct grant for Bob', { exact: true })).toBeEnabled();
 };
+
+const leaveAndReturn = async (page: Page): Promise<Page> => {
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach();
+  await other.bringToFront(); await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  await page.bringToFront();
+  return other;
+};
+
+for (const locale of ['en-US', 'zh-CN'] as const) {
+  test(`background checks retain the member confirmation and roster (${locale})`, async ({ page }, testInfo) => {
+    const state = await install(page); state.withInvitation = true;
+    await page.setViewportSize(locale === 'en-US' ? { width: 1280, height: 900 } : { width: 390, height: 844 });
+    await start(page);
+    if (locale === 'zh-CN') await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const bob = page.locator('.grant-row').filter({ hasText: 'Bob' });
+    const invitation = page.locator('.row').filter({ hasText: '00000000-0000-4000-8000-000000000051' });
+    await expect(invitation).toBeVisible();
+    const select = bob.locator('select');
+    const openingMembers = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/members` && response.request().method() === 'GET');
+    const openingInvitations = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/invitations` && response.request().method() === 'GET');
+    await select.selectOption('member');
+    await openingMembers; await openingInvitations;
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    const cancel = dialog.getByRole('button', { name: locale === 'en-US' ? 'Cancel' : '取消' });
+    await cancel.focus();
+    await dialog.evaluate((element) => { (window as unknown as { retainedDialog: Element }).retainedDialog = element; });
+    await bob.evaluate((element) => { (window as unknown as { retainedBob: Element }).retainedBob = element; });
+    await invitation.evaluate((element) => { (window as unknown as { retainedInvitation: Element }).retainedInvitation = element; });
+    const bounds = await dialog.boundingBox();
+    const me = Promise.withResolvers<void>(), accessGate = Promise.withResolvers<void>(), membersGate = Promise.withResolvers<void>(), invitationsGate = Promise.withResolvers<void>();
+    state.holdMe = me.promise; state.holdAccess = accessGate.promise; state.holdMembers = membersGate.promise; state.holdInvitations = invitationsGate.promise;
+    const meCount = state.requests.filter((value) => value === 'GET /api/v1/me').length;
+    const accessCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length;
+    const membersCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/members`).length;
+    const invitationsCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/invitations`).length;
+    const other = await leaveAndReturn(page);
+    await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/me').length).toBeGreaterThan(meCount);
+    const check = async () => {
+      await expect(dialog).toBeVisible(); await expect(cancel).toBeFocused();
+      expect(await dialog.boundingBox()).toEqual(bounds);
+      expect(await dialog.evaluate((element) => element === (window as unknown as { retainedDialog: Element }).retainedDialog)).toBe(true);
+      expect(await bob.evaluate((element) => element === (window as unknown as { retainedBob: Element }).retainedBob)).toBe(true);
+      expect(await invitation.evaluate((element) => element === (window as unknown as { retainedInvitation: Element }).retainedInvitation)).toBe(true);
+    };
+    await check();
+    await page.screenshot({ path: testInfo.outputPath(`member-check-${locale}.png`) });
+    me.resolve();
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(accessCount);
+    await check();
+    accessGate.resolve(); state.holdMe = null; state.holdAccess = null;
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/members`).length).toBeGreaterThan(membersCount);
+    await check();
+    membersGate.resolve(); state.holdMembers = null;
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/invitations`).length).toBeGreaterThan(invitationsCount);
+    await check();
+    const refreshedInvitations = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/invitations` && response.request().method() === 'GET');
+    invitationsGate.resolve(); state.holdInvitations = null;
+    await refreshedInvitations;
+    await expect(dialog.getByRole('button', { name: locale === 'en-US' ? 'Save role' : '保存角色' })).toBeEnabled();
+    await check();
+    expect(state.writes).toHaveLength(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await other.close();
+  });
+}
 
 test('external project admin creates, replaces and removes a direct grant with source roles and exact versions', async ({ page }) => {
   const state = await install(page); await start(page);

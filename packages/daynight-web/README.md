@@ -476,8 +476,9 @@ separately establish real reporting, resources, permissions and recovery.
 
 ## Project ownership transfer
 
-Project settings show the current owner and offer transfer only to a freshly
-verified owner Team admin. The dialog accepts a Team selected from the paged
+Project settings show the confirmed owner and offer transfer to an owner Team
+admin. Background checks preserve the dialog and its paged selection; transfer
+waits for current authorization and verifies ownership again. The dialog accepts a Team selected from the paged
 membership list, a UUID, or a same-origin Team page URL. Preview displays the
 target and predicted access before confirmation. The request binds the observed
 ownership and target versions and the authenticated user; conflicts require a
@@ -516,7 +517,9 @@ form reconciles Project and membership before enabling another mutation. Failed
 reconciliation leaves Save blocked and exposes a read retry. Navigation aborts
 obsolete client work without claiming that a committed write was rolled back;
 returning to the page loads authoritative state before editing. The existing
-foreground identity guard preserves same-user drafts and focus, while identity
+foreground identity guard preserves same-user drafts and focus. Ordinary access
+checks do not reload the settings resource; Save waits for the current check and
+verifies the role, ownership and observed settings version before dispatch. Identity
 or project replacement invalidates old requests and results.
 
 Project resources include required `settings.version`,

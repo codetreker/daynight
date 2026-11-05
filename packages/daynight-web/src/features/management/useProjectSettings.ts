@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useProjectAccess } from "../projects/ProjectAccess";
-import { ApiError, authRequestsPaused, isAbortError } from "../../api/client";
+import { ApiError, isAbortError } from "../../api/client";
 import { getProject, isExecutionWarningMinutes, saveProjectSettings } from "../../api/project-settings";
 import type { Project } from "../../api/types";
 
@@ -32,6 +32,8 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   const confirmedReadInFlight = useRef(false);
   const generation = useRef(0);
   const submitting = useRef(false);
+  const projectRef = useRef(project);
+  projectRef.current = project;
 
   const clearPrivate = () => { setProject(null); setDraft(""); setUncertain(false); setUnavailable(true); };
   const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null) => {
@@ -87,12 +89,21 @@ export const useProjectSettings = (projectId: string, userId: string) => {
 
   const save = async () => {
     const admitted = access.session.snapshot();
-    if (authRequestsPaused() || submitting.current || confirmedNeedsRead.current || loading || uncertain || admitted.status !== "ready" || admitted.refreshing || admitted.access!.effectiveRole !== "admin" || project === null) return;
+    if (submitting.current || confirmedNeedsRead.current || loading || uncertain || admitted.status !== "ready" || admitted.access!.effectiveRole !== "admin" || project === null) return;
     const minutes = parseWarningDraft(draft);
     if (minutes === null) { setInvalid(true); return; }
     submitting.current = true; setPending(true); setError(null); setNotice(null); setInvalid(false);
     const signal = controller.current!.signal;
+    const operationGeneration = generation.current;
+    const ownership = admitted.access!.ownership;
+    let dispatched = false;
     try {
+      const fresh = await access.session.waitForFreshAccess(signal, true);
+      if (signal.aborted || access.session.scope.isInvalidated || operationGeneration !== generation.current || projectRef.current?.settings.version !== project.settings.version) return;
+      if (fresh === null) return;
+      if (fresh.effectiveRole !== "admin") { setNotice("permission"); return; }
+      if (fresh.ownership.teamId !== ownership.teamId || fresh.ownership.version !== ownership.version) { setNotice("conflict"); return; }
+      dispatched = true;
       const saved = await saveProjectSettings(projectId, { version: project.settings.version, executionWarningMinutes: minutes }, signal);
       await access.session.scope.ready(signal);
       if (signal.aborted || access.session.scope.isInvalidated) return;
@@ -110,6 +121,7 @@ export const useProjectSettings = (projectId: string, userId: string) => {
       if (signal.aborted || isAbortError(failure)) return;
       try { await access.session.scope.ready(signal); } catch { return; }
       if (signal.aborted || access.session.scope.isInvalidated) return;
+      if (!dispatched) { setError(failure); return; }
       if (failure instanceof ApiError && failure.kind === "server" && failure.status === 404) clearPrivate();
       else if (failure instanceof ApiError && failure.kind === "server" && (failure.status === 409 || failure.status === 403)) {
         await load(signal, failure.status === 409 ? "conflict" : "permission");
@@ -123,7 +135,7 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   };
 
   return {
-    project: unavailable || access.status === "unavailable" ? null : project, role, draft, canSubmit: access.ready && !awaitingSavedRead, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain, error: error ?? access.error, invalid, notice,
+    project: unavailable || access.status === "unavailable" ? null : project, role, draft, canSubmit: !awaitingSavedRead, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain, error: error ?? access.error, invalid, notice,
     dirty: project !== null && draft !== String(project.settings.executionWarningMinutes),
     change: (value: string) => { setDraft(value); setInvalid(false); setNotice(null); setError(null); },
     cancel: () => { if (project !== null && !pending && !uncertain) { setDraft(String(project.settings.executionWarningMinutes)); setInvalid(false); setError(null); setNotice("cancelled"); } },
