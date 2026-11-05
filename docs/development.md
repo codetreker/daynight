@@ -132,6 +132,15 @@ an assertion fails. The
 owns the implementation and its dependency limits; the
 [startup budget decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
 preserves the acquisition policy's rationale.
+Controller Job Object creation, membership queries and termination use the existing
+Koffi dependency in the calling process. Each operation retains its fifteen-second
+budget, checked between native calls and after handle release; an in-progress
+kernel call is joined. Native regressions cover access failures, malformed process
+inventories and handle release, while Windows CI keeps real Bot generation,
+recovery and deletion scenarios. A test-owned handle keeps a controlled Job name
+available for direct membership and termination checks. The
+[native Job API decision](../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)
+owns the preserved handle lifetime and measurement boundaries.
 The native fsmonitor regression uses a real hook's invocation marker to qualify
 ordinary Git and verify protected-query suppression. Its
 [fixture decision](../.agents/notes/implemented/testing/2026-11-04-fsmonitor-fixture-marker.md)
