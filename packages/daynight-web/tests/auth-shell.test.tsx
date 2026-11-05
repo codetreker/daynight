@@ -231,7 +231,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe(failure === "write" ? "true" : "false");
   });
 
-  it("closes mobile navigation for identity verification and preserves the interactive workspace until an actual failure", async () => {
+  it("keeps mobile navigation during identity verification and closes it for an actual failure", async () => {
     mockSidebarMediaQuery(true);
     window.localStorage.setItem(SIDEBAR_STORAGE_KEY, "true");
     let meCalls = 0;
@@ -244,17 +244,17 @@ describe("sidebar integration with the authenticated workspace", () => {
     const shell = document.querySelector(".shell")!;
     const workspace = document.querySelector(".workspace")!;
     fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
-    expect(screen.getByRole("dialog", { name: "工作空间导航" })).toHaveAttribute("aria-modal", "true");
+    const drawer = screen.getByRole("dialog", { name: "工作空间导航" });
+    expect(drawer).toHaveAttribute("aria-modal", "true");
     expect(workspace).toHaveAttribute("inert");
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(workspace).not.toHaveAttribute("inert");
+    expect(screen.getByRole("dialog", { name: "工作空间导航" })).toBe(drawer);
+    expect(workspace).toHaveAttribute("inert");
     expect(shell).not.toHaveAttribute("inert");
-    expect(document.body.style.overflow).not.toBe("hidden");
-    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.body.style.overflow).toBe("hidden");
     await act(async () => finishCheck(fail(503, "internal")));
+    expect(screen.queryByRole("dialog", { name: "工作空间导航" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "重新确认当前账户" })).toBeInTheDocument();
     expect(shell).toHaveAttribute("inert");
     expect(heading.isConnected).toBe(true);
@@ -686,9 +686,9 @@ describe("authenticated application shell", () => {
     render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "＋ 创建项目" }));
     const dialog = screen.getByRole("dialog", { name: "创建私有项目" });
-    const name = screen.getByLabelText(/项目名称/);
+    const name = screen.getByLabelText(/项目名称/) as HTMLInputElement;
     fireEvent.change(name, { target: { value: "Unsubmitted project" } });
-    name.focus();
+    name.focus(); name.setSelectionRange(2, 8);
     const shell = document.querySelector(".auth-shell")!;
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
@@ -698,6 +698,7 @@ describe("authenticated application shell", () => {
     expect(screen.queryByRole("dialog", { name: "重新确认当前账户" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "创建私有项目" })).toBe(dialog);
     expect(document.activeElement).toBe(name);
+    expect(name.selectionStart).toBe(2); expect(name.selectionEnd).toBe(8);
     fireEvent.change(name, { target: { value: "Continued while checking" } });
     await act(async () => finishCheck(json(user())));
     expect(document.querySelector(".auth-shell")).toBe(shell);

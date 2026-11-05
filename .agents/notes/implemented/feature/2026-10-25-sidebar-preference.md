@@ -37,13 +37,13 @@ semantics and focus containment, preserves the workspace's prior inert state,
 and shares the reference-counted body scroll lock. Closing releases only its own
 isolation and lock. Escape and backdrop dismissal restore the opener; route
 navigation uses the existing content focus policy. Route changes, returning to
-desktop, identity verification or blocking recovery, and unmount end the
-temporary layer.
+desktop, identity loss, blocking recovery, and unmount end the temporary layer.
 
 Normal [foreground identity checking](../bug-fix/2026-10-23-silent-foreground-identity-checks.md)
-remains distinct from blocking recovery. The checking signal closes the temporary drawer without making normal checking
-hide or disable the content. The native recovery dialog remains able to take
-focus. Sidebar width and temporary state do not participate in user, project,
+remains distinct from blocking recovery. The original decision closed the drawer
+when checking began so a recovery dialog could take focus. The
+[workspace stability decision](../bug-fix/2026-11-05-stable-workspace-during-identity-checks.md)
+retains the drawer during ordinary checking and releases it on blocking recovery. Sidebar width and temporary state do not participate in user, project,
 cache or detail keys, and do not create another request or synchronization loop.
 The graph keeps its existing resize observation and viewport ownership.
 

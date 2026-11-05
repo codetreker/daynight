@@ -25,13 +25,13 @@ type WorkspaceSidebarProps = {
   readonly workersActive?: boolean;
   readonly activeProjectId: string | null;
   readonly testSessionsActive?: boolean;
-  readonly identityChecking: boolean;
+  readonly blocked: boolean;
   readonly workspaceRef: RefObject<HTMLDivElement | null>;
   readonly onNavigate: () => void;
   readonly onCreateTeam?: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, teamMembersActive = false, personalId, selectedTeamId, workersActive = false, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, sharedActive, teamSettingsActive = false, teamMembersActive = false, personalId, selectedTeamId, workersActive = false, activeProjectId, testSessionsActive = false, blocked, workspaceRef, onNavigate, onCreateTeam }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
   const projects = useProjectList();
   const teamMessages = useTeamMessages();
@@ -42,7 +42,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
   const sidebar = useRef<HTMLElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const restoreFocus = useRef(false);
-  const active = narrow && drawer !== null && drawer.route === routeKey && !identityChecking;
+  const active = narrow && drawer !== null && drawer.route === routeKey && !blocked;
   const activeRef = useRef(active);
   activeRef.current = active;
   const expanded = narrow ? active : !collapsed;
@@ -59,8 +59,8 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
   }, [media]);
 
   useLayoutEffect(() => {
-    if (drawer !== null && (!narrow || identityChecking || drawer.route !== routeKey)) setDrawer(null);
-  }, [drawer, narrow, identityChecking, routeKey]);
+    if (drawer !== null && (!narrow || blocked || drawer.route !== routeKey)) setDrawer(null);
+  }, [drawer, narrow, blocked, routeKey]);
 
   useLayoutEffect(() => {
     if (!active) {
@@ -148,7 +148,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
         <button ref={toggle} className="sidebar-toggle" type="button" aria-controls="workspace-sidebar" aria-expanded={expanded} aria-label={toggleLabel} title={toggleLabel} onClick={() => {
           if (!narrow) onToggle();
           else if (active) closeDrawer();
-          else if (!identityChecking) setDrawer({ route: routeKey });
+          else if (!blocked) setDrawer({ route: routeKey });
         }}><span aria-hidden="true">{expanded ? "‹" : "›"}</span><span className="collapse-label">{toggleLabel}</span></button>
       </div>
     </aside>

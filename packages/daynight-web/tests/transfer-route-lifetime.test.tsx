@@ -193,3 +193,47 @@ it("retains independent unknown transfer and invitation results across their rou
   expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/transfer'))).toHaveLength(1);
   expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith('/invitations') && init?.method === 'POST')).toHaveLength(1);
 });
+
+it.each(["success", "error", "changed"] as const)("holds transfer preview %s through pending identity and access checks", async (outcome) => {
+  const preview = Promise.withResolvers<Response>(), identity = Promise.withResolvers<Response>(), permission = Promise.withResolvers<Response>();
+  let focused = true, meReads = 0, holdPermission = false, permissionReads = 0;
+  vi.mocked(document.hasFocus).mockImplementation(() => focused);
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return ++meReads === 1 ? Promise.resolve(json(user)) : identity.promise;
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) { if (holdPermission) { permissionReads++; return permission.promise; } return Promise.resolve(json(access)); }
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return preview.promise;
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }));
+  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
+  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.endsWith("/transfer-preview"))).toBe(true));
+  holdPermission = true; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(meReads).toBe(2));
+  const result = outcome === "error" ? json({ error: { code: "internal_error", message: "private", requestId: "preview-error" } }, 503) : json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null });
+  await act(async () => preview.resolve(result));
+  expect(screen.getByRole("dialog", { name: "Transfer project" })).toBe(dialog);
+  expect(within(dialog).queryByText("After transfer")).toBeNull();
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  await act(async () => identity.resolve(json(outcome === "changed" ? { ...user, id: "00000000-0000-4000-8000-000000000099" } : user)));
+  if (outcome === "changed") {
+    await waitFor(() => expect(dialog.isConnected).toBe(false));
+    expect(screen.queryByText("After transfer")).toBeNull();
+    return;
+  }
+  if (outcome === "success") {
+    await waitFor(() => expect(permissionReads).toBeGreaterThan(0));
+    expect(within(dialog).queryByText("After transfer")).toBeNull();
+    await act(async () => permission.resolve(json(access)));
+    await within(dialog).findByText("After transfer");
+  } else {
+    await within(dialog).findByText(/preview-error/);
+    await act(async () => permission.resolve(json(access)));
+  }
+});
