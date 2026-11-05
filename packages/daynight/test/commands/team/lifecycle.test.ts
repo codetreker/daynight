@@ -2,7 +2,9 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringifyApiJson } from "../../../src/api/json.js";
+import { runCli } from "../../../src/cli/application.js";
 import { runTeamCommand } from "../../../src/commands/team/command.js";
+import { teamDefinition } from "../../../src/commands/team/definition.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
 
 const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -17,7 +19,7 @@ const version = 9_007_199_254_740_993n;
 const team = (name = " Team ") => ({ id: teamId, kind: "ordinary" as const, name, version, createdAt: time, updatedAt: time, membership: { teamId, userId, role: "admin" as const, version: 1n, createdAt: time, updatedAt: time } });
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
-const fixture = async (options: { name?: string; answer?: string; interactive?: boolean; failure?: string; principal?: string; writeOutputFails?: boolean; releaseFails?: boolean; badReceipt?: boolean; badLocation?: boolean; personal?: boolean } = {}) => {
+const fixture = async (options: { name?: string; answer?: string; interactive?: boolean; failure?: string; failureText?: string; malformedBody?: string; principal?: string; writeOutputFails?: boolean; releaseFails?: boolean; badReceipt?: boolean; badLocation?: boolean; personal?: boolean } = {}) => {
   const base = path.resolve("../../.tmp"); await mkdir(base, { recursive: true });
   const dir = await mkdtemp(path.join(base, "team-lifecycle-")); dirs.push(dir); vi.stubEnv("DN_CONFIG_DIR", dir);
   await writeFile(path.join(dir, "config.yml"), "serverUrl: http://localhost:8787\nserverToken: test-token\n");
@@ -28,7 +30,8 @@ const fixture = async (options: { name?: string; answer?: string; interactive?: 
     calls.push({ method, body: typeof init?.body === "string" ? init.body : undefined, requestId: new Headers(init?.headers).get("X-Request-ID") });
     const headers = { "content-type": "application/json", "Daynight-User-ID": method === "GET" ? userId : options.principal ?? userId, ...(method === "POST" ? { Location: options.badLocation ? "/invalid" : pathname.endsWith("/invitations") ? `/api/v1/teams/${teamId}/invitations/${invitationId}` : `/api/v1/teams/${teamId}` } : {}) };
     if (method === "GET") return new Response(stringifyApiJson(pathname.endsWith("/me") ? me : observed), { headers });
-    if (options.failure === "lost") throw new Error("connection lost");
+    if (options.failure === "lost") throw new Error(options.failureText ?? "connection lost");
+    if (options.malformedBody) return new Response(options.malformedBody, { status: method === "POST" ? 201 : 200, headers });
     if (options.failure) return new Response(JSON.stringify({ error: { code: options.failure, message: "rejected", requestId: "request" } }), { status: 409, headers });
     if (method === "POST" && pathname.endsWith("/invitations")) return new Response(JSON.stringify({ id: invitationId, teamId, createdBy: userId, createdAt: time, expiresAt: "2026-11-11T00:00:00Z", consumedBy: null, consumedAt: null, revokedAt: null, link: `http://localhost:8787/team-invitations#${invitationSecret}` }), { status: 201, headers });
     if (method === "DELETE") {
@@ -109,6 +112,33 @@ describe("Team lifecycle", () => {
     const f = await fixture(options);
     await expect(runTeamCommand(["delete", "--team", teamId, "--confirm"], f.context, f.dependencies)).rejects.toThrow(/outcome is unknown \(requestId=/);
     expect(f.calls.map(x => x.method)).toEqual(["GET", "GET", "DELETE"]);
+  });
+  it.each([
+    { action: "create", method: "POST" },
+    { action: "rename", method: "PATCH" },
+    { action: "delete", method: "DELETE" },
+  ])("keeps raw $action failure details out of CLI diagnostics without replay", async ({ action, method }) => {
+    for (const options of [
+      { malformedBody: "RAW_CANARY malformed response" },
+      { failure: "lost", failureText: "RAW_CANARY transport detail" },
+    ]) {
+      const f = await fixture(options);
+      const args = [action, ...(action === "delete" ? [] : ["new"]), ...(action === "create" ? [] : ["--team", teamId]), "--confirm"];
+      const exit = await runCli(["team", ...args], f.context, [{
+        ...teamDefinition,
+        load: async () => ({ run: (commandArgs, context) => runTeamCommand(commandArgs, context, f.dependencies) }),
+      }]);
+      const stderr = f.context.stderr.mock.calls.map(([value]) => value).join("");
+      const requestId = f.calls.at(-1)!.requestId;
+      expect(exit).toBe(1);
+      expect(f.context.stdout).not.toHaveBeenCalled();
+      expect(f.stdoutBytes).not.toHaveBeenCalled();
+      expect(f.calls.map(x => x.method)).toEqual(action === "create" ? ["GET", method] : ["GET", "GET", method]);
+      expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(stderr).toContain(`outcome is unknown (requestId=${requestId})`);
+      expect(stderr).not.toContain("RAW_CANARY");
+      expect(stderr).not.toContain("Caused by:");
+    }
   });
   it("preserves a confirmed receipt if local output fails", async () => {
     const f = await fixture({ writeOutputFails: true });

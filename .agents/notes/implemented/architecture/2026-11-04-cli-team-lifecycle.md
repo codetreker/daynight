@@ -24,7 +24,10 @@ Confirmation and network waits hold no configuration lock.
 Each write binds the actual user to `expectedUserId`, validates the response
 principal and receipt, and consumes the confirmed result without a second read.
 Conflict requires a fresh decision; an unconfirmed response remains unknown and
-is never replayed automatically. The [client requirements](../../../../docs/spec/daynight-project-task.md#team-生命周期)
+is never replayed automatically. Unknown-write diagnostics use the existing
+public diagnostic error with an internal cause. The CLI prints the outcome,
+request ID and current-state guidance without recursive response or transport
+details. The [client requirements](../../../../docs/spec/daynight-project-task.md#team-生命周期)
 own the command behavior. The [Team context decision](2026-11-04-cli-team-context.md)
 owns target resolution, and the [Team lifecycle decision](2026-11-04-team-lifecycle.md)
 owns service transactions and refusals.
@@ -38,6 +41,10 @@ distinct valid names. JSON string literals preserve the exact comparison.
 **Treat a matching later read as the write receipt.** Another actor may have
 changed the resource, and Team names can be duplicated. A later read establishes
 current facts but cannot prove which submission committed.
+
+**Print the complete unknown-write cause chain.** A malformed response parser
+or transport error can contain private response excerpts. Keeping the cause
+internal preserves debugging context without exposing it in terminal output.
 
 ## Consequences
 
