@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskthreadjson"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,9 +35,9 @@ func TestThreadAdmissionObservesCancellationAfterInitialCheck(t *testing.T) {
 	// Cancel immediately after observing the successful admission check. This
 	// fixes the interleaving without relying on encoding time or a goroutine race.
 	ctx := &threadCancelAfterCheck{Context: parent, cancel: cancel}
-	message := core.ThreadMessage{
+	message := model.ThreadMessage{
 		ID: uuid.NewString(), CreatedAt: time.Now().UTC(), Body: strings.Repeat("<>&\u2028中文🌛", 1000),
-		Author: core.ThreadAuthor{UserID: uuid.NewString()},
+		Author: model.ThreadAuthor{UserID: uuid.NewString()},
 	}
 	encoded, err := admitThreadMessage(ctx, message)
 	if encoded != nil || !errors.Is(err, context.Canceled) || !errors.Is(parent.Err(), context.Canceled) {
@@ -79,7 +79,7 @@ func threadWait(t *testing.T, ctx context.Context, condition func() (bool, error
 }
 
 func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
-	for _, kind := range []core.CredentialKind{core.SessionCredential, core.PATCredential} {
+	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
 		t.Run(string(kind), func(t *testing.T) {
 			tasks, database, project, _, principal := taskService(t)
 			threads := NewTaskThreads(database)
@@ -88,12 +88,12 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			caller, table := principal, "sessions"
-			if kind == core.PATCredential {
-				credential := core.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, TokenHash: secretHash(randomSecret("dnpat_")), Name: "Never expires", CreatedAt: time.Now().UTC()}
+			if kind == model.PATCredential {
+				credential := model.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, TokenHash: secretHash(randomSecret("dnpat_")), Name: "Never expires", CreatedAt: time.Now().UTC()}
 				if err := database.CreatePAT(ctx, principal, credential); err != nil {
 					t.Fatal(err)
 				}
-				caller = core.Principal{Kind: core.PATCredential, CredentialID: credential.ID, UserID: principal.UserID}
+				caller = model.Principal{Kind: model.PATCredential, CredentialID: credential.ID, UserID: principal.UserID}
 				table = "personal_access_tokens"
 				postThread(t, threads, caller, task, CreateThreadMessage{Body: "nullable PAT expiry is valid"})
 			}
@@ -146,7 +146,7 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 			valid := workerMember(t, database, project.ID)
 			page := listThread(t, threads, valid, task, ThreadListRequest{})
 			want := 1
-			if kind == core.PATCredential {
+			if kind == model.PATCredential {
 				want = 2
 			}
 			if len(page.Page.Items) != want {
@@ -281,17 +281,17 @@ func TestThreadReadDatabaseFailureAndOversizeInvariantAreVisible(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	threads := NewTaskThreads(database)
 	task := createTask(t, tasks, principal, project.ID, "Stored invariant")
-	oversize := core.ThreadMessage{ID: uuid.NewString(), Body: strings.Repeat("x", taskthreadjson.PageLimit+1)}
-	_, err := selectThreadPage(context.Background(), []core.ThreadMessage{oversize}, 1, false, false)
+	oversize := model.ThreadMessage{ID: uuid.NewString(), Body: strings.Repeat("x", taskcodec.PageLimit+1)}
+	_, err := selectThreadPage(context.Background(), []model.ThreadMessage{oversize}, 1, false, false)
 	if err == nil {
 		t.Fatal("oversize stored message silently skipped")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := admitThreadMessage(ctx, core.ThreadMessage{}); !errors.Is(err, context.Canceled) {
+	if _, err := admitThreadMessage(ctx, model.ThreadMessage{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("admission cancellation lost: %v", err)
 	}
-	if _, err := selectThreadPage(ctx, []core.ThreadMessage{{ID: "id"}}, 1, false, false); !errors.Is(err, context.Canceled) {
+	if _, err := selectThreadPage(ctx, []model.ThreadMessage{{ID: "id"}}, 1, false, false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("selection cancellation lost: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `DROP TABLE task_thread_messages`); err != nil {

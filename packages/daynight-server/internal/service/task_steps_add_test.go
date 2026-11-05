@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 )
 
@@ -30,7 +30,7 @@ func stepsStoredState(t *testing.T, database *store.Store, taskID string, exclud
 	return state
 }
 
-func addServiceStep(t *testing.T, steps *TaskSteps, principal core.Principal, task core.Task, input AddTaskStep) StepsWriteResult {
+func addServiceStep(t *testing.T, steps *TaskSteps, principal model.Principal, task model.Task, input AddTaskStep) StepsWriteResult {
 	t.Helper()
 	result, err := steps.Add(context.Background(), principal, task.ProjectID, task.ID, input)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestTaskStepsAddPreservesParentAndExistingContentAcrossTaskPolicies(t *test
 	for _, mode := range []string{"todo", "in_progress", "done", "active_worker", "invalid_worker"} {
 		t.Run(mode, func(t *testing.T) {
 			task := createTask(t, tasks, admin, project.ID, "Parent", dependency.ID)
-			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), AssignedTo: pointer(pointer(member.UserID))})
+			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), AssignedTo: pointer(pointer(member.UserID))})
 			if mode == "active_worker" {
 				task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
 				descriptor := workerDescriptor()
@@ -75,8 +75,8 @@ func TestTaskStepsAddPreservesParentAndExistingContentAcrossTaskPolicies(t *test
 			}
 			first := addServiceStep(t, steps, member, task, AddTaskStep{Version: task.Version, ID: "ABCDEF01", Title: "same"})
 			existing := first.Resource.Steps[0]
-			result := addServiceStep(t, steps, member, task, AddTaskStep{Version: first.Resource.Version, ID: "00000000", Title: "same", Description: "  # 原值\n<>&  ", Status: pointer(core.TaskStepSkipped), Before: pointer("ABCDEF01")})
-			if result.Resource.Version != task.Version+2 || len(result.Resource.Steps) != 2 || result.Resource.Steps[1] != existing || result.Resource.Steps[0].Status != core.TaskStepSkipped || result.Resource.Steps[0].CreatedAt != result.Resource.Steps[0].UpdatedAt {
+			result := addServiceStep(t, steps, member, task, AddTaskStep{Version: first.Resource.Version, ID: "00000000", Title: "same", Description: "  # 原值\n<>&  ", Status: pointer(model.TaskStepSkipped), Before: pointer("ABCDEF01")})
+			if result.Resource.Version != task.Version+2 || len(result.Resource.Steps) != 2 || result.Resource.Steps[1] != existing || result.Resource.Steps[0].Status != model.TaskStepSkipped || result.Resource.Steps[0].CreatedAt != result.Resource.Steps[0].UpdatedAt {
 				t.Fatalf("add contract: %+v", result.Resource)
 			}
 			if err := database.Pool.QueryRow(context.Background(), query, task.ID).Scan(&after); err != nil || before != after {
@@ -114,10 +114,10 @@ func TestTaskStepsAddAdmissionAndRefusalOrder(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		principal           core.Principal
+		principal           model.Principal
 		project, task, code string
 	}{
-		{core.Principal{}, project.ID, task.ID, "unauthenticated"}, {principal, "bad", task.ID, "invalid_input"}, {principal, project.ID, "bad", "invalid_input"},
+		{model.Principal{}, project.ID, task.ID, "unauthenticated"}, {principal, "bad", task.ID, "invalid_input"}, {principal, project.ID, "bad", "invalid_input"},
 		{principal, uuid.NewString(), task.ID, "not_found"}, {principal, project.ID, uuid.NewString(), "not_found"}, {servicePrincipal(t, database), project.ID, task.ID, "not_found"},
 	} {
 		_, err := steps.Add(context.Background(), tc.principal, tc.project, tc.task, AddTaskStep{Version: 2, ID: "12345678", Title: "x"})
@@ -154,15 +154,15 @@ func TestTaskStepsAddSameVersionSerializesWithAddsAndTaskMetadata(t *testing.T) 
 			tasks, database, project, _, principal := taskService(t)
 			task := createTask(t, tasks, principal, project.ID, "Parent")
 			steps := NewTaskSteps(database)
-			add := func(id string) func(context.Context) (core.Task, error) {
-				return func(ctx context.Context) (core.Task, error) {
+			add := func(id string) func(context.Context) (model.Task, error) {
+				return func(ctx context.Context) (model.Task, error) {
 					result, err := steps.Add(ctx, principal, project.ID, task.ID, AddTaskStep{Version: task.Version, ID: id, Title: "same"})
-					return core.Task{Version: result.Resource.Version}, err
+					return model.Task{Version: result.Resource.Version}, err
 				}
 			}
 			other := add("abcdef01")
 			if metadata {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					return tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: task.Version, Title: pointer("Changed")})
 				}
 			}
@@ -226,7 +226,7 @@ func TestTaskStepsAddInputAndStorageFailures(t *testing.T) {
 	task := createTask(t, tasks, principal, project.ID, "Parent")
 	steps := NewTaskSteps(database)
 	good := AddTaskStep{Version: 1, ID: "00000000", Title: "x"}
-	for _, input := range []AddTaskStep{{Version: 0, ID: "00000000", Title: "x"}, {Version: 1, ID: "bad", Title: "x"}, {Version: 1, ID: "00000000", Title: "\u0085"}, {Version: 1, ID: "00000000", Title: "x", Description: "\x00"}, {Version: 1, ID: "00000000", Title: "x", Status: pointer(core.TaskStepStatus(""))}, {Version: 1, ID: "00000000", Title: "x", Before: pointer("00000001"), After: pointer("00000002")}, {Version: 1, ID: "00000000", Title: "x", Before: pointer("bad")}} {
+	for _, input := range []AddTaskStep{{Version: 0, ID: "00000000", Title: "x"}, {Version: 1, ID: "bad", Title: "x"}, {Version: 1, ID: "00000000", Title: "\u0085"}, {Version: 1, ID: "00000000", Title: "x", Description: "\x00"}, {Version: 1, ID: "00000000", Title: "x", Status: pointer(model.TaskStepStatus(""))}, {Version: 1, ID: "00000000", Title: "x", Before: pointer("00000001"), After: pointer("00000002")}, {Version: 1, ID: "00000000", Title: "x", Before: pointer("bad")}} {
 		result, err := steps.Add(context.Background(), principal, project.ID, task.ID, input)
 		requireThreadFault(t, err, "invalid_input")
 		if result.TransactionOutcome != store.TransactionNotCommitted || result.JSON != nil {
@@ -252,7 +252,7 @@ func TestTaskStepsAddInputAndStorageFailures(t *testing.T) {
 }
 
 func TestTaskStepsFaultRejectsTypedCompletionFailures(t *testing.T) {
-	refusal := &Fault{Code: "step_id_conflict", Message: "private business refusal"}
+	refusal := &model.Fault{Code: "step_id_conflict", Message: "private business refusal"}
 	for _, failure := range []*store.TransactionError{
 		{Phase: "cleanup", Cause: refusal, Outcome: store.TransactionNotCommitted, CleanupFailed: true},
 		{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},
@@ -261,7 +261,7 @@ func TestTaskStepsFaultRejectsTypedCompletionFailures(t *testing.T) {
 		if _, pure := TaskStepsFault(failure); pure {
 			t.Fatal("transaction completion fault concealed")
 		}
-		if _, pure := TaskStepsFault(&Fault{Code: "not_found", Message: "wrapped refusal", Cause: failure}); pure {
+		if _, pure := TaskStepsFault(&model.Fault{Code: "not_found", Message: "wrapped refusal", Cause: failure}); pure {
 			t.Fatal("business wrapper concealed typed completion failure")
 		}
 
@@ -273,8 +273,8 @@ func TestTaskStepsFaultRejectsTypedCompletionFailures(t *testing.T) {
 }
 
 func TestTaskStepsChildAbsenceKeepsIdentityAndCause(t *testing.T) {
-	absence := &StepAbsence{Version: 9007199254740993, Cause: core.ErrNotFound}
-	if absence.Error() != "step is currently absent" || !errors.Is(absence, core.ErrNotFound) {
+	absence := &StepAbsence{Version: 9007199254740993, Cause: model.ErrNotFound}
+	if absence.Error() != "step is currently absent" || !errors.Is(absence, model.ErrNotFound) {
 		t.Fatal("child absence lost safe diagnostic or exact cause")
 	}
 }
@@ -299,14 +299,14 @@ func TestTaskStepsAddQueryFailuresRemainInternal(t *testing.T) {
 }
 
 func TestTaskStepsEncodingFaultPreservesCapacityAndOriginalCause(t *testing.T) {
-	limit := &tasksteps.LimitError{EncodedBytes: tasksteps.MaxEncodedBytes + 1}
+	limit := &taskcodec.LimitError{EncodedBytes: taskcodec.MaxEncodedBytes + 1}
 	for _, original := range []error{limit, fmt.Errorf("candidate encoding: %w", limit)} {
 		converted := taskStepsEncodingFault(original)
 		fault, pure := TaskStepsFault(converted)
-		if !pure || fault.Code != "steps_limit_exceeded" || fault.Message == "" || fault.StepsLimit == nil || fault.StepsLimit.EncodedBytes != tasksteps.MaxEncodedBytes+1 || fault.StepsLimit.MaxEncodedBytes != tasksteps.MaxEncodedBytes {
+		if !pure || fault.Code != "steps_limit_exceeded" || fault.Message == "" || fault.StepsLimit == nil || fault.StepsLimit.EncodedBytes != taskcodec.MaxEncodedBytes+1 || fault.StepsLimit.MaxEncodedBytes != taskcodec.MaxEncodedBytes {
 			t.Fatalf("capacity refusal lost its public details: %#v", converted)
 		}
-		var actual *tasksteps.LimitError
+		var actual *taskcodec.LimitError
 		if fault.Cause != original || !errors.Is(converted, original) || !errors.Is(converted, limit) || !errors.As(converted, &actual) || actual != limit {
 			t.Fatal("capacity conversion lost the original encoding error chain")
 		}

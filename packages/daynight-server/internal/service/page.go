@@ -7,24 +7,24 @@ import (
 	"io"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 type listCursor struct {
-	Version            int                `json:"version"`
-	Kind               string             `json:"kind"`
-	UserID             string             `json:"userId,omitempty"`
-	ProjectID          string             `json:"projectId"`
-	Status             *string            `json:"status"`
-	Ready              *bool              `json:"ready"`
-	AllowAgents        *bool              `json:"allowAgents"`
-	CompatiblePlatform *core.TaskPlatform `json:"compatiblePlatform"`
-	WorkerID           *string            `json:"workerId"`
-	WorkerUserID       *string            `json:"workerUserId"`
-	AssignedTo         json.RawMessage    `json:"assignedTo,omitempty"`
-	CreatedAt          time.Time          `json:"createdAt"`
-	ID                 string             `json:"id"`
+	Version            int                 `json:"version"`
+	Kind               string              `json:"kind"`
+	UserID             string              `json:"userId,omitempty"`
+	ProjectID          string              `json:"projectId"`
+	Status             *string             `json:"status"`
+	Ready              *bool               `json:"ready"`
+	AllowAgents        *bool               `json:"allowAgents"`
+	CompatiblePlatform *model.TaskPlatform `json:"compatiblePlatform"`
+	WorkerID           *string             `json:"workerId"`
+	WorkerUserID       *string             `json:"workerUserId"`
+	AssignedTo         json.RawMessage     `json:"assignedTo,omitempty"`
+	CreatedAt          time.Time           `json:"createdAt"`
+	ID                 string              `json:"id"`
 }
 
 type listScope struct {
@@ -34,13 +34,13 @@ type listScope struct {
 	Status             *string
 	Ready              *bool
 	AllowAgents        *bool
-	CompatiblePlatform *core.TaskPlatform
+	CompatiblePlatform *model.TaskPlatform
 	WorkerID           *string
 	WorkerUserID       *string
-	AssignedTo         core.TaskAssignmentFilter
+	AssignedTo         model.TaskAssignmentFilter
 }
 
-func listPage(request PageRequest, scope listScope) (store.Page, error) {
+func listPage(request model.PageRequest, scope listScope) (store.Page, error) {
 	if request.Limit < 1 || request.Limit > 100 {
 		return store.Page{}, invalidInput("Limit must be between 1 and 100.")
 	}

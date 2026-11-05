@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *Authentication, logger *slog.Logger) {
@@ -32,9 +32,9 @@ func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *Authentication
 	}
 }
 
-func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.Request, principal core.Principal,
+func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.Request, principal model.Principal,
 	phase string, allowed []string, parse func(map[string]json.RawMessage) (T, error),
-	apply func(context.Context, core.Principal, string, string, T) (core.Task, error),
+	apply func(context.Context, model.Principal, string, string, T) (model.Task, error),
 ) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
@@ -85,37 +85,37 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
 }
 
-func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	workerMutation(h, w, request, principal, "update", []string{"version", "claimId", "phase", "herdr", "nativeSessionId", "startupReport"}, updateWorkerInput, h.tasks.UpdateWorker)
 }
 
-func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	workerMutation(h, w, request, principal, "release", []string{"version", "claimId", "stoppedConfirmed"}, releaseWorkerInput, h.tasks.ReleaseWorker)
 }
 
-func (h *taskHandler) withdrawWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) withdrawWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	workerMutation(h, w, request, principal, "withdraw", []string{"version", "claimId"}, withdrawWorkerInput, h.tasks.WithdrawWorker)
 }
 
-func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "previousClaimId"}, resumeWorkerInput, h.tasks.ResumeWorker)
 }
 
-func workerMachineInput(raw json.RawMessage) (core.WorkerMachine, error) {
+func workerMachineInput(raw json.RawMessage) (model.WorkerMachine, error) {
 	fields, err := jsonobject.Decode(raw, "machine", "id", "name")
 	if err != nil {
-		return core.WorkerMachine{}, invalidInput(err.Error())
+		return model.WorkerMachine{}, invalidInput(err.Error())
 	}
 	id, err := requiredString(fields, "id")
 	if err != nil {
-		return core.WorkerMachine{}, err
+		return model.WorkerMachine{}, err
 	}
 	name, err := requiredString(fields, "name")
-	return core.WorkerMachine{ID: id, Name: name}, err
+	return model.WorkerMachine{ID: id, Name: name}, err
 }
 
 func workerDescriptorInput(fields map[string]json.RawMessage) (service.WorkerDescriptor, error) {
@@ -136,28 +136,28 @@ func workerDescriptorInput(fields map[string]json.RawMessage) (service.WorkerDes
 	if err != nil {
 		return service.WorkerDescriptor{}, err
 	}
-	input.Platform = core.TaskPlatform(platform)
+	input.Platform = model.TaskPlatform(platform)
 	agent, err := requiredString(fields, "agent")
 	if err != nil {
 		return service.WorkerDescriptor{}, err
 	}
-	input.Agent = core.WorkerAgent(agent)
+	input.Agent = model.WorkerAgent(agent)
 	input.AgentControlMode, err = workerAgentControlModeInput(fields)
 	return input, err
 }
 
-func workerAgentControlModeInput(fields map[string]json.RawMessage) (core.WorkerAgentControlMode, error) {
+func workerAgentControlModeInput(fields map[string]json.RawMessage) (model.WorkerAgentControlMode, error) {
 	if _, exists := fields["agentControlMode"]; !exists {
-		return core.AgentControlModeHerdr, nil
+		return model.AgentControlModeHerdr, nil
 	}
 	mode, err := requiredString(fields, "agentControlMode")
 	if err != nil {
 		return "", err
 	}
-	if mode != string(core.AgentControlModeHerdr) && mode != string(core.AgentControlModeWeb) {
+	if mode != string(model.AgentControlModeHerdr) && mode != string(model.AgentControlModeWeb) {
 		return "", invalidInput("agentControlMode must be herdr or web.")
 	}
-	return core.WorkerAgentControlMode(mode), nil
+	return model.WorkerAgentControlMode(mode), nil
 }
 
 func claimWorkerInput(fields map[string]json.RawMessage) (service.ClaimWorker, error) {
@@ -174,12 +174,12 @@ func claimWorkerInput(fields map[string]json.RawMessage) (service.ClaimWorker, e
 	return input, nil
 }
 
-func nullableWorkerHerdr(fields map[string]json.RawMessage) (**core.WorkerHerdr, error) {
+func nullableWorkerHerdr(fields map[string]json.RawMessage) (**model.WorkerHerdr, error) {
 	raw, exists := fields["herdr"]
 	if !exists {
 		return nil, nil
 	}
-	var value *core.WorkerHerdr
+	var value *model.WorkerHerdr
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return &value, nil
 	}
@@ -187,7 +187,7 @@ func nullableWorkerHerdr(fields map[string]json.RawMessage) (**core.WorkerHerdr,
 	if err != nil {
 		return nil, invalidInput(err.Error())
 	}
-	value = &core.WorkerHerdr{}
+	value = &model.WorkerHerdr{}
 	for key, destination := range map[string]*string{"session": &value.Session, "workspaceId": &value.WorkspaceID, "paneId": &value.PaneID} {
 		*destination, err = requiredString(values, key)
 		if err != nil {
@@ -226,7 +226,7 @@ func updateWorkerInput(fields map[string]json.RawMessage) (service.UpdateWorker,
 		return service.UpdateWorker{}, err
 	}
 	if phase != nil {
-		value := core.WorkerPhase(*phase)
+		value := model.WorkerPhase(*phase)
 		input.Phase = &value
 	}
 	input.Herdr, err = nullableWorkerHerdr(fields)

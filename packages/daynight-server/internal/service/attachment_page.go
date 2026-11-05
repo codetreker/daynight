@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 )
 
 type attachmentCursor struct {
@@ -20,7 +20,7 @@ type attachmentCursor struct {
 	Path      string `json:"path"`
 }
 
-func attachmentListPage(request PageRequest, projectID, taskID string) (store.AttachmentQuery, error) {
+func attachmentListPage(request model.PageRequest, projectID, taskID string) (store.AttachmentQuery, error) {
 	if request.Limit < 1 || request.Limit > 100 {
 		return store.AttachmentQuery{}, invalidInput("Limit must be between 1 and 100.")
 	}
@@ -49,7 +49,7 @@ func attachmentListPage(request PageRequest, projectID, taskID string) (store.At
 	return query, nil
 }
 
-func (s *Attachments) List(ctx context.Context, principal core.Principal, projectID, taskID string, request PageRequest) (AttachmentPage, error) {
+func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (AttachmentPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return AttachmentPage{}, err
 	}
@@ -66,9 +66,9 @@ func (s *Attachments) List(ctx context.Context, principal core.Principal, projec
 		return AttachmentPage{}, err
 	}
 	var result store.AttachmentPage
-	err = s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot) error {
+	err = s.read(ctx, principal, projectID, taskID, func(reader store.AttachmentReader) error {
 		var err error
-		result, err = snapshot.Attachments(ctx, projectID, taskID, query)
+		result, err = reader.Attachments(ctx, projectID, taskID, query)
 		return err
 	})
 	if err != nil {

@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -33,20 +33,20 @@ func projectRoutes(mux *http.ServeMux, projects *service.Projects, auth *Authent
 }
 
 func resourceMethodNotAllowed(logger *slog.Logger, allowed string) AuthenticatedHandler {
-	return func(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+	return func(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 		w.Header().Set("Cache-Control", "no-store")
 		methodNotAllowed(logger.With("user_id", principal.UserID), allowed)(w, request)
 	}
 }
 
-func projectResponse(project core.Project) api.Project {
+func projectResponse(project model.Project) api.Project {
 	return api.Project{ID: project.ID, Name: project.Name, RepoURL: project.RepoURL,
 		CreatedAt: project.CreatedAt.UTC(), UpdatedAt: project.UpdatedAt.UTC(),
 		Settings:  api.ProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: project.Settings.ExecutionWarningMinutes},
 		Ownership: ownershipResponse(project.Ownership)}
 }
 
-func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
 	fields, err := decodeObject(w, request, "name", "repoUrl", "teamId", "expectedUserId")
@@ -108,7 +108,7 @@ func writeProjectCreateError(w http.ResponseWriter, r *http.Request, logger *slo
 	writeError(w, r, logger, "project", "create", err)
 }
 
-func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
 	values, err := queryValues(request, "limit", "cursor", "teamId", "shared")
@@ -144,7 +144,7 @@ func (h *projectHandler) list(w http.ResponseWriter, request *http.Request, prin
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *projectHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *projectHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", principal.UserID)
 	id, err := service.CanonicalID(request.PathValue("projectId"))

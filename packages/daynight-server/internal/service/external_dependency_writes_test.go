@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func createClassifiedTask(t *testing.T, tasks *Tasks, principal core.Principal, projectID, title string, dependencies, external []string) core.Task {
+func createClassifiedTask(t *testing.T, tasks *Tasks, principal model.Principal, projectID, title string, dependencies, external []string) model.Task {
 	t.Helper()
 	task, err := tasks.Create(context.Background(), principal, projectID, CreateTask{Title: title, DependsOn: dependencies, ExternalDependsOn: external})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestExternalDependencyFlagsOnlyKeepExecutionIntervalsAndVersionOrder(t *tes
 		if !reflect.DeepEqual(noop, target) {
 			t.Fatal("same classification advanced metadata")
 		}
-		if target.Status == core.TaskInProgress {
+		if target.Status == model.TaskInProgress {
 			target = finishTask(t, tasks, principal, target)
 		}
 	}
@@ -148,7 +148,7 @@ func TestExternalDependencyWritesRejectInvalidCandidatesAndAllEdgeCycles(t *test
 		assertTaskUnchanged(t, tasks, principal, a)
 	}
 
-	_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: core.TaskInProgress})
+	_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: model.TaskInProgress})
 	requireFault(t, err, "dependency_unsatisfied")
 	assertTaskUnchanged(t, tasks, principal, target)
 }
@@ -160,10 +160,10 @@ func TestExternalDependencyWriteRacesAndPartialFailures(t *testing.T) {
 	b := createTask(t, tasks, principal, project.ID, "B")
 	target := createClassifiedTask(t, tasks, principal, project.ID, "Target", []string{a.ID, b.ID}, nil)
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID})})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{b.ID})})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")

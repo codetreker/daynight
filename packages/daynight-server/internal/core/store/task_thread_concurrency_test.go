@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -37,20 +37,20 @@ func TestThreadFirstHeadConcurrencyPublishesStrictPositions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	const total = 24
-	messages := make(chan core.ThreadMessage, total)
+	messages := make(chan model.ThreadMessage, total)
 	failures := make(chan error, total)
 	var group sync.WaitGroup
 	for index := range total {
 		group.Add(1)
 		go func(index int) {
 			defer group.Done()
-			var message core.ThreadMessage
+			var message model.ThreadMessage
 			err := database.WriteThread(ctx, func(tx *ThreadTx) error {
 				head, err := tx.LockHead(ctx, queryID(1))
 				if err != nil {
 					return err
 				}
-				message, err = tx.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1), Author: core.ThreadAuthor{UserID: queryID(9)}, Body: fmt.Sprint(index)})
+				message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: fmt.Sprint(index)})
 				if err != nil {
 					return err
 				}
@@ -72,14 +72,14 @@ func TestThreadFirstHeadConcurrencyPublishesStrictPositions(t *testing.T) {
 	for err := range failures {
 		t.Fatal(err)
 	}
-	items := make([]core.ThreadMessage, 0, total)
+	items := make([]model.ThreadMessage, 0, total)
 	for message := range messages {
 		items = append(items, message)
 	}
 	if len(items) != total {
 		t.Fatalf("concurrent first appends: %d", len(items))
 	}
-	slices.SortFunc(items, func(a, b core.ThreadMessage) int {
+	slices.SortFunc(items, func(a, b model.ThreadMessage) int {
 		if threadPositionAfter(a.Position(), b.Position()) {
 			return 1
 		}
@@ -116,7 +116,7 @@ func TestThreadSamplesDatabaseClockAfterHeadLockWait(t *testing.T) {
 	}
 	started := make(chan uint32, 1)
 	completed := make(chan error, 1)
-	var message core.ThreadMessage
+	var message model.ThreadMessage
 	go func() {
 		completed <- database.WriteThread(ctx, func(tx *ThreadTx) error {
 			started <- tx.tx.Conn().PgConn().PID()
@@ -124,7 +124,7 @@ func TestThreadSamplesDatabaseClockAfterHeadLockWait(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			message, err = tx.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1), Author: core.ThreadAuthor{UserID: queryID(9)}, Body: "after lock"})
+			message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "after lock"})
 			if err != nil {
 				return err
 			}
@@ -151,7 +151,7 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 	for _, mutation := range []string{"delete", "source status"} {
 		t.Run(mutation, func(t *testing.T) {
 			database, principal, _, project := membershipFixture(t)
-			task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+			task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			connection, err := database.Pool.Begin(ctx)
@@ -190,7 +190,7 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 			if _, err := thread.LockHead(ctx, task.ID); err != nil {
 				t.Fatal(err)
 			}
-			message, err := thread.InsertMessage(ctx, core.ThreadMessage{TaskID: task.ID, Author: core.ThreadAuthor{UserID: principal.UserID}, Body: "authorized before mutation"})
+			message, err := thread.InsertMessage(ctx, model.ThreadMessage{TaskID: task.ID, Author: model.ThreadAuthor{UserID: principal.UserID}, Body: "authorized before mutation"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -261,7 +261,7 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+			task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			writer, err := database.Pool.Begin(ctx)
@@ -281,7 +281,7 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 			}
 			started := make(chan uint32, 1)
 			completed := make(chan error, 1)
-			var access core.ProjectAccess
+			var access model.ProjectAccess
 			go func() {
 				completed <- database.WriteThread(ctx, func(thread *ThreadTx) error {
 					started <- thread.tx.Conn().PgConn().PID()
@@ -302,12 +302,12 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 			}
 			err = <-completed
 			if mutation == "delete" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("revoked grant admitted: %#v %v", access, err)
 				}
 				return
 			}
-			if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != core.ProjectMemberRole ||
+			if err != nil || access.ProjectID != project.ID || access.UserID != principal.UserID || access.Role != model.ProjectMemberRole ||
 				access.DirectGrant == nil || access.DirectGrant.ProjectID != project.ID || access.DirectGrant.UserID != principal.UserID ||
 				access.DirectGrant.Role != access.Role || access.DirectGrant.Version != version {
 				t.Fatalf("authorization retained pre-wait grant: %#v %v", access, err)
@@ -323,7 +323,7 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 				database, _, principal, project := membershipFixture(t)
 				sourceID := ordinaryProjectTeam(t, database, project.ID)
 				mustQueryExec(t, database, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, sourceID, principal.UserID)
-				task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+				task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 				destinationID := uuid.NewString()
 				if !destinationCreatedLate {
 					mustQueryExec(t, database, `INSERT INTO teams(id,name) VALUES($1,'Destination')`, destinationID)
@@ -358,7 +358,7 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 				}
 				started := make(chan uint32, 1)
 				completed := make(chan error, 1)
-				var access core.ProjectAccess
+				var access model.ProjectAccess
 				go func() {
 					completed <- database.WriteThread(ctx, func(thread *ThreadTx) error {
 						started <- thread.tx.Conn().PgConn().PID()
@@ -399,12 +399,12 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 					t.Fatal(ctx.Err())
 				}
 				if !destinationMember {
-					if !errors.Is(err, core.ErrNotFound) {
+					if !errors.Is(err, model.ErrNotFound) {
 						t.Fatalf("source-only access retained: %#v %v", access, err)
 					}
 				} else if err != nil || access.OwnerTeam.ID != destinationID || access.OwnerTeam.Name == nil || *access.OwnerTeam.Name != "Destination" ||
-					access.Ownership.TeamID != destinationID || access.Ownership.Version != destinationVersion || access.Role != core.ProjectMemberRole ||
-					access.DirectGrant != nil || access.TeamRole == nil || *access.TeamRole != core.ProjectMemberRole || access.CanTransfer {
+					access.Ownership.TeamID != destinationID || access.Ownership.Version != destinationVersion || access.Role != model.ProjectMemberRole ||
+					access.DirectGrant != nil || access.TeamRole == nil || *access.TeamRole != model.ProjectMemberRole || access.CanTransfer {
 					t.Fatalf("destination-only access: %#v %v", access, err)
 				}
 			})
@@ -420,27 +420,27 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	first := appendStoredThread(t, database, task.ID, principal.UserID, "original")
 	ctx := context.Background()
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return err
 		}
-		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err != nil {
+		if _, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID); err != nil {
 			return err
 		}
 		appendStoredThread(t, database, task.ID, principal.UserID, "outside snapshot")
 		mustQueryExec(t, database, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, task.ID)
 		mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
-		presence, err := snapshot.TaskPresence(ctx, project.ID, task.ID)
+		presence, err := snapshot.TaskDAO().TaskPresence(ctx, project.ID, task.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("snapshot presence changed: %#v %v", presence, err)
 		}
-		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err != nil {
+		if _, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID); err != nil {
 			t.Fatalf("snapshot membership changed: %v", err)
 		}
-		items, err := snapshot.ThreadCandidates(ctx, task.ID, nil, false, 10)
+		items, err := snapshot.TaskDAO().ThreadCandidates(ctx, task.ID, nil, false, 10)
 		if err != nil || len(items) != 1 || items[0].ID != first.ID {
 			t.Fatalf("snapshot messages changed: %#v %v", items, err)
 		}
@@ -448,12 +448,12 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		presence, err := snapshot.TaskPresence(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		presence, err := snapshot.TaskDAO().TaskPresence(ctx, project.ID, task.ID)
 		if err != nil || presence.DeletedAt == nil {
 			t.Fatalf("new snapshot missed deletion: %#v %v", presence, err)
 		}
-		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err == nil {
+		if _, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID); err == nil {
 			t.Fatal("new snapshot retained revoked membership")
 		}
 		return nil

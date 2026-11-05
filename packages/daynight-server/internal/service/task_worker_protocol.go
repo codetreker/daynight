@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 type legacyWorkerProtocolKey struct{}
@@ -17,13 +17,13 @@ func WithLegacyWorkerProtocol(ctx context.Context) context.Context {
 
 // LegacyWorkerCompatible reports whether the original WorkerClaim representation
 // preserves the provider and execution backend without substituting identities.
-func LegacyWorkerCompatible(worker *core.WorkerClaim) bool {
-	return worker == nil || ((worker.AgentControlMode == "" || worker.AgentControlMode == core.AgentControlModeHerdr) && (worker.Agent == core.AgentCodex || worker.Agent == core.AgentCopilot))
+func LegacyWorkerCompatible(worker *model.WorkerClaim) bool {
+	return worker == nil || ((worker.AgentControlMode == "" || worker.AgentControlMode == model.AgentControlModeHerdr) && (worker.Agent == model.AgentCodex || worker.Agent == model.AgentCopilot))
 }
 
-func requireCompatibleWorker(ctx context.Context, worker *core.WorkerClaim) error {
+func requireCompatibleWorker(ctx context.Context, worker *model.WorkerClaim) error {
 	if legacy, _ := ctx.Value(legacyWorkerProtocolKey{}).(bool); legacy && !LegacyWorkerCompatible(worker) {
-		return &Fault{Code: "invalid_transition", Message: "This agent or control mode requires a compatible Daynight client. This request did not change the execution."}
+		return &model.Fault{Code: "invalid_transition", Message: "This agent or control mode requires a compatible Daynight client. This request did not change the execution."}
 	}
 	return nil
 }

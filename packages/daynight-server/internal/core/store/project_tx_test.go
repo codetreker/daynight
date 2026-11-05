@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -17,12 +17,12 @@ func TestActiveDependentIDsUseOnlyDirectScopedOrdinaryAndExternalEdges(t *testin
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project, foreign := queryProject(t, database, 1), queryProject(t, database, 2)
-	predecessor := queryTask(t, database, project.ID, 10, core.TaskDone)
-	active := queryTask(t, database, project.ID, 11, core.TaskInProgress, predecessor.ID)
-	done := queryTask(t, database, project.ID, 12, core.TaskDone, predecessor.ID)
-	queryTask(t, database, project.ID, 13, core.TaskTodo, predecessor.ID)
-	queryTask(t, database, project.ID, 14, core.TaskDone, active.ID)
-	queryTask(t, database, foreign.ID, 15, core.TaskInProgress, predecessor.ID)
+	predecessor := queryTask(t, database, project.ID, 10, model.TaskDone)
+	active := queryTask(t, database, project.ID, 11, model.TaskInProgress, predecessor.ID)
+	done := queryTask(t, database, project.ID, 12, model.TaskDone, predecessor.ID)
+	queryTask(t, database, project.ID, 13, model.TaskTodo, predecessor.ID)
+	queryTask(t, database, project.ID, 14, model.TaskDone, active.ID)
+	queryTask(t, database, foreign.ID, 15, model.TaskInProgress, predecessor.ID)
 	mustQueryExec(t, database, `UPDATE task_dependencies SET external=true WHERE task_id=$1`, done.ID)
 	mustQueryExec(t, database, `CREATE FUNCTION reject_dependent_materials() RETURNS text LANGUAGE plpgsql STABLE AS $$
 		BEGIN RAISE EXCEPTION 'dependent materials must not be selected'; END $$;
@@ -81,11 +81,11 @@ func receiveQueryResult(t *testing.T, ctx context.Context, result <-chan error) 
 func TestProjectTransactionsSerializeAndReadFreshAfterLock(t *testing.T) {
 	s := isolatedStore(t)
 	first, second := queryProject(t, s, 1), queryProject(t, s, 2)
-	task := queryTask(t, s, first.ID, 11, core.TaskTodo)
+	task := queryTask(t, s, first.ID, 11, model.TaskTodo)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
-	var firstUpdate, secondUpdate core.Task
+	var firstUpdate, secondUpdate model.Task
 	if err := s.WriteProject(ctx, first.ID, func(tx *ProjectTx) error {
 		var isolation string
 		if err := tx.tx.QueryRow(ctx, "SHOW transaction_isolation").Scan(&isolation); err != nil || isolation != "read committed" {
@@ -97,10 +97,10 @@ func TestProjectTransactionsSerializeAndReadFreshAfterLock(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if fresh.Status != core.TaskDone || fresh.Version != 2 {
+				if fresh.Status != model.TaskDone || fresh.Version != 2 {
 					return errors.New("lock waiter read a snapshot predating the preceding commit")
 				}
-				secondUpdate, err = waiter.UpdateTask(ctx, task.ID, TaskWrite{Title: "Second", Status: core.TaskDone})
+				secondUpdate, err = waiter.UpdateTask(ctx, task.ID, TaskWrite{Title: "Second", Status: model.TaskDone})
 				return err
 			})
 		}()
@@ -108,13 +108,13 @@ func TestProjectTransactionsSerializeAndReadFreshAfterLock(t *testing.T) {
 		independent, finish := context.WithTimeout(ctx, 2*time.Second)
 		defer finish()
 		if err := s.WriteProject(independent, second.ID, func(other *ProjectTx) error {
-			_, err := other.CreateTask(independent, queryID(12), TaskWrite{Title: "Independent", Status: core.TaskTodo})
+			_, err := other.CreateTask(independent, queryID(12), TaskWrite{Title: "Independent", Status: model.TaskTodo})
 			return err
 		}); err != nil {
 			t.Fatalf("unrelated project was blocked: %v", err)
 		}
 		var err error
-		firstUpdate, err = tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "First", Status: core.TaskDone})
+		firstUpdate, err = tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "First", Status: model.TaskDone})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestProjectTransactionsSerializeAndReadFreshAfterLock(t *testing.T) {
 func TestProjectTransactionsCancelActualRowLockWithoutLateWrite(t *testing.T) {
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
-	before := queryTask(t, s, project.ID, 11, core.TaskTodo)
+	before := queryTask(t, s, project.ID, 11, model.TaskTodo)
 	ctx, finish := context.WithTimeout(context.Background(), 10*time.Second)
 	defer finish()
 	var invoked atomic.Bool
@@ -141,7 +141,7 @@ func TestProjectTransactionsCancelActualRowLockWithoutLateWrite(t *testing.T) {
 		go func() {
 			result <- s.WriteProject(waiting, project.ID, func(tx *ProjectTx) error {
 				invoked.Store(true)
-				_, err := tx.UpdateTask(waiting, before.ID, TaskWrite{Title: "Late", Status: core.TaskDone})
+				_, err := tx.UpdateTask(waiting, before.ID, TaskWrite{Title: "Late", Status: model.TaskDone})
 				return err
 			})
 		}()
@@ -172,7 +172,7 @@ func TestProjectTransactionsCancelActualRowLockWithoutLateWrite(t *testing.T) {
 func TestProjectTransactionsCancelActualQueryWait(t *testing.T) {
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
-	task := queryTask(t, s, project.ID, 11, core.TaskTodo)
+	task := queryTask(t, s, project.ID, 11, model.TaskTodo)
 	ctx, finish := context.WithTimeout(context.Background(), 10*time.Second)
 	defer finish()
 	blocker, err := s.Pool.Begin(ctx)
@@ -187,8 +187,8 @@ func TestProjectTransactionsCancelActualQueryWait(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		result <- s.ReadSnapshot(waiting, func(snapshot *Snapshot) error {
-			_, err := snapshot.Task(waiting, project.ID, task.ID)
+		result <- s.ReadSnapshot(waiting, func(snapshot SnapshotScope) error {
+			_, err := snapshot.TaskDAO().Task(waiting, project.ID, task.ID)
 			return err
 		})
 	}()
@@ -210,13 +210,13 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 1)
-	task := queryTask(t, s, project.ID, 11, core.TaskTodo)
+	task := queryTask(t, s, project.ID, 11, model.TaskTodo)
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	for _, operation := range []func() error{
 		func() error { _, err := s.CreateProject(canceled, queryID(99), "Canceled", "repo"); return err },
 		func() error {
-			return s.ReadSnapshot(canceled, func(*Snapshot) error { t.Fatal("canceled snapshot began"); return nil })
+			return s.ReadSnapshot(canceled, func(SnapshotScope) error { t.Fatal("canceled snapshot began"); return nil })
 		},
 		func() error {
 			return s.WriteProject(canceled, project.ID, func(*ProjectTx) error { t.Fatal("canceled writer began"); return nil })
@@ -226,8 +226,8 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 			t.Fatalf("canceled begin cause: %v", err)
 		}
 	}
-	var expiredSnapshot *Snapshot
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error { expiredSnapshot = snapshot; return nil }); err != nil {
+	var expiredSnapshot SnapshotScope
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error { expiredSnapshot = snapshot; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	var expiredProject *ProjectTx
@@ -235,10 +235,10 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, operation := range []func() error{
-		func() error { _, err := expiredSnapshot.Projects(ctx, Page{Limit: 10}); return err },
+		func() error { _, err := expiredSnapshot.ProjectDAO().Projects(ctx, Page{Limit: 10}); return err },
 		func() error { _, err := expiredSnapshot.ObservedAt(ctx); return err },
 		func() error {
-			_, err := expiredSnapshot.Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
+			_, err := expiredSnapshot.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
 			return err
 		},
 		func() error { _, err := expiredProject.TasksByID(ctx, []string{task.ID}); return err },
@@ -259,7 +259,7 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 		call func(*ProjectTx) error
 	}{
 		{"invalid task metadata", func(tx *ProjectTx) error {
-			_, err := tx.CreateTask(ctx, queryID(12), TaskWrite{Title: "", Status: core.TaskTodo})
+			_, err := tx.CreateTask(ctx, queryID(12), TaskWrite{Title: "", Status: model.TaskTodo})
 			return err
 		}},
 		{"invalid update", func(tx *ProjectTx) error {
@@ -267,7 +267,7 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 			return err
 		}},
 		{"invalid edge rolls back creation", func(tx *ProjectTx) error {
-			_, err := tx.CreateTask(ctx, queryID(12), TaskWrite{Title: "New", Status: core.TaskTodo, DependsOn: []string{queryID(12)}})
+			_, err := tx.CreateTask(ctx, queryID(12), TaskWrite{Title: "New", Status: model.TaskTodo, DependsOn: []string{queryID(12)}})
 			return err
 		}},
 	} {
@@ -280,20 +280,20 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 			}
 		})
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Task(ctx, project.ID, queryID(12))
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TaskDAO().Task(ctx, project.ID, queryID(12))
 		return err
-	}); !errors.Is(err, core.ErrNotFound) {
+	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("failed create was persisted: %v", err)
 	}
 
-	dependency := queryTask(t, s, project.ID, 13, core.TaskDone)
-	queryTask(t, s, project.ID, 14, core.TaskTodo, dependency.ID)
+	dependency := queryTask(t, s, project.ID, 13, model.TaskDone)
+	queryTask(t, s, project.ID, 14, model.TaskTodo, dependency.ID)
 	mustQueryExec(t, s, `CREATE FUNCTION reject_edge_delete() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN RAISE EXCEPTION 'private SQL diagnostic'; END $$;
 		CREATE TRIGGER reject_edge_delete BEFORE DELETE ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_edge_delete()`)
 	err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, queryID(14), TaskWrite{Title: "Changed", Status: core.TaskTodo})
+		_, err := tx.UpdateTask(ctx, queryID(14), TaskWrite{Title: "Changed", Status: model.TaskTodo})
 		return err
 	})
 	if err == nil || strings.Contains(err.Error(), "private SQL") {

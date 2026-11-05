@@ -5,9 +5,10 @@ import (
 	"errors"
 	"math"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
 
 type UpdateTaskStep struct {
@@ -18,14 +19,14 @@ type UpdateTaskStep struct {
 
 type SetTaskStepStatus struct {
 	Version int64
-	Status  core.TaskStepStatus
+	Status  model.TaskStepStatus
 }
 
-func (s *TaskSteps) Update(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, input UpdateTaskStep) (StepsWriteResult, error) {
+func (s *TaskSteps) Update(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, input UpdateTaskStep) (StepsWriteResult, error) {
 	return s.change(ctx, principal, projectID, taskID, stepID, input.Version, tasksteps.Changes{Title: input.Title, Description: input.Description})
 }
 
-func (s *TaskSteps) SetStatus(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, input SetTaskStepStatus) (StepsWriteResult, error) {
+func (s *TaskSteps) SetStatus(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, input SetTaskStepStatus) (StepsWriteResult, error) {
 	return s.change(ctx, principal, projectID, taskID, stepID, input.Version, tasksteps.Changes{Status: &input.Status})
 }
 
@@ -34,12 +35,12 @@ func validateStepChanges(changes tasksteps.Changes) error {
 		return invalidInput("At least one step field must be provided.")
 	}
 	if changes.Title != nil {
-		if err := tasksteps.ValidateTitle(*changes.Title); err != nil {
+		if err := taskcodec.ValidateTitle(*changes.Title); err != nil {
 			return invalidInput(err.Error())
 		}
 	}
 	if changes.Description != nil {
-		if err := tasksteps.ValidateDescription(*changes.Description); err != nil {
+		if err := taskcodec.ValidateDescription(*changes.Description); err != nil {
 			return invalidInput(err.Error())
 		}
 	}
@@ -49,13 +50,13 @@ func validateStepChanges(changes tasksteps.Changes) error {
 	return nil
 }
 
-func (s *TaskSteps) change(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, version int64, changes tasksteps.Changes) (StepsWriteResult, error) {
+func (s *TaskSteps) change(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, version int64, changes tasksteps.Changes) (StepsWriteResult, error) {
 	result := StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}
 	projectID, taskID, err := taskWriteIdentity(principal, projectID, taskID, version)
 	if err != nil {
 		return result, err
 	}
-	stepID, err = tasksteps.CanonicalID(stepID)
+	stepID, err = taskcodec.CanonicalID(stepID)
 	if err != nil {
 		return result, invalidInput(err.Error())
 	}
@@ -76,22 +77,22 @@ func (s *TaskSteps) change(ctx context.Context, principal core.Principal, projec
 		if err != nil {
 			return err
 		}
-		if _, err := tasksteps.Collection(header, current); err != nil {
+		if _, err := taskcodec.Collection(header, current); err != nil {
 			return err
 		}
 		candidate, index, changed, err := tasksteps.ChangeCandidate(current, stepID, changes)
 		if errors.Is(err, tasksteps.ErrTargetNotFound) {
-			return &Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
+			return &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
 		}
 		if err != nil {
 			return err
 		}
 		if !changed {
-			result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, current)
+			result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, current)
 			return err
 		}
 		if header.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
 		observed, err := tx.ObservedAt(ctx)
 		if err != nil {
@@ -99,7 +100,7 @@ func (s *TaskSteps) change(ctx context.Context, principal core.Principal, projec
 		}
 		candidate[index].UpdatedAt = observed
 		header.Version++
-		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
+		result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}

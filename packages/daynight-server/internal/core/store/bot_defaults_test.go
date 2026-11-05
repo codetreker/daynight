@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,12 +18,12 @@ import (
 
 func botPreferenceText(value string) *string { return &value }
 
-func readBotDefaults(t *testing.T, database *Store, ownerID string) core.BotDefaultsInput {
+func readBotDefaults(t *testing.T, database *Store, ownerID string) model.BotDefaultsInput {
 	t.Helper()
-	var result core.BotDefaultsInput
-	if err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	var result model.BotDefaultsInput
+	if err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 		var err error
-		result, err = snapshot.BotDefaults(context.Background(), ownerID)
+		result, err = snapshot.BotDAO().BotDefaults(context.Background(), ownerID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func readBotDefaults(t *testing.T, database *Store, ownerID string) core.BotDefa
 	return result
 }
 
-func insertPreferenceBot(t *testing.T, database *Store, candidate core.Bot, overrides core.BotOverrides) core.Bot {
+func insertPreferenceBot(t *testing.T, database *Store, candidate model.Bot, overrides model.BotOverrides) model.Bot {
 	t.Helper()
 	candidate.ID = uuid.NewString()
 	candidate.RequestedOverrides = overrides
@@ -101,8 +101,8 @@ func TestBotDefaultsReadKeepsOwnerScopeAndStableFullWorkerInventory(t *testing.T
 func TestBotPreferencesCommitOnlyExplicitFieldsByCreationOrder(t *testing.T) {
 	database := isolatedStore(t)
 	candidate, _ := storedBotCandidate(t, database)
-	older := insertPreferenceBot(t, database, candidate, core.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/older-cwd"), Provider: botPreferenceText("claude")})
-	newer := insertPreferenceBot(t, database, candidate, core.BotOverrides{Provider: botPreferenceText("copilot")})
+	older := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/older-cwd"), Provider: botPreferenceText("claude")})
+	newer := insertPreferenceBot(t, database, candidate, model.BotOverrides{Provider: botPreferenceText("copilot")})
 	markPreferenceBotReady(t, database, older.ID)
 	markPreferenceBotReady(t, database, newer.ID)
 	commitPreferenceBot(t, database, newer.ID)
@@ -116,7 +116,7 @@ func TestBotPreferencesCommitOnlyExplicitFieldsByCreationOrder(t *testing.T) {
 	otherWorker := uuid.NewString()
 	putWorkerSnapshot(t, database, workerSnapshotFixture(candidate.OwnerUserID, otherWorker, time.Now().UTC()))
 	candidate.WorkerID, candidate.ResolvedConfiguration.WorkerID = otherWorker, otherWorker
-	latest := insertPreferenceBot(t, database, candidate, core.BotOverrides{WorkerID: &otherWorker, Cwd: botPreferenceText("/other-worker")})
+	latest := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &otherWorker, Cwd: botPreferenceText("/other-worker")})
 	markPreferenceBotReady(t, database, latest.ID)
 	commitPreferenceBot(t, database, latest.ID)
 	commitPreferenceBot(t, database, older.ID)
@@ -131,7 +131,7 @@ func TestBotPreferencesRefuseUnsuccessfulOrDeletedBotsAndDoNotRememberDefaults(t
 	candidate, _ := storedBotCandidate(t, database)
 	for _, state := range []string{"pending", "failed", "ready-without-session", "deleted"} {
 		t.Run(state, func(t *testing.T) {
-			bot := insertPreferenceBot(t, database, candidate, core.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/explicit")})
+			bot := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/explicit")})
 			switch state {
 			case "failed":
 				mustQueryExec(t, database, `UPDATE bots SET startup_result='{"state":"failed","code":"launch_failed"}' WHERE id=$1`, bot.ID)
@@ -147,7 +147,7 @@ func TestBotPreferencesRefuseUnsuccessfulOrDeletedBotsAndDoNotRememberDefaults(t
 			}
 		})
 	}
-	bot := insertPreferenceBot(t, database, candidate, core.BotOverrides{})
+	bot := insertPreferenceBot(t, database, candidate, model.BotOverrides{})
 	markPreferenceBotReady(t, database, bot.ID)
 	commitPreferenceBot(t, database, bot.ID)
 	result := readBotDefaults(t, database, candidate.OwnerUserID)
@@ -159,7 +159,7 @@ func TestBotPreferencesRefuseUnsuccessfulOrDeletedBotsAndDoNotRememberDefaults(t
 func TestBotPreferencesShareLifecycleTransactionAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	candidate, _ := storedBotCandidate(t, database)
-	bot := insertPreferenceBot(t, database, candidate, core.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/rolled-back"), Provider: botPreferenceText("claude")})
+	bot := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/rolled-back"), Provider: botPreferenceText("claude")})
 	ctx := context.Background()
 	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -183,8 +183,8 @@ func TestBotPreferencesShareLifecycleTransactionAndRollback(t *testing.T) {
 	if outside.PreferredWorkerID != nil || len(outside.WorkerPreferences) != 0 {
 		t.Fatalf("rollback left preferences: %+v", outside)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		stored, err := snapshot.Bot(ctx, bot.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		stored, err := snapshot.BotDAO().Bot(ctx, bot.ID)
 		if err == nil && (stored.StartupResult.State != "pending" || stored.SessionID != nil) {
 			t.Fatalf("rollback left readiness: %+v", stored)
 		}
@@ -197,8 +197,8 @@ func TestBotPreferencesShareLifecycleTransactionAndRollback(t *testing.T) {
 func TestBotPreferencesConcurrentSuccessKeepsNewestExplicitValues(t *testing.T) {
 	database := isolatedStore(t)
 	candidate, _ := storedBotCandidate(t, database)
-	older := insertPreferenceBot(t, database, candidate, core.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/older"), Provider: botPreferenceText("codex")})
-	newer := insertPreferenceBot(t, database, candidate, core.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/newer"), Provider: botPreferenceText("claude")})
+	older := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/older"), Provider: botPreferenceText("codex")})
+	newer := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/newer"), Provider: botPreferenceText("claude")})
 	markPreferenceBotReady(t, database, older.ID)
 	markPreferenceBotReady(t, database, newer.ID)
 	start := make(chan struct{})
@@ -232,7 +232,7 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			database := isolatedStore(t)
 			candidate, _ := storedBotCandidate(t, database)
-			bot := insertPreferenceBot(t, database, candidate, core.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/choice"), Provider: botPreferenceText("claude")})
+			bot := insertPreferenceBot(t, database, candidate, model.BotOverrides{WorkerID: &candidate.WorkerID, Cwd: botPreferenceText("/choice"), Provider: botPreferenceText("claude")})
 			markPreferenceBotReady(t, database, bot.ID)
 			table, condition := "bot_configuration_preferences", "NEW.cwd IS NOT NULL"
 			if stage == "worker" {
@@ -257,7 +257,7 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 	candidate, _ := storedBotCandidate(t, database)
 	if err := database.WriteBot(context.Background(), func(tx *BotTx) error {
 		return CommitBotPreferences(context.Background(), tx.tx, uuid.NewString())
-	}); !errors.Is(err, core.ErrNotFound) {
+	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing Bot was not rejected: %v", err)
 	}
 	tx, err := database.Pool.Begin(context.Background())
@@ -271,10 +271,10 @@ func TestBotPreferencesStorageFailuresDoNotBecomePartialSuccess(t *testing.T) {
 		t.Fatal("closed transaction became empty defaults")
 	}
 	mustQueryExec(t, database, `UPDATE workers SET telemetry='{"machine":42}' WHERE user_id=$1`, candidate.OwnerUserID)
-	if err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-		_, err := snapshot.BotDefaults(context.Background(), candidate.OwnerUserID)
+	if err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+		_, err := snapshot.BotDAO().BotDefaults(context.Background(), candidate.OwnerUserID)
 		return err
-	}); err == nil || errors.Is(err, core.ErrNotFound) {
+	}); err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("corrupt worker became an empty candidate list: %v", err)
 	}
 }

@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/google/uuid"
@@ -45,8 +45,8 @@ type LoginStart struct {
 
 type LoginCompletion struct {
 	LoginID    string
-	User       core.User
-	Session    core.Session
+	User       model.User
+	Session    model.Session
 	Secret     string
 	ReturnPath string
 }
@@ -107,7 +107,7 @@ func (s *Identity) StartLogin(ctx context.Context, provider, returnPath string) 
 	if err != nil {
 		return LoginStart{}, err
 	}
-	err = s.store.CreateLogin(ctx, core.LoginTransaction{ID: start.ID, StateHash: secretHash(start.State), BrowserBindingHash: secretHash(start.BrowserBinding), Provider: provider, ReturnPath: returnPath, ExpiresAt: start.ExpiresAt}, s.now().UTC())
+	err = s.store.CreateLogin(ctx, model.LoginTransaction{ID: start.ID, StateHash: secretHash(start.State), BrowserBindingHash: secretHash(start.BrowserBinding), Provider: provider, ReturnPath: returnPath, ExpiresAt: start.ExpiresAt}, s.now().UTC())
 	if err != nil {
 		return LoginStart{}, err
 	}
@@ -115,10 +115,10 @@ func (s *Identity) StartLogin(ctx context.Context, provider, returnPath string) 
 }
 
 func unauthenticated(cause error) error {
-	return &Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again.", Cause: cause}
+	return &model.Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again.", Cause: cause}
 }
 func forbidden() error {
-	return &Fault{Code: "forbidden", Message: "A main-site browser session is required for this operation."}
+	return &model.Fault{Code: "forbidden", Message: "A main-site browser session is required for this operation."}
 }
 
 func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding string) (LoginCompletion, error) {
@@ -152,8 +152,8 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	}
 	now := s.now().UTC()
 	result.Secret = randomSecret("dnst_")
-	result.Session = core.Session{ID: uuid.NewString(), TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
-	result.User, err = s.store.CreateIdentitySession(ctx, core.User{ID: uuid.NewString(), UniAuthID: identity.ID, Email: identity.Email, EmailVerified: identity.EmailVerified, Name: identity.Name, AvatarURL: identity.AvatarURL}, result.Session)
+	result.Session = model.Session{ID: uuid.NewString(), TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
+	result.User, err = s.store.CreateIdentitySession(ctx, model.User{ID: uuid.NewString(), UniAuthID: identity.ID, Email: identity.Email, EmailVerified: identity.EmailVerified, Name: identity.Name, AvatarURL: identity.AvatarURL}, result.Session)
 	if err != nil {
 		return LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath}, err
 	}
@@ -162,38 +162,38 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 }
 
 func authLookupError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return unauthenticated(err)
 	}
 	return err
 }
 
-func (s *Identity) Authenticate(ctx context.Context, kind core.CredentialKind, secret string) (core.Principal, error) {
+func (s *Identity) Authenticate(ctx context.Context, kind model.CredentialKind, secret string) (model.Principal, error) {
 	prefix := "dnst_"
-	if kind == core.PATCredential {
+	if kind == model.PATCredential {
 		prefix = "dnpat_"
 	}
 	if !validSecret(secret, prefix) {
-		return core.Principal{}, unauthenticated(nil)
+		return model.Principal{}, unauthenticated(nil)
 	}
 	principal, err := s.store.Authenticate(ctx, kind, secretHash(secret), s.now().UTC())
 	return principal, authLookupError(err)
 }
 
-func (s *Identity) User(ctx context.Context, principal core.Principal) (core.User, error) {
+func (s *Identity) User(ctx context.Context, principal model.Principal) (model.User, error) {
 	user, err := s.store.IdentityUser(ctx, principal.UserID)
 	return user, authLookupError(err)
 }
 
-func (s *Identity) Logout(ctx context.Context, principal core.Principal) error {
-	if principal.Kind != core.SessionCredential {
+func (s *Identity) Logout(ctx context.Context, principal model.Principal) error {
+	if principal.Kind != model.SessionCredential {
 		return forbidden()
 	}
 	return s.store.DeleteSession(ctx, principal)
 }
 
 type MintedPAT struct {
-	Credential core.PersonalAccessToken
+	Credential model.PersonalAccessToken
 	Secret     string
 }
 
@@ -202,8 +202,8 @@ type CreatePAT struct {
 	ExpiresAt *time.Time
 }
 
-func (s *Identity) CreatePAT(ctx context.Context, principal core.Principal, input CreatePAT) (MintedPAT, error) {
-	if principal.Kind != core.SessionCredential {
+func (s *Identity) CreatePAT(ctx context.Context, principal model.Principal, input CreatePAT) (MintedPAT, error) {
+	if principal.Kind != model.SessionCredential {
 		return MintedPAT{}, forbidden()
 	}
 	if !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > 100 {
@@ -215,23 +215,23 @@ func (s *Identity) CreatePAT(ctx context.Context, principal core.Principal, inpu
 		return MintedPAT{}, err
 	}
 	result := MintedPAT{Secret: randomSecret("dnpat_")}
-	result.Credential = core.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, Name: input.Name, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: expiresAt}
+	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, Name: input.Name, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: expiresAt}
 	if err := s.store.CreatePAT(ctx, principal, result.Credential); err != nil {
 		return MintedPAT{}, authLookupError(err)
 	}
 	return result, nil
 }
 
-func (s *Identity) ListPATs(ctx context.Context, principal core.Principal) ([]core.PersonalAccessToken, error) {
-	if principal.Kind != core.SessionCredential {
+func (s *Identity) ListPATs(ctx context.Context, principal model.Principal) ([]model.PersonalAccessToken, error) {
+	if principal.Kind != model.SessionCredential {
 		return nil, forbidden()
 	}
 	credentials, err := s.store.ListPATs(ctx, principal, s.now().UTC())
 	return credentials, authLookupError(err)
 }
 
-func (s *Identity) RevokePAT(ctx context.Context, principal core.Principal, id string) error {
-	if principal.Kind != core.SessionCredential {
+func (s *Identity) RevokePAT(ctx context.Context, principal model.Principal, id string) error {
+	if principal.Kind != model.SessionCredential {
 		return forbidden()
 	}
 	id, err := CanonicalID(id)
@@ -240,25 +240,6 @@ func (s *Identity) RevokePAT(ctx context.Context, principal core.Principal, id s
 	}
 	return authLookupError(s.store.RevokePAT(ctx, principal, id, s.now().UTC()))
 }
-
-// IdentityProviderError separates backend integration failures from an expired
-// product credential while retaining the SDK or context cause.
-type IdentityProviderError struct {
-	Code  string
-	Cause error
-}
-
-func (e *IdentityProviderError) Error() string {
-	switch e.Code {
-	case "identity_configuration":
-		return "The identity provider configuration is unavailable."
-	case "identity_timeout":
-		return "The identity provider request timed out."
-	default:
-		return "The identity provider is unavailable."
-	}
-}
-func (e *IdentityProviderError) Unwrap() error { return e.Cause }
 
 func (s *Identity) Providers(ctx context.Context) ([]string, error) {
 	discovery, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -273,7 +254,7 @@ func (s *Identity) Providers(ctx context.Context) ([]string, error) {
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = "identity_timeout"
 		}
-		return nil, &IdentityProviderError{Code: code, Cause: err}
+		return nil, &model.IdentityProviderError{Code: code, Cause: err}
 	}
 	result := make([]string, 0, len(providers))
 	for _, provider := range providers {

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func currentTaskWrite(current core.Task) store.TaskWrite {
+func currentTaskWrite(current model.Task) store.TaskWrite {
 	return store.TaskWrite{
 		AssignedTo: current.AssignedTo, RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents,
 		Title: current.Title, Description: current.Description, Properties: taskproperties.Clone(current.Properties),
@@ -28,8 +28,8 @@ func canonicalAssignedTo(value *string) (*string, error) {
 	return &canonical, nil
 }
 
-func taskWriteFault(err error) *Fault {
-	var fault *Fault
+func taskWriteFault(err error) *model.Fault {
+	var fault *model.Fault
 	if errors.As(err, &fault) {
 		return fault
 	}
@@ -40,13 +40,13 @@ func enforceAssignmentTransition(ctx context.Context, tx *store.ProjectTx, mutat
 	if equalOptional(mutation.current.AssignedTo, mutation.values.AssignedTo) {
 		return mutation, nil
 	}
-	if mutation.current.Status == core.TaskInProgress {
-		return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task assignment cannot change while the task is in progress."}
+	if mutation.current.Status == model.TaskInProgress {
+		return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Task assignment cannot change while the task is in progress."}
 	}
 	if mutation.values.AssignedTo != nil {
-		if _, err := tx.ProjectAccess(ctx, core.Principal{UserID: *mutation.values.AssignedTo}); err != nil {
-			if errors.Is(err, core.ErrNotFound) {
-				return taskMutation{}, &Fault{Code: "invalid_input", Message: "Assigned user must have access to the project.", Cause: err}
+		if _, err := tx.ProjectAccess(ctx, model.Principal{UserID: *mutation.values.AssignedTo}); err != nil {
+			if errors.Is(err, model.ErrNotFound) {
+				return taskMutation{}, &model.Fault{Code: "invalid_input", Message: "Assigned user must have access to the project.", Cause: err}
 			}
 			return taskMutation{}, err
 		}

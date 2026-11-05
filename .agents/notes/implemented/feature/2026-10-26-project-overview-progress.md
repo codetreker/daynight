@@ -26,15 +26,16 @@ standalone row only while unfinished work remained, and used an inclusive
 rolling seven-day window for its recent count. The [recent browsing and
 pagination decision](2026-10-27-recent-task-pages.md) replaces those policies with
 seven local calendar days, recent completed Goal rows and 100% standalone
-aggregates. It also makes that recent subset the task lists' default, while
-Show all preserves explicit historical access. Component identity and the recent
-standalone denominator retain their original purpose.
+aggregates. Its original task-list default is replaced by the [status filter
+decision](2026-11-05-task-list-status-filter.md), which makes all history available
+and keeps the Overview window. Component identity and the recent standalone
+denominator retain their original purpose.
 
 Current time uses the snapshot's server observation plus monotonic elapsed time.
 The [local summary display decision](../architecture/2026-10-27-project-cache-display.md)
 allows provisional classification using client wall time before that first live
 sample; successful synchronization replaces this provisional time basis. The
-shared project deadline applies local calendar boundaries in both sections,
+project deadline applies local calendar boundaries in Overview,
 pauses while the page is hidden and recalculates on visibility recovery even
 without another successful sync. Execution-duration subscriptions retain their
 separate owner; no second network loop or index is introduced.
@@ -45,7 +46,7 @@ position, selects the destination page, then positions and focuses the mounted
 target before paint and records that new location. A chain witness resolves
 against the latest component; an unavailable target returns focus to its
 category with a message. Positioning remains separate from graph opening,
-preserves Show all preferences, and clears its brief highlight on timeout or
+adjusts list conditions that hide the destination, and clears its brief highlight on timeout or
 cleanup. Required behavior belongs to the [Web specification](../../../../docs/spec/daynight-web.md#项目整体进度);
 the [Web design](../../../../docs/design/daynight-web.md) owns composition.
 

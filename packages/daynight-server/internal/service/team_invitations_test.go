@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -36,7 +36,7 @@ func TestTeamInvitationLifecycle(t *testing.T) {
 		t.Fatalf("preview: %#v %v", preview, err)
 	}
 	existing, err := teams.AcceptInvitation(ctx, admin, minted.Secret, admin.UserID)
-	if err != nil || existing.Joined || existing.Consumed || existing.Membership.Role != core.ProjectAdmin || existing.Membership.Version != team.Membership.Version {
+	if err != nil || existing.Joined || existing.Consumed || existing.Membership.Role != model.ProjectAdmin || existing.Membership.Version != team.Membership.Version {
 		t.Fatalf("existing: %#v %v", existing, err)
 	}
 	active, err := teams.ListInvitations(ctx, admin, team.ID)
@@ -46,7 +46,7 @@ func TestTeamInvitationLifecycle(t *testing.T) {
 	_, err = teams.AcceptInvitation(ctx, other, minted.Secret, admin.UserID)
 	teamFault(t, err, "identity_mismatch")
 	joined, err := teams.AcceptInvitation(ctx, other, minted.Secret, other.UserID)
-	if err != nil || !joined.Joined || !joined.Consumed || joined.Membership.UserID != other.UserID || joined.Membership.Role != core.ProjectMemberRole {
+	if err != nil || !joined.Joined || !joined.Consumed || joined.Membership.UserID != other.UserID || joined.Membership.Role != model.ProjectMemberRole {
 		t.Fatalf("accept: %#v %v", joined, err)
 	}
 	_, err = teams.AcceptInvitation(ctx, admin, minted.Secret, admin.UserID)
@@ -91,7 +91,7 @@ func TestTeamInvitationLifecycle(t *testing.T) {
 	}
 	_, err = teams.InspectInvitation(ctx, other, removable.Secret)
 	teamFault(t, err, "invitation_unavailable")
-	page, err := teams.List(ctx, admin, PageRequest{Limit: 100})
+	page, err := teams.List(ctx, admin, model.PageRequest{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +119,9 @@ func TestTeamInvitationConcurrencyAndRollback(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
-	for index, p := range []core.Principal{a, b} {
+	for index, p := range []model.Principal{a, b} {
 		wg.Add(1)
-		go func(i int, p core.Principal) {
+		go func(i int, p model.Principal) {
 			defer wg.Done()
 			_, errs[i] = teams.AcceptInvitation(ctx, p, invitation.Secret, p.UserID)
 		}(index, p)
@@ -194,7 +194,7 @@ func TestTeamInvitationAcceptRevokeRace(t *testing.T) {
 		t.Fatal("both consumed and revoked")
 	}
 	if accepted != nil {
-		var fault *Fault
+		var fault *model.Fault
 		if !errors.As(accepted, &fault) || fault.Code != "invitation_unavailable" || !changed {
 			t.Fatalf("race: %v %v", accepted, changed)
 		}
@@ -212,7 +212,7 @@ func TestTeamInvitationInspectIntegrityAndReadErrors(t *testing.T) {
 	}
 
 	inspection, err := teams.InspectInvitation(ctx, admin, invitation.Secret)
-	if err != nil || inspection.Membership == nil || inspection.Membership.Role != core.ProjectAdmin || inspection.Membership.UserID != admin.UserID {
+	if err != nil || inspection.Membership == nil || inspection.Membership.Role != model.ProjectAdmin || inspection.Membership.UserID != admin.UserID {
 		t.Fatalf("existing member inspection: %#v %v", inspection, err)
 	}
 

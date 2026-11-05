@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -13,7 +13,7 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskDone)
+	task := queryTask(t, database, project.ID, 10, model.TaskDone)
 	ids := []string{"00000000", "11111111", "abcdef01", "fedcba98"}
 	for index, id := range ids {
 		seedStoreStep(t, database, task.ID, id, int64(index))
@@ -21,12 +21,12 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `CREATE TABLE moved_rows(id text PRIMARY KEY); CREATE FUNCTION audit_moved_rows() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO moved_rows VALUES(NEW.id); RETURN NEW; END $$; CREATE TRIGGER audit_moved_rows AFTER UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION audit_moved_rows()`); err != nil {
 		t.Fatal(err)
 	}
-	read := func() []core.TaskStep {
+	read := func() []model.TaskStep {
 		t.Helper()
-		var rows []core.TaskStep
-		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		var rows []model.TaskStep
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			rows, err = snapshot.TaskSteps(ctx, task.ID)
+			rows, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -73,7 +73,7 @@ func TestTaskStepsMoveStoreFailuresPreserveCausesAndRollback(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	for index, id := range []string{"00000000", "11111111", "abcdef01", "fedcba98"} {
 		seedStoreStep(t, database, task.ID, id, int64(index))
 	}
@@ -106,7 +106,7 @@ func TestTaskStepsMoveStoreFailuresPreserveCausesAndRollback(t *testing.T) {
 				t.Fatalf("store move failure completion: %+v %v", failure, err)
 			}
 			if mode == "count" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatal("count mismatch marker lost")
 				}
 			} else {

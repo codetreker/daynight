@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
@@ -46,7 +46,7 @@ func TestBotDeletionRequiresOriginalRequestAndWorkerReceipt(t *testing.T) {
 	if _, err = f.s.DeleteBot(ctx, f.p, out.Bot.ID, wrong); err == nil {
 		t.Fatal("different deletion accepted")
 	}
-	receipt := BotDeletionReceipt{DeletionID: request.DeletionID, Result: core.BotCleanupResult{State: "completed"}, Stop: &sp.TestStop{Protocol: sp.Protocol, Fence: out.Session.Fence, ControllerID: out.Session.Identity.ControllerID, ControllerInstanceID: out.Session.Identity.ControllerInstanceID, StopProof: sp.StopProof{Kind: "never_started", RecordID: uuid.NewString(), PreviousControllerInstanceID: out.Session.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}
+	receipt := BotDeletionReceipt{DeletionID: request.DeletionID, Result: model.BotCleanupResult{State: "completed"}, Stop: &sp.TestStop{Protocol: sp.Protocol, Fence: out.Session.Fence, ControllerID: out.Session.Identity.ControllerID, ControllerInstanceID: out.Session.Identity.ControllerInstanceID, StopProof: sp.StopProof{Kind: "never_started", RecordID: uuid.NewString(), PreviousControllerInstanceID: out.Session.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}
 	if _, err = f.s.CompleteBotDeletion(ctx, f.p, uuid.NewString(), out.Bot.ID, receipt); err == nil {
 		t.Fatal("wrong worker accepted")
 	}
@@ -82,7 +82,7 @@ func (f *failedBotFiles) DeleteSessionArchives(ctx context.Context, namespace se
 	return f.Storage.DeleteSessionArchives(ctx, namespace)
 }
 func botCleanupReceipt(out BotRegistrationResult, deletionID string) BotDeletionReceipt {
-	return BotDeletionReceipt{DeletionID: deletionID, Result: core.BotCleanupResult{State: "completed"}, Stop: &sp.TestStop{Protocol: sp.Protocol, Fence: out.Session.Fence, ControllerID: out.Session.Identity.ControllerID, ControllerInstanceID: out.Session.Identity.ControllerInstanceID, StopProof: sp.StopProof{Kind: "never_started", RecordID: uuid.NewString(), PreviousControllerInstanceID: out.Session.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}
+	return BotDeletionReceipt{DeletionID: deletionID, Result: model.BotCleanupResult{State: "completed"}, Stop: &sp.TestStop{Protocol: sp.Protocol, Fence: out.Session.Fence, ControllerID: out.Session.Identity.ControllerID, ControllerInstanceID: out.Session.Identity.ControllerInstanceID, StopProof: sp.StopProof{Kind: "never_started", RecordID: uuid.NewString(), PreviousControllerInstanceID: out.Session.Identity.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}
 }
 func TestBotDeletionCleansEveryChildAndOrphanWithRetry(t *testing.T) {
 	for _, failure := range []string{"files", "sql"} {
@@ -242,7 +242,7 @@ func TestBotDeletionReceiptRejectsUnprovenOrStaleExecution(t *testing.T) {
 	}
 	code := "process_not_stopped"
 	receipt.Stop = nil
-	receipt.Result = core.BotCleanupResult{State: "failed", Code: &code}
+	receipt.Result = model.BotCleanupResult{State: "failed", Code: &code}
 	failed, err := f.s.CompleteBotDeletion(ctx, f.p, out.Bot.WorkerID, out.Bot.ID, receipt)
 	if err != nil || failed.Deletion.WorkerCleanup.State != "failed" || failed.Deletion.ServerCleanup.State != "pending" {
 		t.Fatalf("failed stop: %+v %v", failed, err)
@@ -258,7 +258,7 @@ func TestBotDeletionReceiptRejectsUnprovenOrStaleExecution(t *testing.T) {
 		t.Fatalf("changed failure did not advance: %+v %v", changed, err)
 	}
 	receipt.Stop = &good
-	receipt.Result = core.BotCleanupResult{State: "completed"}
+	receipt.Result = model.BotCleanupResult{State: "completed"}
 	files, err := local.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

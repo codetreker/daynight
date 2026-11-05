@@ -9,18 +9,18 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
 func transferFault(t *testing.T, err error, code string) {
 	t.Helper()
-	var f *Fault
+	var f *model.Fault
 	if !errors.As(err, &f) || f.Code != code {
 		t.Fatalf("expected %s: %v", code, err)
 	}
 }
-func transferInput(p TransferPreview, actor core.Principal) TransferInput {
+func transferInput(p TransferPreview, actor model.Principal) TransferInput {
 	return TransferInput{Ownership: p.Ownership, TargetTeam: TeamVersion{ID: p.TargetTeam.ID, Version: p.TargetTeamVersion}, ExpectedUserID: actor.UserID}
 }
 
@@ -38,7 +38,7 @@ func TestTransferAuthorizationVersionsAndReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.SourceTeam.ID != project.Ownership.TeamID || preview.TargetTeam.ID != target.ID || preview.TargetTeamVersion != 1 || preview.ActorRole == nil || *preview.ActorRole != core.ProjectAdmin {
+	if preview.SourceTeam.ID != project.Ownership.TeamID || preview.TargetTeam.ID != target.ID || preview.TargetTeamVersion != 1 || preview.ActorRole == nil || *preview.ActorRole != model.ProjectAdmin {
 		t.Fatalf("preview %#v", preview)
 	}
 	// A Project-only admin cannot transfer. Remove the creator's direct grant so
@@ -153,13 +153,13 @@ func TestTransferInvalidInputsAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid := TransferInput{Ownership: project.Ownership, TargetTeam: TeamVersion{ID: project.Ownership.TeamID, Version: 1}, ExpectedUserID: actor.UserID}
-	_, err = projects.TransferPreview(ctx, core.Principal{}, project.ID, valid.TargetTeam.ID)
+	_, err = projects.TransferPreview(ctx, model.Principal{}, project.ID, valid.TargetTeam.ID)
 	transferFault(t, err, "unauthenticated")
 	_, err = projects.TransferPreview(ctx, actor, "bad", valid.TargetTeam.ID)
 	transferFault(t, err, "invalid_input")
 	_, err = projects.TransferPreview(ctx, actor, project.ID, strings.ToUpper(valid.TargetTeam.ID))
 	transferFault(t, err, "invalid_input")
-	_, err = projects.Transfer(ctx, core.Principal{}, project.ID, valid)
+	_, err = projects.Transfer(ctx, model.Principal{}, project.ID, valid)
 	transferFault(t, err, "unauthenticated")
 	_, err = projects.Transfer(ctx, actor, "bad", valid)
 	transferFault(t, err, "invalid_input")
@@ -208,7 +208,7 @@ func TestTransferUnavailableAndVersionExhaustion(t *testing.T) {
 	_, err = projects.TransferPreview(ctx, actor, uuid.NewString(), missing)
 	transferFault(t, err, "not_found")
 	_, err = projects.Transfer(ctx, actor, uuid.NewString(), input)
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing project error: %v", err)
 	}
 	other := servicePrincipal(t, db)
@@ -246,7 +246,7 @@ func TestTransferDatabaseFailuresDoNotMasqueradeAsRejection(t *testing.T) {
 		func() error { _, err := projects.Transfer(ctx, actor, project.ID, input); return err },
 	} {
 		err := operation()
-		var refusal *Fault
+		var refusal *model.Fault
 		if err == nil || errors.As(err, &refusal) {
 			t.Fatalf("database failure became success or refusal: %v", err)
 		}

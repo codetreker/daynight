@@ -75,7 +75,7 @@ execution 和错误 envelope，先于完整文档的 parseApiJson。扫描循环
 深度为 64，损坏/截断输入不能导致无界等待。
 
 GET 的每项原始消息区间都必须不超过 65,536 UTF-8 字节，页面完整传输不超过
-262,144；POST 默认消息不超过 65,536。J 的编码所有者是服务 internal/taskthreadjson，
+262,144；POST 默认消息不超过 65,536。J 的编码所有者是服务 internal/core/task/codec，
 使用 Go HTML 转义 `<>&`、U+2028/U+2029 和无尾随 LF 的实际资源缓冲。CLI 测量原始
 区间，不以 JSON.stringify 重编码长度代替。页内逗号和外层空白只计入页面预算。
 

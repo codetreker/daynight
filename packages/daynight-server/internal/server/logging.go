@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"crypto/rand"
@@ -11,8 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -73,20 +73,20 @@ func ErrorKind(err error) string {
 	}
 }
 
-func knownFault(err error) (*service.Fault, bool) {
+func knownFault(err error) (*model.Fault, bool) {
 	var transaction *store.TransactionError
 	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
 		return nil, false
 	}
-	var botOperation *service.BotOperationError
+	var botOperation *model.BotOperationError
 	if errors.As(err, &botOperation) {
 		return nil, false
 	}
 	var validation *taskproperties.ValidationError
 	if errors.As(err, &validation) && onlyPropertyValidation(err) {
-		return &service.Fault{Code: "invalid_input", Message: validation.Error(), Cause: err}, true
+		return &model.Fault{Code: "invalid_input", Message: validation.Error(), Cause: err}, true
 	}
-	var fault *service.Fault
+	var fault *model.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
 		case "configuration_not_initialized":
@@ -126,7 +126,7 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 	var configurationError *ConfigurationError
 	var databaseError *store.Error
 	var runtimeFailure *runtimeError
-	var identityFailure *service.IdentityProviderError
+	var identityFailure *model.IdentityProviderError
 	fault, domainFailure := knownFault(err)
 	switch {
 	case errors.As(err, &identityFailure):

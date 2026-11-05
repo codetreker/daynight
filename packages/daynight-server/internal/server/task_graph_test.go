@@ -16,8 +16,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -268,7 +267,7 @@ func TestTaskGraphHTTPErrorPrecedenceAndDTOUTC(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, cause := range []error{&pgconn.PgError{Message: "driver-secret"}, context.Canceled, context.DeadlineExceeded} {
-		err := errors.Join(&service.Fault{Code: "graph_limit_exceeded", Message: "domain-secret", GraphLimit: &service.GraphLimitDetails{NodeCount: 1001, MaxNodes: 1000, MaxEdges: 5000}}, cause)
+		err := errors.Join(&model.Fault{Code: "graph_limit_exceeded", Message: "domain-secret", GraphLimit: &model.GraphLimitDetails{NodeCount: 1001, MaxNodes: 1000, MaxEdges: 5000}}, cause)
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		request.Header.Set("X-Request-ID", "project-test")
@@ -285,8 +284,8 @@ func TestTaskGraphHTTPErrorPrecedenceAndDTOUTC(t *testing.T) {
 		t.Fatalf("operational graph error leaked: %s", &logs)
 	}
 	instant := time.Date(2026, 10, 20, 16, 12, 0, 123456000, time.FixedZone("offset", 8*60*60))
-	result := taskGraphResponse(core.TaskGraph{Project: core.Project{CreatedAt: instant, UpdatedAt: instant}, ObservedAt: instant,
-		Tasks: []core.GraphTask{{ID: "task", CreatedAt: instant, UpdatedAt: instant, StartedAt: &instant, CompletedAt: &instant}}})
+	result := taskGraphResponse(model.TaskGraph{Project: model.Project{CreatedAt: instant, UpdatedAt: instant}, ObservedAt: instant,
+		Tasks: []model.GraphTask{{ID: "task", CreatedAt: instant, UpdatedAt: instant, StartedAt: &instant, CompletedAt: &instant}}})
 	if result.Project.CreatedAt.Location() != time.UTC || result.Project.UpdatedAt.Location() != time.UTC ||
 		result.Tasks[0].CreatedAt.Location() != time.UTC || result.Tasks[0].UpdatedAt.Location() != time.UTC ||
 		result.ObservedAt.Location() != time.UTC || result.Tasks[0].StartedAt.Location() != time.UTC || result.Tasks[0].CompletedAt.Location() != time.UTC ||

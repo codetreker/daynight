@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"errors"
 	"io"
@@ -10,13 +11,12 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func TestWorkerConfigurationFaultClassificationPreservesTransactionFailures(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, code := range []string{"version_conflict", "configuration_not_initialized", "invalid_input"} {
-		refusal := &service.Fault{Code: code, Message: "Configuration refusal."}
+		refusal := &model.Fault{Code: code, Message: "Configuration refusal."}
 		for _, failure := range []*store.TransactionError{
 			{Phase: "cleanup", Cause: errors.Join(refusal, errors.New("rollback failure")), Outcome: store.TransactionUnknown, CleanupFailed: true},
 			{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},

@@ -1,12 +1,12 @@
 # Task Session 需求
 
-本页描述已接入的 Web v1 执行与页面行为。Herdr 的[Session v2 协议要求](session-v2.md)另行定义终端内容、控制和归档的生产消费保证；仅有契约库不启用 Herdr 页面或原生控制能力。
+本页描述 Task Session 的执行模式和页面行为。Herdr 的[Session v2 协议要求](session-v2.md)另行定义终端内容、控制和归档的生产消费保证。
 
 ## 目标与模式
 
 任务执行采用 `herdr` 或 `web` 中的一种控制方式。两者复用现有任务资格、认领、worktree、managed assignment、进度及完成规则。模式在执行开始前确定，同一 claim 不热切换、不双启动，也不因连接失败自动降级。
 
-- `herdr`：worker 通过 Herdr 启动原生终端会话，Task 不显示 Session。Herdr 承载终端通道。
+- `herdr`：worker 通过 Herdr 启动原生终端会话，Task Session 提供只读终端观察和明确授权的控制；Herdr 承载终端通道。
 - `web`：worker 直接启动 Daynight controller，由 controller 持有私有原生会话，经 Daynight server 将结构化事件和操作连接到 Task Session。整个生命周期不依赖 Herdr 安装或服务。
 
 配置复用 `~/.daynight/config.yml` 的 `worker.agentControlMode`，缺省为 `herdr`，不提供 repository 级模式覆盖。Codex、Claude、Copilot 均属于两模式的支持范围。Codex Web 使用私有 app-server stdio；Claude Web 使用 Agent SDK；Copilot Web 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。
@@ -19,7 +19,7 @@
 
 服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；released task 的人工 resume 创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
 
-页面只根据服务端当前执行决定 Session 入口。Herdr、尚未认领和旧记录不显示 Session；Web 正在初始化或离线时显示真实状态，不因此改回 Herdr。重新领取为另一模式后，旧页面不能继续写入原会话。已有同步历史应保持执行归属，不将不同 claim 混成一段。
+页面根据服务端当前执行决定 Session 入口。Herdr 使用终端视图，Web 使用结构化会话；初始化或离线时显示真实状态，不因此切换模式。尚未认领或缺少可用会话时不得伪造当前入口。重新领取为另一模式后，旧页面不能继续写入原会话。已有同步历史应保持执行归属，不将不同 claim 混成一段。终端在后台检查与恢复期间的画面及输入准入要求见 [Session v2](session-v2.md#控制与输入)。
 
 ## 旧客户端兼容
 

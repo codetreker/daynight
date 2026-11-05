@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -14,7 +14,7 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskDone)
+	task := queryTask(t, database, project.ID, 10, model.TaskDone)
 	ids := []string{"00000000", "11111111", "abcdef01", "fedcba98"}
 	for index, id := range ids {
 		seedStoreStep(t, database, task.ID, id, int64(index))
@@ -22,12 +22,12 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `CREATE TABLE deleted_rows(id text PRIMARY KEY); CREATE TABLE compacted_rows(id text PRIMARY KEY); CREATE FUNCTION audit_deleted_rows() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO deleted_rows VALUES(OLD.id); RETURN OLD; END $$; CREATE FUNCTION audit_compacted_rows() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO compacted_rows VALUES(NEW.id); RETURN NEW; END $$; CREATE TRIGGER audit_deleted_rows AFTER DELETE ON task_steps FOR EACH ROW EXECUTE FUNCTION audit_deleted_rows(); CREATE TRIGGER audit_compacted_rows AFTER UPDATE ON task_steps FOR EACH ROW EXECUTE FUNCTION audit_compacted_rows()`); err != nil {
 		t.Fatal(err)
 	}
-	read := func() []core.TaskStep {
+	read := func() []model.TaskStep {
 		t.Helper()
-		var rows []core.TaskStep
-		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		var rows []model.TaskStep
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			rows, err = snapshot.TaskSteps(ctx, task.ID)
+			rows, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -35,7 +35,7 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 		return rows
 	}
 	original := read()
-	byID := make(map[string]core.TaskStep, len(original))
+	byID := make(map[string]model.TaskStep, len(original))
 	for _, row := range original {
 		byID[row.ID] = row
 	}
@@ -83,7 +83,7 @@ func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {
 			database := isolatedStore(t)
 			ctx := context.Background()
 			project := queryProject(t, database, 1)
-			task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+			task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 			for index, id := range []string{"00000000", "11111111", "abcdef01", "fedcba98"} {
 				seedStoreStep(t, database, task.ID, id, int64(index))
 			}
@@ -121,7 +121,7 @@ func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {
 				t.Fatalf("delete store failure completion: %+v %v", failure, err)
 			}
 			if mode == "missing" || mode == "tail_count" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatal("affected-row mismatch marker lost")
 				}
 			} else {
@@ -144,7 +144,7 @@ func TestTaskStepsDeleteLostCommitReceiptKeepsUnknownAndCurrentFacts(t *testing.
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	for index, id := range []string{"00000000", "11111111", "abcdef01"} {
 		seedStoreStep(t, database, task.ID, id, int64(index))
 	}
@@ -174,20 +174,20 @@ func TestTaskStepsDeleteLostCommitReceiptKeepsUnknownAndCurrentFacts(t *testing.
 	if !errors.As(err, &failure) || failure.Phase != "commit" || !failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionUnknown || !errors.Is(err, lost) {
 		t.Fatalf("unknown delete completion: %+v %v", failure, err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		header, err := snapshot.TaskHeader(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		header, err := snapshot.TaskDAO().TaskHeader(ctx, project.ID, task.ID)
 		if err != nil {
 			return err
 		}
-		rows, err := snapshot.TaskSteps(ctx, task.ID)
+		rows, err := snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 		if err != nil {
 			return err
 		}
 		if header.Version != task.Version+1 || len(rows) != 2 || rows[0].ID != "00000000" || rows[0].Position != 0 || rows[1].ID != "abcdef01" || rows[1].Position != 1 {
 			t.Fatal("current read facts do not reflect retained rows/version")
 		}
-		_, err = snapshot.TaskStep(ctx, task.ID, "11111111")
-		if !errors.Is(err, core.ErrNotFound) {
+		_, err = snapshot.TaskDAO().TaskStep(ctx, task.ID, "11111111")
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatal("current target absence not observed")
 		}
 		return nil

@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -43,7 +43,7 @@ func teamRoutes(mux *http.ServeMux, teams *service.Teams, auth *Authentication, 
 	mux.HandleFunc("/api/v1/teams/{teamId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }
 
-func teamResponse(team core.Team) api.Team {
+func teamResponse(team model.Team) api.Team {
 	m := team.Membership
 	return api.Team{TeamRef: teamRefResponse(team.TeamRef), Version: team.Version, CreatedAt: team.CreatedAt.UTC(), UpdatedAt: team.UpdatedAt.UTC(), Membership: api.TeamMember{TeamID: m.TeamID, UserID: m.UserID, Role: string(m.Role), Version: m.Version, CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()}}
 }
@@ -55,7 +55,7 @@ func teamNameInput(fields map[string]json.RawMessage) (string, error) {
 	return requiredString(fields, "name")
 }
 
-func (h *teamHandler) create(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) create(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
 	if _, err := queryValues(r); err != nil {
 		writeTeamError(w, r, logger, "create", err)
@@ -85,7 +85,7 @@ func (h *teamHandler) create(w http.ResponseWriter, r *http.Request, p core.Prin
 	writeTeamJSON(w, r, logger.With("team_id", team.ID), http.StatusCreated, teamResponse(team))
 }
 
-func (h *teamHandler) list(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
 	page, err := pageRequest(r)
 	if err != nil {
@@ -104,7 +104,7 @@ func (h *teamHandler) list(w http.ResponseWriter, r *http.Request, p core.Princi
 	writeJSON(w, r, logger, http.StatusOK, response)
 }
 
-func (h *teamHandler) get(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) get(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
 	if _, err := queryValues(r); err != nil {
 		writeError(w, r, logger, "team", "get", err)
@@ -138,7 +138,7 @@ func teamChangeInput(w http.ResponseWriter, r *http.Request) (service.ChangeTeam
 	return service.ChangeTeam{Name: name, Version: version, ExpectedUserID: expected}, err
 }
 
-func (h *teamHandler) rename(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) rename(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
 	input, err := teamChangeInput(w, r)
 	if err != nil {
@@ -153,7 +153,7 @@ func (h *teamHandler) rename(w http.ResponseWriter, r *http.Request, p core.Prin
 	writeTeamJSON(w, r, logger.With("team_id", team.ID), http.StatusOK, teamResponse(team))
 }
 
-func (h *teamHandler) remove(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) remove(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	logger := h.logger.With("user_id", p.UserID)
 	input, err := teamChangeInput(w, r)
 	if err != nil {
@@ -197,13 +197,13 @@ func writeMutationJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	responseLogger := logger.With(component+"_error_code", "write_outcome_unknown", "write_outcome", "unknown")
 	data, err := json.Marshal(value)
 	if err != nil {
-		fault := &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
+		fault := &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
 		LogFailure(responseLogger, r.Context(), component, "response", fault)
 		writeJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: RequestID(r.Context())}})
 		return
 	}
 	if r.Context().Err() != nil {
-		LogFailure(responseLogger, r.Context(), component, "response", &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: r.Context().Err()})
+		LogFailure(responseLogger, r.Context(), component, "response", &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: r.Context().Err()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -214,7 +214,7 @@ func writeMutationJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		LogFailure(responseLogger, r.Context(), component, "response", &service.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err})
+		LogFailure(responseLogger, r.Context(), component, "response", &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err})
 		return
 	}
 	logger.InfoContext(r.Context(), "write response", "type", "resource", "component", component, "phase", "response", "status", status, "written_bytes", written, "request_id", RequestID(r.Context()))

@@ -4,21 +4,21 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 func extendedWorkerProtocol(request *http.Request) bool {
 	return request.Header.Get("Daynight-Worker-Protocol") == "2"
 }
 
-func legacyWorkerCompatible(worker *core.WorkerClaim) bool {
+func legacyWorkerCompatible(worker *model.WorkerClaim) bool {
 	return service.LegacyWorkerCompatible(worker)
 }
 
 func workerProtocolRequired() error {
-	return &service.Fault{Code: "invalid_transition", Message: "This agent or control mode requires a compatible Daynight client. This request did not change the execution."}
+	return &model.Fault{Code: "invalid_transition", Message: "This agent or control mode requires a compatible Daynight client. This request did not change the execution."}
 }
 
 func workerProtocolContext(request *http.Request) context.Context {
@@ -30,14 +30,14 @@ func workerProtocolContext(request *http.Request) context.Context {
 
 // Legacy workers identify discovery with these filters. Ordinary lists preserve
 // every task, and inventory must report incompatible claims rather than hide them.
-func (h *taskHandler) listWorkerCompatibleTasks(request *http.Request, principal core.Principal, projectID string, input service.TaskListRequest) (service.TaskPage, error) {
+func (h *taskHandler) listWorkerCompatibleTasks(request *http.Request, principal model.Principal, projectID string, input service.TaskListRequest) (service.TaskPage, error) {
 	legacyCandidates := !extendedWorkerProtocol(request) && input.WorkerID == nil && input.Ready != nil && *input.Ready && input.AllowAgents != nil && *input.AllowAgents && input.CompatiblePlatform != nil
 	for {
 		page, err := h.tasks.List(request.Context(), principal, projectID, input)
 		if err != nil || !legacyCandidates {
 			return page, err
 		}
-		items := make([]core.Task, 0, len(page.Items))
+		items := make([]model.Task, 0, len(page.Items))
 		for _, task := range page.Items {
 			worker, err := taskproperties.Worker(task.Properties)
 			if err != nil {

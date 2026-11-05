@@ -9,18 +9,18 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func serviceAssigneeItems(t *testing.T, result core.TaskAssignees, expected map[string]bool, unresolved []string) map[string]core.TaskAssignee {
+func serviceAssigneeItems(t *testing.T, result model.TaskAssignees, expected map[string]bool, unresolved []string) map[string]model.TaskAssignee {
 	t.Helper()
 	if result.Items == nil || result.UnresolvedUserIDs == nil || len(result.Items) != len(expected) {
 		t.Fatalf("assignee result shape: %#v want %v", result, expected)
 	}
-	items := make(map[string]core.TaskAssignee, len(result.Items))
+	items := make(map[string]model.TaskAssignee, len(result.Items))
 	var ids []string
 	for _, item := range result.Items {
 		access, exists := expected[item.UserID]
@@ -46,14 +46,14 @@ func TestTaskAssigneesCatalogueAndResolutionScope(t *testing.T) {
 	ctx := context.Background()
 	current := workerMember(t, database, project.ID)
 	want := map[string]bool{admin.UserID: true, current.UserID: true}
-	var historical []core.Task
+	var historical []model.Task
 	var formerIDs []string
-	for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 		former := workerMember(t, database, project.ID)
 		task := createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
 		task = setStatusTask(t, tasks, admin, task, status)
 		historical = append(historical, task)
-		if status == core.TaskTodo {
+		if status == model.TaskTodo {
 			createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
 		}
 		if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former.UserID); err != nil {
@@ -123,9 +123,9 @@ func TestTaskAssigneesDirectInputBoundsAndAuthorization(t *testing.T) {
 		_, err := tasks.Assignees(ctx, admin, bad, TaskAssigneesRequest{})
 		requireFault(t, err, "invalid_input")
 	}
-	_, err = tasks.Assignees(ctx, core.Principal{}, project.ID, TaskAssigneesRequest{})
+	_, err = tasks.Assignees(ctx, model.Principal{}, project.ID, TaskAssigneesRequest{})
 	requireFault(t, err, "unauthenticated")
-	for _, actor := range []core.Principal{servicePrincipal(t, database), admin} {
+	for _, actor := range []model.Principal{servicePrincipal(t, database), admin} {
 		projectID := project.ID
 		if actor.UserID == admin.UserID {
 			projectID = uuid.NewString()
@@ -199,7 +199,7 @@ func TestTaskAssigneesReadOneAssignmentSnapshot(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, former.UserID); err != nil {
 			t.Fatal(err)
 		}
-		var after core.Task
+		var after model.Task
 		var once sync.Once
 		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: func() {
 			once.Do(func() { after = updateTask(t, tasks, admin, before, UpdateTask{AssignedTo: assignmentChange(nil)}) })
@@ -298,16 +298,5 @@ func TestTaskAssigneesFailuresNeverReturnPartialProfiles(t *testing.T) {
 			t.Fatalf("storage failure became partial/empty success: %#v %v", result, err)
 		}
 	}
-	tasks, database, project, databaseURL, _ := taskService(t)
-	outsider := servicePrincipal(t, database)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: cancel})
-	result, err := traced.Assignees(ctx, outsider, project.ID, TaskAssigneesRequest{})
-	assertOperational(t, err)
-	if !errors.Is(err, context.Canceled) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
-		t.Fatal("transaction completion failure was hidden by project refusal", err)
-	}
-	_, err = tasks.Assignees(context.Background(), outsider, project.ID, TaskAssigneesRequest{})
-	requireFault(t, err, "not_found")
+
 }

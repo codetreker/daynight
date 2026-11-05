@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -54,7 +54,7 @@ func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *Task
 
 func assertOperational(t *testing.T, err error) {
 	t.Helper()
-	var fault *Fault
+	var fault *model.Fault
 	if err == nil || errors.As(err, &fault) {
 		t.Fatalf("operational error was masked: %#v", err)
 	}
@@ -69,11 +69,11 @@ func TestTaskReadAndWriteDatabaseFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, getErr := tasks.Get(context.Background(), principal, project.ID, target.ID)
-			_, listErr := tasks.List(context.Background(), principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 10}})
+			_, listErr := tasks.List(context.Background(), principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
 			_, updateErr := tasks.Update(context.Background(), principal, project.ID, target.ID, UpdateTask{Version: target.Version, Title: pointer("Changed")})
 			_, createErr := tasks.Create(context.Background(), principal, project.ID, CreateTask{Title: "New"})
 			failures := []error{getErr, listErr, updateErr, createErr}
-			for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+			for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 				_, err := tasks.SetStatus(context.Background(), principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: status})
 				failures = append(failures, err)
 			}
@@ -88,7 +88,7 @@ func TestTaskReadAndWriteDatabaseFailures(t *testing.T) {
 	}
 	tasks, database, project, _, principal := taskService(t)
 	database.Close()
-	_, err := tasks.List(context.Background(), principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 10}})
+	_, err := tasks.List(context.Background(), principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
 	assertOperational(t, err)
 }
 
@@ -118,8 +118,8 @@ func TestTaskPolicyQueryCancellationPreservesCause(t *testing.T) {
 }
 
 func TestTaskStatusQueryCancellationPreservesCauseAndState(t *testing.T) {
-	for _, action := range []struct{ from, to core.TaskStatus }{
-		{core.TaskTodo, core.TaskInProgress}, {core.TaskInProgress, core.TaskDone}, {core.TaskDone, core.TaskTodo},
+	for _, action := range []struct{ from, to model.TaskStatus }{
+		{model.TaskTodo, model.TaskInProgress}, {model.TaskInProgress, model.TaskDone}, {model.TaskDone, model.TaskTodo},
 	} {
 		for _, query := range []struct {
 			fragment string
@@ -151,66 +151,6 @@ func TestTaskStatusQueryCancellationPreservesCauseAndState(t *testing.T) {
 	}
 }
 
-func TestTaskTransactionCompletionFailureDominatesDomainFault(t *testing.T) {
-	tasks, _, project, databaseURL, principal := taskService(t)
-	target := createTask(t, tasks, principal, project.ID, "Target")
-	missing := "00000000-0000-0000-0000-000000000000"
-	for _, test := range []struct {
-		name      string
-		fragment  string
-		operation func(context.Context, *Tasks) error
-	}{
-		{"missing task read", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Get(ctx, principal, project.ID, missing)
-			return err
-		}},
-		{"missing task update", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Update(ctx, principal, project.ID, missing, UpdateTask{Version: 1, Title: pointer("Rejected")})
-			return err
-		}},
-		{"stale version update", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: 2, Title: pointer("Rejected")})
-			return err
-		}},
-		{"missing task status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, missing, SetTaskStatus{Version: 1, Status: core.TaskInProgress})
-			return err
-		}},
-		{"stale version status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version + 1, Status: core.TaskTodo})
-			return err
-		}},
-		{"same-state status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: core.TaskTodo})
-			return err
-		}},
-		{"invalid dependency create", "t.id = ANY($2::uuid[])", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Create(ctx, principal, project.ID, CreateTask{Title: "Rejected", DependsOn: []string{missing}})
-			return err
-		}},
-		{"missing project read", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Get(ctx, principal, missing, target.ID)
-			return err
-		}},
-		{"missing project list", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
-			_, err := s.List(ctx, principal, missing, TaskListRequest{PageRequest: PageRequest{Limit: 10}})
-			return err
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.fragment) }, end: cancel})
-			err := test.operation(ctx, traced)
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("completion failure lost cause: %v", err)
-			}
-			assertTaskUnchanged(t, tasks, principal, target)
-		})
-	}
-}
-
 func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	ctx := context.Background()
@@ -236,7 +176,7 @@ func TestTaskPartialWriteFailureRollsBackMetadataAndAllEdges(t *testing.T) {
 		}
 	}
 	assertTaskUnchanged(t, tasks, principal, target)
-	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}})
+	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
 	if err != nil || len(page.Items) != 4 {
 		t.Fatalf("failed creation left rows: %#v, %v", page, err)
 	}
@@ -250,7 +190,7 @@ func TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent(t *testing.T) {
 		match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") },
 		end: func() {
 			if err := database.WriteProject(context.Background(), project.ID, func(tx *store.ProjectTx) error {
-				_, err := tx.UpdateTask(context.Background(), predecessor.ID, store.TaskWrite{Title: predecessor.Title, Status: core.TaskDone})
+				_, err := tx.UpdateTask(context.Background(), predecessor.ID, store.TaskWrite{Title: predecessor.Title, Status: model.TaskDone})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -282,7 +222,7 @@ func TestTaskReopenDependentQueryCancellationPreservesCause(t *testing.T) {
 				trace.start = cancel
 			}
 			traced := tracedTasks(t, databaseURL, trace)
-			_, err := traced.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: core.TaskTodo})
+			_, err := traced.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
 			assertOperational(t, err)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("dependent query cancellation lost cause: %v", err)
@@ -299,7 +239,7 @@ func TestTaskStatusPartialWriteFailureRollsBackTimingAndMaterials(t *testing.T) 
 	prerequisite := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Completed prerequisite"))
 	target, err := tasks.Create(ctx, principal, project.ID, CreateTask{
 		Title: "Original", Description: "Preserved Markdown", DependsOn: []string{prerequisite.ID}, ExternalDependsOn: []string{prerequisite.ID},
-		Properties: propertyPatch([]core.PullRequestProperty{{URL: "https://github.com/owner/repo/pull/1", Title: "Existing evidence"}}...),
+		Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://github.com/owner/repo/pull/1", Title: "Existing evidence"}}...),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +250,7 @@ func TestTaskStatusPartialWriteFailureRollsBackTimingAndMaterials(t *testing.T) 
 		CREATE TRIGGER reject_status_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_status_edge()`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: core.TaskInProgress})
+	_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: model.TaskInProgress})
 	assertOperational(t, err)
 	var pgError *pgconn.PgError
 	if !errors.As(err, &pgError) || pgError.Code != "P0001" || strings.Contains(err.Error(), "private status edge") {

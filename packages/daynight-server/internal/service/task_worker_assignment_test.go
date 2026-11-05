@@ -4,14 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestWorkerClaimRequiresAuthenticatedAssignee(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
 	owner := workerMember(t, database, project.ID)
 	other := workerMember(t, database, project.ID)
-	for _, claimant := range []core.Principal{owner, admin} {
+	for _, claimant := range []model.Principal{owner, admin} {
 		for _, assigned := range []*string{nil, &other.UserID, &claimant.UserID} {
 			before := createAssignedTask(t, tasks, admin, project.ID, assigned)
 			before = updateTask(t, tasks, admin, before, UpdateTask{AllowAgents: pointer(true)})
@@ -26,7 +26,7 @@ func TestWorkerClaimRequiresAuthenticatedAssignee(t *testing.T) {
 				t.Fatal(err)
 			}
 			worker := testWorker(t, after.Properties)
-			if after.Status != core.TaskInProgress || !equalOptional(after.AssignedTo, assigned) || worker.UserID != claimant.UserID || worker.WorkerID != descriptor.WorkerID {
+			if after.Status != model.TaskInProgress || !equalOptional(after.AssignedTo, assigned) || worker.UserID != claimant.UserID || worker.WorkerID != descriptor.WorkerID {
 				t.Fatalf("claim did not bind the authenticated assignee: %#v", after)
 			}
 		}

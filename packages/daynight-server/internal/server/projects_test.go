@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/jackc/pgx/v5"
@@ -297,7 +297,7 @@ func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T
 	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
 	h.handler = RequestLogging(logger, mux)
 	ctx := context.Background()
-	admin, err := h.auth.identity.Authenticate(ctx, core.SessionCredential, h.admin.Value)
+	admin, err := h.auth.identity.Authenticate(ctx, model.SessionCredential, h.admin.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T
 	}
 	other := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.outsider), http.StatusOK)
 	member := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.member), http.StatusOK)
-	for index, project := range []core.Project{h.project, second} {
+	for index, project := range []model.Project{h.project, second} {
 		if _, err := h.database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
 			t.Fatal(err)
 		}
@@ -450,8 +450,8 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, err := range []error{
-		errors.Join(core.ErrNotFound, errors.New("private-database-secret")),
-		&service.Fault{Code: "unexpected", Message: "private-service-secret"},
+		errors.Join(model.ErrNotFound, errors.New("private-database-secret")),
+		&model.Fault{Code: "unexpected", Message: "private-service-secret"},
 	} {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -465,7 +465,7 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
 	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		writeError(w, request, logger, "project", "get", &service.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
+		writeError(w, request, logger, "project", "get", &model.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
 	})).ServeHTTP(response, request)
 	value := decodeResponse[api.ErrorResponse](t, response, http.StatusBadRequest)
 	if value.Error.Details == nil || len(value.Error.Details.TaskIDs) != 1 || value.Error.Details.TaskIDs[0] != "task-id" {
@@ -576,7 +576,7 @@ func TestProjectCreateUnknownOutcomeClassification(t *testing.T) {
 		code   string
 	}{
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
-		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &service.Fault{Code: "forbidden", Message: "private"}}, 500, "internal_error"},
+		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &model.Fault{Code: "forbidden", Message: "private"}}, 500, "internal_error"},
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
 	} {
 		response := httptest.NewRecorder()

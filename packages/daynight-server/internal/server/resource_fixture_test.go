@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 )
@@ -18,7 +18,7 @@ import (
 type resourceTestHandler struct {
 	http.Handler
 	token     string
-	principal core.Principal
+	principal model.Principal
 }
 
 func resourceTestServer(t *testing.T, database *store.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
@@ -50,7 +50,7 @@ func resourceTestServer(t *testing.T, database *store.Store, files filestorage.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := service.NewIdentity(database, client, callback).Authenticate(context.Background(), core.PATCredential, token)
+	principal, err := service.NewIdentity(database, client, callback).Authenticate(context.Background(), model.PATCredential, token)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
 func assistantHostBody() map[string]any {
@@ -204,7 +204,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 	if err := json.Unmarshal([]byte(jsonBody(t, host)), &wantHost); err != nil {
 		t.Fatal(err)
 	}
-	var wantConfiguration core.WorkerConfiguration
+	var wantConfiguration model.WorkerConfiguration
 	if err := json.Unmarshal([]byte(jsonBody(t, value)), &wantConfiguration); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 	if !reflect.DeepEqual(detail.Worker.Telemetry.AssistantHost, &wantHost) {
 		t.Fatalf("configuration exchange changed the stored assistant host: %+v", detail.Worker.Telemetry.AssistantHost)
 	}
-	configuration := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	configuration := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
 	if !reflect.DeepEqual(configuration.Desired, receipt.Configuration.Desired) || configuration.Observation != nil || configuration.ObservationRevision != "0" {
 		t.Fatalf("combined report configuration was not persisted independently: %+v", configuration)
 	}
@@ -230,7 +230,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 	if after := snapshotDetailHTTP(t, handler, id); !reflect.DeepEqual(after.Worker, detail.Worker) {
 		t.Fatalf("refused configuration exchange committed a partial worker report: %+v", after.Worker)
 	}
-	if after := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK); !reflect.DeepEqual(after, configuration) {
+	if after := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK); !reflect.DeepEqual(after, configuration) {
 		t.Fatalf("refused configuration exchange changed the stored configuration: %+v", after)
 	}
 
@@ -244,7 +244,7 @@ func TestWorkerAssistantHostHTTPConfigurationExchangeCompatibility(t *testing.T)
 	if snapshotDetailHTTP(t, handler, id).Worker.Telemetry.AssistantHost != nil {
 		t.Fatal("legacy replacement retained obsolete assistant hosting capability")
 	}
-	retained := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	retained := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
 	if !reflect.DeepEqual(retained, configuration) {
 		t.Fatalf("legacy heartbeat changed the stored cloud configuration: %+v", retained)
 	}

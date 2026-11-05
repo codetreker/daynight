@@ -10,9 +10,9 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -20,7 +20,7 @@ const archiveBucket = sessionarchive.Bucket
 
 // Archive access follows the original session's scope, independently of a later
 // task claim. This path grants no authority to reconnect or control an agent.
-func (s *Service) archiveAccess(ctx context.Context, p core.Principal, project, taskID, id string, finalize bool, fn func(pgx.Tx, *record, task) error) error {
+func (s *Service) archiveAccess(ctx context.Context, p model.Principal, project, taskID, id string, finalize bool, fn func(pgx.Tx, *record, task) error) error {
 	return s.transact(ctx, func(tx pgx.Tx) error {
 		t, deleted, err := scopeArchiveTask(ctx, tx, project, taskID, finalize)
 		if err != nil {
@@ -41,7 +41,7 @@ func (s *Service) archiveAccess(ctx context.Context, p core.Principal, project, 
 		}
 		// Only the original controller owner may finish a deleted task's archive.
 		// Browser content and ordinary session access retain the deletion boundary.
-		if deleted && (p.Kind != core.PATCredential || p.UserID != r.Owner) {
+		if deleted && (p.Kind != model.PATCredential || p.UserID != r.Owner) {
 			return denied()
 		}
 		if project == "" {
@@ -80,7 +80,7 @@ func archiveStatus(ctx context.Context, tx pgx.Tx, id string) (sp.ArchiveStatus,
 	}
 	return out, "", err
 }
-func (s *Service) ArchiveStatus(ctx context.Context, p core.Principal, project, taskID, id string) (sp.ArchiveStatus, error) {
+func (s *Service) ArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
 	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, _ *record, _ task) error {
 		var err error
@@ -89,8 +89,8 @@ func (s *Service) ArchiveStatus(ctx context.Context, p core.Principal, project, 
 	})
 	return out, err
 }
-func archiveWriter(p core.Principal, r *record, f sp.Fence, controller, instance string) error {
-	if p.Kind != core.PATCredential || p.UserID != r.Owner {
+func archiveWriter(p model.Principal, r *record, f sp.Fence, controller, instance string) error {
+	if p.Kind != model.PATCredential || p.UserID != r.Owner {
 		return denied()
 	}
 	if f != r.Snapshot.Fence || controller != r.Snapshot.Identity.ControllerID || instance != r.Snapshot.Identity.ControllerInstanceID {
@@ -98,7 +98,7 @@ func archiveWriter(p core.Principal, r *record, f sp.Fence, controller, instance
 	}
 	return nil
 }
-func (s *Service) UpdateArchive(ctx context.Context, p core.Principal, project, taskID, id string, in sp.ArchiveUpdate) (sp.ArchiveStatus, error) {
+func (s *Service) UpdateArchive(ctx context.Context, p model.Principal, project, taskID, id string, in sp.ArchiveUpdate) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
 	err := s.archiveAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, r *record, _ task) error {
 		if err := archiveWriter(p, r, in.Fence, in.ControllerID, in.ControllerInstanceID); err != nil {
@@ -115,7 +115,7 @@ func (s *Service) UpdateArchive(ctx context.Context, p core.Principal, project, 
 	})
 	return out, err
 }
-func (s *Service) PutArchive(ctx context.Context, p core.Principal, project, taskID, id string, data []byte) (sp.ArchiveStatus, error) {
+func (s *Service) PutArchive(ctx context.Context, p model.Principal, project, taskID, id string, data []byte) (sp.ArchiveStatus, error) {
 	var out sp.ArchiveStatus
 	doc, err := sp.DecodeArchive(data)
 	if err != nil {
@@ -181,7 +181,7 @@ func (s *Service) PutArchive(ctx context.Context, p core.Principal, project, tas
 	})
 	return out, err
 }
-func (s *Service) ArchiveContent(ctx context.Context, p core.Principal, project, taskID, id string) (json.RawMessage, error) {
+func (s *Service) ArchiveContent(ctx context.Context, p model.Principal, project, taskID, id string) (json.RawMessage, error) {
 	var out json.RawMessage
 	err := s.archiveAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, _ *record, _ task) error {
 		status, path, err := archiveStatus(ctx, tx, id)

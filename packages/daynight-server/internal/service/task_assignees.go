@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -40,22 +40,22 @@ func taskAssigneeUserIDs(userIDs []string) ([]string, error) {
 	return canonical, nil
 }
 
-func (s *Tasks) Assignees(ctx context.Context, principal core.Principal, projectID string, request TaskAssigneesRequest) (core.TaskAssignees, error) {
+func (s *Tasks) Assignees(ctx context.Context, principal model.Principal, projectID string, request TaskAssigneesRequest) (model.TaskAssignees, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.TaskAssignees{}, err
+		return model.TaskAssignees{}, err
 	}
 	projectID, err := CanonicalID(projectID)
 	if err != nil {
-		return core.TaskAssignees{}, err
+		return model.TaskAssignees{}, err
 	}
 	userIDs, err := taskAssigneeUserIDs(request.UserIDs)
 	if err != nil {
-		return core.TaskAssignees{}, err
+		return model.TaskAssignees{}, err
 	}
-	var result core.TaskAssignees
-	var refusal *Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+	var result model.TaskAssignees
+	var refusal *model.Fault
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
@@ -63,17 +63,17 @@ func (s *Tasks) Assignees(ctx context.Context, principal core.Principal, project
 		}
 		var err error
 		if userIDs == nil {
-			result, err = snapshot.TaskAssignees(ctx, projectID)
+			result, err = snapshot.TaskDAO().TaskAssignees(ctx, projectID)
 		} else {
-			result, err = snapshot.ResolveTaskAssignees(ctx, projectID, userIDs)
+			result, err = snapshot.TaskDAO().ResolveTaskAssignees(ctx, projectID, userIDs)
 		}
 		return err
 	})
 	if err != nil {
-		return core.TaskAssignees{}, fmt.Errorf("read task assignees: %w", err)
+		return model.TaskAssignees{}, fmt.Errorf("read task assignees: %w", err)
 	}
 	if refusal != nil {
-		return core.TaskAssignees{}, refusal
+		return model.TaskAssignees{}, refusal
 	}
 	return result, nil
 }

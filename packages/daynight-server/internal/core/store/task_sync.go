@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func (s *Snapshot) TaskCacheEpoch(ctx context.Context, projectID string) (string, error) {
@@ -16,7 +16,7 @@ func (s *Snapshot) TaskCacheEpoch(ctx context.Context, projectID string) (string
 	return epoch, nil
 }
 
-func (s *Snapshot) TaskSyncTasks(ctx context.Context, projectID string, lower *time.Time, previewCharacters int) ([]core.TaskViewRecord, error) {
+func (s *Snapshot) TaskSyncTasks(ctx context.Context, projectID string, lower *time.Time, previewCharacters int) ([]model.TaskViewRecord, error) {
 	if lower != nil {
 		// PostgreSQL stores microseconds; rounding upward preserves the exact >=
 		// selection when pgx would otherwise truncate a nanosecond lower bound.
@@ -35,9 +35,9 @@ func (s *Snapshot) TaskSyncTasks(ctx context.Context, projectID string, lower *t
 		return nil, queryError("read task sync", err)
 	}
 	defer rows.Close()
-	tasks := make([]core.TaskViewRecord, 0)
+	tasks := make([]model.TaskViewRecord, 0)
 	for rows.Next() {
-		var task core.TaskViewRecord
+		var task model.TaskViewRecord
 		if err := rows.Scan(&task.ID, &task.TitlePreview, &task.TitleTruncated, &task.Status, &task.Version,
 			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
 			return nil, queryError("read task sync", err)

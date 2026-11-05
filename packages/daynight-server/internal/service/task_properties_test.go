@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -20,13 +20,13 @@ func TestTaskPropertiesCandidateFailureAndPartialWriteRollback(t *testing.T) {
 
 	old = startTask(t, tasks, principal, old)
 	old = finishTask(t, tasks, principal, old)
-	target, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Original", DependsOn: []string{old.ID}, Properties: propertyPatch([]core.PullRequestProperty{{URL: "old\x00", Title: "Old"}}...)})
+	target, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Original", DependsOn: []string{old.ID}, Properties: propertyPatch([]model.PullRequestProperty{{URL: "old\x00", Title: "Old"}}...)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	target = startTask(t, tasks, principal, target)
-	properties := propertyPatch(core.PullRequestProperty{URL: "changed\x00", Title: "Changed"})
+	properties := propertyPatch(model.PullRequestProperty{URL: "changed\x00", Title: "Changed"})
 	_, err = tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, Title: pointer("Changed"), DependsOn: pointer([]string{prerequisite.ID}), Properties: properties})
 	requireFault(t, err, "dependency_unsatisfied")
 	assertTaskUnchanged(t, tasks, principal, target)
@@ -56,7 +56,7 @@ func TestTaskPropertiesCandidateFailureAndPartialWriteRollback(t *testing.T) {
 	assertTaskUnchanged(t, tasks, principal, target)
 	_, err = tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Rejected", DependsOn: []string{prerequisite.ID}, Properties: properties})
 	assertOperational(t, err)
-	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}})
+	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
 	if err != nil || len(page.Items) != 3 {
 		t.Fatalf("partial create persisted: %+v, %v", page, err)
 	}
@@ -65,12 +65,12 @@ func TestTaskPropertiesCandidateFailureAndPartialWriteRollback(t *testing.T) {
 func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
 	tasks, database, project, databaseURL, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Original")
-	first, second := propertyPatch(core.PullRequestProperty{URL: "first", Title: "First"}), propertyPatch(core.PullRequestProperty{URL: "second", Title: "Second"})
+	first, second := propertyPatch(model.PullRequestProperty{URL: "first", Title: "First"}), propertyPatch(model.PullRequestProperty{URL: "second", Title: "Second"})
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, Properties: first})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, Properties: second})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
@@ -82,7 +82,7 @@ func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
 		match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") },
 		end: func() {
 			if err := database.WriteProject(context.Background(), project.ID, func(tx *store.ProjectTx) error {
-				_, err := tx.UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: propertyPatch([]core.PullRequestProperty{{URL: "new", Title: "New"}}...)})
+				_, err := tx.UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: propertyPatch([]model.PullRequestProperty{{URL: "new", Title: "New"}}...)})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -94,7 +94,7 @@ func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
 		t.Fatalf("snapshot mixed task fields and properties: %+v, %v", read, err)
 	}
 	after, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || after.Title != "New snapshot" || after.Version != before.Version+1 || !slices.Equal(testPRs(t, after.Properties), []core.PullRequestProperty{{URL: "new", Title: "New"}}) {
+	if err != nil || after.Title != "New snapshot" || after.Version != before.Version+1 || !slices.Equal(testPRs(t, after.Properties), []model.PullRequestProperty{{URL: "new", Title: "New"}}) {
 		t.Fatalf("fresh properties snapshot: %+v, %v", after, err)
 	}
 }

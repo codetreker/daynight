@@ -52,7 +52,10 @@ independent drafts and reading positions. The current name opens details without
 rebuilding the conversation; narrow layouts and full screen share the existing
 focus rules. Closing a view does not stop its Worker-owned Agent. List deletion
 uses authoritative cleanup stages and invalidates only the target's known
-conversation state; an old Test URL cannot bypass deletion.
+conversation state; an old Test URL cannot bypass deletion. Background identity
+and data checks retain confirmed dialogs, the selected conversation and its
+reading state while request and publication admission remain enforced. Actual
+access loss still clears the affected state.
 
 The [management requirements](../../docs/spec/bot-management-web.md) and
 [Session design](../../docs/design/bot-session-view.md) own behavior and identity
@@ -146,7 +149,16 @@ attachment pages defer restoration until the workspace appears. Team-dependent
 links and its project directory wait for a verified selection, while the page's
 own resource and the shared-project directory can load independently. Restoration
 failures expose a workspace retry without replacing the saved choice. Only a
-verified missing Team clears that choice and restores Personal. The
+verified missing Team clears that choice and restores Personal. Background
+checks retain the confirmed Team and all loaded selector pages until a complete
+refreshed prefix is available; actual changes and recoverable errors remain
+visible. Explicit refresh still reads the directory. When the confirmed selection
+is Personal, Team members and settings entries are omitted from the sidebar in
+all layouts; ordinary Teams retain links to their own member and settings pages
+regardless of their names. Direct Personal member and settings URLs remain
+available under their existing access rules. The
+[personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
+records this visibility choice. The
 [browser Team preference decision](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)
 owns storage, identity and recovery behavior. Shared projects stay outside the
 Team's indented list. Project, member and settings routes select
@@ -177,10 +189,11 @@ open state is temporary and never overwrites the desktop choice. The overlay
 contains keyboard focus, isolates the background and shares the reference-counted
 body scroll lock with the graph and task detail. Escape and backdrop dismissal
 restore the opener; route changes use the existing content focus behavior.
-Route changes, the desktop breakpoint, identity verification, blocking recovery
+Route changes, the desktop breakpoint, identity loss, blocking recovery
 and unmount close the overlay and release its own isolation and lock. Normal
-identity verification continues to preserve the content's existing interaction
-policy. Sidebar changes preserve the mounted project, cache, detail and graph
+identity verification keeps the overlay open with its focus containment and
+scroll lock; blocking recovery releases it before the recovery dialog takes focus.
+Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
 [sidebar preference decision](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
 owns these state boundaries; the
@@ -231,7 +244,9 @@ logout and anonymous state dispose it so old results cannot reach a new identity
 and unmount user-owned content; a project 404 stays a resource error. Returning
 from a hidden or unfocused top-level page checks `/me` in the background while
 keeping the workspace visible and interactive. Pending verification preserves
-focus, dialogs, drafts, scroll and embedded documents. Each new qualifying return
+focus, dialogs, the narrow navigation overlay, drafts, scroll and embedded
+documents throughout the wait and recovery reads. Display retention does not
+grant request, publication or mutation permission. Each new qualifying return
 aborts and replaces pending verification, so earlier responses cannot overwrite
 the latest identity decision. A failed check retains state behind the blocking
 retry overlay until a successful check. The native modal inherits the current language,
@@ -252,6 +267,20 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
+Team settings display the selectable Team ID with an adjacent copy button for every
+viewer. Clipboard success and failure are reported locally; failure leaves the ID
+selectable and retryable. Pending copies are guarded and results are discarded when
+the Team or identity context changes. Team settings, members and invitations retain loaded content, the invitation area, drafts and open
+confirmations throughout ordinary identity checks and same-account background reads, without loading rows or disabling local editing. Initial reads and actual errors retain their own feedback. Writes require fresh Team, membership and invitation admission;
+explicit reconciliation retains the original operation result and never replays a write or infers its success from a read.
+A changed selected member role or version invalidates its confirmation. Project
+settings, membership and transfer results retain their original scope and wait for
+admission before publication. Current access is rechecked where required; a
+confirmed settings write awaiting access is reread without replaying it.
+Confirmed one-time invitation receipts remain bound to the original identity and
+available until closed even if resource access changes. Invitation directories
+and new management operations still require current authorization. Actual failures
+and access loss retain their existing handling.
 A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 records this presentation policy. Ordinary same-origin
 iframe focus changes do not count as top-level returns. Requests
@@ -421,6 +450,11 @@ editor and draft while pausing configuration reads. The active, visible,
 identity-admitted tab performs its own five-second single-flight refresh without
 using the runtime observation clock.
 
+Background identity checks retain the editor, dialogs, local input and unapplied
+Project selection while private requests and new saves remain gated. In-flight
+saves retain their submitted snapshot and result classification until admission
+resumes. Background directory reads preserve the complete loaded collection,
+including an empty collection; actual failures retain their error semantics.
 Background results do not replace draft input, focus or selection. Saving uses
 the draft's target revision; observation updates cannot invalidate that baseline.
 A conflict retains the draft and exposes the latest cloud value for explicit
@@ -746,12 +780,13 @@ withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)
 owns the versioning, HTTP cache and scan-cost trade-offs.
 
-The task-list filter supports All, Assigned to me, Unassigned and a person. It
-intersects recent/show-all selections before pagination and returns to page one
-when changed. Standalone rows match directly. A chain with any matching member
-retains its real representative as context and shows matching children and count;
-full-chain progress, readiness, dependencies, statistics and graph use the complete
-index. Overview positioning can clear a filter that hides its target. The
+The task lists share assignee and status filters. Assignee supports All, Assigned
+to me, Unassigned and a person; status supports all, todo, in progress and done.
+Both conditions must match the same task before pagination. Standalone rows match
+directly; a chain with any matching ordinary member retains its real representative
+and all ordinary children. Changing either filter resets both lists to page one.
+Full-chain progress, readiness, dependencies, statistics and graph use the complete
+index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
@@ -826,6 +861,11 @@ The task Session host keeps the native Web timeline and dispatches Herdr executi
 to a read-only terminal preview with explicit control acquisition. Hidden terminal
 views close their viewer channel and release the browser lease; Worker recording
 continues independently. Controls become available only after Worker confirmation.
+During visibility or identity checks, the last confirmed screen, draft and
+same-control confirmation remain in place while input, receipt polling and lease
+renewal pause. A recovery read alone does not permit input: a fresh channel
+observation matching the current fence and control epoch is also required.
+Actual disconnections and errors remain visible.
 Unknown initial submission disposition and resuming automatic input require
 separate decisions. Unknown manual input is never automatically resent.
 
@@ -889,7 +929,12 @@ line breaks and local code/table scrolling without raw HTML or remote image
 loads. Reply previews use a known parent directly; an out-of-window parent loads
 only on demand with at most two bounded list reads and an exact target check.
 Message details use a nested native dialog that owns Escape/Tab and restores
-focus within page, modal and fullscreen task details.
+focus within page, modal and fullscreen task details. Document hiding and ordinary
+identity checks retain the same dialog, reading position, reply and editable draft
+while reads, sending and publication remain gated. Actual scope retirement clears them.
+The controlled-browser regression runs with `pnpm exec playwright test --config
+tests/navigation/discussion-identity-playwright.config.ts` from this package; it
+holds identity and Thread responses while exercising the production interface.
 
 The composer preserves original whitespace and code indentation. Ctrl/Command+
 Enter sends outside IME composition. A valid 201 confirms the remote message and
@@ -1058,7 +1103,7 @@ the representative title, completed/total count and a floored integer percentage
 A Goal completes only when all ordinary members are done; its last member
 completion determines recency, with external prerequisites excluded. The latest
 known member completion supplies evidence when some historical times are unknown;
-without known recent evidence, completed Goals appear only through Show all.
+without known recent evidence, completed Goals remain available in the task list.
 The standalone aggregate row combines every unfinished standalone task with known
 completions in the same window. It remains visible at 100% when only recent
 completions remain, as do recent completed Goals. Project statistic cards retain
@@ -1070,7 +1115,7 @@ completions from October 21 at 00:00 onward. Local date arithmetic preserves
 calendar-day semantics across daylight-saving changes. Current time advances
 from the server sample and monotonic elapsed time after synchronization;
 local-only summaries use their provisional client-time anchor. One project-owned
-deadline updates Overview and Task list together at midnight, pauses while the
+deadline updates Overview at midnight, pauses while the
 page is hidden, and recalculates on visibility recovery without requiring a new
 snapshot.
 
@@ -1083,7 +1128,7 @@ exact newest-first order remains stable; the standalone aggregate follows
 matching-status chains.
 Pagination shows the current item range and filtered total with previous/next
 controls; one-page results have no pager. Each list retains its own page during
-the project visit. Changing Show all resets that list to page one; shrinking
+the project visit. Changing either filter resets both task lists to page one; shrinking
 results clamp the page immediately. These display slices do not truncate the
 cached graph, statistics, Goal progress or dependency context, and do not add
 requests or stored page preferences.
@@ -1117,10 +1162,8 @@ tasks (pending and in progress) from the complete snapshot, independently of
 completed-item visibility, outer/inner selection and the open graph dialog. Their sum
 equals the project's unfinished total; toolbars report all entries matching the
 current filter against complete category totals, independently of page size.
-Both categories default to all unfinished work plus completions in the local
-calendar window. Their independent Show all controls include all history when
-checked and restore the recent default when cleared. The label has no completed
-count suffix; each choice retains its existing per-project browser record.
+Both categories default to all statuses and include all history. Status and
+assignee selections are shared in memory during the project visit.
 
 Chain membership is an ordinary-edge weak component: `dependsOn` contains all
 prerequisites, while `externalDependsOn` marks edges that do not join
@@ -1149,8 +1192,7 @@ snapshot order, as do children in other status groups. Fresh snapshots recalcula
 this order. Top-level Goal ordering remains independent. Other starting tasks in a merge are
 included, while external prerequisite context is excluded. The
 list always retains `done`, `in_progress` and `todo` children; completed tasks
-remain visible. The chain-level Show all control changes whole-Goal visibility
-and never filters children by status or completion date. Child rows show their own status,
+remain visible. Filters determine whole-chain visibility and never remove children. Child rows show their own status,
 applicable ready/blocked markers and known execution duration after the title,
 and open the shared task dialog. The expanded heading offers the representative task's own
 details. Aggregate progress still includes that representative. Chain rows
@@ -1809,6 +1851,12 @@ shard 2 runs all 28 cases before its full-stack acceptance. Its results and fail
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
+The Team management browser suite exercises the production settings page against
+controlled API responses. It checks name and action geometry, wrapping, text
+selection and rename interactions. Run `pnpm --filter @codetreker/daynight-web
+exec playwright test --config tests/navigation/team-management-playwright.config.ts`.
+Browser CI shard 2 runs this suite before full-stack acceptance.
+
 The Bot viewport suite runs the production application, Session host and timeline
 against controlled HTTP and Session API responses. It checks long-history
 scrolling, bounded pagination, visible input and retained reading positions at
@@ -2037,8 +2085,16 @@ language scenarios remain GET/HEAD-only in the browser; fixture writes use the
 installed CLI or authenticated API request context. The three task-status scenarios
 and `task-status-transitions` separately admit only registered project/task PUT status requests with exact expected
 counts. Six authentication scenarios declare only their exact expected management writes;
-unrelated browser mutations remain failures. The `project-settings` journey
-admits exactly four registered project-settings PATCHes: successful save, stale
+unrelated browser mutations remain failures. The visible `auth-login-session`
+journey names its awaited operations and saves `auth-login-operations` on success
+and failure. The JSON attachment contains only operation labels, status, duration
+and optional error names; authentication traces remain disabled. Owned route and
+provider cleanup actions each have a five-second limit. Interception disable
+failure still attempts CDP detach, and original, cleanup and attachment errors
+remain visible together. The [login diagnostics decision](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
+owns failure preservation and diagnostic privacy.
+
+The `project-settings` journey admits exactly four registered project-settings PATCHes: successful save, stale
 conflict, committed response loss and demoted-member refusal. Other users and
 administrative preparation use authenticated request contexts; a failed read
 reconciliation can be recovered only by an explicit read retry, without a fifth

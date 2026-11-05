@@ -1,7 +1,7 @@
 package api
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+import taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 
-type TaskStep = tasksteps.Step
-type StepsResource = tasksteps.StepsResource
-type StepResource = tasksteps.StepResource
+type TaskStep = taskcodec.Step
+type StepsResource = taskcodec.StepsResource
+type StepResource = taskcodec.StepResource

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestTaskAgentPermissionUpdatesAndStatusRemainIndependent(t *testing.T) {
@@ -18,7 +18,7 @@ func TestTaskAgentPermissionUpdatesAndStatusRemainIndependent(t *testing.T) {
 			t.Fatal("new task permits automatic execution")
 		}
 		task = updateTask(t, tasks, principal, task, UpdateTask{AllowAgents: &allowed})
-		if task.AllowAgents != allowed || task.Status != core.TaskTodo || !task.Ready {
+		if task.AllowAgents != allowed || task.Status != model.TaskTodo || !task.Ready {
 			t.Fatalf("permission changed status: %#v", task)
 		}
 		noOp := updateTask(t, tasks, principal, task, UpdateTask{AllowAgents: &allowed})
@@ -27,12 +27,12 @@ func TestTaskAgentPermissionUpdatesAndStatusRemainIndependent(t *testing.T) {
 		}
 		_, err := tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: task.Version + 1, AllowAgents: &allowed})
 		requireFault(t, err, "version_conflict")
-		task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved metadata"), Properties: propertyPatch([]core.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}...)})
+		task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved metadata"), Properties: propertyPatch([]model.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}...)})
 
 		if !task.Ready || task.AllowAgents != allowed {
 			t.Fatal("metadata edit changed permission or readiness")
 		}
-		task = setStatusTask(t, tasks, principal, task, core.TaskTodo)
+		task = setStatusTask(t, tasks, principal, task, model.TaskTodo)
 		if task.AllowAgents != allowed {
 			t.Fatal("same-status request changed permission")
 		}
@@ -73,7 +73,7 @@ func TestTaskAgentPermissionFilterPrecedesLimitAndBindsCursor(t *testing.T) {
 		}
 	}
 	for _, allowed := range []bool{false, true} {
-		request := TaskListRequest{PageRequest: PageRequest{Limit: 1}, Ready: pointer(true), AllowAgents: &allowed}
+		request := TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, Ready: pointer(true), AllowAgents: &allowed}
 		var ids []string
 		for {
 			page, err := tasks.List(ctx, principal, project.ID, request)
@@ -107,7 +107,7 @@ func TestTaskAgentPermissionFilterPrecedesLimitAndBindsCursor(t *testing.T) {
 			t.Fatalf("bounded filter hid candidates: got %v want %v", ids, want)
 		}
 	}
-	all, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 10}})
+	all, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
 	if err != nil || len(all.Items) != 6 {
 		t.Fatalf("omitted permission filter changed full inventory: %v", err)
 	}
@@ -127,22 +127,22 @@ func TestTaskAgentPermissionAndStartRaceHasOneMutationWinner(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	before := createTask(t, tasks, principal, project.ID, "Permission race")
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, principal, project.ID, before.ID, UpdateTask{Version: before.Version, AllowAgents: pointer(true)})
 		},
-		func(ctx context.Context) (core.Task, error) {
-			return tasks.SetStatus(ctx, principal, project.ID, before.ID, SetTaskStatus{Version: before.Version, Status: core.TaskInProgress})
+		func(ctx context.Context) (model.Task, error) {
+			return tasks.SetStatus(ctx, principal, project.ID, before.ID, SetTaskStatus{Version: before.Version, Status: model.TaskInProgress})
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	after, err := tasks.Get(context.Background(), principal, project.ID, before.ID)
 	if err != nil || after.Version != before.Version+1 {
 		t.Fatalf("race committed incorrectly: %#v %v", after, err)
 	}
-	if after.Status == core.TaskInProgress {
+	if after.Status == model.TaskInProgress {
 		if after.AllowAgents || after.StartedAt == nil {
 			t.Fatal("start winner changed permission or omitted timing")
 		}
-	} else if after.Status != core.TaskTodo || !after.AllowAgents || after.StartedAt != nil {
+	} else if after.Status != model.TaskTodo || !after.AllowAgents || after.StartedAt != nil {
 		t.Fatalf("permission winner changed status: %#v", after)
 	}
 }

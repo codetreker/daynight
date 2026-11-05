@@ -5,13 +5,13 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 )
 
-func (h *taskStepsHandler) change(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskStepsHandler) change(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	operation := "update"
 	allowed := []string{"version", "title", "description"}
@@ -27,7 +27,7 @@ func (h *taskStepsHandler) change(w http.ResponseWriter, request *http.Request, 
 		refuse(err)
 		return
 	}
-	stepID, err := tasksteps.CanonicalID(request.PathValue("stepId"))
+	stepID, err := taskcodec.CanonicalID(request.PathValue("stepId"))
 	if err != nil {
 		refuse(invalidInput(err.Error()))
 		return
@@ -98,7 +98,7 @@ func stepStatusInput(fields map[string]json.RawMessage) (service.SetTaskStepStat
 	if err != nil {
 		return input, err
 	}
-	input.Status = core.TaskStepStatus(status)
+	input.Status = model.TaskStepStatus(status)
 	return input, nil
 }
 

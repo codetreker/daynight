@@ -1,7 +1,8 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { openDB } from "idb";
 import { expect, it, vi } from "vitest";
-import { ProjectAccessBoundary } from "../src/features/projects/ProjectAccess";
+import { ProjectAccessBoundary, useProjectAccess, type ProjectAccessSession } from "../src/features/projects/ProjectAccess";
+import { pauseAuthRequests } from "../src/api/client";
 import { ProjectOwnership } from "../src/features/management/ProjectOwnership";
 import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
 import { saveDetail } from "../src/features/task-detail/detail-cache";
@@ -59,4 +60,42 @@ it("withdraws an open Task and its persisted cache after a confirmed transfer wi
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
     connection.close();
   } finally { sessions.dispose(); scope.dispose(); }
+});
+
+
+it("waits for identity before retrying cleanup and before publishing the transfer receipt", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const cleanup = Promise.withResolvers<boolean>();
+  const revoke = vi.spyOn(scope, "revokeProject").mockRejectedValueOnce(new Error("cleanup failed")).mockReturnValueOnce(cleanup.promise);
+  let accessSession!: ProjectAccessSession;
+  const CaptureAccess = () => { accessSession = useProjectAccess(projectId).session; return null; };
+  const fetcher = vi.fn(async (url: string) => {
+    if (url === `/api/v1/projects/${projectId}/access`) return json(access);
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return json({ sourceTeam: source, targetTeam: { ...target, version: 1n }, ownership: access.ownership, actorRole: null });
+    if (url === `/api/v1/projects/${projectId}/transfer`) return json({ projectId, changed: true, sourceTeam: source, ownerTeam: target, ownership: { teamId: target.id, version: 2n }, actorAccess: null });
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    const transferred = vi.fn();
+    createLocaleRender("en")(<ProjectAccessBoundary projectId={projectId} initialRead><CaptureAccess /><ProjectOwnership projectId={projectId} projectName="Project" active onTransferred={transferred} /></ProjectAccessBoundary>, { taskCache: { scope } });
+    const button = await screen.findByRole("button", { name: "Transfer project" });
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+    fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target.id } });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled()); fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled()); fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
+    await within(dialog).findByText(/transfer succeeded, but project cache cleanup failed/i);
+    const first = pauseAuthRequests();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    await act(async () => { await Promise.resolve(); }); expect(revoke).toHaveBeenCalledTimes(1);
+    first(); await waitFor(() => expect(revoke).toHaveBeenCalledTimes(2));
+    const second = pauseAuthRequests();
+    await act(async () => cleanup.resolve(true));
+    expect(transferred).not.toHaveBeenCalled();
+    expect(accessSession.snapshot().status).toBe("ready");
+    second(); await waitFor(() => expect(transferred).toHaveBeenCalledOnce());
+    expect(accessSession.snapshot().status).toBe("unavailable");
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
+  } finally { scope.dispose(); }
 });

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -63,12 +63,12 @@ func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
 	steps := NewTaskSteps(database)
 	ctx := context.Background()
 	for _, tc := range []struct {
-		principal core.Principal
+		principal model.Principal
 		projectID string
 		taskID    string
 		code      string
 	}{
-		{core.Principal{}, project.ID, task.ID, "unauthenticated"},
+		{model.Principal{}, project.ID, task.ID, "unauthenticated"},
 		{principal, "bad", task.ID, "invalid_input"},
 		{principal, project.ID, "bad", "invalid_input"},
 		{principal, uuid.NewString(), task.ID, "not_found"},
@@ -78,7 +78,7 @@ func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
 		_, err := steps.List(ctx, tc.principal, tc.projectID, tc.taskID)
 		requireThreadFault(t, err, tc.code)
 	}
-	_, err := steps.Get(ctx, core.Principal{}, project.ID, task.ID, "00000000")
+	_, err := steps.Get(ctx, model.Principal{}, project.ID, task.ID, "00000000")
 	requireThreadFault(t, err, "unauthenticated")
 	for _, id := range []string{"bad", "00000000-0000-4000-8000-000000000001"} {
 		_, err := steps.Get(ctx, principal, project.ID, task.ID, id)
@@ -110,22 +110,22 @@ func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
 }
 
 func TestTaskStepsFaultDoesNotHideCleanupFailure(t *testing.T) {
-	refusal := &Fault{Code: "not_found", Message: "Step was not found.", Cause: core.ErrNotFound}
+	refusal := &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: model.ErrNotFound}
 	wrapped := fmt.Errorf("read: %w", &store.Error{Phase: "snapshot", Cause: refusal})
 	if actual, ok := TaskStepsFault(wrapped); !ok || actual != refusal {
 		t.Fatal("pure refusal lost")
 	}
-	if actual, ok := TaskStepsFault(fmt.Errorf("snapshot: %w", errors.Join(core.ErrNotFound, wrapped))); !ok || actual != refusal {
+	if actual, ok := TaskStepsFault(fmt.Errorf("snapshot: %w", errors.Join(model.ErrNotFound, wrapped))); !ok || actual != refusal {
 		t.Fatal("store not-found marker hid a pure refusal")
 	}
 	cleanup := errors.New("cleanup failed")
-	for _, err := range []error{nil, cleanup, core.ErrNotFound, fmt.Errorf("read: %w", errors.Join(refusal, cleanup))} {
+	for _, err := range []error{nil, cleanup, model.ErrNotFound, fmt.Errorf("read: %w", errors.Join(refusal, cleanup))} {
 		if _, ok := TaskStepsFault(err); ok {
 			t.Fatal("internal cleanup error downgraded")
 		}
 	}
 	joined := errors.Join(refusal, cleanup)
-	if !errors.Is(joined, cleanup) || !errors.Is(joined, core.ErrNotFound) {
+	if !errors.Is(joined, cleanup) || !errors.Is(joined, model.ErrNotFound) {
 		t.Fatal("error chain changed")
 	}
 }

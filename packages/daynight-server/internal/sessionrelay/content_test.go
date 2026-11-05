@@ -10,9 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
@@ -242,7 +241,7 @@ func TestContentMembershipIsRecheckedAfterResponse(t *testing.T) {
 	defer cancel()
 	// A second reader is independent from the controller's grant parent, so
 	// revoking the reader does not revoke the native connection itself.
-	viewer := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	viewer := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	hash := sha256.Sum256([]byte("reader"))
 	for _, q := range []struct {
 		sql  string
@@ -277,7 +276,7 @@ func TestContentOverloadIsARequestFailureWithoutAPageBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := <-read
-	var faultValue *service.Fault
+	var faultValue *model.Fault
 	if !errors.As(got.err, &faultValue) || faultValue.Code != "rate_limited" {
 		t.Fatalf("unexpected request result: %v", got.err)
 	}

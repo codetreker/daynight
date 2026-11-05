@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -38,7 +38,7 @@ func assignmentCursorMutation(t *testing.T, cursor string, mutate func(map[strin
 	return base64.RawURLEncoding.EncodeToString(data)
 }
 
-func assignmentTaskIDs(tasks []core.Task) []string {
+func assignmentTaskIDs(tasks []model.Task) []string {
 	ids := make([]string, len(tasks))
 	for index, task := range tasks {
 		ids[index] = task.ID
@@ -51,9 +51,9 @@ func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
 	ctx := context.Background()
 	alice, bob := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 	prerequisite := createAssignedTask(t, tasks, admin, project.ID, &bob.UserID)
-	inventory := []core.Task{prerequisite}
+	inventory := []model.Task{prerequisite}
 	for _, assigned := range []*string{nil, &alice.UserID, &admin.UserID} {
-		for _, required := range []*core.TaskPlatform{nil, pointer(core.PlatformLinux), pointer(core.PlatformWindows)} {
+		for _, required := range []*model.TaskPlatform{nil, pointer(model.PlatformLinux), pointer(model.PlatformWindows)} {
 			for _, allowed := range []bool{false, true} {
 				for _, status := range []string{"todo", "blocked", "in_progress", "done"} {
 					input := CreateTask{Title: "Assignment filter candidate", AssignedTo: assigned, RequiredPlatform: required}
@@ -66,7 +66,7 @@ func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
 					}
 					current = updateTask(t, tasks, admin, current, UpdateTask{AllowAgents: &allowed})
 					if status == "in_progress" || status == "done" {
-						current = setStatusTask(t, tasks, admin, current, core.TaskStatus(status))
+						current = setStatusTask(t, tasks, admin, current, model.TaskStatus(status))
 					}
 					inventory = append(inventory, current)
 				}
@@ -74,11 +74,11 @@ func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
 		}
 	}
 	for _, selector := range []*string{nil, pointer("unassigned"), pointer("me"), pointer(strings.ToUpper(alice.UserID)), &bob.UserID} {
-		for _, status := range []*core.TaskStatus{nil, pointer(core.TaskTodo), pointer(core.TaskInProgress), pointer(core.TaskDone)} {
+		for _, status := range []*model.TaskStatus{nil, pointer(model.TaskTodo), pointer(model.TaskInProgress), pointer(model.TaskDone)} {
 			for _, allowed := range []*bool{nil, pointer(false), pointer(true)} {
 				for _, ready := range []*bool{nil, pointer(false), pointer(true)} {
-					for _, platform := range []*core.TaskPlatform{nil, pointer(core.PlatformLinux)} {
-						request := TaskListRequest{PageRequest: PageRequest{Limit: 100}, AssignedTo: selector, Status: status, Ready: ready, AllowAgents: allowed, CompatiblePlatform: platform}
+					for _, platform := range []*model.TaskPlatform{nil, pointer(model.PlatformLinux)} {
+						request := TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, AssignedTo: selector, Status: status, Ready: ready, AllowAgents: allowed, CompatiblePlatform: platform}
 						page, err := tasks.List(ctx, admin, project.ID, request)
 						if err != nil {
 							t.Fatal(err)
@@ -109,7 +109,7 @@ func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
 			}
 		}
 	}
-	request := TaskListRequest{PageRequest: PageRequest{Limit: 1}, AssignedTo: &alice.UserID, Status: pointer(core.TaskTodo), Ready: pointer(true), AllowAgents: pointer(true), CompatiblePlatform: pointer(core.PlatformLinux)}
+	request := TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: &alice.UserID, Status: pointer(model.TaskTodo), Ready: pointer(true), AllowAgents: pointer(true), CompatiblePlatform: pointer(model.PlatformLinux)}
 	var got []string
 	for {
 		page, err := tasks.List(ctx, admin, project.ID, request)
@@ -131,7 +131,7 @@ func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
 	if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error { return tx.RemoveMember(ctx, alice.UserID) }); err != nil {
 		t.Fatal(err)
 	}
-	former, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, AssignedTo: &alice.UserID})
+	former, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, AssignedTo: &alice.UserID})
 	if err != nil || len(former.Items) != 24 {
 		t.Fatalf("former assignee could not be queried: %d %v", len(former.Items), err)
 	}
@@ -144,7 +144,7 @@ func TestTaskAssignedToCursorScopeAndOtherCursorVersions(t *testing.T) {
 	for range 3 {
 		createAssignedTask(t, tasks, admin, project.ID, &admin.UserID)
 	}
-	request := TaskListRequest{PageRequest: PageRequest{Limit: 1}, AssignedTo: pointer("me")}
+	request := TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: pointer("me")}
 	page, err := tasks.List(ctx, admin, project.ID, request)
 	if err != nil || page.NextCursor == nil || len(page.Items) != 1 {
 		t.Fatalf("missing self-filtered cursor: %#v %v", page, err)
@@ -172,7 +172,7 @@ func TestTaskAssignedToCursorScopeAndOtherCursorVersions(t *testing.T) {
 	_, err = tasks.List(ctx, admin, project.ID, request)
 	requireFault(t, err, "invalid_input")
 	for _, invalid := range []string{"", "ME", "Unassigned", " me", "null", "bad", strings.Repeat("a", 36)} {
-		_, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, AssignedTo: &invalid})
+		_, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, AssignedTo: &invalid})
 		requireFault(t, err, "invalid_input")
 	}
 	projectCursor, err := encodeProjectCursor(project, admin.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
@@ -189,7 +189,7 @@ func TestTaskAssignedToCursorScopeAndOtherCursorVersions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	workerPage, err := workers.List(ctx, admin, PageRequest{Limit: 1})
+	workerPage, err := workers.List(ctx, admin, model.PageRequest{Limit: 1})
 	if err != nil || workerPage.NextCursor == nil {
 		t.Fatal("worker cursor missing", err)
 	}
@@ -203,7 +203,7 @@ func TestTaskAssignedToWorkerInventoryUsesExplicitSelectionOnly(t *testing.T) {
 	ctx := context.Background()
 	alice, bob, owner := workerMember(t, database, project.ID), workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 	workerID := uuid.NewString()
-	var active []core.Task
+	var active []model.Task
 	for _, assigned := range []*string{&bob.UserID, nil, &alice.UserID} {
 		task := claimableTask(t, tasks, owner, project.ID)
 		descriptor := workerDescriptor()
@@ -222,11 +222,11 @@ func TestTaskAssignedToWorkerInventoryUsesExplicitSelectionOnly(t *testing.T) {
 		}
 		active = append(active, task)
 	}
-	all, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, WorkerID: &workerID})
+	all, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, WorkerID: &workerID})
 	if err != nil || !reflect.DeepEqual(assignmentTaskIDs(all.Items), assignmentTaskIDs(active)) {
 		t.Fatal("default worker inventory imposed caller assignment", err)
 	}
-	filtered, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}, WorkerID: &workerID, AssignedTo: &alice.UserID})
+	filtered, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 1}, WorkerID: &workerID, AssignedTo: &alice.UserID})
 	if err != nil || len(filtered.Items) != 1 || filtered.Items[0].ID != active[2].ID || filtered.NextCursor != nil {
 		t.Fatalf("worker lookahead preceded assignment selection: %#v %v", filtered, err)
 	}
@@ -234,7 +234,7 @@ func TestTaskAssignedToWorkerInventoryUsesExplicitSelectionOnly(t *testing.T) {
 		task := createAssignedTask(t, tasks, admin, project.ID, assigned)
 		updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
 	}
-	candidates, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, Ready: pointer(true), AllowAgents: pointer(true)})
+	candidates, err := tasks.List(ctx, owner, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, Ready: pointer(true), AllowAgents: pointer(true)})
 	if err != nil || len(candidates.Items) != 3 {
 		t.Fatalf("unfiltered task list implicitly filtered responsibility: %#v %v", candidates, err)
 	}

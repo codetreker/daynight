@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
@@ -14,8 +14,8 @@ func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
 	ctx := context.Background()
 	db := isolatedStore(t)
 	project := queryProject(t, db, 1)
-	queryTask(t, db, project.ID, 2, core.TaskInProgress)
-	worker := core.WorkerClaim{ClaimID: uuid.NewString(), UserID: uuid.NewString(), WorkerID: uuid.NewString(), WorktreeID: uuid.NewString()}
+	queryTask(t, db, project.ID, 2, model.TaskInProgress)
+	worker := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: uuid.NewString(), WorkerID: uuid.NewString(), WorktreeID: uuid.NewString()}
 	report := sp.StartupReport{SessionID: uuid.NewString(), ClaimID: worker.ClaimID, ExecutionGeneration: "2", ControllerInstanceID: uuid.NewString()}
 	snapshot := sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: report.SessionID, ClaimID: worker.ClaimID, ExecutionGeneration: "2"}}, Lifecycle: "active", Identity: sp.Identity{ControllerInstanceID: report.ControllerInstanceID, WorkerID: worker.WorkerID, WorktreeID: worker.WorktreeID}}
 	raw, err := json.Marshal(snapshot)
@@ -23,7 +23,7 @@ func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQueryExec(t, db, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,'{}',$7)`, report.SessionID, project.ID, queryID(2), worker.ClaimID, worker.UserID, uuid.NewString(), raw)
-	check := func(ctx context.Context, w core.WorkerClaim, r sp.StartupReport) (bool, error) {
+	check := func(ctx context.Context, w model.WorkerClaim, r sp.StartupReport) (bool, error) {
 		var matched bool
 		err := db.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
 			var err error
@@ -35,14 +35,14 @@ func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
 	if matched, err := check(ctx, worker, report); err != nil || !matched {
 		t.Fatalf("current identity: %t %v", matched, err)
 	}
-	for name, mutate := range map[string]func(*core.WorkerClaim, *sp.StartupReport){
-		"old generation":   func(_ *core.WorkerClaim, r *sp.StartupReport) { r.ExecutionGeneration = "1" },
-		"foreign session":  func(_ *core.WorkerClaim, r *sp.StartupReport) { r.SessionID = uuid.NewString() },
-		"old claim":        func(_ *core.WorkerClaim, r *sp.StartupReport) { r.ClaimID = uuid.NewString() },
-		"foreign instance": func(_ *core.WorkerClaim, r *sp.StartupReport) { r.ControllerInstanceID = uuid.NewString() },
-		"foreign owner":    func(w *core.WorkerClaim, _ *sp.StartupReport) { w.UserID = uuid.NewString() },
-		"foreign worker":   func(w *core.WorkerClaim, _ *sp.StartupReport) { w.WorkerID = uuid.NewString() },
-		"foreign worktree": func(w *core.WorkerClaim, _ *sp.StartupReport) { w.WorktreeID = uuid.NewString() },
+	for name, mutate := range map[string]func(*model.WorkerClaim, *sp.StartupReport){
+		"old generation":   func(_ *model.WorkerClaim, r *sp.StartupReport) { r.ExecutionGeneration = "1" },
+		"foreign session":  func(_ *model.WorkerClaim, r *sp.StartupReport) { r.SessionID = uuid.NewString() },
+		"old claim":        func(_ *model.WorkerClaim, r *sp.StartupReport) { r.ClaimID = uuid.NewString() },
+		"foreign instance": func(_ *model.WorkerClaim, r *sp.StartupReport) { r.ControllerInstanceID = uuid.NewString() },
+		"foreign owner":    func(w *model.WorkerClaim, _ *sp.StartupReport) { w.UserID = uuid.NewString() },
+		"foreign worker":   func(w *model.WorkerClaim, _ *sp.StartupReport) { w.WorkerID = uuid.NewString() },
+		"foreign worktree": func(w *model.WorkerClaim, _ *sp.StartupReport) { w.WorktreeID = uuid.NewString() },
 	} {
 		t.Run(name, func(t *testing.T) {
 			w, r := worker, report

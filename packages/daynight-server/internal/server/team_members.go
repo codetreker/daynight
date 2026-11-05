@@ -4,11 +4,11 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
-func (h *teamHandler) listMembers(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) listMembers(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	if _, err := queryValues(r); err != nil {
@@ -54,10 +54,10 @@ func teamMemberInput(w http.ResponseWriter, r *http.Request, roleRequired bool) 
 			return service.ChangeTeamMember{}, err
 		}
 	}
-	return service.ChangeTeamMember{Version: version, ExpectedUserID: expected, Role: core.ProjectRole(role)}, nil
+	return service.ChangeTeamMember{Version: version, ExpectedUserID: expected, Role: model.ProjectRole(role)}, nil
 }
 
-func actorRoleResponse(role *core.ProjectRole) *string {
+func actorRoleResponse(role *model.ProjectRole) *string {
 	if role == nil {
 		return nil
 	}
@@ -65,7 +65,7 @@ func actorRoleResponse(role *core.ProjectRole) *string {
 	return &value
 }
 
-func (h *teamHandler) setMemberRole(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) setMemberRole(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	input, err := teamMemberInput(w, r, true)
@@ -81,7 +81,7 @@ func (h *teamHandler) setMemberRole(w http.ResponseWriter, r *http.Request, p co
 	writeTeamJSON(w, r, logger.With("team_id", result.Membership.TeamID), http.StatusOK, api.TeamMemberRoleReceipt{Membership: teamMemberResponse(result.Membership), ActorRole: actorRoleResponse(result.ActorRole)})
 }
 
-func (h *teamHandler) removeMember(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) removeMember(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	input, err := teamMemberInput(w, r, false)

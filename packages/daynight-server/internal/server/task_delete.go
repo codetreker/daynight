@@ -3,11 +3,11 @@ package server
 import (
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
-func (h *taskHandler) delete(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) delete(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {

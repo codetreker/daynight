@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -25,7 +25,7 @@ func TestTaskPropertySetRemovePresenceAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed.Version != target.Version+1 || !changed.UpdatedAt.After(target.UpdatedAt) || changed.Title != target.Title || !reflect.DeepEqual(testPRs(t, changed.Properties), []core.PullRequestProperty{{URL: "opaque\x00", Title: "Evidence"}}) {
+	if changed.Version != target.Version+1 || !changed.UpdatedAt.After(target.UpdatedAt) || changed.Title != target.Title || !reflect.DeepEqual(testPRs(t, changed.Properties), []model.PullRequestProperty{{URL: "opaque\x00", Title: "Evidence"}}) {
 		t.Fatalf("set result: %#v", changed)
 	}
 	same, err := tasks.SetProperty(ctx, principal, project.ID, target.ID, "pullRequests", ` [ { "title":"Evidence", "url":"opaque\u0000" } ] `, changed.Version)
@@ -97,12 +97,12 @@ func TestTaskPausedPropertyPreservesActiveExecutionAndPresence(t *testing.T) {
 	tasks, _, project, _, principal := taskService(t)
 	ctx := context.Background()
 	target := claimableTask(t, tasks, principal, project.ID)
-	target = updateTask(t, tasks, principal, target, UpdateTask{Properties: propertyPatch(core.PullRequestProperty{URL: "pull-request", Title: "Evidence"})})
+	target = updateTask(t, tasks, principal, target, UpdateTask{Properties: propertyPatch(model.PullRequestProperty{URL: "pull-request", Title: "Evidence"})})
 	target = claimWorkerTask(t, tasks, principal, target, workerDescriptor())
-	if _, exists := target.Properties["paused"]; exists || target.Status != core.TaskInProgress {
+	if _, exists := target.Properties["paused"]; exists || target.Status != model.TaskInProgress {
 		t.Fatalf("claim synthesized pause state or did not start execution: %#v", target)
 	}
-	assertExecutionPreserved := func(actual core.Task) {
+	assertExecutionPreserved := func(actual model.Task) {
 		t.Helper()
 		actual.Version = target.Version
 		actual.UpdatedAt = target.UpdatedAt
@@ -164,7 +164,7 @@ func TestIllegalStoredPropertiesRemainInputErrorsAndPreserveTask(t *testing.T) {
 			actions := []func() error{
 				func() error { _, err := tasks.Get(ctx, principal, project.ID, target.ID); return err },
 				func() error {
-					_, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 10}})
+					_, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
 					return err
 				},
 				func() error {

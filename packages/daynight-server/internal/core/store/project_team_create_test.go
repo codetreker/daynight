@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -37,7 +37,7 @@ func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
 				t.Fatalf("delete: %v", err)
 			}
 			result := receiveQueryResult(t, ctx, done)
-			if rollback && result != nil || !rollback && !errors.Is(result, core.ErrNotFound) {
+			if rollback && result != nil || !rollback && !errors.Is(result, model.ErrNotFound) {
 				t.Fatalf("create: %v", result)
 			}
 			var count int
@@ -148,14 +148,14 @@ func TestExplicitPersonalProjectCreationRejectsOtherOwnerAndCorruptMembership(t 
 			id := uuid.NewString()
 			project, access, err := s.CreateProjectInTeam(ctx, actor, id, "Rejected", "host:repo", &teamID)
 			var failure *TransactionError
-			if err == nil || project != (core.Project{}) || access.ProjectID != "" || !errors.As(err, &failure) || failure.Outcome != TransactionNotCommitted || failure.CommitAttempted || failure.CleanupFailed {
+			if err == nil || project != (model.Project{}) || access.ProjectID != "" || !errors.As(err, &failure) || failure.Outcome != TransactionNotCommitted || failure.CommitAttempted || failure.CleanupFailed {
 				t.Fatalf("failure result %#v %#v %#v %v", project, access, failure, err)
 			}
 			if scenario == "other owner" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("other Personal owner not hidden: %v", err)
 				}
-			} else if errors.Is(err, core.ErrNotFound) || failure.Cause.Error() != "Personal Team owner membership is invalid" {
+			} else if errors.Is(err, model.ErrNotFound) || failure.Cause.Error() != "Personal Team owner membership is invalid" {
 				t.Fatalf("Personal corruption was hidden: %v", err)
 			}
 			var empty bool

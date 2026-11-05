@@ -1,11 +1,11 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"errors"
 	"log/slog"
 	"net/http"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/webui"
 )
 
@@ -34,7 +34,7 @@ func uiHandler(logger *slog.Logger, serve func(http.ResponseWriter, *http.Reques
 				return
 			}
 			if errors.Is(err, webui.ErrNotFound) {
-				err = &service.Fault{Code: "not_found", Message: "resource not found", Cause: err}
+				err = &model.Fault{Code: "not_found", Message: "resource not found", Cause: err}
 			}
 			writeError(w, request, logger, "webui", "read", err)
 		}

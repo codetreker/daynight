@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -21,7 +21,7 @@ type projectCursor struct {
 	ID        string                 `json:"id"`
 }
 
-func projectListPage(request PageRequest, userID string, scope store.ProjectScope) (store.Page, error) {
+func projectListPage(request model.PageRequest, userID string, scope store.ProjectScope) (store.Page, error) {
 	if request.Limit < 1 || request.Limit > 100 {
 		return store.Page{}, invalidInput("Limit must be between 1 and 100.")
 	}
@@ -49,7 +49,7 @@ func projectListPage(request PageRequest, userID string, scope store.ProjectScop
 	return page, nil
 }
 
-func encodeProjectCursor(project core.Project, userID string, scope store.ProjectScope) (string, error) {
+func encodeProjectCursor(project model.Project, userID string, scope store.ProjectScope) (string, error) {
 	data, err := json.Marshal(projectCursor{Version: 2, Kind: "scoped-projects", UserID: userID, Scope: scope.Kind, TeamID: scope.TeamID, CreatedAt: project.CreatedAt, ID: project.ID})
 	if err != nil {
 		return "", err

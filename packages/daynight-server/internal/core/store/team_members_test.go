@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -17,8 +17,8 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 	ctx := context.Background()
 	_, other, _ := testAuthRecords(t, s)
 	mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, other.UserID)
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		original, err := snapshot.TeamMembers(ctx, team.ID)
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		original, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if err != nil {
 			return err
 		}
@@ -37,8 +37,8 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 			if err != nil || count != 1 {
 				t.Fatalf("admin count %d %v", count, err)
 			}
-			updated, err := tx.SetMemberRole(ctx, other.UserID, core.ProjectAdmin)
-			if err != nil || updated.Role != core.ProjectAdmin || updated.Version <= member.Version {
+			updated, err := tx.SetMemberRole(ctx, other.UserID, model.ProjectAdmin)
+			if err != nil || updated.Role != model.ProjectAdmin || updated.Version <= member.Version {
 				t.Fatalf("updated relation %#v %v", updated, err)
 			}
 			return nil
@@ -46,7 +46,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		again, err := snapshot.TeamMembers(ctx, team.ID)
+		again, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if err == nil && !reflect.DeepEqual(original, again) {
 			t.Fatalf("snapshot changed: %#v %#v", original, again)
 		}
@@ -66,7 +66,7 @@ func TestTeamMemberStoreSnapshotAndMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { _, err := tx.Member(ctx, other.UserID); return err })
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("removed membership: %v", err)
 	}
 }
@@ -117,9 +117,9 @@ func TestTeamMemberDirectoryFailuresDoNotPublishPartialResults(t *testing.T) {
 	ctx := context.Background()
 	for _, mode := range []string{"query", "scan", "stream"} {
 		cause := errors.New("directory stream failure")
-		err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-			snapshot.tx = teamMembersFailureTx{Tx: snapshot.tx, cause: cause, scan: mode == "scan", failQuery: mode == "query"}
-			items, err := snapshot.TeamMembers(ctx, team.ID)
+		err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			snapshot.(*Snapshot).tx = teamMembersFailureTx{Tx: snapshot.(*Snapshot).tx, cause: cause, scan: mode == "scan", failQuery: mode == "query"}
+			items, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 			if items != nil || !errors.Is(err, cause) {
 				t.Fatalf("partial directory %#v: %v", items, err)
 			}
@@ -130,20 +130,20 @@ func TestTeamMemberDirectoryFailuresDoNotPublishPartialResults(t *testing.T) {
 		}
 	}
 	mustQueryExec(t, s, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, team.ID, uuid.NewString())
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		items, err := snapshot.TeamMembers(ctx, team.ID)
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		items, err := snapshot.TeamDAO().TeamMembers(ctx, team.ID)
 		if items != nil || err == nil {
 			t.Fatalf("missing user accepted: %#v %v", items, err)
 		}
 		return err
 	})
-	if err == nil || errors.Is(err, core.ErrNotFound) {
+	if err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("integrity failure hidden: %v", err)
 	}
-	err = s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	err = s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		canceled, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := snapshot.TeamMembers(canceled, team.ID)
+		_, err := snapshot.TeamDAO().TeamMembers(canceled, team.ID)
 		return err
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -164,7 +164,7 @@ func TestTeamMemberMutationFailuresRollbackAndPreserveCauses(t *testing.T) {
  CREATE TRIGGER refuse_member_change BEFORE `+event+` ON team_members FOR EACH ROW EXECUTE FUNCTION refuse_member_change()`)
 			err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
 				if operation == "update" {
-					_, err := tx.SetMemberRole(ctx, actor.UserID, core.ProjectMemberRole)
+					_, err := tx.SetMemberRole(ctx, actor.UserID, model.ProjectMemberRole)
 					return err
 				}
 				return tx.RemoveMember(ctx, actor.UserID)
@@ -185,7 +185,7 @@ func TestTeamMemberCancellationAndUnknownCommit(t *testing.T) {
 	s, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
-		if _, err := tx.SetMemberRole(ctx, actor.UserID, core.ProjectMemberRole); err != nil {
+		if _, err := tx.SetMemberRole(ctx, actor.UserID, model.ProjectMemberRole); err != nil {
 			return err
 		}
 		cancel()
@@ -209,14 +209,14 @@ func TestTeamMemberCancellationAndUnknownCommit(t *testing.T) {
 		if err := raw.QueryRow(base, `SELECT id::text FROM teams WHERE id=$1 FOR UPDATE`, team.ID).Scan(&id); err != nil {
 			return err
 		}
-		_, err := (&TeamTx{tx: raw, teamID: team.ID}).SetMemberRole(base, actor.UserID, core.ProjectMemberRole)
+		_, err := (&TeamTx{tx: raw, teamID: team.ID}).SetMemberRole(base, actor.UserID, model.ProjectMemberRole)
 		return err
 	})
 	if !errors.Is(err, lost) || !errors.As(err, &failure) || failure.Outcome != TransactionUnknown || !failure.CommitAttempted {
 		t.Fatalf("unknown write %#v %v", failure, err)
 	}
 	got := readStoreTeam(t, s, actor.UserID, team.ID)
-	if got.Membership.Role != core.ProjectMemberRole || got.Membership.Version <= team.Membership.Version {
+	if got.Membership.Role != model.ProjectMemberRole || got.Membership.Version <= team.Membership.Version {
 		t.Fatalf("actual committed membership: %#v", got.Membership)
 	}
 }

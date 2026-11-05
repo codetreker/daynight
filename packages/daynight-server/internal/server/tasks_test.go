@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -439,9 +439,9 @@ func TestTaskHTTPKnownFaultsPreserveOperationalPrecedence(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, err := range []error{
-		&service.Fault{Code: "unknown", Message: "unknown-secret"},
-		errors.Join(&service.Fault{Code: "not_found", Message: "domain-secret"}, &pgconn.PgError{Message: "driver-secret"}),
-		errors.Join(&service.Fault{Code: "not_found", Message: "domain-secret"}, context.Canceled),
+		&model.Fault{Code: "unknown", Message: "unknown-secret"},
+		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, &pgconn.PgError{Message: "driver-secret"}),
+		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, context.Canceled),
 	} {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)

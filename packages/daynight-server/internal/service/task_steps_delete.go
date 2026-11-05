@@ -5,20 +5,21 @@ import (
 	"errors"
 	"math"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
 
 type DeleteTaskStep struct{ Version int64 }
 
-func (s *TaskSteps) Delete(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, input DeleteTaskStep) (StepsWriteResult, error) {
+func (s *TaskSteps) Delete(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, input DeleteTaskStep) (StepsWriteResult, error) {
 	result := StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}
 	projectID, taskID, err := taskWriteIdentity(principal, projectID, taskID, input.Version)
 	if err != nil {
 		return result, err
 	}
-	stepID, err = tasksteps.CanonicalID(stepID)
+	stepID, err = taskcodec.CanonicalID(stepID)
 	if err != nil {
 		return result, invalidInput(err.Error())
 	}
@@ -36,25 +37,25 @@ func (s *TaskSteps) Delete(ctx context.Context, principal core.Principal, projec
 		if err != nil {
 			return err
 		}
-		if _, err := tasksteps.Collection(header, current); err != nil {
+		if _, err := taskcodec.Collection(header, current); err != nil {
 			return err
 		}
 		candidate, index, err := tasksteps.DeleteCandidate(current, stepID)
 		if errors.Is(err, tasksteps.ErrTargetNotFound) {
-			return &Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
+			return &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
 		}
 		if err != nil {
 			return err
 		}
 		if header.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
 		observed, err := tx.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
 		header.Version++
-		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
+		result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}

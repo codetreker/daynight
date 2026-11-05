@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -67,7 +67,7 @@ func TestInstalledCLITaskStepsAddAcceptance(t *testing.T) {
 		first := acceptanceCLIJSON[api.StepsResource](t, firstText)
 		taskStepsCompleteJSON(t, firstText, false)
 		requests := taskStepsAddRequestBudget(t, process, project, mark, "POST "+taskStepsCollectionRoute)
-		if first.ProjectID != project.ID || first.TaskID != task.ID || first.Version != 2 || len(first.Steps) != 1 || first.Steps[0].ID != "00abcdef" || first.Steps[0].Title != title || first.Steps[0].Description != "" || first.Steps[0].Status != core.TaskStepTodo || first.Steps[0].CreatedAt != first.Steps[0].UpdatedAt {
+		if first.ProjectID != project.ID || first.TaskID != task.ID || first.Version != 2 || len(first.Steps) != 1 || first.Steps[0].ID != "00abcdef" || first.Steps[0].Title != title || first.Steps[0].Description != "" || first.Steps[0].Status != model.TaskStepTodo || first.Steps[0].CreatedAt != first.Steps[0].UpdatedAt {
 			t.Fatal("explicit Add lost defaults, canonical identity or complete +1 receipt")
 		}
 		taskStepsAddProducerTarget(t, process, requests[0].RequestID, "00abcdef")
@@ -76,7 +76,7 @@ func TestInstalledCLITaskStepsAddAcceptance(t *testing.T) {
 		second := acceptanceCLIJSON[api.StepsResource](t, secondText)
 		taskStepsCompleteJSON(t, secondText, false)
 		requests = taskStepsAddRequestBudget(t, process, project, mark, "GET "+taskStepsCollectionRoute, "POST "+taskStepsCollectionRoute)
-		if second.Version != 3 || len(second.Steps) != 2 || second.Steps[0].ID != "12345678" || second.Steps[0].Title != title || second.Steps[0].Description != description || second.Steps[0].Status != core.TaskStepDone || second.Steps[0].CreatedAt != second.Steps[0].UpdatedAt || second.Steps[1] != first.Steps[0] {
+		if second.Version != 3 || len(second.Steps) != 2 || second.Steps[0].ID != "12345678" || second.Steps[0].Title != title || second.Steps[0].Description != description || second.Steps[0].Status != model.TaskStepDone || second.Steps[0].CreatedAt != second.Steps[0].UpdatedAt || second.Steps[1] != first.Steps[0] {
 			t.Fatal("default-version before Add changed old fields/order or new text/state")
 		}
 		taskStepsAddProducerTarget(t, process, requests[1].RequestID, "12345678")
@@ -88,13 +88,13 @@ func TestInstalledCLITaskStepsAddAcceptance(t *testing.T) {
 			t.Fatal("generated Add did not return three complete records")
 		}
 		generated := third.Steps[1]
-		if third.Version != 4 || len(third.Steps) != 3 || !regexp.MustCompile(`^[0-9a-f]{8}$`).MatchString(generated.ID) || generated.Title != title || generated.Description != "" || generated.Status != core.TaskStepInProgress || generated.CreatedAt != generated.UpdatedAt || third.Steps[0] != second.Steps[0] || third.Steps[2] != second.Steps[1] {
+		if third.Version != 4 || len(third.Steps) != 3 || !regexp.MustCompile(`^[0-9a-f]{8}$`).MatchString(generated.ID) || generated.Title != title || generated.Description != "" || generated.Status != model.TaskStepInProgress || generated.CreatedAt != generated.UpdatedAt || third.Steps[0] != second.Steps[0] || third.Steps[2] != second.Steps[1] {
 			t.Fatal("generated Add identity/after placement or unchanged rows lost")
 		}
 		taskStepsAddProducerTarget(t, process, requests[0].RequestID, generated.ID)
 		fourthText := add("--if-version", "4", "--id", "fedcba98", "--title", "\uFEFF", "--status", "skipped", "--json")
 		fourth := acceptanceCLIJSON[api.StepsResource](t, fourthText)
-		if fourth.Version != 5 || len(fourth.Steps) != 4 || fourth.Steps[3].ID != "fedcba98" || fourth.Steps[3].Status != core.TaskStepSkipped {
+		if fourth.Version != 5 || len(fourth.Steps) != 4 || fourth.Steps[3].ID != "fedcba98" || fourth.Steps[3].Status != model.TaskStepSkipped {
 			t.Fatal("append or independent skipped state was not confirmed")
 		}
 		if read := acceptanceDecode[api.StepsResource](t, process.request(context.Background(), http.MethodGet, acceptanceTaskPath(task)+"/steps", nil, "steps-add-readback"), http.StatusOK); len(read.Steps) != 4 || read.Steps[1].ID != generated.ID || read.Steps[0].Description != description {

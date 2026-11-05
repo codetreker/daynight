@@ -8,7 +8,7 @@
 
 页面在已认证的 `TaskCacheProvider` 内调用一次 `useBotSessionCache()`，把返回值与已验证的 `binding` 传给 `BotSessionHost`。选中项尚未取得绑定时传 `null`，不沿用旧绑定。缓存 hook 应放在选中项与详情面板之上，不能以选中 Bot 或详情开关作为 key。关闭页面内容时可传 `active=false`；删除或权威拒绝访问调用 `cache.invalidateBot(botId)`。同一账号 scope 内被撤销的 Bot 不接受陈旧选择，页面重挂不撤销该标记；重新授权须在新的有效身份范围建立缓存。
 
-`BotSessionHost` 始终渲染同一个 shell，pane 以完整绑定的 JSON key 区分。当前选择直接控制 `hidden`、`inert` 和 `active`，布局 effect 才创建新客户端。`isCurrent` 由账号范围、撤权状态和 pane 的实际客户端身份决定，不依赖当前可见项。非当前 pane 可同步消息；共享 View 的发送和交互控件还要求 `active`，不会将可见性变化当成身份撤销。详情布局与模式使用共享组件，未复制聊天 renderer 或 reducer。
+`BotSessionHost` 始终渲染同一个 shell，pane 以完整绑定的 JSON key 区分。当前选择直接控制 `hidden`、`inert` 和 `active`，布局 effect 才创建新客户端。`isCurrent` 由账号范围、撤权状态和 pane 的实际客户端身份决定，不依赖当前可见项。非当前 pane 可同步消息；共享 View 的发送和交互控件还要求 `active`，不会将可见性变化当成身份撤销。普通后台检查不改变当前已确认绑定或 Host 的展示 active；client 的 `authPaused` 暂停发送和结果发布，保留原 pane、Timeline 和本地交互状态。可复用的 channel 在暂停期间保留，现有 60 秒和消息缓冲边界或真实传输中断会触发必要的断开与恢复；重连等待当前准入，并沿用 cursor 重放和代际拒绝。详情布局与模式使用共享组件，未复制聊天 renderer 或 reducer。
 
 ## 有界资源与轻量保留
 

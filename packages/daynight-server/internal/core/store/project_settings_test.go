@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -35,13 +35,13 @@ func TestProjectSettingsMigrationPreservesHistoricalMetadataAndTiming(t *testing
 	if err := migrate(ctx, pool, schemaMigrations[:10]); err != nil {
 		t.Fatal(err)
 	}
-	var migrated core.Project
+	var migrated model.Project
 	if err := pool.QueryRow(ctx, `SELECT id::text,name,repo_url,created_at,updated_at,settings_version,execution_warning_minutes
 		FROM projects WHERE id=$1`, project.ID).Scan(&migrated.ID, &migrated.Name, &migrated.RepoURL, &migrated.CreatedAt,
 		&migrated.UpdatedAt, &migrated.Settings.Version, &migrated.Settings.ExecutionWarningMinutes); err != nil {
 		t.Fatal(err)
 	}
-	if migrated.ID != project.ID || migrated.Name != project.Name || migrated.RepoURL != project.RepoURL || !migrated.CreatedAt.Equal(stamp) || !migrated.UpdatedAt.Equal(stamp.Add(time.Hour)) || migrated.Settings != (core.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) || taskMetadata() != beforeTask {
+	if migrated.ID != project.ID || migrated.Name != project.Name || migrated.RepoURL != project.RepoURL || !migrated.CreatedAt.Equal(stamp) || !migrated.UpdatedAt.Equal(stamp.Add(time.Hour)) || migrated.Settings != (model.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) || taskMetadata() != beforeTask {
 		t.Fatalf("settings migration changed history or omitted defaults: %#v", migrated)
 	}
 	for _, field := range []string{"execution_warning_minutes", "settings_version"} {
@@ -69,10 +69,10 @@ func TestProjectSettingsStoreUpdatesAndRollbackKeepOneProjectResource(t *testing
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
 	other := queryProject(t, database, 2)
-	if project.Settings != (core.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) {
+	if project.Settings != (model.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) {
 		t.Fatalf("new project has no explicit settings default: %#v", project)
 	}
-	var saved core.Project
+	var saved model.Project
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		before, err := tx.Project(ctx)
 		if err != nil {
@@ -86,7 +86,7 @@ func TestProjectSettingsStoreUpdatesAndRollbackKeepOneProjectResource(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if saved.Settings != (core.ProjectSettings{Version: 2, ExecutionWarningMinutes: 90}) || !saved.UpdatedAt.After(project.UpdatedAt) || !saved.CreatedAt.Equal(project.CreatedAt) {
+	if saved.Settings != (model.ProjectSettings{Version: 2, ExecutionWarningMinutes: 90}) || !saved.UpdatedAt.After(project.UpdatedAt) || !saved.CreatedAt.Equal(project.CreatedAt) {
 		t.Fatalf("settings write changed the wrong metadata: %#v", saved)
 	}
 	failure := errors.New("reject project transaction after setting write")
@@ -98,20 +98,20 @@ func TestProjectSettingsStoreUpdatesAndRollbackKeepOneProjectResource(t *testing
 	}); !errors.Is(err, failure) {
 		t.Fatalf("rollback lost its original cause: %v", err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		read, err := snapshot.Project(ctx, project.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		read, err := snapshot.ProjectDAO().Project(ctx, project.ID)
 		if err != nil {
 			return err
 		}
-		unchanged, err := snapshot.Project(ctx, other.ID)
+		unchanged, err := snapshot.ProjectDAO().Project(ctx, other.ID)
 		if err != nil {
 			return err
 		}
-		page, err := snapshot.Projects(ctx, Page{Limit: 10})
+		page, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 10})
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(read, saved) || !reflect.DeepEqual(unchanged, other) || !reflect.DeepEqual(page.Items, []core.Project{saved, other}) {
+		if !reflect.DeepEqual(read, saved) || !reflect.DeepEqual(unchanged, other) || !reflect.DeepEqual(page.Items, []model.Project{saved, other}) {
 			t.Fatalf("project settings lost isolation, rollback or list consistency: %#v %#v %#v", read, unchanged, page)
 		}
 		return nil

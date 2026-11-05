@@ -10,18 +10,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func assignmentChange(value *string) **string { return &value }
 
-func createAssignedTask(t *testing.T, tasks *Tasks, actor core.Principal, projectID string, assigned *string) core.Task {
+func createAssignedTask(t *testing.T, tasks *Tasks, actor model.Principal, projectID string, assigned *string) model.Task {
 	t.Helper()
 	created, err := tasks.Create(context.Background(), actor, projectID, CreateTask{
 		Title: "Assigned responsibility", Description: "Preserved material", AssignedTo: assigned,
-		Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00", Title: "Evidence"}),
+		Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00", Title: "Evidence"}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func createAssignedTask(t *testing.T, tasks *Tasks, actor core.Principal, projec
 	return created
 }
 
-func assertAssignmentChanged(t *testing.T, before, after core.Task, assigned *string) {
+func assertAssignmentChanged(t *testing.T, before, after model.Task, assigned *string) {
 	t.Helper()
 	if !equalOptional(after.AssignedTo, assigned) || after.AllowAgents || after.Version != before.Version+1 || !after.UpdatedAt.After(before.UpdatedAt) {
 		t.Fatalf("assignment transition: before %#v, after %#v", before, after)
@@ -51,7 +51,7 @@ func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 		if want != nil {
 			want = &alice.UserID
 		}
-		if !equalOptional(created.AssignedTo, want) || created.AllowAgents || created.Version != 1 || created.Status != core.TaskTodo {
+		if !equalOptional(created.AssignedTo, want) || created.AllowAgents || created.Version != 1 || created.Status != model.TaskTodo {
 			t.Fatalf("creation assignment: %#v", created)
 		}
 	}
@@ -62,7 +62,7 @@ func TestTaskAssignmentCreateAndTransitions(t *testing.T) {
 	outsider := servicePrincipal(t, database)
 	_, err := tasks.Create(ctx, admin, project.ID, CreateTask{Title: "Ineligible assignment", AssignedTo: &outsider.UserID})
 	requireFault(t, err, "invalid_input")
-	for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskDone} {
+	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskDone} {
 		for _, transition := range []struct{ before, after *string }{
 			{nil, &alice.UserID}, {&alice.UserID, &bob.UserID}, {&alice.UserID, nil},
 		} {
@@ -80,7 +80,7 @@ func TestTaskAssignmentNoOpsAndExecutionLocks(t *testing.T) {
 	ctx := context.Background()
 	alice, bob := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 	for _, assigned := range []*string{nil, &alice.UserID} {
-		for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+		for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 			before := createAssignedTask(t, tasks, admin, project.ID, assigned)
 			before = updateTask(t, tasks, admin, before, UpdateTask{AllowAgents: pointer(true)})
 			before = setStatusTask(t, tasks, admin, before, status)
@@ -94,7 +94,7 @@ func TestTaskAssignmentNoOpsAndExecutionLocks(t *testing.T) {
 			}
 			_, err := tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version - 1, AssignedTo: assignmentChange(equal)})
 			requireFault(t, err, "version_conflict")
-			if status == core.TaskInProgress {
+			if status == model.TaskInProgress {
 				for _, value := range []*string{&bob.UserID, nil} {
 					if equalOptional(value, assigned) {
 						continue
@@ -131,7 +131,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	if same := updateTask(t, tasks, admin, before, UpdateTask{AssignedTo: assignmentChange(pointer(strings.ToUpper(alice.UserID)))}); !reflect.DeepEqual(same, before) {
 		t.Fatal("historical same assignment changed the task")
 	}
-	current := updateTask(t, tasks, admin, before, UpdateTask{AssignedTo: assignmentChange(&alice.UserID), Title: pointer("Legitimate metadata"), RequiredPlatform: platformChange(pointer(core.PlatformLinux))})
+	current := updateTask(t, tasks, admin, before, UpdateTask{AssignedTo: assignmentChange(&alice.UserID), Title: pointer("Legitimate metadata"), RequiredPlatform: platformChange(pointer(model.PlatformLinux))})
 	if !equalOptional(current.AssignedTo, &alice.UserID) || !current.AllowAgents {
 		t.Fatal("unrelated metadata requalified or cleared a former assignee")
 	}
@@ -146,7 +146,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	if same, err := tasks.RemoveProperty(ctx, admin, project.ID, current.ID, "paused", current.Version); err != nil || !reflect.DeepEqual(same, current) {
 		t.Fatal("absent property removal changed assignment", err)
 	}
-	for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskInProgress, core.TaskDone, core.TaskTodo} {
+	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskInProgress, model.TaskDone, model.TaskTodo} {
 		current = setStatusTask(t, tasks, admin, current, status)
 		if !equalOptional(current.AssignedTo, &alice.UserID) || !current.AllowAgents {
 			t.Fatalf("status %s lost historical responsibility", status)
@@ -170,7 +170,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	_, err := tasks.Update(ctx, admin, project.ID, current.ID, UpdateTask{Version: current.Version, AssignedTo: assignmentChange(&bob.UserID)})
 	requireFault(t, err, "invalid_transition")
 	assertTaskUnchanged(t, tasks, admin, current)
-	phase := core.WorkerExecuting
+	phase := model.WorkerExecuting
 	current, err = tasks.UpdateWorker(ctx, owner, project.ID, current.ID, UpdateWorker{Version: current.Version, ClaimID: descriptor.ClaimID, Phase: &phase})
 	if err != nil {
 		t.Fatal(err)
@@ -202,12 +202,12 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	if err != nil || !equalOptional(current.AssignedTo, &bob.UserID) || current.AllowAgents {
 		t.Fatal("manual resume lost responsibility or reset its permission", err)
 	}
-	current, err = tasks.SetStatus(ctx, owner, project.ID, current.ID, SetTaskStatus{Version: current.Version, Status: core.TaskDone, ClaimID: &next.ClaimID})
+	current, err = tasks.SetStatus(ctx, owner, project.ID, current.ID, SetTaskStatus{Version: current.Version, Status: model.TaskDone, ClaimID: &next.ClaimID})
 	if err != nil || !equalOptional(current.AssignedTo, &bob.UserID) {
 		t.Fatal("claim completion lost responsibility", err)
 	}
 	current = startTask(t, tasks, admin, current)
-	if !equalOptional(current.AssignedTo, &bob.UserID) || testWorker(t, current.Properties).State != core.WorkerCompleted {
+	if !equalOptional(current.AssignedTo, &bob.UserID) || testWorker(t, current.Properties).State != model.WorkerCompleted {
 		t.Fatal("reopening changed responsibility or historical ownership")
 	}
 	withdrawn := createAssignedTask(t, tasks, admin, project.ID, &owner.UserID)
@@ -230,13 +230,13 @@ func TestTaskAssignmentCompetesWithExecutionAndPermission(t *testing.T) {
 				before = updateTask(t, tasks, admin, before, UpdateTask{AllowAgents: pointer(true)})
 			}
 			results := competeTaskWrites(t, database, project.ID,
-				func(ctx context.Context) (core.Task, error) {
+				func(ctx context.Context) (model.Task, error) {
 					return tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&bob.UserID)})
 				},
-				func(ctx context.Context) (core.Task, error) {
+				func(ctx context.Context) (model.Task, error) {
 					switch competitor {
 					case "start":
-						return tasks.SetStatus(ctx, admin, project.ID, before.ID, SetTaskStatus{Version: before.Version, Status: core.TaskInProgress})
+						return tasks.SetStatus(ctx, admin, project.ID, before.ID, SetTaskStatus{Version: before.Version, Status: model.TaskInProgress})
 					case "claim":
 						return tasks.ClaimWorker(ctx, alice, project.ID, before.ID, ClaimWorker{Version: before.Version, WorkerDescriptor: workerDescriptor()})
 					default:
@@ -249,7 +249,7 @@ func TestTaskAssignmentCompetesWithExecutionAndPermission(t *testing.T) {
 				t.Fatal("race did not commit exactly one mutation", err)
 			}
 			if equalOptional(after.AssignedTo, &bob.UserID) {
-				if after.AllowAgents || after.Status != core.TaskTodo || testWorker(t, after.Properties) != nil {
+				if after.AllowAgents || after.Status != model.TaskTodo || testWorker(t, after.Properties) != nil {
 					t.Fatal("winning assignment admitted execution or permission")
 				}
 			} else if !equalOptional(after.AssignedTo, &alice.UserID) || !after.AllowAgents {
@@ -265,21 +265,21 @@ func TestTaskAssignmentNoOpAndClaimCanBothSucceed(t *testing.T) {
 	before := createAssignedTask(t, tasks, admin, project.ID, &owner.UserID)
 	before = updateTask(t, tasks, admin, before, UpdateTask{AllowAgents: pointer(true)})
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&owner.UserID)})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.ClaimWorker(ctx, owner, project.ID, before.ID, ClaimWorker{Version: before.Version, WorkerDescriptor: workerDescriptor()})
 		})
 	for _, result := range results {
 		if result.err != nil {
 			requireFault(t, result.err, "version_conflict")
-		} else if result.task.Status == core.TaskTodo && !reflect.DeepEqual(result.task, before) {
+		} else if result.task.Status == model.TaskTodo && !reflect.DeepEqual(result.task, before) {
 			t.Fatal("successful equal assignment was not a no-op")
 		}
 	}
 	after, err := tasks.Get(context.Background(), admin, project.ID, before.ID)
-	if err != nil || after.Status != core.TaskInProgress || after.Version != before.Version+1 || !after.AllowAgents || !equalOptional(after.AssignedTo, &owner.UserID) || testWorker(t, after.Properties).UserID != owner.UserID {
+	if err != nil || after.Status != model.TaskInProgress || after.Version != before.Version+1 || !after.AllowAgents || !equalOptional(after.AssignedTo, &owner.UserID) || testWorker(t, after.Properties).UserID != owner.UserID {
 		t.Fatalf("equal assignment interfered with claim: %#v, %v", after, err)
 	}
 }
@@ -382,7 +382,7 @@ func TestTaskAssignmentFailuresPreserveAtomicityAndCause(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION refuse_assignment_edge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1028',MESSAGE='private assignment edge'; END $$; CREATE TRIGGER refuse_assignment_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION refuse_assignment_edge()`); err != nil {
 			t.Fatal(err)
 		}
-		_, err := tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&bob.UserID), Description: pointer("Must not save"), Properties: propertyPatch(core.PullRequestProperty{URL: "new", Title: "new"})})
+		_, err := tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&bob.UserID), Description: pointer("Must not save"), Properties: propertyPatch(model.PullRequestProperty{URL: "new", Title: "new"})})
 		assertOperational(t, err)
 		var pg *pgconn.PgError
 		if !errors.As(err, &pg) || pg.Code != "P1028" || strings.Contains(err.Error(), "private assignment") {

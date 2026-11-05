@@ -10,7 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -36,10 +36,10 @@ type DeviceInspection struct {
 }
 
 func deviceRateFault() error {
-	return &Fault{Code: "rate_limited", Message: "Too many device authorization attempts. Please wait before trying again."}
+	return &model.Fault{Code: "rate_limited", Message: "Too many device authorization attempts. Please wait before trying again."}
 }
 func (s *Identity) deviceRate(ctx context.Context, operation, actor string, globalLimit, actorLimit int) error {
-	allowed, err := s.store.TakeDeviceRate(ctx, []core.DeviceRateBucket{{Hash: secretHash(operation), Limit: globalLimit}, {Hash: secretHash(operation + ":" + actor), Limit: actorLimit}}, s.now().UTC())
+	allowed, err := s.store.TakeDeviceRate(ctx, []model.DeviceRateBucket{{Hash: secretHash(operation), Limit: globalLimit}, {Hash: secretHash(operation + ":" + actor), Limit: actorLimit}}, s.now().UTC())
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func (s *Identity) StartDevice(ctx context.Context, clientID, source string) (De
 			code.WriteByte(deviceAlphabet[n.Int64()])
 		}
 		result := DeviceStart{DeviceCode: randomSecret(""), UserCode: code.String(), ExpiresAt: now.Add(DeviceLifetime)}
-		err := s.store.CreateDeviceAuthorization(ctx, core.DeviceAuthorization{ID: uuid.NewString(), DeviceCodeHash: secretHash(result.DeviceCode), UserCode: result.UserCode, CreatedAt: now, ExpiresAt: result.ExpiresAt, NextPollAt: now.Add(5 * time.Second), PollIntervalSeconds: 5})
+		err := s.store.CreateDeviceAuthorization(ctx, model.DeviceAuthorization{ID: uuid.NewString(), DeviceCodeHash: secretHash(result.DeviceCode), UserCode: result.UserCode, CreatedAt: now, ExpiresAt: result.ExpiresAt, NextPollAt: now.Add(5 * time.Second), PollIntervalSeconds: 5})
 		var conflict *pgconn.PgError
 		if errors.As(err, &conflict) && conflict.Code == "23505" {
 			continue
@@ -96,8 +96,8 @@ func normalizeDeviceCode(code string) (string, error) {
 	return code, nil
 }
 
-func (s *Identity) deviceBrowser(ctx context.Context, p core.Principal, code string) (string, error) {
-	if p.Kind != core.SessionCredential {
+func (s *Identity) deviceBrowser(ctx context.Context, p model.Principal, code string) (string, error) {
+	if p.Kind != model.SessionCredential {
 		return "", forbidden()
 	}
 	if err := s.deviceRate(ctx, "device-lookup", p.UserID, 120, 12); err != nil {
@@ -107,13 +107,13 @@ func (s *Identity) deviceBrowser(ctx context.Context, p core.Principal, code str
 }
 
 func deviceLookupError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
-		return &Fault{Code: "not_found", Message: "Device authorization was not found."}
+	if errors.Is(err, model.ErrNotFound) {
+		return &model.Fault{Code: "not_found", Message: "Device authorization was not found."}
 	}
 	return err
 }
 
-func (s *Identity) InspectDevice(ctx context.Context, p core.Principal, code string) (DeviceInspection, error) {
+func (s *Identity) InspectDevice(ctx context.Context, p model.Principal, code string) (DeviceInspection, error) {
 	code, err := s.deviceBrowser(ctx, p, code)
 	if err != nil {
 		return DeviceInspection{}, err
@@ -129,7 +129,7 @@ func (s *Identity) InspectDevice(ctx context.Context, p core.Principal, code str
 	return DeviceInspection{UserCode: formatDeviceCode(d.UserCode), ExpiresAt: d.ExpiresAt.UTC(), Status: status}, nil
 }
 
-func (s *Identity) DecideDevice(ctx context.Context, p core.Principal, code, decision, expectedUserID string) error {
+func (s *Identity) DecideDevice(ctx context.Context, p model.Principal, code, decision, expectedUserID string) error {
 	code, err := s.deviceBrowser(ctx, p, code)
 	if err != nil {
 		return err
@@ -142,7 +142,7 @@ func (s *Identity) DecideDevice(ctx context.Context, p core.Principal, code, dec
 		return invalidInput("expectedUserId must be a canonical user UUID")
 	}
 	if expected != p.UserID {
-		return &Fault{Code: "forbidden", Message: "The signed-in account changed. Review the device authorization again."}
+		return &model.Fault{Code: "forbidden", Message: "The signed-in account changed. Review the device authorization again."}
 	}
 	status := "approved"
 	switch decision {
@@ -157,7 +157,7 @@ func (s *Identity) DecideDevice(ctx context.Context, p core.Principal, code, dec
 		return deviceLookupError(err)
 	}
 	if outcome != "" {
-		return &Fault{Code: "invalid_transition", Message: "This device authorization can no longer be decided. Check its current status."}
+		return &model.Fault{Code: "invalid_transition", Message: "This device authorization can no longer be decided. Check its current status."}
 	}
 	return nil
 }
@@ -178,7 +178,7 @@ func (s *Identity) RedeemDevice(ctx context.Context, clientID, grantType, code, 
 	now := s.now().UTC().Truncate(time.Microsecond)
 	result := MintedPAT{Secret: randomSecret("dnpat_")}
 	name := []rune(deviceName)
-	result.Credential = core.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI (" + string(name[:min(len(name), 85)]) + ")", TokenHash: secretHash(result.Secret), CreatedAt: now}
+	result.Credential = model.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI (" + string(name[:min(len(name), 85)]) + ")", TokenHash: secretHash(result.Secret), CreatedAt: now}
 	outcome, err := s.store.RedeemDeviceAuthorization(ctx, secretHash(code), result.Credential)
 	if err != nil {
 		return MintedPAT{}, err
@@ -189,9 +189,9 @@ func (s *Identity) RedeemDevice(ctx context.Context, clientID, grantType, code, 
 	return result, nil
 }
 
-func (s *Identity) LogoutDevice(ctx context.Context, p core.Principal) error {
-	if p.Kind != core.PATCredential {
-		return &Fault{Code: "forbidden", Message: "A CLI Bearer credential is required for this operation."}
+func (s *Identity) LogoutDevice(ctx context.Context, p model.Principal) error {
+	if p.Kind != model.PATCredential {
+		return &model.Fault{Code: "forbidden", Message: "A CLI Bearer credential is required for this operation."}
 	}
 	return s.store.DeleteCurrentPAT(ctx, p)
 }

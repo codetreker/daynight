@@ -4,16 +4,16 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func teamInvitationResponse(i core.TeamInvitation) api.TeamInvitation {
+func teamInvitationResponse(i model.TeamInvitation) api.TeamInvitation {
 	return api.TeamInvitation{ID: i.ID, TeamID: i.TeamID, CreatedBy: i.CreatedBy, CreatedAt: i.CreatedAt.UTC(), ExpiresAt: i.ExpiresAt.UTC(), ConsumedBy: i.ConsumedBy, ConsumedAt: i.ConsumedAt, RevokedAt: i.RevokedAt}
 }
-func teamMemberResponse(m core.TeamMember) api.TeamMember {
+func teamMemberResponse(m model.TeamMember) api.TeamMember {
 	return api.TeamMember{TeamID: m.TeamID, UserID: m.UserID, Role: string(m.Role), Version: m.Version, CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()}
 }
-func (h *teamHandler) listInvitations(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) listInvitations(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	if _, err := queryValues(r); err != nil {
@@ -31,7 +31,7 @@ func (h *teamHandler) listInvitations(w http.ResponseWriter, r *http.Request, p 
 	}
 	writeJSON(w, r, logger, http.StatusOK, response)
 }
-func (h *teamHandler) createInvitation(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) createInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	_, err := queryValues(r)
@@ -51,7 +51,7 @@ func (h *teamHandler) createInvitation(w http.ResponseWriter, r *http.Request, p
 	w.Header().Set("Location", "/api/v1/teams/"+result.Invitation.TeamID+"/invitations/"+result.Invitation.ID)
 	writeTeamJSON(w, r, logger, http.StatusCreated, api.CreatedTeamInvitation{TeamInvitation: teamInvitationResponse(result.Invitation), Link: h.origin + "/team-invitations#" + result.Secret})
 }
-func (h *teamHandler) revokeInvitation(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) revokeInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	_, err := queryValues(r)
@@ -77,7 +77,7 @@ func (h *teamHandler) revokeInvitation(w http.ResponseWriter, r *http.Request, p
 	}
 
 }
-func (h *teamHandler) inspectInvitation(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) inspectInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	_, err := queryValues(r)
@@ -101,7 +101,7 @@ func (h *teamHandler) inspectInvitation(w http.ResponseWriter, r *http.Request, 
 	}
 	writeJSON(w, r, logger, http.StatusOK, response)
 }
-func (h *teamHandler) acceptInvitation(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *teamHandler) acceptInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
 	_, err := queryValues(r)

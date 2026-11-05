@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -62,7 +62,7 @@ func TestTaskStepsChangeNoOpPreservesAllBytesBeforeClockAndWrites(t *testing.T) 
 					return steps.Update(context.Background(), principal, project.ID, task.ID, "00000000", UpdateTaskStep{Version: version, Title: pointer("same"), Description: pointer("original body")})
 				},
 				func() (StepsWriteResult, error) {
-					return steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: version, Status: core.TaskStepTodo})
+					return steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: version, Status: model.TaskStepTodo})
 				},
 			} {
 				result, err := operation()
@@ -73,12 +73,12 @@ func TestTaskStepsChangeNoOpPreservesAllBytesBeforeClockAndWrites(t *testing.T) 
 			}
 			_, err = steps.Update(context.Background(), principal, project.ID, task.ID, "00000000", UpdateTaskStep{Version: version - 1, Title: pointer("same")})
 			requireThreadFault(t, err, "version_conflict")
-			_, err = steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: version - 1, Status: core.TaskStepTodo})
+			_, err = steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: version - 1, Status: model.TaskStepTodo})
 			requireThreadFault(t, err, "version_conflict")
 			if version == math.MaxInt64 {
 				_, err = steps.Update(context.Background(), principal, project.ID, task.ID, "00000000", UpdateTaskStep{Version: version, Title: pointer("changed")})
 				requireThreadFault(t, err, "version_exhausted")
-				_, err = steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: version, Status: core.TaskStepDone})
+				_, err = steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: version, Status: model.TaskStepDone})
 				requireThreadFault(t, err, "version_exhausted")
 				_, err = steps.Update(context.Background(), principal, project.ID, task.ID, "ffffffff", UpdateTaskStep{Version: version, Title: pointer("changed")})
 				requireThreadFault(t, err, "not_found")
@@ -98,7 +98,7 @@ func TestTaskStepsChangePreservesOtherRowsParentAndExecutionPolicies(t *testing.
 	for _, policy := range []string{"todo", "in_progress", "done", "active_worker", "invalid_worker"} {
 		t.Run(policy, func(t *testing.T) {
 			task := createTask(t, tasks, admin, project.ID, "Parent", dependency.ID)
-			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), ExternalDependsOn: pointer([]string{dependency.ID}), RequiredPlatform: platformChange(pointer(core.PlatformLinux))})
+			task = updateTask(t, tasks, admin, task, UpdateTask{Description: pointer("Parent description"), Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00url", Title: "Evidence"}), ExternalDependsOn: pointer([]string{dependency.ID}), RequiredPlatform: platformChange(pointer(model.PlatformLinux))})
 			if policy == "active_worker" {
 				task = updateTask(t, tasks, admin, task, UpdateTask{AssignedTo: pointer(pointer(owner.UserID))})
 				task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
@@ -142,7 +142,7 @@ func TestTaskStepsChangePreservesOtherRowsParentAndExecutionPolicies(t *testing.
 				t.Fatal("target and parent do not share actual database clock", err)
 			}
 			version := result.Resource.Version
-			for _, status := range []core.TaskStepStatus{core.TaskStepInProgress, core.TaskStepDone, core.TaskStepSkipped, core.TaskStepTodo} {
+			for _, status := range []model.TaskStepStatus{model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped, model.TaskStepTodo} {
 				result, err = steps.SetStatus(context.Background(), editor, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: version, Status: status})
 				requireChangeCommitted(t, result, err, true)
 				if result.Resource.Version != version+1 || result.Resource.Steps[0].Status != status || result.Resource.Steps[0].Title != title || result.Resource.Steps[0].Description != description || result.Resource.Steps[0].CreatedAt != target.CreatedAt || result.Resource.Steps[1] != initial.Resource.Steps[1] {
@@ -175,11 +175,11 @@ func TestTaskStepsChangeAdmissionInputAndStorageFailures(t *testing.T) {
 	_, err := steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: "invalid"})
 	requireThreadFault(t, err, "invalid_input")
 	for _, tc := range []struct {
-		principal                 core.Principal
+		principal                 model.Principal
 		project, task, step, code string
 		version                   int64
 	}{
-		{core.Principal{}, project.ID, task.ID, "00000000", "unauthenticated", 1}, {principal, "bad", task.ID, "00000000", "invalid_input", 1}, {principal, project.ID, "bad", "00000000", "invalid_input", 1}, {principal, project.ID, task.ID, "bad", "invalid_input", 1}, {principal, project.ID, task.ID, "00000000", "invalid_input", 0},
+		{model.Principal{}, project.ID, task.ID, "00000000", "unauthenticated", 1}, {principal, "bad", task.ID, "00000000", "invalid_input", 1}, {principal, project.ID, "bad", "00000000", "invalid_input", 1}, {principal, project.ID, task.ID, "bad", "invalid_input", 1}, {principal, project.ID, task.ID, "00000000", "invalid_input", 0},
 		{principal, uuid.NewString(), task.ID, "00000000", "not_found", 1}, {principal, project.ID, uuid.NewString(), "00000000", "not_found", 1}, {servicePrincipal(t, database), project.ID, task.ID, "00000000", "not_found", 1}, {principal, project.ID, task.ID, "ffffffff", "not_found", 1},
 	} {
 		_, err := steps.Update(context.Background(), tc.principal, tc.project, tc.task, tc.step, UpdateTaskStep{Version: tc.version, Title: pointer("changed")})
@@ -196,7 +196,7 @@ func TestTaskStepsChangeAdmissionInputAndStorageFailures(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `UPDATE task_steps SET position=3 WHERE task_id=$1 AND id='abcdef01'`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: core.TaskStepDone})
+	_, err = steps.SetStatus(context.Background(), principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: model.TaskStepDone})
 	if err == nil {
 		t.Fatal("corrupt storage concealed")
 	}
@@ -246,7 +246,7 @@ func TestTaskStepsChangeConfirmedRollbackAfterTargetAndParentWrites(t *testing.T
 				var result StepsWriteResult
 				var err error
 				if status {
-					result, err = steps.SetStatus(ctx, principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: core.TaskStepDone})
+					result, err = steps.SetStatus(ctx, principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: model.TaskStepDone})
 				} else {
 					result, err = steps.Update(ctx, principal, project.ID, task.ID, "00000000", UpdateTaskStep{Version: 1, Title: pointer("new title"), Description: pointer("new description")})
 				}
@@ -291,22 +291,22 @@ func TestTaskStepsChangeSameVersionSerializesWithOtherWrites(t *testing.T) {
 			task := createTask(t, tasks, principal, project.ID, "Parent")
 			seedChangeSteps(t, database, task.ID)
 			steps := NewTaskSteps(database)
-			update := func(ctx context.Context) (core.Task, error) {
+			update := func(ctx context.Context) (model.Task, error) {
 				result, err := steps.Update(ctx, principal, project.ID, task.ID, "00000000", UpdateTaskStep{Version: 1, Title: pointer("changed")})
-				return core.Task{Version: result.Resource.Version}, err
+				return model.Task{Version: result.Resource.Version}, err
 			}
-			other := func(ctx context.Context) (core.Task, error) {
-				result, err := steps.SetStatus(ctx, principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: core.TaskStepDone})
-				return core.Task{Version: result.Resource.Version}, err
+			other := func(ctx context.Context) (model.Task, error) {
+				result, err := steps.SetStatus(ctx, principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: model.TaskStepDone})
+				return model.Task{Version: result.Resource.Version}, err
 			}
 			if kind == "add" {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					result, err := steps.Add(ctx, principal, project.ID, task.ID, AddTaskStep{Version: 1, ID: "12345678", Title: "added"})
-					return core.Task{Version: result.Resource.Version}, err
+					return model.Task{Version: result.Resource.Version}, err
 				}
 			}
 			if kind == "task" {
-				other = func(ctx context.Context) (core.Task, error) {
+				other = func(ctx context.Context) (model.Task, error) {
 					return tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: 1, Title: pointer("Parent changed")})
 				}
 			}
@@ -337,13 +337,13 @@ func TestTaskStepsChangeNoOpAndRealChangeOrdering(t *testing.T) {
 	seedChangeSteps(t, database, task.ID)
 	steps := NewTaskSteps(database)
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			result, err := steps.Update(ctx, principal, project.ID, task.ID, "00000000", UpdateTaskStep{Version: 1, Title: pointer("same")})
-			return core.Task{Version: result.Resource.Version}, err
+			return model.Task{Version: result.Resource.Version}, err
 		},
-		func(ctx context.Context) (core.Task, error) {
-			result, err := steps.SetStatus(ctx, principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: core.TaskStepDone})
-			return core.Task{Version: result.Resource.Version}, err
+		func(ctx context.Context) (model.Task, error) {
+			result, err := steps.SetStatus(ctx, principal, project.ID, task.ID, "00000000", SetTaskStepStatus{Version: 1, Status: model.TaskStepDone})
+			return model.Task{Version: result.Resource.Version}, err
 		})
 	success := 0
 	for _, result := range results {
@@ -357,7 +357,7 @@ func TestTaskStepsChangeNoOpAndRealChangeOrdering(t *testing.T) {
 		t.Fatal("invalid no-op/change outcome")
 	}
 	current, err := steps.List(context.Background(), principal, project.ID, task.ID)
-	if err != nil || current.Resource.Version != 2 || current.Resource.Steps[0].Title != "same" || current.Resource.Steps[0].Status != core.TaskStepDone {
+	if err != nil || current.Resource.Version != 2 || current.Resource.Steps[0].Title != "same" || current.Resource.Steps[0].Status != model.TaskStepDone {
 		t.Fatal("no-op advanced version or replaced real state")
 	}
 }
@@ -371,7 +371,7 @@ func TestTaskStepsChangeUnexpectedTargetDisappearanceStaysInternal(t *testing.T)
 	}
 	before := stepsStoredState(t, database, task.ID, false)
 	result, err := NewTaskSteps(database).Update(context.Background(), principal, project.ID, task.ID, "00000000", UpdateTaskStep{Version: 1, Title: pointer("changed")})
-	if !errors.Is(err, core.ErrNotFound) || result.JSON != nil || result.TransactionOutcome != store.TransactionNotCommitted {
+	if !errors.Is(err, model.ErrNotFound) || result.JSON != nil || result.TransactionOutcome != store.TransactionNotCommitted {
 		t.Fatalf("unexpected target update result lost: %+v %v", result, err)
 	}
 	if _, pure := TaskStepsFault(err); pure {

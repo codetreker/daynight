@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -29,7 +29,7 @@ type ChangeTeam struct {
 }
 
 type TeamPage struct {
-	Items      []core.Team
+	Items      []model.Team
 	NextCursor *string
 }
 
@@ -40,7 +40,7 @@ func validateTeamName(name string) error {
 	return nil
 }
 
-func requireTeamActor(principal core.Principal, expectedUserID string) error {
+func requireTeamActor(principal model.Principal, expectedUserID string) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -49,7 +49,7 @@ func requireTeamActor(principal core.Principal, expectedUserID string) error {
 		return invalidInput("expectedUserId must be a canonical user UUID.")
 	}
 	if expected != principal.UserID {
-		return &Fault{Code: "identity_mismatch", Message: "The signed-in account changed. Review the Team operation again."}
+		return &model.Fault{Code: "identity_mismatch", Message: "The signed-in account changed. Review the Team operation again."}
 	}
 	return nil
 }
@@ -62,49 +62,49 @@ func canonicalTeamID(id string) (string, error) {
 	return canonical, nil
 }
 
-func (s *Teams) Create(ctx context.Context, principal core.Principal, input CreateTeam) (core.Team, error) {
+func (s *Teams) Create(ctx context.Context, principal model.Principal, input CreateTeam) (model.Team, error) {
 	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
-		return core.Team{}, err
+		return model.Team{}, err
 	}
 	if err := validateTeamName(input.Name); err != nil {
-		return core.Team{}, err
+		return model.Team{}, err
 	}
 	id, err := uuid.NewRandom()
 	if err != nil {
-		return core.Team{}, fmt.Errorf("generate Team ID: %w", err)
+		return model.Team{}, fmt.Errorf("generate Team ID: %w", err)
 	}
 	return s.store.CreateTeam(ctx, principal.UserID, id.String(), input.Name)
 }
 
-func (s *Teams) Get(ctx context.Context, principal core.Principal, teamID string) (core.Team, error) {
+func (s *Teams) Get(ctx context.Context, principal model.Principal, teamID string) (model.Team, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.Team{}, err
+		return model.Team{}, err
 	}
 	id, err := canonicalTeamID(teamID)
 	if err != nil {
-		return core.Team{}, err
+		return model.Team{}, err
 	}
-	var result core.Team
+	var result model.Team
 	var missing error
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result, err = snapshot.Team(ctx, principal.UserID, id)
-		if errors.Is(err, core.ErrNotFound) {
+		result, err = snapshot.TeamDAO().Team(ctx, principal.UserID, id)
+		if errors.Is(err, model.ErrNotFound) {
 			missing = err
 			return nil
 		}
 		return err
 	})
 	if err != nil {
-		return core.Team{}, err
+		return model.Team{}, err
 	}
 	if missing != nil {
-		return core.Team{}, &Fault{Code: "not_found", Message: "Team was not found.", Cause: missing}
+		return model.Team{}, &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: missing}
 	}
 	return result, nil
 }
 
-func (s *Teams) List(ctx context.Context, principal core.Principal, request PageRequest) (TeamPage, error) {
+func (s *Teams) List(ctx context.Context, principal model.Principal, request model.PageRequest) (TeamPage, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return TeamPage{}, err
 	}
@@ -114,9 +114,9 @@ func (s *Teams) List(ctx context.Context, principal core.Principal, request Page
 		return TeamPage{}, err
 	}
 	var result store.TeamPage
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		var err error
-		result, err = snapshot.Teams(ctx, principal.UserID, page)
+		result, err = snapshot.TeamDAO().Teams(ctx, principal.UserID, page)
 		return err
 	})
 	if err != nil {
@@ -134,7 +134,7 @@ func (s *Teams) List(ctx context.Context, principal core.Principal, request Page
 	return response, nil
 }
 
-func (s *Teams) write(ctx context.Context, principal core.Principal, teamID string, input ChangeTeam, operation func(*store.TeamTx, core.Team) error) error {
+func (s *Teams) write(ctx context.Context, principal model.Principal, teamID string, input ChangeTeam, operation func(*store.TeamTx, model.Team) error) error {
 	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
 		return err
 	}
@@ -153,28 +153,28 @@ func (s *Teams) write(ctx context.Context, principal core.Principal, teamID stri
 		if err != nil {
 			return err
 		}
-		if team.Membership.Role != core.ProjectAdmin {
-			return &Fault{Code: "forbidden", Message: "Team administrator access is required."}
+		if team.Membership.Role != model.ProjectAdmin {
+			return &model.Fault{Code: "forbidden", Message: "Team administrator access is required."}
 		}
 		if team.Kind == "personal" {
-			return &Fault{Code: "personal_team_immutable", Message: "Personal Team cannot be changed or deleted."}
+			return &model.Fault{Code: "personal_team_immutable", Message: "Personal Team cannot be changed or deleted."}
 		}
 		if team.Version != input.Version {
-			return &Fault{Code: "version_conflict", Message: "Team version does not match."}
+			return &model.Fault{Code: "version_conflict", Message: "Team version does not match."}
 		}
 		return operation(tx, team)
 	})
 }
 
-func (s *Teams) Rename(ctx context.Context, principal core.Principal, teamID string, input ChangeTeam) (core.Team, error) {
-	var result core.Team
-	err := s.write(ctx, principal, teamID, input, func(tx *store.TeamTx, team core.Team) error {
+func (s *Teams) Rename(ctx context.Context, principal model.Principal, teamID string, input ChangeTeam) (model.Team, error) {
+	var result model.Team
+	err := s.write(ctx, principal, teamID, input, func(tx *store.TeamTx, team model.Team) error {
 		if *team.Name == input.Name {
 			result = team
 			return nil
 		}
 		if team.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Team version is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Team version is exhausted."}
 		}
 		var err error
 		result, err = tx.Rename(ctx, principal.UserID, input.Name)
@@ -183,17 +183,17 @@ func (s *Teams) Rename(ctx context.Context, principal core.Principal, teamID str
 	return result, err
 }
 
-func (s *Teams) Delete(ctx context.Context, principal core.Principal, teamID string, input ChangeTeam) error {
-	return s.write(ctx, principal, teamID, input, func(tx *store.TeamTx, team core.Team) error {
+func (s *Teams) Delete(ctx context.Context, principal model.Principal, teamID string, input ChangeTeam) error {
+	return s.write(ctx, principal, teamID, input, func(tx *store.TeamTx, team model.Team) error {
 		if *team.Name != input.Name {
-			return &Fault{Code: "version_conflict", Message: "Team name does not match the confirmed version."}
+			return &model.Fault{Code: "version_conflict", Message: "Team name does not match the confirmed version."}
 		}
 		occupied, err := tx.HasProjects(ctx)
 		if err != nil {
 			return err
 		}
 		if occupied {
-			return &Fault{Code: "team_not_empty", Message: "Transfer every Project before deleting the Team."}
+			return &model.Fault{Code: "team_not_empty", Message: "Transfer every Project before deleting the Team."}
 		}
 		return tx.Delete(ctx)
 	})
@@ -201,22 +201,22 @@ func (s *Teams) Delete(ctx context.Context, principal core.Principal, teamID str
 
 // TeamResponseFault preserves transaction completion evidence before inspecting
 // nested domain refusals. Uncertain COMMIT cannot be reported as a rejection.
-func TeamResponseFault(err error) (*Fault, bool) {
+func TeamResponseFault(err error) (*model.Fault, bool) {
 	var transaction *store.TransactionError
 	if !errors.As(err, &transaction) {
 		return nil, false
 	}
 	if transaction.CleanupFailed {
-		return &Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
+		return &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
 	}
 	if transaction.CommitAttempted && transaction.Outcome == store.TransactionUnknown {
-		return &Fault{Code: "write_outcome_unknown", Message: "The write outcome is unknown. Read the current resource before deciding on another operation.", Cause: err}, true
+		return &model.Fault{Code: "write_outcome_unknown", Message: "The write outcome is unknown. Read the current resource before deciding on another operation.", Cause: err}, true
 	}
 	if transaction.Phase != "operation" || transaction.Outcome != store.TransactionNotCommitted {
-		return &Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
+		return &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}, true
 	}
-	if errors.Is(err, core.ErrNotFound) {
-		return &Fault{Code: "not_found", Message: "Team was not found.", Cause: err}, true
+	if errors.Is(err, model.ErrNotFound) {
+		return &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}, true
 	}
 	return nil, false
 }

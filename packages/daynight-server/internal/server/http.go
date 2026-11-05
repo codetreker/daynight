@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"encoding/json"
@@ -14,14 +15,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
 const maxJSONBody = 1 << 20
 
 func invalidInput(message string) error {
-	return &service.Fault{Code: "invalid_input", Message: message}
+	return &model.Fault{Code: "invalid_input", Message: message}
 }
 
 func decodeObject(w http.ResponseWriter, request *http.Request, allowed ...string) (map[string]json.RawMessage, error) {
@@ -137,12 +137,12 @@ func queryValues(request *http.Request, allowed ...string) (url.Values, error) {
 	return values, nil
 }
 
-func pageValues(values url.Values) (service.PageRequest, error) {
-	page := service.PageRequest{Limit: 50}
+func pageValues(values url.Values) (model.PageRequest, error) {
+	page := model.PageRequest{Limit: 50}
 	if value, exists := values["limit"]; exists {
 		limit, err := strconv.Atoi(value[0])
 		if err != nil || limit < 1 || limit > 100 {
-			return service.PageRequest{}, invalidInput("limit must be an integer from 1 to 100")
+			return model.PageRequest{}, invalidInput("limit must be an integer from 1 to 100")
 		}
 		page.Limit = limit
 	}
@@ -152,10 +152,10 @@ func pageValues(values url.Values) (service.PageRequest, error) {
 	return page, nil
 }
 
-func pageRequest(request *http.Request) (service.PageRequest, error) {
+func pageRequest(request *http.Request) (model.PageRequest, error) {
 	values, err := queryValues(request, "limit", "cursor")
 	if err != nil {
-		return service.PageRequest{}, err
+		return model.PageRequest{}, err
 	}
 	return pageValues(values)
 }
@@ -230,7 +230,7 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			}
 		}
 	}
-	var identityError *service.IdentityProviderError
+	var identityError *model.IdentityProviderError
 	if errors.As(err, &identityError) {
 		switch identityError.Code {
 		case "identity_configuration":

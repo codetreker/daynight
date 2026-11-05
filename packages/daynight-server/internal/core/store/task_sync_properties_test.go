@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -46,17 +46,17 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
 	other := queryProject(t, database, 2)
-	task := queryTask(t, database, project.ID, 10, core.TaskTodo)
-	empty := queryTask(t, database, project.ID, 11, core.TaskTodo)
-	foreign := queryTask(t, database, other.ID, 12, core.TaskTodo)
-	before, err := taskproperties.Normalize(core.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque\u0000","title":"Repeated 中文"},{"url":"opaque\u0000","title":"Repeated 中文"}]`)}, false)
+	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
+	empty := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	foreign := queryTask(t, database, other.ID, 12, model.TaskTodo)
+	before, err := taskproperties.Normalize(model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque\u0000","title":"Repeated 中文"},{"url":"opaque\u0000","title":"Repeated 中文"}]`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'pullRequests',$2),($3,'unknown','null')`, task.ID, string(before["pullRequests"]), foreign.ID)
 	tracer := &syncPropertiesTracer{afterTasks: func() {
 		if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status, Properties: core.TaskProperties{}})
+			_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: task.Title, Description: task.Description, Status: task.Status, Properties: model.TaskProperties{}})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -70,8 +70,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	traced := &Store{Pool: pool}
-	if err := traced.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+	if err := traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil {
 			return err
 		}
@@ -86,8 +86,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 	if tracer.taskQueries != 1 || tracer.propertyQueries != 1 {
 		t.Fatalf("properties were not loaded in one batch: task=%d properties=%d", tracer.taskQueries, tracer.propertyQueries)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil {
 			return err
 		}
@@ -99,8 +99,8 @@ func TestTaskSyncPropertiesShareTaskSnapshotAndBatchQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	future := task.UpdatedAt.AddDate(100, 0, 0)
-	if err := traced.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(ctx, project.ID, &future, 160)
+	if err := traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &future, 160)
 		if err != nil || actual == nil || len(actual) != 0 {
 			t.Fatalf("empty window changed: %#v %v", actual, err)
 		}
@@ -121,13 +121,13 @@ func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
 			database := isolatedStore(t)
 			ctx := context.Background()
 			project := queryProject(t, database, 1)
-			queryTask(t, database, project.ID, 10, core.TaskTodo)
-			bad := queryTask(t, database, project.ID, 11, core.TaskTodo)
+			queryTask(t, database, project.ID, 10, model.TaskTodo)
+			bad := queryTask(t, database, project.ID, 11, model.TaskTodo)
 			mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)`, bad.ID, test.field, test.raw)
-			var actual []core.TaskViewRecord
-			err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+			var actual []model.TaskViewRecord
+			err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 				var err error
-				actual, err = snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
+				actual, err = snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
 				return err
 			})
 			var invalid *taskproperties.ValidationError
@@ -138,10 +138,10 @@ func TestTaskSyncPropertyFailuresReturnNoPartialRows(t *testing.T) {
 	}
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
-	queryTask(t, database, project.ID, 10, core.TaskTodo)
+	queryTask(t, database, project.ID, 10, model.TaskTodo)
 	mustQueryExec(t, database, `DROP TABLE task_properties`)
-	err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-		actual, err := snapshot.TaskSyncTasks(context.Background(), project.ID, nil, 160)
+	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+		actual, err := snapshot.TaskDAO().TaskSyncTasks(context.Background(), project.ID, nil, 160)
 		if actual != nil {
 			t.Fatalf("property query failure returned tasks: %#v", actual)
 		}

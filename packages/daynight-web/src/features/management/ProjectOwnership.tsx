@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError, isAbortError } from "../../api/client";
+import { ApiError, authRequestsPaused, isAbortError } from "../../api/client";
 import { canonicalId } from "../../api/validation";
 import { previewProjectTransfer, transferProject, type ProjectTransferPreview, type ProjectTransferReceipt } from "../../api/project-transfer";
 import type { TeamRef } from "../../api/auth-types";
@@ -32,6 +32,7 @@ const TeamChoices = ({ value, onChange, disabled }: { readonly value: string; re
   const teams = useTeams(), { locale } = useI18n(), m = messages(locale === "zh-CN");
   return <div className="field"><label htmlFor="transfer-known">{m.known}</label><select id="transfer-known" value={teams.list.items.some((team) => team.id === value) ? value : ""} disabled={disabled || teams.list.status === "loading"} onChange={(event) => onChange(event.target.value)}><option value="">{m.choose}</option>{teams.list.items.map((team) => <option key={team.id} value={team.id}>{teamName(team, m.personal)} · {team.membership.role}</option>)}</select>
     {teams.list.status === "error" && <p role="alert">{m.noTeams} <button type="button" onClick={teams.refreshList}>{m.retry}</button></p>}
+    {teams.list.status === "ready" && teams.list.error !== null && <p role="alert">{m.noTeams} <button type="button" onClick={teams.revalidateList}>{m.retry}</button></p>}
     {teams.list.cursor !== null && <button className="button" type="button" disabled={disabled || teams.list.more} onClick={teams.loadMore}>{teams.list.more ? m.loading : teams.list.moreError !== null ? m.retry : m.more}</button>}
   </div>;
 };
@@ -62,15 +63,23 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
       const current = await access.session.revalidate();
       if (signal.aborted || current === null || !current.canTransfer) return;
       const value = await previewProjectTransfer(projectId, id, scope.userId, signal, scope.principalMismatch);
-      if (signal.aborted) return;
-      if (value.ownership.teamId !== current.ownership.teamId || value.ownership.version !== current.ownership.version) { setConflict(true); return; }
+      await scope.ready(signal);
+      if (signal.aborted || scope.isInvalidated) return;
+      await access.session.waitForFreshAccess(signal);
+      const latest = access.session.snapshot();
+      if (signal.aborted || scope.isInvalidated || latest.status !== "ready" || latest.refreshing || !latest.access?.canTransfer) return;
+      if (value.ownership.teamId !== latest.access.ownership.teamId || value.ownership.version !== latest.access.ownership.version) { setConflict(true); return; }
       setPreview(value); setConflict(false);
-    } catch (error) { if (!signal.aborted && !isAbortError(error)) { setReadError(error); if (error instanceof ApiError && (error.status === 403 || error.status === 404)) void access.session.revalidate(); } }
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) return;
+      try { await scope.ready(signal); } catch { return; }
+      if (!signal.aborted && !scope.isInvalidated) { setReadError(error); if (error instanceof ApiError && (error.status === 403 || error.status === 404)) void access.session.revalidate(); }
+    }
     finally { if (read.current === controller) { read.current = null; if (!signal.aborted) setReading(false); } }
   };
   const submit = () => {
     const current = access.session.snapshot();
-    if (!active || op.guarded() || preview === null || reading || current.status !== "ready" || current.refreshing || !current.access?.canTransfer || current.access.ownership.teamId !== preview.ownership.teamId || current.access.ownership.version !== preview.ownership.version) return;
+    if (!active || authRequestsPaused() || op.guarded() || preview === null || reading || current.status !== "ready" || current.refreshing || !current.access?.canTransfer || current.access.ownership.teamId !== preview.ownership.teamId || current.access.ownership.version !== preview.ownership.version) return;
     onRetentionChange?.(true);
     void op.run(async (signal, dispatched) => {
       const ticket = await scope.beginSync(projectId, signal);
@@ -80,17 +89,32 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
       const finish = async () => {
         setCleanupError(null);
         try {
+          await scope.ready(scope.signal);
           if (receipt.actorAccess === null) {
-            if (!await scope.revokeProject(ticket, scope.signal)) {
-              const latest = await access.session.revalidateAfterMutation();
+            const revoked = await scope.revokeProject(ticket, scope.signal);
+            await scope.ready(scope.signal);
+            if (!revoked) {
+              await access.session.revalidateAfterMutation();
+              const latest = await access.session.waitForFreshAccess(scope.signal);
               if (latest === null && access.session.snapshot().status !== "unavailable") throw new Error("Unable to verify current project access");
-              if (latest !== null) { cleanup.current = null; setDialog(false); onTransferred?.(receipt); onRetentionChange?.(false); return; }
+              if (latest !== null) { await scope.ready(scope.signal); if (scope.isInvalidated) return; cleanup.current = null; setDialog(false); onTransferred?.(receipt); onRetentionChange?.(false); return; }
             }
           }
-          access.session.publishMutation(receipt.actorAccess);
+          await scope.ready(scope.signal);
+          if (receipt.actorAccess === null) access.session.publishMutation(null);
+          else {
+            await access.session.revalidateAfterMutation();
+            const latest = await access.session.waitForFreshAccess(scope.signal);
+            if (latest === null && access.session.snapshot().status !== "unavailable") throw new Error("Unable to verify current project access");
+          }
+          await scope.ready(scope.signal);
+          if (scope.isInvalidated) return;
           cleanup.current = null; setDialog(false); onTransferred?.(receipt); onRetentionChange?.(false);
-          if (receipt.actorAccess !== null) void access.session.revalidateAfterMutation();
-        } catch (error) { if (!scope.signal.aborted) setCleanupError(error); }
+        } catch (error) {
+          if (scope.signal.aborted) return;
+          try { await scope.ready(scope.signal); } catch { return; }
+          if (!scope.isInvalidated) setCleanupError(error);
+        }
       };
       cleanup.current = finish; void finish();
     }, (error) => {

@@ -64,7 +64,8 @@ The message-details dialog owns its keyboard layer and tells the task Surface
 when the child layer is occupied. This prevents parent Escape and focus-reclaim
 behavior from closing or stealing focus from the child dialog. Markdown and
 reading-intent scroll behavior are shared pure UI primitives, with consumer-owned
-labels and resource policy.
+labels and resource policy. The [background-check decision](../bug-fix/2026-11-05-stable-discussion-details.md)
+separates this dialog's lifetime from temporary request admission.
 
 ## Alternatives
 

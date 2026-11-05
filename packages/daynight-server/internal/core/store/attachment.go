@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -13,14 +13,14 @@ type AttachmentQuery struct {
 }
 
 type AttachmentPage struct {
-	Items   []core.Attachment
+	Items   []model.Attachment
 	HasMore bool
 }
 
 const attachmentProjection = `project_id::text, task_id::text, path, content_type, size_bytes, created_at, updated_at`
 
-func scanAttachment(row pgx.Row) (core.Attachment, error) {
-	var attachment core.Attachment
+func scanAttachment(row pgx.Row) (model.Attachment, error) {
+	var attachment model.Attachment
 	err := row.Scan(&attachment.ProjectID, &attachment.TaskID, &attachment.Path, &attachment.ContentType,
 		&attachment.SizeBytes, &attachment.CreatedAt, &attachment.UpdatedAt)
 	attachment.CreatedAt = attachment.CreatedAt.UTC()
@@ -28,11 +28,11 @@ func scanAttachment(row pgx.Row) (core.Attachment, error) {
 	return attachment, err
 }
 
-func (s *Snapshot) Attachment(ctx context.Context, projectID, taskID, path string) (core.Attachment, error) {
+func (s *Snapshot) Attachment(ctx context.Context, projectID, taskID, path string) (model.Attachment, error) {
 	attachment, err := scanAttachment(s.tx.QueryRow(ctx, `SELECT `+attachmentProjection+` FROM task_attachments
 		WHERE project_id = $1 AND task_id = $2 AND path = $3`, projectID, taskID, path))
 	if err != nil {
-		return core.Attachment{}, queryError("read attachment", err)
+		return model.Attachment{}, queryError("read attachment", err)
 	}
 	return attachment, nil
 }
@@ -45,7 +45,7 @@ func (s *Snapshot) Attachments(ctx context.Context, projectID, taskID string, qu
 		return AttachmentPage{}, queryError("list attachments", err)
 	}
 	defer rows.Close()
-	items := make([]core.Attachment, 0)
+	items := make([]model.Attachment, 0)
 	for rows.Next() {
 		attachment, err := scanAttachment(rows)
 		if err != nil {
@@ -81,8 +81,8 @@ func (s *Snapshot) AttachmentPathConflict(ctx context.Context, projectID, taskID
 	return conflict, nil
 }
 
-func (s *Store) PutAttachment(ctx context.Context, attachment core.Attachment) (core.Attachment, bool, error) {
-	var result core.Attachment
+func (s *Store) PutAttachment(ctx context.Context, attachment model.Attachment) (model.Attachment, bool, error) {
+	var result model.Attachment
 	var created bool
 	err := s.Pool.QueryRow(ctx, `INSERT INTO task_attachments (project_id, task_id, path, content_type, size_bytes)
 		VALUES ($1, $2, $3, $4, $5)
@@ -95,7 +95,7 @@ func (s *Store) PutAttachment(ctx context.Context, attachment core.Attachment) (
 		Scan(&result.ProjectID, &result.TaskID, &result.Path, &result.ContentType, &result.SizeBytes,
 			&result.CreatedAt, &result.UpdatedAt, &created)
 	if err != nil {
-		return core.Attachment{}, false, queryError("put attachment", err)
+		return model.Attachment{}, false, queryError("put attachment", err)
 	}
 	result.CreatedAt = result.CreatedAt.UTC()
 	result.UpdatedAt = result.UpdatedAt.UTC()
@@ -108,7 +108,7 @@ func (s *Store) DeleteAttachment(ctx context.Context, projectID, taskID, path st
 		return queryError("delete attachment", err)
 	}
 	if result.RowsAffected() == 0 {
-		return queryError("delete attachment", core.ErrNotFound)
+		return queryError("delete attachment", model.ErrNotFound)
 	}
 	return nil
 }

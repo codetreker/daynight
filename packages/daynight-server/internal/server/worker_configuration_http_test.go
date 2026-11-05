@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -45,9 +45,9 @@ func configurationHTTPReportBody(bootstrap, observation any) map[string]any {
 }
 
 type configurationHTTPReceipt struct {
-	ObservedAt     time.Time                       `json:"observedAt"`
-	LastReportedAt time.Time                       `json:"lastReportedAt"`
-	Configuration  core.WorkerConfigurationReceipt `json:"configuration"`
+	ObservedAt     time.Time                        `json:"observedAt"`
+	LastReportedAt time.Time                        `json:"lastReportedAt"`
+	Configuration  model.WorkerConfigurationReceipt `json:"configuration"`
 }
 
 func configurationHTTPReport(t *testing.T, handler http.Handler, workerID string, bootstrap, observation any) configurationHTTPReceipt {
@@ -67,7 +67,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	assertProjectError(t, projectRequest(handler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
 	reportSnapshotHTTP(t, handler, workerID, workerSnapshotReportBody())
 	response := projectRequest(handler, http.MethodGet, path, "")
-	resource := decodeResponse[core.WorkerConfigurationResource](t, response, http.StatusOK)
+	resource := decodeResponse[model.WorkerConfigurationResource](t, response, http.StatusOK)
 	fields := decodeResponse[map[string]json.RawMessage](t, response, http.StatusOK)
 	if len(fields) != 3 || string(fields["desired"]) != "null" || string(fields["observation"]) != "null" || string(fields["observationRevision"]) != `"0"` {
 		t.Fatalf("uninitialized configuration resource schema: %s", response.Body)
@@ -97,12 +97,12 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 		t.Fatal("configuration bootstrap changed the existing task or claim")
 	}
 	value["maxConcurrent"] = 5
-	resource = decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "1", "value": value})), http.StatusOK)
+	resource = decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "1", "value": value})), http.StatusOK)
 	if resource.Desired.Revision != "2" || resource.Desired.Value.MaxConcurrent != 5 || !resource.Desired.UpdatedAt.After(initial.UpdatedAt) {
 		t.Fatalf("target change did not advance revision: %+v", resource.Desired)
 	}
 	saved := resource.Desired
-	resource = decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "2", "value": value})), http.StatusOK)
+	resource = decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "2", "value": value})), http.StatusOK)
 	if !reflect.DeepEqual(resource.Desired, saved) {
 		t.Fatal("equal canonical configuration changed its revision or timestamp")
 	}
@@ -117,7 +117,7 @@ func TestWorkerConfigurationHTTPLifecycleWithoutTaskPrerequisite(t *testing.T) {
 	if len(fields) != 2 || fields["observedAt"] == nil || fields["lastReportedAt"] == nil || legacy.Header().Get(workerConfigurationHeader) != "" {
 		t.Fatalf("legacy report receipt changed: %s", legacy.Body)
 	}
-	resource = decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
+	resource = decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
 	if !reflect.DeepEqual(resource.Desired, saved) {
 		t.Fatal("legacy heartbeat changed the cloud target")
 	}
@@ -166,21 +166,21 @@ func TestWorkerConfigurationHTTPObservationCASAndHeartbeatIndependence(t *testin
 	if !receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" {
 		t.Fatalf("initial observation CAS: %+v", receipt.Configuration)
 	}
-	resource := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
+	resource := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
 	if resource.Observation == nil || len(resource.Observation.Items) != 7 || resource.Observation.Items[4].Error == nil || resource.Observation.Items[5].Key.ProjectID != removedID {
 		t.Fatalf("partial success and project removal results were lost: %+v", resource.Observation)
 	}
 	accepted := resource.Observation
 	reportedAt := configurationHTTPObservationReportedAt(t, projectRequest(handler, http.MethodGet, path, ""))
 	value["maxConcurrent"] = 4
-	decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "1", "value": value})), http.StatusOK)
+	decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodPut, path, jsonBody(t, map[string]any{"revision": "1", "value": value})), http.StatusOK)
 	stale := configurationHTTPObservation(configurationHTTPItem("maxConcurrent", 1))
 	receipt = configurationHTTPReport(t, handler, workerID, nil, stale)
 	if receipt.Configuration.ObservationAccepted || receipt.Configuration.ObservationRevision != "1" || receipt.Configuration.Desired.Revision != "2" || receipt.Configuration.Desired.Value.MaxConcurrent != 4 {
 		t.Fatalf("stale observation did not return current target and CAS: %+v", receipt.Configuration)
 	}
 	reportSnapshotHTTP(t, handler, workerID, workerSnapshotReportBody())
-	resource = decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
+	resource = decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
 	if resource.ObservationRevision != "1" || !reflect.DeepEqual(resource.Observation, accepted) || !configurationHTTPObservationReportedAt(t, projectRequest(handler, http.MethodGet, path, "")).Equal(reportedAt) {
 		t.Fatal("stale observation or machine heartbeat replaced configuration observation")
 	}
@@ -250,7 +250,7 @@ func TestWorkerConfigurationHTTPStrictInputAndNegotiation(t *testing.T) {
 			assertProjectError(t, configurationHTTPRequest(handler, http.MethodPost, path+"/report", body, "1"), http.StatusBadRequest, "invalid_input")
 		})
 	}
-	resource := decodeResponse[core.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
+	resource := decodeResponse[model.WorkerConfigurationResource](t, projectRequest(handler, http.MethodGet, path+"/configuration", ""), http.StatusOK)
 	if resource.Desired.Revision != "1" || resource.ObservationRevision != "0" || resource.Observation != nil {
 		t.Fatal("invalid requests changed the configuration")
 	}
@@ -309,7 +309,7 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	aware := map[string]string{"Origin": integration.server.URL, workerConfigurationHeader: "1"}
 	identityRequest(t, alice, http.MethodPost, integration.server.URL+path+"/report", jsonBody(t, configurationHTTPReportBody(value, nil)), aware, http.StatusNotFound)
 	_, data = identityRequest(t, alice, http.MethodGet, integration.server.URL+path+"/configuration", "", nil, http.StatusOK)
-	if identityDecode[core.WorkerConfigurationResource](t, data).Desired != nil {
+	if identityDecode[model.WorkerConfigurationResource](t, data).Desired != nil {
 		t.Fatal("inaccessible project bootstrap persisted a target")
 	}
 	_, data = identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects/"+project.ID+"/invitations", invitationActorBody(bobUser.ID), origin, http.StatusCreated)
@@ -351,7 +351,7 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	identityRequest(t, bob, http.MethodDelete, integration.server.URL+"/api/v1/projects/"+project.ID+"/members/"+aliceUser.ID, jsonBody(t, api.RemoveProjectMemberRequest{Version: membershipVersion, ExpectedUserID: bobUser.ID}), origin, http.StatusNoContent)
 	value["maxConcurrent"] = 4
 	_, data = identityRequest(t, alice, http.MethodPut, integration.server.URL+path+"/configuration", put("1"), origin, http.StatusOK)
-	resource := identityDecode[core.WorkerConfigurationResource](t, data)
+	resource := identityDecode[model.WorkerConfigurationResource](t, data)
 	if resource.Desired.Revision != "2" || len(resource.Desired.Value.Projects) != 1 || len(resource.Desired.Value.Projects[0].NativeOverrides) != 0 || strings.Contains(string(data), project.Name) || strings.Contains(string(data), project.RepoURL) {
 		t.Fatal("retaining a revoked project blocked unrelated settings or exposed project details")
 	}
@@ -359,7 +359,7 @@ func TestWorkerConfigurationHTTPIdentityOriginAndRevokedProjects(t *testing.T) {
 	identityRequest(t, alice, http.MethodPut, integration.server.URL+path+"/configuration", put("2"), origin, http.StatusNotFound)
 	value["projects"] = []any{}
 	_, data = identityRequest(t, alice, http.MethodPut, integration.server.URL+path+"/configuration", put("2"), origin, http.StatusOK)
-	resource = identityDecode[core.WorkerConfigurationResource](t, data)
+	resource = identityDecode[model.WorkerConfigurationResource](t, data)
 	if resource.Desired.Revision != "3" || len(resource.Desired.Value.Projects) != 0 {
 		t.Fatal("revoked project could not be removed")
 	}

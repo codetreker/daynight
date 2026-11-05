@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -10,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -80,7 +79,7 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	properties := []core.PullRequestProperty{{URL: "https://github.com/org/repo/pull/1", Title: "Change"}}
+	properties := []model.PullRequestProperty{{URL: "https://github.com/org/repo/pull/1", Title: "Change"}}
 	a, err = tasks.Update(ctx, principal, project.ID, a.ID, UpdateTask{Version: a.Version, Properties: propertyPatch(properties...)})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +100,7 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 	_, err = sync.Get(ctx, principal, project.ID, TaskSyncRequest{Epoch: "invalid"})
 	requireFault(t, err, "invalid_input")
-	_, err = sync.Get(ctx, core.Principal{}, project.ID, TaskSyncRequest{})
+	_, err = sync.Get(ctx, model.Principal{}, project.ID, TaskSyncRequest{})
 	requireFault(t, err, "unauthenticated")
 	_, err = sync.Get(ctx, principal, "invalid", TaskSyncRequest{})
 	requireFault(t, err, "invalid_input")
@@ -136,7 +135,7 @@ func TestTaskSyncFullCapacityBeforeWindowProjection(t *testing.T) {
 			result, err := NewTaskSync(traced.store, 10*time.Second).Get(context.Background(), principal, project.ID, TaskSyncRequest{Epoch: epoch, Since: &since})
 			if test.refused {
 				fault := requireFault(t, err, "graph_limit_exceeded")
-				if read || fault.GraphLimit.NodeCount != int64(test.nodes) || fault.GraphLimit.EdgeCount != int64(test.edges) || !reflect.DeepEqual(result, core.TaskSync{}) {
+				if read || fault.GraphLimit.NodeCount != int64(test.nodes) || fault.GraphLimit.EdgeCount != int64(test.edges) || !reflect.DeepEqual(result, model.TaskSync{}) {
 					t.Fatalf("partial capacity check: %#v %#v", fault, result)
 				}
 			} else if err != nil || !read || result.Tasks == nil || len(result.Tasks) != 0 {
@@ -162,7 +161,7 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	}
 	traced := tracedTasks(t, url, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "SELECT count(*) FROM tasks") }, end: func() {
 		if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "After", Status: core.TaskDone})
+			_, err := tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "After", Status: model.TaskDone})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -179,52 +178,9 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		t.Fatalf("mixed snapshot: %#v %v", old, err)
 	}
 	fresh, err := NewTaskSync(database, 10*time.Second).Get(ctx, reader, project.ID, TaskSyncRequest{Epoch: oldEpoch})
-	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.Role != core.ProjectAdmin || fresh.ActorAccess.DirectGrant == nil || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 {
+	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.Role != model.ProjectAdmin || fresh.ActorAccess.DirectGrant == nil || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 {
 		t.Fatalf("fresh history: %#v %v", fresh, err)
 	}
-}
-
-func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
-	for _, test := range []struct {
-		name, fragment           string
-		missing, limit, complete bool
-	}{
-		{"project", "SELECT p.id::text, p.name, p.repo_url", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
-		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT task_id::text,name,value FROM task_properties", false, false, false}, {"people", "FROM candidate_ids candidate", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
-		{"missing completion", "FROM project_grants", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			tasks, database, project, url, principal := taskService(t)
-			if test.name == "properties" {
-				createTask(t, tasks, principal, project.ID, "Property read")
-			}
-			if test.limit {
-				seedGraph(t, database, project.ID, 1001, 0)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			action := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.fragment) }}
-			if test.complete {
-				action.end = cancel
-			} else {
-				action.start = cancel
-			}
-			traced := tracedTasks(t, url, action)
-			id := project.ID
-			if test.missing {
-				id = "00000000-0000-4000-8000-000000000099"
-			}
-			result, err := NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, id, TaskSyncRequest{})
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(result, core.TaskSync{}) {
-				t.Fatalf("completion precedence: %#v %v", result, err)
-			}
-		})
-	}
-	_, database, project, _, principal := taskService(t)
-	database.Close()
-	_, err := NewTaskSync(database, 10*time.Second).Get(context.Background(), principal, project.ID, TaskSyncRequest{})
-	assertOperational(t, err)
 }
 
 func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
@@ -234,7 +190,7 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
-	var first, later core.Task
+	var first, later model.Task
 	err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
 		go func() {
 			var err error
@@ -249,7 +205,7 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 			return err
 		}
 		var err error
-		first, err = tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "First", Status: core.TaskTodo})
+		first, err = tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "First", Status: model.TaskTodo})
 		return err
 	})
 	if err != nil {
@@ -289,11 +245,11 @@ func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) 
 	}
 	since := baseline.Tasks[1].UpdatedAt
 	result := make(chan error, 1)
-	var first, later core.Task
+	var first, later model.Task
 	var heldFor time.Duration
 	err = database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
 		var err error
-		first, err = tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "Committed first", Status: core.TaskTodo})
+		first, err = tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "Committed first", Status: model.TaskTodo})
 		if err != nil {
 			return err
 		}

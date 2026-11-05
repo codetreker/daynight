@@ -23,7 +23,7 @@
 返回 `(http.Handler, error)`，验证配置并统一注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
-每个资源 service 方法显式接收 `core.Principal`；不保留匿名业务入口或私有创建/列表
+每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表
 别名。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 记录组合、凭据隐私与验证边界。
 
@@ -88,6 +88,8 @@ store 先投影任务自身的 160 字符标题预览、业务 version、状态�
 
 ## 目录与调用方向
 
+稳定代码组织规则由[服务端规则](../daynight-server.md)拥有。
+
 服务位于 `packages/daynight-server/`，使用独立 `go.mod` 和可执行程序：
 
 ```text
@@ -103,8 +105,9 @@ packages/daynight-server/
     ├── webui/
     │   └── dist/                 生成的真实页面与资源，不提交
     └── core/
-        ├── project.go
-        ├── task.go
+        ├── model/
+        │   ├── project.go
+        │   └── task.go
         └── store/
             └── migrations/
 ```
@@ -114,7 +117,7 @@ packages/daynight-server/
 集成验收及其 `TestMain`；两个测试包分别拥有临时资源和辅助函数。`api` 拥有 HTTP 请求、响应和错误
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、
 HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 用例、业务
-校验与事务编排。`internal/core` 拥有领域模型；`internal/core/store` 使用具体的
+校验与事务编排。`internal/core/model` 拥有共享领域模型；`internal/core/store` 使用具体的
 `pgx`/`pgxpool` 类型实现 PostgreSQL 查询、事务和迁移。`internal/webui` 拥有
 `go:embed` 资源及页面/资源响应，server 在既有 mux 精确注册路由。静态处理不经过
 service/store；请求仍只经过一次现有日志包装。HTML、图、Worker 观测及最新详情为 no-store，
@@ -132,7 +135,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 调用方向为 `server → service → core/store`。传输层将 API DTO 转换为 service
 参数，core 不依赖 HTTP，store 不决定状态转换或依赖规则。事务内查询所需的数据、
 加锁和持久化操作由 store 提供，是否接受候选变更由 service 决定。现有关系型数据只有 PostgreSQL 一个实现，
-不为测试另外定义空泛的 `Store` 接口或模拟存储实现。附件的字节存储接口由其独立
+`SnapshotReader` 以 `SnapshotScope` 提供 Credential、Team、Project、Task、Worker、Bot 和 Attachment 的只读 Reader；各 Reader 与 `ObservedAt` 绑定同一个只读 Repeatable Read 事务，仅在 callback 内有效。授权和数据读取因此共享快照，业务拒绝需要暂存时仍在事务正常完成后返回，完成或清理失败优先。`Completion` 和事务错误保留 committed、not_committed、unknown 及原因链，未知结果不能推断为回滚。当前 PostgreSQL 实现仍位于 store 根包，写作用域沿用各自现有合同。附件的字节存储接口由其独立
 架构拥有，不替代这里的具体 PostgreSQL store。
 
 独立模块允许服务拥有自己的 Go/PostgreSQL 生命周期，避免将数据库事务接入现有
@@ -271,7 +274,7 @@ PATCH 的语义空操作仍检查版本及输入，返回当前资源，保持 `
 不变。许可判断沿用此顺序：锁后检查成员与版本，再判断 `allowAgents` 是否变化；同值返回当前资源，实际变化在 `in_progress` 拒绝。许可编辑与状态设置并发时共享该项目锁；自动执行许可不改变显式执行、ready 或依赖约束。任意真实字段、状态或依赖集合变化只增加一次版本；依赖顺序变化不算真实变更。
 平台写入复用同一成员/版本顺序与项目锁：requiredPlatform 的字段存在性区分省略、设置、清除，
 精确版本同值不写，任一实际变化在 in_progress 拒绝并整体回滚组合编辑。状态、许可和平台相互保留；
-普通人工 setter 不执行自动发现资格筛选。core.TaskPlatform.Valid 与 PlatformCompatible
+普通人工 setter 不执行自动发现资格筛选。model.TaskPlatform.Valid 与 PlatformCompatible
 拥有枚举与 null/同值兼容，不使用服务器操作系统推测远端执行环境。
 
 业务校验先生成候选变更计划，完成全部检查后才执行写入。预期拒绝保留为业务结果，
@@ -343,7 +346,7 @@ status 是输入错误，含其他合法字段也不写入。HTTP 与日志保�
 严格 request DTO 和具体服务 use case 共用原 project 锁。
 
 省略可更新字段表示保持原值；`description: ""` 清空描述，`dependsOn: []` 清空
-依赖，`properties.pullRequests: []` 清空 PR 引用。`allowAgents` 使用可选布尔输入保留 omitted/false 的区别，创建严格拒绝该字段。`requiredPlatform` 使用明确的字段存在性和可空值区分省略、设置与清除：PATCH 省略保持、枚举设置、null 清除；创建省略或 null 均不限制。`core.TaskPlatform.Valid()` 验证枚举，`core.PlatformCompatible(required, actual)` 以 null/同值规则匹配，不读取服务进程的平台。PATCH 的双层指针明确区分未提供和显式 null，不把清除转换为省略。属性数组按序比较并整体替换，
+依赖，`properties.pullRequests: []` 清空 PR 引用。`allowAgents` 使用可选布尔输入保留 omitted/false 的区别，创建严格拒绝该字段。`requiredPlatform` 使用明确的字段存在性和可空值区分省略、设置与清除：PATCH 省略保持、枚举设置、null 清除；创建省略或 null 均不限制。`model.TaskPlatform.Valid()` 验证枚举，`model.PlatformCompatible(required, actual)` 以 null/同值规则匹配，不读取服务进程的平台。PATCH 的双层指针明确区分未提供和显式 null，不把清除转换为省略。属性数组按序比较并整体替换，
 具体记录只有字符串 `url` 和 `title`；内容不做业务校验。assignedTo 同样以双层指针区分 omitted/null/UUID；service 先规范化，精确版本等值保留，新目标在事务内验证访问。实际变化同时关闭许可，进行中的任务拒绝变化；其他写入保留负责人。除平台和负责人字段允许清除外，显式 `null`、嵌套未知或
 重复字段、不合理的类型及非法枚举均为输入错误。`id`、
 `projectId`、创建时间及更新时间不可由调用者写入。任务返回结构包含模型字段及

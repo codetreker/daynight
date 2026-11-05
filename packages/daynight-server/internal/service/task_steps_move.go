@@ -5,9 +5,10 @@ import (
 	"errors"
 	"math"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
 
 type MoveTaskStep struct {
@@ -35,7 +36,7 @@ func canonicalStepPlacement(input MoveTaskStep) (tasksteps.Placement, error) {
 		if *anchor == nil {
 			continue
 		}
-		canonical, err := tasksteps.CanonicalID(**anchor)
+		canonical, err := taskcodec.CanonicalID(**anchor)
 		if err != nil {
 			return placement, invalidInput(err.Error())
 		}
@@ -44,13 +45,13 @@ func canonicalStepPlacement(input MoveTaskStep) (tasksteps.Placement, error) {
 	return placement, nil
 }
 
-func (s *TaskSteps) Move(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, input MoveTaskStep) (StepsWriteResult, error) {
+func (s *TaskSteps) Move(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, input MoveTaskStep) (StepsWriteResult, error) {
 	result := StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}
 	projectID, taskID, err := taskWriteIdentity(principal, projectID, taskID, input.Version)
 	if err != nil {
 		return result, err
 	}
-	stepID, err = tasksteps.CanonicalID(stepID)
+	stepID, err = taskcodec.CanonicalID(stepID)
 	if err != nil {
 		return result, invalidInput(err.Error())
 	}
@@ -72,33 +73,33 @@ func (s *TaskSteps) Move(ctx context.Context, principal core.Principal, projectI
 		if err != nil {
 			return err
 		}
-		if _, err := tasksteps.Collection(header, current); err != nil {
+		if _, err := taskcodec.Collection(header, current); err != nil {
 			return err
 		}
 		candidate, from, to, err := tasksteps.MoveCandidate(current, stepID, placement)
 		switch {
 		case errors.Is(err, tasksteps.ErrTargetNotFound):
-			return &Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
+			return &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
 		case errors.Is(err, tasksteps.ErrAnchorNotFound):
-			return &Fault{Code: "not_found", Message: "Step anchor was not found.", Cause: err}
+			return &model.Fault{Code: "not_found", Message: "Step anchor was not found.", Cause: err}
 		case errors.Is(err, tasksteps.ErrSelfAnchor):
-			return &Fault{Code: "invalid_input", Message: "Step cannot be its own position anchor.", Cause: err}
+			return &model.Fault{Code: "invalid_input", Message: "Step cannot be its own position anchor.", Cause: err}
 		case err != nil:
 			return err
 		}
 		if from == to {
-			result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, current)
+			result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, current)
 			return err
 		}
 		if header.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
 		observed, err := tx.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
 		header.Version++
-		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
+		result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}

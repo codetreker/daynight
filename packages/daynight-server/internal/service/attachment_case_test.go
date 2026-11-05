@@ -1,5 +1,6 @@
 package service
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"errors"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 )
 
 func TestAttachmentCaseDistinctPaths(t *testing.T) {
@@ -43,7 +44,7 @@ func TestAttachmentFilesystemNameConflictPreservesMetadataAndBytes(t *testing.T)
 	if created || !errors.Is(err, filestorage.ErrPathConflict) {
 		t.Fatalf("conflict identity lost: created=%v err=%v", created, err)
 	}
-	page, err := attachments.List(t.Context(), principal, task.ProjectID, task.ID, PageRequest{Limit: 50})
+	page, err := attachments.List(t.Context(), principal, task.ProjectID, task.ID, model.PageRequest{Limit: 50})
 	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0], original) {
 		t.Fatalf("refused write changed metadata: %#v, %v", page, err)
 	}

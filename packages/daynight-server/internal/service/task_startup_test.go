@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/google/uuid"
 )
 
@@ -16,7 +16,7 @@ func TestWorkerStartupReportsAreOwnerBoundOrderedAndIdempotent(t *testing.T) {
 	tasks, db, project, _, owner := taskService(t)
 	ctx := context.Background()
 	descriptor := workerDescriptor()
-	descriptor.AgentControlMode = core.AgentControlModeWeb
+	descriptor.AgentControlMode = model.AgentControlModeWeb
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
 	report := sp.StartupReport{SchemaVersion: 1, Source: "worker", SessionID: uuid.NewString(), ClaimID: descriptor.ClaimID, ExecutionGeneration: "1", ControllerInstanceID: uuid.NewString(), Revision: "2", ObservedAt: "2026-11-05T00:00:00Z"}
 	report.Startup.State, report.Startup.ReasonCode = "unknown", "native_timeout"
@@ -29,7 +29,7 @@ func TestWorkerStartupReportsAreOwnerBoundOrderedAndIdempotent(t *testing.T) {
 	if _, err = db.Pool.Exec(ctx, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,'{}',$7)`, report.SessionID, project.ID, task.ID, report.ClaimID, owner.UserID, uuid.NewString(), raw); err != nil {
 		t.Fatal(err)
 	}
-	write := func(p core.Principal, r sp.StartupReport) (core.Task, error) {
+	write := func(p model.Principal, r sp.StartupReport) (model.Task, error) {
 		return tasks.UpdateWorker(ctx, p, project.ID, task.ID, UpdateWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StartupReport: &r})
 	}
 	task, err = write(owner, report)

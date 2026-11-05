@@ -2,7 +2,7 @@ package store
 
 import (
 	"context"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"testing"
 	"time"
@@ -25,7 +25,7 @@ func TestBotLockedReadObservesCompleteConcurrentBinding(t *testing.T) {
 	if err = insertBotSession(ctx, writer, bot, sid, eid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = BindBotSession(ctx, writer, bot.ID, 1, sid, core.BotRoleConfiguration{Instructions: "role", Revision: "1", Digest: "digest"}); err != nil {
+	if _, err = BindBotSession(ctx, writer, bot.ID, 1, sid, model.BotRoleConfiguration{Instructions: "role", Revision: "1", Digest: "digest"}); err != nil {
 		t.Fatal(err)
 	}
 	reader, err := db.Pool.Begin(ctx)
@@ -38,7 +38,7 @@ func TestBotLockedReadObservesCompleteConcurrentBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	type result struct {
-		bot core.Bot
+		bot model.Bot
 		err error
 	}
 	done := make(chan result, 1)

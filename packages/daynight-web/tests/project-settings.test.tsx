@@ -102,6 +102,67 @@ describe("project settings form", () => {
     await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n)))); await screen.findByText("设置已保存。");
   });
 
+  it("keeps an unsubmitted draft editable while identity and permissions are checked", async () => {
+    const permission = deferred<Response>(); let holdPermission = false;
+    install((url) => url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    mount(); await ready(); change("95");
+    const field = screen.getByLabelText("提醒阈值") as HTMLInputElement;
+    field.focus();
+    const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
+    expect(field).not.toBeDisabled(); expect(document.activeElement).toBe(field);
+    expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
+    change("96"); expect(field).toHaveValue(96);
+    resume(); await act(async () => permission.resolve(json(members())));
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).not.toBeDisabled());
+    expect(field).toHaveValue(96);
+  });
+
+  it("retains a confirmed save when permission recovery fails and reads before enabling another save", async () => {
+    const saving = deferred<Response>(), permission = deferred<Response>(); let holdPermission = false, saved = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project(saved ? 90 : 60, saved ? 9_007_199_254_740_994n : 9_007_199_254_740_993n)));
+    mount(); await ready(); change(); submit();
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init.method === "PATCH")).toBe(true));
+    const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
+    saved = true; await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+    resume(); await act(async () => permission.resolve(fail(503)));
+    await screen.findByText("设置已保存。"); await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
+    holdPermission = false; fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
+  });
+
+  it("holds a dispatched settings receipt until identity and project access are confirmed", async () => {
+    const saving = deferred<Response>(), permission = deferred<Response>(); let holdPermission = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project()));
+    mount(); await ready(); change(); submit();
+    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init.method === "PATCH")).toBe(true));
+    const resume = pauseAuthRequests(); holdPermission = true;
+    fireEvent(window, new Event("focus"));
+    await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+    expect(screen.queryByText("设置已保存。")).toBeNull();
+    expect(screen.getByRole("button", { name: "正在保存…" })).toBeDisabled();
+    resume();
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1));
+    expect(screen.queryByText("设置已保存。")).toBeNull();
+    await act(async () => permission.resolve(json(members())));
+    await screen.findByText("设置已保存。");
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
+  });
+
+  it("does not publish an in-flight settings receipt after the identity generation changes", async () => {
+    const saving = deferred<Response>();
+    install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project()));
+    mount(); await ready(); change(); submit();
+    const resume = pauseAuthRequests();
+    await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+    expect(screen.queryByText("设置已保存。")).toBeNull();
+    act(() => invalidateAuthRequests()); resume();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByText("设置已保存。")).toBeNull();
+  });
+
   it("shows members a read-only saved threshold and rejects missing self membership", async () => {
     install((url) => url.endsWith("/members") ? json(members("member")) : json(project(45))); const view = mount();
     await screen.findByText(/只有项目管理员可以修改/); expect(screen.getByLabelText("提醒阈值")).toHaveValue(45); expect(screen.getByLabelText("提醒阈值")).toBeDisabled(); expect(screen.queryByRole("button", { name: "保存设置" })).toBeNull(); view.unmount();

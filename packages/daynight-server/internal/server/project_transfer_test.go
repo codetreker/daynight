@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
@@ -157,11 +157,11 @@ func TestTransferHTTPCompletionClassification(t *testing.T) {
 		status int
 		code   string
 	}{
-		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: core.ErrNotFound}, 404, "not_found"},
-		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &service.Fault{Code: "version_conflict", Message: "changed"}}, 409, "version_conflict"},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.ErrNotFound}, 404, "not_found"},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &model.Fault{Code: "version_conflict", Message: "changed"}}, 409, "version_conflict"},
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
 		{&store.TransactionError{Phase: "cleanup", CommitAttempted: true, CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: errors.Join(context.DeadlineExceeded, errors.New("private cleanup"))}, 503, "write_outcome_unknown"},
-		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Cause: &service.Fault{Code: "forbidden", Message: "private refusal"}}, 500, "internal_error"},
+		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Cause: &model.Fault{Code: "forbidden", Message: "private refusal"}}, 500, "internal_error"},
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private error")}, 500, "internal_error"},
 	} {
 		w := httptest.NewRecorder()

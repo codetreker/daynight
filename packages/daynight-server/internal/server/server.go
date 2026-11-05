@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"log/slog"
@@ -43,7 +44,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	uiRoutes(mux, logger)
 	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		writeError(w, request, logger, "server", "route", &service.Fault{Code: "not_found", Message: "resource not found"})
+		writeError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
 	return &sessionApplication{Handler: attachmentPathGuard(mux, logger), relay: relay}, nil
 }

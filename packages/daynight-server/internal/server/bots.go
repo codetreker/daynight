@@ -7,8 +7,8 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
@@ -33,7 +33,7 @@ func botsRoutes(mux *http.ServeMux, bots *service.Bots, relay *sessionrelay.Serv
 	mux.HandleFunc(worker, auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 }
 
-func (h *botsHandler) detail(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *botsHandler) detail(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	switch request.Method {
 	case http.MethodGet, http.MethodHead:
 		h.get(w, request, principal)
@@ -70,9 +70,9 @@ func botCreateInput(fields map[string]json.RawMessage) (service.CreateBot, error
 	return input, nil
 }
 
-func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
-	var bot core.Bot
+	var bot model.Bot
 	var err error
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
 		err = invalidInput("bot creation does not accept query parameters")
@@ -94,7 +94,7 @@ func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, princ
 	writeJSON(w, request, logger, http.StatusOK, botResponse(bot))
 }
 
-func (h *botsHandler) defaults(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *botsHandler) defaults(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	values, err := queryValues(request, "workerId")
 	var result service.BotDefaults
@@ -127,7 +127,7 @@ func botDefaultsResponse(value service.BotDefaults) api.BotDefaults {
 	return result
 }
 
-func botConfigurationResponse(value *core.BotConfiguration) *api.BotConfiguration {
+func botConfigurationResponse(value *model.BotConfiguration) *api.BotConfiguration {
 	if value == nil {
 		return nil
 	}
@@ -136,7 +136,7 @@ func botConfigurationResponse(value *core.BotConfiguration) *api.BotConfiguratio
 	return &result
 }
 
-func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	page, err := pageRequest(request)
 	var result service.BotPage
@@ -165,10 +165,10 @@ func botResource(request *http.Request) (string, error) {
 	return service.CanonicalID(request.PathValue("botId"))
 }
 
-func (h *botsHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *botsHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	id, err := botResource(request)
 	logger := h.logger.With("user_id", principal.UserID)
-	var bot core.Bot
+	var bot model.Bot
 	if err == nil {
 		bot, err = h.bots.Get(request.Context(), principal, id)
 	}
@@ -192,10 +192,10 @@ func botDeleteInput(fields map[string]json.RawMessage) (service.DeleteBot, error
 	return service.DeleteBot{Version: value, DeletionID: id}, err
 }
 
-func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	id, err := botResource(request)
 	logger := h.logger.With("user_id", principal.UserID)
-	var bot core.Bot
+	var bot model.Bot
 	if err == nil {
 		var fields map[string]json.RawMessage
 		fields, err = decodeObject(w, request, "ifVersion", "deletionId")
@@ -214,7 +214,7 @@ func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, princ
 	writeJSON(w, request, logger, http.StatusOK, botResponse(bot))
 }
 
-func botResponse(bot core.Bot) api.Bot {
+func botResponse(bot model.Bot) api.Bot {
 	result := api.Bot{ID: bot.ID, WorkerID: bot.WorkerID, Version: bot.Version}
 	if bot.Deletion != nil {
 		deletion := bot.Deletion

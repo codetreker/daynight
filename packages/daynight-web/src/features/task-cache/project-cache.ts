@@ -27,7 +27,7 @@ type HistorySettlement = { readonly taskId: string; readonly token: string; read
 type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true };
 export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly cacheGenerationChanged?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
 type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
-class TaskCacheLifecycleChanged extends DOMException {
+export class TaskCacheLifecycleChanged extends DOMException {
   constructor() { super("The task cache lifecycle changed.", "AbortError"); }
 }
 const released = (): never => { throw new TaskCacheLifecycleChanged(); };

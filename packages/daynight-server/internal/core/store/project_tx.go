@@ -5,8 +5,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -17,12 +17,12 @@ type ProjectTx struct {
 
 type TaskWrite struct {
 	AssignedTo        *string
-	RequiredPlatform  *core.TaskPlatform
+	RequiredPlatform  *model.TaskPlatform
 	AllowAgents       bool
 	Title             string
 	Description       string
-	Properties        core.TaskProperties
-	Status            core.TaskStatus
+	Properties        model.TaskProperties
+	Status            model.TaskStatus
 	DependsOn         []string
 	ExternalDependsOn []string
 }
@@ -50,15 +50,15 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 	return nil
 }
 
-func (tx *ProjectTx) Task(ctx context.Context, id string) (core.Task, error) {
+func (tx *ProjectTx) Task(ctx context.Context, id string) (model.Task, error) {
 	return readTaskWithLock(ctx, tx.tx, tx.projectID, id, " FOR UPDATE OF t")
 }
 
-func (tx *ProjectTx) TasksByID(ctx context.Context, ids []string) ([]core.Task, error) {
+func (tx *ProjectTx) TasksByID(ctx context.Context, ids []string) ([]model.Task, error) {
 	return tx.tasks(ctx, `t.id = ANY($2::uuid[])`, ids, "read prerequisites")
 }
 
-func (tx *ProjectTx) tasks(ctx context.Context, condition string, value any, phase string) ([]core.Task, error) {
+func (tx *ProjectTx) tasks(ctx context.Context, condition string, value any, phase string) ([]model.Task, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT `+taskProjection+` FROM tasks t
 		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
@@ -108,30 +108,30 @@ func (tx *ProjectTx) Reachable(ctx context.Context, from, to string, replacement
 	return reachable, nil
 }
 
-func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties, false)
+func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
+	properties, err := taskproperties.Normalize(values.Properties)
 	if err != nil {
-		return core.Task{}, queryError("validate task properties", err)
+		return model.Task{}, queryError("validate task properties", err)
 	}
 	values.Properties = properties
 	_, err = tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, allow_agents, required_platform, assigned_to)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, tx.projectID, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
-		return core.Task{}, queryError("create task", err)
+		return model.Task{}, queryError("create task", err)
 	}
 	if err := writeTaskProperties(ctx, tx.tx, id, values.Properties); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if err := tx.insertDependencies(ctx, id, values.DependsOn, values.ExternalDependsOn); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	return tx.Task(ctx, id)
 }
 
-func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	properties, err := taskproperties.Normalize(values.Properties, false)
+func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite) (model.Task, error) {
+	properties, err := taskproperties.Normalize(values.Properties)
 	if err != nil {
-		return core.Task{}, queryError("validate task properties", err)
+		return model.Task{}, queryError("validate task properties", err)
 	}
 	values.Properties = properties
 	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, allow_agents = $6, required_platform = $7, assigned_to = $8,
@@ -147,30 +147,30 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 		version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
 		tx.projectID, id, values.Title, values.Description, values.Status, values.AllowAgents, values.RequiredPlatform, values.AssignedTo)
 	if err != nil {
-		return core.Task{}, queryError("update task", err)
+		return model.Task{}, queryError("update task", err)
 	}
 	if result.RowsAffected() == 0 {
-		return core.Task{}, queryError("update task", core.ErrNotFound)
+		return model.Task{}, queryError("update task", model.ErrNotFound)
 	}
 	if err := writeTaskProperties(ctx, tx.tx, id, values.Properties); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	worker, err := taskproperties.Worker(values.Properties)
 	if err != nil {
-		return core.Task{}, queryError("decode updated worker", err)
+		return model.Task{}, queryError("decode updated worker", err)
 	}
 	var activeClaim *string
-	if values.Status == core.TaskInProgress && worker != nil && worker.State == core.WorkerActive && worker.AgentControlMode == core.AgentControlModeWeb {
+	if values.Status == model.TaskInProgress && worker != nil && worker.State == model.WorkerActive && worker.AgentControlMode == model.AgentControlModeWeb {
 		activeClaim = &worker.ClaimID
 	}
 	if err := tx.freezeTaskSessions(ctx, id, activeClaim); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if _, err := tx.tx.Exec(ctx, `DELETE FROM task_dependencies WHERE project_id = $1 AND task_id = $2`, tx.projectID, id); err != nil {
-		return core.Task{}, queryError("replace dependencies", err)
+		return model.Task{}, queryError("replace dependencies", err)
 	}
 	if err := tx.insertDependencies(ctx, id, values.DependsOn, values.ExternalDependsOn); err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	return tx.Task(ctx, id)
 }
@@ -226,7 +226,7 @@ func (tx *ProjectTx) DeleteTask(ctx context.Context, id string, removeDepends bo
 		return queryError("delete task", err)
 	}
 	if result.RowsAffected() == 0 {
-		return queryError("delete task", core.ErrNotFound)
+		return queryError("delete task", model.ErrNotFound)
 	}
 	if err := tx.freezeTaskSessions(ctx, id, nil); err != nil {
 		return err

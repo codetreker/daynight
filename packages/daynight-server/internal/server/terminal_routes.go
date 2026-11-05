@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
@@ -62,7 +62,7 @@ func selectedSessionProtocol(r *http.Request) (string, error) {
 	}
 	return socketProtocol, nil
 }
-func terminalFault(code, message string) error { return &service.Fault{Code: code, Message: message} }
+func terminalFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func (h *sessionRoutes) registerTerminalRoutes(mux *http.ServeMux) {
 	for path, method := range map[string]string{
 		sessionBase: "GET", sessionBase + "/{sessionId}/state": "GET",
@@ -73,11 +73,11 @@ func (h *sessionRoutes) registerTerminalRoutes(mux *http.ServeMux) {
 		sessionBase + "/{sessionId}/recording-evidence/{evidenceId}":  "GET",
 		sessionBase + "/{sessionId}/automation-recovery/{recoveryId}": "GET",
 	} {
-		mux.HandleFunc(method+" "+path, h.auth.Require(h.parameters(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
+		mux.HandleFunc(method+" "+path, h.auth.Require(h.parameters(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 			h.failure(w, r, terminalFault("unsupported_protocol", "This endpoint requires daynight.session.v2."))
 		})))
 		if path != sessionBase {
-			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
+			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 				methodNotAllowed(h.logger, method)(w, r)
 			})
 			mux.HandleFunc(path, fallback)
@@ -119,7 +119,7 @@ func terminalBody(w http.ResponseWriter, r *http.Request) (v2.Message, error) {
 	}
 	return m, nil
 }
-func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if r.Method == http.MethodHead {
 		methodNotAllowed(h.logger, "GET")(w, r)
 		return
@@ -255,7 +255,7 @@ func (h *sessionRoutes) terminalRoute(w http.ResponseWriter, r *http.Request, p 
 	}
 	h.result(w, r, status, result, err)
 }
-func (h *sessionRoutes) terminalWorkerMessage(ctx context.Context, p core.Principal, project, task, id, epoch string, m v2.Message) (v2.Message, error) {
+func (h *sessionRoutes) terminalWorkerMessage(ctx context.Context, p model.Principal, project, task, id, epoch string, m v2.Message) (v2.Message, error) {
 	switch m.Type {
 	case "automation_recovery_prepare", "automation_recovery":
 		return h.service.UpdateTerminalRecovery(ctx, p, project, task, id, epoch, m)
@@ -289,8 +289,8 @@ func readTerminal(ctx context.Context, c *websocket.Conn) (v2.Message, error) {
 	}
 	return v2.DecodeMessage(raw)
 }
-func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	if p.Kind != core.PATCredential {
+func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if p.Kind != model.PATCredential {
 		h.failure(w, r, terminalFault("permission_denied", "Worker channels require the original owner's credential."))
 		return
 	}
@@ -390,7 +390,7 @@ func (h *sessionRoutes) terminalWorkerChannel(w http.ResponseWriter, r *http.Req
 		}
 	}
 }
-func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if _, err := queryValues(r, "browserClientId"); err != nil {
 		h.failure(w, r, err)
 		return
@@ -399,7 +399,7 @@ func (h *sessionRoutes) terminalBrowserChannel(w http.ResponseWriter, r *http.Re
 		h.failure(w, r, err)
 		return
 	}
-	if err := h.origin(r, p.Kind == core.SessionCredential); err != nil {
+	if err := h.origin(r, p.Kind == model.SessionCredential); err != nil {
 		h.failure(w, r, err)
 		return
 	}

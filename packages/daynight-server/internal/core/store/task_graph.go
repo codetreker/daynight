@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 type TaskGraphSize struct {
@@ -53,10 +53,10 @@ func (s *Snapshot) TaskGraphRoot(ctx context.Context, projectID, taskID string) 
 		return err
 	}
 	if !presence.Found {
-		return queryError("read task graph root", core.ErrNotFound)
+		return queryError("read task graph root", model.ErrNotFound)
 	}
 	if presence.DeletedAt != nil {
-		return core.ErrTaskDeleted
+		return model.ErrTaskDeleted
 	}
 	return nil
 }
@@ -73,7 +73,7 @@ func (s *Snapshot) TaskGraphProjectionSize(ctx context.Context, projectID, taskI
 	return size, nil
 }
 
-func (s *Snapshot) TaskGraphTasks(ctx context.Context, projectID, taskID string, previewCharacters int) ([]core.GraphTask, error) {
+func (s *Snapshot) TaskGraphTasks(ctx context.Context, projectID, taskID string, previewCharacters int) ([]model.GraphTask, error) {
 	rows, err := s.tx.Query(ctx, taskGraphSelection+`SELECT t.id::text, left(t.title, $3), char_length(t.title) > $3,
 		t.status, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+taskDependsOn+`, `+taskExternalDependsOn+`, `+taskBlockedBy+`, `+taskReady+`
 		FROM tasks t JOIN selected ON selected.id = t.id WHERE t.project_id = $1 AND t.deleted_at IS NULL ORDER BY t.created_at, t.id`, projectID, taskID, previewCharacters)
@@ -81,9 +81,9 @@ func (s *Snapshot) TaskGraphTasks(ctx context.Context, projectID, taskID string,
 		return nil, queryError("read task graph", err)
 	}
 	defer rows.Close()
-	tasks := make([]core.GraphTask, 0)
+	tasks := make([]model.GraphTask, 0)
 	for rows.Next() {
-		var task core.GraphTask
+		var task model.GraphTask
 		if err := rows.Scan(&task.ID, &task.TitlePreview, &task.TitleTruncated, &task.Status,
 			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn, &task.BlockedBy, &task.Ready); err != nil {
 			return nil, queryError("read task graph", err)

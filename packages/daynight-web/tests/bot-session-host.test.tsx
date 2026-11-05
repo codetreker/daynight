@@ -42,6 +42,36 @@ it('shows no old target while the new binding is unavailable and restores it wit
   await f.select(1); expect(screen.getByRole('textbox')).toBe(a); expect(f.bots[0]!.api.current).toHaveBeenCalledOnce();
 });
 
+it.each(['deadline', 'buffer', 'transport'] as const)('retains the pane and client while %s forces a paused channel to reconnect', async reason => {
+  const bot=botFixture(); let paused=false, onClose: (error?:unknown)=>void=()=>{};
+  const original=vi.mocked(bot.api.channel).getMockImplementation()!;
+  vi.mocked(bot.api.channel).mockImplementation((id,after,onMessage,close)=>{onClose=close;return original(id,after,onMessage,close);});
+  const cache=new BotSessionCache({userId:botOwner,isCurrent:()=>true,isPaused:()=>paused,storage:null,onPrincipalMismatch:vi.fn(),createApi:()=>bot.api}); caches.push(cache);
+  const view=render(<BotSessionHost cache={cache} binding={bot.binding} />);
+  const input=await screen.findByRole('textbox',{name:'Message'}); await waitFor(()=>expect(input).toBeEnabled());
+  const pane=cache.snapshot()[0]!, client=pane.client, timeline=view.container.querySelector('.session-timeline');
+  fireEvent.change(input,{target:{value:'kept draft'}}); const firstGeneration=client.snapshot().connectionGeneration;
+  const now=Date.now(); let clock: ReturnType<typeof vi.spyOn>|undefined;
+  try {
+    act(()=>{paused=true;cache.syncAvailability();});
+    expect(client.snapshot().authPaused).toBe(true);
+    if(reason==='deadline') { clock=vi.spyOn(Date,'now').mockReturnValue(now+60_001); }
+    if(reason==='buffer') act(()=>{for(let n=0;n<1001;n++)bot.receive({protocol:bot.snapshot().protocol,type:'snapshot',userId:botOwner,snapshot:bot.snapshot(),cursor:'queued'});});
+    if(reason==='transport') act(()=>onClose(new Error('transport interrupted')));
+    expect(screen.getByRole('textbox',{name:'Message'})).toBe(input); expect(input).toHaveValue('kept draft');
+    act(()=>{paused=false;cache.syncAvailability();});
+    clock?.mockRestore(); clock=undefined;
+    await waitFor(()=>expect(vi.mocked(bot.api.channel).mock.calls.length).toBe(2));
+    await waitFor(()=>expect(client.snapshot().connected).toBe(true));
+    expect(cache.snapshot()[0]).toBe(pane); expect(cache.snapshot()[0]!.client).toBe(client);
+    expect(screen.getByRole('textbox',{name:'Message'})).toBe(input); expect(input).toHaveValue('kept draft');
+    expect(view.container.querySelector('.session-timeline')).toBe(timeline);
+    expect(client.snapshot().connectionGeneration).toBeGreaterThan(firstGeneration);
+    expect(vi.mocked(bot.api.channel).mock.calls[1]![1]).toBe('zero');
+    expect(bot.api.command).not.toHaveBeenCalled();
+  } finally {clock?.mockRestore();}
+});
+
 it('retains a cold bookmark on failed history and resumes the same target through local retry', async () => {
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('session-timeline') ? 200 : 0; });
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(2000);

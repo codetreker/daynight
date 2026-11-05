@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
-func storeWorkerConfiguration() core.WorkerConfiguration {
-	return core.WorkerConfiguration{MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3, Native: core.WorkerNativeConfiguration{Agent: core.AgentCodex, Args: []string{}}, Projects: []core.WorkerProjectConfiguration{}}
+func storeWorkerConfiguration() model.WorkerConfiguration {
+	return model.WorkerConfiguration{MaxConcurrent: 1, PollIntervalMs: 60000, RecoveryLimit: 3, Native: model.WorkerNativeConfiguration{Agent: model.AgentCodex, Args: []string{}}, Projects: []model.WorkerProjectConfiguration{}}
 }
 
 func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
@@ -27,7 +27,7 @@ func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 	userID, workerID := queryID(1), queryID(2)
 	original := putWorkerSnapshot(t, database, workerSnapshotFixture(userID, workerID, stamp))
 	project := queryProject(t, database, 10)
-	queryTask(t, database, project.ID, 20, core.TaskInProgress)
+	queryTask(t, database, project.ID, 20, model.TaskInProgress)
 	before := currentTaskFactsFixture(t, database)
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
@@ -36,10 +36,10 @@ func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 	if !reflect.DeepEqual(original, after) || !reflect.DeepEqual(before, currentTaskFactsFixture(t, database)) {
 		t.Fatal("configuration migration changed telemetry or Task facts")
 	}
-	var resource core.WorkerConfigurationResource
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	var resource model.WorkerConfigurationResource
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		var err error
-		resource, err = snapshot.WorkerConfiguration(ctx, userID, workerID)
+		resource, err = snapshot.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -95,11 +95,11 @@ func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
 	putWorkerSnapshot(t, database, workerSnapshotFixture(userID, workerID, time.Now().UTC()))
 	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
 		bad := storeWorkerConfiguration()
-		bad.Projects = append(bad.Projects, core.WorkerProjectConfiguration{ProjectID: queryID(3), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}})
+		bad.Projects = append(bad.Projects, model.WorkerProjectConfiguration{ProjectID: queryID(3), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}})
 		if _, err := tx.SetWorkerConfiguration(ctx, userID, workerID, 1, bad); err == nil {
 			t.Fatal("invalid native JSON encoding hidden")
 		}
-		observation := core.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []core.WorkerConfigurationItem{{AppliedValue: json.RawMessage(`invalid`)}}}
+		observation := model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{{AppliedValue: json.RawMessage(`invalid`)}}}
 		if err := tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, observation); err == nil {
 			t.Fatal("invalid application JSON encoding hidden")
 		}
@@ -117,18 +117,18 @@ func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
 		if _, err := tx.SetWorkerConfiguration(ctx, userID, workerID, 1, storeWorkerConfiguration()); !errors.Is(err, pgx.ErrTxClosed) {
 			t.Fatalf("closed update failure lost: %v", err)
 		}
-		if err := tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, core.WorkerConfigurationObservation{}); !errors.Is(err, pgx.ErrTxClosed) {
+		if err := tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{}); !errors.Is(err, pgx.ErrTxClosed) {
 			t.Fatalf("closed observation clock failure lost: %v", err)
 		}
 		return sentinelConfigurationRollback
 	}); !errors.Is(err, sentinelConfigurationRollback) {
 		t.Fatalf("rollback operation error lost: %v", err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		if err := snapshot.tx.Rollback(ctx); err != nil {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if err := snapshot.(*Snapshot).tx.Rollback(ctx); err != nil {
 			return err
 		}
-		_, err := snapshot.WorkerConfiguration(ctx, userID, workerID)
+		_, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
 		if !errors.Is(err, pgx.ErrTxClosed) {
 			t.Fatalf("closed read failure lost: %v", err)
 		}
@@ -140,7 +140,7 @@ func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
-		return tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, core.WorkerConfigurationObservation{Items: []core.WorkerConfigurationItem{}})
+		return tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{}})
 	}); err == nil {
 		t.Fatal("observation database update failure hidden")
 	}
@@ -154,7 +154,7 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	workerID := queryID(90)
 	putWorkerSnapshot(t, database, workerSnapshotFixture(admin.UserID, workerID, time.Now().UTC()))
 	value := storeWorkerConfiguration()
-	var desired core.WorkerDesiredConfiguration
+	var desired model.WorkerDesiredConfiguration
 	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
 		current, err := tx.WorkerConfiguration(ctx, admin.UserID, workerID)
 		if err != nil || current.Desired != nil || current.ObservationRevision != "0" {
@@ -163,7 +163,7 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 		if err := tx.ConfigurationProjectAccess(ctx, admin.UserID, project.ID); err != nil {
 			t.Fatalf("owner Project access rejected: %v", err)
 		}
-		if err := tx.ConfigurationProjectAccess(ctx, member.UserID, project.ID); !errors.Is(err, core.ErrNotFound) {
+		if err := tx.ConfigurationProjectAccess(ctx, member.UserID, project.ID); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("inaccessible Project exposed: %v", err)
 		}
 		desired, err = tx.SetWorkerConfiguration(ctx, admin.UserID, workerID, 1, value)
@@ -173,13 +173,13 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 		if desired.Revision != "1" || desired.UpdatedAt.IsZero() || !reflect.DeepEqual(desired.Value, value) {
 			t.Fatalf("stored target result: %+v", desired)
 		}
-		observation := core.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []core.WorkerConfigurationItem{}}
+		observation := model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{}}
 		return tx.SetWorkerConfigurationObservation(ctx, admin.UserID, workerID, 1, observation)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		current, err := snapshot.WorkerConfiguration(ctx, admin.UserID, workerID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)
 		if err != nil {
 			return err
 		}

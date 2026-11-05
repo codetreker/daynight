@@ -5,9 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"strings"
@@ -726,7 +725,7 @@ func TestTerminalForeignHealthyRelayCannotRevokeControlOrPendingOperation(t *tes
 				if before != after {
 					t.Fatal("foreign relay mutated healthy original control state")
 				}
-				var refusal *service.Fault
+				var refusal *model.Fault
 				if !errors.As(err, &refusal) || refusal.Code != "relay_instance_unavailable" {
 					t.Fatalf("missing explicit relay routing refusal: %v", err)
 				}
@@ -758,7 +757,7 @@ func TestTerminalForeignRelaySuspendsOnlyAfterHeartbeatLossOrClaimEnd(t *testing
 			epoch := "1"
 			registration.ConnectionEpoch = &epoch
 			_, err := other.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", registration))
-			var refusal *service.Fault
+			var refusal *model.Fault
 			if !errors.As(err, &refusal) || refusal.Code != "input_busy" {
 				t.Fatalf("healthy foreign registration bypassed existing owner: %v", err)
 			}
@@ -1185,9 +1184,9 @@ func TestTerminalExpiredLeaseAndWrongBrowserCannotInput(t *testing.T) {
 	}
 }
 
-func terminalOtherActor(t *testing.T, f *terminalControlFixture) core.Principal {
+func terminalOtherActor(t *testing.T, f *terminalControlFixture) model.Principal {
 	t.Helper()
-	p := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	hash := sha256.Sum256([]byte(p.CredentialID))
 	statements := []struct {
 		sql  string

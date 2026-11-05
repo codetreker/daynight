@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -51,11 +51,11 @@ func TestInstalledCLITaskStepsDeleteAcceptance(t *testing.T) {
 		attachment := acceptanceDecode[api.Attachment](t, process.attachmentRequest(http.MethodPut, acceptanceAttachmentPath(task, "evidence.md"), "text/markdown", attachmentBody), http.StatusCreated)
 		stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
 		rows := []api.TaskStep{
-			{ID: "00abcdef", Title: "todo", Description: "[Retained artifact](evidence.md)", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)},
-			{ID: "12345678", Title: "in progress", Description: "second", Status: core.TaskStepInProgress, CreatedAt: stamp.Add(time.Second), UpdatedAt: stamp.Add(time.Minute)},
-			{ID: "fedcba98", Title: "done", Description: "third", Status: core.TaskStepDone, CreatedAt: stamp.Add(time.Second * 2), UpdatedAt: stamp.Add(time.Second * 3)},
-			{ID: "11111111", Title: "skipped", Description: "fourth", Status: core.TaskStepSkipped, CreatedAt: stamp.Add(time.Second * 4), UpdatedAt: stamp.Add(time.Second * 4)},
-			{ID: "00000000", Title: "Retained\x1b[31m\nFull title", Description: "# Retained Markdown\n[Artifact](evidence.md)", Status: core.TaskStepDone, CreatedAt: stamp.Add(time.Second * 5), UpdatedAt: stamp.Add(time.Hour * 2)},
+			{ID: "00abcdef", Title: "todo", Description: "[Retained artifact](evidence.md)", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)},
+			{ID: "12345678", Title: "in progress", Description: "second", Status: model.TaskStepInProgress, CreatedAt: stamp.Add(time.Second), UpdatedAt: stamp.Add(time.Minute)},
+			{ID: "fedcba98", Title: "done", Description: "third", Status: model.TaskStepDone, CreatedAt: stamp.Add(time.Second * 2), UpdatedAt: stamp.Add(time.Second * 3)},
+			{ID: "11111111", Title: "skipped", Description: "fourth", Status: model.TaskStepSkipped, CreatedAt: stamp.Add(time.Second * 4), UpdatedAt: stamp.Add(time.Second * 4)},
+			{ID: "00000000", Title: "Retained\x1b[31m\nFull title", Description: "# Retained Markdown\n[Artifact](evidence.md)", Status: model.TaskStepDone, CreatedAt: stamp.Add(time.Second * 5), UpdatedAt: stamp.Add(time.Hour * 2)},
 		}
 		for index, step := range rows {
 			fixture.exec(t, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, task.ID, step.ID, index, step.Title, step.Description, step.Status, step.CreatedAt, step.UpdatedAt)

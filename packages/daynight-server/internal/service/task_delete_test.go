@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func deletedTaskStorage(t *testing.T, database *store.Store, task core.Task) (string, *time.Time, time.Time, int64) {
+func deletedTaskStorage(t *testing.T, database *store.Store, task model.Task) (string, *time.Time, time.Time, int64) {
 	t.Helper()
 	var data string
 	var deleted *time.Time
@@ -32,7 +32,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	attachments, tasks, database, files, task, principal := attachmentService(t)
 	ctx := context.Background()
 	pre := finishTask(t, tasks, principal, createTask(t, tasks, principal, task.ProjectID, "Prerequisite"))
-	task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved body"), DependsOn: pointer([]string{pre.ID}), ExternalDependsOn: pointer([]string{pre.ID}), Properties: propertyPatch(core.PullRequestProperty{URL: "PR", Title: "Retained evidence"})})
+	task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved body"), DependsOn: pointer([]string{pre.ID}), ExternalDependsOn: pointer([]string{pre.ID}), Properties: propertyPatch(model.PullRequestProperty{URL: "PR", Title: "Retained evidence"})})
 	attachment := putAttachment(t, attachments, principal, task, "evidence.txt", "retained bytes")
 	before, marker, _, _ := deletedTaskStorage(t, database, task)
 	if marker != nil {
@@ -66,8 +66,8 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 		t.Fatalf("attachment bytes changed: %q %v %v", content, readErr, closeErr)
 	}
 	for _, ready := range []*bool{nil, pointer(true), pointer(false)} {
-		page, err := tasks.List(ctx, principal, task.ProjectID, TaskListRequest{PageRequest: PageRequest{Limit: 100}, Ready: ready})
-		if err != nil || slices.ContainsFunc(page.Items, func(item core.Task) bool { return item.ID == task.ID }) {
+		page, err := tasks.List(ctx, principal, task.ProjectID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, Ready: ready})
+		if err != nil || slices.ContainsFunc(page.Items, func(item model.Task) bool { return item.ID == task.ID }) {
 			t.Fatalf("deleted task is listed: %#v %v", page, err)
 		}
 	}
@@ -81,19 +81,19 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	}
 	_, err = tasks.Get(ctx, principal, task.ProjectID, task.ID)
 	fault := requireFault(t, err, "task_deleted")
-	if !errors.Is(fault, core.ErrTaskDeleted) {
+	if !errors.Is(fault, model.ErrTaskDeleted) {
 		t.Fatal("deleted task cause lost")
 	}
 	_, err = tasks.Update(ctx, principal, task.ProjectID, task.ID, UpdateTask{Version: version, Title: pointer("Changed")})
 	requireFault(t, err, "task_deleted")
-	_, err = tasks.SetStatus(ctx, principal, task.ProjectID, task.ID, SetTaskStatus{Version: version, Status: core.TaskDone})
+	_, err = tasks.SetStatus(ctx, principal, task.ProjectID, task.ID, SetTaskStatus{Version: version, Status: model.TaskDone})
 	requireFault(t, err, "task_deleted")
 	requireFault(t, tasks.Delete(ctx, principal, task.ProjectID, task.ID, DeleteTask{Version: version}), "task_deleted")
 	_, err = tasks.ClaimWorker(ctx, principal, task.ProjectID, task.ID, ClaimWorker{Version: version, WorkerDescriptor: workerDescriptor()})
 	requireFault(t, err, "task_deleted")
 	_, err = tasks.Create(ctx, principal, task.ProjectID, CreateTask{Title: "Invalid reference", DependsOn: []string{task.ID}})
 	requireFault(t, err, "invalid_input")
-	_, err = attachments.List(ctx, principal, task.ProjectID, task.ID, PageRequest{Limit: 100})
+	_, err = attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: 100})
 	requireFault(t, err, "task_deleted")
 	_, _, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, attachment.Path)
 	requireFault(t, err, "task_deleted")
@@ -106,7 +106,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	}
 	graph, err = tasks.Graph(ctx, principal, task.ProjectID, pre.ID)
 	requireFault(t, err, "task_deleted")
-	if !reflect.DeepEqual(graph, core.TaskGraph{}) {
+	if !reflect.DeepEqual(graph, model.TaskGraph{}) {
 		t.Fatalf("deleted graph root returned data: %#v", graph)
 	}
 }
@@ -115,8 +115,8 @@ func TestTaskDeletionProtectsVersionDependenciesAndWorker(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	ctx := context.Background()
 	pre := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Pre"))
-	var dependents []core.Task
-	for _, status := range []core.TaskStatus{core.TaskTodo, core.TaskInProgress, core.TaskDone} {
+	var dependents []model.Task
+	for _, status := range []model.TaskStatus{model.TaskTodo, model.TaskInProgress, model.TaskDone} {
 		dependent := createTask(t, tasks, principal, project.ID, "Dependent", pre.ID)
 		dependent = setStatusTask(t, tasks, principal, dependent, status)
 		dependents = append(dependents, dependent)
@@ -163,7 +163,7 @@ func TestTaskDeletionValidationAndAccessDoNotExposeHistory(t *testing.T) {
 	ctx := context.Background()
 	task := createTask(t, tasks, principal, project.ID, "Private")
 	stranger := servicePrincipal(t, database)
-	requireFault(t, tasks.Delete(ctx, core.Principal{}, project.ID, task.ID, DeleteTask{Version: task.Version}), "unauthenticated")
+	requireFault(t, tasks.Delete(ctx, model.Principal{}, project.ID, task.ID, DeleteTask{Version: task.Version}), "unauthenticated")
 	requireFault(t, tasks.Delete(ctx, principal, "invalid", task.ID, DeleteTask{Version: task.Version}), "invalid_input")
 	requireFault(t, tasks.Delete(ctx, principal, project.ID, "invalid", DeleteTask{Version: task.Version}), "invalid_input")
 	requireFault(t, tasks.Delete(ctx, principal, project.ID, task.ID, DeleteTask{Version: 0}), "invalid_input")
@@ -182,10 +182,10 @@ func TestTaskDeletionSerializesWithDependencyCreation(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	pre := createTask(t, tasks, principal, project.ID, "Prerequisite")
 	results := competeTaskWrites(t, database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
-			return core.Task{}, tasks.Delete(ctx, principal, project.ID, pre.ID, DeleteTask{Version: pre.Version})
+		func(ctx context.Context) (model.Task, error) {
+			return model.Task{}, tasks.Delete(ctx, principal, project.ID, pre.ID, DeleteTask{Version: pre.Version})
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			return tasks.Create(ctx, principal, project.ID, CreateTask{Title: "New dependent", DependsOn: []string{pre.ID}})
 		})
 	success := 0
@@ -194,7 +194,7 @@ func TestTaskDeletionSerializesWithDependencyCreation(t *testing.T) {
 			success++
 			continue
 		}
-		var fault *Fault
+		var fault *model.Fault
 		if !errors.As(result.err, &fault) || fault.Code != "invalid_input" && fault.Code != "dependency_unsatisfied" {
 			t.Fatalf("unexpected concurrent refusal: %v", result.err)
 		}
@@ -202,13 +202,13 @@ func TestTaskDeletionSerializesWithDependencyCreation(t *testing.T) {
 	if success != 1 {
 		t.Fatalf("both deletion and a live reference committed: %#v", results)
 	}
-	page, err := tasks.List(context.Background(), principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}})
+	page, err := tasks.List(context.Background(), principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, task := range page.Items {
 		for _, dependency := range task.DependsOn {
-			if !slices.ContainsFunc(page.Items, func(candidate core.Task) bool { return candidate.ID == dependency }) {
+			if !slices.ContainsFunc(page.Items, func(candidate model.Task) bool { return candidate.ID == dependency }) {
 				t.Fatal("concurrent write left a dangling active dependency")
 			}
 		}
@@ -239,7 +239,7 @@ func TestTaskDeletionRollsBackWhenEpochInvalidationFails(t *testing.T) {
 func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	task := claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), workerDescriptor())
-	completed, err := tasks.SetStatus(context.Background(), principal, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &testWorker(t, task.Properties).ClaimID})
+	completed, err := tasks.SetStatus(context.Background(), principal, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: model.TaskDone, ClaimID: &testWorker(t, task.Properties).ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,11 +10,11 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -39,7 +39,7 @@ func taskStepsRoutes(mux *http.ServeMux, steps *service.TaskSteps, auth *Authent
 	mux.HandleFunc(path+"/{stepId}/position", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 }
 
-func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	operation := "list"
 	if request.PathValue("stepId") != "" {
@@ -53,7 +53,7 @@ func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, pri
 	}
 	stepID := request.PathValue("stepId")
 	if operation == "get" {
-		stepID, err = tasksteps.CanonicalID(stepID)
+		stepID, err = taskcodec.CanonicalID(stepID)
 		if err != nil {
 			writeStepsError(w, request, logger, "read", invalidInput(err.Error()))
 			return
@@ -102,7 +102,7 @@ func stepsReadKind(id string) string {
 	return "normal"
 }
 
-func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := taskResource(request, principal, h.logger.With("operation", "add"))
 	refuse := func(err error) {
@@ -130,7 +130,7 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 		refuse(err)
 		return
 	}
-	id, err := tasksteps.CanonicalID(input.ID)
+	id, err := taskcodec.CanonicalID(input.ID)
 	if err != nil {
 		refuse(invalidInput(err.Error()))
 		return
@@ -179,7 +179,7 @@ func addStepInput(fields map[string]json.RawMessage) (service.AddTaskStep, error
 		return input, err
 	}
 	if status != nil {
-		value := core.TaskStepStatus(*status)
+		value := model.TaskStepStatus(*status)
 		input.Status = &value
 	}
 	input.Before, err = optionalString(fields, "before")

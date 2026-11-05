@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -23,27 +23,27 @@ func NewMemberships(database *store.Store) *Memberships {
 }
 
 type MintedInvitation struct {
-	Invitation core.ProjectInvitation
+	Invitation model.ProjectInvitation
 	Secret     string
 }
 
 type InvitationInspection struct {
 	ProjectID   string
 	ProjectName string
-	DirectGrant *core.ProjectGrant
-	Access      *core.ProjectAccess
+	DirectGrant *model.ProjectGrant
+	Access      *model.ProjectAccess
 }
 
 type InvitationAcceptance struct {
 	ProjectID   string
-	DirectGrant core.ProjectGrant
-	Access      core.ProjectAccess
+	DirectGrant model.ProjectGrant
+	Access      model.ProjectAccess
 	Joined      bool
 	Consumed    bool
 }
 
-func requirePrincipal(principal core.Principal) error {
-	if principal.Kind != core.SessionCredential && principal.Kind != core.PATCredential {
+func requirePrincipal(principal model.Principal) error {
+	if principal.Kind != model.SessionCredential && principal.Kind != model.PATCredential {
 		return unauthenticated(nil)
 	}
 	if _, err := CanonicalID(principal.CredentialID); err != nil {
@@ -56,45 +56,45 @@ func requirePrincipal(principal core.Principal) error {
 }
 
 func projectNotFound(cause error) error {
-	return &Fault{Code: "not_found", Message: "Project was not found.", Cause: cause}
+	return &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: cause}
 }
 
 func membershipLookupError(err error) error {
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return projectNotFound(err)
 	}
 	return err
 }
 
-func RequireProjectRead(ctx context.Context, snapshot *store.Snapshot, principal core.Principal, projectID string) (core.ProjectAccess, error) {
+func RequireProjectRead(ctx context.Context, reader store.ProjectReader, principal model.Principal, projectID string) (model.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.ProjectAccess{}, err
+		return model.ProjectAccess{}, err
 	}
 	id, err := CanonicalID(projectID)
 	if err != nil {
-		return core.ProjectAccess{}, err
+		return model.ProjectAccess{}, err
 	}
-	access, err := snapshot.ProjectAccess(ctx, principal, id)
+	access, err := reader.ProjectAccess(ctx, principal, id)
 	return access, membershipLookupError(err)
 }
 
-func RequireProjectWrite(ctx context.Context, tx *store.ProjectTx, principal core.Principal) (core.ProjectAccess, error) {
+func RequireProjectWrite(ctx context.Context, tx *store.ProjectTx, principal model.Principal) (model.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.ProjectAccess{}, err
+		return model.ProjectAccess{}, err
 	}
 	access, err := tx.ProjectAccess(ctx, principal)
 	return access, membershipLookupError(err)
 }
 
-func requireProjectAdmin(access core.ProjectAccess) error {
-	if access.Role != core.ProjectAdmin {
-		return &Fault{Code: "forbidden", Message: "Project administrator access is required."}
+func requireProjectAdmin(access model.ProjectAccess) error {
+	if access.Role != model.ProjectAdmin {
+		return &model.Fault{Code: "forbidden", Message: "Project administrator access is required."}
 	}
 	return nil
 }
 
 // Domain refusals still complete the transaction, so cancellation and commit errors remain visible.
-func completeMembershipOperation(operation func() error, refusal **Fault) error {
+func completeMembershipOperation(operation func() error, refusal **model.Fault) error {
 	err := operation()
 	if errors.As(err, refusal) {
 		return nil
@@ -102,7 +102,7 @@ func completeMembershipOperation(operation func() error, refusal **Fault) error 
 	return err
 }
 
-func (s *Memberships) read(ctx context.Context, principal core.Principal, projectID string, admin bool, operation func(*store.Snapshot, core.ProjectAccess) error) error {
+func (s *Memberships) read(ctx context.Context, principal model.Principal, projectID string, admin bool, operation func(store.ProjectReader, model.ProjectAccess) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -110,10 +110,10 @@ func (s *Memberships) read(ctx context.Context, principal core.Principal, projec
 	if err != nil {
 		return err
 	}
-	var refusal *Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	var refusal *model.Fault
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			access, err := RequireProjectRead(ctx, snapshot, principal, id)
+			access, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, id)
 			if err != nil {
 				return err
 			}
@@ -122,7 +122,7 @@ func (s *Memberships) read(ctx context.Context, principal core.Principal, projec
 					return err
 				}
 			}
-			return operation(snapshot, access)
+			return operation(snapshot.ProjectDAO(), access)
 		}, &refusal)
 	})
 	if err != nil {
@@ -134,7 +134,7 @@ func (s *Memberships) read(ctx context.Context, principal core.Principal, projec
 	return nil
 }
 
-func (s *Memberships) write(ctx context.Context, principal core.Principal, projectID string, operation func(*store.ProjectTx) error) error {
+func (s *Memberships) write(ctx context.Context, principal model.Principal, projectID string, operation func(*store.ProjectTx) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (s *Memberships) write(ctx context.Context, principal core.Principal, proje
 	if err != nil {
 		return err
 	}
-	var refusal *Fault
+	var refusal *model.Fault
 	err = s.store.WriteProject(ctx, id, func(tx *store.ProjectTx) error {
 		return completeMembershipOperation(func() error {
 			access, err := RequireProjectWrite(ctx, tx, principal)
@@ -165,21 +165,21 @@ func (s *Memberships) write(ctx context.Context, principal core.Principal, proje
 }
 
 type ProjectParticipants struct {
-	Items       []core.ProjectParticipant
-	ActorAccess core.ProjectAccess
+	Items       []model.ProjectParticipant
+	ActorAccess model.ProjectAccess
 }
 
-func (s *Memberships) List(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectParticipant, error) {
+func (s *Memberships) List(ctx context.Context, principal model.Principal, projectID string) ([]model.ProjectParticipant, error) {
 	result, err := s.ListWithAccess(ctx, principal, projectID)
 	return result.Items, err
 }
 
-func (s *Memberships) ListWithAccess(ctx context.Context, principal core.Principal, projectID string) (ProjectParticipants, error) {
+func (s *Memberships) ListWithAccess(ctx context.Context, principal model.Principal, projectID string) (ProjectParticipants, error) {
 	var result ProjectParticipants
-	err := s.read(ctx, principal, projectID, false, func(snapshot *store.Snapshot, access core.ProjectAccess) error {
+	err := s.read(ctx, principal, projectID, false, func(reader store.ProjectReader, access model.ProjectAccess) error {
 		var err error
 		result.ActorAccess = access
-		result.Items, err = snapshot.ProjectParticipants(ctx, projectID)
+		result.Items, err = reader.ProjectParticipants(ctx, projectID)
 		return err
 	})
 	if err != nil {
@@ -188,16 +188,16 @@ func (s *Memberships) ListWithAccess(ctx context.Context, principal core.Princip
 	return result, nil
 }
 
-func memberMutationTarget(ctx context.Context, tx *store.ProjectTx, userID string, version int64) (core.ProjectMember, error) {
+func memberMutationTarget(ctx context.Context, tx *store.ProjectTx, userID string, version int64) (model.ProjectMember, error) {
 	member, err := tx.DirectProjectMember(ctx, userID)
-	if errors.Is(err, core.ErrNotFound) {
-		return core.ProjectMember{}, &Fault{Code: "not_found", Message: "Project member was not found.", Cause: err}
+	if errors.Is(err, model.ErrNotFound) {
+		return model.ProjectMember{}, &model.Fault{Code: "not_found", Message: "Project member was not found.", Cause: err}
 	}
 	if err != nil {
-		return core.ProjectMember{}, err
+		return model.ProjectMember{}, err
 	}
 	if member.Grant.Version != version {
-		return core.ProjectMember{}, &Fault{Code: "version_conflict", Message: "Member version does not match."}
+		return model.ProjectMember{}, &model.Fault{Code: "version_conflict", Message: "Member version does not match."}
 	}
 	return member, nil
 }
@@ -215,7 +215,7 @@ func validateMemberMutation(userID string, version int64) (string, error) {
 
 type SetProjectMemberRole struct {
 	Version        int64
-	Role           core.ProjectRole
+	Role           model.ProjectRole
 	ExpectedUserID string
 }
 
@@ -224,7 +224,7 @@ type RemoveProjectMember struct {
 	ExpectedUserID string
 }
 
-func requireMembershipActor(principal core.Principal, expectedUserID string) error {
+func requireMembershipActor(principal model.Principal, expectedUserID string) error {
 	expected, err := CanonicalID(expectedUserID)
 	if err != nil {
 		return err
@@ -233,26 +233,26 @@ func requireMembershipActor(principal core.Principal, expectedUserID string) err
 		return invalidInput("expectedUserId must be a canonical user UUID")
 	}
 	if expected != principal.UserID {
-		return &Fault{Code: "identity_mismatch", Message: "The signed-in account changed. Review the project authorization again."}
+		return &model.Fault{Code: "identity_mismatch", Message: "The signed-in account changed. Review the project authorization again."}
 	}
 	return nil
 }
 
-func (s *Memberships) SetRole(ctx context.Context, principal core.Principal, projectID, userID string, input SetProjectMemberRole) (core.ProjectGrant, error) {
+func (s *Memberships) SetRole(ctx context.Context, principal model.Principal, projectID, userID string, input SetProjectMemberRole) (model.ProjectGrant, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.ProjectGrant{}, err
+		return model.ProjectGrant{}, err
 	}
 	if err := requireMembershipActor(principal, input.ExpectedUserID); err != nil {
-		return core.ProjectGrant{}, err
+		return model.ProjectGrant{}, err
 	}
 	id, err := validateMemberMutation(userID, input.Version)
 	if err != nil {
-		return core.ProjectGrant{}, err
+		return model.ProjectGrant{}, err
 	}
-	if input.Role != core.ProjectAdmin && input.Role != core.ProjectMemberRole {
-		return core.ProjectGrant{}, invalidInput("Role must be admin or member.")
+	if input.Role != model.ProjectAdmin && input.Role != model.ProjectMemberRole {
+		return model.ProjectGrant{}, invalidInput("Role must be admin or member.")
 	}
-	var result core.ProjectGrant
+	var result model.ProjectGrant
 	err = s.write(ctx, principal, projectID, func(tx *store.ProjectTx) error {
 		member, err := memberMutationTarget(ctx, tx, id, input.Version)
 		if err != nil {
@@ -269,7 +269,7 @@ func (s *Memberships) SetRole(ctx context.Context, principal core.Principal, pro
 	return result, err
 }
 
-func (s *Memberships) Remove(ctx context.Context, principal core.Principal, projectID, userID string, input RemoveProjectMember) error {
+func (s *Memberships) Remove(ctx context.Context, principal model.Principal, projectID, userID string, input RemoveProjectMember) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -288,7 +288,7 @@ func (s *Memberships) Remove(ctx context.Context, principal core.Principal, proj
 	})
 }
 
-func (s *Memberships) CreateInvitation(ctx context.Context, principal core.Principal, projectID, expectedUserID string) (MintedInvitation, error) {
+func (s *Memberships) CreateInvitation(ctx context.Context, principal model.Principal, projectID, expectedUserID string) (MintedInvitation, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return MintedInvitation{}, err
 	}
@@ -303,7 +303,7 @@ func (s *Memberships) CreateInvitation(ctx context.Context, principal core.Princ
 	err = s.write(ctx, principal, id, func(tx *store.ProjectTx) error {
 		now := s.now().UTC()
 		result.Secret = randomSecret(invitationPrefix)
-		result.Invitation = core.ProjectInvitation{ID: uuid.NewString(), ProjectID: id, CreatedBy: principal.UserID, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
+		result.Invitation = model.ProjectInvitation{ID: uuid.NewString(), ProjectID: id, CreatedBy: principal.UserID, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
 		return tx.CreateInvitation(ctx, result.Invitation)
 	})
 	if err != nil {
@@ -313,17 +313,17 @@ func (s *Memberships) CreateInvitation(ctx context.Context, principal core.Princ
 	return result, nil
 }
 
-func (s *Memberships) ListInvitations(ctx context.Context, principal core.Principal, projectID string) ([]core.ProjectInvitation, error) {
-	var invitations []core.ProjectInvitation
-	err := s.read(ctx, principal, projectID, true, func(snapshot *store.Snapshot, _ core.ProjectAccess) error {
+func (s *Memberships) ListInvitations(ctx context.Context, principal model.Principal, projectID string) ([]model.ProjectInvitation, error) {
+	var invitations []model.ProjectInvitation
+	err := s.read(ctx, principal, projectID, true, func(reader store.ProjectReader, _ model.ProjectAccess) error {
 		var err error
-		invitations, err = snapshot.Invitations(ctx, projectID, s.now().UTC())
+		invitations, err = reader.Invitations(ctx, projectID, s.now().UTC())
 		return err
 	})
 	return invitations, err
 }
 
-func (s *Memberships) RevokeInvitation(ctx context.Context, principal core.Principal, projectID, invitationID, expectedUserID string) error {
+func (s *Memberships) RevokeInvitation(ctx context.Context, principal model.Principal, projectID, invitationID, expectedUserID string) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -338,25 +338,25 @@ func (s *Memberships) RevokeInvitation(ctx context.Context, principal core.Princ
 }
 
 func invitationUnavailable(cause error) error {
-	return &Fault{Code: "invitation_unavailable", Message: "Invitation is unavailable.", Cause: cause}
+	return &model.Fault{Code: "invitation_unavailable", Message: "Invitation is unavailable.", Cause: cause}
 }
 
-func invitationAvailable(invitation core.ProjectInvitation, now time.Time) bool {
+func invitationAvailable(invitation model.ProjectInvitation, now time.Time) bool {
 	return invitation.ConsumedAt == nil && invitation.RevokedAt == nil && invitation.ExpiresAt.After(now)
 }
 
-func (s *Memberships) inspect(ctx context.Context, principal core.Principal, secret string, operation func(*store.Snapshot, core.ProjectInvitation) error) error {
+func (s *Memberships) inspect(ctx context.Context, principal model.Principal, secret string, operation func(store.ProjectReader, model.ProjectInvitation) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
 	if !validSecret(secret, invitationPrefix) {
 		return invitationUnavailable(nil)
 	}
-	var refusal *Fault
-	err := s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	var refusal *model.Fault
+	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			invitation, err := snapshot.Invitation(ctx, secretHash(secret))
-			if errors.Is(err, core.ErrNotFound) {
+			invitation, err := snapshot.ProjectDAO().Invitation(ctx, secretHash(secret))
+			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(err)
 			}
 			if err != nil {
@@ -365,7 +365,7 @@ func (s *Memberships) inspect(ctx context.Context, principal core.Principal, sec
 			if !invitationAvailable(invitation, s.now().UTC()) {
 				return invitationUnavailable(nil)
 			}
-			return operation(snapshot, invitation)
+			return operation(snapshot.ProjectDAO(), invitation)
 		}, &refusal)
 	})
 	if err != nil {
@@ -377,19 +377,19 @@ func (s *Memberships) inspect(ctx context.Context, principal core.Principal, sec
 	return nil
 }
 
-func (s *Memberships) InspectInvitation(ctx context.Context, principal core.Principal, secret string) (InvitationInspection, error) {
+func (s *Memberships) InspectInvitation(ctx context.Context, principal model.Principal, secret string) (InvitationInspection, error) {
 	var result InvitationInspection
-	err := s.inspect(ctx, principal, secret, func(snapshot *store.Snapshot, invitation core.ProjectInvitation) error {
-		project, err := snapshot.Project(ctx, invitation.ProjectID)
-		if errors.Is(err, core.ErrNotFound) {
+	err := s.inspect(ctx, principal, secret, func(reader store.ProjectReader, invitation model.ProjectInvitation) error {
+		project, err := reader.Project(ctx, invitation.ProjectID)
+		if errors.Is(err, model.ErrNotFound) {
 			return invitationUnavailable(err)
 		}
 		if err != nil {
 			return err
 		}
 		result.ProjectID, result.ProjectName = project.ID, project.Name
-		access, err := snapshot.ProjectAccess(ctx, principal, project.ID)
-		if errors.Is(err, core.ErrNotFound) {
+		access, err := reader.ProjectAccess(ctx, principal, project.ID)
+		if errors.Is(err, model.ErrNotFound) {
 			return nil
 		}
 		if err == nil {
@@ -401,7 +401,7 @@ func (s *Memberships) InspectInvitation(ctx context.Context, principal core.Prin
 	return result, err
 }
 
-func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Principal, secret, expectedUserID string) (InvitationAcceptance, error) {
+func (s *Memberships) AcceptInvitation(ctx context.Context, principal model.Principal, secret, expectedUserID string) (InvitationAcceptance, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return InvitationAcceptance{}, err
 	}
@@ -409,18 +409,18 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Princ
 		return InvitationAcceptance{}, err
 	}
 	var projectID string
-	if err := s.inspect(ctx, principal, secret, func(_ *store.Snapshot, invitation core.ProjectInvitation) error {
+	if err := s.inspect(ctx, principal, secret, func(_ store.ProjectReader, invitation model.ProjectInvitation) error {
 		projectID = invitation.ProjectID
 		return nil
 	}); err != nil {
 		return InvitationAcceptance{}, err
 	}
 	var result InvitationAcceptance
-	var refusal *Fault
+	var refusal *model.Fault
 	err := s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
 		return completeMembershipOperation(func() error {
 			invitation, err := tx.LockInvitation(ctx, secretHash(secret))
-			if errors.Is(err, core.ErrNotFound) {
+			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(err)
 			}
 			if err != nil {
@@ -431,10 +431,10 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Princ
 				return invitationUnavailable(nil)
 			}
 			member, err := tx.DirectProjectMember(ctx, principal.UserID)
-			if err != nil && !errors.Is(err, core.ErrNotFound) {
+			if err != nil && !errors.Is(err, model.ErrNotFound) {
 				return err
 			}
-			if errors.Is(err, core.ErrNotFound) {
+			if errors.Is(err, model.ErrNotFound) {
 				member, err = tx.AddInvitedMember(ctx, principal.UserID)
 				if err != nil {
 					return err
@@ -449,7 +449,7 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Princ
 			return err
 		}, &refusal)
 	})
-	if errors.Is(err, core.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return InvitationAcceptance{}, invitationUnavailable(err)
 	}
 	if err != nil {

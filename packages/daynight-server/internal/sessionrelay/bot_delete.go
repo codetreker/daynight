@@ -8,10 +8,10 @@ import (
 	"math"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -19,14 +19,14 @@ import (
 // data. The Worker owns process-stop verification; the relay checks its exact
 // execution identity and persists the receipt before removing that identity.
 type BotDeletionReceipt struct {
-	DeletionID string                `json:"deletionId"`
-	Stop       *sp.TestStop          `json:"stop"`
-	Result     core.BotCleanupResult `json:"result"`
+	DeletionID string                 `json:"deletionId"`
+	Stop       *sp.TestStop           `json:"stop"`
+	Result     model.BotCleanupResult `json:"result"`
 }
 
-func (s *Service) deletionBot(ctx context.Context, tx pgx.Tx, p core.Principal, id string) (core.Bot, error) {
+func (s *Service) deletionBot(ctx context.Context, tx pgx.Tx, p model.Principal, id string) (model.Bot, error) {
 	if err := credential(ctx, tx, p, s.now()); err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	bot, err := store.ReadBotForUpdate(ctx, tx, id)
 	if err != nil {
@@ -38,21 +38,21 @@ func (s *Service) deletionBot(ctx context.Context, tx pgx.Tx, p core.Principal, 
 	return bot, nil
 }
 
-func writeBotDeletion(ctx context.Context, tx pgx.Tx, bot core.Bot) (core.Bot, error) {
+func writeBotDeletion(ctx context.Context, tx pgx.Tx, bot model.Bot) (model.Bot, error) {
 	if bot.Version == math.MaxInt64 {
-		return core.Bot{}, fault("version_exhausted", "Bot version cannot advance.")
+		return model.Bot{}, fault("version_exhausted", "Bot version cannot advance.")
 	}
 	_, err := tx.Exec(ctx, `UPDATE bots SET deletion=$2,version=version+1,updated_at=statement_timestamp() WHERE id=$1`, bot.ID, encode(bot.Deletion))
 	if err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	return store.ReadBotForUpdate(ctx, tx, bot.ID)
 }
 
 // DeleteBot commits admission revocation independently of physical cleanup.
 // A retry uses the original version/deletion ID, even after stages advance.
-func (s *Service) DeleteBot(ctx context.Context, p core.Principal, id string, input service.DeleteBot) (core.Bot, error) {
-	var out core.Bot
+func (s *Service) DeleteBot(ctx context.Context, p model.Principal, id string, input service.DeleteBot) (model.Bot, error) {
+	var out model.Bot
 	if !botID(id) || !botID(input.DeletionID) || input.Version < 1 {
 		return out, fault("invalid_input", "Invalid Bot deletion identity or version.")
 	}
@@ -95,7 +95,7 @@ func (s *Service) DeleteBot(ctx context.Context, p core.Principal, id string, in
 		if err != nil {
 			return err
 		}
-		bot.Deletion = &core.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: core.BotCleanupResult{State: "pending"}, ServerCleanup: core.BotCleanupResult{State: "pending"}}
+		bot.Deletion = &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
 		out, err = writeBotDeletion(ctx, tx, bot)
 		if err != nil {
 			return err
@@ -104,7 +104,7 @@ func (s *Service) DeleteBot(ctx context.Context, p core.Principal, id string, in
 		return credential(ctx, tx, p, s.now())
 	})
 	if err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	for _, sid := range sessions {
 		s.discardBotSession(sid)
@@ -115,16 +115,16 @@ func (s *Service) DeleteBot(ctx context.Context, p core.Principal, id string, in
 	return out, nil
 }
 
-func validCleanupResult(result core.BotCleanupResult) bool {
+func validCleanupResult(result model.BotCleanupResult) bool {
 	return result.State == "completed" && result.Code == nil || result.State == "failed" && result.Code != nil && botText(*result.Code)
 }
 
-func (s *Service) CompleteBotDeletion(ctx context.Context, p core.Principal, workerID, id string, input BotDeletionReceipt) (core.Bot, error) {
-	var out core.Bot
+func (s *Service) CompleteBotDeletion(ctx context.Context, p model.Principal, workerID, id string, input BotDeletionReceipt) (model.Bot, error) {
+	var out model.Bot
 	if !botID(workerID) || !botID(id) || !botID(input.DeletionID) || !validCleanupResult(input.Result) {
 		return out, fault("invalid_input", "Invalid Bot deletion receipt.")
 	}
-	if p.Kind != core.PATCredential {
+	if p.Kind != model.PATCredential {
 		return out, denied()
 	}
 	if input.Stop != nil {
@@ -195,7 +195,7 @@ func (s *Service) CompleteBotDeletion(ctx context.Context, p core.Principal, wor
 		return err
 	})
 	if err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	if out.Deletion.WorkerCleanup.State != "completed" || out.Deletion.ServerCleanup.State == "completed" {
 		return out, nil
@@ -207,8 +207,8 @@ func (s *Service) CompleteBotDeletion(ctx context.Context, p core.Principal, wor
 // and the remaining Session children do not cascade on parent removal.
 var botSessionChildren = []string{"session_events", "session_timeline", "session_operations", "session_resources", "session_archives", "session_recording_evidence"}
 
-func (s *Service) cleanBotDeletion(ctx context.Context, p core.Principal, id, deletionID string) (core.Bot, error) {
-	var out core.Bot
+func (s *Service) cleanBotDeletion(ctx context.Context, p model.Principal, id, deletionID string) (model.Bot, error) {
+	var out model.Bot
 	var sessions []string
 	cleanupFailed := false
 	err := s.transact(ctx, func(tx pgx.Tx) error {
@@ -278,7 +278,7 @@ func (s *Service) cleanBotDeletion(ctx context.Context, p core.Principal, id, de
 			cleanupFailed = true
 			return err
 		}
-		bot.Deletion.ServerCleanup = core.BotCleanupResult{State: "completed"}
+		bot.Deletion.ServerCleanup = model.BotCleanupResult{State: "completed"}
 		out, err = writeBotDeletion(ctx, tx, bot)
 		return err
 	})
@@ -289,7 +289,7 @@ func (s *Service) cleanBotDeletion(ctx context.Context, p core.Principal, id, de
 		return out, nil
 	}
 	if !cleanupFailed {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	// The admission barrier and Worker receipt are already committed. Persist
 	// failure separately; never downgrade a concurrent successful retry.
@@ -306,12 +306,12 @@ func (s *Service) cleanBotDeletion(ctx context.Context, p core.Principal, id, de
 			return nil
 		}
 		code := "server_cleanup_failed"
-		bot.Deletion.ServerCleanup = core.BotCleanupResult{State: "failed", Code: &code}
+		bot.Deletion.ServerCleanup = model.BotCleanupResult{State: "failed", Code: &code}
 		out, e = writeBotDeletion(ctx, tx, bot)
 		return e
 	})
 	if failure != nil {
-		return core.Bot{}, failure
+		return model.Bot{}, failure
 	}
 	return out, nil
 }
