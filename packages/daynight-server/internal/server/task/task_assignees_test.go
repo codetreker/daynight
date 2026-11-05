@@ -1,4 +1,4 @@
-package server
+package task_test
 
 import (
 	"bytes"

@@ -79,3 +79,18 @@ func TestThreadHTTPFailurePriorityAndResponseWrite(t *testing.T) {
 		t.Fatal("canceled response was written")
 	}
 }
+
+func TestThreadExecutionLoggerIncludesOnlyExecutionIdentity(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	if threadExecutionLogger(logger, nil) != logger {
+		t.Fatal("ordinary message changed its logger")
+	}
+	execution := &model.ThreadExecution{ClaimID: "claim", WorkerID: "worker", Provider: "codex"}
+	threadExecutionLogger(logger, execution).Info("thread")
+	for _, value := range []string{`"claim_id":"claim"`, `"worker_id":"worker"`, `"provider":"codex"`} {
+		if !strings.Contains(logs.String(), value) {
+			t.Fatalf("missing execution attribution %s: %s", value, &logs)
+		}
+	}
+}
