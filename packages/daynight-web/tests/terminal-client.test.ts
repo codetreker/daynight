@@ -17,6 +17,48 @@ function harness(isCurrent?: () => boolean, nativeSessionId?: string | null) {
 }
 afterEach(() => { vi.useRealTimers(); window.sessionStorage.clear(); });
 describe('terminal client control ownership', () => {
+  it('keeps discovery stable and requires a fresh channel before admitting input after registration', async () => {
+    vi.useFakeTimers(); const h = harness();
+    vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', availability: 'not_registered', transport: 'disconnected', inputReady: false });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.api.channel).toHaveBeenCalledOnce();
+    expect(h.client.getSnapshot()).toMatchObject({ availability: null, transport: 'connecting', inputReady: false, ownsControl: false });
+    await h.client.control('acquire_control'); expect(h.api.command).not.toHaveBeenCalled();
+    h.manual(); expect(h.client.getSnapshot()).toMatchObject({ phase: 'ready', transport: 'connected', inputReady: true, ownsControl: true });
+    h.client.close();
+  });
+  it('recovers discovery when admission briefly closes as the retry timer fires', async () => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted);
+    vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_registered', protocol: r.protocol, claimId: r.claimId, agentControlMode: 'herdr' });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); admitted = false;
+    await vi.advanceTimersByTimeAsync(1500); expect(h.api.current).toHaveBeenCalledOnce(); admitted = true;
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); expect(h.api.channel).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('recovers when a discovery response arrives during a transient admission gate', async () => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted); let resolve!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.current).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    h.client.setVisible(true); admitted = false; resolve(h.state()); await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.channel).not.toHaveBeenCalled(); admitted = true; h.client.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0); expect(h.api.channel).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('resumes an explicit refresh interrupted after an inapplicable result', async () => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted); let resolve!: (value: TerminalSessionState) => void;
+    vi.mocked(h.api.current).mockResolvedValueOnce({ status: 'not_applicable', protocol: r.protocol });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    vi.mocked(h.api.current).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const refresh = h.client.refresh(); admitted = false; resolve(h.state()); await refresh;
+    admitted = true; h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0);
+    expect(h.api.current).toHaveBeenCalledTimes(3); expect(h.api.channel).toHaveBeenCalledOnce(); h.client.close();
+  });
+  it('rejects a not-registered response for another claim without polling it', async () => {
+    vi.useFakeTimers(); const h = harness();
+    vi.mocked(h.api.current).mockResolvedValue({ status: 'not_registered', protocol: r.protocol, claimId: owner.projectId, agentControlMode: 'herdr' });
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(5000);
+    expect(h.client.getSnapshot()).toMatchObject({ phase: 'unavailable', availability: null, error: { code: 'stale_fence' } });
+    expect(h.api.current).toHaveBeenCalledOnce(); expect(h.api.channel).not.toHaveBeenCalled(); h.client.close();
+  });
   it('only subscribes when visible and closes its read subscription on hiding', async () => {
     const h = harness(); expect(h.api.current).not.toHaveBeenCalled(); h.client.setVisible(true); await vi.waitFor(() => expect(h.api.channel).toHaveBeenCalledOnce()); h.publish();
     expect(h.client.getSnapshot().phase).toBe('ready'); h.client.setVisible(false); expect(h.close).toHaveBeenCalledOnce(); expect(h.client.getSnapshot().ownsControl).toBe(false); h.client.close();
@@ -134,6 +176,34 @@ describe('terminal client control ownership', () => {
     await vi.advanceTimersByTimeAsync(1500);
     expect(h.client.getSnapshot()).toMatchObject({ inputReady: true, session: { control: latest.control, capabilities: latest.capabilities } });
     expect(h.api.state).toHaveBeenCalledTimes(2); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
+  });
+  it.each(['timer', 'in-flight'] as const)('resumes reconciliation when the admission gate interrupts the %s', async interruption => {
+    vi.useFakeTimers(); let admitted = true; const h = harness(() => admitted);
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
+    const changed = structuredClone(h.state()); changed.control!.initialAssignment = 'transport_completed';
+    vi.mocked(h.api.state).mockResolvedValueOnce(changed); await h.client.refresh();
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: false, ownsControl: false });
+    if (interruption === 'timer') {
+      admitted = false; await vi.advanceTimersByTimeAsync(1500);
+      expect(h.api.state).toHaveBeenCalledTimes(1);
+    } else {
+      let resolve!: (value: TerminalSessionState) => void;
+      vi.mocked(h.api.state).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+      await vi.advanceTimersByTimeAsync(1500); expect(h.api.state).toHaveBeenCalledTimes(2);
+      for (let i = 0; i < 4; i++) { h.client.setVisible(true); await vi.advanceTimersByTimeAsync(250); }
+      expect(h.api.state).toHaveBeenCalledTimes(2);
+      admitted = false; resolve(structuredClone(h.state())); await vi.advanceTimersByTimeAsync(0);
+      expect(h.client.getSnapshot().inputReady).toBe(false);
+    }
+    const before = vi.mocked(h.api.state).mock.calls.length;
+    admitted = true;
+    for (let i = 0; i < 5; i++) { h.client.setVisible(true); await vi.advanceTimersByTimeAsync(250); }
+    expect(h.api.state).toHaveBeenCalledTimes(before);
+    expect(h.client.getSnapshot().inputReady).toBe(false);
+    h.client.setVisible(true); await vi.advanceTimersByTimeAsync(250);
+    expect(h.api.state).toHaveBeenCalledTimes(before + 1);
+    expect(h.client.getSnapshot()).toMatchObject({ inputReady: true, ownsControl: true });
+    expect(h.api.channel).toHaveBeenCalledOnce(); expect(h.api.command).not.toHaveBeenCalled(); h.client.close();
   });
   it('keeps a newer GET and waits for matching channel state before admitting input', async () => {
     vi.useFakeTimers(); const h = harness(); h.client.setVisible(true); await vi.advanceTimersByTimeAsync(0); h.manual();
