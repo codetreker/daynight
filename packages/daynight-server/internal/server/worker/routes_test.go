@@ -57,11 +57,15 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 	check(request("GET", "/api/v1/me/workers/bad", ""), 400, "invalid_input")
 	check(request("GET", path+"?x=1", ""), 400, "invalid_input")
 	check(request("GET", path+"/configuration?x=1", ""), 400, "invalid_input")
-	check(request("POST", path+"/report?x=1", "{}"), 400, "invalid_input")
+	check(request("POST", path+"/report?x=1", jsonBody(t, workerSnapshotReportBody())), 400, "invalid_input")
 	check(request("POST", path+"/report", "{}"), 400, "invalid_input")
-	check(request("POST", path+"/report", jsonBody(t, workerSnapshotReportBody()), "2"), 400, "invalid_input")
-	check(request("POST", path+"/report", jsonBody(t, workerSnapshotReportBody()), "1", "1"), 400, "invalid_input")
-	check(request("POST", path+"/report", `{"unknown":true}`), 400, "invalid_input")
+	aware := workerSnapshotReportBody()
+	aware["configuration"] = map[string]any{"bootstrap": nil, "observation": nil}
+	check(request("POST", path+"/report", jsonBody(t, aware), "2"), 400, "invalid_input")
+	check(request("POST", path+"/report", jsonBody(t, aware), "1", "1"), 400, "invalid_input")
+	unknown := workerSnapshotReportBody()
+	unknown["unknown"] = true
+	check(request("POST", path+"/report", jsonBody(t, unknown)), 400, "invalid_input")
 	legacy := workerSnapshotReportBody()
 	legacy["taskInventory"] = nil
 	w := request("POST", path+"/report", jsonBody(t, legacy))
@@ -88,9 +92,9 @@ func TestWorkerRoutesLifecycleAndInvalidRequests(t *testing.T) {
 		t.Fatalf("worker page: %+v", page)
 	}
 	check(request("PUT", path+"/configuration", `{}`), 400, "invalid_input")
-	check(request("PUT", path+"/configuration", `{"revision":1,"value":{}}`), 400, "invalid_input")
 	check(request("PUT", path+"/configuration", `{"revision":"1","value":null}`), 400, "invalid_input")
 	config := map[string]any{"maxConcurrent": 3, "pollIntervalMs": 60000, "recoveryLimit": 0, "native": map[string]any{"agent": "codex", "model": nil, "args": []any{}}, "projects": []any{}}
+	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": 1, "value": config})), 400, "invalid_input")
 	check(request("PUT", path+"/configuration", jsonBody(t, map[string]any{"revision": "1", "value": config})), 409, "configuration_not_initialized")
 	observed["configuration"] = map[string]any{"bootstrap": config, "observation": nil}
 	check(request("POST", path+"/report", jsonBody(t, observed), "1"), 200, "")

@@ -260,8 +260,11 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 	workers := NewWorkers(database)
 	id := uuid.NewString()
 	barrier := make(chan struct{})
-	results := make(chan WorkerReportResult, 2)
-	failures := make(chan error, 2)
+	type reportResult struct {
+		value WorkerReportResult
+		err   error
+	}
+	results := make(chan reportResult, 2)
 	for index := range 2 {
 		go func(index int) {
 			<-barrier
@@ -270,22 +273,24 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 			report := serviceWorkerReport()
 			report.Configuration = &model.WorkerConfigurationExchange{Bootstrap: &value}
 			result, err := workers.Report(ctx, principal, id, report)
-			results <- result
-			failures <- err
+			results <- reportResult{value: result, err: err}
 		}(index)
 	}
 	close(barrier)
+	reports := [2]reportResult{<-results, <-results}
 	var chosen int64
-	for range 2 {
-		result, err := <-results, <-failures
-		if err != nil {
-			t.Fatal(err)
+	for _, report := range reports {
+		if report.err != nil {
+			t.Fatal(report.err)
+		}
+		if report.value.Configuration == nil || report.value.Configuration.Desired == nil {
+			t.Fatalf("bootstrap omitted desired configuration: %+v", report.value)
 		}
 		if chosen == 0 {
-			chosen = result.Configuration.Desired.Value.MaxConcurrent
+			chosen = report.value.Configuration.Desired.Value.MaxConcurrent
 		}
-		if result.Configuration.Desired.Revision != "1" || result.Configuration.Desired.Value.MaxConcurrent != chosen {
-			t.Fatalf("bootstrap raced: %+v", result)
+		if report.value.Configuration.Desired.Revision != "1" || report.value.Configuration.Desired.Value.MaxConcurrent != chosen {
+			t.Fatalf("bootstrap raced: %+v", report.value)
 		}
 	}
 	initial, err := workers.Configuration(ctx, principal, id)
@@ -304,9 +309,9 @@ func TestWorkerConfigurationConcurrentBootstrapAndIndependentCAS(t *testing.T) {
 		}(index)
 	}
 	close(barrier)
+	mutationResults := [2]error{<-mutations, <-mutations}
 	winners := 0
-	for range 2 {
-		err := <-mutations
+	for _, err := range mutationResults {
 		if err == nil {
 			winners++
 		} else {
