@@ -237,8 +237,8 @@ Two Compose-managed named volumes hold application data:
 
 | Volume | Container path | Content |
 |---|---|---|
-| `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership and attachment metadata |
-| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` |
+| `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership, attachment metadata and Session archive metadata/receipts |
+| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` and new Session archive bodies under the project/user and Session UUID shards described in the [Session design](../../docs/design/task-session-protocol.md#服务端归档布局) |
 
 Names are scoped to the Compose project. Server startup applies its embedded
 migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
@@ -252,7 +252,7 @@ docker compose down
 ```
 
 To deliberately delete projects, tasks, authentication records, attachment
-metadata and attachment files, remove both volumes:
+metadata/files and Session archive metadata/bodies, remove both volumes:
 
 ```bash
 docker compose down --volumes

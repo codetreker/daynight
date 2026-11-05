@@ -1,0 +1,31 @@
+.task-session-host, .terminal-session { min-width: 0; }
+.terminal-session { padding: 1rem; gap: .75rem; }
+.terminal-host-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-width: 0; margin-bottom: .65rem; }
+.terminal-host-toolbar > label { display: flex; align-items: center; gap: .5rem; flex: 1; min-width: 0; }
+.terminal-host-toolbar select { min-width: 0; max-width: 100%; padding: .5rem; flex: 1; }
+.terminal-host-toolbar time { color: var(--muted, #64748b); font-size: .8rem; overflow-wrap: anywhere; }
+.terminal-notice { padding: .75rem; border: 1px solid #d6d3ee; border-radius: .5rem; background: #f8f7ff; }
+.terminal-notice p { margin: 0 0 .5rem; }
+.terminal-composer label { display: block; }
+.terminal-composer textarea { box-sizing: border-box; display: block; width: 100%; min-height: 7rem; resize: vertical; margin: .5rem 0; padding: .75rem; border: 1px solid #d8dce5; border-radius: .5rem; font: inherit; }
+.terminal-keys { display: flex; gap: .35rem; flex-wrap: wrap; flex: 1; }
+.terminal-input-reason { font-size: .85rem; color: var(--muted, #64748b); }
+.terminal-input-reason summary { cursor: pointer; }
+.terminal-confirmation { padding: 1rem; border: 1px solid #c9c4e8; border-radius: .5rem; }
+.terminal-confirmation label { display: flex; align-items: start; gap: .5rem; margin-bottom: .75rem; }
+.managed-session-records { margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1px solid #e0e3eb; min-width: 0; }
+.managed-session-records .terminal-host-toolbar { margin-bottom: .5rem; }
+.managed-session-records h4 { margin: 0; font-size: 11px; font-weight: 550; color: #637087; }
+.managed-session-records p { font-size: 11px; line-height: 1.7; color: #737d8e; }
+.managed-recording-close { flex: none; padding: .5rem; }
+.managed-session-list { padding: 0; list-style: none; display: grid; gap: .5rem; }
+.managed-session-list .button { width: 100%; text-align: left; overflow-wrap: anywhere; }
+.terminal-session.session-fullscreen { overflow: auto; }
+@media (max-width: 600px) { .terminal-host-toolbar > label { flex-basis: 100%; flex-wrap: wrap; } .terminal-session { padding: .65rem; } }
+.task-session-host { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.task-session-host > .terminal-host-toolbar { flex: none; padding: .5rem .75rem; margin: 0; border-bottom: 1px solid #e8ebf1; }
+.task-session-current { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.task-session-current[hidden] { display: none; }
+.terminal-session { overflow: auto; }
+.terminal-session > * { flex-shrink: 0; }
+.terminal-session > .session-timeline-shell { flex-shrink: 1; min-height: 12rem; }

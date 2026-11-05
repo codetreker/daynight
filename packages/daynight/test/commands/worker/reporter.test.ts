@@ -1,3 +1,4 @@
+import type { WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt } from "../../../src/api/worker-configuration.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError } from "../../../src/api/client.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -252,4 +253,99 @@ it("starts no work when its root signal is already cancelled", async () => {
   const f = fixture(); f.cancellation.abort(); const reporter = f.start();
   await vi.advanceTimersByTimeAsync(60_000); await reporter.stop();
   expect(f.collect).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+});
+
+const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+const cloudDesired = { revision: "1", updatedAt: timestamp, value: cloudValue };
+
+it("exchanges cloud configuration without a task inventory and acknowledges only the sent immutable snapshot", async () => {
+  const f = fixture();
+  const pending = deferred<WorkerCloudReportReceipt>();
+  const failure = { code: "unavailable" as const, category: "agent" as const, phase: "validate" as const, occurredAt: timestamp };
+  const captureValue = {
+    bootstrap: null,
+    observation: { baseRevision: "0", desiredRevision: "1", items: [{ key: { kind: "maxConcurrent" as const }, targetRevision: "1", appliedValue: null, state: "error" as const, error: failure, lastFailure: failure, nextAttemptAt: timestamp }] },
+  };
+  const capture = vi.fn(() => captureValue);
+  const send = vi.fn((_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => pending.promise);
+  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: WorkerCloudReceipt) => {});
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { capture, send, accept } });
+  await settle();
+  expect(f.send).not.toHaveBeenCalled(); expect(send).toHaveBeenCalledOnce();
+  const sent = send.mock.calls[0]![1];
+  expect(send.mock.calls[0]![0].taskInventory).toBeNull();
+  captureValue.observation.baseRevision = "1";
+  captureValue.observation.items.length = 0;
+  expect(sent.observation?.baseRevision).toBe("0"); expect(sent.observation?.items).toHaveLength(1);
+  expect(Object.isFrozen(sent.observation?.items[0]?.lastFailure)).toBe(true);
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  pending.resolve({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt });
+  await settle();
+  expect(accept.mock.calls[0]![0]).toBe(captureValue);
+  expect(accept).toHaveBeenCalledWith(captureValue, receipt);
+  await reporter.stop();
+});
+
+it("captures current configuration after an unknown send outcome instead of replaying the old observation", async () => {
+  const f = fixture();
+  let revision = "1";
+  const capture = vi.fn(() => ({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: revision, items: [] } }));
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
+  send.mockRejectedValueOnce(new Error("unknown cloud mutation outcome"));
+  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: WorkerCloudReceipt) => {});
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { capture, send, accept } });
+  await settle(); expect(accept).not.toHaveBeenCalled();
+  revision = "2"; reporter.trigger(); await settle();
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls.map(([, sent]) => sent.observation?.desiredRevision)).toEqual(["1", "2"]);
+  expect(accept).toHaveBeenCalledOnce();
+  expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
+  expect(accept).toHaveBeenCalledWith(capture.mock.results[1]!.value, receipt);
+  await reporter.stop();
+});
+
+it("keeps bootstrap reporting independent of runtime application and joins receipt commits on shutdown", async () => {
+  const f = fixture(), committed = deferred<void>();
+  const bootstrap = { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+  const capture = vi.fn(() => ({ bootstrap, observation: null }));
+  const receipt = { desired: { revision: "1", updatedAt: timestamp, value: bootstrap }, observationRevision: "0", observationAccepted: false };
+  const send = vi.fn(async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
+  const accept = vi.fn(() => committed.promise);
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { capture, send, accept } });
+  await settle(); expect(send).toHaveBeenCalledOnce(); expect(accept).toHaveBeenCalledOnce();
+  let finished = false;
+  const stopping = reporter.stop().then(() => { finished = true; });
+  await settle(); expect(finished).toBe(false);
+  committed.resolve(); await stopping;
+  await vi.advanceTimersByTimeAsync(60_000); expect(send).toHaveBeenCalledOnce();
+});
+
+it("reconciles an unknown import before capturing a fresh report within the same heartbeat operation", async () => {
+  const f = fixture(), reconciled = deferred<void>();
+  let needsReconciliation = false, targetPresent = false;
+  const prepare = vi.fn(async (_operation: Operation) => {
+    if (!needsReconciliation) return;
+    await reconciled.promise;
+    targetPresent = true; needsReconciliation = false;
+  });
+  const capture = vi.fn((): WorkerCloudReport => targetPresent
+    ? { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } }
+    : { bootstrap: cloudValue, observation: null });
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
+  send.mockImplementationOnce(async () => { needsReconciliation = true; throw new Error("Import response lost"); });
+  const accept = vi.fn(async (_sent: WorkerCloudReport, _receipt: WorkerCloudReceipt) => {});
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { prepare, capture, send, accept } });
+  await settle(); expect(send).toHaveBeenCalledOnce(); expect(accept).not.toHaveBeenCalled();
+  reporter.trigger(); await settle();
+  expect(prepare).toHaveBeenCalledTimes(2); expect(capture).toHaveBeenCalledOnce();
+  expect(prepare.mock.calls[1]![0]).toBe(f.collect.mock.calls[1]![0]);
+  expect(prepare.mock.calls[1]![0].limits).toMatchObject({ totalMs: 15_000, requestMs: 10_000 });
+  reconciled.resolve(); await settle();
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[0]![1]).toEqual({ bootstrap: cloudValue, observation: null });
+  expect(send.mock.calls[1]![1]).toEqual({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } });
+  expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
+  await reporter.stop();
 });

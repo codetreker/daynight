@@ -20,7 +20,7 @@ func TestInstalledCLIExternalDependencyReadAcceptance(t *testing.T) {
 		evidence := newLifecycleEvidence(t, scenario)
 		process := fixture.launch(t, nil).started(t)
 		cli.configure(t, process)
-		projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "External dependency read contract"))
+		projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "External dependency read contract", "--confirm"))
 		prerequisiteID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "External prerequisite"))
 		targetID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Classified dependent", "--description", "Preserve stored edge metadata.", "--depends-on", prerequisiteID))
 		prerequisite, target := cli.task(t, prerequisiteID), cli.task(t, targetID)

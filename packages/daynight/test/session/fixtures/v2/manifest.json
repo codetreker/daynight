@@ -814,6 +814,41 @@
       "file": "invalid-recovery-state-consumed-envelope-generation.json",
       "type": "message",
       "valid": false
+    },
+    {
+      "file": "valid-resolve-initial-assignment.json",
+      "type": "message",
+      "valid": true
+    },
+    {
+      "file": "invalid-resume-with-initial-disposition.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-draft.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resolve-initial-missing-disposition.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "invalid-resume-with-lease.json",
+      "type": "message",
+      "valid": false
+    },
+    {
+      "file": "valid-control-unresolved-initial.json",
+      "type": "message",
+      "valid": true
     }
   ]
 }

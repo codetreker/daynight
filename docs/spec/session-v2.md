@@ -103,10 +103,14 @@ lease 为 30 秒，10 秒续约，授予和续约必须收到关联原请求的 
 Worker 将首次进度从 `dispatching` 发布回 `pending` 后重新准入；
 `unknown`、`unconfirmed` 和 `transport_completed` 不得因此变为可重发状态。首次派发与人工
 接管互斥；`unknown` 或旧运行的 `unconfirmed` 不得自动补发任务说明。
-恢复自动执行需要用户确认已处理终端草稿；未知首次输入还需要显式
-`delivered_continue` 决定。Worker 重新核对 readiness、原 fence、最新 epoch 和
-进行中批次；该决定不构成 provider ACK。网页单写者不能排除本地 Herdr TUI/API
-并发输入。
+未知首次输入通过独立 `resolve_initial_assignment` 动作显式提交
+`delivered_continue` 决定；仅允许无 lease 的 suspended 状态，`draftHandled=false`。
+Worker 持久记录处置、提升控制代次并保持 suspended，不修改原 unknown 操作结果。
+恢复自动执行必须另行提交 `resume_automation`，确认 `draftHandled=true` 且
+`initialUnknownDisposition=null`，不得夹带首次输入处置。两种动作的 `leaseId` 均为 null；
+未处置的 unknown/unconfirmed 禁止恢复。Worker 重新核对 readiness、原 fence、最新 epoch 和
+进行中批次；处置不构成 provider ACK。旧 Worker 未公布独立处置能力时禁用该动作，
+不能用同时恢复自动执行的旧请求替代。网页单写者不能排除本地 Herdr TUI/API 并发输入。
 
 控制派发必须保留服务端认证的 actor、原请求摘要和 fence。Worker 持久仲裁后
 返回关联 operationId 的结果与状态；未关联状态、尚未派发完成的结果或旧代次
@@ -160,7 +164,11 @@ SHA-256。发送前持久原请求；请求响应丢失后，通过
 零帧。`partial`、`unknown` 与无内容状态均不能放宽身份、权限或 hash 校验。
 停止证据不足保持 `stop_unknown`，不能封最终文件、删除 worktree 或恢复替代运行。
 
-归档使用 `session-archives` 与原 Session 权限，不是可覆盖的普通附件。
+归档使用 `session-archives` 与原 Session 权限，不是可覆盖的普通附件。新 Task 归档
+按原项目和 Session UUID 前两位分组，与 Web Task 归档使用同一目录规则。既有
+文件和元数据保持原状，读取继续使用登记位置；正文、校验值、回执、公开 URL
+和上传重试沿用原语义。
+[共享 Session 需求](task-sessions.md#内容归属与结束后历史)拥有目录布局要求。
 正文 hash 对实际上传 UTF-8 字节计算，重试上传同一字节。帧 hash 对所保存的原始
 帧 JSON 字节计算。`dispositionDigest` 对规范化终态记录计算，与正文 hash 不可
 互换。ready 回执绑定正文 hash、长度、完整性；unavailable 回执绑定不可变原因

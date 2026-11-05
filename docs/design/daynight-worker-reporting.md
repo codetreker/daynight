@@ -1,6 +1,6 @@
 # Worker 采集与上报设计
 
-[上报需求](../spec/daynight-worker-reporting.md)拥有时机、采集口径、错误和验证要求，[快照接口](../spec/daynight-worker-snapshots.md)拥有共享格式，[服务端设计](daynight-worker-snapshots.md)拥有保存与查询。[决策记录](../../.agents/notes/implemented/architecture/2026-10-28-worker-runtime-reporting.md)解释独立调度、纯探测及进程内状态的选择。
+[上报需求](../spec/daynight-worker-reporting.md)拥有时机、采集口径、错误和验证要求，[快照接口](../spec/daynight-worker-snapshots.md)拥有共享格式，[服务端设计](daynight-worker-snapshots.md)拥有保存与查询。[报告决策](../../.agents/notes/implemented/architecture/2026-10-28-worker-runtime-reporting.md)解释独立调度与纯探测；[配置决策](../../.agents/notes/implemented/architecture/2026-11-04-worker-cloud-runtime-configuration.md)拥有持久应用状态与报告确认。
 
 ## 职责与数据流
 
@@ -9,14 +9,16 @@ flowchart LR
   C[CLI context version / workingDirectory] --> R[runtime]
   R --> T[telemetry collector]
   I[coordinator 完整清单 / 新 claim] --> P[reporter]
+  M[配置模块已发布快照] --> P
+  P -->|目标 / 观测确认| M
   T --> P
   P --> A[typed ApiClient]
   A --> S[账号 Worker 快照 API]
 ```
 
-`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 在取得实例锁、稳定身份、存储、日志及认证账号后创建 collector 和 reporter；此时仓库准备与任务 tick 尚未开始。runtime 将固定的 workerId 与 serverOrigin 交给 collector，供其筛选 durable daemon 归属。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
+`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 取得实例锁、稳定身份、存储、日志及认证账号，先查询云端目标并建立配置模块，再创建 collector/reporter；此时仓库准备、业务 backend 初始化与任务 tick 尚未开始。runtime 将固定的 workerId 与 serverOrigin 交给 collector，供其筛选 durable daemon 归属。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
 
-`telemetry.ts` 只读采集运行环境，返回完整 telemetry 和私有 issue 列表。`reporter.ts` 拥有周期、触发合并、最新清单、尝试 Operation 和清洗诊断。`remote.ts` 使用固定服务凭据及 expectedUserId 将报告转交 typed ApiClient；调用者拥有 Operation 的取消及释放。API 对 mutable POST 使用精确 200 准入，不套用通用创建操作的 201 语义。
+`telemetry.ts` 只读采集运行环境，返回完整 telemetry 和私有 issue 列表。`reporter.ts` 拥有周期、触发合并、最新清单、尝试 Operation 和清洗诊断。`remote.ts` 使用固定服务凭据及 expectedUserId 将报告转交 typed ApiClient；调用者拥有 Operation 的取消及释放。配置报告采用独立 typed 方法，对该请求设置配置能力标记并验证完整回执，普通报告保留精确两字段回执。API 对 mutable POST 使用精确 200 准入，不套用通用创建操作的 201 语义。
 
 reporter 不拥有执行 backend，不调用 task/claim 更新。Herdr 观察器直接读取私有 API 端点，不经过 runtime 的 lazyHerdr；纯 Web 执行保持对 Herdr 的延迟初始化。
 
@@ -27,6 +29,12 @@ reporter 构造时立即触发，并设置独立 30 秒 interval。`running` 表
 每次尝试新建总预算 15 秒、单请求 10 秒的 Operation。collector 从剩余预算派生最多 5 秒的 collection Operation，各字段并行观察。原生版本命令使用 `cleanupWithinDeadline` 模式，在执行预算中预留终止与 join 时间，Windows 的 taskkill 也受同一剩余预算约束。普通 preflight 继续拥有自己的命令清理策略。
 
 runtime 根 signal 中止时，reporter 同步停止 interval、清除 pending 并取消当前 Operation；coordinator 的同一根信号监听同步关闭调度并中止全部 job controller，包括终止清理 job。取消阶段不等待 reporter.stop()，因此慢报告不能延后任务取消，终止清理也不能在报告 join 期间继续删除 worktree 或完成本机行。随后 runtime 等待 reporter.stop()，再进入 coordinator shutdown 等待所有 job，直接停止受管执行并保留未完成 claim、worktree、原生 session ID 及 active/pending 行；backend、存储、日志与实例锁最后收尾。普通报告失败不终止执行；探测进程收尾无法确认与诊断输出失败会由 stop() 保留并传递，其他资源清理仍继续。
+
+## 配置快照与回执
+
+reporter 通过 capture/send/accept 接缝与配置模块协作。发送前捕获不可变配置快照，与当前机器报告和最新任务引用组成一次新请求；成功回执交给同一快照对应的确认处理。配置模块串行接纳当前目标、观测 CAS 与确认，只清除该快照中相同身份且已被服务端接纳的失败。飞行期间的新失败保留，恢复不提前丢弃 lastFailure；CAS 拒绝只更新比较版本。
+
+capture 和 accept 不执行 native、仓库或停止 I/O。接收唤醒配置应用循环，外部操作在报告预算之外完成，再通过配置提交队列发布实际结果。报告因此不等待项目变更，也不被任务清单错误阻断。配置持久化错误保持原错误链，不能把尚未持久化的实际值发布为成功。配置模块在 Worker 自有 JSON 保存应用与确认状态，机器采样、版本缓存和清单仍是进程内状态。
 
 ## 完整清单复用
 
@@ -72,10 +80,14 @@ collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后
 
 reporter 按字段或 report 子系统保存故障签名和重复次数；故障变化时输出 worker_report_failed，恢复时输出 worker_report_recovered。诊断重新构造错误类别与 cause 结构，不传递原错误消息或命令输出。该状态只去重，不承担重试或恢复职责。
 
-传输、响应解析及 principal 不一致使本次失败。后续触发重新收集并发送；响应丢失不证明服务端未写入，也不授权重放。无 SQLite 元数据、报告历史或跨进程日志恢复。服务端保持最新观测并按当前权限规范化引用，故客户端无需在本机保存另一份任务展示状态。
+传输、响应解析及 principal 不一致使本次失败。后续触发重新收集并发送；响应丢失不证明服务端未写入，也不授权重放。机器采集与清单没有 SQLite 元数据、报告历史或跨进程日志恢复。服务端保持最新观测并按当前权限规范化引用，故客户端无需在本机保存另一份任务展示状态。配置应用与观测确认使用独立 JSON owner，不复用任务索引或机器报告去重状态。
 
 ## 验证结构
 
-reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。runtime/coordinator 测试验证认证后的启动顺序、完整清单发布点、确认 claim、长 tick、纯 Web 的 Herdr 延迟边界，以及报告 join 延后时全部 job 的同步取消与未完成资源保留；typed API 测试验证精确状态、响应和账号准入。
+reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。配置测试核对不可变发送快照、回执准入、报告前恢复、飞行期间新失败、CAS 拒绝和结果未知；runtime 测试同时延后 native/项目应用与任务清单，确认配置通道持续工作。
+
+collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。
+
+runtime/coordinator 测试验证认证后的启动顺序、完整清单发布点、确认 claim、长 tick、纯 Web 的 Herdr 延迟边界，以及报告 join 延后时全部 job 的同步取消与未完成资源保留；typed API 测试验证精确状态、响应和账号准入。
 
 原生采集测试在实际平台运行 OS、CPU、内存、statfs 和版本命令，仅报告环境及 Probe 状态。各平台通过自己的实际运行结果建立能力依据；mock 结果不推断为该平台已通过。完整任务执行与恢复另由[整体架构](daynight-worker.md#验证边界)规定。

@@ -11,10 +11,13 @@ would remove useful localization beyond those controls.
 
 ## Decision
 
-The Session header and composer activity labels, permission trigger, primary
+The normal native Session header and composer activity labels, permission trigger, primary
 send button, interrupt button, and built-in Command/File changes tool labels
 use the existing English catalog values in both supported locales. Each marked
-position keeps English for its alternate states as well. Fixed English text
+operation position keeps English for its alternate states as well. Startup,
+connection and recovery diagnostics follow the localized
+[startup presentation decision](2026-11-05-session-startup-presentation.md), which
+partially supersedes the original blanket header rule. Fixed English text
 has a local language annotation rather than changing the language of the whole
 Session.
 
@@ -44,6 +47,6 @@ content, so changing their Chinese catalog values has the same problem.
 Chinese Sessions intentionally combine English operation labels with Chinese
 explanations. Locale changes preserve those labels without changing drafts,
 capability gates, permission confirmation, operation identity or recovery.
-New states at the specified positions must keep this language behavior;
+New native activity and operation states at the specified positions keep this language behavior;
 unrelated labels do not become English implicitly. Component checks cover
 both the fixed terms and adjacent localized content.

@@ -14,6 +14,8 @@ import crossSpawn from "cross-spawn";
 import { parse as parseYaml, stringify as yaml } from "yaml";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
+import { parseWorkerCloudReport } from "../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudObservation, WorkerCloudReport } from "../../src/api/worker-configuration.js";
 import type { Project, Task, UpdateWorkerClaimInput, WorkerClaimDescriptor, WorkerReport } from "../../src/api/types.js";
 import { codexProjectTrustArguments } from "../../src/commands/worker/herdr/arguments.js";
 import { terminateInstalledProcess } from "../fixtures/installed-cli.js";
@@ -23,7 +25,7 @@ const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.r
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-27T00:00:00Z";
 type Row = { project_id: string; task_id: string; claim_id: string; status: string; agent: string; session_id: string | null; agent_control_mode: "herdr" | "web" };
-type Event = { kind: string; timestamp: number; name?: string; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string; code?: string; daemonPid?: number; workspaceId?: string; label?: string; cwd?: string; restored?: boolean };
+type Event = { kind: string; timestamp: number; name?: string; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; projectMapped?: boolean; argv?: string[]; message?: string; code?: string; daemonPid?: number; workspaceId?: string; label?: string; cwd?: string; restored?: boolean };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
@@ -37,7 +39,7 @@ if(process.argv.includes('--version')){process.stdout.write('herdr 0.9.5\n');pro
 const require=createRequire(import.meta.url),Database=require(process.env.FIXTURE_SQLITE),events=process.env.FIXTURE_EVENTS;
 const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),daemonPid:process.pid,...value})+'\n');
 const socketError=error=>{if(error.code==='ECONNRESET'||error.code==='EPIPE'){void event({kind:'peer-disconnect',code:error.code});return;}throw error;};
-const record=async(kind,taskId,extra={})=>{const sql=new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});try{await event({kind,taskId,row:sql.prepare('SELECT * FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
+const record=async(kind,taskId,extra={})=>{const sql=new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});try{const row=sql.prepare('SELECT * FROM tasks WHERE task_id=?').get(taskId);await event({kind,taskId,row,projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,projectMapped:!!row&&!!sql.prepare('SELECT 1 FROM projects WHERE project_id=?').get(row.project_id),...extra});}finally{sql.close();}};
 const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');await mkdir(directory,{recursive:true});
 const workspaces=[],panes=[],agents=[],tabs=[],shells=new Map(),children=new Map(),nativeArguments=new Map();let next=0;
 const clone=value=>JSON.parse(JSON.stringify(value));
@@ -195,8 +197,13 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   const cleanupEvidenceFile = path.join(workspace, ".tmp", `installed-worker-${scenario}-cleanup.json`);
   const logs: string[] = [];
   const requests: { method: string; path: string; taskId?: string }[] = [];
-  const reports: { workerId: string; input: WorkerReport }[] = [];
-  const inventoryResponses: { projectId: string; itemCount: number; status: number; mappedProjectCount: number }[] = [];
+  const reports: { workerId: string; input: WorkerReport & { readonly configuration: WorkerCloudReport } }[] = [];
+  let configurationWorkerId: string | null = null;
+  let cloudDesired: WorkerCloudDesired | null = null;
+  let cloudObservation: (WorkerCloudObservation & { readonly reportedAt: string }) | null = null;
+  let cloudObservationRevision = "0";
+  let bootstrapImports = 0;
+  const inventoryResponses: { projectId: string; itemCount: number; status: number; mappedProjectCount: number | null; mappedProject: boolean | null }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
   let installed: Awaited<ReturnType<typeof createAcceptanceCli>> | undefined;
   let failure: unknown;
@@ -216,10 +223,35 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       const task = tasks.find((item) => item.id === parts[6]);
       if (request.headers.authorization !== "Bearer worker-fixture-token") { send(response, { error: { code: "unauthorized", message: "Fixture authentication mismatch", requestId: "worker-auth-fixture" } }, 401); return; }
       requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, ...(task === undefined ? {} : { taskId: task.id }) });
+      if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "configuration" && request.method === "GET") {
+        response.setHeader("Daynight-User-ID", uuid(100));
+        if (configurationWorkerId !== parts[5]) {
+          send(response, { error: { code: "not_found", message: "Worker not found.", requestId: "worker-configuration-fixture" } }, 404); return;
+        }
+        response.setHeader("Daynight-Worker-Configuration", "1");
+        send(response, { desired: cloudDesired, observationRevision: cloudObservationRevision, observation: cloudObservation }); return;
+      }
       if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "report" && request.method === "POST") {
-        reports.push({ workerId: parts[5]!, input: JSON.parse(Buffer.concat(chunks).toString("utf8")) as WorkerReport });
+        if (request.headers["daynight-worker-configuration"] !== "1") throw new Error("Installed Worker must use the configuration report capability.");
+        const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as WorkerReport & { readonly configuration: WorkerCloudReport };
+        const configuration = parseWorkerCloudReport(input.configuration);
+        reports.push({ workerId: parts[5]!, input });
         const observedAt = new Date().toISOString();
-        send(response, { observedAt, lastReportedAt: observedAt }); return;
+        if (configurationWorkerId !== null && configurationWorkerId !== parts[5]) throw new Error("Fixture configuration belongs to a different Worker.");
+        configurationWorkerId = parts[5]!;
+        if (cloudDesired === null && configuration.bootstrap !== null) {
+          cloudDesired = { revision: "1", updatedAt: observedAt, value: configuration.bootstrap };
+          bootstrapImports++;
+        }
+        let observationAccepted = false;
+        if (configuration.observation !== null && configuration.observation.baseRevision === cloudObservationRevision) {
+          if (cloudDesired === null || BigInt(configuration.observation.desiredRevision) > BigInt(cloudDesired.revision)) throw new Error("Configuration observation references an unavailable target.");
+          cloudObservation = { ...configuration.observation, reportedAt: observedAt };
+          cloudObservationRevision = (BigInt(cloudObservationRevision) + 1n).toString();
+          observationAccepted = true;
+        }
+        response.setHeader("Daynight-Worker-Configuration", "1");
+        send(response, { observedAt, lastReportedAt: observedAt, configuration: { desired: cloudDesired, observationRevision: cloudObservationRevision, observationAccepted } }); return;
       }
       if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } }); return; }
       if (url.pathname === "/api/v1/projects" && request.method === "GET") { send(response, { items: projects, nextCursor: null }); return; }
@@ -230,7 +262,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         const assignedTo = url.searchParams.get("assignedTo");
         const selectedAssignee = assignedTo === null ? undefined : assignedTo === "me" ? uuid(100) : assignedTo === "unassigned" ? null : assignedTo.toLowerCase();
         if (inventory !== null && failInventory) {
-          inventoryResponses.push({ projectId: project.id, itemCount: 0, status: 500, mappedProjectCount: 2 });
+          inventoryResponses.push({ projectId: project.id, itemCount: 0, status: 500, mappedProjectCount: null, mappedProject: null });
           send(response, { error: { code: "internal_error", message: "Injected unavailable inventory", requestId: "worker-inventory-fault" } }, 500); return;
         }
         const items = tasks.filter((item) => {
@@ -241,7 +273,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         });
         if (inventory !== null) {
           const sql = new Database(databaseFile, { readonly: true });
-          try { inventoryResponses.push({ projectId: project.id, itemCount: items.length, status: 200, mappedProjectCount: (sql.prepare("SELECT count(*) AS count FROM projects").get() as { count: number }).count }); }
+          try { inventoryResponses.push({ projectId: project.id, itemCount: items.length, status: 200, mappedProjectCount: (sql.prepare("SELECT count(*) AS count FROM projects").get() as { count: number }).count, mappedProject: sql.prepare("SELECT 1 FROM projects WHERE project_id=?").get(project.id) !== undefined }); }
           finally { sql.close(); }
         }
         send(response, { items, nextCursor: null }); return;
@@ -291,6 +323,10 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       const code = await Promise.race([closed, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`Installed worker shutdown timed out.\n${logs.join("")}`)), 20_000); })]);
       expect(code, logs.join("")).toBe(expectedCode);
     } finally { if (timer !== undefined) clearTimeout(timer); }
+  };
+  const changeCloudModel = (model: string): void => {
+    if (cloudDesired === null) throw new Error("The fixture cloud configuration was not initialized.");
+    cloudDesired = { revision: (BigInt(cloudDesired.revision) + 1n).toString(), updatedAt: new Date().toISOString(), value: { ...cloudDesired.value, native: { ...cloudDesired.value.native, model } } };
   };
   const complete = (task: FixtureTask): void => {
     task.status = "done"; task.ready = false; task.completedAt = time; task.version += 1n;
@@ -347,7 +383,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     await writeFile(sentinel, "Keep the original uncommitted task result.\n");
     const sql = new Database(databaseFile, { readonly: true });
     try {
-      expect(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{ name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+      expect(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+      expect(sql.prepare("SELECT COUNT(*) AS count FROM bots").get()).toEqual({ count: 0 });
+      expect(sql.prepare("SELECT COUNT(*) AS count FROM bot_executions").get()).toEqual({ count: 0 });
       expect((sql.prepare("PRAGMA table_info(projects)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "repo_url", "local_path"]);
       expect((sql.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
       expect(sql.prepare("SELECT DISTINCT agent_control_mode FROM tasks").all()).toEqual([{ agent_control_mode: "herdr" }]);
@@ -365,6 +403,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     let restarted: ReturnType<typeof start> | undefined;
     let restartRequestOffset = requests.length;
     let restartLogOffset = logs.length;
+    let restartInventoryOffset = inventoryResponses.length;
     if (scenario === "inventory-failure") {
       failInventory = true;
       second.properties = Object.fromEntries(Object.entries(second.properties).filter(([name]) => name !== "worker"));
@@ -408,15 +447,16 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         environment.FIXTURE_RESTORE_WORKSPACE = JSON.stringify({ label: previousWorkspace.label, cwd: previousWorkspace.cwd, sessionId: originalSession });
       }
       const configuration = parseYaml(await readFile(configFile, "utf8")) as { worker: { model: string } };
-      configuration.worker.model = "current-model";
+      configuration.worker.model = "stale-local-model";
       await writeFile(configFile, yaml(configuration));
+      changeCloudModel("current-model");
       if (scenario === "empty-database") await rm(databaseFile);
       else if (scenario === "null-session") {
         const database = new Database(databaseFile);
         try { expect(database.prepare("UPDATE tasks SET session_id=NULL WHERE task_id=? AND claim_id=?").run(second.id, originalClaim).changes).toBe(1); }
         finally { database.close(); }
       }
-      restartRequestOffset = requests.length; restartLogOffset = logs.length;
+      restartRequestOffset = requests.length; restartLogOffset = logs.length; restartInventoryOffset = inventoryResponses.length;
       restarted = start();
       await waitFor("second managed assignment after restart", async () => {
         const observed = await events();
@@ -429,6 +469,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(await readFile(sentinel, "utf8")).toBe("Keep the original uncommitted task result.\n");
       const latestStart = (await events()).filter((event) => event.kind === "native-start" && event.taskId === second.id).at(-1)!;
       expect(latestStart.argv).toContain("current-model");
+      expect(latestStart.argv).not.toContain("stale-local-model");
       if (scenario === "resume") {
         expect(restartedSession).toBe(originalSession);
         expect(latestStart.argv?.slice(0, 7)).toEqual(["codex", "--no-daemon", "resume", originalSession, "--model", "current-model", "--search"]);
@@ -446,7 +487,10 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(readWorkerClaim(second.properties)!.claimId).toBe(originalClaim);
       expect(second.assignedTo).toBe(scenario === "null-session" ? null : uuid(101));
       expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST" && request.path.endsWith("/worker-claim"))).toBe(false);
-      expect(inventoryResponses.filter((response) => response.status === 200).every((response) => response.mappedProjectCount === 2)).toBe(true);
+      await waitFor("inventory coverage after restart", () => new Set(inventoryResponses.slice(restartInventoryOffset).filter((response) => response.status === 200).map((response) => response.projectId)).size === projects.length);
+      const observedInventories = inventoryResponses.slice(restartInventoryOffset).filter((response) => response.status === 200);
+      expect(observedInventories.every((response) => response.mappedProject)).toBe(true);
+      expect(new Set(observedInventories.map((response) => response.projectId))).toEqual(new Set(projects.map((project) => project.id)));
       expect(restarted.child.kill("SIGINT")).toBe(true);
       await expectExit(restarted.closed, 0);
       expect(row(second.id)?.status).toBe("active");
@@ -462,7 +506,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     for (const event of observed.filter((entry) => entry.kind === "workspace" || entry.kind === "native-start")) {
       expect(event.row).toMatchObject({ status: "active", agent: "codex", agent_control_mode: "herdr" });
       expect(Object.keys(event.row!).sort()).toEqual(["agent", "agent_control_mode", "claim_id", "project_id", "session_id", "status", "task_id"]);
-      expect(event.projectCount).toBe(2);
+      expect(event.projectMapped).toBe(true);
       if (event.kind === "workspace") {
         const task = tasks.find((task) => task.id === event.taskId)!;
         const original = originalClaims.get(task.id)!;
@@ -509,6 +553,13 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     expect(claimRequests.map((request) => request.taskId)).toEqual(tasks.map((task) => task.id));
     expect(requests.filter((request) => request.method === "POST")).toHaveLength(claimRequests.length + reportRequests.length);
     expect(reportRequests).toHaveLength(reports.length);
+    expect(bootstrapImports).toBe(1);
+    expect(reports.filter(({ input }) => input.configuration.bootstrap !== null)).toHaveLength(1);
+    expect(reports.some(({ input }) => input.configuration.observation !== null)).toBe(true);
+    const firstConfigurationRead = requests.findIndex(request => request.method === "GET" && request.path.endsWith("/configuration"));
+    const firstProjectRead = requests.findIndex(request => request.path.startsWith("/api/v1/projects"));
+    expect(firstConfigurationRead).toBeGreaterThanOrEqual(0);
+    expect(firstProjectRead).toBeGreaterThan(firstConfigurationRead);
     expect(new Set(reports.map((report) => report.workerId))).toEqual(new Set([originalClaims.get(first.id)!.workerId]));
     const awaitHome = await realpath(home);
     expect(reports.every(({ input }) => input.workingDirectory === awaitHome && input.versions.daynight === installed!.receipt.packageVersion)).toBe(true);
@@ -516,7 +567,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     await expect(readFile(path.join(repositoryPaths[0]!, ".worktrees/daynight", first.id, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(row(second.id)?.session_id).toMatch(/^[0-9a-f-]{36}$/);
     await mkdir(path.dirname(evidenceFile), { recursive: true });
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher with real Git/SQLite/HTTP and controlled Herdr/Codex metadata and real task-process substitutes", nativeAgentExecution: false, receipt: installed.receipt, requests, reports, inventoryResponses, events: observed, first: row(first.id), second: row(second.id), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher with real Git/SQLite/HTTP and controlled Herdr/Codex metadata and real task-process substitutes", nativeAgentExecution: false, receipt: installed.receipt, requests, reports, configuration: { bootstrapImports, desired: cloudDesired, observationRevision: cloudObservationRevision, observation: cloudObservation }, inventoryResponses, events: observed, first: row(first.id), second: row(second.id), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });

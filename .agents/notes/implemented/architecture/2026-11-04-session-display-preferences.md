@@ -24,6 +24,11 @@ a no-op. Stores retain stable snapshots and notify only when mode or issue kind
 changes. Each subscription removes its listener on release; the page cache keeps
 small preference state so a failed save survives unmounting and remounting.
 Storage exceptions are reduced to error categories rather than retained objects.
+Explicit removal invalidates old handles, notifies their subscribers and attempts
+to delete the stored value. A page tombstone prevents failed deletion from
+reviving it; a new authorized handle starts at the default and remains editable.
+The [Bot cache](2026-11-04-bot-session-cache.md) calls this operation for
+revoked bindings and account cleanup, including observed cold panes.
 
 The module consumes the [display classification contract](2026-11-04-session-display-classification.md)
 and does not depend on a Session client, draft, operation ledger or execution

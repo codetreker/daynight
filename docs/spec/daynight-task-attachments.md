@@ -327,7 +327,7 @@ K1 保持已接受的边界。普通附件操作不增加用于修复 K1 的跨�
 FA1–FA14 的验收覆盖存储、HTTP、CLI、Web、部署、布局迁移和跨层集成。各组件测试
 验证正常行为、路径拒绝、普通 IO 失败及错误传播。真实进程与 PostgreSQL 验证
 持久性，实际安装 CLI 验证二进制字节，生产浏览器验证相对资源和可信 HTML 交互。
-Go 和 Web 既有覆盖率、race 及原生 CLI 检查持续有效。
+Go 和 Web 既有覆盖率及原生 CLI 检查持续有效；Go race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认及 main CI 开启、PR CI 关闭。
 
 实际服务验收在原生和
 生产容器两个目标上由已安装 CLI 与页面交叉读取同一 task 文件；二进制按原始字节

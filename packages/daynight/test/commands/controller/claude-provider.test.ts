@@ -7,6 +7,25 @@ vi.mock("node:child_process", async importOriginal => ({ ...await importOriginal
 const sdk = vi.hoisted(() => ({ query: vi.fn(), getSessionInfo: vi.fn(), getSessionMessages: vi.fn() }));
 vi.mock("@anthropic-ai/claude-agent-sdk", () => sdk);
 import { openClaudeProvider } from "../../../src/commands/controller/providers/claude.js";
+import { startupFailure } from "../../../src/commands/controller/startup.js";
+import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
+
+test.each(["reject", "timeout"])("Claude cleanup failure preserves the original startup %s without asserting stopped", async mode => {
+  const failure = mode === "reject" ? Object.assign(new Error("Native initialization rejected"), { errorClass: "control_request_failed" }) : new NativeRpcTimeoutError("initialize");
+  let wake: (() => void) | undefined, ended = false;
+  sdk.query.mockImplementation(() => ({
+    initializationResult: async () => { throw failure; },
+    async *[Symbol.asyncIterator]() { if (!ended) await new Promise<void>(resolve => { wake = resolve; }); },
+    close() { ended = true; wake?.(); throw new Error("Fixture cleanup failed"); },
+  }));
+  const activities: string[] = [], diagnostics: string[] = [];
+  const error = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline: () => {}, onState: state => activities.push(state.activity), onSpawn: () => {}, onDiagnostic: message => diagnostics.push(message),
+  }).catch(error => error);
+  expect(startupFailure(error)).toEqual(mode === "reject" ? { state: "failed", reasonCode: "native_rejected" } : { state: "unknown", reasonCode: "native_timeout" });
+  expect(diagnostics.some(message => /stop|cleanup/i.test(message))).toBe(true);
+  expect(activities).not.toContain("stopped");
+});
 
 test("Claude approval stays pending after SDK callback resolution until the matching native tool result", async () => {
   let captured!: Options, emit!: (value: unknown) => void; let end!: () => void;

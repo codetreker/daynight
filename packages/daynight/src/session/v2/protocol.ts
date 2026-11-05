@@ -73,7 +73,7 @@ const parseLease = (value: unknown): SessionV2Lease => {
   const o = exact(value, ["leaseId", "holderUserId", "browserClientId", "controlEpoch", "expiresAt"]);
   return { leaseId: uuidValue(o.leaseId), holderUserId: uuidValue(o.holderUserId), browserClientId: uuidValue(o.browserClientId), controlEpoch: seq(o.controlEpoch), expiresAt: timestamp(o.expiresAt) };
 };
-const actions: readonly SessionV2Action[] = ["acquire_control", "renew_control", "release_control", "resume_automation", "paste", "keys"];
+const actions: readonly SessionV2Action[] = ["acquire_control", "renew_control", "release_control", "resolve_initial_assignment", "resume_automation", "paste", "keys"];
 export const SESSION_V2_KEYS: readonly SessionV2Key[] = ["Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Backspace", "Delete", "Home", "End", "PageUp", "PageDown", "Ctrl+C", "Ctrl+D", "Ctrl+U"];
 const completeness = (value: unknown) => choice(value, ["complete", "partial"]);
 const unavailableReason = (value: unknown) => choice(value, ["recording_not_enabled", "ended_before_first_sample"]);
@@ -128,14 +128,18 @@ const parsePayload = <K extends keyof SessionV2Payloads>(kind: K, value: unknown
       case "snapshot": { const o = exact(value, ["connectionEpoch", "segmentId", "segmentOrdinal", "binding", "frame", "recorded"]); return { connectionEpoch: seq(o.connectionEpoch), segmentId: uuidValue(o.segmentId), segmentOrdinal: seq(o.segmentOrdinal), binding: parseTerminalBinding(o.binding), frame: parseTerminalFrame(o.frame), recorded: bool(o.recorded) }; }
       case "control_state": {
         const o = exact(value, ["connectionEpoch", "controlEpoch", "state", "lease", "initialAssignment", "availableActions", "unavailableReason"]);
-        const parsed: SessionV2Payloads["control_state"] = { connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), state: choice(o.state, ["automation", "manual", "suspended", "closing", "closed"]), lease: nullable(o.lease, parseLease), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), availableActions: unique(list(o.availableActions, v => choice(v, actions), 6), v => v), unavailableReason: nullable(o.unavailableReason, errorCode) };
+        const parsed: SessionV2Payloads["control_state"] = { connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), state: choice(o.state, ["automation", "manual", "suspended", "closing", "closed"]), lease: nullable(o.lease, parseLease), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), availableActions: unique(list(o.availableActions, v => choice(v, actions), actions.length), v => v), unavailableReason: nullable(o.unavailableReason, errorCode) };
         if ((parsed.state === "manual") !== (parsed.lease !== null) || parsed.lease && parsed.lease.controlEpoch !== parsed.controlEpoch || ["closing", "closed"].includes(parsed.state) && parsed.availableActions.length || parsed.state !== "manual" && parsed.availableActions.some(a => a === "paste" || a === "keys") || parsed.state === "automation" && ["unknown", "unconfirmed"].includes(parsed.initialAssignment) || parsed.state === "manual" && parsed.initialAssignment === "dispatching") return fail();
         return parsed;
       }
       case "control_request": {
         const o = exact(value, ["operationId", "connectionEpoch", "controlEpoch", "action", "browserClientId", "leaseId", "draftHandled", "initialUnknownDisposition"]);
-        const p: SessionV2Payloads["control_request"] = { operationId: uuidValue(o.operationId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), action: choice(o.action, ["acquire_control", "renew_control", "release_control", "resume_automation"]), browserClientId: uuidValue(o.browserClientId), leaseId: nullable(o.leaseId, uuidValue), draftHandled: bool(o.draftHandled), initialUnknownDisposition: nullable(o.initialUnknownDisposition, v => literal(v, "delivered_continue")) };
-        if (p.action === "resume_automation" ? !p.draftHandled : p.draftHandled || p.initialUnknownDisposition !== null || (p.action === "acquire_control") !== (p.leaseId === null)) return fail();
+        const p: SessionV2Payloads["control_request"] = { operationId: uuidValue(o.operationId), connectionEpoch: seq(o.connectionEpoch), controlEpoch: seq(o.controlEpoch), action: choice(o.action, ["acquire_control", "renew_control", "release_control", "resolve_initial_assignment", "resume_automation"]), browserClientId: uuidValue(o.browserClientId), leaseId: nullable(o.leaseId, uuidValue), draftHandled: bool(o.draftHandled), initialUnknownDisposition: nullable(o.initialUnknownDisposition, v => literal(v, "delivered_continue")) };
+        if (p.action === "resolve_initial_assignment") {
+          if (p.leaseId !== null || p.draftHandled || p.initialUnknownDisposition !== "delivered_continue") return fail();
+        } else if (p.action === "resume_automation") {
+          if (p.leaseId !== null || !p.draftHandled || p.initialUnknownDisposition !== null) return fail();
+        } else if (p.draftHandled || p.initialUnknownDisposition !== null || (p.action === "acquire_control") !== (p.leaseId === null)) return fail();
         return p;
       }
       case "control_dispatch": {
