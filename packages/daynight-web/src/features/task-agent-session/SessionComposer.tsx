@@ -9,6 +9,7 @@ import '../../styles/session-composer.css';
 import type { SessionState } from './state';
 import { sessionCancelGate, sessionSendGate, sessionRespondGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
 import { sessionNativeLabels, useSessionMessages } from './messages';
+import { useSessionControlMessages } from './controls-messages';
 
 type CommandIntent = { readonly id: string; readonly name: string; readonly sessionId: string | undefined };
 const parseCommand = (text: string) => /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(text.trimStart());
@@ -32,6 +33,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   readonly onSend: (text: string) => Promise<void>; readonly onCancel: () => Promise<void>;
 }) {
   const m = useSessionMessages(), menuId = useId();
+  const controlMessages = useSessionControlMessages(state.snapshot?.identity.provider);
   const [controlView, setControlView] = useState<ControlsView>(null);
   const [keyboardHint, setKeyboardHint] = useState({ hovered: false, focused: false, dismissed: false });
   const keyboardHintVisible = active && !suppressKeyboardHint && !keyboardHint.dismissed && (keyboardHint.hovered || keyboardHint.focused);
@@ -350,7 +352,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
       <div className="session-command-body" ref={commandBodyRef}>
       {controls?.commandsError ? <p className="session-error" role="alert">{controls.commandsError}</p> : null}
       {!controls ? <p className="session-control-note">{m.controlsUnavailable}</p> : null}
-      {matchingCommands.length ? <div role="listbox" id={`${menuId}-commands`} aria-label={m.nativeCommands}>{matchingCommands.map((command, index) => <button key={command.id} id={`${menuId}-command-${index}`} type="button" role="option" aria-selected={index === selectedIndex} disabled={!command.available || authPaused || !connected || pending || commandPending} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)}><strong>/{command.name}</strong><span>{command.description}</span>{command.argumentHint ? <small>{command.argumentHint}</small> : null}</button>)}</div> : <p className="session-control-note">{m.noCommands}</p>}
+      {matchingCommands.length ? <div role="listbox" id={`${menuId}-commands`} aria-label={m.nativeCommands}>{matchingCommands.map((command, index) => <button key={command.id} id={`${menuId}-command-${index}`} type="button" role="option" aria-selected={index === selectedIndex} disabled={!command.available || authPaused || !connected || pending || commandPending} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)}><strong>/{command.name}</strong><span>{controlMessages.commandDescription(command)}</span>{command.argumentHint ? <small>{command.argumentHint}</small> : null}</button>)}</div> : <p className="session-control-note">{m.noCommands}</p>}
       </div>
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}

@@ -149,6 +149,8 @@ Codex 动态读取 model/list、configRequirements/read，以 thread/settings/up
 
 Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending 目标和原生实际值；确认前不乐观替换实际值。命令目录在 / 菜单中提供过滤、键盘选择和参数，model/permissions 为本地打开设置面板的保留入口。SessionComposer 对提交和发送按钮采用同一完整名称分类：零匹配使用 sessionSendGate 与 send_message，一个匹配进入命令路径，多个同名匹配保留歧义错误。前缀过滤只提供候选，不决定操作类型；client.send 不因正文以 slash 开头而拒绝，既有身份、执行、能力和待确认操作校验保持不变。
 
+设置与内置命令文案由 Web 的 Session 消息目录按当前语言呈现。设置名和说明以 Provider 与稳定 setting ID 定位，权限选项以该设置内的 value 定位；模型与原生 effort 标签原样展示，Claude 的 `default` effort 选项使用内置原生默认值文案。未知项回退下发原文。pending 提示中的已确认值使用同一选项映射。翻译只在渲染时应用，不改写 controls、revision、setting intent 或命令目录签名，因此语言切换不清除命令选择与草稿。旧格式不带命令说明来源；内置说明及缺省说明按 Provider、已知命令身份和精确英文文案识别，其他文本保持原样。兼容限制及取舍见[设置文案本地化决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-controls-localization.md)。
+
 菜单的默认高亮与明确候选选择分离，直接 Enter 不消费仅前缀匹配的默认项。临时候选随输入、目录和菜单生命周期变化重置；目录按 revision、错误及命令字段的稳定签名比较，等值快照重建 controls 对象不清除明确选择。显式选择带参数命令产生独立的 commandId 与命令头意图，参数编辑、目录刷新和菜单关闭保留它，修改命令头、清空草稿或切换 Session 才清除。提交使用当前 controls revision 验证同一 ID 与完整名称，不能冻结旧 revision，也不能在移除、替换、不可用或歧义后退回普通消息。原生命令草稿仍沿用 revision 与受理回执绑定；execute_command 的拒绝、失败或 unknown 不调用普通发送路径。运行中目录查询错误通过 refresh_controls 重新读取；只读与失效投影深拷贝后关闭 mutable/available，不能改写持久能力。没有命令目录时，普通消息仍由原有发送权限决定。
 
 已核实的排队取消使用 input_cancelled，主动中断只有在成功原生 ACK、输入 UUID 匹配且 terminal_reason 为 aborted_streaming/aborted_tools 时使用 turn_interrupted。Web 将这两个终止诊断显示为中性状态；其他诊断仍是错误提示，不能仅凭用户点击中断或错误文本掩盖原生故障。
