@@ -5,7 +5,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 )
@@ -18,14 +18,14 @@ type UpdateTaskStep struct {
 
 type SetTaskStepStatus struct {
 	Version int64
-	Status  core.TaskStepStatus
+	Status  model.TaskStepStatus
 }
 
-func (s *TaskSteps) Update(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, input UpdateTaskStep) (StepsWriteResult, error) {
+func (s *TaskSteps) Update(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, input UpdateTaskStep) (StepsWriteResult, error) {
 	return s.change(ctx, principal, projectID, taskID, stepID, input.Version, tasksteps.Changes{Title: input.Title, Description: input.Description})
 }
 
-func (s *TaskSteps) SetStatus(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, input SetTaskStepStatus) (StepsWriteResult, error) {
+func (s *TaskSteps) SetStatus(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, input SetTaskStepStatus) (StepsWriteResult, error) {
 	return s.change(ctx, principal, projectID, taskID, stepID, input.Version, tasksteps.Changes{Status: &input.Status})
 }
 
@@ -49,7 +49,7 @@ func validateStepChanges(changes tasksteps.Changes) error {
 	return nil
 }
 
-func (s *TaskSteps) change(ctx context.Context, principal core.Principal, projectID, taskID, stepID string, version int64, changes tasksteps.Changes) (StepsWriteResult, error) {
+func (s *TaskSteps) change(ctx context.Context, principal model.Principal, projectID, taskID, stepID string, version int64, changes tasksteps.Changes) (StepsWriteResult, error) {
 	result := StepsWriteResult{Phase: "prepare", TransactionOutcome: store.TransactionNotCommitted}
 	projectID, taskID, err := taskWriteIdentity(principal, projectID, taskID, version)
 	if err != nil {
@@ -81,7 +81,7 @@ func (s *TaskSteps) change(ctx context.Context, principal core.Principal, projec
 		}
 		candidate, index, changed, err := tasksteps.ChangeCandidate(current, stepID, changes)
 		if errors.Is(err, tasksteps.ErrTargetNotFound) {
-			return &Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
+			return &model.Fault{Code: "not_found", Message: "Step was not found.", Cause: &StepAbsence{Version: header.Version, Cause: err}}
 		}
 		if err != nil {
 			return err
@@ -91,7 +91,7 @@ func (s *TaskSteps) change(ctx context.Context, principal core.Principal, projec
 			return err
 		}
 		if header.Version == math.MaxInt64 {
-			return &Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
+			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
 		observed, err := tx.ObservedAt(ctx)
 		if err != nil {

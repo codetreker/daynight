@@ -4,11 +4,11 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
-func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -41,7 +41,7 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		return
 	}
 
-	task, err := h.tasks.SetStatus(workerProtocolContext(request), principal, projectID, id, service.SetTaskStatus{Version: input.Version, Status: core.TaskStatus(input.Status), ClaimID: input.ClaimID})
+	task, err := h.tasks.SetStatus(workerProtocolContext(request), principal, projectID, id, service.SetTaskStatus{Version: input.Version, Status: model.TaskStatus(input.Status), ClaimID: input.ClaimID})
 	if err != nil {
 		writeError(w, request, logger, "task", "set_status", err)
 		return

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -49,7 +49,7 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 	return result, nil
 }
 
-func taskSyncResponse(sync core.TaskSync) api.TaskSync {
+func taskSyncResponse(sync model.TaskSync) api.TaskSync {
 	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projectResponse(sync.Project), ActorAccess: projectAccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
 	for _, person := range sync.AssigneeVersions {
 		result.AssigneeVersions = append(result.AssigneeVersions, api.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
@@ -65,7 +65,7 @@ func taskSyncResponse(sync core.TaskSync) api.TaskSync {
 	return result
 }
 
-func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) taskSync(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	start := time.Now()
 	projectID, _, logger, err := h.resource(request, principal)

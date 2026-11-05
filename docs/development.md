@@ -441,6 +441,9 @@ API examples, logs, updates and volume removal.
 
 ## Server development
 
+Read the [server organization rules](daynight-server.md) before adding to, changing,
+or reviewing daynight-server.
+
 Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS and pnpm 11.28.6. Run
 `pnpm install --frozen-lockfile` from the repository root before source builds. The
 [server module](../packages/daynight-server/README.md) owns configuration, startup,

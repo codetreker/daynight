@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -35,7 +35,7 @@ func taskAssigneesRequest(request *http.Request) (service.TaskAssigneesRequest, 
 	return service.TaskAssigneesRequest{UserIDs: userIDs}, nil
 }
 
-func taskAssigneesResponse(result core.TaskAssignees) api.TaskAssignees {
+func taskAssigneesResponse(result model.TaskAssignees) api.TaskAssignees {
 	response := api.TaskAssignees{Items: make([]api.TaskAssignee, 0, len(result.Items)), UnresolvedUserIDs: append([]string{}, result.UnresolvedUserIDs...)}
 	for _, person := range result.Items {
 		response.Items = append(response.Items, api.TaskAssignee{UserID: person.UserID, Version: person.Version, Name: person.Name, AvatarURL: person.AvatarURL, HasProjectAccess: person.HasProjectAccess})
@@ -43,7 +43,7 @@ func taskAssigneesResponse(result core.TaskAssignees) api.TaskAssignees {
 	return response
 }
 
-func (h *taskHandler) assignees(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) assignees(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	start := time.Now()
 	projectID, _, logger, err := h.resource(request, principal)

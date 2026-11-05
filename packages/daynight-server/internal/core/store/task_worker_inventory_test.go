@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *testing.T) {
@@ -14,9 +14,9 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 	project := queryProject(t, database, 1)
 	owner, workerID := queryID(2), queryID(3)
 	for number := 10; number < 14; number++ {
-		queryTask(t, database, project.ID, number, core.TaskInProgress)
-		claim := &core.WorkerClaim{ClaimID: queryID(number + 100), State: core.WorkerActive, UserID: owner, WorkerID: workerID,
-			Machine: core.WorkerMachine{ID: queryID(4), Name: "Machine"}, Platform: core.PlatformLinux, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeHerdr, WorktreeID: queryID(number + 200), Phase: core.WorkerPreparing, ClaimedAt: time.Now().UTC()}
+		queryTask(t, database, project.ID, number, model.TaskInProgress)
+		claim := &model.WorkerClaim{ClaimID: queryID(number + 100), State: model.WorkerActive, UserID: owner, WorkerID: workerID,
+			Machine: model.WorkerMachine{ID: queryID(4), Name: "Machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: queryID(number + 200), Phase: model.WorkerPreparing, ClaimedAt: time.Now().UTC()}
 		if number < 12 {
 			claim.UserID = queryID(5)
 		}

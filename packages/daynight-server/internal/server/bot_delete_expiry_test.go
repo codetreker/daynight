@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
@@ -21,7 +21,7 @@ import (
 )
 
 func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
-	for _, kind := range []core.CredentialKind{core.PATCredential, core.SessionCredential} {
+	for _, kind := range []model.CredentialKind{model.PATCredential, model.SessionCredential} {
 		for _, replay := range []bool{false, true} {
 			phase := "intent"
 			if replay {
@@ -31,7 +31,7 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 				h := authTestHarness(t)
 				cookie := h.login(t, "bot-delete-owner")
 				pat := decodeResponse[api.CreatedPersonalAccessToken](t, h.request("POST", "/api/v1/me/tokens", `{"name":"bot-delete","expiresAt":null}`, []*http.Cookie{cookie}, nil, h.auth.origin), 201)
-				principal, err := h.auth.identity.Authenticate(context.Background(), core.PATCredential, pat.Token)
+				principal, err := h.auth.identity.Authenticate(context.Background(), model.PATCredential, pat.Token)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -42,14 +42,14 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 					t.Fatal(err)
 				}
 				bots := service.NewBots(h.database)
-				configuration := core.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "codex", Args: []string{}}
-				bot, err := bots.Create(ctx, principal, service.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: core.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
+				configuration := model.BotConfiguration{WorkerID: worker, Cwd: "/workspace", Provider: "codex", Args: []string{}}
+				bot, err := bots.Create(ctx, principal, service.CreateBot{ID: uuid.NewString(), Name: "Assistant", Overrides: model.BotOverrides{WorkerID: &worker}, ResolvedConfiguration: configuration})
 				if err != nil {
 					t.Fatal(err)
 				}
 				relay := sessionrelay.New(h.database)
 				digest := sha256.Sum256([]byte("Use Daynight CLI."))
-				bound, err := relay.RegisterBot(ctx, principal, worker, bot.ID, sessionrelay.BotRegistration{BotVersion: bot.Version, Configuration: configuration, RoleConfiguration: core.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}})
+				bound, err := relay.RegisterBot(ctx, principal, worker, bot.ID, sessionrelay.BotRegistration{BotVersion: bot.Version, Configuration: configuration, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -62,7 +62,7 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 				botsRoutes(mux, bots, relay, h.auth, logger)
 				h.handler = RequestLogging(logger, mux)
 				cookies, authorization, table := []*http.Cookie(nil), []string{"Bearer " + pat.Token}, "personal_access_tokens"
-				if kind == core.SessionCredential {
+				if kind == model.SessionCredential {
 					cookies, authorization, table = []*http.Cookie{cookie}, nil, "sessions"
 					principal, err = h.auth.identity.Authenticate(ctx, kind, cookie.Value)
 					if err != nil {

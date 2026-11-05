@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"crypto/sha256"
@@ -19,7 +20,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
@@ -371,7 +371,7 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 	for _, code := range []string{"session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict"} {
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		response := httptest.NewRecorder()
-		writeError(response, request, testLogger(), "session", "test", &service.Fault{Code: code, Message: "Conflict"})
+		writeError(response, request, testLogger(), "session", "test", &model.Fault{Code: code, Message: "Conflict"})
 		if response.Code != 409 {
 			t.Fatalf("%s mapped to %d", code, response.Code)
 		}

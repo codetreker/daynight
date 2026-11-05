@@ -51,6 +51,8 @@ live Provider acceptance.
 
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
+Read the [organization rules](../../docs/daynight-server.md) before adding to,
+modifying, or reviewing daynight-server.
 The TypeScript review command retains its separate configuration, storage and
 lifecycle. The client HTTP foundation targets this service's API.
 
@@ -277,7 +279,7 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
 | `api/` | Project/task/attachment, identity and membership DTOs; common HTTP error envelopes |
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
-| `internal/core/` | Shared project/task, identity/member models and resource-not-found markers |
+| `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
 
 HTTP startup prepares one local file-storage root and creates and verifies one
 concrete PostgreSQL store. The handler factory `server.New(Dependencies, Config, logger)` returns
@@ -584,7 +586,7 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
-New Session archives use `internal/sessionarchive.Namespace` for project/user
+New Session archives use `internal/core/model/sessionarchive.Namespace` for project/user
 and Session UUID directories. Task Web/Herdr objects use
 `session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
 independent Test/Bot objects use
@@ -788,7 +790,7 @@ references by current project membership and undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
 
-The shared `core.Project` and `core.Task` models have one representation across
+The shared `model.Project` and `model.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
 candidate reachability. The static property registry in `internal/taskproperties/`
 owns native validation, normalization, schemas and public writability. Generic

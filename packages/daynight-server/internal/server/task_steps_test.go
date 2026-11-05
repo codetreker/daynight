@@ -1,5 +1,6 @@
 package server
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func stepsHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task) {
@@ -134,7 +134,7 @@ func TestStepsResponseReportsWriteFailureAndCanceledOutput(t *testing.T) {
 		t.Fatal("canceled response was written or treated as complete")
 	}
 	response = httptest.NewRecorder()
-	writeStepsError(response, request, logger, "read", errors.Join(&service.Fault{Code: "not_found", Message: "Business refusal"}, errors.New("cleanup-secret-sentinel")))
+	writeStepsError(response, request, logger, "read", errors.Join(&model.Fault{Code: "not_found", Message: "Business refusal"}, errors.New("cleanup-secret-sentinel")))
 	if response.Code != 500 || !strings.Contains(response.Body.String(), `"code":"internal_error"`) || strings.Contains(logs.String(), "cleanup-secret-sentinel") {
 		t.Fatal("cleanup failure downgraded or disclosed")
 	}

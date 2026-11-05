@@ -5,15 +5,15 @@ import (
 	"encoding/json"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/jackc/pgx/v5"
 )
 
-func loadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[string]core.TaskProperties, error) {
-	result := make(map[string]core.TaskProperties, len(taskIDs))
+func loadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[string]model.TaskProperties, error) {
+	result := make(map[string]model.TaskProperties, len(taskIDs))
 	for _, id := range taskIDs {
-		result[id] = core.TaskProperties{}
+		result[id] = model.TaskProperties{}
 	}
 	if len(taskIDs) == 0 {
 		return result, nil
@@ -40,7 +40,7 @@ func loadTaskProperties(ctx context.Context, tx pgx.Tx, taskIDs []string) (map[s
 	return result, nil
 }
 
-func attachTaskProperties(ctx context.Context, tx pgx.Tx, tasks []core.Task) error {
+func attachTaskProperties(ctx context.Context, tx pgx.Tx, tasks []model.Task) error {
 	ids := make([]string, len(tasks))
 	for i := range tasks {
 		ids[i] = tasks[i].ID
@@ -55,7 +55,7 @@ func attachTaskProperties(ctx context.Context, tx pgx.Tx, tasks []core.Task) err
 	return nil
 }
 
-func writeTaskProperties(ctx context.Context, tx pgx.Tx, taskID string, properties core.TaskProperties) error {
+func writeTaskProperties(ctx context.Context, tx pgx.Tx, taskID string, properties model.TaskProperties) error {
 	names := make([]string, 0, len(properties))
 	for name := range properties {
 		names = append(names, name)

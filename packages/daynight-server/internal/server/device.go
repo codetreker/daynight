@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -28,16 +28,16 @@ func (h *Authentication) registerDeviceRoutes(mux *http.ServeMux) {
 		})
 	}
 	for _, path := range []string{"/api/v1/auth/device/inspect", "/api/v1/auth/device/decision", "/api/v1/auth/device/logout"} {
-		mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
+		mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
 			methodNotAllowed(h.logger, "POST")(w, r)
 		}))
 	}
 }
 
 func (h *Authentication) requireDeviceBrowser(next AuthenticatedHandler) http.HandlerFunc {
-	return h.Require(func(w http.ResponseWriter, r *http.Request, p core.Principal) {
-		if p.Kind != core.SessionCredential {
-			writeError(w, r, h.logger, "auth", "device_browser", &service.Fault{Code: "forbidden", Message: "A main-site browser session is required for this operation."})
+	return h.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		if p.Kind != model.SessionCredential {
+			writeError(w, r, h.logger, "auth", "device_browser", &model.Fault{Code: "forbidden", Message: "A main-site browser session is required for this operation."})
 			return
 		}
 		next(w, r, p)
@@ -90,7 +90,7 @@ func (h *Authentication) writeDeviceFailure(w http.ResponseWriter, r *http.Reque
 		h.deviceError(w, r, 400, grant.Code)
 		return
 	}
-	var fault *service.Fault
+	var fault *model.Fault
 	if errors.As(err, &fault) && fault.Code == "rate_limited" {
 		w.Header().Set("Retry-After", "60")
 		h.deviceError(w, r, 429, "slow_down")
@@ -141,7 +141,7 @@ func (h *Authentication) deviceToken(w http.ResponseWriter, r *http.Request) {
 	}{result.Secret, "Bearer"})
 }
 
-func (h *Authentication) deviceInspect(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *Authentication) deviceInspect(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	fields, err := decodeObject(w, r, "userCode")
 	if err != nil {
 		writeError(w, r, h.logger, "auth", "device_inspect", err)
@@ -160,7 +160,7 @@ func (h *Authentication) deviceInspect(w http.ResponseWriter, r *http.Request, p
 	writeJSON(w, r, h.logger, 200, result)
 }
 
-func (h *Authentication) deviceDecision(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *Authentication) deviceDecision(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	fields, err := decodeObject(w, r, "userCode", "decision", "expectedUserId")
 	if err != nil {
 		writeError(w, r, h.logger, "auth", "device_decision", err)
@@ -187,7 +187,7 @@ func (h *Authentication) deviceDecision(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Authentication) deviceLogout(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *Authentication) deviceLogout(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if err := h.identity.LogoutDevice(r.Context(), p); err != nil {
 		writeError(w, r, h.logger, "auth", "device_logout", err)
 		return

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 var ErrIDConflict = errors.New("step ID already exists")
@@ -12,7 +12,7 @@ var ErrAnchorNotFound = errors.New("step anchor was not found")
 
 // AddCandidate leaves current rows untouched and resolves identity before placement.
 // Time assignment and encoding belong to the locked write after version admission.
-func AddCandidate(current []core.TaskStep, step core.TaskStep, before, after *string) ([]core.TaskStep, int, error) {
+func AddCandidate(current []model.TaskStep, step model.TaskStep, before, after *string) ([]model.TaskStep, int, error) {
 	for _, existing := range current {
 		if existing.ID == step.ID {
 			return nil, 0, ErrIDConflict

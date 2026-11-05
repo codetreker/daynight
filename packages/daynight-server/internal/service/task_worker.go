@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
@@ -17,10 +17,10 @@ import (
 type WorkerDescriptor struct {
 	ClaimID          string
 	WorkerID         string
-	Machine          core.WorkerMachine
-	Platform         core.TaskPlatform
-	Agent            core.WorkerAgent
-	AgentControlMode core.WorkerAgentControlMode
+	Machine          model.WorkerMachine
+	Platform         model.TaskPlatform
+	Agent            model.WorkerAgent
+	AgentControlMode model.WorkerAgentControlMode
 	WorktreeID       string
 }
 
@@ -32,8 +32,8 @@ type ClaimWorker struct {
 type UpdateWorker struct {
 	Version         int64
 	ClaimID         string
-	Phase           *core.WorkerPhase
-	Herdr           **core.WorkerHerdr
+	Phase           *model.WorkerPhase
+	Herdr           **model.WorkerHerdr
 	NativeSessionID **string
 	StartupReport   *sp.StartupReport
 }
@@ -54,23 +54,23 @@ type ResumeWorker struct {
 	PreviousClaimID string
 }
 
-func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, projectID, id string, input ClaimWorker) (core.Task, error) {
+func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, projectID, id string, input ClaimWorker) (model.Task, error) {
 	descriptor, err := canonicalWorkerDescriptor(input.WorkerDescriptor)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
-	if err := requireCompatibleWorker(ctx, &core.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
-		return core.Task{}, err
+	if err := requireCompatibleWorker(ctx, &model.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
+		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
 		if current.AssignedTo == nil || *current.AssignedTo != principal.UserID {
-			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task must be assigned to the authenticated user for automatic execution."}
+			return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Task must be assigned to the authenticated user for automatic execution."}
 		}
-		if !current.AllowAgents || !core.PlatformCompatible(current.RequiredPlatform, descriptor.Platform) {
-			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task does not permit automatic execution on this platform."}
+		if !current.AllowAgents || !model.PlatformCompatible(current.RequiredPlatform, descriptor.Platform) {
+			return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Task does not permit automatic execution on this platform."}
 		}
 		worker, err := taskproperties.Worker(current.Properties)
 		if err != nil {
@@ -83,19 +83,19 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, proje
 	})
 }
 
-func (s *Tasks) ResumeWorker(ctx context.Context, principal core.Principal, projectID, id string, input ResumeWorker) (core.Task, error) {
+func (s *Tasks) ResumeWorker(ctx context.Context, principal model.Principal, projectID, id string, input ResumeWorker) (model.Task, error) {
 	descriptor, err := canonicalWorkerDescriptor(input.WorkerDescriptor)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
-	if err := requireCompatibleWorker(ctx, &core.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
-		return core.Task{}, err
+	if err := requireCompatibleWorker(ctx, &model.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
+		return model.Task{}, err
 	}
 	previousID, err := CanonicalID(input.PreviousClaimID)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
@@ -103,7 +103,7 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal core.Principal, proj
 		if err != nil {
 			return taskMutation{}, err
 		}
-		if worker == nil || worker.State != core.WorkerReleased || worker.ClaimID != previousID {
+		if worker == nil || worker.State != model.WorkerReleased || worker.ClaimID != previousID {
 			return taskMutation{}, claimConflict()
 		}
 		if err := requireWorkerOperator(ctx, tx, principal, worker); err != nil {
@@ -116,49 +116,49 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal core.Principal, proj
 	})
 }
 
-func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, projectID, id string, input UpdateWorker) (core.Task, error) {
+func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, projectID, id string, input UpdateWorker) (model.Task, error) {
 	claimID, err := CanonicalID(input.ClaimID)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if input.Phase == nil && input.Herdr == nil && input.NativeSessionID == nil && input.StartupReport == nil {
-		return core.Task{}, invalidInput("At least one worker execution field must be provided.")
+		return model.Task{}, invalidInput("At least one worker execution field must be provided.")
 	}
 	if input.Phase != nil && !input.Phase.Valid() {
-		return core.Task{}, invalidInput("Worker phase is invalid.")
+		return model.Task{}, invalidInput("Worker phase is invalid.")
 	}
 	if input.Herdr != nil && *input.Herdr != nil {
 		herdr := *input.Herdr
 		if !workerText(herdr.Session) || !workerText(herdr.WorkspaceID) || !workerText(herdr.PaneID) {
-			return core.Task{}, invalidInput("Herdr session, workspace and pane must be nonempty UTF-8 text without NUL.")
+			return model.Task{}, invalidInput("Herdr session, workspace and pane must be nonempty UTF-8 text without NUL.")
 		}
 	}
 	if input.NativeSessionID != nil && *input.NativeSessionID != nil && !workerText(**input.NativeSessionID) {
-		return core.Task{}, invalidInput("Native session ID must be null or nonempty UTF-8 text without NUL.")
+		return model.Task{}, invalidInput("Native session ID must be null or nonempty UTF-8 text without NUL.")
 	}
 	if input.StartupReport != nil {
 		raw, err := json.Marshal(input.StartupReport)
 		if err != nil {
-			return core.Task{}, invalidInput("Invalid startup report.")
+			return model.Task{}, invalidInput("Invalid startup report.")
 		}
 		if _, err = sp.DecodeStartupReport(raw); err != nil {
-			return core.Task{}, invalidInput("Invalid startup report.")
+			return model.Task{}, invalidInput("Invalid startup report.")
 		}
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
 		}
 		if worker.UserID != principal.UserID {
-			return taskMutation{}, &Fault{Code: "forbidden", Message: "Only the current execution owner may update worker execution."}
+			return taskMutation{}, &model.Fault{Code: "forbidden", Message: "Only the current execution owner may update worker execution."}
 		}
-		if worker.AgentControlMode == core.AgentControlModeWeb && input.Herdr != nil && *input.Herdr != nil {
+		if worker.AgentControlMode == model.AgentControlModeWeb && input.Herdr != nil && *input.Herdr != nil {
 			return taskMutation{}, invalidInput("Web execution cannot bind Herdr resources.")
 		}
 		reportChanged := false
 		if input.StartupReport != nil {
-			if worker.AgentControlMode != core.AgentControlModeWeb || input.StartupReport.ClaimID != claimID {
+			if worker.AgentControlMode != model.AgentControlModeWeb || input.StartupReport.ClaimID != claimID {
 				return taskMutation{}, claimConflict()
 			}
 			matched, err := tx.MatchSessionStartup(ctx, current.ID, worker, *input.StartupReport)
@@ -209,15 +209,15 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 	})
 }
 
-func (s *Tasks) ReleaseWorker(ctx context.Context, principal core.Principal, projectID, id string, input ReleaseWorker) (core.Task, error) {
+func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, projectID, id string, input ReleaseWorker) (model.Task, error) {
 	claimID, err := CanonicalID(input.ClaimID)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
 	if !input.StoppedConfirmed {
-		return core.Task{}, invalidInput("Stopped execution must be explicitly confirmed.")
+		return model.Task{}, invalidInput("Stopped execution must be explicitly confirmed.")
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
@@ -226,9 +226,9 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal core.Principal, pro
 			return taskMutation{}, err
 		}
 		next := *worker
-		next.State = core.WorkerReleased
+		next.State = model.WorkerReleased
 		values := currentTaskWrite(current)
-		values.Status = core.TaskTodo
+		values.Status = model.TaskTodo
 		values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
 		if err != nil {
 			return taskMutation{}, err
@@ -237,24 +237,24 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal core.Principal, pro
 	})
 }
 
-func (s *Tasks) WithdrawWorker(ctx context.Context, principal core.Principal, projectID, id string, input WithdrawWorker) (core.Task, error) {
+func (s *Tasks) WithdrawWorker(ctx context.Context, principal model.Principal, projectID, id string, input WithdrawWorker) (model.Task, error) {
 	claimID, err := CanonicalID(input.ClaimID)
 	if err != nil {
-		return core.Task{}, err
+		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
 		worker, err := taskproperties.Worker(current.Properties)
 		if err != nil {
 			return taskMutation{}, err
 		}
-		if worker == nil || worker.ClaimID != claimID || (worker.State != core.WorkerActive && worker.State != core.WorkerReleased) {
+		if worker == nil || worker.ClaimID != claimID || (worker.State != model.WorkerActive && worker.State != model.WorkerReleased) {
 			return taskMutation{}, claimConflict()
 		}
 		if err := requireWorkerOperator(ctx, tx, principal, worker); err != nil {
 			return taskMutation{}, err
 		}
 		values := currentTaskWrite(current)
-		values.Status, values.AllowAgents = core.TaskTodo, false
+		values.Status, values.AllowAgents = model.TaskTodo, false
 		values.Properties, err = taskproperties.WithWorker(values.Properties, nil)
 		if err != nil {
 			return taskMutation{}, err
@@ -265,7 +265,7 @@ func (s *Tasks) WithdrawWorker(ctx context.Context, principal core.Principal, pr
 
 func canonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error) {
 	if input.AgentControlMode == "" {
-		input.AgentControlMode = core.AgentControlModeHerdr
+		input.AgentControlMode = model.AgentControlModeHerdr
 	}
 	for _, field := range []*string{&input.ClaimID, &input.WorkerID, &input.Machine.ID, &input.WorktreeID} {
 		value, err := CanonicalID(*field)
@@ -284,67 +284,67 @@ func workerText(value string) bool {
 	return strings.TrimSpace(value) != "" && utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
-func workerReady(current core.Task) error {
-	if current.Status != core.TaskTodo {
-		return &Fault{Code: "invalid_transition", Message: "Only a ready todo task may be claimed."}
+func workerReady(current model.Task) error {
+	if current.Status != model.TaskTodo {
+		return &model.Fault{Code: "invalid_transition", Message: "Only a ready todo task may be claimed."}
 	}
 	if len(current.BlockedBy) > 0 {
-		return &Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
+		return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
 	}
 	worker, err := taskproperties.Worker(current.Properties)
 	if err != nil {
 		return err
 	}
-	if worker != nil && worker.State == core.WorkerActive {
+	if worker != nil && worker.State == model.WorkerActive {
 		return claimConflict()
 	}
 	return nil
 }
 
-func freshWorkerExecution(worker *core.WorkerClaim, descriptor WorkerDescriptor) error {
+func freshWorkerExecution(worker *model.WorkerClaim, descriptor WorkerDescriptor) error {
 	if worker == nil {
 		return nil
 	}
 	if worker.ClaimID == descriptor.ClaimID {
-		return &Fault{Code: "claim_conflict", Message: "A fresh claim ID is required for a new execution."}
+		return &model.Fault{Code: "claim_conflict", Message: "A fresh claim ID is required for a new execution."}
 	}
 	if worker.WorktreeID == descriptor.WorktreeID {
-		return &Fault{Code: "invalid_transition", Message: "A fresh worktree ID is required for a new execution."}
+		return &model.Fault{Code: "invalid_transition", Message: "A fresh worktree ID is required for a new execution."}
 	}
 	return nil
 }
 
-func acquireWorker(ctx context.Context, tx *store.ProjectTx, current core.Task, userID string, descriptor WorkerDescriptor) (taskMutation, error) {
+func acquireWorker(ctx context.Context, tx *store.ProjectTx, current model.Task, userID string, descriptor WorkerDescriptor) (taskMutation, error) {
 	claimedAt, err := tx.ObservedAt(ctx)
 	if err != nil {
 		return taskMutation{}, err
 	}
 	values := currentTaskWrite(current)
 	delete(values.Properties, "sessionStartup")
-	values.Status = core.TaskInProgress
-	values.Properties, err = taskproperties.WithWorker(values.Properties, &core.WorkerClaim{ClaimID: descriptor.ClaimID, State: core.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: core.WorkerPreparing, ClaimedAt: claimedAt})
+	values.Status = model.TaskInProgress
+	values.Properties, err = taskproperties.WithWorker(values.Properties, &model.WorkerClaim{ClaimID: descriptor.ClaimID, State: model.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: model.WorkerPreparing, ClaimedAt: claimedAt})
 	if err != nil {
 		return taskMutation{}, err
 	}
 	return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 }
 
-func activeWorker(current core.Task, claimID string) (*core.WorkerClaim, error) {
+func activeWorker(current model.Task, claimID string) (*model.WorkerClaim, error) {
 	worker, err := taskproperties.Worker(current.Properties)
 	if err != nil {
 		return nil, err
 	}
-	if worker == nil || worker.State != core.WorkerActive || worker.ClaimID != claimID || current.Status != core.TaskInProgress {
+	if worker == nil || worker.State != model.WorkerActive || worker.ClaimID != claimID || current.Status != model.TaskInProgress {
 		return nil, claimConflict()
 	}
 	return worker, nil
 }
 
 func claimConflict() error {
-	return &Fault{Code: "claim_conflict", Message: "Task worker claim does not match the active execution."}
+	return &model.Fault{Code: "claim_conflict", Message: "Task worker claim does not match the active execution."}
 }
 
-func requireWorkerOperator(ctx context.Context, tx *store.ProjectTx, principal core.Principal, worker *core.WorkerClaim) error {
+func requireWorkerOperator(ctx context.Context, tx *store.ProjectTx, principal model.Principal, worker *model.WorkerClaim) error {
 	if principal.UserID == worker.UserID {
 		return nil
 	}

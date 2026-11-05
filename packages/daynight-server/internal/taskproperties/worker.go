@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
 	"github.com/google/uuid"
 )
@@ -25,22 +25,22 @@ type herdrDocument struct {
 }
 
 type workerDocument struct {
-	ClaimID          string                      `json:"claimId"`
-	State            core.WorkerState            `json:"state"`
-	UserID           string                      `json:"userId"`
-	WorkerID         string                      `json:"workerId"`
-	Machine          machineDocument             `json:"machine"`
-	Platform         core.TaskPlatform           `json:"platform"`
-	Agent            core.WorkerAgent            `json:"agent"`
-	AgentControlMode core.WorkerAgentControlMode `json:"agentControlMode"`
-	WorktreeID       string                      `json:"worktreeId"`
-	Phase            core.WorkerPhase            `json:"phase"`
-	Herdr            *herdrDocument              `json:"herdr"`
-	NativeSessionID  *string                     `json:"nativeSessionId"`
-	ClaimedAt        string                      `json:"claimedAt"`
+	ClaimID          string                       `json:"claimId"`
+	State            model.WorkerState            `json:"state"`
+	UserID           string                       `json:"userId"`
+	WorkerID         string                       `json:"workerId"`
+	Machine          machineDocument              `json:"machine"`
+	Platform         model.TaskPlatform           `json:"platform"`
+	Agent            model.WorkerAgent            `json:"agent"`
+	AgentControlMode model.WorkerAgentControlMode `json:"agentControlMode"`
+	WorktreeID       string                       `json:"worktreeId"`
+	Phase            model.WorkerPhase            `json:"phase"`
+	Herdr            *herdrDocument               `json:"herdr"`
+	NativeSessionID  *string                      `json:"nativeSessionId"`
+	ClaimedAt        string                       `json:"claimedAt"`
 }
 
-func encodeWorker(worker *core.WorkerClaim) *workerDocument {
+func encodeWorker(worker *model.WorkerClaim) *workerDocument {
 	if worker == nil {
 		return nil
 	}
@@ -53,7 +53,7 @@ func encodeWorker(worker *core.WorkerClaim) *workerDocument {
 	return value
 }
 
-func decodeWorker(data []byte) (*core.WorkerClaim, error) {
+func decodeWorker(data []byte) (*model.WorkerClaim, error) {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil, fmt.Errorf("properties.worker must be an object")
 	}
@@ -93,12 +93,12 @@ func decodeWorker(data []byte) (*core.WorkerClaim, error) {
 	if err != nil || claimedAt.IsZero() {
 		return nil, fmt.Errorf("properties.worker.claimedAt must be an RFC3339 timestamp")
 	}
-	worker := &core.WorkerClaim{ClaimID: values["claimId"], State: core.WorkerState(values["state"]), UserID: values["userId"], WorkerID: values["workerId"], Machine: core.WorkerMachine{ID: machineID, Name: machineName}, Platform: core.TaskPlatform(values["platform"]), Agent: core.WorkerAgent(values["agent"]), WorktreeID: values["worktreeId"], Phase: core.WorkerPhase(values["phase"]), ClaimedAt: claimedAt.UTC()}
+	worker := &model.WorkerClaim{ClaimID: values["claimId"], State: model.WorkerState(values["state"]), UserID: values["userId"], WorkerID: values["workerId"], Machine: model.WorkerMachine{ID: machineID, Name: machineName}, Platform: model.TaskPlatform(values["platform"]), Agent: model.WorkerAgent(values["agent"]), WorktreeID: values["worktreeId"], Phase: model.WorkerPhase(values["phase"]), ClaimedAt: claimedAt.UTC()}
 	mode, err := stringField(fields, "agentControlMode", "properties.worker")
 	if err != nil {
 		return nil, err
 	}
-	worker.AgentControlMode = core.WorkerAgentControlMode(mode)
+	worker.AgentControlMode = model.WorkerAgentControlMode(mode)
 	if !worker.AgentControlMode.Supports(worker.Agent) {
 		return nil, fmt.Errorf("properties.worker has an unsupported agent control mode and agent combination")
 	}
@@ -124,9 +124,9 @@ func decodeWorker(data []byte) (*core.WorkerClaim, error) {
 			}
 			parts = append(parts, value)
 		}
-		worker.Herdr = &core.WorkerHerdr{Session: parts[0], WorkspaceID: parts[1], PaneID: parts[2]}
+		worker.Herdr = &model.WorkerHerdr{Session: parts[0], WorkspaceID: parts[1], PaneID: parts[2]}
 	}
-	if worker.AgentControlMode == core.AgentControlModeWeb && worker.Herdr != nil {
+	if worker.AgentControlMode == model.AgentControlModeWeb && worker.Herdr != nil {
 		return nil, fmt.Errorf("properties.worker.herdr must be null for web execution")
 	}
 	raw, exists := fields["nativeSessionId"]

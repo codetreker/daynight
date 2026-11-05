@@ -85,16 +85,16 @@ Content-Type: application/json
 ```go
 type SetTaskStatus struct {
     Version int64
-    Status  core.TaskStatus
+    Status  model.TaskStatus
     ClaimID *string
 }
 
 func (s *Tasks) SetStatus(
     ctx context.Context,
-    principal core.Principal,
+    principal model.Principal,
     projectID, taskID string,
     input SetTaskStatus,
-) (core.Task, error)
+) (model.Task, error)
 ```
 
 服务边界也检查正版本和三状态枚举，直接调用不能绕过 HTTP 校验；随后复用 Tasks.write。锁内顺序为：

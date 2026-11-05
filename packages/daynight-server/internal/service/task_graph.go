@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -15,20 +15,20 @@ const (
 	graphTitlePreviewCharacters = 160
 )
 
-func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID, taskID string) (core.TaskGraph, error) {
+func (s *Tasks) Graph(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.TaskGraph{}, err
+		return model.TaskGraph{}, err
 	}
 	projectID, err := CanonicalID(projectID)
 	if err != nil {
-		return core.TaskGraph{}, err
+		return model.TaskGraph{}, err
 	}
 	taskID, err = CanonicalID(taskID)
 	if err != nil {
-		return core.TaskGraph{}, err
+		return model.TaskGraph{}, err
 	}
-	var graph core.TaskGraph
-	var refusal *Fault
+	var graph model.TaskGraph
+	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
 			if errors.As(err, &refusal) {
@@ -38,15 +38,15 @@ func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID, 
 		}
 		var err error
 		graph.Project, err = snapshot.Project(ctx, projectID)
-		if errors.Is(err, core.ErrNotFound) {
-			refusal = &Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
+		if errors.Is(err, model.ErrNotFound) {
+			refusal = &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
 			return nil
 		}
 		if err != nil {
 			return err
 		}
 		if err := snapshot.TaskGraphRoot(ctx, projectID, taskID); err != nil {
-			if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrTaskDeleted) {
+			if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrTaskDeleted) {
 				refusal = taskNotFound(err)
 				return nil
 			}
@@ -57,8 +57,8 @@ func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID, 
 			return err
 		}
 		if size.NodeCount > maxGraphNodes || size.EdgeCount > maxGraphEdges {
-			refusal = &Fault{Code: "graph_limit_exceeded", Message: "Task graph exceeds the supported size.",
-				GraphLimit: &GraphLimitDetails{NodeCount: size.NodeCount, EdgeCount: size.EdgeCount,
+			refusal = &model.Fault{Code: "graph_limit_exceeded", Message: "Task graph exceeds the supported size.",
+				GraphLimit: &model.GraphLimitDetails{NodeCount: size.NodeCount, EdgeCount: size.EdgeCount,
 					MaxNodes: maxGraphNodes, MaxEdges: maxGraphEdges}}
 			return nil
 		}
@@ -71,28 +71,28 @@ func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID, 
 		return err
 	})
 	if err != nil {
-		return core.TaskGraph{}, fmt.Errorf("read task graph: %w", err)
+		return model.TaskGraph{}, fmt.Errorf("read task graph: %w", err)
 	}
 	if refusal != nil {
-		return core.TaskGraph{}, refusal
+		return model.TaskGraph{}, refusal
 	}
 	return graph, nil
 }
 
-func summarizeGraph(tasks []core.GraphTask) core.TaskGraphSummary {
-	summary := core.TaskGraphSummary{Total: int64(len(tasks))}
+func summarizeGraph(tasks []model.GraphTask) model.TaskGraphSummary {
+	summary := model.TaskGraphSummary{Total: int64(len(tasks))}
 	for _, task := range tasks {
 		switch task.Status {
-		case core.TaskTodo:
+		case model.TaskTodo:
 			summary.Todo++
 			if task.Ready {
 				summary.Ready++
 			} else {
 				summary.Blocked++
 			}
-		case core.TaskInProgress:
+		case model.TaskInProgress:
 			summary.InProgress++
-		case core.TaskDone:
+		case model.TaskDone:
 			summary.Done++
 		}
 	}

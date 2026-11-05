@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/jackc/pgx/v5"
 )
@@ -31,15 +31,15 @@ func decodeCursor(value string, v sp.Snapshot, kind string) (position, error) {
 	}
 	return p, nil
 }
-func (s *Service) Current(ctx context.Context, p core.Principal, project, taskID string) (map[string]any, error) {
+func (s *Service) Current(ctx context.Context, p model.Principal, project, taskID string) (map[string]any, error) {
 	return s.current(ctx, p, project, taskID, false)
 }
 
-func (s *Service) CurrentWithStartup(ctx context.Context, p core.Principal, project, taskID string) (map[string]any, error) {
+func (s *Service) CurrentWithStartup(ctx context.Context, p model.Principal, project, taskID string) (map[string]any, error) {
 	return s.current(ctx, p, project, taskID, true)
 }
 
-func (s *Service) current(ctx context.Context, p core.Principal, project, taskID string, includeStartup bool) (map[string]any, error) {
+func (s *Service) current(ctx context.Context, p model.Principal, project, taskID string, includeStartup bool) (map[string]any, error) {
 	var out map[string]any
 	err := s.transact(ctx, func(tx pgx.Tx) error {
 		t, err := lockTask(ctx, tx, project, taskID)
@@ -55,7 +55,7 @@ func (s *Service) current(ctx context.Context, p core.Principal, project, taskID
 			out = map[string]any{"status": "not_applicable", "claimId": nil, "agentControlMode": nil}
 			return nil
 		}
-		if w.AgentControlMode != core.AgentControlModeWeb {
+		if w.AgentControlMode != model.AgentControlModeWeb {
 			out = map[string]any{"status": "not_applicable", "claimId": w.ClaimID, "agentControlMode": "herdr"}
 			return nil
 		}
@@ -87,7 +87,7 @@ func (s *Service) current(ctx context.Context, p core.Principal, project, taskID
 	})
 	return out, err
 }
-func (s *Service) Timeline(ctx context.Context, p core.Principal, project, taskID, id, direction, token string, limit int) (map[string]any, error) {
+func (s *Service) Timeline(ctx context.Context, p model.Principal, project, taskID, id, direction, token string, limit int) (map[string]any, error) {
 	if limit < 1 || limit > 200 {
 		return nil, fault("invalid_input", "Timeline limit must be between 1 and 200.")
 	}
@@ -117,7 +117,7 @@ func contentCursor(v *string) any {
 	}
 	return *v
 }
-func (s *Service) BrowserPoll(ctx context.Context, p core.Principal, project, taskID, id, token string) (sp.Snapshot, []map[string]any, string, error) {
+func (s *Service) BrowserPoll(ctx context.Context, p model.Principal, project, taskID, id, token string) (sp.Snapshot, []map[string]any, string, error) {
 	var snapshot sp.Snapshot
 	events := []map[string]any{}
 	resultCursor := token

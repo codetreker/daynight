@@ -21,7 +21,7 @@
 `server.New(Dependencies, Config, logger)` 先校验必需配置并构造真实 UniAuth SDK，
 再注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI；失败返回
 error，运行时关闭已获得的 listener、数据库和文件根句柄。业务服务显式接受
-core.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
+model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
 直接实现私有创建和按成员过滤。正式 Application 在常驻 LocaleProvider 下选择公开首页、
 公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
 [公开入口设计](daynight-landing.md)拥有路由组合与公开身份提示，后者不参与私有资源准入。
@@ -303,7 +303,7 @@ ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessio
 锁后读取当前成员资格；省略时锁定并验证调用者真实 Personal Team。随后在同一事务插入
 Project、ownership 与 creator direct admin grant。创建和删除共享 Team 存在性锁，删除的
 独立 Read Committed 查询能看到锁等待前提交的 ownership。未确认 COMMIT 与清理失败沿用
-Team 事务的结果分类，不自动重放。`core.Project.Ownership` 是真实内部聚合，
+Team 事务的结果分类，不自动重放。`model.Project.Ownership` 是真实内部聚合，
 Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性错误，没有运行时旧数据回退。
 创建在同一事务投影当前 access，提交确认后与 Project 一并返回；公开归属与权限来源使用真实记录。
 

@@ -4,15 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func workerAssistantHostInput(raw json.RawMessage) (*core.WorkerAssistantHost, error) {
+func workerAssistantHostInput(raw json.RawMessage) (*model.WorkerAssistantHost, error) {
 	fields, err := workerObject(raw, "assistantHost", "protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers")
 	if err != nil {
 		return nil, err
 	}
-	host := &core.WorkerAssistantHost{}
+	host := &model.WorkerAssistantHost{}
 	host.ProtocolVersion, err = workerIntegerInput(fields["protocolVersion"])
 	if err != nil {
 		return nil, err
@@ -29,12 +29,12 @@ func workerAssistantHostInput(raw json.RawMessage) (*core.WorkerAssistantHost, e
 	if err != nil {
 		return nil, err
 	}
-	host.DefaultProvider = core.WorkerAgent(provider)
+	host.DefaultProvider = model.WorkerAgent(provider)
 	var providers []json.RawMessage
 	if json.Unmarshal(fields["providers"], &providers) != nil || providers == nil {
 		return nil, invalidInput("assistantHost.providers must be an array")
 	}
-	host.Providers = make([]core.WorkerAssistantProvider, 0, len(providers))
+	host.Providers = make([]model.WorkerAssistantProvider, 0, len(providers))
 	for _, raw := range providers {
 		provider, err := workerAssistantProviderInput(raw)
 		if err != nil {
@@ -45,8 +45,8 @@ func workerAssistantHostInput(raw json.RawMessage) (*core.WorkerAssistantHost, e
 	return host, nil
 }
 
-func workerAssistantProviderInput(raw json.RawMessage) (core.WorkerAssistantProvider, error) {
-	var provider core.WorkerAssistantProvider
+func workerAssistantProviderInput(raw json.RawMessage) (model.WorkerAssistantProvider, error) {
+	var provider model.WorkerAssistantProvider
 	fields, err := workerObject(raw, "assistantHost.providers", "provider", "available", "reason", "model", "args")
 	if err != nil {
 		return provider, err
@@ -55,7 +55,7 @@ func workerAssistantProviderInput(raw json.RawMessage) (core.WorkerAssistantProv
 	if err != nil {
 		return provider, err
 	}
-	provider.Provider = core.WorkerAgent(name)
+	provider.Provider = model.WorkerAgent(name)
 	if bytes.Equal(bytes.TrimSpace(fields["available"]), []byte("null")) || json.Unmarshal(fields["available"], &provider.Available) != nil {
 		return provider, invalidInput("assistantHost provider available must be a boolean")
 	}

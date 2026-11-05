@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
 )
@@ -60,7 +60,7 @@ func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 	})
 	recorded := &attachmentRecordedStorage{Storage: files}
 	attachments := NewAttachments(database, recorded)
-	createFixedTask := func(projectID, taskID string) core.Task {
+	createFixedTask := func(projectID, taskID string) model.Task {
 		t.Helper()
 		if _, err := database.Pool.Exec(ctx, `INSERT INTO tasks(id, project_id, title) VALUES ($1,$2,'Attachment isolation')`, taskID, projectID); err != nil {
 			t.Fatal(err)
@@ -71,7 +71,7 @@ func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 		}
 		return task
 	}
-	owners := []core.Task{
+	owners := []model.Task{
 		createFixedTask(project.ID, "ab000000-0000-4000-8000-000000000001"),
 		createFixedTask(project.ID, "ab000000-0000-4000-8000-000000000002"),
 		createFixedTask(project.ID, "cd000000-0000-4000-8000-000000000003"),
@@ -79,10 +79,10 @@ func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 	}
 	path := "文档 space/same%_?#.bin"
 	contents := [][]byte{{0, 255, 1}, {0, 255, 2}, {0, 255, 3}, {0, 255, 4}}
-	physicalPath := func(task core.Task) string {
+	physicalPath := func(task model.Task) string {
 		return filepath.Join(root, "task-attachments", task.ProjectID, task.ID[:2], task.ID, "文档 space", "same%_?#.bin")
 	}
-	assertContent := func(task core.Task, want []byte) {
+	assertContent := func(task model.Task, want []byte) {
 		t.Helper()
 		metadata, object, err := attachments.Open(ctx, principal, task.ProjectID, task.ID, path)
 		if err != nil {
@@ -117,7 +117,7 @@ func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 		if call != (attachmentStorageCall{"put", "task-attachments", task.ProjectID + "/" + task.ID[:2] + "/" + task.ID + "/" + path}) {
 			t.Fatalf("business storage address: %#v", call)
 		}
-		page, err := attachments.List(ctx, principal, task.ProjectID, task.ID, PageRequest{Limit: 10})
+		page, err := attachments.List(ctx, principal, task.ProjectID, task.ID, model.PageRequest{Limit: 10})
 		if err != nil || len(page.Items) != 1 || page.Items[0].Path != path {
 			t.Fatalf("logical inventory: %#v err=%v", page, err)
 		}

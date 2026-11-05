@@ -4,7 +4,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -24,7 +24,7 @@ func validateCandidate(ctx context.Context, tx *store.ProjectTx, id string, valu
 		}
 	}
 	if len(missing) > 0 {
-		return &Fault{Code: "invalid_input", Message: "Dependencies must identify tasks in this project.", TaskIDs: missing}
+		return &model.Fault{Code: "invalid_input", Message: "Dependencies must identify tasks in this project.", TaskIDs: missing}
 	}
 	cycles := make([]string, 0)
 	for _, dependency := range values.DependsOn {
@@ -37,18 +37,18 @@ func validateCandidate(ctx context.Context, tx *store.ProjectTx, id string, valu
 		}
 	}
 	if len(cycles) > 0 {
-		return &Fault{Code: "dependency_cycle", Message: "Task dependencies would create a cycle.", TaskIDs: cycles}
+		return &model.Fault{Code: "dependency_cycle", Message: "Task dependencies would create a cycle.", TaskIDs: cycles}
 	}
-	if values.Status == core.TaskInProgress || values.Status == core.TaskDone {
+	if values.Status == model.TaskInProgress || values.Status == model.TaskDone {
 		blocked := make([]string, 0)
 		for _, prerequisite := range prerequisites {
-			if prerequisite.Status != core.TaskDone {
+			if prerequisite.Status != model.TaskDone {
 				blocked = append(blocked, prerequisite.ID)
 			}
 		}
 		if len(blocked) > 0 {
 			slices.Sort(blocked)
-			return &Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: blocked}
+			return &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: blocked}
 		}
 	}
 	return nil

@@ -9,7 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 )
 
 var (

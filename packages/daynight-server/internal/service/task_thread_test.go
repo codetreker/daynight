@@ -12,22 +12,22 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskthreadjson"
 	"github.com/google/uuid"
 )
 
-func requireThreadFault(t *testing.T, err error, code string) *Fault {
+func requireThreadFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
-	var fault *Fault
+	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" {
 		t.Fatalf("expected %s fault, got %#v", code, err)
 	}
 	return fault
 }
 
-func postThread(t *testing.T, threads *TaskThreads, principal core.Principal, task core.Task, input CreateThreadMessage) ThreadMessageDocument {
+func postThread(t *testing.T, threads *TaskThreads, principal model.Principal, task model.Task, input CreateThreadMessage) ThreadMessageDocument {
 	t.Helper()
 	result, err := threads.Post(context.Background(), principal, task.ProjectID, task.ID, input)
 	if err != nil {
@@ -40,7 +40,7 @@ func postThread(t *testing.T, threads *TaskThreads, principal core.Principal, ta
 	return result
 }
 
-func listThread(t *testing.T, threads *TaskThreads, principal core.Principal, task core.Task, input ThreadListRequest) ThreadPageDocument {
+func listThread(t *testing.T, threads *TaskThreads, principal model.Principal, task model.Task, input ThreadListRequest) ThreadPageDocument {
 	t.Helper()
 	result, err := threads.List(context.Background(), principal, task.ProjectID, task.ID, input)
 	if err != nil {
@@ -143,17 +143,17 @@ func TestThreadInputAndScopedAuthorization(t *testing.T) {
 		requireThreadFault(t, err, "message_not_found")
 	}
 	outsider := servicePrincipal(t, database)
-	for _, call := range []func(core.Principal, string, string) error{
-		func(p core.Principal, projectID, taskID string) error {
+	for _, call := range []func(model.Principal, string, string) error{
+		func(p model.Principal, projectID, taskID string) error {
 			_, err := threads.Post(ctx, p, projectID, taskID, CreateThreadMessage{Body: "body"})
 			return err
 		},
-		func(p core.Principal, projectID, taskID string) error {
+		func(p model.Principal, projectID, taskID string) error {
 			_, err := threads.List(ctx, p, projectID, taskID, ThreadListRequest{})
 			return err
 		},
 	} {
-		requireThreadFault(t, call(core.Principal{}, project.ID, task.ID), "unauthenticated")
+		requireThreadFault(t, call(model.Principal{}, project.ID, task.ID), "unauthenticated")
 		requireThreadFault(t, call(principal, "bad", task.ID), "invalid_input")
 		requireThreadFault(t, call(principal, project.ID, "bad"), "invalid_input")
 		requireThreadFault(t, call(principal, project.ID, uuid.NewString()), "not_found")
@@ -209,18 +209,18 @@ func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 			threads := NewTaskThreads(database)
 			task := createTask(t, tasks, principal, project.ID, "Budget")
 			var claimID *string
-			author := core.ThreadAuthor{UserID: principal.UserID}
+			author := model.ThreadAuthor{UserID: principal.UserID}
 			if agent {
 				task = updateTask(t, tasks, principal, task, UpdateTask{AssignedTo: assignmentChange(&principal.UserID)})
 				task = updateTask(t, tasks, principal, task, UpdateTask{AllowAgents: pointer(true)})
 				descriptor := workerDescriptor()
 				task = claimWorkerTask(t, tasks, principal, task, descriptor)
 				claimID = &descriptor.ClaimID
-				author.Agent, author.Execution = true, &core.ThreadExecution{ClaimID: descriptor.ClaimID, WorkerID: descriptor.WorkerID, Provider: string(descriptor.Agent)}
+				author.Agent, author.Execution = true, &model.ThreadExecution{ClaimID: descriptor.ClaimID, WorkerID: descriptor.WorkerID, Provider: string(descriptor.Agent)}
 			}
 			reply := postThread(t, threads, principal, task, CreateThreadMessage{Body: "reply target"})
 			prefix := " <>&\"\\\n\t中文🌛\u2028\u2029 "
-			template := core.ThreadMessage{ID: uuid.NewString(), TaskID: task.ID, Author: author, Body: prefix, ReplyTo: &reply.Message.ID, CreatedAt: time.Now().UTC()}
+			template := model.ThreadMessage{ID: uuid.NewString(), TaskID: task.ID, Author: author, Body: prefix, ReplyTo: &reply.Message.ID, CreatedAt: time.Now().UTC()}
 			base, err := taskthreadjson.EncodeMessage(template, true)
 			if err != nil {
 				t.Fatal(err)
@@ -254,7 +254,7 @@ func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 	}
 }
 
-func insertThreadFixture(t *testing.T, database *store.Store, task core.Task, principal core.Principal, id string, createdAt time.Time, body string) {
+func insertThreadFixture(t *testing.T, database *store.Store, task model.Task, principal model.Principal, id string, createdAt time.Time, body string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_thread_messages(task_id,message_id,created_at,author_user_id,author_agent,body) VALUES($1,$2,$3,$4,false,$5)`, task.ID, id, createdAt, principal.UserID, body); err != nil {
 		t.Fatal(err)
@@ -327,7 +327,7 @@ func TestThreadPageByteLimitKeepsCompleteBodiesAndActualSides(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	threads := NewTaskThreads(database)
 	task := createTask(t, tasks, principal, project.ID, "Byte page")
-	template := core.ThreadMessage{ID: uuid.NewString(), Author: core.ThreadAuthor{UserID: principal.UserID}, CreatedAt: time.Now()}
+	template := model.ThreadMessage{ID: uuid.NewString(), Author: model.ThreadAuthor{UserID: principal.UserID}, CreatedAt: time.Now()}
 	base, err := taskthreadjson.EncodeMessage(template, false)
 	if err != nil {
 		t.Fatal(err)
@@ -377,14 +377,14 @@ func TestThreadSameMillisecondBytePagesTraverseBothResourceForms(t *testing.T) {
 	threads := NewTaskThreads(database)
 	task := createTask(t, tasks, principal, project.ID, "Same millisecond byte pages")
 	createdAt := time.Date(2026, 11, 3, 0, 0, 0, 120000000, time.UTC)
-	execution := &core.ThreadExecution{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Provider: "codex"}
+	execution := &model.ThreadExecution{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Provider: "codex"}
 	name := "Alice <>&"
-	want := make([]core.ThreadMessage, 7)
+	want := make([]model.ThreadMessage, 7)
 	indices := make(map[string]int, len(want))
 	for i := range want {
-		message := core.ThreadMessage{
+		message := model.ThreadMessage{
 			TaskID: task.ID, ID: fmt.Sprintf("00000000-0000-4000-8000-%012x", i+1), CreatedAt: createdAt,
-			Author: core.ThreadAuthor{UserID: principal.UserID, DisplayName: &name, Agent: true, Execution: execution},
+			Author: model.ThreadAuthor{UserID: principal.UserID, DisplayName: &name, Agent: true, Execution: execution},
 			Body:   fmt.Sprintf("message %d <>&\"\\\n\t中文🌛\u2028\u2029 ", i),
 		}
 		if i > 0 {
@@ -413,7 +413,7 @@ func TestThreadSameMillisecondBytePagesTraverseBothResourceForms(t *testing.T) {
 		for _, reverse := range []bool{false, true} {
 			t.Run(fmt.Sprintf("details=%t/reverse=%t", details, reverse), func(t *testing.T) {
 				request := ThreadListRequest{Count: 100, Details: details, FromBeginning: !reverse}
-				var traversed []core.ThreadMessage
+				var traversed []model.ThreadMessage
 				pages := 0
 				for {
 					page := listThread(t, threads, principal, task, request).Page
@@ -488,7 +488,7 @@ func TestThreadResponseClassificationPreservesUnknownAndCleanupPriority(t *testi
 		{&store.ThreadTransactionError{Cause: context.DeadlineExceeded, Phase: "commit", CommitAttempted: true, OutcomeUnknown: true}, "message_outcome_unknown"},
 		{&store.ThreadTransactionError{Cause: clock, Phase: "commit", CommitAttempted: true}, ""},
 		{&store.ThreadTransactionError{Cause: clock, Phase: "rollback", RollbackFailed: true}, "internal_error"},
-		{&store.ThreadTransactionError{Cause: errors.Join(&Fault{Code: "payload_too_large"}, context.Canceled), Phase: "rollback", RollbackFailed: true, OutcomeUnknown: true}, "internal_error"},
+		{&store.ThreadTransactionError{Cause: errors.Join(&model.Fault{Code: "payload_too_large"}, context.Canceled), Phase: "rollback", RollbackFailed: true, OutcomeUnknown: true}, "internal_error"},
 	} {
 		fault, ok := ThreadResponseFault(test.err)
 		if ok != (test.code != "") || ok && fault.Code != test.code || ThreadWriteOutcomeUnknown(test.err) != (test.code == "message_outcome_unknown") {

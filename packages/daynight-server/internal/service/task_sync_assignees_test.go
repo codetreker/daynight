@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
-func syncAssigneeVersions(t *testing.T, value core.TaskSync) map[string]core.TaskAssigneeVersion {
+func syncAssigneeVersions(t *testing.T, value model.TaskSync) map[string]model.TaskAssigneeVersion {
 	t.Helper()
 	if value.AssigneeVersions == nil {
 		t.Fatal("sync omitted the complete people version manifest")
 	}
-	result := make(map[string]core.TaskAssigneeVersion, len(value.AssigneeVersions))
+	result := make(map[string]model.TaskAssigneeVersion, len(value.AssigneeVersions))
 	ids := make([]string, 0, len(value.AssigneeVersions))
 	for _, entry := range value.AssigneeVersions {
 		if len(entry.Version) != 64 || result[entry.UserID].UserID != "" {
@@ -41,7 +41,7 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 	retained := createAssignedTask(t, tasks, admin, project.ID, &former.UserID)
 	other := servicePrincipal(t, database)
 	sync := NewTaskSync(database, 10*time.Second)
-	read := func() (core.TaskSync, map[string]core.TaskAssigneeVersion) {
+	read := func() (model.TaskSync, map[string]model.TaskAssigneeVersion) {
 		t.Helper()
 		result, err := sync.Get(ctx, admin, project.ID, TaskSyncRequest{})
 		if err != nil {
@@ -67,7 +67,7 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	if _, err := database.CreateIdentitySession(ctx, user, core.Session{ID: uuid.NewString(), TokenHash: secretHash(randomSecret("dnst_")), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}); err != nil {
+	if _, err := database.CreateIdentitySession(ctx, user, model.Session{ID: uuid.NewString(), TokenHash: secretHash(randomSecret("dnst_")), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Pool.Exec(ctx, `UPDATE project_grants SET role='admin',version=version+1 WHERE project_id=$1 AND user_id=$2`, project.ID, member.UserID); err != nil {
@@ -156,7 +156,7 @@ func TestTaskSyncAssigneeIntegrityFailureReturnsNoSnapshot(t *testing.T) {
 	}
 	result, err := NewTaskSync(database, 10*time.Second).Get(context.Background(), admin, project.ID, TaskSyncRequest{})
 	assertOperational(t, err)
-	if !reflect.DeepEqual(result, core.TaskSync{}) {
+	if !reflect.DeepEqual(result, model.TaskSync{}) {
 		t.Fatalf("missing qualified profile produced a partial task snapshot: %#v", result)
 	}
 }

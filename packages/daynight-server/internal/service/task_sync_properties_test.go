@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
@@ -24,7 +24,7 @@ func TestTaskSyncPropertiesAndVersionUseOneSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var after core.Task
+	var after model.Task
 	writes := 0
 	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool {
 		return strings.Contains(sql, "SELECT task_id::text,name,value FROM task_properties")
@@ -76,7 +76,7 @@ func TestTaskSyncIllegalPropertiesPreserveTransactionCompletionPriority(t *testi
 				source = traced.store
 			}
 			result, err := NewTaskSync(source, 10*time.Second).Get(ctx, principal, project.ID, TaskSyncRequest{})
-			if !reflect.DeepEqual(result, core.TaskSync{}) {
+			if !reflect.DeepEqual(result, model.TaskSync{}) {
 				t.Fatalf("failed sync returned partial state: %#v", result)
 			}
 			if completeFailure {
@@ -116,7 +116,7 @@ func TestTaskSyncWindowOnlyValidatesReturnedProperties(t *testing.T) {
 	}
 	snapshot, err := NewTaskSync(database, 10*time.Second).Get(ctx, principal, project.ID, TaskSyncRequest{})
 	requireFault(t, err, "invalid_input")
-	if !reflect.DeepEqual(snapshot, core.TaskSync{}) {
+	if !reflect.DeepEqual(snapshot, model.TaskSync{}) {
 		t.Fatalf("snapshot accepted corrupt sibling or returned partial state: %#v", snapshot)
 	}
 }

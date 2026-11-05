@@ -6,19 +6,19 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 var workerAssistantReasons = []string{"unsupported_arguments", "invalid_cwd", "not_found", "permission_denied", "timeout", "command_failed", "invalid_output", "unavailable"}
 
-func validateWorkerAssistantHost(host *core.WorkerAssistantHost, platform core.TaskPlatform) error {
+func validateWorkerAssistantHost(host *model.WorkerAssistantHost, platform model.TaskPlatform) error {
 	if host == nil {
 		return nil
 	}
 	if host.ProtocolVersion != 1 || !workerReportTime(host.ObservedAt) || !host.DefaultProvider.Valid() || !workerAssistantAbsolutePath(host.DefaultCwd, platform) || len(host.Providers) != 3 {
 		return invalidInput("Assistant host requires protocol v1, an observation time, an absolute directory, a default provider and all three providers.")
 	}
-	seen := make(map[core.WorkerAgent]bool, 3)
+	seen := make(map[model.WorkerAgent]bool, 3)
 	for _, provider := range host.Providers {
 		if !provider.Provider.Valid() || seen[provider.Provider] || provider.Available != (provider.Reason == nil) || (provider.Reason != nil && !slices.Contains(workerAssistantReasons, *provider.Reason)) {
 			return invalidInput("Assistant provider identities and availability reasons must be valid and unique.")
@@ -43,11 +43,11 @@ func workerAssistantText(value string, limit int) bool {
 	return workerText(value) && len(value) <= limit && !strings.ContainsFunc(value, unicode.IsControl)
 }
 
-func workerAssistantAbsolutePath(value string, platform core.TaskPlatform) bool {
+func workerAssistantAbsolutePath(value string, platform model.TaskPlatform) bool {
 	if !workerAssistantText(value, 4096) {
 		return false
 	}
-	if platform != core.PlatformWindows {
+	if platform != model.PlatformWindows {
 		return strings.HasPrefix(value, "/")
 	}
 	path := strings.ReplaceAll(value, "\\", "/")
@@ -63,7 +63,7 @@ func workerAssistantAbsolutePath(value string, platform core.TaskPlatform) bool 
 
 // WorkerAssistantHostState combines server liveness with the age of the actual
 // preflight. An available host still requires checking the selected provider.
-func WorkerAssistantHostState(worker core.WorkerSnapshot, observedAt time.Time) string {
+func WorkerAssistantHostState(worker model.WorkerSnapshot, observedAt time.Time) string {
 	host := worker.Telemetry.AssistantHost
 	if host == nil || host.ProtocolVersion != 1 {
 		return "unsupported"

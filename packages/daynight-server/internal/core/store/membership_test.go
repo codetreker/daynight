@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func membershipFixture(t *testing.T) (*Store, core.Principal, core.Principal, core.Project) {
+func membershipFixture(t *testing.T) (*Store, model.Principal, model.Principal, model.Project) {
 	t.Helper()
 	s := isolatedStore(t)
 	_, admin, _ := testAuthRecords(t, s)
@@ -26,10 +26,10 @@ func membershipFixture(t *testing.T) (*Store, core.Principal, core.Principal, co
 	return s, admin, member, project
 }
 
-func newStoredInvitation(project core.Project, creator core.Principal, label string) core.ProjectInvitation {
+func newStoredInvitation(project model.Project, creator model.Principal, label string) model.ProjectInvitation {
 	hash := sha256.Sum256([]byte(label))
 	now := time.Now().UTC()
-	return core.ProjectInvitation{ID: uuid.NewString(), ProjectID: project.ID, CreatedBy: creator.UserID, TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
+	return model.ProjectInvitation{ID: uuid.NewString(), ProjectID: project.ID, CreatedBy: creator.UserID, TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
 }
 
 func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
@@ -46,18 +46,18 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	if _, err := s.Pool.Exec(ctx, `UPDATE projects SET created_at=$2::timestamptz WHERE id=$1`, inaccessible.ID, time.Now().Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	var original core.ProjectMember
+	var original model.ProjectMember
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		var err error
 		original, err = snapshot.DirectProjectMember(ctx, admin.UserID, project.ID)
 		if err != nil {
 			return err
 		}
-		if original.Grant.Role != core.ProjectAdmin || original.Grant.UserID != admin.UserID || original.Grant.Version < 1 {
+		if original.Grant.Role != model.ProjectAdmin || original.Grant.UserID != admin.UserID || original.Grant.Version < 1 {
 			t.Fatalf("first admin: %+v", original)
 		}
 		access, err := snapshot.ProjectAccess(ctx, admin, project.ID)
-		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != core.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &original.Grant)) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != model.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &original.Grant)) {
 			t.Fatalf("admin access: %+v %v", access, err)
 		}
 		page, err := snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
@@ -75,7 +75,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 			t.Fatalf("second filtered page: %+v", next)
 		}
 		_, err = snapshot.ProjectAccess(ctx, member, project.ID)
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("nonmember found: %v", err)
 		}
 		return nil
@@ -92,7 +92,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 			t.Fatal("snapshot mismatch")
 		}
 		access, err := tx.ProjectAccess(ctx, admin)
-		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != core.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &current.Grant)) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != admin.UserID || access.Role != model.ProjectAdmin || !reflect.DeepEqual(access.DirectGrant, &current.Grant)) {
 			t.Fatalf("write admission: %+v %v", access, err)
 		}
 		return tx.CreateInvitation(ctx, invitation)
@@ -118,7 +118,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var invited core.ProjectMember
+	var invited model.ProjectMember
 	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		invite, err := tx.LockInvitation(ctx, invitation.TokenHash)
 		if err != nil {
@@ -128,7 +128,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if invited.Grant.Role != core.ProjectMemberRole || invited.Grant.Version <= original.Grant.Version {
+		if invited.Grant.Role != model.ProjectMemberRole || invited.Grant.Version <= original.Grant.Version {
 			t.Fatal("invited role/version")
 		}
 		return tx.ConsumeInvitation(ctx, invite.ID, member.UserID, time.Now())
@@ -137,7 +137,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		access, err := snapshot.ProjectAccess(ctx, member, project.ID)
-		if err != nil || (access.ProjectID != project.ID || access.UserID != member.UserID || access.Role != core.ProjectMemberRole || !reflect.DeepEqual(access.DirectGrant, &invited.Grant)) {
+		if err != nil || (access.ProjectID != project.ID || access.UserID != member.UserID || access.Role != model.ProjectMemberRole || !reflect.DeepEqual(access.DirectGrant, &invited.Grant)) {
 			t.Fatalf("invited access: %+v %v", access, err)
 		}
 		members, err := snapshot.ProjectParticipants(ctx, project.ID)
@@ -159,7 +159,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		changed, err := tx.SetMemberRole(ctx, member.UserID, core.ProjectAdmin)
+		changed, err := tx.SetMemberRole(ctx, member.UserID, model.ProjectAdmin)
 		if err != nil {
 			return err
 		}
@@ -283,7 +283,7 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 					case "target-member":
 						_, err = tx.DirectProjectMember(ctx, member.UserID)
 					case "set-role":
-						_, err = tx.SetMemberRole(ctx, admin.UserID, core.ProjectMemberRole)
+						_, err = tx.SetMemberRole(ctx, admin.UserID, model.ProjectMemberRole)
 					case "remove":
 						err = tx.RemoveMember(ctx, member.UserID)
 					case "add":
@@ -316,7 +316,7 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 func TestProjectParticipantsKeepGrantFactsAndRequireCanonicalProfiles(t *testing.T) {
 	s, admin, member, project := membershipFixture(t)
 	ctx := context.Background()
-	var direct core.ProjectMember
+	var direct model.ProjectMember
 	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		var err error
 		direct, err = tx.AddInvitedMember(ctx, member.UserID)
@@ -336,10 +336,10 @@ func TestProjectParticipantsKeepGrantFactsAndRequireCanonicalProfiles(t *testing
 		if len(people) != 2 || people[0].UserID != admin.UserID || people[1].UserID != member.UserID {
 			t.Fatalf("deduplicated ordered participants: %#v", people)
 		}
-		if !reflect.DeepEqual(people[0].Profile, core.ProjectParticipantProfile{Name: &name, Email: &email, AvatarURL: &avatar}) || people[0].EffectiveRole != core.ProjectAdmin {
+		if !reflect.DeepEqual(people[0].Profile, model.ProjectParticipantProfile{Name: &name, Email: &email, AvatarURL: &avatar}) || people[0].EffectiveRole != model.ProjectAdmin {
 			t.Fatalf("canonical profile: %#v", people[0])
 		}
-		if !reflect.DeepEqual(people[1], core.ProjectParticipant{UserID: member.UserID, Profile: core.ProjectParticipantProfile{}, EffectiveRole: core.ProjectMemberRole, DirectGrant: &direct.Grant}) {
+		if !reflect.DeepEqual(people[1], model.ProjectParticipant{UserID: member.UserID, Profile: model.ProjectParticipantProfile{}, EffectiveRole: model.ProjectMemberRole, DirectGrant: &direct.Grant}) {
 			t.Fatalf("nullable profile and exact grant: %#v", people[1])
 		}
 		return nil

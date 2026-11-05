@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
 var ErrBotPreferencesNotReady = errors.New("bot preferences require an undeleted ready bot with a bound session")
 
-func (s *Snapshot) BotDefaults(ctx context.Context, ownerID string) (core.BotDefaultsInput, error) {
+func (s *Snapshot) BotDefaults(ctx context.Context, ownerID string) (model.BotDefaultsInput, error) {
 	return readBotDefaultsInput(ctx, s.tx, ownerID)
 }
 
-func (b *BotTx) BotDefaults(ctx context.Context, ownerID string) (core.BotDefaultsInput, error) {
+func (b *BotTx) BotDefaults(ctx context.Context, ownerID string) (model.BotDefaultsInput, error) {
 	return readBotDefaultsInput(ctx, b.tx, ownerID)
 }
 
@@ -28,49 +28,49 @@ func (b *BotTx) LockCreation(ctx context.Context, id string) error {
 	return nil
 }
 
-func readBotDefaultsInput(ctx context.Context, tx pgx.Tx, ownerID string) (core.BotDefaultsInput, error) {
-	result := core.BotDefaultsInput{Workers: []core.WorkerSnapshot{}, WorkerPreferences: map[string]core.BotWorkerPreference{}}
+func readBotDefaultsInput(ctx context.Context, tx pgx.Tx, ownerID string) (model.BotDefaultsInput, error) {
+	result := model.BotDefaultsInput{Workers: []model.WorkerSnapshot{}, WorkerPreferences: map[string]model.BotWorkerPreference{}}
 	if err := tx.QueryRow(ctx, `SELECT (SELECT worker_id::text FROM bot_worker_preferences WHERE user_id=$1)`, ownerID).
 		Scan(&result.PreferredWorkerID); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot worker preference", err)
+		return model.BotDefaultsInput{}, queryError("read bot worker preference", err)
 	}
 	rows, err := tx.Query(ctx, `SELECT `+workerSnapshotProjection+` FROM workers WHERE user_id=$1 ORDER BY created_at,worker_id`, ownerID)
 	if err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot default workers", err)
+		return model.BotDefaultsInput{}, queryError("read bot default workers", err)
 	}
 	for rows.Next() {
 		worker, err := scanWorkerSnapshot(rows)
 		if err != nil {
 			rows.Close()
-			return core.BotDefaultsInput{}, queryError("read bot default workers", err)
+			return model.BotDefaultsInput{}, queryError("read bot default workers", err)
 		}
 		result.Workers = append(result.Workers, worker)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot default workers", err)
+		return model.BotDefaultsInput{}, queryError("read bot default workers", err)
 	}
 	rows, err = tx.Query(ctx, `SELECT worker_id::text,cwd,provider FROM bot_configuration_preferences WHERE user_id=$1`, ownerID)
 	if err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
+		return model.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var workerID string
-		var preference core.BotWorkerPreference
+		var preference model.BotWorkerPreference
 		if err := rows.Scan(&workerID, &preference.Cwd, &preference.Provider); err != nil {
-			return core.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
+			return model.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
 		}
 		result.WorkerPreferences[workerID] = preference
 	}
 	if err := rows.Err(); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
+		return model.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
 	}
 	// This clock evaluates freshness after the observed data is read. In a
 	// ReadCommitted creation transaction, a heartbeat may commit between queries;
 	// a clock sampled first would incorrectly classify that heartbeat as future.
 	if err := tx.QueryRow(ctx, `SELECT statement_timestamp()`).Scan(&result.ObservedAt); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot default observation", err)
+		return model.BotDefaultsInput{}, queryError("read bot default observation", err)
 	}
 	result.ObservedAt = result.ObservedAt.UTC()
 	return result, nil

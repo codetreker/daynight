@@ -6,17 +6,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestMoveCandidatePreservesRecordsAndResolvesFinalOrder(t *testing.T) {
 	ids := []string{"00000000", "11111111", "abcdef01", "fedcba98"}
-	current := make([]core.TaskStep, len(ids))
+	current := make([]model.TaskStep, len(ids))
 	for index, id := range ids {
 		stamp := time.Date(2026, 1, index+1, 2, 3, 4, index*1000, time.UTC)
-		current[index] = core.TaskStep{ID: id, Position: int64(index), Title: "same", Description: id + "\n<原值&>", Status: []core.TaskStepStatus{core.TaskStepTodo, core.TaskStepInProgress, core.TaskStepDone, core.TaskStepSkipped}[index], CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)}
+		current[index] = model.TaskStep{ID: id, Position: int64(index), Title: "same", Description: id + "\n<原值&>", Status: []model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}[index], CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)}
 	}
-	original := append([]core.TaskStep{}, current...)
+	original := append([]model.TaskStep{}, current...)
 	for _, tc := range []struct {
 		name, target string
 		placement    Placement
@@ -64,9 +64,9 @@ func TestMoveCandidatePreservesRecordsAndResolvesFinalOrder(t *testing.T) {
 }
 
 func TestMoveCandidateTargetPrecedesSelfAndAnchorChecks(t *testing.T) {
-	current := []core.TaskStep{{ID: "00000000", Position: 0}, {ID: "abcdef01", Position: 1}}
+	current := []model.TaskStep{{ID: "00000000", Position: 0}, {ID: "abcdef01", Position: 1}}
 	for _, tc := range []struct {
-		rows      []core.TaskStep
+		rows      []model.TaskStep
 		target    string
 		placement Placement
 		cause     error

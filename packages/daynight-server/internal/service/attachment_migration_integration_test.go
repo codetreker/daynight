@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -69,7 +69,7 @@ func (fixture *attachmentMigrationIntegrationFixture) writeLegacy(t *testing.T, 
 	}
 	fixture.files[owner.taskID+"/"+path] = bytes.Clone(content)
 	if registered {
-		if _, _, err := fixture.database.PutAttachment(t.Context(), core.Attachment{ProjectID: owner.projectID,
+		if _, _, err := fixture.database.PutAttachment(t.Context(), model.Attachment{ProjectID: owner.projectID,
 			TaskID: owner.taskID, Path: path, ContentType: "application/octet-stream", SizeBytes: int64(len(content))}); err != nil {
 			t.Fatal(err)
 		}

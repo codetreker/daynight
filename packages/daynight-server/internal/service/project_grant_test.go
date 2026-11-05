@@ -6,12 +6,12 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func grantParticipant(t *testing.T, f *membershipFixture, project core.Project, p core.Principal, role core.ProjectRole) {
+func grantParticipant(t *testing.T, f *membershipFixture, project model.Project, p model.Principal, role model.ProjectRole) {
 	t.Helper()
 	_, err := f.database.Pool.Exec(context.Background(), `INSERT INTO team_members(team_id,user_id,role) VALUES ($1,$2,$3)`, project.Ownership.TeamID, p.UserID, role)
 	if err != nil {
@@ -23,36 +23,36 @@ func TestProjectGrantsExistenceVersionsAndAccess(t *testing.T) {
 	f := newMembershipFixture(t)
 	owner, inherited, outsider := f.user(t), f.user(t), f.user(t)
 	project := f.project(t, owner, "Grant")
-	grantParticipant(t, f, project, inherited, core.ProjectMemberRole)
+	grantParticipant(t, f, project, inherited, model.ProjectMemberRole)
 	ctx := context.Background()
-	put := func(actor, target core.Principal, version *int64, role core.ProjectRole) (SetGrantResult, error) {
+	put := func(actor, target model.Principal, version *int64, role model.ProjectRole) (SetGrantResult, error) {
 		return f.memberships.SetGrant(ctx, actor, project.ID, target.UserID, SetProjectGrant{Version: version, Role: role, ExpectedUserID: actor.UserID})
 	}
-	_, err := put(owner, outsider, nil, core.ProjectAdmin)
+	_, err := put(owner, outsider, nil, model.ProjectAdmin)
 	requireFault(t, err, "not_found")
-	created, err := put(owner, inherited, nil, core.ProjectAdmin)
-	if err != nil || created.Grant.Role != core.ProjectAdmin || created.ActorAccess == nil || created.ActorAccess.Role != core.ProjectAdmin {
+	created, err := put(owner, inherited, nil, model.ProjectAdmin)
+	if err != nil || created.Grant.Role != model.ProjectAdmin || created.ActorAccess == nil || created.ActorAccess.Role != model.ProjectAdmin {
 		t.Fatalf("created: %#v %v", created, err)
 	}
-	_, err = put(owner, inherited, nil, core.ProjectAdmin)
+	_, err = put(owner, inherited, nil, model.ProjectAdmin)
 	requireFault(t, err, "version_conflict")
-	noOp, err := put(owner, inherited, &created.Grant.Version, core.ProjectAdmin)
+	noOp, err := put(owner, inherited, &created.Grant.Version, model.ProjectAdmin)
 	if err != nil || !reflect.DeepEqual(noOp.Grant, created.Grant) {
 		t.Fatalf("no-op: %#v %v", noOp, err)
 	}
-	updated, err := put(owner, inherited, &created.Grant.Version, core.ProjectMemberRole)
+	updated, err := put(owner, inherited, &created.Grant.Version, model.ProjectMemberRole)
 	if err != nil || updated.Grant.Version <= created.Grant.Version {
 		t.Fatalf("updated: %#v %v", updated, err)
 	}
-	_, err = put(owner, inherited, &created.Grant.Version, core.ProjectMemberRole)
+	_, err = put(owner, inherited, &created.Grant.Version, model.ProjectMemberRole)
 	requireFault(t, err, "version_conflict")
 	removed, err := f.memberships.RemoveGrant(ctx, owner, project.ID, inherited.UserID, RemoveProjectMember{Version: updated.Grant.Version, ExpectedUserID: owner.UserID})
 	if err != nil || removed.ProjectID != project.ID || removed.UserID != inherited.UserID || removed.ActorAccess == nil {
 		t.Fatalf("removed: %#v %v", removed, err)
 	}
-	_, err = put(owner, inherited, &updated.Grant.Version, core.ProjectAdmin)
+	_, err = put(owner, inherited, &updated.Grant.Version, model.ProjectAdmin)
 	requireFault(t, err, "version_conflict")
-	recreated, err := put(owner, inherited, nil, core.ProjectAdmin)
+	recreated, err := put(owner, inherited, nil, model.ProjectAdmin)
 	if err != nil || recreated.Grant.Version <= updated.Grant.Version {
 		t.Fatalf("recreated: %#v %v", recreated, err)
 	}
@@ -63,12 +63,12 @@ func TestProjectGrantsExistenceVersionsAndAccess(t *testing.T) {
 	}
 
 	ownerGrant := f.member(t, owner, project.ID).Grant
-	demoted, err := put(owner, owner, &ownerGrant.Version, core.ProjectMemberRole)
-	if err != nil || demoted.ActorAccess == nil || demoted.ActorAccess.Role != core.ProjectAdmin || demoted.ActorAccess.TeamRole == nil || *demoted.ActorAccess.TeamRole != core.ProjectAdmin {
+	demoted, err := put(owner, owner, &ownerGrant.Version, model.ProjectMemberRole)
+	if err != nil || demoted.ActorAccess == nil || demoted.ActorAccess.Role != model.ProjectAdmin || demoted.ActorAccess.TeamRole == nil || *demoted.ActorAccess.TeamRole != model.ProjectAdmin {
 		t.Fatalf("owner inherited admin: %#v %v", demoted, err)
 	}
 	result, err := f.memberships.RemoveGrant(ctx, owner, project.ID, owner.UserID, RemoveProjectMember{Version: demoted.Grant.Version, ExpectedUserID: owner.UserID})
-	if err != nil || result.ActorAccess == nil || result.ActorAccess.Role != core.ProjectAdmin || result.ActorAccess.DirectGrant != nil {
+	if err != nil || result.ActorAccess == nil || result.ActorAccess.Role != model.ProjectAdmin || result.ActorAccess.DirectGrant != nil {
 		t.Fatalf("owner remove: %#v %v", result, err)
 	}
 	_, err = f.memberships.RemoveGrant(ctx, owner, project.ID, inherited.UserID, RemoveProjectMember{Version: recreated.Grant.Version, ExpectedUserID: owner.UserID})
@@ -86,14 +86,14 @@ func TestGrantActorLosesAccessAndIdentityGuard(t *testing.T) {
 	owner, admin := f.user(t), f.user(t)
 	project := f.project(t, owner, "Loss")
 	joined := f.join(t, owner, admin, project.ID).Grant
-	promoted, err := f.memberships.SetGrant(context.Background(), owner, project.ID, admin.UserID, SetProjectGrant{Version: &joined.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
+	promoted, err := f.memberships.SetGrant(context.Background(), owner, project.ID, admin.UserID, SetProjectGrant{Version: &joined.Version, Role: model.ProjectAdmin, ExpectedUserID: owner.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := f.member(t, admin, project.ID).Grant
 	_, err = f.memberships.RemoveGrant(context.Background(), admin, project.ID, admin.UserID, RemoveProjectMember{Version: promoted.Grant.Version, ExpectedUserID: owner.UserID})
 	requireFault(t, err, "identity_mismatch")
-	_, err = f.memberships.SetGrant(context.Background(), admin, project.ID, admin.UserID, SetProjectGrant{Version: &before.Version, Role: core.ProjectMemberRole, ExpectedUserID: owner.UserID})
+	_, err = f.memberships.SetGrant(context.Background(), admin, project.ID, admin.UserID, SetProjectGrant{Version: &before.Version, Role: model.ProjectMemberRole, ExpectedUserID: owner.UserID})
 	requireFault(t, err, "identity_mismatch")
 	if actual := f.member(t, admin, project.ID).Grant; !reflect.DeepEqual(actual, before) {
 		t.Fatalf("identity mismatch wrote grant: %#v", actual)
@@ -102,15 +102,15 @@ func TestGrantActorLosesAccessAndIdentityGuard(t *testing.T) {
 	if err != nil || removed.ActorAccess != nil {
 		t.Fatalf("success with lost access: %#v %v", removed, err)
 	}
-	_, err = f.memberships.SetGrant(context.Background(), admin, project.ID, admin.UserID, SetProjectGrant{Role: core.ProjectAdmin, ExpectedUserID: admin.UserID})
+	_, err = f.memberships.SetGrant(context.Background(), admin, project.ID, admin.UserID, SetProjectGrant{Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
 	requireFault(t, err, "not_found")
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = f.memberships.SetGrant(cancelled, owner, project.ID, owner.UserID, SetProjectGrant{Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
+	_, err = f.memberships.SetGrant(cancelled, owner, project.ID, owner.UserID, SetProjectGrant{Role: model.ProjectAdmin, ExpectedUserID: owner.UserID})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation: %v", err)
 	}
-	_, err = f.memberships.SetGrant(context.Background(), owner, project.ID, uuid.NewString(), SetProjectGrant{Version: new(int64), Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
+	_, err = f.memberships.SetGrant(context.Background(), owner, project.ID, uuid.NewString(), SetProjectGrant{Version: new(int64), Role: model.ProjectAdmin, ExpectedUserID: owner.UserID})
 	requireFault(t, err, "invalid_input")
 }
 
@@ -118,16 +118,16 @@ func TestGrantCompetingCreateAndReplace(t *testing.T) {
 	f := newMembershipFixture(t)
 	owner, target := f.user(t), f.user(t)
 	project := f.project(t, owner, "Race")
-	grantParticipant(t, f, project, target, core.ProjectMemberRole)
+	grantParticipant(t, f, project, target, model.ProjectMemberRole)
 	var version *int64
 	for _, create := range []bool{true, false} {
-		role := core.ProjectAdmin
+		role := model.ProjectAdmin
 		if !create {
-			role = core.ProjectMemberRole
+			role = model.ProjectMemberRole
 		}
-		operation := func(ctx context.Context) (core.Task, error) {
+		operation := func(ctx context.Context) (model.Task, error) {
 			_, err := f.memberships.SetGrant(ctx, owner, project.ID, target.UserID, SetProjectGrant{Version: version, Role: role, ExpectedUserID: owner.UserID})
-			return core.Task{}, err
+			return model.Task{}, err
 		}
 		results := competeTaskWrites(t, f.database, project.ID, operation, operation)
 		success, conflict := 0, 0
@@ -135,7 +135,7 @@ func TestGrantCompetingCreateAndReplace(t *testing.T) {
 			if result.err == nil {
 				success++
 			} else {
-				var fault *Fault
+				var fault *model.Fault
 				if errors.As(result.err, &fault) && fault.Code == "version_conflict" {
 					conflict++
 				} else {
@@ -152,10 +152,10 @@ func TestGrantCompetingCreateAndReplace(t *testing.T) {
 }
 
 func TestGrantIdentityCheckPrecedesDomainStore(t *testing.T) {
-	principal := core.Principal{Kind: core.SessionCredential, CredentialID: uuid.NewString(), UserID: uuid.NewString()}
+	principal := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: uuid.NewString()}
 	memberships := NewMemberships(nil)
 	other := uuid.NewString()
-	_, err := memberships.SetGrant(context.Background(), principal, uuid.NewString(), uuid.NewString(), SetProjectGrant{Role: core.ProjectAdmin, ExpectedUserID: other})
+	_, err := memberships.SetGrant(context.Background(), principal, uuid.NewString(), uuid.NewString(), SetProjectGrant{Role: model.ProjectAdmin, ExpectedUserID: other})
 	requireFault(t, err, "identity_mismatch")
 	_, err = memberships.RemoveGrant(context.Background(), principal, uuid.NewString(), uuid.NewString(), RemoveProjectMember{Version: 1, ExpectedUserID: other})
 	requireFault(t, err, "identity_mismatch")
@@ -166,22 +166,22 @@ func TestGrantSelfDemotionReturnsRemainingMemberAccess(t *testing.T) {
 	owner, external := f.user(t), f.user(t)
 	project := f.project(t, owner, "Demotion")
 	joined := f.join(t, owner, external, project.ID).Grant
-	promoted, err := f.memberships.SetGrant(context.Background(), owner, project.ID, external.UserID, SetProjectGrant{Version: &joined.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID})
+	promoted, err := f.memberships.SetGrant(context.Background(), owner, project.ID, external.UserID, SetProjectGrant{Version: &joined.Version, Role: model.ProjectAdmin, ExpectedUserID: owner.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := f.memberships.SetGrant(context.Background(), external, project.ID, external.UserID, SetProjectGrant{Version: &promoted.Grant.Version, Role: core.ProjectMemberRole, ExpectedUserID: external.UserID})
-	if err != nil || result.ActorAccess == nil || result.ActorAccess.Role != core.ProjectMemberRole || result.ActorAccess.DirectGrant == nil || result.ActorAccess.DirectGrant.Version != result.Grant.Version {
+	result, err := f.memberships.SetGrant(context.Background(), external, project.ID, external.UserID, SetProjectGrant{Version: &promoted.Grant.Version, Role: model.ProjectMemberRole, ExpectedUserID: external.UserID})
+	if err != nil || result.ActorAccess == nil || result.ActorAccess.Role != model.ProjectMemberRole || result.ActorAccess.DirectGrant == nil || result.ActorAccess.DirectGrant.Version != result.Grant.Version {
 		t.Fatalf("remaining access: %#v %v", result, err)
 	}
-	_, err = f.memberships.SetGrant(context.Background(), external, project.ID, owner.UserID, SetProjectGrant{Role: core.ProjectMemberRole, ExpectedUserID: external.UserID})
+	_, err = f.memberships.SetGrant(context.Background(), external, project.ID, owner.UserID, SetProjectGrant{Role: model.ProjectMemberRole, ExpectedUserID: external.UserID})
 	requireFault(t, err, "forbidden")
 }
 
 func TestRemoveGrantRejectsInvalidInputBeforeDomainStore(t *testing.T) {
 	memberships := NewMemberships(nil)
-	principal := core.Principal{Kind: core.SessionCredential, CredentialID: uuid.NewString(), UserID: uuid.NewString()}
-	_, err := memberships.RemoveGrant(context.Background(), core.Principal{}, uuid.NewString(), uuid.NewString(), RemoveProjectMember{Version: 1, ExpectedUserID: principal.UserID})
+	principal := model.Principal{Kind: model.SessionCredential, CredentialID: uuid.NewString(), UserID: uuid.NewString()}
+	_, err := memberships.RemoveGrant(context.Background(), model.Principal{}, uuid.NewString(), uuid.NewString(), RemoveProjectMember{Version: 1, ExpectedUserID: principal.UserID})
 	requireFault(t, err, "unauthenticated")
 	_, err = memberships.RemoveGrant(context.Background(), principal, uuid.NewString(), uuid.NewString(), RemoveProjectMember{Version: 0, ExpectedUserID: principal.UserID})
 	requireFault(t, err, "invalid_input")

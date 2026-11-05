@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
 	"github.com/jackc/pgx/v5"
@@ -47,15 +47,15 @@ func (audit *stepChangeAudit) reset() {
 func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 	database, _, task := stepsHTTPFixture(t, io.Discard)
 	stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
-	rows := make([]core.TaskStep, 129)
+	rows := make([]model.TaskStep, 129)
 	for index := range rows {
-		rows[index] = core.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "Old <中文&>\u2028\u2029", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
+		rows[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "Old <中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 	}
 	title, description := "Changed <&> 中文", strings.Repeat("N", 64)
-	candidate := append([]core.TaskStep{}, rows...)
+	candidate := append([]model.TaskStep{}, rows...)
 	candidate[0].Title = title
 	candidate[0].Description = description
-	header := core.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
+	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
 	_, base, err := tasksteps.EncodeCollection(header, candidate)
 	if err != nil {
 		t.Fatal(err)
@@ -222,8 +222,8 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 	// timestamp, so a longer status always increases the next encoded candidate.
 	reset()
 	zeroStamp := stamp.Truncate(time.Second)
-	current := append([]core.TaskStep{}, rows...)
-	current[0].Status = core.TaskStepDone
+	current := append([]model.TaskStep{}, rows...)
+	current[0].Status = model.TaskStepDone
 	current[0].UpdatedAt = zeroStamp
 	current[128].Description += strings.Repeat("X", padding)
 	_, currentJSON, err := tasksteps.EncodeCollection(header, current)

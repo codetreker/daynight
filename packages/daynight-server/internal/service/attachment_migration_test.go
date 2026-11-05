@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
-func migrationRecordFixture(t *testing.T) (string, string, core.Task, AttachmentMigrationSummary) {
+func migrationRecordFixture(t *testing.T) (string, string, model.Task, AttachmentMigrationSummary) {
 	t.Helper()
 	tasks, database, project, databaseURL, principal := taskService(t)
 	task := createTask(t, tasks, principal, project.ID, "Operation records")
@@ -28,7 +28,7 @@ func migrationRecordFixture(t *testing.T) (string, string, core.Task, Attachment
 	if err := os.WriteFile(name, []byte{0, 255, 1}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := database.PutAttachment(context.Background(), core.Attachment{ProjectID: project.ID, TaskID: task.ID, Path: "file.bin", ContentType: "application/octet-stream", SizeBytes: 3}); err != nil {
+	if _, _, err := database.PutAttachment(context.Background(), model.Attachment{ProjectID: project.ID, TaskID: task.ID, Path: "file.bin", ContentType: "application/octet-stream", SizeBytes: 3}); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))

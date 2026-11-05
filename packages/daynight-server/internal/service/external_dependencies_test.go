@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestExternalDependenciesSurviveMetadataAndStatus(t *testing.T) {
@@ -25,7 +25,7 @@ func TestExternalDependenciesSurviveMetadataAndStatus(t *testing.T) {
 	if err != nil || !slices.Equal(target.ExternalDependsOn, []string{prerequisite.ID}) {
 		t.Fatalf("seeded classification not readable: %#v, %v", target, err)
 	}
-	for _, input := range []UpdateTask{{Title: pointer("Renamed")}, {Description: pointer("Preserved classification")}, {Properties: propertyPatch(core.PullRequestProperty{URL: "https://example.com/pr/1", Title: "Preserved"})}} {
+	for _, input := range []UpdateTask{{Title: pointer("Renamed")}, {Description: pointer("Preserved classification")}, {Properties: propertyPatch(model.PullRequestProperty{URL: "https://example.com/pr/1", Title: "Preserved"})}} {
 		before := target
 		target = updateTask(t, tasks, principal, target, input)
 		if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, before.ExternalDependsOn) || target.Version != before.Version+1 || !reflect.DeepEqual(target.StartedAt, before.StartedAt) || !reflect.DeepEqual(target.CompletedAt, before.CompletedAt) {
@@ -38,7 +38,7 @@ func TestExternalDependenciesSurviveMetadataAndStatus(t *testing.T) {
 	}
 	_, err = tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version - 1, DependsOn: &target.DependsOn})
 	requireFault(t, err, "version_conflict")
-	for _, status := range []core.TaskStatus{core.TaskDone, core.TaskTodo, core.TaskInProgress} {
+	for _, status := range []model.TaskStatus{model.TaskDone, model.TaskTodo, model.TaskInProgress} {
 		target = setStatusTask(t, tasks, principal, target, status)
 		if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, []string{prerequisite.ID}) {
 			t.Fatalf("status update lost classification: %#v", target)
@@ -53,7 +53,7 @@ func TestExternalDependenciesSurviveMetadataAndStatus(t *testing.T) {
 	if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, []string{prerequisite.ID}) || !reflect.DeepEqual(target.StartedAt, started) || target.CompletedAt == nil {
 		t.Fatalf("completion lost classification or timing: %#v", target)
 	}
-	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 10}})
+	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
 	if err != nil || len(page.Items) != 2 || !reflect.DeepEqual(page.Items[1], target) {
 		t.Fatalf("list lost completed classification: %#v, %v", page, err)
 	}
@@ -78,17 +78,17 @@ func TestExternalDependenciesReplacementRetainsSurvivorsAndScheduling(t *testing
 		t.Fatalf("replacement lost surviving flag or classified a new edge: %#v", target)
 	}
 
-	_, err := tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: core.TaskInProgress})
+	_, err := tasks.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: model.TaskInProgress})
 	requireFault(t, err, "dependency_unsatisfied")
 	assertTaskUnchanged(t, tasks, principal, target)
 	_, err = tasks.Update(ctx, principal, project.ID, b.ID, UpdateTask{Version: b.Version, DependsOn: pointer([]string{target.ID})})
 	requireFault(t, err, "dependency_cycle")
 	assertTaskUnchanged(t, tasks, principal, b)
-	for _, predecessor := range []core.Task{b, c} {
+	for _, predecessor := range []model.Task{b, c} {
 		finishTask(t, tasks, principal, startTask(t, tasks, principal, predecessor))
 	}
 	ready := true
-	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 10}, Ready: &ready})
+	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}, Ready: &ready})
 	if err != nil || len(page.Items) != 2 || page.Items[1].ID != target.ID || !slices.Equal(page.Items[1].ExternalDependsOn, []string{b.ID}) {
 		t.Fatalf("ready read omitted external prerequisite: %#v, %v", page, err)
 	}

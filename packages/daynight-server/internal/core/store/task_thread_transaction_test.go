@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -30,7 +30,7 @@ func TestThreadCommitAppliedWithLostResponseRemainsUnknown(t *testing.T) {
 	}
 	cause := errors.New("commit response lost")
 	err = writeThread(ctx, &threadCommitResponseLoss{Tx: tx, cause: cause}, func(tx *ThreadTx) error {
-		_, err := tx.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1), Author: core.ThreadAuthor{UserID: queryID(9)}, Body: "committed once"})
+		_, err := tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "committed once"})
 		return err
 	})
 	var failure *ThreadTransactionError
@@ -70,7 +70,7 @@ func TestThreadRollbackKeepsCancellationAndCleanupCause(t *testing.T) {
 	cleanup := errors.New("cleanup failed")
 	wrapped := &rollbackFailureTx{Tx: tx, failure: cleanup}
 	err = writeThread(ctx, wrapped, func(tx *ThreadTx) error {
-		_, err := tx.InsertMessage(ctx, core.ThreadMessage{TaskID: queryID(1), Author: core.ThreadAuthor{UserID: queryID(9)}, Body: "canceled"})
+		_, err := tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "canceled"})
 		if err != nil {
 			return err
 		}

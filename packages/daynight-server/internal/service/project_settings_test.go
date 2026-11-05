@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -22,7 +22,7 @@ func TestProjectSettingsSavedValueVersionAndMembership(t *testing.T) {
 	other := f.project(t, admin, "Independent execution settings")
 	f.join(t, admin, member, project.ID)
 	ctx := context.Background()
-	if project.Settings != (core.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) {
+	if project.Settings != (model.ProjectSettings{Version: 1, ExecutionWarningMinutes: 60}) {
 		t.Fatalf("creation omitted explicit settings: %#v", project)
 	}
 	noop, err := f.projects.UpdateSettings(ctx, admin, strings.ToUpper(project.ID), UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 60})
@@ -30,10 +30,10 @@ func TestProjectSettingsSavedValueVersionAndMembership(t *testing.T) {
 		t.Fatalf("same-value save changed project metadata: %#v, %v", noop, err)
 	}
 	saved, err := f.projects.UpdateSettings(ctx, admin, project.ID, UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90})
-	if err != nil || saved.Settings != (core.ProjectSettings{Version: 2, ExecutionWarningMinutes: 90}) || !saved.UpdatedAt.After(project.UpdatedAt) || saved.CreatedAt != project.CreatedAt {
+	if err != nil || saved.Settings != (model.ProjectSettings{Version: 2, ExecutionWarningMinutes: 90}) || !saved.UpdatedAt.After(project.UpdatedAt) || saved.CreatedAt != project.CreatedAt {
 		t.Fatalf("real setting change did not update its own revision: %#v, %v", saved, err)
 	}
-	for _, principal := range []core.Principal{admin, member} {
+	for _, principal := range []model.Principal{admin, member} {
 		read, err := f.projects.Get(ctx, principal, project.ID)
 		if err != nil || !reflect.DeepEqual(read, saved) {
 			t.Fatalf("members disagree on saved settings: %#v, %v", read, err)
@@ -55,7 +55,7 @@ func TestProjectSettingsSavedValueVersionAndMembership(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(read, saved) {
 		t.Fatalf("refused writes changed saved settings: %#v, %v", read, err)
 	}
-	listed, err := f.projects.List(ctx, member, PageRequest{Limit: 10})
+	listed, err := f.projects.List(ctx, member, model.PageRequest{Limit: 10})
 	if err != nil || len(listed.Items) != 1 || !reflect.DeepEqual(listed.Items[0], saved) {
 		t.Fatalf("accessible project projection lost settings: %#v, %v", listed, err)
 	}
@@ -70,7 +70,7 @@ func TestProjectSettingsValidationBeforeStorage(t *testing.T) {
 	_, _, _, principal := projectService(t)
 	projects := NewProjects(nil)
 	ctx := context.Background()
-	for _, absent := range []core.Principal{{}, {UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: "unknown"}} {
+	for _, absent := range []model.Principal{{}, {UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: "unknown"}} {
 		_, err := projects.UpdateSettings(ctx, absent, uuid.NewString(), UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 60})
 		requireFault(t, err, "unauthenticated")
 	}
@@ -87,13 +87,13 @@ func TestProjectSettingsSameVersionWritersHaveOneWinner(t *testing.T) {
 	admin := f.user(t)
 	project := f.project(t, admin, "Settings race")
 	results := competeTaskWrites(t, f.database, project.ID,
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			_, err := f.projects.UpdateSettings(ctx, admin, project.ID, UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 90})
-			return core.Task{}, err
+			return model.Task{}, err
 		},
-		func(ctx context.Context) (core.Task, error) {
+		func(ctx context.Context) (model.Task, error) {
 			_, err := f.projects.UpdateSettings(ctx, admin, project.ID, UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: 120})
-			return core.Task{}, err
+			return model.Task{}, err
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	read, err := f.projects.Get(context.Background(), admin, project.ID)
@@ -110,7 +110,7 @@ func TestProjectSettingsChecksCurrentAdministratorAfterProjectLock(t *testing.T)
 			project := f.project(t, owner, "Queued administrator")
 			other := f.project(t, owner, "Other project remains available")
 			membership := f.join(t, owner, target, project.ID)
-			if _, err := f.memberships.SetRole(context.Background(), owner, project.ID, target.UserID, SetProjectMemberRole{Version: membership.Grant.Version, Role: core.ProjectAdmin, ExpectedUserID: owner.UserID}); err != nil {
+			if _, err := f.memberships.SetRole(context.Background(), owner, project.ID, target.UserID, SetProjectMemberRole{Version: membership.Grant.Version, Role: model.ProjectAdmin, ExpectedUserID: owner.UserID}); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -122,7 +122,7 @@ func TestProjectSettingsChecksCurrentAdministratorAfterProjectLock(t *testing.T)
 					if err := tx.RemoveMember(ctx, target.UserID); err != nil {
 						return err
 					}
-				} else if _, err := tx.SetMemberRole(ctx, target.UserID, core.ProjectMemberRole); err != nil {
+				} else if _, err := tx.SetMemberRole(ctx, target.UserID, model.ProjectMemberRole); err != nil {
 					return err
 				}
 				go func() {
@@ -189,7 +189,7 @@ func TestProjectSettingsCancellationAndDatabaseFailuresPreserveTheSavedProject(t
 			}
 			updated, err := traced.UpdateSettings(ctx, principal, project.ID, UpdateProjectSettings{Version: 1, ExecutionWarningMinutes: test.minutes})
 			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(updated, core.Project{}) {
+			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(updated, model.Project{}) {
 				t.Fatalf("canceled operation returned saved state or lost cause: %#v, %v", updated, err)
 			}
 			read, err := f.projects.Get(context.Background(), admin, project.ID)

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -56,7 +56,7 @@ func (h *Authentication) cookie(name, value string, expires time.Time, maxAge in
 }
 
 func authFailure() error {
-	return &service.Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again."}
+	return &model.Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again."}
 }
 
 func requestCookie(request *http.Request, name string) (string, bool) {
@@ -69,35 +69,35 @@ func requestCookie(request *http.Request, name string) (string, bool) {
 	return value, count == 1
 }
 
-func (h *Authentication) AuthenticateRequest(request *http.Request) (core.Principal, error) {
+func (h *Authentication) AuthenticateRequest(request *http.Request) (model.Principal, error) {
 	if values, present := request.Header["Authorization"]; present {
 		if len(values) != 1 {
-			return core.Principal{}, authFailure()
+			return model.Principal{}, authFailure()
 		}
 		parts := strings.Fields(values[0])
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return core.Principal{}, authFailure()
+			return model.Principal{}, authFailure()
 		}
-		return h.identity.Authenticate(request.Context(), core.PATCredential, parts[1])
+		return h.identity.Authenticate(request.Context(), model.PATCredential, parts[1])
 	}
 	secret, ok := requestCookie(request, h.SessionCookieName())
 	if !ok {
-		return core.Principal{}, authFailure()
+		return model.Principal{}, authFailure()
 	}
-	principal, err := h.identity.Authenticate(request.Context(), core.SessionCredential, secret)
+	principal, err := h.identity.Authenticate(request.Context(), model.SessionCredential, secret)
 	if err != nil {
-		return core.Principal{}, err
+		return model.Principal{}, err
 	}
 	if request.Method != "GET" && request.Method != "HEAD" && request.Method != "OPTIONS" {
 		origins := request.Header.Values("Origin")
 		if len(origins) != 1 || origins[0] != h.origin {
-			return core.Principal{}, &service.Fault{Code: "forbidden", Message: "Cookie writes require the exact main-site Origin."}
+			return model.Principal{}, &model.Fault{Code: "forbidden", Message: "Cookie writes require the exact main-site Origin."}
 		}
 	}
 	return principal, nil
 }
 
-type AuthenticatedHandler func(http.ResponseWriter, *http.Request, core.Principal)
+type AuthenticatedHandler func(http.ResponseWriter, *http.Request, model.Principal)
 
 func (h *Authentication) Require(next AuthenticatedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
@@ -129,7 +129,7 @@ func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
 	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "PATCH, DELETE"} {
 		fallback := methodNotAllowed(h.logger, methods)
 		if path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/me") {
-			mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ core.Principal) { fallback(w, request) }))
+			mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ model.Principal) { fallback(w, request) }))
 		} else {
 			mux.HandleFunc(path, fallback)
 		}
@@ -187,14 +187,14 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 	http.Redirect(w, request, result.ReturnPath, http.StatusSeeOther)
 }
 
-func userResponse(user core.User) api.User {
+func userResponse(user model.User) api.User {
 	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL, PersonalTeam: teamRefResponse(user.PersonalTeam)}
 }
-func tokenResponse(c core.PersonalAccessToken) api.PersonalAccessToken {
+func tokenResponse(c model.PersonalAccessToken) api.PersonalAccessToken {
 	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}
 }
 
-func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p core.Principal) {
+func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	user, err := h.identity.User(request.Context(), p)
 	if err != nil {
@@ -203,7 +203,7 @@ func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p core
 	}
 	h.writeCachedUser(w, request, userResponse(user))
 }
-func (h *Authentication) logout(w http.ResponseWriter, request *http.Request, p core.Principal) {
+func (h *Authentication) logout(w http.ResponseWriter, request *http.Request, p model.Principal) {
 	if err := h.identity.Logout(request.Context(), p); err != nil {
 		writeError(w, request, h.logger, "auth", "logout", err)
 		return
@@ -211,7 +211,7 @@ func (h *Authentication) logout(w http.ResponseWriter, request *http.Request, p 
 	http.SetCookie(w, h.cookie(h.SessionCookieName(), "", time.Unix(1, 0), -1))
 	w.WriteHeader(http.StatusNoContent)
 }
-func (h *Authentication) listTokens(w http.ResponseWriter, request *http.Request, p core.Principal) {
+func (h *Authentication) listTokens(w http.ResponseWriter, request *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	tokens, err := h.identity.ListPATs(request.Context(), p)
 	if err != nil {
@@ -224,7 +224,7 @@ func (h *Authentication) listTokens(w http.ResponseWriter, request *http.Request
 	}
 	writeJSON(w, request, h.logger, http.StatusOK, result)
 }
-func (h *Authentication) createToken(w http.ResponseWriter, request *http.Request, p core.Principal) {
+func (h *Authentication) createToken(w http.ResponseWriter, request *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	fields, err := decodeObject(w, request, "name", "expiresAt")
 	if err != nil {
@@ -248,7 +248,7 @@ func (h *Authentication) createToken(w http.ResponseWriter, request *http.Reques
 	}
 	writeCreated(w, request, h.logger, "/api/v1/me/tokens/"+result.Credential.ID, api.CreatedPersonalAccessToken{PersonalAccessToken: tokenResponse(result.Credential), Token: result.Secret})
 }
-func (h *Authentication) revokeToken(w http.ResponseWriter, request *http.Request, p core.Principal) {
+func (h *Authentication) revokeToken(w http.ResponseWriter, request *http.Request, p model.Principal) {
 	if err := h.identity.RevokePAT(request.Context(), p, request.PathValue("tokenId")); err != nil {
 		writeError(w, request, h.logger, "auth", "revoke_token", err)
 		return

@@ -1,4 +1,4 @@
-package core
+package model
 
 type TaskAssignee struct {
 	UserID           string

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
@@ -38,7 +38,7 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }
 
-func taskResponse(task core.Task, request *http.Request) (api.Task, error) {
+func taskResponse(task model.Task, request *http.Request) (api.Task, error) {
 	result := api.Task{ID: task.ID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
 		Properties: propertiesResponse(task.Properties), Status: string(task.Status), Version: task.Version, CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
 		StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
@@ -67,12 +67,12 @@ func taskResponse(task core.Task, request *http.Request) (api.Task, error) {
 	return result, nil
 }
 
-func propertiesResponse(properties core.TaskProperties) api.TaskProperties {
+func propertiesResponse(properties model.TaskProperties) api.TaskProperties {
 	return taskproperties.Clone(properties)
 }
 
-func propertyValues(properties api.TaskWritableProperties) core.TaskProperties {
-	return taskproperties.Clone(core.TaskProperties(properties))
+func propertyValues(properties api.TaskWritableProperties) model.TaskProperties {
+	return taskproperties.Clone(model.TaskProperties(properties))
 }
 
 func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesPatch, error) {
@@ -88,11 +88,11 @@ func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesP
 	return &result, nil
 }
 
-func (h *taskHandler) resource(request *http.Request, principal core.Principal) (string, string, *slog.Logger, error) {
+func (h *taskHandler) resource(request *http.Request, principal model.Principal) (string, string, *slog.Logger, error) {
 	return taskResource(request, principal, h.logger)
 }
 
-func taskResource(request *http.Request, principal core.Principal, base *slog.Logger) (string, string, *slog.Logger, error) {
+func taskResource(request *http.Request, principal model.Principal, base *slog.Logger) (string, string, *slog.Logger, error) {
 	logger := base.With("user_id", principal.UserID)
 	projectID, err := service.CanonicalID(request.PathValue("projectId"))
 	if err != nil {
@@ -222,7 +222,7 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 		result.AssignedTo = &value[0]
 	}
 	if value, exists := values["status"]; exists {
-		status := core.TaskStatus(value[0])
+		status := model.TaskStatus(value[0])
 		result.Status = &status
 	}
 	if value, exists := values["ready"]; exists {
@@ -240,7 +240,7 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 		result.AllowAgents = &allowAgents
 	}
 	if value, exists := values["compatiblePlatform"]; exists {
-		platform := core.TaskPlatform(value[0])
+		platform := model.TaskPlatform(value[0])
 		result.CompatiblePlatform = &platform
 	}
 	if value, exists := values["workerId"]; exists {
@@ -249,7 +249,7 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 	return result, nil
 }
 
-func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -283,7 +283,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 	writeCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, response)
 }
 
-func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -321,7 +321,7 @@ func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, princip
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -342,7 +342,7 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
-func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
@@ -361,7 +361,7 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 	}
 	values := service.UpdateTask{AssignedTo: input.AssignedTo, RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
 	if input.Properties != nil {
-		values.Properties = core.TaskPropertiesPatch(*input.Properties)
+		values.Properties = model.TaskPropertiesPatch(*input.Properties)
 	}
 
 	task, err := h.tasks.Update(workerProtocolContext(request), principal, projectID, id, values)

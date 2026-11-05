@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
@@ -39,7 +39,7 @@ func taskStepsRoutes(mux *http.ServeMux, steps *service.TaskSteps, auth *Authent
 	mux.HandleFunc(path+"/{stepId}/position", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 }
 
-func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	operation := "list"
 	if request.PathValue("stepId") != "" {
@@ -102,7 +102,7 @@ func stepsReadKind(id string) string {
 	return "normal"
 }
 
-func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := taskResource(request, principal, h.logger.With("operation", "add"))
 	refuse := func(err error) {
@@ -179,7 +179,7 @@ func addStepInput(fields map[string]json.RawMessage) (service.AddTaskStep, error
 		return input, err
 	}
 	if status != nil {
-		value := core.TaskStepStatus(*status)
+		value := model.TaskStepStatus(*status)
 		input.Status = &value
 	}
 	input.Before, err = optionalString(fields, "before")

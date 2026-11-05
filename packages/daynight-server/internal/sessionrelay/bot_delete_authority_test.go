@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
@@ -54,7 +54,7 @@ func TestBotDeletionRejectsUnauthorizedActorsWithoutChangingResponsibility(t *te
 				if phase == "intent" {
 					_, err = f.s.DeleteBot(ctx, principal, bot.ID, request)
 				} else {
-					_, err = f.s.CompleteBotDeletion(ctx, principal, bot.WorkerID, bot.ID, BotDeletionReceipt{DeletionID: request.DeletionID, Result: core.BotCleanupResult{State: "completed"}})
+					_, err = f.s.CompleteBotDeletion(ctx, principal, bot.WorkerID, bot.ID, BotDeletionReceipt{DeletionID: request.DeletionID, Result: model.BotCleanupResult{State: "completed"}})
 				}
 				botFault(t, err, want)
 				if after := deletionAuthorityState(t, f, bot.ID); after != before {
@@ -72,7 +72,7 @@ func TestBotDeletionUnknownIdentityAndStaleVersionLeaveOriginalBotUnchanged(t *t
 	request := service.DeleteBot{Version: bot.Version, DeletionID: uuid.NewString()}
 	_, err := f.s.DeleteBot(ctx, f.p, uuid.NewString(), request)
 	botFault(t, err, "not_found")
-	_, err = f.s.CompleteBotDeletion(ctx, f.p, bot.WorkerID, uuid.NewString(), BotDeletionReceipt{DeletionID: request.DeletionID, Result: core.BotCleanupResult{State: "completed"}})
+	_, err = f.s.CompleteBotDeletion(ctx, f.p, bot.WorkerID, uuid.NewString(), BotDeletionReceipt{DeletionID: request.DeletionID, Result: model.BotCleanupResult{State: "completed"}})
 	botFault(t, err, "not_found")
 	request.Version++
 	_, err = f.s.DeleteBot(ctx, f.p, bot.ID, request)

@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func queryID(number int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012d", number) }
 
-func queryProject(t *testing.T, s *Store, number int) core.Project {
+func queryProject(t *testing.T, s *Store, number int) model.Project {
 	t.Helper()
 	project, err := s.CreateProject(context.Background(), queryID(number), "Project", "https://example.com/owner/repo.git")
 	if err != nil {
@@ -25,9 +25,9 @@ func queryProject(t *testing.T, s *Store, number int) core.Project {
 	return project
 }
 
-func queryTask(t *testing.T, s *Store, projectID string, number int, status core.TaskStatus, dependencies ...string) core.Task {
+func queryTask(t *testing.T, s *Store, projectID string, number int, status model.TaskStatus, dependencies ...string) model.Task {
 	t.Helper()
-	var task core.Task
+	var task model.Task
 	err := s.WriteProject(context.Background(), projectID, func(tx *ProjectTx) error {
 		var err error
 		task, err = tx.CreateTask(context.Background(), queryID(number), TaskWrite{
@@ -41,9 +41,9 @@ func queryTask(t *testing.T, s *Store, projectID string, number int, status core
 	return task
 }
 
-func snapshotTask(t *testing.T, s *Store, projectID, id string) core.Task {
+func snapshotTask(t *testing.T, s *Store, projectID, id string) model.Task {
 	t.Helper()
-	var task core.Task
+	var task model.Task
 	err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
 		var err error
 		task, err = snapshot.Task(context.Background(), projectID, id)
@@ -68,7 +68,7 @@ func TestTaskReadersRejectInvalidStoredStatus(t *testing.T) {
 			database := isolatedStore(t)
 			ctx := context.Background()
 			project := queryProject(t, database, 1)
-			task := queryTask(t, database, project.ID, 11, core.TaskTodo)
+			task := queryTask(t, database, project.ID, 11, model.TaskTodo)
 			mustQueryExec(t, database, `ALTER TABLE tasks DROP CONSTRAINT tasks_status_check`)
 			mustQueryExec(t, database, `UPDATE tasks SET status=$1 WHERE id=$2`, status, task.ID)
 			for _, read := range []func(*Snapshot) error{
@@ -82,7 +82,7 @@ func TestTaskReadersRejectInvalidStoredStatus(t *testing.T) {
 					return err
 				},
 			} {
-				if err := database.ReadSnapshot(ctx, read); err == nil || errors.Is(err, core.ErrNotFound) {
+				if err := database.ReadSnapshot(ctx, read); err == nil || errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("invalid persisted status was accepted or hidden: %v", err)
 				}
 			}
@@ -116,19 +116,19 @@ func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 		}
 		_, err = snapshot.Project(ctx, queryID(999))
 		return err
-	}); !errors.Is(err, core.ErrNotFound) || !errors.Is(err, pgx.ErrNoRows) {
+	}); !errors.Is(err, model.ErrNotFound) || !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("missing project: %v", err)
 	}
 	if err := s.WriteProject(ctx, queryID(999), func(*ProjectTx) error {
 		t.Fatal("missing project invoked write callback")
 		return nil
-	}); !errors.Is(err, core.ErrNotFound) {
+	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing project write: %v", err)
 	}
-	done := queryTask(t, s, first.ID, 10, core.TaskDone)
-	pending := queryTask(t, s, first.ID, 11, core.TaskTodo)
-	other := queryTask(t, s, second.ID, 12, core.TaskTodo)
-	dependent := queryTask(t, s, first.ID, 13, core.TaskTodo, pending.ID, done.ID)
+	done := queryTask(t, s, first.ID, 10, model.TaskDone)
+	pending := queryTask(t, s, first.ID, 11, model.TaskTodo)
+	other := queryTask(t, s, second.ID, 12, model.TaskTodo)
+	dependent := queryTask(t, s, first.ID, 13, model.TaskTodo, pending.ID, done.ID)
 	if !reflect.DeepEqual(dependent.DependsOn, []string{done.ID, pending.ID}) ||
 		!reflect.DeepEqual(dependent.BlockedBy, []string{pending.ID}) || dependent.Ready || dependent.Version != 1 {
 		t.Fatalf("derived task fields: %#v", dependent)
@@ -147,19 +147,19 @@ func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 			}
 		}
 		_, err := tx.Task(ctx, other.ID)
-		if !errors.Is(err, core.ErrNotFound) {
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("cross-project task: %v", err)
 		}
-		_, err = tx.UpdateTask(ctx, other.ID, TaskWrite{Title: "Forbidden", Status: core.TaskTodo})
-		if !errors.Is(err, core.ErrNotFound) {
+		_, err = tx.UpdateTask(ctx, other.ID, TaskWrite{Title: "Forbidden", Status: model.TaskTodo})
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("cross-project update: %v", err)
 		}
-		updated, err := tx.UpdateTask(ctx, dependent.ID, TaskWrite{Title: "Updated", Status: core.TaskInProgress, DependsOn: []string{done.ID}})
+		updated, err := tx.UpdateTask(ctx, dependent.ID, TaskWrite{Title: "Updated", Status: model.TaskInProgress, DependsOn: []string{done.ID}})
 		if err != nil {
 			return err
 		}
 		if updated.Title != "Updated" || updated.Description != "" || updated.Version != 2 ||
-			updated.Status != core.TaskInProgress || !updated.CreatedAt.Equal(dependent.CreatedAt) ||
+			updated.Status != model.TaskInProgress || !updated.CreatedAt.Equal(dependent.CreatedAt) ||
 			!updated.UpdatedAt.After(dependent.UpdatedAt) || !reflect.DeepEqual(updated.DependsOn, []string{done.ID}) ||
 			len(updated.BlockedBy) != 0 || updated.Ready {
 			t.Fatalf("updated task: %#v", updated)
@@ -171,7 +171,7 @@ func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		_, err := snapshot.Task(ctx, second.ID, done.ID)
 		return err
-	}); !errors.Is(err, core.ErrNotFound) {
+	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("cross-project snapshot: %v", err)
 	}
 }
@@ -185,12 +185,12 @@ func TestQueriesKeysetsAndFiltersBeforePagination(t *testing.T) {
 	}
 	instant := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
 	mustQueryExec(t, s, "UPDATE projects SET created_at = $1", instant)
-	a := queryTask(t, s, project.ID, 11, core.TaskTodo)
-	c := queryTask(t, s, project.ID, 13, core.TaskTodo)
-	b := queryTask(t, s, project.ID, 12, core.TaskTodo, c.ID)
-	d := queryTask(t, s, project.ID, 14, core.TaskDone)
-	e := queryTask(t, s, project.ID, 15, core.TaskInProgress, d.ID)
-	f := queryTask(t, s, project.ID, 16, core.TaskTodo, d.ID)
+	a := queryTask(t, s, project.ID, 11, model.TaskTodo)
+	c := queryTask(t, s, project.ID, 13, model.TaskTodo)
+	b := queryTask(t, s, project.ID, 12, model.TaskTodo, c.ID)
+	d := queryTask(t, s, project.ID, 14, model.TaskDone)
+	e := queryTask(t, s, project.ID, 15, model.TaskInProgress, d.ID)
+	f := queryTask(t, s, project.ID, 16, model.TaskTodo, d.ID)
 	mustQueryExec(t, s, "UPDATE tasks SET created_at = $1", instant)
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		first, err := snapshot.Projects(ctx, Page{Limit: 2})
@@ -205,7 +205,7 @@ func TestQueriesKeysetsAndFiltersBeforePagination(t *testing.T) {
 		if err != nil || empty.HasMore || empty.Items == nil || len(empty.Items) != 0 {
 			t.Fatalf("empty project page: %#v, %v", empty, err)
 		}
-		todo, yes, no := core.TaskTodo, true, false
+		todo, yes, no := model.TaskTodo, true, false
 		for _, test := range []struct {
 			query   TaskQuery
 			want    []string
@@ -240,10 +240,10 @@ func TestQueriesCandidateGraphReplacesWholeSet(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project, other := queryProject(t, s, 1), queryProject(t, s, 2)
-	a := queryTask(t, s, project.ID, 11, core.TaskTodo)
-	b := queryTask(t, s, project.ID, 12, core.TaskTodo, a.ID)
-	c := queryTask(t, s, project.ID, 13, core.TaskTodo, b.ID)
-	z := queryTask(t, s, other.ID, 14, core.TaskTodo, a.ID)
+	a := queryTask(t, s, project.ID, 11, model.TaskTodo)
+	b := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID)
+	c := queryTask(t, s, project.ID, 13, model.TaskTodo, b.ID)
+	z := queryTask(t, s, other.ID, 14, model.TaskTodo, a.ID)
 	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		for _, test := range []struct {
 			from, to string
@@ -274,10 +274,10 @@ func TestQueriesPartialWriteRollbackRestoresResource(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 1)
-	old := queryTask(t, s, project.ID, 11, core.TaskDone)
-	first := queryTask(t, s, project.ID, 12, core.TaskDone)
-	second := queryTask(t, s, project.ID, 13, core.TaskDone)
-	before := queryTask(t, s, project.ID, 14, core.TaskTodo, old.ID)
+	old := queryTask(t, s, project.ID, 11, model.TaskDone)
+	first := queryTask(t, s, project.ID, 12, model.TaskDone)
+	second := queryTask(t, s, project.ID, 13, model.TaskDone)
+	before := queryTask(t, s, project.ID, 14, model.TaskTodo, old.ID)
 	mustQueryExec(t, s, `CREATE FUNCTION reject_second_edge() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN
 		IF NEW.depends_on_task_id = '`+second.ID+`' THEN
@@ -291,7 +291,7 @@ func TestQueriesPartialWriteRollbackRestoresResource(t *testing.T) {
 		END $$;
 		CREATE TRIGGER reject_second_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_second_edge()`)
 	err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, before.ID, TaskWrite{Title: "Changed", Description: "Changed", Status: core.TaskDone, DependsOn: []string{first.ID, second.ID}})
+		_, err := tx.UpdateTask(ctx, before.ID, TaskWrite{Title: "Changed", Description: "Changed", Status: model.TaskDone, DependsOn: []string{first.ID, second.ID}})
 		return err
 	})
 	var cause *pgconn.PgError
@@ -308,9 +308,9 @@ func TestQueriesSnapshotRetainsCompleteOldGraph(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, s, 1)
-	a := queryTask(t, s, project.ID, 11, core.TaskTodo)
-	b := queryTask(t, s, project.ID, 12, core.TaskTodo, a.ID)
-	c := queryTask(t, s, project.ID, 13, core.TaskDone)
+	a := queryTask(t, s, project.ID, 11, model.TaskTodo)
+	b := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID)
+	c := queryTask(t, s, project.ID, 13, model.TaskDone)
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		if _, err := snapshot.Project(ctx, project.ID); err != nil {
 			return err
@@ -320,10 +320,10 @@ func TestQueriesSnapshotRetainsCompleteOldGraph(t *testing.T) {
 			t.Fatalf("snapshot transaction modes: %s %s, %v", isolation, readOnly, err)
 		}
 		if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			if _, err := tx.UpdateTask(ctx, a.ID, TaskWrite{Title: "Done", Status: core.TaskDone}); err != nil {
+			if _, err := tx.UpdateTask(ctx, a.ID, TaskWrite{Title: "Done", Status: model.TaskDone}); err != nil {
 				return err
 			}
-			_, err := tx.UpdateTask(ctx, b.ID, TaskWrite{Title: "Changed", Status: core.TaskTodo, DependsOn: []string{c.ID}})
+			_, err := tx.UpdateTask(ctx, b.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, DependsOn: []string{c.ID}})
 			return err
 		}); err != nil {
 			return err
@@ -364,7 +364,7 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 			_, err := snapshot.Projects(context.Background(), Page{Limit: 10})
 			return err
 		})
-		if err == nil || errors.Is(err, core.ErrNotFound) {
+		if err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("project decode failure became an empty result: %v", err)
 		}
 	})
@@ -387,28 +387,28 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 	t.Run("task decoding", func(t *testing.T) {
 		s := isolatedStore(t)
 		project := queryProject(t, s, 1)
-		task := queryTask(t, s, project.ID, 11, core.TaskTodo)
+		task := queryTask(t, s, project.ID, 11, model.TaskTodo)
 		mustQueryExec(t, s, `ALTER TABLE tasks RENAME TO task_source;
 			CREATE VIEW tasks AS SELECT id, project_id, title, description, status, 'invalid version'::text AS version,
 			created_at, updated_at, started_at, completed_at, allow_agents, required_platform, assigned_to, deleted_at FROM task_source`)
 		if err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
 			_, err := snapshot.Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}})
 			return err
-		}); err == nil || errors.Is(err, core.ErrNotFound) {
+		}); err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("task decode failure became an empty page: %v", err)
 		}
 		if err := s.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
 			_, err := tx.TasksByID(context.Background(), []string{task.ID})
 			return err
-		}); err == nil || errors.Is(err, core.ErrNotFound) {
+		}); err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("prerequisite decode failure became an empty result: %v", err)
 		}
 	})
 }
 
-func projectBeforeSettings(t *testing.T, database *Store, number int) core.Project {
+func projectBeforeSettings(t *testing.T, database *Store, number int) model.Project {
 	t.Helper()
-	project := core.Project{ID: queryID(number), Name: "Project", RepoURL: "https://example.com/owner/repo.git"}
+	project := model.Project{ID: queryID(number), Name: "Project", RepoURL: "https://example.com/owner/repo.git"}
 	if err := database.Pool.QueryRow(context.Background(), `INSERT INTO projects (id, name, repo_url)
 		VALUES ($1, $2, $3) RETURNING created_at, updated_at`, project.ID, project.Name, project.RepoURL).
 		Scan(&project.CreatedAt, &project.UpdatedAt); err != nil {

@@ -26,7 +26,7 @@ UUID remains the directory identity, with at most 256 prefix shards per owner.
 The kind directory separates the existing project and user UUID domains,
 including equal UUID values; it introduces no new ownership or access authority.
 
-`internal/sessionarchive.Namespace` shares path generation between archive
+`internal/core/model/sessionarchive.Namespace` shares path generation between archive
 writers and restricted cleanup. Generic `Put`, `Open` and `Delete` continue to
 accept bucket/path. Bot cleanup receives a validated Namespace and removes that
 current Session directory, including unregistered objects there, while preserving

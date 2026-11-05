@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
@@ -15,14 +15,14 @@ import (
 
 func botFault(t *testing.T, err error, code string) {
 	t.Helper()
-	var fault *service.Fault
+	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != code {
 		t.Fatalf("wanted %s, got %v", code, err)
 	}
 }
-func markBotDeleted(t *testing.T, f fixture, bot core.Bot) {
+func markBotDeleted(t *testing.T, f fixture, bot model.Bot) {
 	t.Helper()
-	if _, err := f.s.DB.Pool.Exec(context.Background(), `UPDATE bots SET deletion=$2,version=version+1 WHERE id=$1`, bot.ID, encode(core.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: bot.Version, WorkerCleanup: core.BotCleanupResult{State: "pending"}, ServerCleanup: core.BotCleanupResult{State: "pending"}})); err != nil {
+	if _, err := f.s.DB.Pool.Exec(context.Background(), `UPDATE bots SET deletion=$2,version=version+1 WHERE id=$1`, bot.ID, encode(model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: bot.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -136,7 +136,7 @@ func TestBotRegistrationRejectsInvalidRoleAndFrozenConfiguration(t *testing.T) {
 	_, err = f.s.RegisterBot(ctx, other, bot.WorkerID, bot.ID, original)
 	botFault(t, err, "forbidden")
 	login := f.p
-	login.Kind = core.SessionCredential
+	login.Kind = model.SessionCredential
 	_, err = f.s.RegisterBot(ctx, login, bot.WorkerID, bot.ID, original)
 	botFault(t, err, "forbidden")
 	if _, err = f.s.DB.Pool.Exec(ctx, `UPDATE personal_access_tokens SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, f.p.CredentialID); err != nil {
@@ -222,7 +222,7 @@ func TestBotDeletionCommitPrecedesWaitingBrowserAndControllerAdmission(t *testin
 				t.Fatal(err)
 			}
 			defer tx.Rollback(context.Background())
-			if _, err = tx.Exec(ctx, `UPDATE bots SET deletion=$2 WHERE id=$1`, out.Bot.ID, encode(core.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: out.Bot.Version, WorkerCleanup: core.BotCleanupResult{State: "pending"}, ServerCleanup: core.BotCleanupResult{State: "pending"}})); err != nil {
+			if _, err = tx.Exec(ctx, `UPDATE bots SET deletion=$2 WHERE id=$1`, out.Bot.ID, encode(model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: out.Bot.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})); err != nil {
 				t.Fatal(err)
 			}
 			result := make(chan error, 1)

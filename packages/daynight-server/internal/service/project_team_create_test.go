@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -22,21 +22,21 @@ func TestCreateProjectTeamAndIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		actor core.Principal
+		actor model.Principal
 		team  *string
 		repo  string
-		role  core.ProjectRole
+		role  model.ProjectRole
 	}{
-		{admin, &team.ID, "https://example.com/Org/Repo.git", core.ProjectAdmin},
-		{member, &team.ID, "ssh://git@example.com:2222/Org/Repo.git", core.ProjectMemberRole},
-		{admin, nil, "git@example.com:Org/Repo.git", core.ProjectAdmin},
-		{admin, &personalTeam, "git@example.com:Org/Repo.git", core.ProjectAdmin},
+		{admin, &team.ID, "https://example.com/Org/Repo.git", model.ProjectAdmin},
+		{member, &team.ID, "ssh://git@example.com:2222/Org/Repo.git", model.ProjectMemberRole},
+		{admin, nil, "git@example.com:Org/Repo.git", model.ProjectAdmin},
+		{admin, &personalTeam, "git@example.com:Org/Repo.git", model.ProjectAdmin},
 	} {
 		project, access, err := projects.CreateWithAccess(ctx, test.actor, CreateProject{Name: "  原始 name  ", RepoURL: test.repo, TeamID: test.team, ExpectedUserID: test.actor.UserID})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if project.Name != "  原始 name  " || project.RepoURL != test.repo || access.ProjectID != project.ID || access.Role != core.ProjectAdmin || access.DirectGrant == nil || access.DirectGrant.UserID != test.actor.UserID || access.DirectGrant.Role != core.ProjectAdmin || access.TeamRole == nil || *access.TeamRole != test.role || access.Ownership.TeamID != project.Ownership.TeamID || (test.team != nil && project.Ownership.TeamID != *test.team) {
+		if project.Name != "  原始 name  " || project.RepoURL != test.repo || access.ProjectID != project.ID || access.Role != model.ProjectAdmin || access.DirectGrant == nil || access.DirectGrant.UserID != test.actor.UserID || access.DirectGrant.Role != model.ProjectAdmin || access.TeamRole == nil || *access.TeamRole != test.role || access.Ownership.TeamID != project.Ownership.TeamID || (test.team != nil && project.Ownership.TeamID != *test.team) {
 			t.Fatalf("project/access mismatch %#v %#v", project, access)
 		}
 	}
@@ -50,7 +50,7 @@ func TestCreateProjectTeamAndIdentity(t *testing.T) {
 	}
 	before := snapshot()
 	_, err := projects.Create(ctx, outsider, CreateProject{Name: "Refused", RepoURL: "host:repo", TeamID: &team.ID, ExpectedUserID: outsider.UserID})
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("non-member: %v", err)
 	}
 	_, err = NewProjects(nil).Create(ctx, admin, CreateProject{Name: "Mismatch", RepoURL: "host:repo", ExpectedUserID: outsider.UserID})
@@ -59,7 +59,7 @@ func TestCreateProjectTeamAndIdentity(t *testing.T) {
 		_, err := projects.Create(ctx, admin, CreateProject{Name: "Refused", RepoURL: "host:repo", TeamID: &target, ExpectedUserID: admin.UserID})
 		if target == "bad" {
 			requireFault(t, err, "invalid_input")
-		} else if !errors.Is(err, core.ErrNotFound) {
+		} else if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing Team: %v", err)
 		}
 	}

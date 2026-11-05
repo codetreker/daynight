@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func validatedTokenExpiry(value *time.Time, now time.Time) (*time.Time, error) {
@@ -25,38 +25,38 @@ type UpdatePATExpiry struct {
 	ExpectedUserID    string
 }
 
-func (s *Identity) UpdatePATExpiry(ctx context.Context, p core.Principal, id string, input UpdatePATExpiry) (core.PersonalAccessToken, error) {
-	if p.Kind != core.SessionCredential {
-		return core.PersonalAccessToken{}, forbidden()
+func (s *Identity) UpdatePATExpiry(ctx context.Context, p model.Principal, id string, input UpdatePATExpiry) (model.PersonalAccessToken, error) {
+	if p.Kind != model.SessionCredential {
+		return model.PersonalAccessToken{}, forbidden()
 	}
 	expected, err := CanonicalID(input.ExpectedUserID)
 	if err != nil {
-		return core.PersonalAccessToken{}, err
+		return model.PersonalAccessToken{}, err
 	}
 	if expected != input.ExpectedUserID {
-		return core.PersonalAccessToken{}, invalidInput("expectedUserId must be a canonical user UUID")
+		return model.PersonalAccessToken{}, invalidInput("expectedUserId must be a canonical user UUID")
 	}
 	if expected != p.UserID {
-		return core.PersonalAccessToken{}, &Fault{Code: "forbidden", Message: "The signed-in account changed. Review the token again."}
+		return model.PersonalAccessToken{}, &model.Fault{Code: "forbidden", Message: "The signed-in account changed. Review the token again."}
 	}
 	id, err = CanonicalID(id)
 	if err != nil {
-		return core.PersonalAccessToken{}, err
+		return model.PersonalAccessToken{}, err
 	}
 	now := s.now().UTC()
 	expiry, err := validatedTokenExpiry(input.ExpiresAt, now)
 	if err != nil {
-		return core.PersonalAccessToken{}, err
+		return model.PersonalAccessToken{}, err
 	}
 	result, conflict, err := s.store.UpdatePATExpiry(ctx, p, id, expiry, input.ExpectedExpiresAt, now)
-	if errors.Is(err, core.ErrNotFound) {
-		return core.PersonalAccessToken{}, &Fault{Code: "not_found", Message: "Active token was not found.", Cause: err}
+	if errors.Is(err, model.ErrNotFound) {
+		return model.PersonalAccessToken{}, &model.Fault{Code: "not_found", Message: "Active token was not found.", Cause: err}
 	}
 	if err != nil {
-		return core.PersonalAccessToken{}, err
+		return model.PersonalAccessToken{}, err
 	}
 	if conflict {
-		return core.PersonalAccessToken{}, &Fault{Code: "version_conflict", Message: "Token expiration changed. Read the current token before trying again."}
+		return model.PersonalAccessToken{}, &model.Fault{Code: "version_conflict", Message: "Token expiration changed. Read the current token before trying again."}
 	}
 	return result, nil
 }

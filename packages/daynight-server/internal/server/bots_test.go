@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
@@ -30,10 +30,10 @@ func TestBotsHTTPEmptyList(t *testing.T) {
 	}
 }
 
-func seedHTTPBot(t *testing.T, database *store.Store, handler *resourceTestHandler, workerID string) core.Bot {
+func seedHTTPBot(t *testing.T, database *store.Store, handler *resourceTestHandler, workerID string) model.Bot {
 	t.Helper()
 	bot, err := service.NewBots(database).Create(context.Background(), handler.principal, service.CreateBot{
-		ID: uuid.NewString(), Name: "  长期助手  ", ResolvedConfiguration: core.BotConfiguration{
+		ID: uuid.NewString(), Name: "  长期助手  ", ResolvedConfiguration: model.BotConfiguration{
 			WorkerID: workerID, Cwd: "/private/bot-work", Provider: "codex", Args: []string{},
 		},
 	})
@@ -139,12 +139,12 @@ func TestBotsHTTPStrictInputAndAuthentication(t *testing.T) {
 }
 
 func TestBotResponseRoleAndRedaction(t *testing.T) {
-	bot := core.Bot{ID: uuid.NewString(), Version: 1, RoleConfiguration: &core.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	bot := model.Bot{ID: uuid.NewString(), Version: 1, RoleConfiguration: &model.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	value := botResponse(bot)
 	if value.RoleConfiguration.Instructions != "Role" || value.CreatedAt.Location() != time.UTC {
 		t.Fatal("role or timestamp projection changed")
 	}
-	bot.Deletion = &core.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 1}
+	bot.Deletion = &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 1}
 	value = botResponse(bot)
 	if value.BotDefinition != nil {
 		t.Fatal("deleted role remains visible")
@@ -152,8 +152,8 @@ func TestBotResponseRoleAndRedaction(t *testing.T) {
 }
 
 func TestBotsHTTPUnconfirmedTransactionRemainsInternalFailure(t *testing.T) {
-	refusal := &service.Fault{Code: "resource_conflict", Message: "Bot deletion belongs to a different request."}
-	failure := &service.BotOperationError{Operation: "delete", Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: refusal}}
+	refusal := &model.Fault{Code: "resource_conflict", Message: "Bot deletion belongs to a different request."}
+	failure := &model.BotOperationError{Operation: "delete", Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: refusal}}
 	request := httptest.NewRequest(http.MethodDelete, "/api/v1/me/bots/"+uuid.NewString(), nil)
 	response := httptest.NewRecorder()
 	writeError(response, request, slog.New(slog.NewTextHandler(io.Discard, nil)), "bot", "delete", failure)

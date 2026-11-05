@@ -9,7 +9,7 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
@@ -81,7 +81,7 @@ func threadListInput(request *http.Request) (service.ThreadListRequest, error) {
 	return result, nil
 }
 
-func (h *taskThreadHandler) post(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskThreadHandler) post(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := taskResource(request, principal, h.logger)
 	if err != nil {
@@ -113,7 +113,7 @@ func (h *taskThreadHandler) post(w http.ResponseWriter, request *http.Request, p
 	writeThreadJSON(w, request, logger, http.StatusCreated, document.JSON)
 }
 
-func (h *taskThreadHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+func (h *taskThreadHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, taskID, logger, err := taskResource(request, principal, h.logger)
 	if err != nil {
@@ -191,7 +191,7 @@ func writeThreadError(w http.ResponseWriter, request *http.Request, logger *slog
 	writeError(w, request, logger, "task_thread", phase, err)
 }
 
-func threadExecutionLogger(logger *slog.Logger, execution *core.ThreadExecution) *slog.Logger {
+func threadExecutionLogger(logger *slog.Logger, execution *model.ThreadExecution) *slog.Logger {
 	if execution == nil {
 		return logger
 	}

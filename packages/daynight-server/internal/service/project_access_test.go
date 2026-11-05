@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
@@ -22,8 +22,8 @@ func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
 	}
 	joined.Grant.Version = 9007199254740993
 	for _, test := range []struct {
-		principal core.Principal
-		grant     core.ProjectGrant
+		principal model.Principal
+		grant     model.ProjectGrant
 	}{
 		{admin, f.member(t, admin, project.ID).Grant},
 		{member, joined.Grant},
@@ -34,7 +34,7 @@ func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
 		}
 	}
 	for _, test := range []struct {
-		principal core.Principal
+		principal model.Principal
 		projectID string
 	}{
 		{outsider, project.ID},
@@ -42,7 +42,7 @@ func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
 	} {
 		access, err := f.projects.Access(ctx, test.principal, test.projectID)
 		requireFault(t, err, "not_found")
-		if !reflect.DeepEqual(access, core.ProjectAccess{}) {
+		if !reflect.DeepEqual(access, model.ProjectAccess{}) {
 			t.Fatal("inaccessible project returned actor data")
 		}
 	}
@@ -50,9 +50,9 @@ func TestProjectAccessProjectionAndAuthorization(t *testing.T) {
 
 func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
 	ctx := context.Background()
-	_, err := NewProjects(nil).Access(ctx, core.Principal{}, uuid.NewString())
+	_, err := NewProjects(nil).Access(ctx, model.Principal{}, uuid.NewString())
 	requireFault(t, err, "unauthenticated")
-	principal := core.Principal{Kind: core.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	principal := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	_, err = NewProjects(nil).Access(ctx, principal, "invalid")
 	requireFault(t, err, "invalid_input")
 	projects, database, databaseURL, admin := projectService(t)
@@ -61,13 +61,13 @@ func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	outsider := servicePrincipal(t, database)
-	for _, actor := range []core.Principal{admin, outsider} {
+	for _, actor := range []model.Principal{admin, outsider} {
 		canceled, cancel := context.WithCancel(ctx)
 		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: cancel})
 		access, err := NewProjects(traced.store).Access(canceled, actor, project.ID)
 		cancel()
 		assertOperational(t, err)
-		if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(access, core.ProjectAccess{}) {
+		if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(access, model.ProjectAccess{}) {
 			t.Fatalf("completion failure masked by actor result: %#v %v", access, err)
 		}
 	}

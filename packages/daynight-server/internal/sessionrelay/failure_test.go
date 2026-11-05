@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func addMember(t *testing.T, f fixture, role string) core.Principal {
+func addMember(t *testing.T, f fixture, role string) model.Principal {
 	t.Helper()
-	p := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	p := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
 	hash := sha256.Sum256([]byte(p.CredentialID))
 	ctx := context.Background()
 	for _, q := range []struct {
@@ -83,7 +83,7 @@ func TestReadOnlyMembersAndRevokedActorsCannotDispatch(t *testing.T) {
 		t.Fatal("reader minted controller grant")
 	}
 	cookie := reader
-	cookie.Kind = core.SessionCredential
+	cookie.Kind = model.SessionCredential
 	if _, err = f.s.Register(ctx, cookie, f.project, f.task, f.r); err == nil {
 		t.Fatal("cookie registered worker")
 	}

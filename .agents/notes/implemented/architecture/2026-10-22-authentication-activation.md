@@ -19,7 +19,7 @@ rather than assumptions embedded in a handler.
 pinned UniAuth client, and mounts authentication, membership and all existing
 resource routes. It returns a handler or an error. Startup propagates composition
 failure and closes its acquired listener, file root and database. Resource use
-cases accept an explicit `core.Principal`; ordinary project creation atomically
+cases accept an explicit `model.Principal`; ordinary project creation atomically
 adds its first administrator and ordinary project lists filter membership before
 pagination. The staging aliases `CreatePrivate` and `ListAccessible` are removed.
 There is no anonymous business mode, fixed user or trusted-principal adapter.

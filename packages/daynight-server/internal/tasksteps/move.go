@@ -4,7 +4,7 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 var ErrSelfAnchor = errors.New("step cannot be its own position anchor")
@@ -18,8 +18,8 @@ type Placement struct {
 // MoveCandidate resolves the target before its anchor and inserts the saved row
 // into the remaining collection, so forward moves use final-array positions.
 // The caller validates placement syntax and the current dense collection.
-func MoveCandidate(current []core.TaskStep, stepID string, placement Placement) ([]core.TaskStep, int, int, error) {
-	from := slices.IndexFunc(current, func(step core.TaskStep) bool { return step.ID == stepID })
+func MoveCandidate(current []model.TaskStep, stepID string, placement Placement) ([]model.TaskStep, int, int, error) {
+	from := slices.IndexFunc(current, func(step model.TaskStep) bool { return step.ID == stepID })
 	if from < 0 {
 		return nil, 0, 0, ErrTargetNotFound
 	}
@@ -34,7 +34,7 @@ func MoveCandidate(current []core.TaskStep, stepID string, placement Placement) 
 			to = len(remaining)
 		}
 	} else {
-		to = slices.IndexFunc(remaining, func(step core.TaskStep) bool {
+		to = slices.IndexFunc(remaining, func(step model.TaskStep) bool {
 			return placement.Before != nil && step.ID == *placement.Before || placement.After != nil && step.ID == *placement.After
 		})
 		if to < 0 {

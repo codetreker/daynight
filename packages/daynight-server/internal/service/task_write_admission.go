@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func taskWriteIdentity(principal core.Principal, projectID, taskID string, version int64) (string, string, error) {
+func taskWriteIdentity(principal model.Principal, projectID, taskID string, version int64) (string, string, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return "", "", err
 	}
@@ -28,21 +28,21 @@ func taskWriteIdentity(principal core.Principal, projectID, taskID string, versi
 
 func requireTaskVersion(current, observed int64) error {
 	if current != observed {
-		return &Fault{Code: "version_conflict", Message: "Task version does not match."}
+		return &model.Fault{Code: "version_conflict", Message: "Task version does not match."}
 	}
 	return nil
 }
 
-func taskWriteHeader(ctx context.Context, tx *store.ProjectTx, taskID string, version int64) (core.TaskHeader, error) {
+func taskWriteHeader(ctx context.Context, tx *store.ProjectTx, taskID string, version int64) (model.TaskHeader, error) {
 	header, err := tx.TaskHeader(ctx, taskID)
-	if errors.Is(err, core.ErrNotFound) {
-		return core.TaskHeader{}, taskNotFound(err)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.TaskHeader{}, taskNotFound(err)
 	}
 	if err != nil {
-		return core.TaskHeader{}, err
+		return model.TaskHeader{}, err
 	}
 	if header.DeletedAt != nil {
-		return core.TaskHeader{}, taskNotFound(core.ErrTaskDeleted)
+		return model.TaskHeader{}, taskNotFound(model.ErrTaskDeleted)
 	}
 	return header, requireTaskVersion(header.Version, version)
 }
