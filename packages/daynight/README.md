@@ -1687,11 +1687,14 @@ selection unchanged.
 Service credentials, local repository root, mode and the first-import candidate
 come from one captured source; changed credentials require restarting the
 command. Cloud lookup and reporting do not wait for Project preparation or task inventory.
-Existing prepared local bindings can supply selected Projects, while a Project
-without a confirmed prepared binding remains pending and is excluded from new
-execution. Native validation or receiving a Project ID is not readiness proof.
-Persistent local Project mappings remain available to ownership inventory and
-resource discovery independently of the selected/effective set.
+Selected Projects use existing local bindings or are prepared under
+`worker.repositoryRoot`; only confirmed prepared Projects can execute. A failed
+preparation does not block independent healthy Projects. Removing a Project
+excludes it from scheduling and stops its executions while retaining their
+claims, worktrees and session history. Unconfirmed stops continue to occupy
+capacity; stopped retained worktrees do not permanently occupy a slot. Project
+failures are reported and retried. Persistent local mappings remain available
+to ownership inventory and resource discovery independently of the selection.
 
 `worker.repositoryRoot` defaults to `~/daynights`, independently of review's
 root. New registration expands the actual home shortcut or resolves a path
@@ -1870,8 +1873,8 @@ Status is pending, active or done. Pending is an actual acquired claim waiting
 for startup; active owns startup, running, recovery or cleanup responsibility;
 done means the claim's local execution has ended. macOS Herdr may still retain
 its worktree and separate archive responsibility. Completed rows remain,
-and at most one claim for the same Project/task can be active. A removed config
-entry stops new acquisition but its saved Project mapping continues reconciliation.
+and at most one claim for the same Project/task can be active. A removed Project
+is excluded from automatic execution and its saved mapping continues reconciliation.
 Mappings with unfinished tasks or actual managed resources cannot be rebound.
 
 The state directory belongs to the configured single service, Daynight account

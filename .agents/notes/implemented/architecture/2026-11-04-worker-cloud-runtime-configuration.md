@@ -53,13 +53,12 @@ Project side effect remains pending. Already-started removal retains its own
 revision until the adapter confirms completion. Persistent Project mappings
 retain their separate ownership-inventory and resource-discovery purpose.
 
-One `createWorkerRepositoryAdmission` instance serializes candidate validation
-and registration. Its queue head rereads every other Project's retained mapping,
-combines them with the current candidate, reuses the existing physical-overlap
-validation against repository roots and the Worker state directory, then
-registers the binding before admitting the next candidate. Existing and locally
-supplied bindings share this entry point regardless of where a path originated.
-Project network queries and repository preparation run outside that queue. The
+Repository admission serializes candidate validation and registration against
+retained mappings and the Worker state directory. Project preparation also
+reserves candidate paths before I/O, as described in the
+[Project selection decision](2026-11-05-worker-cloud-project-selection.md).
+Existing and locally supplied bindings share the same physical-overlap rules.
+Project network queries and repository preparation run outside the queue. The
 configuration manager remains the single owner of `configuration.json` commits;
 binding admission owns only validation and registration of local mappings.
 Each inventory round captures the mappings it queries. Ownership loss,
@@ -81,10 +80,12 @@ The same coordinator consumes current successful parameters. Running native
 processes retain their launch arguments. Herdr restarts and Web frozen-record
 recovery preserve their existing task-system semantics; configuration neither
 adds task fields nor creates a claim-specific parameter or pause ledger. New
-acquisition uses selected ready Projects. Retained mappings outside that target
-continue advancing existing and explicitly resumed claims with applicable
-validated settings or their original Web record; a selected but unprepared
+acquisition and automatic advancement use selected ready Projects. Retained
+mappings outside that target remain available for ownership observation and
+manual disposition; their executions are stopped. A selected but unprepared
 Project remains unavailable. The
+[Project selection decision](2026-11-05-worker-cloud-project-selection.md)
+owns preparation, stopping and resource capacity. The
 [Worker design](../../../../docs/design/daynight-worker.md#配置与目录)
 owns runtime composition and the
 [reporting design](../../../../docs/design/daynight-worker-reporting.md)
@@ -122,13 +123,11 @@ both facts.
 configuration and existing execution has its own recovery rules. A claim gate
 would introduce cross-system ordering and storage without proving application.
 
-**Isolate failed Project resource discovery during scheduling.** Per-Project
-isolation would let healthy Projects acquire work while another repository cannot
-be inspected, but a failed Git scan cannot establish that its original resources
-are absent. The existing global discovery gate remains until Project preparation
-and removal can preserve unknown ownership and capacity independently. The single
-configuration owner and retained bindings leave that adaptation possible without
-changing task or claim records.
+**Isolate failed Project resource discovery during scheduling.** At the time of
+the runtime configuration decision, the global discovery gate preserved unknown
+ownership and capacity until Project preparation and removal could handle them
+independently. The later [Project selection decision](2026-11-05-worker-cloud-project-selection.md)
+records that adaptation.
 
 **Publish revalidated history before checking the startup target.** A recovered
 claim can launch between the two publications with an old model even when the
@@ -156,11 +155,6 @@ remain independent; a path collision fails that Project without admitting an
 unsafe mapping. Configuration persistence does not become
 a second task or native-process recovery system.
 
-A failed repository preparation can leave a retained mapping that fails global
-Git discovery. The current coordinator queues other eligible active work before
-discovery, but defers pending starts and new claims until discovery succeeds; configuration
-reporting and independent values continue. A failed clone may leave an empty
-directory that the existing preparation logic will not automatically clone
-again. Recovery of Project preparation and independent scheduling must retain
-unknown Git, Herdr and Web ownership rather than treating an inspection failure
-as an empty resource set.
+Project preparation and independent scheduling retain unknown Git, Herdr and
+Web ownership rather than treating an inspection failure as an empty resource
+set. The Project selection decision describes their failure isolation.

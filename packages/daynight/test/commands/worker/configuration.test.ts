@@ -173,6 +173,66 @@ describe("Worker cloud configuration application", () => {
     expect(item(manager.current(), "projectRemoval")).toMatchObject({ targetRevision: "2", state: "applied", appliedValue: true });
   });
 
+  it("cancels preparation when the project is removed and joins it before preparing again", async () => {
+    const entered = deferred(), release = deferred(), cancelled = deferred();
+    let calls = 0;
+    const { manager, wait } = await fixture();
+    await manager.configureProjectAdapters({ prepare: async (_projectId, signal) => {
+      calls += 1;
+      if (calls === 1) {
+        signal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+        entered.resolve();
+        await release.promise;
+      }
+    }, remove: async () => {} });
+    await manager.receive(desired());
+    await entered.promise;
+    await manager.receive(desired("2", "original", false));
+    await cancelled.promise;
+    await wait(snapshot => item(snapshot, "projectRemoval")?.state === "applied");
+    await manager.receive(desired("3"));
+    expect(manager.current().effective.projects[0]?.ready).toBe(false);
+    release.resolve();
+    await wait(snapshot => snapshot.effective.projects[0]?.ready === true);
+    expect(calls).toBe(2);
+  });
+
+  it("reports and retries stopping a retained project absent from the initial cloud target", async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const { manager, wait } = await fixture();
+    await manager.configureProjectAdapters({ remove: async () => { if (++attempts === 1) throw new Error("stop failed"); } });
+    await manager.receive(desired("1", "original", false));
+    await manager.ensureProjectRemoval(projectId);
+    await wait(snapshot => item(snapshot, "projectRemoval")?.state === "error");
+    expect(item(manager.current(), "projectRemoval")).toMatchObject({ targetRevision: "1", error: { phase: "stop" }, lastFailure: { phase: "stop" } });
+    await manager.ensureProjectRemoval(projectId);
+    expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await wait(snapshot => item(snapshot, "projectRemoval")?.state === "applied");
+    expect(item(manager.current(), "projectRemoval")).toMatchObject({ targetRevision: "1", lastFailure: { phase: "stop" } });
+    expect(attempts).toBe(2);
+  });
+
+  it("reconfirms an unacknowledged cached removal after restart", async () => {
+    const first = await fixture();
+    await first.manager.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+    await first.manager.receive(desired());
+    await first.wait(snapshot => snapshot.effective.projects[0]?.ready === true);
+    await first.manager.receive(desired("2", "original", false));
+    await first.wait(snapshot => item(snapshot, "projectRemoval")?.state === "applied");
+    await first.manager.stop();
+    const stop = vi.fn(async () => {});
+    const reopened = await createWorkerConfigurationManager({ file: first.file, identity, signal: new AbortController().signal, applyNative: async () => {} });
+    fixtures.push({ manager: reopened, directory: first.directory });
+    await reopened.receive(desired("2", "original", false));
+    await reopened.configureProjectAdapters({ remove: stop });
+    await reopened.ensureProjectRemoval(projectId);
+    await reopened.settle();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(item(reopened.current(), "projectRemoval")).toMatchObject({ targetRevision: "2", state: "applied" });
+  });
+
   it("keeps an in-flight removal across repeated selection changes", async () => {
     const removing = deferred(), releaseRemoval = deferred();
     const prepare = vi.fn(async () => {});

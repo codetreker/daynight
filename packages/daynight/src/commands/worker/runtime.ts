@@ -19,6 +19,7 @@ import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOperation } from "../../api/operation.js";
+import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
 import { ApiError } from "../../api/client.js";
 import type { WorkerCloudNative, WorkerCloudResource, WorkerCloudValue } from "../../api/worker-configuration.js";
 import { parseProviderArguments } from "../controller/providers/projection.js";
@@ -29,7 +30,7 @@ import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./
 import { parseWorkerCloudBootstrap, readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForProject } from "./configuration-source.js";
 import type { WorkerProject } from "./types.js";
 import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/types.js";
-import { validateWorkerConfigurationSource } from "./config.js";
+import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
 import type { WorkerCoordinatorConfiguration, WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
@@ -203,6 +204,7 @@ export const runWorker = async (options: {
   let configuration: WorkerConfigurationManager | undefined;
   let renewal: Promise<void> | undefined;
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
+  let initialRemovalReconciliation: Promise<void> | undefined;
   const failures: unknown[] = [];
   try {
     signal.throwIfAborted();
@@ -230,18 +232,31 @@ export const runWorker = async (options: {
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
     const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory })) : git;
     const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
-    const bindingJobs = new Map<string, Promise<WorkerProject | undefined>>();
-    const resolveBinding = (projectId: string): Promise<WorkerProject | undefined> => {
+    const reservations = new Map<string, string>();
+    let reservationTail: Promise<void> = Promise.resolve();
+    const reserveRepository = (binding: WorkerProject, applicationSignal: AbortSignal): Promise<void> => {
+      const reservation = reservationTail.then(async () => {
+        applicationSignal.throwIfAborted();
+        const retained = getStore().listProjects().filter(project => project.projectId !== binding.projectId);
+        await validateWorkerRepositoryLocations([...retained.map(value => ({ path: value.localPath })), ...[...reservations.values()].map(value => ({ path: value })), { path: binding.localPath }], paths, applicationSignal);
+        applicationSignal.throwIfAborted();
+        reservations.set(binding.projectId, binding.localPath);
+      });
+      reservationTail = reservation.then(() => undefined, () => undefined);
+      return reservation;
+    };
+    const bindingJobs = new Map<string, Promise<WorkerProject>>();
+    const resolveBinding = (projectId: string, applicationSignal: AbortSignal): Promise<WorkerProject> => {
       const existing = bindingJobs.get(projectId);
       if (existing !== undefined) return existing;
       const job = (async () => {
-        const project = await remote.project(projectId, signal);
+        const project = await remote.project(projectId, applicationSignal);
         const currentStore = getStore();
         const previous = currentStore.getProject({ projectId });
         const mapped = previous === null ? await workerLocalRepositoryForProject(local, paths, project) : undefined;
-        if (previous === null && mapped === undefined) return undefined;
-        if (previous !== null) await remote.resolveProject({ repoUrl: previous.repoUrl, projectId }, signal);
-        return admitRepository(previous === null ? { projectId, repoUrl: mapped!.remote, localPath: mapped!.path } : previous, signal);
+        if (previous !== null) await remote.resolveProject({ repoUrl: previous.repoUrl, projectId }, applicationSignal);
+        const root = resolveRepositoryRoot(local.repositoryRoot, paths, options.homeDirectory, "worker.repositoryRoot");
+        return previous ?? { projectId, repoUrl: mapped?.remote ?? project.repoUrl, localPath: mapped?.path ?? repositoryLocation(project.repoUrl, root) };
       })();
       bindingJobs.set(projectId, job);
       void job.finally(() => { if (bindingJobs.get(projectId) === job) bindingJobs.delete(projectId); }).catch(() => undefined);
@@ -261,6 +276,7 @@ export const runWorker = async (options: {
     const transitions = new Map<string, string>();
     let effectiveSignature = "";
     let configurationChanged = new AbortController();
+    let scheduleInitialRemovals: (() => void) | undefined;
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal,
       applyNative: nativeApplication.apply,
@@ -268,7 +284,8 @@ export const runWorker = async (options: {
         const signature = JSON.stringify(snapshot.effective);
         if (signature !== effectiveSignature) { effectiveSignature = signature; configurationChanged.abort(); }
         const current = view(snapshot);
-        if (current !== null) coordinator?.updateConfiguration(current);
+        coordinator?.updateConfiguration(current ?? { repositories: [], targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1 });
+        scheduleInitialRemovals?.();
         for (const item of snapshot.items) {
           const key = JSON.stringify(item.key), state = JSON.stringify([item.targetRevision, item.state, item.error]);
           if (transitions.get(key) === state) continue;
@@ -282,6 +299,23 @@ export const runWorker = async (options: {
     let bootstrap: WorkerCloudValue | null = null;
     if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, signal);
     const manager = configuration;
+    let initialRemovalsComplete = false;
+    let initialRemovalsJob: Promise<void> | undefined;
+    const ensureInitialRemovals = (): Promise<void> => {
+      if (initialRemovalsComplete || manager.current().desired === null) return Promise.resolve();
+      if (initialRemovalsJob !== undefined) return initialRemovalsJob;
+      const job = (async () => {
+        for (const project of getStore().listProjects()) {
+          signal.throwIfAborted();
+          await manager.ensureProjectRemoval(project.projectId);
+        }
+        initialRemovalsComplete = true;
+      })();
+      initialRemovalsJob = job;
+      initialRemovalReconciliation = job;
+      void job.finally(() => { if (initialRemovalsJob === job) initialRemovalsJob = undefined; }).catch(() => undefined);
+      return job;
+    };
     let reconcileReport = false;
     const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl });
     reporter = createWorkerReporter({ signal, collect: operation => telemetry.collect(operation), send: (report, operation) => remote.report(workerId, report, operation), emit,
@@ -301,48 +335,70 @@ export const runWorker = async (options: {
         accept: async (sent, receipt) => { await manager.acknowledge(sent, receipt); if (receipt.desired !== null) bootstrap = null; },
       },
     });
+    scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
+    scheduleInitialRemovals();
     signal.throwIfAborted();
-    await manager.configureProjectAdapters({ prepare: async (projectId, applicationSignal) => {
-      const binding = await resolveBinding(projectId);
-      if (binding === undefined) return false;
-      applicationSignal.throwIfAborted();
-      const operation = createOperation({ signal: applicationSignal });
-      try { await getGit().prepareRepository(binding, operation); }
-      finally { operation.dispose(); }
-      prepared.set(projectId, binding);
-    } });
     const lazyHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>>): WorkerHerdrAdapter => new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => {
       herdr = herdr === undefined ? platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment }) : herdr;
       return Reflect.get(herdr, property);
     } });
-    let attachmentShown = false, started = false, initialMappingsComplete = false;
+    let coordinatorJob: Promise<ReturnType<typeof createWorkerCoordinator>> | undefined;
+    const ensureCoordinator = (): Promise<ReturnType<typeof createWorkerCoordinator>> => {
+      if (coordinator !== undefined) return Promise.resolve(coordinator);
+      if (coordinatorJob !== undefined) return coordinatorJob;
+      const job = (async () => {
+        const currentStore = getStore();
+        if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit);
+        if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
+          onError: message => emit({ kind: "credential-renewal-error", message }),
+        }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
+        const environment = await nativeApplication.prepareEnvironment();
+        signal.throwIfAborted();
+        const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1 };
+        coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
+          hasHerdrJournal: await hasHerdrJournal(paths, platform),
+          availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
+          onInventory: inventory => {
+            const desired = manager.current().desired;
+            if (desired !== null && desired.value.projects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null)) reporter!.publishInventory(inventory);
+          },
+          onClaim: reporter!.recordClaim,
+          buildPrompt: web.buildPrompt, emit, signal });
+        const latest = view(manager.current());
+        coordinator.updateConfiguration(latest ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: manager.current().effective.maxConcurrent ?? 1 });
+        return coordinator;
+      })();
+      coordinatorJob = job;
+      void job.finally(() => { if (coordinatorJob === job) coordinatorJob = undefined; }).catch(() => undefined);
+      return job;
+    };
+    await manager.configureProjectAdapters({ prepare: async (projectId, applicationSignal) => {
+      const binding = await resolveBinding(projectId, applicationSignal);
+      await reserveRepository(binding, applicationSignal);
+      try {
+        const operation = createOperation({ signal: applicationSignal });
+        try { await getGit().prepareRepository(binding, operation); }
+        finally { operation.dispose(); }
+        applicationSignal.throwIfAborted();
+        prepared.set(projectId, await admitRepository(binding, applicationSignal));
+        if (!manager.current().desired?.value.projects.some(project => project.projectId === projectId)) await manager.ensureProjectRemoval(projectId);
+      } finally { reservations.delete(projectId); }
+    }, remove: async (projectId, applicationSignal) => {
+      const runningCoordinator = await ensureCoordinator();
+      applicationSignal.throwIfAborted();
+      const latest = view(manager.current());
+      if (latest !== null) runningCoordinator.updateConfiguration(latest);
+      await runningCoordinator.stopProject(projectId, applicationSignal);
+      prepared.delete(projectId);
+    } });
+    let attachmentShown = false, started = false;
     while (!signal.aborted) {
       try {
+        await ensureInitialRemovals();
         const current = view(manager.current());
         if (current !== null) {
-          if (!initialMappingsComplete && manager.current().desired !== null) {
-            await Promise.allSettled(manager.current().desired!.value.projects.map(project => resolveBinding(project.projectId)));
-            signal.throwIfAborted();
-            initialMappingsComplete = true;
-          }
           {
-            const currentStore = getStore();
-            if (coordinator === undefined) {
-              if (web === undefined) web = await createWebRuntime(options, paths, currentStore, getGit(), serverUrl, serverToken, platform, emit);
-              if (renewal === undefined) renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
-                onError: message => emit({ kind: "credential-renewal-error", message }),
-              }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
-              const environment = await nativeApplication.prepareEnvironment();
-              coordinator = createWorkerCoordinator({ store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
-                hasHerdrJournal: await hasHerdrJournal(paths, platform),
-                availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
-                onInventory: inventory => {
-                  const desired = manager.current().desired;
-                  if (desired !== null && desired.value.projects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null)) reporter!.publishInventory(inventory);
-                },
-                onClaim: reporter.recordClaim,
-                buildPrompt: web.buildPrompt, emit, signal });
-            }
+            await ensureCoordinator();
             if (coordinator !== undefined) {
               const latest = view(manager.current());
               if (latest !== null) { coordinator.updateConfiguration(latest); await coordinator.tick(); }
@@ -372,6 +428,7 @@ export const runWorker = async (options: {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
     await renewal;
     try { await reporter?.stop(); } catch (error) { failures.push(error); }
+    try { await initialRemovalReconciliation; } catch { /* The reconciliation failure was reported when it occurred. */ }
     try { await configuration?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
     if (coordinator !== undefined) {
       try {
