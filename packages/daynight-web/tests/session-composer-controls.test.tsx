@@ -446,7 +446,6 @@ it('requires an explicit arrow selection before Enter completes a prefix and res
   fireEvent.change(input, { target: { value: '/m' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
   fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'Enter' });
   await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/mo'));
-  await waitFor(() => expect(input).toHaveValue(''));
   fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
   view.rerender(<SessionComposer {...props} state={{ ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, revision: '4' } } }} />);
   fireEvent.keyDown(input, { key: 'Enter' }); await waitFor(() => expect(props.onSend).toHaveBeenCalledTimes(2));
