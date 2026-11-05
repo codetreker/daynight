@@ -244,3 +244,27 @@ it.each(["success", "error", "changed"] as const)("holds transfer preview %s thr
     await act(async () => permission.resolve(json(access)));
   }
 });
+
+it("retains transfer choices and permits retry when a background Team reread fails", async () => {
+  let reads = 0;
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(++reads === 2 ? json({ error: { code: "internal_error", message: "private", requestId: "rq-team" } }, 500) : json(personalTeamPage(userId)));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }, { timeout: 20000 }));
+  const dialog = await screen.findByRole("dialog", { name: "Transfer project" }, { timeout: 20000 });
+  const select = within(dialog).getByLabelText("Your Teams");
+  await within(select).findByRole("option", { name: "Personal · admin" }, { timeout: 20000 });
+  fireEvent.change(select, { target: { value: source } });
+  vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur")); vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
+  expect(await within(dialog).findByRole("alert", {}, { timeout: 20000 })).toHaveTextContent("Unable to load your Teams");
+  expect(select).toHaveValue(source); expect(within(select).getByRole("option", { name: "Personal · admin" })).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(within(dialog).queryByRole("alert")).toBeNull(), { timeout: 20000 });
+  expect(select).toHaveValue(source); expect(reads).toBe(3);
+});

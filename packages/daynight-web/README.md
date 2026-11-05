@@ -149,11 +149,14 @@ attachment pages defer restoration until the workspace appears. Team-dependent
 links and its project directory wait for a verified selection, while the page's
 own resource and the shared-project directory can load independently. Restoration
 failures expose a workspace retry without replacing the saved choice. Only a
-verified missing Team clears that choice and restores Personal. When the
-confirmed selection is Personal, Team members and settings entries are omitted
-from the sidebar in all layouts; ordinary Teams retain links to their own
-member and settings pages regardless of their names. Direct Personal member and
-settings URLs remain available under their existing access rules. The
+verified missing Team clears that choice and restores Personal. Background
+checks retain the confirmed Team and all loaded selector pages until a complete
+refreshed prefix is available; actual changes and recoverable errors remain
+visible. Explicit refresh still reads the directory. When the confirmed selection
+is Personal, Team members and settings entries are omitted from the sidebar in
+all layouts; ordinary Teams retain links to their own member and settings pages
+regardless of their names. Direct Personal member and settings URLs remain
+available under their existing access rules. The
 [personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
 records this visibility choice. The
 [browser Team preference decision](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)

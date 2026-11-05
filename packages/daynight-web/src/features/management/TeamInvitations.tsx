@@ -91,6 +91,7 @@ export const TeamInvitations = ({ teamId, teamName, active, admissionBlocked = f
   const isVisible = editable && active;
   const currentIssue = unknown ? op.result?.error : issue;
   return <>
+    {active && !isVisible && op.pending && <div role="status">{common.submitPending}</div>}
     {active && !isVisible && currentIssue !== null && currentIssue !== undefined && <div className="notice warning" role="alert"><p>{unavailable ? zh ? "邀请变更结果仍未确认；此 Team 不可用或你已无权访问。" : "The invitation change is still unconfirmed; this Team is unavailable or you no longer have access." : memberWithoutManagement ? zh ? "邀请变更结果仍未确认；你已无权读取此 Team 的邀请。" : "The invitation change is still unconfirmed; you no longer have permission to read this Team’s invitations." : observed && !unknown ? m.invitationObserved : m.invitationUnknown}</p>{currentIssue instanceof ApiError && currentIssue.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{currentIssue.requestId}</code></p>}</div>}
     {isVisible && <>
       {loading && <div className="empty-inline" role="status">{m.loading}</div>}
