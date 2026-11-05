@@ -1,0 +1,26 @@
+.terminal-screen { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: #fbfcff; color: #34445c; padding: 18px 20px; }
+.terminal-screen:focus-visible { outline: 2px solid #8c8cf0; outline-offset: -2px; }
+.terminal-text { margin: 0; width: max-content; white-space: pre; tab-size: 4; font: calc(12px * var(--terminal-text-scale, 1))/1.75 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.terminal-recording { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; color: #34445c; }
+.terminal-recording-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 22px; color: #68758a; font-size: 12px; }
+.terminal-recording-summary label { display: flex; align-items: center; gap: 8px; }
+.terminal-recording-summary select { border: 1px solid #dce0e8; border-radius: 6px; background: #fff; padding: 5px 8px; font: inherit; }
+.terminal-partial { color: #87682e; background: #fff5df; border-radius: 14px; padding: 3px 9px; }
+.terminal-recording-display { flex: 1 1 310px; display: flex; min-width: 0; min-height: 120px; margin: 0 22px; border: 1px solid #dce2ed; border-radius: 8px; overflow: hidden; }
+.terminal-recording-display > .terminal-screen { flex: 1; }
+.terminal-recording-gap { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-width: 0; padding: 24px; text-align: center; color: #806b40; background: repeating-linear-gradient(135deg, #fcfbf6, #fcfbf6 9px, #f9f7ef 9px, #f9f7ef 18px); font-size: 12px; }
+.terminal-recording-gap p { margin: 0; }
+.terminal-recording-controls { flex: none; padding: 16px 22px; }
+.terminal-recording-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.terminal-recording-time { margin-left: auto; color: #637087; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.terminal-recording-controls input[type='range'] { display: block; width: 100%; height: 28px; margin: 10px 0 0; accent-color: #6262ba; }
+.terminal-recording-gap-track { position: relative; height: 4px; background: #c4c6f3; margin-bottom: 10px; overflow: hidden; border-radius: 2px; }
+.terminal-recording-gap-track span { position: absolute; top: 0; bottom: 0; min-width: 3px; background: repeating-linear-gradient(45deg, #c99b46, #c99b46 2px, #fff4d8 2px, #fff4d8 5px); }
+.terminal-recording-caption { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; color: #77839a; font-size: 11px; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .terminal-recording-summary, .terminal-recording-controls { padding: 12px; }
+  .terminal-recording-display { margin-inline: 12px; }
+  .terminal-screen { padding: 14px; }
+  .terminal-recording-buttons .button, .terminal-recording-gap .button { min-height: 44px; }
+  .terminal-recording-time { width: 100%; margin-left: 0; }
+}

@@ -61,7 +61,8 @@ export const createHerdrInputArbiter = (options: {
   const project = (value: HerdrInputRecord): SessionV2Payloads["control_state"] => {
     const unavailable = ["closing", "closed"].includes(value.state);
     const initialAssignment = value.initialDisposition === null ? value.initialOutcome : "transport_completed";
-    const availableActions: SessionV2Payloads["control_state"]["availableActions"] = unavailable ? [] : value.state === "manual" ? ["renew_control", "release_control", "paste", "keys"] : ["acquire_control", ...(value.state === "suspended" ? ["resume_automation" as const] : [])];
+    const unresolvedInitial = ["unknown", "unconfirmed"].includes(value.initialOutcome) && value.initialDisposition === null;
+    const availableActions: SessionV2Payloads["control_state"]["availableActions"] = unavailable ? [] : value.state === "manual" ? ["renew_control", "release_control", "paste", "keys"] : ["acquire_control", ...(value.state === "suspended" ? [unresolvedInitial ? "resolve_initial_assignment" as const : "resume_automation" as const] : [])];
     return { connectionEpoch: value.target.connectionEpoch, controlEpoch: value.controlEpoch, state: value.state, lease: value.lease, initialAssignment, availableActions, unavailableReason: value.unknownInput && value.initialDisposition === null ? "input_unknown" : value.state === "suspended" ? "automation_suspended" : null };
   };
   const state = (): SessionV2Payloads["control_state"] => { requireJournal(); expire(); return project(record()); };
@@ -150,7 +151,8 @@ export const createHerdrInputArbiter = (options: {
     else if (busy()) code = "input_busy";
     else if (request.action === "acquire_control" && before.lease !== null) code = "input_busy";
     else if (["renew_control", "release_control"].includes(request.action) && (before.lease === null || before.lease.leaseId !== request.leaseId || before.lease.holderUserId !== actorUserId || before.lease.browserClientId !== request.browserClientId)) code = "lease_expired";
-    else if (request.action === "resume_automation" && (before.state !== "suspended" || !request.draftHandled || ["unknown", "unconfirmed"].includes(before.initialOutcome) && before.initialDisposition === null && request.initialUnknownDisposition !== "delivered_continue")) code = "automation_suspended";
+    else if (request.action === "resolve_initial_assignment" && (before.state !== "suspended" || before.lease !== null || !["unknown", "unconfirmed"].includes(before.initialOutcome) || before.initialDisposition !== null)) code = "automation_suspended";
+    else if (request.action === "resume_automation" && (before.state !== "suspended" || !request.draftHandled || ["unknown", "unconfirmed"].includes(before.initialOutcome) && before.initialDisposition === null)) code = "automation_suspended";
     if (code) {
       const ack: ControlAck = { requestDigest, durable: true, controlState: state(), result: result(request.operationId, "rejected", code) };
       storeOperation({ operationId: request.operationId, source: "control", target: before.target, digest: hash, controlEpoch: request.controlEpoch, leaseId: request.leaseId, leaseSeq: null, result: ack.result, controlAck: ack }); return ack;
@@ -171,10 +173,12 @@ export const createHerdrInputArbiter = (options: {
           draft.lease = { leaseId: randomUUID(), holderUserId: actorUserId, browserClientId: request.browserClientId, controlEpoch: draft.controlEpoch, expiresAt: new Date(now() + SESSION_V2_LIMITS.leaseTtlMs).toISOString() };
         } else if (request.action === "renew_control") draft.lease!.expiresAt = new Date(now() + SESSION_V2_LIMITS.leaseTtlMs).toISOString();
         else {
-          draft.state = request.action === "release_control" ? "suspended" : "automation"; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); draft.lease = null; draft.leaseSeq = "0";
+          draft.state = request.action === "resume_automation" ? "automation" : "suspended"; draft.controlEpoch = String(BigInt(draft.controlEpoch) + 1n); draft.lease = null; draft.leaseSeq = "0";
+          if (request.action === "resolve_initial_assignment") {
+            draft.initialDisposition = { actorUserId, operationId: request.operationId, decidedAt: new Date(now()).toISOString(), disposition: "delivered_continue" };
+          }
           if (request.action === "resume_automation") {
             draft.draftRisk = false; draft.unknownInput = false;
-            if (["unknown", "unconfirmed"].includes(draft.initialOutcome) && draft.initialDisposition === null) draft.initialDisposition = { actorUserId, operationId: request.operationId, decidedAt: new Date(now()).toISOString(), disposition: "delivered_continue" };
           }
         }
         const ack: ControlAck = { requestDigest, durable: true, controlState: project(draft), result: result(request.operationId, "transport_completed") };

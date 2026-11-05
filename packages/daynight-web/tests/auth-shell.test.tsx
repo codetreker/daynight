@@ -1157,7 +1157,8 @@ describe("authenticated standalone attachment reader", () => {
     expect(document.title).toBe("Task details · Daynight");
     expect(screen.getByRole("main")).toBe(reader);
     expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", `/api/v1/projects/${projectId}/tasks/${taskId}/attachments/files/docs/guide.md`);
-    expect(fetcher).toHaveBeenCalledTimes(5);
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher.mock.calls.filter(([url]) => url.includes("/sessions?"))).toHaveLength(1);
   });
 
   it("keeps the authenticated attachment controller and panel mounted through same-task history", async () => {

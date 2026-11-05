@@ -768,7 +768,7 @@ own the complete resource lifecycle and the remaining write architecture.
 
 ## Session display
 
-Task, Test and readable archived Sessions share the Display menu beside Refresh.
+Native timeline Task, Test and readable archived Sessions share the Display menu beside Refresh.
 Conversation is the default and keeps messages, plans, interactions and real
 errors; Standard preserves the complete activity view. The authenticated account
 and verified Session ID select a shared page preference, persisted independently
@@ -779,6 +779,25 @@ entries and reading intent without replaying operations or altering pagination.
 The [requirements](../../docs/spec/task-sessions.md#session-显示模式) own the
 display rules; the [Session design](../../docs/design/task-session-protocol.md#session-显示菜单与入口绑定)
 owns identity binding, menu behavior and preference integration.
+
+## Herdr Sessions and recordings
+
+The task Session host keeps the native Web timeline and dispatches Herdr executions
+to a read-only terminal preview with explicit control acquisition. Hidden terminal
+views close their viewer channel and release the browser lease; Worker recording
+continues independently. Controls become available only after Worker confirmation.
+Unknown initial submission disposition and resuming automatic input require
+separate decisions. Unknown manual input is never automatically resent.
+
+The Session selector and the managed Session recordings section in the attachment
+sidebar open fixed original executions in the shared reading area. These entries
+have no attachment mutation actions. Ordinary file previews and upload drafts
+retain their state while a recording is selected.
+Verified complete frames support direct seeking, stepping and playback; partial
+recordings remain labeled and playback stops at every gap until the reader
+explicitly continues. Archive reading establishes no control connection.
+The [Herdr Session Web design](../../docs/design/herdr-session-web.md) owns
+identity, verification, control and playback behavior.
 
 ## Task discussions
 
