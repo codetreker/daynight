@@ -420,7 +420,7 @@ it('keeps a confirmed self-removal receipt when access recovery fails and retrie
     await screen.findByText('Direct grant for Alice removed.');
     const retry = await screen.findByRole('button', { name: 'Retry' });
     expect(screen.getByText('Direct grant for Alice removed.')).toBeVisible();
-    await waitFor(() => expect(mounted.access().snapshot().status).toBe('error'));
+    expect(mounted.access().snapshot().status).toBe('error');
     expect(mounted.scope.getAuthorizedProject(projectId)).toBeNull();
     expect(mounted.scope.canPreviewProject(projectId)).toBe(false);
     mounted.view.unmount();
