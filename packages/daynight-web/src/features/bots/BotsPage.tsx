@@ -68,20 +68,21 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
   useEffect(() => { if (targetUnavailable) setDeleteTarget(null); }, [targetUnavailable]);
   const binding = useMemo(() => bot && !detail.stale && bot.sessionId && bot.testExecutionId ? { ownerUserId: bot.ownerUserId, botId: bot.id, sessionId: bot.sessionId, testExecutionId: bot.testExecutionId } : null, [bot, detail.stale]);
   const selectedDeletion = deletions.find(record => record.id === botId);
-  const items = (list.value ?? []).filter(item => !blocked(item.id)).filter(item => item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  const visibleBots = (list.value ?? []).filter(item => !blocked(item.id));
+  const items = visibleBots.filter(item => item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const worker = (id: string) => defaults.value?.workers.find(item => item.workerId === id);
   const showDetails = detailsOpen && botId !== null && !blocked(botId) && !scope.isInvalidated && !denied && !deleted;
   useEffect(() => { if (botId === null || denied || deleted || scope.isInvalidated) setDetailsOpen(false); }, [botId, denied, deleted, scope]);
   const refreshed = () => { list.refresh(); defaults.refresh(); detail.refresh(); };
   return <section className={`bots-page${botId ? ' bot-selected' : ''}`} aria-label={m.title}>
     <aside className="bot-list-panel" aria-label={m.title}>
-      <header className="bot-list-heading"><h1>{m.title}</h1><button className="button primary" type="button" disabled={!readEnabled} onClick={() => setCreating({ scope, botId })}>{m.create}</button></header>
-      <label className="bot-search"><span>{m.search}</span><input type="search" value={search} onChange={event => setSearch(event.target.value)} /></label>
-      <button className="button quiet bot-refresh" type="button" onClick={refreshed} disabled={!readEnabled || list.busy || defaults.busy}>{m.refresh}</button>
+      <header className="bot-list-heading"><h1>{m.title}</h1><button className="button quiet bot-create" type="button" aria-label={m.create} title={m.create} disabled={!readEnabled} onClick={() => setCreating({ scope, botId })}><span aria-hidden="true">+</span></button></header>
+      <label className="bot-search"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg><input type="search" aria-label={m.search} placeholder={m.search} value={search} onChange={event => setSearch(event.target.value)} /></label>
+      <div className="bot-list-section"><h2>{m.yourAssistants}{list.value !== null ? <span className="bot-list-count">{visibleBots.length}</span> : null}</h2><button className="button quiet bot-refresh" type="button" aria-label={m.refresh} title={m.refresh} aria-busy={list.busy || defaults.busy} onClick={refreshed} disabled={!readEnabled || list.busy || defaults.busy}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M20 7a9 9 0 1 0 1 8M20 3v5h-5" /></svg></button></div>
       {list.value === null && list.error === null ? <p role="status">{m.loading}</p> : null}
       {list.error !== null ? <ReadError label={m.listError} error={list.error} retry={list.refresh} /> : null}
       {defaults.error !== null ? <ReadError label={m.defaultsError} error={defaults.error} retry={defaults.refresh} /> : null}
-      {list.value !== null && items.length === 0 ? <p className="bot-empty" role="status">{search ? m.noMatches : m.empty}</p> : null}
+      {list.value !== null && items.length === 0 ? <p className="bot-empty" role="status">{visibleBots.length === 0 ? m.empty : m.noMatches}</p> : null}
       <ul className="bot-list">{items.map(item => <BotListItem key={item.id} bot={item} selected={botId === item.id} disabled={scope.isInvalidated} worker={worker(item.workerId)} stale={defaults.stale} follow={follow} onDelete={(bot, opener) => setDeleteTarget({ scope, bot, opener })} />)}</ul>
       <div className="bot-deletions">{deletions.filter(record => record.id !== botId).map(record => <BotDeletionStatus key={record.id} record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} />)}</div>
     </aside>
