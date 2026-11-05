@@ -114,7 +114,7 @@ describe("Team preference during same-Team navigation", () => {
       return Promise.resolve(json(team));
     });
     vi.stubGlobal("fetch", fetcher);
-    const fixture = renderHook(({ preserve, blocked }: { preserve: boolean; blocked: boolean }) => useTeamPreference(personal, a, scope, blocked, preserve, guard), { initialProps: { preserve: true, blocked: false } });
+    const fixture = renderHook(({ preserve, blocked }: { preserve: boolean; blocked: boolean }) => useTeamPreference(personal, a, scope, blocked, { preserveOnRevalidation: preserve, guardUnavailable: guard }), { initialProps: { preserve: true, blocked: false } });
     await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready" }));
     fixture.rerender({ preserve: false, blocked: false });
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
@@ -131,5 +131,103 @@ describe("Team preference during same-Team navigation", () => {
     } else expect(guard).toHaveBeenCalledWith(a);
     await act(async () => pending.resolve(json(team)));
     expect(fixture.result.current.detail.status).toBe(outcome === "ready" ? "ready" : "error");
+  });
+});
+
+describe("Team restoration on workspace entry", () => {
+  const entry = (fetcher: (url: string, init?: RequestInit) => Promise<Response>, enabled = true) => {
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    vi.stubGlobal("fetch", vi.fn(fetcher));
+    return renderHook(({ route, visible }: { route: string | null; visible: boolean }) => useTeamPreference(personal, route, scope, false, { restoreOnEntry: visible }), { initialProps: { route: null as string | null, visible: enabled } });
+  };
+  const reply = (id: string, status = 200) => new Response(stringifyWireJson(status === 200
+    ? { id, kind: "ordinary", name: id === a ? "Alpha" : "Beta", version: 1n, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: "member", version: 1n, createdAt: time, updatedAt: time } }
+    : { error: { code: status === 404 ? "not_found" : "internal_error", message: "unavailable", requestId: "request-entry" } }), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
+
+  it("restores once on a non-Team entry and preserves the current choice until default re-entry", async () => {
+    localStorage.setItem(key, a);
+    const fetcher = vi.fn(async (url: string) => reply(url.split("/").at(-1)!));
+    const fixture = entry(fetcher);
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready" }));
+    localStorage.setItem(key, b);
+    fixture.rerender({ route: null, visible: true });
+    expect(fixture.result.current.detail.id).toBe(a);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    fixture.rerender({ route: "default", visible: true });
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: b, status: "ready" }));
+  });
+
+  it("waits for a visible workspace before restoring a standalone entry", async () => {
+    localStorage.setItem(key, a);
+    const fetcher = vi.fn(async () => reply(a));
+    const fixture = entry(fetcher, false);
+    expect(fetcher).not.toHaveBeenCalled();
+    fixture.rerender({ route: null, visible: true });
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready" }));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses Personal without writing a preference when no selection exists", async () => {
+    const fetcher = vi.fn(async () => reply(a));
+    const fixture = entry(fetcher);
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: personal.id, status: "ready" }));
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("exposes a failed storage read until retry restores the saved selection", async () => {
+    localStorage.setItem(key, a);
+    const denied = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
+    const fixture = entry(async () => reply(a));
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ status: "error", storageError: true }));
+    denied.mockRestore();
+    act(() => fixture.result.current.retry());
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready" }));
+    expect(localStorage.getItem(key)).toBe(a);
+  });
+
+  it("retains a saved selection through a server failure and permits retry", async () => {
+    localStorage.setItem(key, a); let status = 500;
+    const fixture = entry(async () => reply(a, status));
+    await waitFor(() => expect(fixture.result.current.detail.status).toBe("error"));
+    expect(localStorage.getItem(key)).toBe(a);
+    status = 200; act(() => fixture.result.current.retry());
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready" }));
+  });
+
+  it("forgets a confirmed missing Team without changing an explicit resource URL", async () => {
+    window.history.replaceState(null, "", "/workers"); localStorage.setItem(key, a);
+    const fixture = entry(async () => reply(a, 404));
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: personal.id, status: "ready" }));
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(window.location.pathname).toBe("/workers");
+  });
+
+  it("rereads a newer saved Team when default entry replaces an unfinished restoration", async () => {
+    localStorage.setItem(key, a);
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = vi.fn((url: string) => url.endsWith(a) ? pending.promise : Promise.resolve(reply(b)));
+    const fixture = entry(fetcher);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    localStorage.setItem(key, b);
+    fixture.rerender({ route: "default", visible: true });
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: b, status: "ready" }));
+    await act(async () => pending.resolve(reply(a)));
+    expect(fixture.result.current.detail.id).toBe(b);
+    expect(localStorage.getItem(key)).toBe(b);
+  });
+
+  it("lets explicit selection replace an unfinished restoration", async () => {
+    localStorage.setItem(key, a);
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = vi.fn((url: string) => url.endsWith(a) ? pending.promise : Promise.resolve(reply(b)));
+    const fixture = entry(fetcher);
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    expect(fixture.result.current.detail.status).toBe("loading");
+    fixture.rerender({ route: b, visible: true });
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: b, status: "ready" }));
+    await act(async () => pending.resolve(reply(a)));
+    expect(fixture.result.current.detail.id).toBe(b);
+    expect(localStorage.getItem(key)).toBe(b);
   });
 });

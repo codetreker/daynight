@@ -5,7 +5,7 @@ import { navigate } from "../../app/router";
 import { useTeams } from "./TeamsProvider";
 import { useTeamMessages } from "./messages";
 
-export const TeamSelector = ({ personalId, selectedId, expanded, onExpand, onNavigate, onCreate }: { readonly personalId: string; readonly selectedId: string; readonly expanded: boolean; readonly onExpand: () => void; readonly onNavigate: () => void; readonly onCreate?: () => void }) => {
+export const TeamSelector = ({ personalId, selectedId, expanded, onExpand, onNavigate, onCreate }: { readonly personalId: string; readonly selectedId: string | null; readonly expanded: boolean; readonly onExpand: () => void; readonly onNavigate: () => void; readonly onCreate?: () => void }) => {
   const teams = useTeams(), m = useTeamMessages(), menu = useRef<HTMLDetailsElement>(null);
   const { messages: { common } } = useI18n();
   const detail = (error: unknown) => <><span>{error instanceof ApiError && error.kind === "network" ? m.network : m.readError}</span>{error instanceof ApiError && error.requestId !== null && <span> {common.requestId}<code>{error.requestId}</code></span>}</>;

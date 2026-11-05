@@ -402,3 +402,72 @@ describe("Team workspace navigation", () => {
   });
 
 });
+
+describe("Team selection at cold workspace entries", () => {
+  const savedKey = `daynight.selectedTeam:${userId}`;
+  const missing = () => json({ error: { code: "not_found", message: "missing", requestId: "rq-resource" } }, 404);
+  const resourceFallback = (url: string) => url === "/api/v1/me" || url.startsWith("/api/v1/teams?") || url === `/api/v1/teams/${a}` || url === `/api/v1/teams/${b}` || url.startsWith("/api/v1/projects?") ? undefined : missing();
+  const selector = () => document.querySelector("summary.team-switch");
+
+  it.each([`/projects/${projectId}`, `/projects/${projectId}/members`, `/projects/${projectId}/settings`, "/shared-projects", "/workers", "/account", "/bots", "/test-sessions"])("restores the sidebar Team independently of %s", async (path) => {
+    window.history.replaceState(null, "", path); localStorage.setItem(savedKey, a);
+    const fetcher = install(resourceFallback); render(<AuthenticatedApp />);
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));
+    expect(screen.getByRole("link", { name: "Team members" })).toHaveAttribute("href", `/teams/${a}/members`);
+    expect(screen.getByRole("link", { name: "Team settings" })).toHaveAttribute("href", `/teams/${a}/settings`);
+    expect(window.location.pathname).toBe(path);
+    expect(localStorage.getItem(savedKey)).toBe(a);
+    expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
+  });
+
+  it("keeps resource reads independent while dependent sidebar links and projects wait for restoration", async () => {
+    const path = `/projects/${projectId}`; window.history.replaceState(null, "", path); localStorage.setItem(savedKey, a);
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = install((url) => url === `/api/v1/teams/${a}` ? pending.promise : resourceFallback(url));
+    render(<AuthenticatedApp />);
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith(`/api/v1/projects/${projectId}`))).toBe(true));
+    expect(selector()).toHaveAttribute("aria-label", "Switch Team: Loading Teams");
+    for (const name of ["My projects", "Team members", "Team settings"]) {
+      const link = screen.getByRole("link", { name });
+      expect(link).toHaveAttribute("aria-disabled", "true"); expect(link).not.toHaveAttribute("href");
+      fireEvent.click(link); expect(window.location.pathname).toBe(path);
+    }
+    expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(false);
+    await act(async () => pending.resolve(json(team(a, "  Alpha  "))));
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${a}`))).toBe(true));
+    expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
+    expect(window.location.pathname).toBe(path);
+  });
+
+  it("keeps Shared content available during a failed restoration and retries without losing the saved Team", async () => {
+    window.history.replaceState(null, "", "/shared-projects"); localStorage.setItem(savedKey, a); let status = 500;
+    const fetcher = install((url) => url === `/api/v1/teams/${a}` && status === 500 ? json({ error: { code: "internal_error", message: "private", requestId: "rq-restore" } }, 500) : undefined);
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "Projects shared with me" });
+    const notice = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
+    expect(notice).toHaveTextContent("rq-restore"); expect(notice).not.toHaveTextContent("private");
+    expect(localStorage.getItem(savedKey)).toBe(a);
+    expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true);
+    expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
+    status = 200; fireEvent.click(within(notice).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));
+    expect(screen.queryByRole("heading", { name: "Unable to load Teams" })).toBeNull();
+    expect(window.location.pathname).toBe("/shared-projects");
+  });
+
+  it.each([a, personal])("honors the explicit Team %s on a members reload", async (teamId) => {
+    const path = `/teams/${teamId}/members`; window.history.replaceState(null, "", path); localStorage.setItem(savedKey, b);
+    install((url) => {
+      if (url === `/api/v1/teams/${personal}`) return json(team(personal, null, "personal"));
+      if (url === `/api/v1/teams/${teamId}/members`) return json({ items: [{ ...team(teamId, null).membership, profile: { name: "Alice", email: null, avatarUrl: null } }] });
+      if (url.startsWith(`/api/v1/teams/${teamId}/invitations?`)) return json({ items: [], nextCursor: null });
+      return resourceFallback(url);
+    });
+    render(<AuthenticatedApp />);
+    await waitFor(() => expect(selector()).toHaveAttribute("aria-label", teamId === personal ? "Switch Team: Personal" : "Switch Team:   Alpha  "));
+    await screen.findByRole("heading", { name: "Team members" });
+    expect(screen.getByRole("link", { name: "Team members" })).toHaveAttribute("href", path);
+    expect(window.location.pathname).toBe(path); expect(localStorage.getItem(savedKey)).toBe(teamId);
+  });
+});
