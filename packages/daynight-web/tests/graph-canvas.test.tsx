@@ -202,7 +202,7 @@ describe('task dependency canvas', () => {
     await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
     expect(dialog).toHaveFocus();
     await user.tab({ shift });
-    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog).getByRole('combobox', { name: '语言 / Language' })).toHaveFocus();
+    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog).getByRole('button', { name: '关闭依赖图' })).toHaveFocus();
   });
 
   it('inerts background ancestors for the whole modal and restores their original state without touching body portals', async () => {
@@ -274,7 +274,7 @@ describe('task dependency canvas', () => {
     const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
-    const first = within(dialog).getByRole('combobox', { name: '语言 / Language' });
+    const first = within(dialog).getByRole('button', { name: '关闭依赖图' });
     first.focus();
     await user.tab({ shift: true });
     const last = document.activeElement as HTMLElement;
