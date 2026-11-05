@@ -22,7 +22,7 @@ describe('command candidate reverse navigation', () => {
     const props = base(); render(<SessionComposer {...props} />);
     const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value } });
     expect(fireEvent.keyDown(input, { key: 'Tab' })).toBe(false);
-    if (value === '/model') expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+    if (value === '/model') expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible();
     else if (value === '/permissions') expect(screen.getByRole('combobox', { name: 'Approval policy' })).toBeVisible();
     else if (value === '/rev') expect(input).toHaveValue('/review ');
     else await waitFor(() => expect(props.onExecuteCommand).toHaveBeenCalledExactlyOnceWith('compact', '', '3', '/compact'));
@@ -116,7 +116,7 @@ describe('composer provider controls', () => {
     const props = base(); render(<SessionComposer {...props} />);
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'Model' }));
-    fireEvent.change(screen.getByRole('combobox', { name: 'Model selection' }), { target: { value: 'native-b' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), { target: { value: 'native-b' } });
     await waitFor(() => expect(props.onUpdateSetting).toHaveBeenCalledWith('model', 'native-b', '3'));
     expect(screen.getByRole('textbox')).toHaveValue('draft');
     fireEvent.click(screen.getByRole('button', { name: 'Permissions' }));
@@ -145,7 +145,7 @@ describe('composer provider controls', () => {
   it('opens local slash settings and sends unknown slash input normally', async () => {
     const props = base(); render(<SessionComposer {...props} />);const input = screen.getByRole('textbox');
     fireEvent.change(input, { target: { value: '/model' } });fireEvent.keyDown(input, { key: 'Enter' });
-    expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible();
     fireEvent.keyDown(input, { key: 'Escape' });
     fireEvent.change(input, { target: { value: '/made-up' } });fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/made-up'));
@@ -208,6 +208,23 @@ it('keeps input, controls, activity, actions, and keyboard help inside one chatb
   expect(screen.getByRole('textbox')).toBe(input);
   expect(within(surface as HTMLElement).getByRole('button', { name: 'Permissions' })).toBe(buttons[1]);
   expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it('groups interruption with submission while preserving the custom footer activity contract', () => {
+  const props = base();
+  props.state = { ...props.state, snapshot: { ...props.state.snapshot!, activity: 'working', currentTurnId: 'turn', turnStartedAt: new Date().toISOString(), operations: { canSend: true, canCancel: true, canRespond: true } } };
+  const view = render(<SessionComposer {...props} />);
+  const interrupt = screen.getByRole('button', { name: 'Interrupt' });
+  const actions = interrupt.closest('.session-primary-actions');
+  expect(actions).not.toBeNull();
+  expect(actions).toContainElement(screen.getByRole('button', { name: 'Add to current turn' }));
+  expect(screen.getByLabelText('Agent activity')).not.toContainElement(interrupt);
+  fireEvent.mouseEnter(interrupt);
+  expect(screen.getByRole('button', { name: 'Add to current turn' }).parentElement).not.toHaveAttribute('data-hint-open');
+  view.rerender(<SessionComposer {...props} presentation={{ renderFooter: ({ settings, activity, submit }) => <>{settings}<section aria-label="Custom activity">{activity}</section>{submit}</> }} />);
+  expect(screen.getByLabelText('Custom activity')).toContainElement(screen.getByRole('button', { name: 'Interrupt' }));
+  expect(screen.getByLabelText('Custom activity')).toHaveTextContent('Working');
+  expect(screen.getAllByRole('button', { name: 'Interrupt' })).toHaveLength(1);
 });
 
 it('keeps failed submission details with the draft inside the same chatbox', async () => {
@@ -425,7 +442,7 @@ it('uses the current revision for a selected command and preserves a newer draft
 it('requires an explicit arrow selection before Enter completes a prefix and resets it on edits and catalog refresh', async () => {
   const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
   fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' }); fireEvent.keyDown(input, { key: 'Enter' });
-  expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible(); fireEvent.keyDown(input, { key: 'Escape' });
+  expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible(); fireEvent.keyDown(input, { key: 'Escape' });
   fireEvent.change(input, { target: { value: '/m' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
   fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'Enter' });
   await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/mo'));
@@ -523,7 +540,7 @@ it.each(['equivalent', 'activity', 'settings'] as const)('preserves explicit com
   const nextSnapshot: SessionSnapshot = mode === 'activity' ? { ...next, sessionRevision: '13', activity: 'working', currentTurnId: 'turn' } : mode === 'settings' ? { ...next, controls: { ...next.controls!, settings: next.controls!.settings.map(setting => ({ ...setting, value: 'native-b' })) } } : next;
   view.rerender(<SessionComposer {...props} state={hydrateSession(props.state, nextSnapshot, [])} />);
   fireEvent.keyDown(input, { key: 'Enter' });
-  expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+  expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible();
   expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
 });
 

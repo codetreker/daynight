@@ -1943,7 +1943,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-39 scenarios, divided into disjoint sets of 20 and 19. Default file-level partitioning
+41 scenarios, divided into disjoint sets of 21 and 20. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -2353,8 +2353,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (78 ordinary cases; local stress adds five native cases
-for 44 native / 39 container, 83 total), current manual/periodic refresh,
+The selected inventory (82 ordinary cases; local stress adds five native cases
+for 46 native / 41 container, 87 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
