@@ -331,11 +331,12 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
       event.preventDefault(); void send();
     }} />;
   const settings = <div className="session-controls-toolbar" aria-label={m.title}>
-        <button type="button" className="session-control-trigger" aria-label={m.model} data-pending={modelPending || undefined} aria-expanded={controlView === 'model'} onClick={() => { setControlView(controlView === 'model' ? null : 'model'); dismissCommands(true); }}>{modelLabel}<span aria-hidden="true"> ▾</span></button>
+        <button type="button" className="session-control-trigger session-model-trigger" aria-label={m.model} data-pending={modelPending || undefined} aria-expanded={controlView === 'model'} onClick={() => { setControlView(controlView === 'model' ? null : 'model'); dismissCommands(true); }}><span className="session-model-label">{modelLabel}</span><span className="session-control-caret" aria-hidden="true">▾</span></button>
         <button type="button" className="session-control-trigger" aria-label={sessionNativeLabels.permissions} lang="en" data-pending={permissionPending || undefined} aria-expanded={controlView === 'permissions'} onClick={() => { setControlView(controlView === 'permissions' ? null : 'permissions'); dismissCommands(true); }}>{sessionNativeLabels.permissions}<span aria-hidden="true"> ▾</span></button>
-        <button type="button" className="session-control-trigger" aria-label={m.commands} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
+        <button type="button" className="session-control-trigger session-command-trigger" aria-label={m.commands} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
       </div>;
-  const activity = <SessionActivity suppressStatus={sessionNoticeOwned} snapshot={snapshot} connected={connected} active={active} commandPending={commandPending || hasPendingOperation(state, 'execute_command')} interruptRequested={interruptRequested} interruptPending={cancelling || hasPendingOperation(state, 'cancel')} interruptAllowed={cancelAllowed} onInterrupt={() => void cancel()} />;
+  const activityProps = { suppressStatus: sessionNoticeOwned, snapshot, connected, active, commandPending: commandPending || hasPendingOperation(state, 'execute_command'), interruptRequested, interruptPending: cancelling || hasPendingOperation(state, 'cancel'), interruptAllowed: cancelAllowed, onInterrupt: () => void cancel() };
+  const activity = <SessionActivity {...activityProps} />;
   const submit = <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(submission.kind !== 'message' ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>;
   return <form ref={formRef} className="session-composer session-composer-adaptive" onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
     if (event.key !== 'Escape' || !(controlView || showCommands)) return;
@@ -356,8 +357,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     <div className="session-composer-surface">
     {input}
     {presentation?.renderAttachments ? <div className="session-composer-attachments">{presentation.renderAttachments({ text, inputRef, setText, snapshot, active, connected, authPaused })}</div> : null}
-    <div className="session-composer-footer">
-      {presentation?.renderFooter ? presentation.renderFooter({ settings, activity, submit }) : <>{settings}{activity}{submit}</>}
+    <div className={`session-composer-footer${presentation?.renderFooter ? '' : ' session-composer-footer-default'}`} data-submit-wide={pending || activityProps.commandPending || activityProps.interruptPending || snapshot?.activity === 'working' || snapshot?.activity === 'waiting_input' || undefined}>
+      {presentation?.renderFooter ? presentation.renderFooter({ settings, activity, submit }) : <>{settings}<SessionActivity {...activityProps} render={(status, interrupt) => <>{status}<div className="session-primary-actions">{interrupt}{submit}</div></>} /></>}
     </div>
     {error ? <p className="session-error" role="alert">{error}</p> : null}
     </div>
