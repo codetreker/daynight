@@ -53,8 +53,9 @@ test('creates, renames and typed-deletes a Team, preserving raw input and browse
   await expect.poll(() => selected(page)).toBe(teamId);
   expect(api.writes[0]).toEqual({ method: 'POST', body: { name: '  Alpha\nTeam  ', expectedUserId: userId } });
   await settings(page);
-  await page.getByLabel('Team name').fill('  Renamed\nTeam  ');
-  await page.getByRole('button', { name: 'Save changes' }).click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('dialog').getByLabel('Team name').fill('  Renamed\nTeam  ');
+  await page.getByRole('dialog').getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
   expect(api.writes[1]).toEqual({ method: 'PATCH', body: { name: '  Renamed\nTeam  ', version: 1, expectedUserId: userId } });
   await page.getByRole('button', { name: 'Delete Team' }).click();
@@ -89,9 +90,25 @@ test('cancel and Escape submit nothing; dialogs retain focus on narrow screens i
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
 });
 
+test('rename dialog restores focus, discards drafts and fits long text in both languages', async ({ page }) => {
+  const api = await install(page); api.name = 'A'.repeat(300);
+  await page.setViewportSize({ width: 375, height: 667 }); await page.goto(`/teams/${teamId}/settings`);
+  const edit = page.getByRole('button', { name: 'Edit', exact: true }); await expect(edit).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await edit.click(); const dialog = page.getByRole('dialog'), name = dialog.getByLabel('Team name');
+  await expect(name).toBeFocused(); await name.fill('Draft');
+  await page.keyboard.press('Shift+Tab'); expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(edit).toBeFocused();
+  await edit.click(); await expect(name).toHaveValue('A'.repeat(300));
+  await dialog.getByRole('combobox').selectOption('zh-CN');
+  await expect(dialog.getByLabel('Team 名称')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await dialog.getByRole('button', { name: '取消' }).click(); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
+});
+
 test('nonempty refusal and lost response remain distinct, with no automatic replay', async ({ page }) => {
   const api = await install(page); await page.goto(`/teams/${teamId}/settings`);
-  await expect(page.getByLabel('Team name')).toHaveValue('Alpha');
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
   api.refusal = 'team_not_empty';
   await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha'); await dialog.getByRole('button', { name: 'Delete Team' }).click();
@@ -111,12 +128,12 @@ test('nonempty refusal and lost response remain distinct, with no automatic repl
 test('Personal settings remain read-only, and a version conflict requires a fresh typed name', async ({ page }) => {
   const api = await install(page);
   await page.goto(`/teams/${personalId}/settings`);
-  await expect(page.getByLabel('Team name')).toHaveValue('Personal');
-  await expect(page.getByLabel('Team name')).toBeDisabled();
+  await expect(page.getByRole('main').getByText('Personal', { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete Team' })).toBeDisabled();
   expect(api.writes).toHaveLength(0);
   await page.goto(`/teams/${teamId}/settings`);
-  await expect(page.getByLabel('Team name')).toHaveValue('Alpha');
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Delete Team' }).click(); const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Enter the Team name to confirm').fill('Alpha');
   api.name = 'New name'; api.version = 2; api.refusal = 'version_conflict';
@@ -134,7 +151,7 @@ test('Personal settings remain read-only, and a version conflict requires a fres
 
 test('Escape restores focus after the delete dialog waits for a fresh Team read', async ({ page }) => {
   const api = await install(page); await page.goto(`/teams/${teamId}/settings`);
-  await expect(page.getByLabel('Team name')).toHaveValue('Alpha');
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
   const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
   api.holdRead = { started: started.resolve, wait: finish.promise };
   const opener = page.getByRole('button', { name: 'Delete Team' });
