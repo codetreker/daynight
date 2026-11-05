@@ -1,4 +1,4 @@
-package service
+package worker
 
 import (
 	"context"
@@ -8,13 +8,18 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 )
 
-type Workers struct{ store *store.Store }
+type workerStore interface {
+	store.SnapshotReader
+	store.WorkerWriter
+}
 
-func NewWorkers(database *store.Store) *Workers { return &Workers{store: database} }
+type Workers struct{ store workerStore }
+
+func NewWorkers(database workerStore) *Workers { return &Workers{store: database} }
 
 type WorkerReportResult struct {
 	Configuration  *model.WorkerConfigurationReceipt
@@ -41,52 +46,57 @@ func (s *Workers) Report(ctx context.Context, principal model.Principal, workerI
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
-	input, err = validateWorkerReport(input)
+	input, err = workercore.ValidateReport(input)
 	if err != nil {
 		return WorkerReportResult{}, err
 	}
 	if input.Configuration != nil {
 		raw, marshalErr := json.Marshal(input.Configuration)
 		if marshalErr != nil {
-			return WorkerReportResult{}, invalidInput("Worker configuration exchange is invalid.")
+			return WorkerReportResult{}, &model.Fault{Code: "invalid_input", Message: "Worker configuration exchange is invalid."}
 		}
-		input.Configuration, err = ParseWorkerConfigurationExchange(raw)
+		input.Configuration, err = workercore.ParseWorkerConfigurationExchange(raw)
 		if err != nil {
 			return WorkerReportResult{}, err
 		}
 	}
 	var result WorkerReportResult
-	err = s.store.WriteWorker(ctx, func(tx *store.WorkerTx) error {
-		observedAt, err := tx.ObservedAt(ctx)
+	completion, err := s.store.WriteWorker(ctx, func(scope store.WorkerScope) error {
+		tx := scope.WorkerDAO()
+		observedAt, err := scope.ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		observation := model.WorkerTaskObservation{State: model.WorkerTasksUnavailable, Items: []model.WorkerObservedTask{}}
+		var items []model.WorkerObservedTask
 		if input.TaskInventory != nil {
-			items, err := tx.ReportTaskSnapshots(ctx, principal.UserID, workerID, *input.TaskInventory)
+			sources, err := tx.ReportTaskSnapshots(ctx, principal.UserID, *input.TaskInventory)
 			if err != nil {
 				return err
 			}
-			observation = model.WorkerTaskObservation{State: model.WorkerTasksObserved, ObservedAt: &observedAt,
-				InventoryObservedAt: &input.TaskInventory.ObservedAt, Items: items}
+			items, err = workercore.MatchTaskSnapshots(sources, *input.TaskInventory, principal.UserID, workerID)
+			if err != nil {
+				return err
+			}
 		}
-		stored, err := tx.UpsertWorker(ctx, model.WorkerSnapshot{UserID: principal.UserID, WorkerID: workerID,
-			CreatedAt: observedAt, LastReportedAt: observedAt, Telemetry: input.Telemetry, TaskSnapshot: observation})
+		stored, err := tx.UpsertWorker(ctx, workercore.SnapshotForReport(principal.UserID, workerID, input, observedAt, items))
 		if err != nil {
 			return err
 		}
 		if input.Configuration != nil {
-			result.Configuration, err = exchangeWorkerConfiguration(ctx, tx, principal, workerID, *input.Configuration)
+			result.Configuration, err = workercore.ExchangeConfiguration(ctx, tx, principal, workerID, *input.Configuration)
 			if err != nil {
 				return err
 			}
 		}
 		result.LastReportedAt = stored.LastReportedAt
-		result.ObservedAt, err = tx.ObservedAt(ctx)
+		result.ObservedAt, err = scope.ObservedAt(ctx)
 		return err
 	})
 	if err != nil {
 		return WorkerReportResult{}, workerConfigurationError("report worker", err)
+	}
+	if completion.Outcome != store.TransactionCommitted {
+		return WorkerReportResult{}, fmt.Errorf("report worker: transaction did not confirm commit")
 	}
 	return result, nil
 }
@@ -95,8 +105,7 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 	if err := model.RequirePrincipal(principal); err != nil {
 		return WorkerPage{}, err
 	}
-	scope := query.ListScope{Kind: "workers", WorkerUserID: &principal.UserID}
-	page, err := query.ListPage(request, scope)
+	page, err := workercore.ListPage(request, principal.UserID)
 	if err != nil {
 		return WorkerPage{}, err
 	}
@@ -117,7 +126,7 @@ func (s *Workers) List(ctx context.Context, principal model.Principal, request m
 	result.Items = records.Items
 	if records.HasMore {
 		last := records.Items[len(records.Items)-1]
-		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.WorkerID)
+		cursor, err := workercore.ListCursor(principal.UserID, last.CreatedAt, last.WorkerID)
 		if err != nil {
 			return WorkerPage{}, fmt.Errorf("encode worker cursor: %w", err)
 		}

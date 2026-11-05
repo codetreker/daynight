@@ -1,4 +1,4 @@
-package service
+package worker
 
 import (
 	"slices"
@@ -15,7 +15,7 @@ func validateWorkerAssistantHost(host *model.WorkerAssistantHost, platform model
 	if host == nil {
 		return nil
 	}
-	if host.ProtocolVersion != 1 || !workerReportTime(host.ObservedAt) || !host.DefaultProvider.Valid() || !workerAssistantAbsolutePath(host.DefaultCwd, platform) || len(host.Providers) != 3 {
+	if host.ProtocolVersion != 1 || !workerReportTime(host.ObservedAt) || !host.DefaultProvider.Valid() || !AssistantAbsolutePath(host.DefaultCwd, platform) || len(host.Providers) != 3 {
 		return invalidInput("Assistant host requires protocol v1, an observation time, an absolute directory, a default provider and all three providers.")
 	}
 	seen := make(map[model.WorkerAgent]bool, 3)
@@ -43,7 +43,7 @@ func workerAssistantText(value string, limit int) bool {
 	return model.ValidWorkerText(value) && len(value) <= limit && !strings.ContainsFunc(value, unicode.IsControl)
 }
 
-func workerAssistantAbsolutePath(value string, platform model.TaskPlatform) bool {
+func AssistantAbsolutePath(value string, platform model.TaskPlatform) bool {
 	if !workerAssistantText(value, 4096) {
 		return false
 	}

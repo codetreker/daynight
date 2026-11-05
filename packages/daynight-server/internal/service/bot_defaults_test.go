@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"reflect"
 	"testing"
 	"time"
@@ -11,13 +12,23 @@ import (
 	"github.com/google/uuid"
 )
 
+func workerValidationValue[T any](value T) *T { return &value }
+
+func validAssistantHost() *model.WorkerAssistantHost {
+	return &model.WorkerAssistantHost{ProtocolVersion: 1, ObservedAt: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC), DefaultCwd: "/workspace", DefaultProvider: model.AgentCopilot, Providers: []model.WorkerAssistantProvider{
+		{Provider: model.AgentCodex, Available: true, Args: []string{}},
+		{Provider: model.AgentClaude, Reason: workerValidationValue("not_found"), Args: []string{}},
+		{Provider: model.AgentCopilot, Available: true, Model: workerValidationValue("gpt-5"), Args: []string{"--effort", "high"}},
+	}}
+}
+
 func reportBotHost(t *testing.T, database *store.Store, principal model.Principal, workerID, cwd string) {
 	t.Helper()
 	report := serviceWorkerReport()
 	report.Telemetry.AssistantHost = validAssistantHost()
 	report.Telemetry.AssistantHost.ObservedAt = time.Now().UTC().Add(-time.Second)
 	report.Telemetry.AssistantHost.DefaultCwd = cwd
-	if _, err := NewWorkers(database).Report(context.Background(), principal, workerID, report); err != nil {
+	if _, err := workerservice.NewWorkers(database).Report(context.Background(), principal, workerID, report); err != nil {
 		t.Fatal(err)
 	}
 }

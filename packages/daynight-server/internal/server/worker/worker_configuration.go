@@ -1,11 +1,11 @@
-package server
+package worker
 
 import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 const workerConfigurationHeader = "Daynight-Worker-Configuration"
@@ -29,7 +29,7 @@ func (h *workersHandler) configuration(w http.ResponseWriter, request *http.Requ
 			if revisionErr != nil {
 				err = revisionErr
 			} else {
-				value, valueErr := service.ParseWorkerConfiguration(fields["value"])
+				value, valueErr := workercore.ParseWorkerConfiguration(fields["value"])
 				if valueErr != nil {
 					err = valueErr
 				} else {

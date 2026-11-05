@@ -1,4 +1,4 @@
-package service
+package worker
 
 import (
 	"encoding/json"
@@ -13,7 +13,7 @@ func TestWorkerAssistantHostValidationRejectsUnknownProtocol(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"assistantHost":{"protocolVersion":2,"observedAt":"2026-11-04T12:00:00Z","defaultCwd":"/workspace","defaultProvider":"copilot","providers":[]}}`), &report.Telemetry); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := validateWorkerReport(report); err == nil {
+	if _, err := ValidateReport(report); err == nil {
 		t.Fatal("unsupported assistant host protocol accepted")
 	}
 }
@@ -30,7 +30,7 @@ func TestWorkerAssistantHostDomainValidation(t *testing.T) {
 	report := validWorkerReportForValidation()
 	report.TaskInventory = nil
 	report.Telemetry.AssistantHost = validAssistantHost()
-	if _, err := validateWorkerReport(report); err != nil {
+	if _, err := ValidateReport(report); err != nil {
 		t.Fatal(err)
 	}
 	cases := map[string]func(*model.WorkerAssistantHost){
@@ -64,7 +64,7 @@ func TestWorkerAssistantHostDomainValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			report.Telemetry.AssistantHost = validAssistantHost()
 			mutate(report.Telemetry.AssistantHost)
-			if _, err := validateWorkerReport(report); err == nil {
+			if _, err := ValidateReport(report); err == nil {
 				t.Fatal("invalid assistant host accepted")
 			}
 		})
@@ -73,14 +73,14 @@ func TestWorkerAssistantHostDomainValidation(t *testing.T) {
 		report.Telemetry.AssistantHost = validAssistantHost()
 		report.Telemetry.Platform = model.PlatformWindows
 		report.Telemetry.AssistantHost.DefaultCwd = path
-		if _, err := validateWorkerReport(report); err != nil {
+		if _, err := ValidateReport(report); err != nil {
 			t.Fatal(path, err)
 		}
 	}
 	for _, path := range []string{`C:work`, `/work`, `\work`, `\\server`, `\\server\`, `\\?\C:\work`, `1:/work`} {
 		report.Telemetry.AssistantHost = validAssistantHost()
 		report.Telemetry.AssistantHost.DefaultCwd = path
-		if _, err := validateWorkerReport(report); err == nil {
+		if _, err := ValidateReport(report); err == nil {
 			t.Fatal("invalid Windows absolute path", path)
 		}
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type WorkerTx struct {
+type workerTx struct {
 	tx pgx.Tx
 }
 
@@ -21,18 +21,18 @@ type WorkerPage struct {
 	HasMore bool
 }
 
-func (s *Store) WriteWorker(ctx context.Context, operation func(*WorkerTx) error) error {
+func (s *Store) WriteWorker(ctx context.Context, operation func(WorkerScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return queryError("begin worker snapshot", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin worker snapshot", err)
 	}
-	if err := transact(ctx, tx, func(tx pgx.Tx) error { return operation(&WorkerTx{tx: tx}) }); err != nil {
-		return queryError("write worker snapshot", err)
-	}
-	return nil
+	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(&workerTx{tx: tx}) })
+	return teamCompletion("write worker snapshot", err)
 }
 
-func (w *WorkerTx) ObservedAt(ctx context.Context) (time.Time, error) {
+func (w *workerTx) WorkerDAO() WorkerWriteDAO { return w }
+
+func (w *workerTx) ObservedAt(ctx context.Context) (time.Time, error) {
 	var observed time.Time
 	if err := w.tx.QueryRow(ctx, "SELECT statement_timestamp()").Scan(&observed); err != nil {
 		return time.Time{}, queryError("read worker clock", err)
@@ -40,16 +40,14 @@ func (w *WorkerTx) ObservedAt(ctx context.Context) (time.Time, error) {
 	return observed.UTC(), nil
 }
 
-func (w *WorkerTx) ReportTaskSnapshots(ctx context.Context, userID, workerID string, inventory model.WorkerTaskInventory) ([]model.WorkerObservedTask, error) {
-	items := make([]model.WorkerObservedTask, 0, len(inventory.Claims))
+func (w *workerTx) ReportTaskSnapshots(ctx context.Context, userID string, inventory model.WorkerTaskInventory) ([]WorkerTaskSource, error) {
+	items := make([]WorkerTaskSource, 0, len(inventory.Claims))
 	if len(inventory.Claims) == 0 {
 		return items, nil
 	}
 	ids := make([]string, len(inventory.Claims))
-	references := make(map[string]model.WorkerTaskReference, len(inventory.Claims))
 	for index, reference := range inventory.Claims {
 		ids[index] = reference.TaskID
-		references[reference.TaskID] = reference
 	}
 	rows, err := w.tx.Query(ctx, `SELECT t.id::text, t.project_id::text, t.title, t.status, worker_property.value, p.name
 		FROM tasks t
@@ -61,14 +59,13 @@ func (w *WorkerTx) ReportTaskSnapshots(ctx context.Context, userID, workerID str
 		return nil, queryError("read reported task sources", err)
 	}
 	defer rows.Close()
-	matched := make(map[string]model.WorkerObservedTask, len(inventory.Claims))
 	for rows.Next() {
-		var task model.WorkerObservedTask
+		var source WorkerTaskSource
 		var properties *string
-		if err := rows.Scan(&task.TaskID, &task.ProjectID, &task.Title, &task.Status, &properties, &task.ProjectName); err != nil {
+		if err := rows.Scan(&source.Task.ID, &source.Task.ProjectID, &source.Task.Title, &source.Task.Status, &properties, &source.ProjectName); err != nil {
 			return nil, queryError("read reported task sources", err)
 		}
-		if !task.Status.Valid() {
+		if !source.Task.Status.Valid() {
 			return nil, queryError("read reported task sources", fmt.Errorf("stored task status is invalid"))
 		}
 		if properties == nil {
@@ -78,32 +75,18 @@ func (w *WorkerTx) ReportTaskSnapshots(ctx context.Context, userID, workerID str
 		if err != nil {
 			return nil, queryError("decode reported task source", err)
 		}
-		reference := references[task.TaskID]
-		claim, err := taskproperties.Worker(model.TaskProperties{"worker": value})
-		if err != nil {
-			return nil, queryError("decode reported worker", err)
-		}
-		if task.ProjectID != reference.ProjectID || task.Status != model.TaskInProgress || claim == nil ||
-			claim.State != model.WorkerActive || claim.UserID != userID || claim.WorkerID != workerID || claim.ClaimID != reference.ClaimID {
-			continue
-		}
-		task.ClaimID, task.Phase, task.Agent = claim.ClaimID, claim.Phase, claim.Agent
-		matched[task.TaskID] = task
+		source.Task.Properties = model.TaskProperties{"worker": value}
+		items = append(items, source)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, queryError("read reported task sources", err)
-	}
-	for _, reference := range inventory.Claims {
-		if task, ok := matched[reference.TaskID]; ok {
-			items = append(items, task)
-		}
 	}
 	return items, nil
 }
 
 const workerSnapshotProjection = `user_id::text, worker_id::text, created_at, last_seen_at, telemetry, task_snapshot`
 
-func (w *WorkerTx) UpsertWorker(ctx context.Context, snapshot model.WorkerSnapshot) (model.WorkerSnapshot, error) {
+func (w *workerTx) UpsertWorker(ctx context.Context, snapshot model.WorkerSnapshot) (model.WorkerSnapshot, error) {
 	telemetry, err := json.Marshal(snapshot.Telemetry)
 	if err != nil {
 		return model.WorkerSnapshot{}, queryError("encode worker telemetry", err)

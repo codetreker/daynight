@@ -6,9 +6,11 @@ import (
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
+	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 
@@ -46,7 +48,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(dependencies.Store), auth, logger)
 	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(dependencies.Store), auth, logger)
-	workersRoutes(mux, service.NewWorkers(dependencies.Store), auth, logger)
+	workerhttp.RegisterRoutes(mux, workerservice.NewWorkers(dependencies.Store), auth, logger)
 	taskhttp.TaskRoutes(mux, taskservice.NewTasks(dependencies.Store), auth, logger)
 	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(dependencies.Store), auth, logger)
 	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(dependencies.Store), auth, logger)

@@ -13,7 +13,7 @@ flowchart LR
   Q --> H
 ```
 
-`api/workers.go` 定义公开 DTO；`internal/server/workers.go` 注册报告与快照认证端点，并挂接由[配置设计](daynight-worker-configuration.md)拥有的配置子资源，输入解析拒绝各层未知、重复和错误分支字段。`service.Workers` 处理 principal、规范 UUID、有效报告、账号绑定分页与事务编排。core 的报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存受控 JSONB。
+`api/workers.go` 定义公开 DTO；`internal/server/worker` 注册报告、快照和[配置](daynight-worker-configuration.md)认证端点，输入解析拒绝各层未知、重复和错误分支字段。`service/worker` 选择事务作用域并组合任务清单与项目准入；`core/worker` 处理报告校验、任务匹配、时效及配置规则。报告、遥测和任务观测模型与 HTTP DTO 分离，store 保存受控 JSONB。
 
 机器信息不授予身份。资源由 `(principal.UserID,workerId)` 定位，Cookie 写入的 Origin、PAT、身份响应标头及 no-store 复用既有认证。报告日志使用 `component=worker_report`，关联 user_id、已验证 worker_id、request_id 与处理阶段；正文和原生命令内容不进入日志。
 
@@ -27,9 +27,9 @@ flowchart LR
 
 ## 报告事务
 
-`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `projectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
+`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，DAO 按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `projectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
 
-按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
+按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码；core 使用 Task 的 claim 规则匹配引用。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
 
 UPSERT 同时写 last_seen_at、telemetry、task_snapshot，只竞争该 Worker 行，并以 `workers.last_seen_at < EXCLUDED.last_seen_at` 拒绝旧 observation。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。
 

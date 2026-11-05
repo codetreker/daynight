@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
 )
 
 // BotDefaults is an observation, not a reservation or a startup guarantee.
@@ -103,7 +104,7 @@ func selectBotWorker(result BotDefaults, worker BotWorkerDefaults) BotDefaults {
 
 func resolveBotWorker(worker model.WorkerSnapshot, now time.Time, preference model.BotWorkerPreference, overrides model.BotOverrides) BotWorkerDefaults {
 	result := BotWorkerDefaults{WorkerID: worker.WorkerID, Machine: worker.Telemetry.Machine, Platform: worker.Telemetry.Platform,
-		State: WorkerAssistantHostState(worker, now), Providers: []model.WorkerAssistantProvider{}}
+		State: workercore.WorkerAssistantHostState(worker, now), Providers: []model.WorkerAssistantProvider{}}
 	host := worker.Telemetry.AssistantHost
 	if host != nil {
 		result.Providers = host.Providers
@@ -119,7 +120,7 @@ func resolveBotWorker(worker model.WorkerSnapshot, now time.Time, preference mod
 	if overrides.Cwd != nil {
 		cwd = *overrides.Cwd
 	}
-	if !workerAssistantAbsolutePath(cwd, worker.Telemetry.Platform) {
+	if !workercore.AssistantAbsolutePath(cwd, worker.Telemetry.Platform) {
 		reason := "invalid_cwd"
 		result.Reason = &reason
 		return result

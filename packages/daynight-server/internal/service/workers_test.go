@@ -2,6 +2,7 @@ package service
 
 import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
 	"context"
 	"errors"
@@ -30,7 +31,7 @@ func serviceWorkerReport() model.WorkerReport {
 
 func TestWorkerSnapshotsPreserveUnknownEmptyAndStaleObservations(t *testing.T) {
 	_, database, _, principal := projectService(t)
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	ctx := context.Background()
 	id := uuid.NewString()
 	report := serviceWorkerReport()
@@ -84,7 +85,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
 	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00", Title: "Unrelated PR"})})
 	before := task
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	report := serviceWorkerReport()
 	report.TaskInventory = &model.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []model.WorkerTaskReference{{ProjectID: strings.ToUpper(project.ID), TaskID: task.ID, ClaimID: descriptor.ClaimID}, {ProjectID: project.ID, TaskID: uuid.NewString(), ClaimID: uuid.NewString()}}}
 	if _, err := workers.Report(ctx, owner, descriptor.WorkerID, report); err != nil {
@@ -128,7 +129,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 	_, database, _, principal := projectService(t)
 	ctx := context.Background()
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	for _, id := range ids {
 		if _, err := workers.Report(ctx, principal, id, serviceWorkerReport()); err != nil {
@@ -176,7 +177,7 @@ func TestWorkerSnapshotsPaginationClockAndExpiredDetail(t *testing.T) {
 
 func TestWorkerSnapshotServiceRefusalsAndStorageFailures(t *testing.T) {
 	_, database, _, principal := projectService(t)
-	workers := NewWorkers(database)
+	workers := workerservice.NewWorkers(database)
 	ctx := context.Background()
 	id := uuid.NewString()
 	_, err := workers.Report(ctx, model.Principal{}, id, serviceWorkerReport())
