@@ -28,7 +28,9 @@ provides the authenticated branch under that same Provider. The
 adds the public introduction and reactive branch selection; all page owners update
 document metadata on language or route changes.
 Navigation focus remains dependent on the route, so changing a language does
-not refocus the page. The original integration placed the shared selector in the
+not refocus the page. The [global language-entry decision](../simplification/2026-11-05-global-language-entry.md)
+partially supersedes the original placement policy while retaining the language
+runtime and state guarantees. The original integration placed the shared selector in the
 navigation bar, task details and fullscreen graph so modal users could change
 language while the underlying application was inert. The
 [compact-header decision](../simplification/2026-10-24-compact-task-detail-header.md)

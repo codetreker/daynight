@@ -19,7 +19,8 @@ mounted graph without rebuilding its business state or viewport. The same dialog
 and graph remain mounted across fullscreen changes, retaining the existing
 focus containment, layered Escape and restoration behavior.
 
-This partially supersedes the selector placement in the
+The [global language entry decision](2026-11-05-global-language-entry.md)
+assigns the entry to the page. This partially supersedes the selector placement in the
 [bilingual interface decision](../feature/2026-10-22-web-bilingual-interface.md)
 and the notice geometry in the
 [progressive graph decision](../feature/2026-10-22-progressive-task-graph.md).

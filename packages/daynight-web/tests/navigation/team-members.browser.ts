@@ -365,8 +365,9 @@ test('same-account revalidation preserves a pending exit and its unknown outcome
 
 test('narrow viewport and Chinese dialog retain usable controls', async ({ page }) => {
   const api = await install(page); await page.setViewportSize({ width: 375, height: 667 }); await start(page);
-  await page.getByLabel('Team role: Bob').selectOption('member'); const dialog = page.getByRole('dialog');
-  await dialog.getByRole('combobox').selectOption('zh-CN');
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+  await page.getByLabel('Team 角色: Bob').selectOption('member'); const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
   await expect(dialog.getByRole('heading', { name: '修改 Team 角色' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '确认修改' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

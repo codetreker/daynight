@@ -951,6 +951,7 @@ describe("authenticated application shell", () => {
     await act(async () => finishCheck(fail(503, "internal")));
     expect(document.body).toHaveClass("auth-session-checking");
     const overlay = screen.getByRole("dialog", { name: "重新确认当前账户" });
+    expect(within(overlay).queryByRole("combobox")).toBeNull();
     fireEvent.keyDown(overlay, { key: "Escape" });
     expect(screen.queryByText("关闭后无法恢复这份令牌。请确认你已保存。")).toBeNull();
     const cancel = new Event("cancel", { cancelable: true });
@@ -963,6 +964,8 @@ describe("authenticated application shell", () => {
     expect(document.querySelector(".auth-shell")).toHaveAttribute("aria-hidden", "true");
     expect(document.querySelector(".auth-shell")).toHaveAttribute("inert");
     expect(screen.getByRole("dialog", { name: "重新确认当前账户" })).toBe(overlay);
+    expect(within(overlay).queryByRole("combobox")).toBeNull();
+    expect(within(overlay).getByRole("status")).toBeInTheDocument();
     await act(async () => finishCheck(json(user())));
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(screen.getByRole("dialog", { name: "访问令牌已创建" })).toBe(reveal);

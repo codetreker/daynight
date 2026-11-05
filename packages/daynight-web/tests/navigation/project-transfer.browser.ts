@@ -136,8 +136,10 @@ test('conflict requires a new preview and a lost response followed by 404 stays 
 
 test('narrow dialog supports bilingual labels, focus trapping and cancellation', async ({ page }) => {
   const state = await install(page); await page.setViewportSize({ width: 375, height: 667 }); await start(page);
-  const dialog = await open(page);
-  await dialog.getByRole('combobox').first().selectOption('zh-CN');
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
+  await page.getByRole('button', { name: '转移项目', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
   await expect(dialog.getByRole('heading', { name: '转移项目' })).toBeVisible();
   await expect(dialog.getByLabel('目标 Team ID 或链接')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
