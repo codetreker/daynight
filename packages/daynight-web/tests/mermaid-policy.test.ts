@@ -67,6 +67,14 @@ A@{ "im\u0067": "https://example.invalid/x.png" } --> B`);
     await expect(preflightBlock('block\ncolumns auto\nA', mermaid)).resolves.toBeUndefined();
   });
 
+  it('counts expanded spaces once in the real Block hierarchy', async () => {
+    for (const source of ['block\nA space:1 B', 'block\nblock:group\nA space:2\nend', 'block\nA A\nclass missing demo']) {
+      await preflightBlock(source, mermaid);
+      const parsed = await mermaid.mermaidAPI.getDiagramFromText(source);
+      expect(() => inspectMermaidDiagram('block', parsed)).not.toThrow();
+    }
+  });
+
   it('counts structures separately and rejects broken SDK contracts', () => {
     const nodes = Array.from({ length: 500 }, () => ({}));
     const parsed = (n: unknown, e: unknown) => ({ type: 'classDiagram', db: { getData: () => ({ nodes: n, edges: e }) } });

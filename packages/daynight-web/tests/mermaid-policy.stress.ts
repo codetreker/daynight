@@ -29,6 +29,32 @@ beforeAll(() => {
 });
 
 describe('real SDK complexity boundaries', () => {
+  it.each([
+    { name: 'only spaces', source: (spaces: number) => `block\nspace:${spaces}`, atLimit: 500 },
+    { name: 'ordinary node and spaces', source: (spaces: number) => `block\nA space:${spaces}`, atLimit: 499 },
+    { name: 'nested composite and spaces', source: (spaces: number) => `block\nblock:group\nA space:${spaces}\nend`, atLimit: 498 },
+  ])('counts $name at the exact limit', async ({ source, atLimit }) => {
+    for (const spaces of [atLimit, atLimit + 1]) {
+      const text = source(spaces);
+      // A single space:501 is rejected before the parser can expand it.
+      if (spaces > 500) {
+        await expect(preflightBlock(text, mermaid)).rejects.toMatchObject({ issue: 'complexity' });
+        continue;
+      }
+      await preflightBlock(text, mermaid);
+      const parsed = await mermaid.mermaidAPI.getDiagramFromText(text);
+      if (spaces === atLimit) expect(() => inspectMermaidDiagram('block', parsed)).not.toThrow();
+      else expect(() => inspectMermaidDiagram('block', parsed)).toThrow(expect.objectContaining({ issue: 'complexity' }));
+    }
+  });
+
+  it('does not count unrendered class placeholders or repeated nodes', async () => {
+    const source = 'block\n' + items(500).map((i) => `A${i}`).join(' ') + '\nA0\n' + items(501).map((i) => `class missing${i} demo`).join('\n');
+    await preflightBlock(source, mermaid);
+    const parsed = await mermaid.mermaidAPI.getDiagramFromText(source);
+    expect(() => inspectMermaidDiagram('block', parsed)).not.toThrow();
+  });
+
   it.each(samples)('accepts 500 and refuses 501 structures for %s', async (type, source) => {
     for (const n of [500, 501]) {
       const text = source(n);

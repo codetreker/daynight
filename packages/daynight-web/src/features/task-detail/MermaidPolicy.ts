@@ -112,15 +112,23 @@ export const inspectMermaidDiagram = (type: StableMermaidType, parsed: { readonl
       break;
     }
     case 'block': {
-      const blocks = array(getter(db, 'getBlocksFlat'));
-      // The SDK includes one synthetic root in the flat database.
-      if (!blocks.some((block) => record(block).id === 'root')) invalidContract();
-      budget(blocks.length - 1);
-      budget(array(getter(db, 'getEdges')).length);
-      for (const block of blocks) {
-        const node = record(block);
+      const blocks = array(getter(db, 'getBlocksFlat')).map(record);
+      if (!blocks.some((block) => block.id === 'root')) invalidContract();
+      // The flat DB includes a synthetic root, space templates and unrendered
+      // style placeholders. The renderer traverses getBlocks() instead.
+      for (const node of blocks) {
         if (node.img || node.type === 'imageSquare') throw new MermaidPolicyError('image');
       }
+      const visited = new Set<Record<string, unknown>>();
+      const pending = [...array(getter(db, 'getBlocks'))];
+      while (pending.length > 0) {
+        const node = record(pending.pop());
+        if (visited.has(node)) continue;
+        visited.add(node);
+        budget(visited.size);
+        if (node.children !== undefined) pending.push(...array(node.children));
+      }
+      budget(array(getter(db, 'getEdges')).length);
       break;
     }
     case 'packet': {
