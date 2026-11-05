@@ -46,7 +46,7 @@ describe("minimal worker SQLite schema", () => {
     expect((database.pragma("table_info(tasks)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
     expect((database.pragma("table_list") as { name: string; strict: number }[]).filter(({ name }) => name === "projects" || name === "tasks").every(({ strict }) => strict === 1)).toBe(true);
     expect(database.pragma("journal_mode", { simple: true })).toBe("wal");
-    expect(database.pragma("user_version", { simple: true })).toBe(10);
+    expect(database.pragma("user_version", { simple: true })).toBe(11);
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     expect(database.pragma("foreign_key_list(projects)")).toEqual([]);
     expect(database.pragma("foreign_key_list(tasks)")).toEqual([]);
@@ -260,11 +260,11 @@ it("rebuilds the unversioned six-column index and discards every project and cla
   const { file, db } = legacyFixture();
   const events: unknown[] = [];
   const rebuilt = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
-  expect(db.pragma("user_version", { simple: true })).toBe(10);
+  expect(db.pragma("user_version", { simple: true })).toBe(11);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect((db.pragma("table_info(tasks)") as { name: string }[]).map(row => row.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
-  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 10 }, { kind: "completed", fromVersion: 0, toVersion: 10 }]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 11 }, { kind: "completed", fromVersion: 0, toVersion: 11 }]);
   close(rebuilt);
   events.length = 0;
   const reopened = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
@@ -295,7 +295,7 @@ it("rebuilds the current seven-column layout when its stored version is zero", (
   const rebuilt = open(file);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
-  expect(db.pragma("user_version", { simple: true })).toBe(10);
+  expect(db.pragma("user_version", { simple: true })).toBe(11);
 });
 
 it("rebuilds an unknown unversioned schema containing duplicate identities and invalid payloads", () => {
@@ -306,24 +306,24 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
-  expect(db.pragma("user_version", { simple: true })).toBe(10);
+  expect(db.pragma("user_version", { simple: true })).toBe(11);
 });
 
 it("rejects newer formats and altered constraints without mutating their records", () => {
   const { file, store, register } = fixture(); register(); close(store);
   const db = connect(file), before = db.prepare("SELECT * FROM tasks").all();
-  db.pragma("user_version = 11");
+  db.pragma("user_version = 12");
   expect(() => open(file)).toThrow("unsupported-version");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
-  expect(db.pragma("user_version", { simple: true })).toBe(11);
-  db.pragma("user_version = 10");
+  expect(db.pragma("user_version", { simple: true })).toBe(12);
+  db.pragma("user_version = 11");
   db.exec("DROP INDEX tasks_one_active_per_task; CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id, task_id) WHERE status = 'pending'");
   expect(() => open(file)).toThrow("invalid-format");
   expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
 });
 
 it("fences an open worker connection before writing a subsequently changed format", () => {
-  const { file, store, register } = fixture(); register(); const db = connect(file); db.pragma("user_version = 11");
+  const { file, store, register } = fixture(); register(); const db = connect(file); db.pragma("user_version = 12");
   expect(() => store.activateTask(claim)).toThrow("unsupported-version");
   expect(() => store.getTask(claim)).toThrow("unsupported-version");
   expect(db.prepare("SELECT status FROM tasks").get()).toEqual({ status: "pending" });
@@ -402,7 +402,7 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getTask(claim)).toMatchObject({ status: "active", sessionId: uuid(75) });
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("submitted");
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("notified");
-    expect(db.pragma("user_version", { simple: true })).toBe(10);
+    expect(db.pragma("user_version", { simple: true })).toBe(11);
   });
 
   it("upgrades version five while retaining every original claim and project", () => {
@@ -417,6 +417,6 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getTask(claim)).toMatchObject({ ...claim, status: "active", sessionId: uuid(75) });
     expect(recovered.listCleanupSchedules()).toEqual([]);
     recovered.saveCleanupSchedule(owner, schedule);
-    expect(db.pragma("user_version", { simple: true })).toBe(10);
+    expect(db.pragma("user_version", { simple: true })).toBe(11);
   });
 });

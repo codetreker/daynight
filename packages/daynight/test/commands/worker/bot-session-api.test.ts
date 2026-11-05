@@ -235,3 +235,125 @@ describe("Bot recovery grants", () => {
     expect(requests).toBe(0);
   });
 });
+
+describe("Bot deletion receipts", () => {
+  const deletion = () => ({ deletionId: id(40), requestedVersion: "9007199254740993", workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null } });
+  const deleted = () => ({ id: id(3), workerId: id(2), version: "9007199254740994", deletion: deletion() });
+  const receipt = () => ({ deletionId: id(40), stop: { protocol: "daynight.session.v1" as const, sessionId: id(4), testExecutionId: id(5), executionGeneration: "1", controllerId: id(7), controllerInstanceId: id(8), stopProof: { recordId: id(41), previousControllerInstanceId: id(8), stoppedAt: "2026-01-01T00:00:00Z" } }, result: { state: "completed" as const, code: null } });
+  const deleting = (value: BotRecord): BotRecord => ({ ...value, observed: deleted() });
+
+  it.each(["pending", "failed", "completed"])("confirms only the worker stage when server cleanup is %s", async state => {
+    const expected = { ...deleted(), version: "9007199254740995", deletion: { ...deletion(), workerCleanup: receipt().result, serverCleanup: { state, code: state === "failed" ? "server_cleanup_failed" : null } } };
+    const requests: { method: string; url: string; body: unknown }[] = [];
+    const fixture = await listen((request, response, body) => {
+      requests.push({ method: request.method!, url: request.url!, body });
+      response.end(JSON.stringify(expected));
+    });
+    expect(await fixture.api.completeDeletion(deleting(fixture.record), receipt(), signal())).toEqual(expected);
+    expect(requests).toEqual([{ method: "POST", url: `/api/v1/me/workers/${id(2)}/bots/${id(3)}/deletion-complete`, body: receipt() }]);
+  });
+
+  it("reports a failed local cleanup without inventing process-stop proof", async () => {
+    const failure = { deletionId: id(40), stop: null, result: { state: "failed" as const, code: "process_stop_unproven" } };
+    let payload: unknown;
+    const fixture = await listen((_request, response, body) => {
+      payload = body;
+      response.end(JSON.stringify({ ...deleted(), deletion: { ...deletion(), workerCleanup: failure.result } }));
+    });
+    const result = await fixture.api.completeDeletion(deleting(fixture.record), failure, signal());
+    expect(payload).toEqual(failure);
+    expect(result.deletion.workerCleanup).toEqual(failure.result);
+  });
+
+  it("completes an unregistered Bot without manufacturing a Session", async () => {
+    const completion = { deletionId: id(40), stop: null, result: { state: "completed" as const, code: null } };
+    const fixture = await listen((_request, response) => response.end(JSON.stringify({ ...deleted(), deletion: { ...deletion(), workerCleanup: completion.result } })));
+    const value = deleting(fixture.record);
+    value.intent = null;
+    value.definition = { ...definition(), sessionId: null, testExecutionId: null };
+    expect((await fixture.api.completeDeletion(value, completion, signal())).deletion.workerCleanup.state).toBe("completed");
+  });
+
+  it("resubmits the same receipt after private execution metadata has been removed", async () => {
+    const fixture = await listen((_request, response) => response.end(JSON.stringify({ ...deleted(), deletion: { ...deletion(), workerCleanup: receipt().result } })));
+    const value = deleting(fixture.record);
+    value.intent = null; value.definition = null;
+    expect((await fixture.api.completeDeletion(value, receipt(), signal())).deletion.workerCleanup.state).toBe("completed");
+  });
+
+  it.each(["owner", "worker", "bot", "active", "deletion", "session", "execution", "generation", "controller", "instance", "proof instance", "record", "future", "missing stop", "invalid kind", "claim", "failed code", "completed code"])("rejects conflicting %s before submitting deletion", async mismatch => {
+    let requests = 0;
+    const fixture = await listen((_request, response) => { requests++; response.end(JSON.stringify(deleted())); });
+    const value = deleting(fixture.record), completion: any = receipt();
+    if (mismatch === "owner") value.owner = { ...value.owner, ownerUserId: id(90) };
+    if (mismatch === "worker") value.observed.workerId = id(90);
+    if (mismatch === "bot") value.botId = id(90);
+    if (mismatch === "active") value.observed = definition();
+    if (mismatch === "deletion") completion.deletionId = id(90);
+    if (mismatch === "session") completion.stop.sessionId = id(90);
+    if (mismatch === "execution") completion.stop.testExecutionId = id(90);
+    if (mismatch === "generation") completion.stop.executionGeneration = "2";
+    if (mismatch === "controller") completion.stop.controllerId = id(90);
+    if (mismatch === "instance") completion.stop.controllerInstanceId = id(90);
+    if (mismatch === "proof instance") completion.stop.stopProof.previousControllerInstanceId = id(90);
+    if (mismatch === "record") completion.stop.stopProof.recordId = "invalid";
+    if (mismatch === "future") completion.stop.stopProof.stoppedAt = "2099-01-01T00:00:00Z";
+    if (mismatch === "missing stop") completion.stop = null;
+    if (mismatch === "invalid kind") completion.stop.stopProof.kind = "stopped";
+    if (mismatch === "claim") completion.stop.claimId = id(90);
+    if (mismatch === "failed code") completion.result = { state: "failed", code: " " };
+    if (mismatch === "completed code") completion.result.code = "cleanup_failed";
+    await expect(fixture.api.completeDeletion(value, completion, signal())).rejects.toThrow();
+    expect(requests).toBe(0);
+  });
+
+  it.each(["bot", "worker", "deletion", "requested version", "version", "result", "code", "active", "principal"])("does not accept an unrelated %s completion response", async mismatch => {
+    const responseBot: any = { ...deleted(), deletion: { ...deletion(), workerCleanup: receipt().result } };
+    if (mismatch === "bot") responseBot.id = id(90);
+    if (mismatch === "worker") responseBot.workerId = id(90);
+    if (mismatch === "deletion") responseBot.deletion.deletionId = id(90);
+    if (mismatch === "requested version") responseBot.deletion.requestedVersion = "1";
+    if (mismatch === "version") responseBot.version = "1";
+    if (mismatch === "result") responseBot.deletion.workerCleanup.state = "pending";
+    if (mismatch === "code") responseBot.deletion.workerCleanup.code = "unexpected";
+    const fixture = await listen((_request, response) => {
+      if (mismatch === "principal") response.setHeader("Daynight-User-ID", id(90));
+      response.end(JSON.stringify(mismatch === "active" ? definition() : responseBot));
+    });
+    await expect(fixture.api.completeDeletion(deleting(fixture.record), receipt(), signal())).rejects.toThrow();
+  });
+
+  it("preserves a never-started proof for the registered original execution", async () => {
+    const completion = { ...receipt(), stop: { ...receipt().stop, stopProof: { ...receipt().stop.stopProof, kind: "never_started" as const } } };
+    let payload: unknown;
+    const fixture = await listen((_request, response, body) => {
+      payload = body; response.end(JSON.stringify({ ...deleted(), deletion: { ...deletion(), workerCleanup: completion.result } }));
+    });
+    await fixture.api.completeDeletion(deleting(fixture.record), completion, signal());
+    expect(payload).toEqual(completion);
+  });
+
+  it("rejects canceled deletion before sending its receipt", async () => {
+    let requests = 0;
+    const fixture = await listen((_request, response) => { requests++; response.end(JSON.stringify(deleted())); });
+    await expect(fixture.api.completeDeletion(deleting(fixture.record), receipt(), AbortSignal.abort())).rejects.toThrow();
+    expect(requests).toBe(0);
+  });
+
+  it("rejects an invented Session when the durable intent remains unregistered", async () => {
+    let requests = 0;
+    const fixture = await listen((_request, response) => { requests++; response.end(JSON.stringify(deleted())); });
+    const value = deleting(fixture.record);
+    value.intent!.sessionId = null;
+    value.definition = { ...definition(), sessionId: null, testExecutionId: null };
+    await expect(fixture.api.completeDeletion(value, receipt(), signal())).rejects.toThrow();
+    expect(requests).toBe(0);
+  });
+
+  it("keeps a lost deletion response unknown without automatic replay", async () => {
+    let requests = 0;
+    const fixture = await listen(request => { requests++; request.socket.destroy(); });
+    await expect(fixture.api.completeDeletion(deleting(fixture.record), receipt(), signal())).rejects.toThrow();
+    expect(requests).toBe(1);
+  });
+});
