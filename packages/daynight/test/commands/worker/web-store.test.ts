@@ -133,7 +133,7 @@ it.each(["missing", "claim", "execution", "session", "generation", "controller",
   if (conflict === "controller") observed.controllerInstanceId = id(20);
   if (conflict === "test") observed = { ...observed, testExecutionId: id(20) } as unknown as typeof observed;
   if (conflict === "native") observed.nativeSessionId = id(20);
-  if (conflict === "process") observed.controllerProcess = { ...observed.controllerProcess!, parentPid: 999 };
+  if (conflict === "process") observed.controllerProcess = { ...observed.controllerProcess!, pid: 999 };
   if (conflict === "native-prefix") observed.nativeProcesses = observed.nativeProcesses.map((proof, index) => index === 0 ? { ...proof, commandHash: "c".repeat(64) } : proof);
   if (conflict === "empty-processes") observed.nativeProcesses = [];
   expect(() => f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(7) }, 5, conflict === "missing" ? undefined : observed)).toThrow(/original generation/);

@@ -39,7 +39,10 @@ process stop, then returns to the existing recovery budget and retry gates.
 Windows Controller proof enrichment preserves every core identity field and
 accepts only an initially absent Job Object name for the original launch. Startup
 process capture precedes the Controller creating that boundary; requiring whole
-object equality would prevent cleanup in that interval.
+object equality would prevent cleanup in that interval. POSIX parent PID is
+observational: a detached Controller can be reparented between launcher and
+Controller self-capture. Its PID, birth, command and process group remain binding;
+Windows also retains parent PID and the original Job boundary.
 A proven stopped original generation can hand back to the existing native
 recovery path, preserving its pause, budget and authorization checks. Clearing
 an orchestration block does not grant a replacement writer.

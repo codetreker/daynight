@@ -23,9 +23,9 @@ export const orchestrationIdentity = (task: LocalTask): OrchestrationIdentity =>
 export const sameOrchestrationIdentity = (task: LocalTask, blocker: OrchestrationBlocker): boolean =>
   JSON.stringify(orchestrationIdentity(task)) === JSON.stringify(blocker.identity);
 
-/** The Windows Controller adds its launch Job after the launcher captures the same process. */
+/** The detached POSIX Controller may be reparented between launcher and self-capture. Windows retains its parent and adds the launch Job. */
 export const preservesControllerProcessProof = (previous: ProcessProof, observed: ProcessProof | null, launchId: string): boolean =>
-  observed !== null && observed.pid === previous.pid && observed.parentPid === previous.parentPid
+  observed !== null && observed.pid === previous.pid && (previous.processGroupId !== null || observed.parentPid === previous.parentPid)
   && observed.processGroupId === previous.processGroupId && observed.startedAt === previous.startedAt && observed.commandHash === previous.commandHash
   && (previous.jobObjectName !== undefined ? observed.jobObjectName === previous.jobObjectName
     : observed.jobObjectName === undefined || (previous.processGroupId === null && observed.jobObjectName === `Local\\Daynight-${launchId}`));

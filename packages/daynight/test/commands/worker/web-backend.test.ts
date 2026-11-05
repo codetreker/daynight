@@ -1010,6 +1010,54 @@ it.each(["journal", "live"] as const)("preserves a native identity first learned
   expect(request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
 });
 
+it.each((["live", "stopped"] as const).flatMap(state => (["none", "pid", "birth", "command", "group", "native-parent"] as const).map(conflict => [state, conflict] as const)))("cleans up a POSIX Controller reparented after persisted launch proof and Worker interruption (%s, %s)", async (state, conflict) => {
+  const f = await fixture("codex", 3);
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
+  const source = await cleanupSource(f, task);
+  const launcherProof = { ...source.snapshot.controllerProcess!, parentPid: 777 };
+  const native = { ...launcherProof, pid: 988, parentPid: launcherProof.pid, startedAt: "native-original", commandHash: "b".repeat(64) };
+  f.store.updateWebExecution(source.task, { launchSubmission: "unknown", controllerProcess: launcherProof, nativeProcesses: [native] }, 6);
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const reopened = openWebExecutionStore(path.join(f.home, "worker.sqlite")); stores.push(reopened);
+  const controller = { ...launcherProof, parentPid: 1 };
+  if (conflict === "pid") controller.pid += 1;
+  if (conflict === "birth") controller.startedAt = "different-birth";
+  if (conflict === "command") controller.commandHash = "c".repeat(64);
+  if (conflict === "group") controller.processGroupId = 999;
+  const nativeProcesses = conflict === "native-parent" ? [{ ...native, parentPid: 1 }] : [native];
+  const nativeSessionId = randomUUID();
+  let stopped = state === "stopped";
+  const snapshot: ControllerSnapshot = { ...source.snapshot, controllerProcess: controller, nativeProcesses, nativeSessionId,
+    lifecycle: stopped ? "stopped" : "starting", nativeStopped: stopped, stoppedAt: stopped ? new Date(50).toISOString() : null,
+    startup: { state: "starting", reasonCode: "initializing" }, initialInputState: "not_submitted",
+  };
+  source.saved.mockReturnValue(snapshot); source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  source.stopped.mockImplementation(async () => stopped);
+  vi.mocked(lifecycle.recordStoppedControllerGeneration).mockResolvedValue(snapshot);
+  const stop = vi.spyOn(processProof, "stopControllerProcesses").mockImplementation(async () => {
+    stopped = true; snapshot.lifecycle = "stopped"; snapshot.nativeStopped = true; snapshot.stoppedAt = new Date(50).toISOString();
+  });
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: reopened, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
+  const result = backend.cleanup(reopened.getTask(task)!, "shutdown", 50);
+  if (conflict !== "none") {
+    await expect(result).rejects.toThrow();
+    expect(reopened.getTask(task)?.resources.nativeSession).toBeNull();
+    expect(stop).not.toHaveBeenCalled();
+    expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+    return;
+  }
+  expect((await result).complete).toBe(true);
+  expect(reopened.getTask(task)?.resources.nativeSession?.sessionId).toBe(nativeSessionId);
+  expect(reopened.getTask(task)?.webExecution?.executionGeneration).toBe("1");
+  expect(reopened.getTask(task)?.recovery).toEqual({ count: 0, pauseReason: null, retryAuthorized: false });
+  expect(source.stopped).toHaveBeenCalledWith(controller, [native]);
+  if (state === "live") expect(stop).toHaveBeenCalledWith(controller, [native], expect.any(Number));
+  else expect(stop).not.toHaveBeenCalled();
+  expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(state === "live" ? ["observe", "stop"] : ["observe"]);
+  expect(launcher.launch).not.toHaveBeenCalled();
+});
+
 it.each((["cleanup", "resume"] as const).flatMap(mode => (["valid", "known-job-lost", "known-job-changed", "core-changed", "wrong-launch"] as const).map(conflict => [mode, conflict] as const)))("verifies Windows controller proof enrichment before the first Worker observation (%s, %s)", async (mode, conflict) => {
   const f = await fixture("codex", 3);
   const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
@@ -1154,7 +1202,7 @@ it.each((["none", "controller", "journal-native", "journal-process"] as const).f
     if (action.kind === "stop") snapshot = { ...snapshot, lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date(50).toISOString() };
     const observed = { ...snapshot };
     if (phase === "cleanup") {
-      if (conflict === "controller") observed.controllerProcess = { ...snapshot.controllerProcess!, parentPid: 999 };
+      if (conflict === "controller") observed.controllerProcess = { ...snapshot.controllerProcess!, startedAt: "different-controller-birth" };
       if (conflict === "journal-native") observed.nativeSessionId = randomUUID();
       if (conflict === "journal-process") observed.nativeProcesses = [];
     }
