@@ -9,7 +9,7 @@ import { chromium, expect, request as playwrightRequest, type Browser, type Brow
 import { authenticatedAPI, browserFetch, tokenContext, type AuthenticatedAPI } from '../../tests/e2e/authentication.ts';
 import { stringifyApiJson } from '../../src/api/json.ts';
 import { login } from './auth-fixture.mts';
-import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recoverBrowsers, type BrowserInventory } from './browser.mts';
+import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recoverBrowsers, setBrowserViewport, type BrowserInventory } from './browser.mts';
 import { createAcceptanceCli, validateInstalledCli } from './installed-cli.mts';
 import { command } from './process.mts';
 import { processIdentity, requireGroupStopped, type ProcessIdentity } from './identity.mts';
@@ -263,7 +263,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 640 }, { width: 320, height: 240 }]) {
-      await page.setViewportSize(viewport);
+      await setBrowserViewport(page, viewport);
       await expect.poll(async () => {
         const box = await detail.boundingBox();
         return box !== null && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1
@@ -286,7 +286,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
         await detail.getByRole('tab', { name: '附件', exact: true }).click();
       }
     }
-    await page.setViewportSize({ width: 1440, height: 1000 });
+    await setBrowserViewport(page, { width: 1440, height: 1000 });
     await (await attachmentFileActions(detail, 'docs/long.md')).click();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('menu')).toHaveCount(0);
@@ -321,7 +321,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
   await (await attachmentFileButton(detail, 'docs/long.md')).click();
   await expect(detail.locator('.attachment-markdown h1')).toHaveText('Fullscreen reading');
   await toggle.click();
-  await page.setViewportSize({ width: 320, height: 240 });
+  await setBrowserViewport(page, { width: 320, height: 240 });
   const markdown = detail.locator('.attachment-preview-body');
   shortReading.markdownHeight = await visibleReadingHeight(markdown);
   shortReading.markdownScroll = await scrollReading(page, markdown);
@@ -329,7 +329,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
-  await page.setViewportSize({ width: 1440, height: 1000 });
+  await setBrowserViewport(page, { width: 1440, height: 1000 });
 
   const reader = await context.newPage();
   try {
