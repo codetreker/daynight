@@ -21,9 +21,13 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   useBodyScrollLock(true);
   useLayoutEffect(() => {
     const opener = document.activeElement;
-    dialog.current!.showModal();
+    const element = dialog.current!;
+    element.showModal();
     name.current?.focus();
-    return () => { if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); };
+    return () => {
+      if (element.open) element.close();
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
   }, []);
   useEffect(() => () => active.current?.abort(), []);
   const checkProjects = (cursor: string | null) => {

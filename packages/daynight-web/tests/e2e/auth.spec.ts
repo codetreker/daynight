@@ -269,11 +269,11 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           const submit = draft.getByRole('button', { name: messages.auth.createProject.submit });
           await submit.focus();
           await page.keyboard.press('Tab');
-          await expect(page.locator('body')).toBeFocused();
+          expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
           await page.keyboard.press('Tab');
           await expect(close).toBeFocused();
           await page.keyboard.press('Shift+Tab');
-          await expect(page.locator('body')).toBeFocused();
+          expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
           await page.keyboard.press('Shift+Tab');
           await expect(submit).toBeFocused();
           await nameInput.focus();
