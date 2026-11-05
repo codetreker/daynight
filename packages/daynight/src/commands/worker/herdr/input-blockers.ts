@@ -109,6 +109,10 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
   if (agent === "codex") {
     const selected = (line: string) => /^\s*[›»]\s*\d+[.)]\s+\S/.test(line);
     const laterPrompt = (index: number) => lines.slice(index + 1).some(line => /^\s*[›»]/.test(line));
+    const welcome = lines.findLastIndex(line => /^\s*Welcome to Codex, OpenAI's command-line coding agent\s*$/.test(line));
+    const signIn = lines.findLastIndex(line => /^\s*>\s*\d+[.)]\s+(?:Sign in with (?:ChatGPT|Device Code)|Use (?:an OpenAI API key|Amazon Bedrock))\s*$/.test(line));
+    const onboardingEnd = lines.findLastIndex(line => /^\s*Press enter to continue\s*$/i.test(line));
+    if (welcome >= 0 && signIn > welcome && onboardingEnd > signIn && !laterPrompt(onboardingEnd)) return "menu";
     // Disabled placeholders occupy the composer's own prompt row.
     // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4873-L4954
     const disabled = (line: string) => {
@@ -152,6 +156,14 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
   if (agent === "claude") {
     const laterPrompt = (index: number) => lines.slice(index + 1).some(line => /^\s*❯/.test(line));
     const selected = lines.findLastIndex(line => /^\s*❯\s*\d+[.)]\s+\S/.test(line));
+    // First-run theme and security screens consume Enter before a business composer exists.
+    const welcome = lines.findLastIndex(line => /^\s*Welcome to Claude Code v\S+\s*$/.test(line));
+    const theme = lines.findLastIndex(line => /^\s*Choose the text style that looks best with your terminal\s*$/.test(line));
+    const themeEnd = lines.findLastIndex(line => /^\s*Syntax theme: .+ \(ctrl\+t to disable\)\s*$/.test(line));
+    if (welcome >= 0 && theme > welcome && selected > theme && themeEnd > selected && !laterPrompt(themeEnd)) return "menu";
+    const security = lines.findLastIndex(line => /^\s*Security notes:\s*$/.test(line));
+    const onboardingEnd = lines.findLastIndex(line => /^\s*Press Enter to continue(?:…|\.{3})?\s*$/i.test(line));
+    if (welcome >= 0 && security > welcome && onboardingEnd > security && !laterPrompt(onboardingEnd)) return "menu";
     // Keep the footer controls together rather than matching ordinary prose about cancellation.
     // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/detect/manifests/claude.toml
     const footer = lines.findLastIndex(line => /^\s*Enter to (?:confirm|select(?:\s*·\s*(?:(?:tab\/arrow|arrow) keys|arrows|↑\/↓|↑↓) to navigate)?)\s*·\s*Esc to cancel\s*$/i.test(line));

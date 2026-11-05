@@ -48,9 +48,18 @@ Session fence 是 `sessionId`、`claimId`、`executionGeneration`。服务端与
 只开新段。排序依据段序号和帧序号，墙钟只用于显示与范围校验。
 
 运行账本保留每代的 owner、原生绑定、段归属和停止证明，不能只覆盖当前 snapshot。
-停止证明必须引用原始 boot identity、PID 和 birth token，并覆盖受管 terminal、
+普通停止证明必须引用原始 boot identity、PID 和 birth token，并覆盖受管 terminal、
 承载 shell 与 native agent；当前 pane 消失或 close 返回不构成证明。
+已登记但尚未提交 native launch 的准备运行使用独立的准备资源停止证明：必须持久保存
+本代未提交启动的事实，并证明原 daemon 与唯一 shell 的资源范围已经停止。该分支不能
+包含本代 agent、segment 或已选择、已登记、已观察到的录制内容；采集错误仍须保留。
+启动结果未知、原始身份缺失或不一致时继续保持 stop_unknown，不得根据当前进程缺席
+追认未启动。准备证明不授予新代运行或自动输入权限；unknown 输入仍不得重放。
 契约仅验证证明结构与归属，适配器负责提供可信原生观察。
+
+准备证明是 v2 的显式扩展，旧普通证明字节语义及 v1 保持不变。生成此证明的 Worker
+需要支持该变体的服务端与 Web reader；旧严格 reader 的拒绝不能通过删字段或转换固定
+归档绕过。服务端拒绝时保留原 ledger、归档和 worktree 收尾责任，旧缓存页面需要刷新。
 
 ## 完整画面与样式
 

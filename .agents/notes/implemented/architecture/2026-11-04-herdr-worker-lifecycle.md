@@ -50,6 +50,13 @@ Stop proof, segment closure and ledger acknowledgement are separately recoverabl
 boundaries. Without a committed stop intent, emergency signaling cannot produce
 a durable stopped result after restart.
 
+The [preparation stop decision](../bug-fix/2026-11-05-herdr-prepared-stop-proof.md)
+partially supersedes the requirement for native agent evidence when a monotonic
+journal fact proves that the generation never submitted native launch. That
+distinct proof covers the original daemon and shell; ordinary native proofs and
+all uncertain-launch retention rules remain. A preparation proof grants no new
+generation or automatic input permission.
+
 This partially supersedes the [minimal claim record decision](../simplification/2026-10-27-worker-claim-records.md),
 [Herdr adapter decision](2026-10-26-worker-herdr-adapter.md), and
 [Web evidence separation decision](2026-10-28-web-execution-evidence.md).

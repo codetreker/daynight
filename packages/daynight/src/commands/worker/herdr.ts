@@ -36,7 +36,7 @@ export const createWorkerHerdr = (options: {
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
   const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
-  const nativeEnvironment = createHerdrNativeEnvironment(options.paths, inheritedEnvironment);
+  const nativeEnvironment = { ...createHerdrNativeEnvironment(options.paths, inheritedEnvironment), ...options.agentEnvironment };
   const workspaceEnvironment: { -readonly [K in keyof HerdrWorkspaceEnvironment]: HerdrWorkspaceEnvironment[K] } = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", ...options.agentEnvironment };
   for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
     const value = inheritedEnvironment[key];
@@ -56,6 +56,7 @@ export const createWorkerHerdr = (options: {
     },
   }, workspaceEnvironment, readCodexConfig: (args, cwd, operation) => readCodexConfiguration({ args, cwd, environment: { ...nativeEnvironment, ...workspaceEnvironment } }, operation) });
   return {
+    get managedShellExecutable(): "/bin/bash" | undefined { return instance.managedShellExecutable; },
     ensureInstance: instance.ensure,
     stopInstance: instance.stop,
     attachment: instance.attachment,

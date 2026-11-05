@@ -37,6 +37,28 @@ const readyComposer = {
   copilot: "",
 } as const;
 
+// Native visible screens from Codex 0.166.0 and Claude Code 2.1.247.
+const onboardingScreens = [
+  { provider: "codex", screen: "Welcome to Codex, OpenAI's command-line coding agent\nChoose how you want to use Codex.\n> 1. Sign in with ChatGPT\n  2. Sign in with Device Code\n  3. Use an OpenAI API key\n  4. Use Amazon Bedrock\nPress enter to continue" },
+  { provider: "claude", screen: "Welcome to Claude Code v2.1.247\nLet's get started.\nChoose the text style that looks best with your terminal\nTo change this later, run /theme\n  1. Auto (match terminal)\n❯ 2. Dark mode ✔\nSyntax theme: Monokai Extended (ctrl+t to disable)" },
+  { provider: "claude", screen: "Welcome to Claude Code v2.1.247\nSecurity notes:\n1. Claude can make mistakes.\nPress Enter to continue…" },
+] as const;
+
+it.each(onboardingScreens)("blocks automatic input to $provider onboarding without preventing manual handling", async ({ provider, screen }) => {
+  const f = fixture(); f.observation.kind = provider; f.text(screen);
+  try {
+    for (const purpose of ["automatic", "cleanup"] as const) await expect(f.inspect(purpose)).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    f.calls.splice(0);
+    await expect(f.inspect("manual")).resolves.toBeDefined();
+    expect(f.calls).not.toContain("pane.read");
+    for (const visible of [screen.replace(/Welcome to (?:Codex[^\n]*|Claude Code[^\n]*)/, "A discussion of onboarding"), `${screen}\n${readyComposer[provider]}`]) {
+      f.text(visible); await expect(f.inspect()).resolves.toMatchObject({ composer: "unavailable" });
+    }
+    expect(f.calls).not.toContain("agent.prompt");
+    expect(f.calls).not.toContain("terminal.attach");
+  } finally { f.operation.dispose(); }
+});
+
 it.each(["codex", "claude", "copilot"] as const)("accepts an interactive %s completion without claiming automatic empty-composer proof", async provider => {
   const f = fixture(); f.observation.kind = provider; f.text(readyComposer[provider]);
   try {

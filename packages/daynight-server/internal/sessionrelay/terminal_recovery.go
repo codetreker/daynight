@@ -148,7 +148,7 @@ func (s *Service) UpdateTerminalRecovery(ctx context.Context, p core.Principal, 
 			}
 			previous := r.Runs[len(r.Runs)-2]
 			current := r.Runs[len(r.Runs)-1]
-			if previous.ExecutionGeneration != state.SourceGeneration || previous.StopProof == nil || previous.StopProof.RecordID != state.StopOperationID || previous.StopProof.Binding.NativeSessionID == nil || *previous.StopProof.Binding.NativeSessionID != state.NativeSessionID || current.ExecutionGeneration != m.ExecutionGeneration || current.StoppedAt != nil || len(current.SegmentIDs) == 0 {
+			if previous.ExecutionGeneration != state.SourceGeneration || previous.StopProof == nil || previous.StopProof.NativeLaunch != "" || previous.StopProof.RecordID != state.StopOperationID || previous.StopProof.Binding.NativeSessionID == nil || *previous.StopProof.Binding.NativeSessionID != state.NativeSessionID || current.ExecutionGeneration != m.ExecutionGeneration || current.StoppedAt != nil || len(current.SegmentIDs) == 0 {
 				return fault("stop_unknown", "The recovery does not prove the original run stopped and resumed.")
 			}
 			state.Consumed = &v2.AutomationRecoveryConsumption{ExecutionGeneration: m.ExecutionGeneration, ConnectionEpoch: epoch, ControlEpoch: in.ControlEpoch, RequestDigest: digest}

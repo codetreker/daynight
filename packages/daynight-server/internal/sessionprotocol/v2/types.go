@@ -134,14 +134,21 @@ type Run struct {
 	SegmentIDs          []string   `json:"segmentIds"`
 }
 type StopProof struct {
-	RecordID            string         `json:"recordId"`
-	ExecutionGeneration string         `json:"executionGeneration"`
-	Binding             Binding        `json:"binding"`
-	BootID              string         `json:"bootId"`
-	StoppedAt           string         `json:"stoppedAt"`
-	Method              string         `json:"method"`
-	TerminalStopped     bool           `json:"terminalStopped"`
-	Processes           []ProcessProof `json:"processes"`
+	RecordID            string               `json:"recordId"`
+	ExecutionGeneration string               `json:"executionGeneration"`
+	Binding             Binding              `json:"binding"`
+	BootID              string               `json:"bootId"`
+	StoppedAt           string               `json:"stoppedAt"`
+	Method              string               `json:"method"`
+	TerminalStopped     bool                 `json:"terminalStopped"`
+	Processes           []ProcessProof       `json:"processes"`
+	NativeLaunch        string               `json:"nativeLaunch,omitempty"`
+	Daemon              *PreparedDaemonProof `json:"daemon,omitempty"`
+}
+type PreparedDaemonProof struct {
+	PID        int    `json:"pid"`
+	BirthToken string `json:"birthToken"`
+	BootID     string `json:"bootId"`
 }
 type ProcessProof struct {
 	Role       string `json:"role"`

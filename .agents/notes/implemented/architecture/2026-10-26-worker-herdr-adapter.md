@@ -17,7 +17,9 @@ execution.
 The Herdr adapter retains private-instance isolation, official native integration
 and input readiness. On macOS, the [durable lifecycle decision](2026-11-04-herdr-worker-lifecycle.md)
 uses one daemon per run, persists original process identities before input, and
-recovers stop intents. Other platforms use direct current-resource operations
+recovers stop intents. The [native command environment decision](../bug-fix/2026-11-05-herdr-native-command-environment.md)
+uses a managed Bash without user startup files for new macOS runs, while existing
+daemons retain their original shell configuration. Other platforms use direct current-resource operations
 and call-local stop/input observations under the [simplification
 decision](../simplification/2026-10-27-worker-claim-records.md). The
 [integration preflight decision](../bug-fix/2026-10-28-worker-integration-preflight.md)

@@ -40,7 +40,7 @@ const fixture = () => {
       let record = store.create({ owner: { ...owner, taskId: uuid(100 + n) }, claimId: uuid(200 + n), cwd: home });
       record = store.update(record, draft => {
         draft.initialPrompt = "private assignment content";
-        draft.runs.push({ run: { executionGeneration: "1", owner: draft.owner, binding: { instanceId: uuid(300 + n), sessionId: "w", workspaceId: "workspace", paneId: "pane", terminalId: "terminal", nativeSessionId: null }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", instanceDirectory: herdrRunDirectory(paths.herdrDirectory, uuid(300 + n)), daemon: withIdentity ? daemon(100 + n) : null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null });
+        draft.runs.push({ run: { executionGeneration: "1", owner: draft.owner, binding: { instanceId: uuid(300 + n), sessionId: "w", workspaceId: "workspace", paneId: "pane", terminalId: "terminal", nativeSessionId: null }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory: herdrRunDirectory(paths.herdrDirectory, uuid(300 + n)), daemon: withIdentity ? daemon(100 + n) : null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null });
       });
       if (change) record = store.update(record, change);
       return record;
@@ -129,9 +129,13 @@ describe("read-only durable Herdr runtime versions", () => {
 
   it("ignores confirmed stops and other service or Worker owners", async () => {
     const f = fixture();
-    const stopped = f.add(1, draft => { const run = draft.runs[0]!; run.phase = "stop_intent"; run.stopOperationId = uuid(500); run.stopReason = "terminal"; run.processes = [{ ...daemon(102), role: "shell" }, { ...daemon(103), role: "agent" }]; });
+    let stopped = f.add(1);
     const store = openHerdrLifecycleStore(f.journal, { onMigration: () => {} });
-    try { store.update(stopped, draft => {
+    try {
+      stopped = store.update(stopped, draft => { const run = draft.runs[0]!; run.phase = "launch_requested"; run.nativeLaunch = "requested"; });
+      stopped = store.update(stopped, draft => { const run = draft.runs[0]!; run.phase = "active"; run.nativeLaunch = "observed"; run.processes = [{ ...daemon(102), role: "shell" }, { ...daemon(103), role: "agent" }]; });
+      stopped = store.update(stopped, draft => { const run = draft.runs[0]!; run.phase = "stop_intent"; run.stopOperationId = uuid(500); run.stopReason = "terminal"; });
+      store.update(stopped, draft => {
       const local = draft.runs[0]!; local.phase = "stopped_confirmed"; local.run.stoppedAt = "2026-11-04T00:01:00.000Z";
       local.run.stopProof = { recordId: local.stopOperationId!, executionGeneration: "1", binding: local.run.binding, bootId: local.daemon!.bootId, stoppedAt: local.run.stoppedAt, method: "instances_exited", terminalStopped: true, processes: local.processes.map(({ role, pid, birthToken, bootId }) => ({ role: role as "shell" | "agent", pid, birthToken, bootId })) };
     }); } finally { store.close(); }

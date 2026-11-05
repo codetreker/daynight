@@ -57,6 +57,7 @@ const fixture = (realInspector = false, driverResources = false) => {
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
   const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const shellSettings = { managed: false, captureFailure: false };
   let beforePromptGuard: (() => void) | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
   let recoveryDelay: ((stage: "publish" | "state" | "prepare", signal: AbortSignal | undefined) => Promise<void>) | undefined;
@@ -75,7 +76,11 @@ const fixture = (realInspector = false, driverResources = false) => {
   };
   const native: MacProcessControl = {
     bootIdentity: async () => "boot-one",
-    capture: async (pid, role) => { events.push(`capture:${role}`); return proof(pid, role); },
+    capture: async (pid, role, expected) => {
+      events.push(`capture:${role}`);
+      if (expected) { expected.operation.check(); events.push(`image:${expected.executable}`); if (shellSettings.captureFailure) throw new Error("Unconfirmed final shell image"); }
+      return proof(pid, role);
+    },
     observe: async value => observed.get(value.pid) ?? "same",
     peer: async endpoint => {
       const local = [...instances.values()].find(value => [value.paths.apiEndpoint, value.paths.clientEndpoint].includes(endpoint)); if (!local) throw new Error("Unknown endpoint");
@@ -173,6 +178,7 @@ const fixture = (realInspector = false, driverResources = false) => {
     transmit.set(state.paths.clientEndpoint, input);
     return {
       paths: state.paths, attachment: { executable: "herdr", arguments: [], environment: {}, unsetEnvironment: [] },
+      get managedShellExecutable() { return shellSettings.managed ? "/bin/bash" as const : undefined; },
       ensureInstance: async () => { if (!state.started) { events.push("daemon-launch"); expect(read().preparation?.phase).toBe("launch_requested"); await options.onDaemonSpawn?.(state.daemonPid); state.started = true; } return { reconnected: false, version: "0.9.5", protocol: 22, snapshot: {} }; },
       stopInstance: async () => { throw new Error("Unsafe daemon close must not be used"); },
       tasks: {
@@ -243,13 +249,24 @@ const fixture = (realInspector = false, driverResources = false) => {
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, readTask: async () => task,
+  return { context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, readTask: async () => task,
     revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
     mutateRecord: (change: Parameters<HerdrLifecycleStore["update"]>[1]) => { const record = read(); return reader!.update(record, change); },
     get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it.each([true, false])("requires the final shell image only for a managed launcher: %s", async managed => {
+    const f = fixture(); f.shellSettings.managed = managed; f.register(); await f.prepare();
+    expect(f.events.filter(event => event.startsWith("image:"))).toEqual(managed ? ["image:/bin/bash"] : []);
+    expect(f.read().runs[0]!.phase).toBe("prepared");
+  });
+  it("retains preparation without a run or service ledger when the final shell image is unconfirmed", async () => {
+    const f = fixture(); f.shellSettings.managed = true; f.shellSettings.captureFailure = true; f.register();
+    await expect(f.prepare()).rejects.toThrow("Unconfirmed final shell image");
+    expect(f.read().preparation?.daemon).not.toBeNull(); expect(f.read().runs).toEqual([]);
+    expect(f.ledgers).toEqual([]); expect(f.launches).toEqual([]); expect(f.inputs).toEqual([]);
+  });
   it("continues a completed interactive turn through the real inspector while retaining input and process guards", async () => {
     const f = fixture(true); f.register(); const binding = await f.prepare(); await f.start(binding);
     expect(f.settings.nativeWrites).toBe(2);
@@ -606,10 +623,52 @@ describe("durable Herdr facade with real SQLite", () => {
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/stop_unknown/i);
     expect(f.read().runs[0]!.phase).toBe("stop_unknown"); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false); expect(f.inputs).toHaveLength(1);
   });
-  it("keeps missing native launch proof unknown even when remaining resources stop", async () => {
+  it("confirms prepared resources stopped without fabricating an agent or replaying launch", async () => {
     const f = fixture(); f.register(); await f.prepare();
+    const original = f.read().runs[0]!;
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    const stopped = f.read().runs[0]!;
+    expect(stopped).toMatchObject({ phase: "stopped_confirmed", nativeLaunch: "not_submitted" });
+    expect(stopped.run.stopProof).toMatchObject({ nativeLaunch: "not_submitted", daemon: { pid: original.daemon!.pid, birthToken: original.daemon!.birthToken, bootId: "boot-one" }, processes: [{ role: "shell", pid: original.processes[0]!.pid }] });
+    expect(stopped.run.segmentIds).toEqual([]); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+    expect(f.ledgers.at(-1)!.payload.runs[0]!.stopProof).toEqual(stopped.run.stopProof);
+    f.reopen(); await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.read().runs[0]).toEqual(stopped); expect(f.events.filter(value => value === "stop")).toHaveLength(1);
+    await expect(f.prepare()).rejects.toThrow(/prepared|native.*identity|native.*session|input journal/i);
+    expect(f.launches).toHaveLength(0); expect(f.inputs).toHaveLength(0);
+  });
+  it("keeps prepared provenance across an unconfirmed stop and completes only after original stopping succeeds", async () => {
+    const f = fixture(); f.register(); await f.prepare(); f.settings.stopUnknown = true;
     await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/stop_unknown/i);
-    expect(f.read().runs[0]!.phase).toBe("stop_unknown"); expect(f.read().runs[0]!.run.stopProof).toBeNull(); expect(f.inputs).toHaveLength(0);
+    const pending = f.read().runs[0]!;
+    expect(pending).toMatchObject({ phase: "stop_unknown", nativeLaunch: "not_submitted", run: { stopProof: null } });
+    f.reopen(); f.settings.stopUnknown = false;
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.read().runs[0]).toMatchObject({ phase: "stopped_confirmed", nativeLaunch: "not_submitted", stopOperationId: pending.stopOperationId });
+    expect(f.launches).toHaveLength(0); expect(f.inputs).toHaveLength(0);
+  });
+  it("does not confirm prepared stopping when the daemon disappeared before a durable stop intent", async () => {
+    const f = fixture(); f.register(); await f.prepare(); f.observed.set(f.read().runs[0]!.daemon!.pid, "exited");
+    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/stop_unknown/i);
+    expect(f.read().runs[0]).toMatchObject({ phase: "stop_unknown", nativeLaunch: "not_submitted", run: { stopProof: null } });
+    expect(f.events.filter(value => value === "stop")).toHaveLength(0);
+  });
+  it("does not grant another generation from stopped preparation with an inherited native identity", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    await f.prepare(); expect(f.read().runs).toHaveLength(2);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation()); f.reopen();
+    expect(() => f.facade.lifecycle!.assertCanAdvance(f.context)).toThrow();
+    await expect(f.prepare()).rejects.toThrow(/prepared.*recovery|prepared.*generation/i);
+    expect(f.read().runs).toHaveLength(2); expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+  });
+  it("retains requested launch uncertainty when only the original shell can be stopped", async () => {
+    const f = fixture(); f.register(); await f.prepare();
+    f.mutateRecord(draft => { const run = draft.runs[0]!; run.phase = "launch_requested"; run.nativeLaunch = "requested"; });
+    f.reopen();
+    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow(/stop_unknown/i);
+    expect(f.read().runs[0]).toMatchObject({ phase: "stop_unknown", nativeLaunch: "requested", run: { stopProof: null } });
+    expect(f.launches).toHaveLength(0); expect(f.inputs).toHaveLength(0);
   });
   it("does not recover or send input after losing the original claim", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding); f.changeTask({ allowAgents: false });

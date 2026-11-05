@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse as parseToml } from "smol-toml";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { assertCodexIntegrationHome, createHerdrEnvironment, createHerdrInstance, createHerdrNativeEnvironment, createHerdrVersionObserver, resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
@@ -80,6 +81,45 @@ afterEach(async () => {
 });
 
 describe("private Herdr instance", () => {
+  it.skipIf(process.platform !== "darwin")("runs new isolated panes without user shell startup files while retaining PATH and native homes", async () => {
+    const f = await fixture();
+    const home = path.join(f.root, "native-home"); await mkdir(home);
+    const marker = path.join(home, "startup-ran");
+    await writeFile(path.join(home, ".bashrc"), `printf changed > '${marker}'\nexport PATH=/unrelated\n`);
+    const instance = createHerdrInstance({ paths: f.worker, environment: { ...f.environment, HOME: home }, spawnProcess: f.start, isolatedRun: true });
+    await instance.ensure(operation());
+    expect(instance.managedShellExecutable).toBe("/bin/bash");
+    const config = parseToml(await readFile(instance.paths.configurationFile, "utf8"));
+    expect(config.terminal).toMatchObject({ shell_mode: "non_login", default_shell: expect.any(String) });
+    const terminal = config.terminal as { default_shell: string };
+    const launched = spawnSync(terminal.default_shell, ["-i", "-c", 'printf "%s\\n%s\\n" "$PATH" "$CODEX_HOME"'], { env: { ...process.env, HOME: home, PATH: "/checked/native/bin:/usr/bin:/bin", CODEX_HOME: "/retained/native/home" }, encoding: "utf8", timeout: 10_000 });
+    expect(launched.status).toBe(0);
+    expect(launched.stdout).toBe("/checked/native/bin:/usr/bin:/bin\n/retained/native/home\n");
+    expect(existsSync(marker)).toBe(false);
+    const bin = path.join(home, "bin"); await mkdir(bin);
+    await writeFile(path.join(bin, "native-provider"), '#!/bin/sh\nprintf checked-executable\n', { mode: 0o700 });
+    const inheritedFunction = spawnSync(terminal.default_shell, ["-i", "-c", "native-provider"], {
+      env: { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin`, "BASH_FUNC_native-provider%%": "() { printf unchecked-function; }" }, encoding: "utf8", timeout: 10_000,
+    });
+    expect(inheritedFunction.status).toBe(0);
+    expect(inheritedFunction.stdout).toBe("checked-executable");
+    await instance.stop(operation());
+  });
+
+  it.skipIf(process.platform !== "darwin")("reconnects a legacy isolated daemon without replacing its shell configuration and refuses to restart its directory", async () => {
+    const f = await fixture(); await f.instance.ensure(operation());
+    const legacy = "onboarding = false\n\n[session]\nresume_agents_on_restore = false\n\n[update]\nversion_check = false\nmanifest_check = false\n";
+    await writeFile(f.instance.paths.configurationFile, legacy);
+    const other = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("Must not restart the old daemon"); }, isolatedRun: true });
+    expect(await other.ensure(operation())).toMatchObject({ reconnected: true });
+    expect(await other.connect(operation())).toMatchObject({ reconnected: true });
+    expect(other.managedShellExecutable).toBeUndefined();
+    expect(await readFile(f.instance.paths.configurationFile, "utf8")).toBe(legacy);
+    expect(existsSync(path.join(f.root, "shell"))).toBe(false);
+    await f.instance.stop(operation());
+    await expect(other.ensure(operation())).rejects.toThrow("differs from the managed");
+    expect(await readFile(f.instance.paths.configurationFile, "utf8")).toBe(legacy);
+  });
   it("waits for durable daemon registration before observing readiness", async () => {
     const setup = await fixture();
     let captured = 0;
