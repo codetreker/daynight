@@ -615,7 +615,7 @@ func TestInstalledCLIStatusRacesAcceptance(t *testing.T) {
 			evidence := newLifecycleEvidence(t, scenario)
 			process := fixture.launch(t, nil).started(t)
 			cli.configure(t, process)
-			projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "Installed status race"))
+			projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "Installed status race", "--confirm"))
 			prerequisiteID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Unfinished prerequisite"))
 			id := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Competing task", "--description", "Complete preserved description. Attachment: plans/lifecycle.md\nReview before execution."))
 			before := acceptanceCLISetPullRequests(t, cli, cli.task(t, id), acceptanceProperties(t, []api.PullRequestProperty{{URL: "https://github.com/example/race/pull/9", Title: "Preserved PR reference"}}))

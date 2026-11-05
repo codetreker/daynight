@@ -100,7 +100,8 @@ Step 分派先于普通 Task 分支；`step.ts` 组合 list/show 读取与 Add/U
 `step-rendering.ts` 单独拥有完整 Steps/Step 资源的文本与 JSON 输出，
 `step-diagnostics.ts` 拥有安全公开诊断并保留内部 cause。四状态 Step 类型
 不复用 TaskStatus。帮助与本地 ID 参数校验完成后才加载配置、Git 或 HTTP。
-`project create` 将名称声明为一个必填位置参数，`--repo` 声明为可选 text 选项。该定义声明
+`project create` 将名称声明为一个必填位置参数，`--repo`、`--team` 声明为可选 text
+选项，`--confirm` 为无值开关。该定义声明
 `allowOptionsTerminator`，使 `--` 后的词按位置参数处理，因而前导 `-` 的名称也能
 原样提交。语法层按共享定义检查位置参数的最小/最大数量、allowEmpty 和固定候选；optional 参数只能组成连续的末尾后缀。properties 的 task ID 可选性由 --schema 模式决定，set-property 的 value 明确允许空字符串。名称的 Unicode 文本语义由 Project 命令在业务加载之前校验；通用属性值不套用此规则。
 共享语法通过 `value.allowEmpty` 表达描述空值，通过 `value.choices` 表达状态允许值，
@@ -352,7 +353,7 @@ flowchart TD
 
 | CLI 操作 | API |
 |---|---|
-| `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`，再提交真实 `expectedUserId` 和原始 `name`、`repoUrl` |
+| `project create <name> [--repo <repo>] [--team <uuid\|personal>] [--confirm]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时读取 `/me`、解析并验证目标 Team，确认后提交 `teamId`、真实 `expectedUserId` 和原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
 | `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
@@ -398,6 +399,12 @@ Team 读取先以 `/me` 确定真实用户和 Personal Team，并核对响应主
 循环及超额，完整验证后统一渲染。`default show` 对已配置目标执行详情读取，避免把
 失效配置显示成可用；`team list` 不解析默认，显式目标也不受其影响。该读取路径不写
 配置，既有全范围 Project 发现继续使用原列表方法。
+
+Project 创建先对全部可访问项目的完整分页进行仓库匹配。唯一匹配直接返回，多个
+匹配报告歧义；两者均不解析默认、确认或写入。零匹配才复用当前用户和目标解析：
+显式目标优先，配置缺失时使用 Personal，失效配置明确失败。确认阶段不持配置锁，
+缺少 `--confirm` 的非 TTY 调用在写入前拒绝。请求与响应绑定真实主体，服务端在
+事务内重新检查 Team 成员资格；未知提交不自动重放。
 
 `default set` 使用发起请求时的规范 origin 和 token 快照，以 `/me` 主体定位当前
 `teamDefaults` pair，保留其存在性和原值作为写入前置条件，不解析或验证旧目标。

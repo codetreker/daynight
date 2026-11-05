@@ -164,7 +164,7 @@ export type ApiClient = {
   previewProjectTransfer(userId: string, projectId: string, targetTeamId: string): Promise<ProjectTransferPreview>;
   transferProject(userId: string, projectId: string, preview: ProjectTransferPreview, requestId: string): Promise<ProjectTransferReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
-  createProject(input: CreateProjectInput): Promise<Project>;
+  createProject(input: CreateProjectInput, requestId?: string): Promise<Project>;
   getProject(projectId: string, userId?: string): Promise<Project>;
   getProjectAccess(projectId: string): Promise<ProjectAccess>;
   listProjects(userId?: string): Promise<readonly Project[]>;
@@ -1005,13 +1005,17 @@ export const createApiClient = (options: {
       const worker = resourceId(workerId);
       return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], { kind: "json", value: input }, true);
     },
-    createProject: (input) => {
+    createProject: (input, requestId) => {
       const expected = resourceId(input.expectedUserId);
       const teamId = input.teamId === undefined ? undefined : resourceId(input.teamId);
-      return exchange({ operation: "project.create" }, "/projects", "POST", {
+      return exchange({ operation: "project.create", ...(requestId === undefined ? {} : { sentRequestId: requestId }) }, "/projects", "POST", {
         kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
         onPrincipal: (principal) => { if (principal !== expected) throw new ProtocolError("The authenticated response principal does not match the expected user."); },
-        parse: (value) => parseCreatedProject(value, expected, teamId),
+        parse: (value) => {
+          const project = parseCreatedProject(value, expected, teamId);
+          if (project.name !== input.name || project.repoUrl !== input.repoUrl) throw new ProtocolError("Project creation receipt does not match the request.");
+          return project;
+        }, confirmMutation: (project) => project.id,
       }, [201], { kind: "json", value: { name: input.name, repoUrl: input.repoUrl, expectedUserId: expected, ...(teamId === undefined ? {} : { teamId }) } });
     },
     getProject: (projectId, userId) => {

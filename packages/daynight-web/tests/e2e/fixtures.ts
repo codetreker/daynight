@@ -78,7 +78,7 @@ export const test = base.extend<{
       try {
         const client = await createAcceptanceCli(value, join(directory, 'cli'));
         cli = client;
-        const argv = ['project', 'create', `Status ${randomUUID()}`, '--repo', `https://example.com/status/${randomUUID()}`];
+        const argv = ['project', 'create', `Status ${randomUUID()}`, '--repo', `https://example.com/status/${randomUUID()}`, '--confirm'];
         const result = await client.run(argv);
         expect(result.exitCode).toBe(0); expect(result.stderr).toBe('');
         const ids = [...result.stdout.matchAll(/^ID: ([0-9a-f-]{36})$/gm)]; expect(ids).toHaveLength(1);
