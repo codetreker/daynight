@@ -14,8 +14,12 @@ one resource masquerade as another or make a stale version writable.
 The existing `TaskDetailSessions` owner serializes status and Task mutations.
 It validates a complete Steps receipt against the submitted operation and keeps
 its actual version distinct from parent detail and summary versions. A status
-write triggers parent and project reads; the common submission gate opens when
-all three resources converge under the same identity and cache generation.
+write triggers parent and project reads only while its original operation still
+owns an admitted, live detail in the same cache generation. After asynchronous
+Steps receipt admission, the continuation re-enters the shared mutation stage
+to wait for identity verification and checks deletion and ownership again. The
+common submission gate opens when all three resources converge under the same
+identity and cache generation.
 A newer observed version invalidates the older collection and schedules a read.
 If the parent GET finishes before the other resources advance, the owner
 coalesces a new parent read at that floor and opening generation. Reopening
@@ -49,10 +53,20 @@ different baselines and making late responses harder to fence.
 body cannot establish the complete collection or the resulting parent version;
 readback preserves the uncertainty without inventing a result.
 
+**Fence only the returned Steps collection.** Its generation check discards a
+late array, but an unconditional follow-up parent read can still replace a
+confirmed deletion with loading and then error/Retry. The continuation must
+retain the original operation and cache ownership after the admission await.
+
 ## Consequences
 
 Status changes require convergence of three independently returned resources,
 so synchronization or read failures remain visible and temporarily prevent
-further writes. The [append and content form](2026-11-04-task-steps-web-add.md)
+further writes. Confirmed deletion keeps its explanation and return action
+without a late success starting another parent read. Cache restoration and
+retirement retain their current owners; the old operation cannot start their
+reads. Deterministic session tests hold committed receipt admission across these
+events and include live status and position convergence without write replay.
+The [append and content form](2026-11-04-task-steps-web-add.md)
 and [position writes](2026-11-04-task-steps-web-position.md) reuse the same
 owner; [deletion](2026-11-05-task-steps-web-delete.md) uses that gate as well.

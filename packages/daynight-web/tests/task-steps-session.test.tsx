@@ -531,6 +531,127 @@ const drainReads = async (scope: TaskCacheScope) => {
   await scope.beginSync(projectId, signal());
 };
 
+// Hold the real successful Steps admission after its IndexedDB transaction commits.
+// Recovery reads remain independently controlled so the terminal event wins the await.
+const heldStepSuccess = async (action: "status" | "position") => {
+  const scope = await seed(); const session = await open(scope);
+  const second = { ...item, id: "00000002", title: "Second" };
+  const original = [item, second];
+  const changed = action === "status" ? [{ ...item, status: "done" as const }, second] : [second, item];
+  const write = deferred<Response>(); const replacementWrite = deferred<Response>(); const recovery = deferred<Response>(); const parent = deferred<Response>();
+  const entered = deferred<void>(); const release = deferred<void>();
+  let submitted = false; let intercepted = false; let restored = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "PUT") { const pending = submitted ? replacementWrite : write; submitted = true; return pending.promise; }
+    if (restored) return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(5n, original) : body(), TEST_VIEWER_ID));
+    if (url.endsWith("/steps")) return submitted ? recovery.promise : Promise.resolve(resourceResponse(resource(5n, original), TEST_VIEWER_ID));
+    return submitted ? parent.promise : Promise.resolve(resourceResponse(body(), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  if (action === "status") session.setStepStatus(projectId, taskId, item.id, "done", 5n);
+  else session.moveStep(projectId, taskId, item.id, { position: "last" }, 5n);
+  await waitFor(() => expect(submitted).toBe(true));
+  await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope));
+  const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementation(async (...args) => {
+    const result = await transaction(...args);
+    if (typeof result === "bigint" && !intercepted) { intercepted = true; entered.resolve(); await release.promise; }
+    return result;
+  });
+  write.resolve(resourceResponse(resource(6n, changed), TEST_VIEWER_ID)); await entered.promise;
+  return { scope, session, fetcher, recovery, parent, release, replacementWrite, changed, restore: () => { restored = true; } };
+};
+const parentReadCount = (fetcher: ReturnType<typeof vi.fn>) => fetcher.mock.calls.filter(([url, options]) => options.method === undefined && !url.endsWith("/steps")).length;
+
+it.each(["status", "position"] as const)("keeps deletion terminal when a successful Step %s awaits cache admission", async (action) => {
+  const { scope, session, fetcher, recovery, parent, release } = await heldStepSuccess(action);
+  recovery.resolve(failure(410, "task_deleted"));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).status).toBe("deleted"));
+  const reads = parentReadCount(fetcher); const refresh = vi.fn(); session.subscribeProject(projectId, refresh);
+  const published: string[] = []; session.subscribe(projectId, taskId, () => { published.push(session.snapshot(projectId, taskId).status); });
+  parent.resolve(failure(500, "internal_error")); release.resolve(); await drainReads(scope);
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ status: "deleted", detail: null, requiresFreshRead: false, mutation: { phase: "confirmed", reconciling: false } });
+  expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ status: "deleted", resource: null });
+  expect(published.every((status) => status === "deleted")).toBe(true);
+  expect(parentReadCount(fetcher)).toBe(reads); expect(refresh).not.toHaveBeenCalled();
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(false);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it("does not resume an old Step success after deletion restores a new cache generation", async () => {
+  const { scope, session, fetcher, recovery, parent, release, restore } = await heldStepSuccess("status");
+  recovery.resolve(failure(410, "task_deleted")); await waitFor(() => expect(session.snapshot(projectId, taskId).status).toBe("deleted"));
+  restore(); await apply(scope, body(), true); session.observe(projectId, taskId, node(scope));
+  const reads = parentReadCount(fetcher); const refresh = vi.fn(); session.subscribeProject(projectId, refresh);
+  parent.resolve(resourceResponse(body(6n), TEST_VIEWER_ID)); release.resolve(); await drainReads(scope);
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ status: "loading", detail: null, mutation: { operation: null, phase: "idle" } });
+  expect(parentReadCount(fetcher)).toBe(reads); expect(refresh).not.toHaveBeenCalled();
+  session.load(projectId, taskId, 2, "open"); session.loadSteps(projectId, taskId, true);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  expect(session.snapshot(projectId, taskId).detail?.version).toBe(5n);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it.each(["project", "identity", "session"] as const)("does not continue Step success after %s retirement during admission", async (retirement) => {
+  const { scope, session, fetcher, recovery, parent, release } = await heldStepSuccess("status");
+  if (retirement === "project") { const ticket = await scope.beginSync(projectId, signal()); await scope.revokeProject(ticket, scope.signal); }
+  else if (retirement === "identity") await scope.invalidateScope();
+  else session.dispose();
+  const reads = parentReadCount(fetcher); const refresh = vi.fn(); session.subscribeProject(projectId, refresh);
+  recovery.resolve(resourceResponse(resource(6n), TEST_VIEWER_ID)); parent.resolve(resourceResponse(body(6n), TEST_VIEWER_ID)); release.resolve();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull();
+  expect(parentReadCount(fetcher)).toBe(reads); expect(refresh).not.toHaveBeenCalled();
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(false);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+});
+
+it("leaves a later operation in control when an earlier Step success resumes admission", async () => {
+  const { scope, session, fetcher, recovery, parent, release, replacementWrite, changed } = await heldStepSuccess("status");
+  session.requireOpeningRead(projectId, taskId);
+  recovery.resolve(resourceResponse(resource(6n, changed), TEST_VIEWER_ID)); parent.resolve(resourceResponse(body(6n), TEST_VIEWER_ID));
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.setStepStatus(projectId, taskId, "00000002", "done", 6n);
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(2));
+  const operation = session.snapshot(projectId, taskId).mutation.operation;
+  const reads = parentReadCount(fetcher); const refresh = vi.fn(); session.subscribeProject(projectId, refresh);
+  release.resolve(); await drainReads(scope);
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ requiresFreshRead: false, refreshing: false, mutation: { operation, phase: "pending" } });
+  expect(parentReadCount(fetcher)).toBe(reads); expect(refresh).not.toHaveBeenCalled();
+  replacementWrite.resolve(failure(403, "forbidden")); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("refused"));
+});
+
+it("waits for same-identity verification between Steps admission and successful follow-up reads", async () => {
+  const { scope, session, fetcher, recovery, parent, release } = await heldStepSuccess("status");
+  let resume: (() => void) | null = null;
+  session.subscribeSteps(projectId, taskId, () => {
+    if (session.stepsSnapshot(projectId, taskId).resource?.version === 6n && resume === null) resume = pauseAuthRequests();
+  });
+  const refresh = vi.fn(); session.subscribeProject(projectId, refresh);
+  release.resolve(); await waitFor(() => expect(resume).not.toBeNull());
+  try { await new Promise<void>((resolve) => setTimeout(resolve, 0)); expect(refresh).not.toHaveBeenCalled(); }
+  finally { resume!(); }
+  recovery.resolve(resourceResponse(resource(6n, [{ ...item, status: "done" }, { ...item, id: "00000002", title: "Second" }]), TEST_VIEWER_ID));
+  parent.resolve(resourceResponse(body(6n), TEST_VIEWER_ID));
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  expect(refresh).toHaveBeenCalled(); expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+  await drainReads(scope);
+});
+
+it.each(["status", "position"] as const)("continues a live Step %s success after awaited admission without replay", async (action) => {
+  const { scope, session, fetcher, recovery, parent, release, changed } = await heldStepSuccess(action);
+  recovery.resolve(resourceResponse(resource(6n, changed), TEST_VIEWER_ID));
+  const refresh = vi.fn(); session.subscribeProject(projectId, refresh);
+  parent.resolve(resourceResponse(body(6n), TEST_VIEWER_ID)); release.resolve();
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ status: "ready", detail: { version: 6n }, mutation: { phase: "confirmed", reconciling: false } });
+  expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual(changed);
+  expect(refresh).toHaveBeenCalled();
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(1);
+  await drainReads(scope);
+});
+
 it.each(["steps", "parent"] as const)("keeps %s 410 terminal against an older parent response", async (source) => {
   const scope = await seed(); const session = await open(scope); const late = deferred<Response>(); const steps = deferred<Response>(); let parentReads = 0;
   const fetch = vi.fn().mockImplementation((url: string) => {
