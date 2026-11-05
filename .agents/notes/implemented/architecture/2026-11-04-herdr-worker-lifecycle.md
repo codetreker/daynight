@@ -37,8 +37,16 @@ the original birth instance.
 Shutdown closes the run and its segments while retaining the claim and Session.
 A confirmed stop, known native conversation and confirmed or explicitly resolved
 initial input permit another generation; the [input arbitration decision](2026-11-04-herdr-input-arbitration.md)
-keeps human-owned input suspended and preserves the original unknown receipt. Reconnection changes the connection epoch and starts a
-segment with an explicit gap. Uncertain input is never automatically replayed.
+keeps human-owned input suspended and preserves the original unknown receipt.
+Reopening the Worker changes the connection epoch and starts a segment with an
+explicit gap. A lost relay connection during an otherwise live run is recovered
+by ordinary observation, even when native identity and recorded content remain
+unchanged. The same claim and original native processes are verified before
+reconnecting through the existing durable registration and readback path. That
+connection advances only its connection epoch, preserving the Session, native
+generation, segment and suspended input state. Task pause permits read-only
+observation to reconnect but grants no input or automation recovery. An unknown
+registration is read back before any new registration; input is never replayed.
 An automatic known-menu or disabled-input rejection with no native write clears
 only the current admission and preserves initial pending state when applicable.
 The typed waiting result survives input-journal serialization, while any
@@ -88,6 +96,11 @@ boot identity and retains unknown on changed execution images.
 **Reconstruct missing provenance from remote summaries.** A NULL native session
 or absent current pane cannot distinguish never-started execution from an
 interrupted launch. Refusal preserves the original resources and conversation.
+
+**Reconnect only when native identity or the ledger changes.** An idle terminal
+can remain unchanged indefinitely after a relay disconnect, leaving its live
+preview permanently offline. Connection ownership needs its own reconciliation
+trigger; unrelated native events cannot provide that liveness guarantee.
 
 ## Consequences
 

@@ -1005,3 +1005,65 @@ it("retains pending responsibility when the completed deletion journal belongs t
   expect(f.facade.tasks.pendingStops()).toHaveLength(1); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
   expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ state: "failed", worktreeDeleted: false });
 });
+
+it.each([false, true])("reconnects an unchanged active observation without input replay, paused: %s", async paused => {
+  const create = inputSessionModule.createHerdrInputSession; let disconnect!: () => void;
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => { disconnect = () => options.suspend(f.context); return create(options); });
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const original = f.read(), registrations = f.registrations.length;
+  disconnect();
+  if (paused) { const task = await f.readTask(); f.changeTask({ properties: { ...task.properties, paused: true } }); }
+  await f.facade.tasks.observe(f.context, binding, operation());
+  const after = f.read();
+  expect(f.registrations).toHaveLength(registrations + 1);
+  expect(after.sessionId).toBe(original.sessionId); expect(after.runs).toEqual(original.runs); expect(after.segments).toEqual(original.segments);
+  expect(BigInt(after.connectionEpoch!)).toBe(BigInt(original.connectionEpoch!) + 1n);
+  expect(f.facade.input!.state(f.context).state).toBe("suspended");
+  await expect(f.facade.tasks.submitPrompt(f.context, binding, "Must remain suspended", operation())).rejects.toThrow();
+  expect(f.launches).toHaveLength(1); expect(f.inputs).toEqual([{ initial: true, body: "Original managed assignment" }]);
+});
+
+it.each(["claim", "disabled", "native"] as const)("does not reconnect unchanged observation after original %s authorization changes", async changed => {
+  const create = inputSessionModule.createHerdrInputSession; let disconnect!: () => void;
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => { disconnect = () => options.suspend(f.context); return create(options); });
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding); const registrations = f.registrations.length;
+  disconnect();
+  if (changed === "disabled") f.changeTask({ allowAgents: false });
+  else if (changed === "claim") { const task = await f.readTask(); f.changeTask({ properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, claimId: uuid(777) } } }); }
+  else f.settings.peerReplaced = true;
+  await expect(f.facade.tasks.observe(f.context, binding, operation())).rejects.toThrow(/claim|daemon/i);
+  expect(f.registrations).toHaveLength(registrations); expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+});
+
+it("reconciles a lost reconnect acknowledgement on later observation without replaying that registration", async () => {
+  const create = inputSessionModule.createHerdrInputSession; let disconnect!: () => void;
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => { disconnect = () => options.suspend(f.context); return create(options); });
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const register = f.api.register, state = f.api.state; let unavailable = false;
+  f.api.register = async (...args) => { await register(...args); unavailable = true; throw new Error("lost reconnect ACK"); };
+  f.api.state = (...args) => unavailable ? Promise.reject(new Error("readback unavailable")) : state(...args);
+  disconnect(); await expect(f.facade.tasks.observe(f.context, binding, operation())).rejects.toThrow("readback unavailable");
+  const pending = f.read(); expect(pending.registrationRequest).not.toBeNull(); const count = f.registrations.length;
+  await expect(f.facade.tasks.observe(f.context, binding, operation())).rejects.toThrow("readback unavailable");
+  expect(f.registrations).toHaveLength(count); expect(f.read().registrationRequest).toEqual(pending.registrationRequest);
+  unavailable = false; await f.facade.tasks.observe(f.context, binding, operation());
+  expect(f.registrations).toHaveLength(count); expect(f.read().registrationRequest).toBeNull();
+  expect(f.facade.input!.state(f.context).state).toBe("suspended");
+  expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+});
+
+it("reconnects observation while preserving an unknown input result and preventing automatic input", async () => {
+  const create = inputSessionModule.createHerdrInputSession; let disconnect!: () => void;
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => { disconnect = () => options.suspend(f.context); return create(options); });
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  f.settings.inputUnknown = true; await expect(f.facade.tasks.submitPrompt(f.context, binding, "Uncertain continuation", operation())).rejects.toThrow();
+  const store = openHerdrInputStore(path.join(f.paths.workerDirectory, "herdr-inputs.sqlite"));
+  try {
+    const before = store.get(f.read().sessionId)!; expect(before.unknownInput).toBe(true);
+    disconnect(); await f.facade.tasks.observe(f.context, binding, operation());
+    const after = store.get(f.read().sessionId)!;
+    expect(after.unknownInput).toBe(true); expect(after.operations).toEqual(before.operations); expect(after.state).toBe("suspended");
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Must remain blocked", operation())).rejects.toThrow();
+    expect(f.inputs).toHaveLength(2); expect(f.launches).toHaveLength(1);
+  } finally { store.close(); }
+});

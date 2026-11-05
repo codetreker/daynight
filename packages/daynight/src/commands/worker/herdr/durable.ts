@@ -349,9 +349,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   };
   const publishObservedLedger = async (owner: Identity, operation: Operation): Promise<void> => {
     const record = need(owner);
+    const disconnected = !connected.has(record.sessionId);
+    if (current(record).phase === "active" && disconnected) {
+      // Reconnect the original live target even when its identity and frame have
+      // not changed. Registration cannot restore its suspended input authority.
+      await verifyClaim(owner, operation, false);
+      await verifyRuntime(record);
+    }
     // Native identity can appear after the first input. A later unchanged
     // observation must also reconcile an earlier publication's unknown outcome.
-    if (current(record).phase === "active" && (record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record))) await publish(owner, operation);
+    if (current(record).phase === "active" && (disconnected || record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record))) await publish(owner, operation);
   };
   const publishObservedIdentity = async (owner: Identity, observed: HerdrAgentObservation, operation: Operation): Promise<void> => {
     enrich(owner, observed);
