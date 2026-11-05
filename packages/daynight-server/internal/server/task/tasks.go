@@ -42,7 +42,13 @@ func TaskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *authhttp.Authent
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-graph", auth.Require(handler.graph))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(func(w http.ResponseWriter, request *http.Request, principal model.Principal) {
+		if request.PathValue("taskId") == "search" {
+			httpx.ResourceMethodNotAllowed(logger, "POST")(w, request, principal)
+			return
+		}
+		httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")(w, request, principal)
+	}))
 }
 
 func taskResponse(task model.Task, request *http.Request) (api.Task, error) {

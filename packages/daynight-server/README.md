@@ -140,6 +140,14 @@ The [activation decision](../../.agents/notes/implemented/architecture/2026-10-2
 owns composition and credential-private validation; current delivery results
 require receipts bound to the tested source.
 
+The [project Task search requirements](../../docs/spec/daynight-task-search.md)
+and [design](../../docs/design/daynight-task-search.md) define the read-only
+`POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
+titles and Markdown descriptions using literal expressions, returns ranked
+pages with real ordinary-dependency context, and rejects continuation when the
+project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
+include successful pages and typed failures.
+
 The [task-summary synchronization requirements](../../docs/spec/daynight-task-sync.md)
 and [architecture](../../docs/design/daynight-task-sync.md) define the implemented
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary

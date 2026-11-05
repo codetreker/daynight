@@ -53,6 +53,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(dependencies.Store), auth, logger)
 	workerhttp.RegisterRoutes(mux, workerservice.NewWorkers(dependencies.Store), auth, logger)
 	taskhttp.TaskRoutes(mux, taskservice.NewTasks(dependencies.Store), auth, logger)
+	taskhttp.TaskSearchRoutes(mux, taskservice.NewTaskSearch(dependencies.Store), auth, logger)
 	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(dependencies.Store), auth, logger)
 	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(dependencies.Store), auth, logger)
 	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
