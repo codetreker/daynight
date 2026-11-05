@@ -25,14 +25,24 @@ export const openFooterController = async (api: AuthenticatedAPI, origin: string
   expect(claimResponse.status()).toBe(200);
   const claimed = await claimResponse.json() as Task;
   const releaseClaim = async () => {
-    const response = await api.get(taskPath);
+    // Task details omit runtime properties; the dedicated resource owns current claim observation.
+    const response = await api.get(`${taskPath}/properties`);
     expect(response.status()).toBe(200);
-    const current = await response.json() as Task;
+    const current = await response.json() as { projectId: string; taskId: string; version: number; properties: Task['properties'] };
+    expect(current.projectId).toBe(task.projectId); expect(current.taskId).toBe(task.id);
     const claim = readWorkerClaim(current.properties);
-    if (claim?.claimId === claimId && claim.state === 'active') {
+    expect(claim?.claimId, 'Cleanup retains the original fixture claim').toBe(claimId);
+    if (claim?.state === 'active') {
       const released = await api.post(`${taskPath}/worker-claim/release`, { headers: { 'Daynight-Worker-Protocol': '2' }, data: { version: current.version, claimId, stoppedConfirmed: true } });
       expect(released.status()).toBe(200);
     }
+    const confirmedResponse = await api.get(`${taskPath}/properties`);
+    expect(confirmedResponse.status()).toBe(200);
+    const confirmed = await confirmedResponse.json() as { version: number; properties: Task['properties'] };
+    const releasedClaim = readWorkerClaim(confirmed.properties);
+    expect(releasedClaim?.claimId).toBe(claimId);
+    expect(releasedClaim?.state, 'Fixture claim release is confirmed').toBe('released');
+    return { claimId, state: releasedClaim!.state, version: confirmed.version };
   };
   let closeTransport: (() => Promise<void>) | undefined;
   try {
@@ -136,7 +146,7 @@ export const openFooterController = async (api: AuthenticatedAPI, origin: string
       },
       close: async () => {
         await closeSocket();
-        await releaseClaim();
+        return await releaseClaim();
       },
     };
   } catch (error) {

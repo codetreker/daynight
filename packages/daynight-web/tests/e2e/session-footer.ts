@@ -190,6 +190,7 @@ export async function verifySessionFooter(page: Page, api: AuthenticatedAPI, ori
       boundary: 'Production Task Session pages and real isolated service with a protocol Controller fixture. Authorized pending submissions are held and rejected by the controlled relay writer; no native Provider or physical mobile keyboard coverage is claimed.',
     }, null, 2) });
   } finally {
-    await controller.close();
+    const cleanup = await controller.close();
+    await info.attach('session-footer-cleanup', { contentType: 'application/json', body: JSON.stringify({ projectId: project.id, taskId: task.id, sessionId: controller.sessionId, ...cleanup }) });
   }
 }
