@@ -22,4 +22,4 @@ The filter belongs to presentation. The client retains operation identity and re
 
 ## Consequences
 
-Pending and unsuccessful operations remain visible with existing check controls and errors. Successful history no longer consumes the twelve visible receipt slots; more than twelve non-successful receipts remain subject to the existing display limit. The operation ledger and its storage bounds are unchanged. Future operation kinds must define their completion semantics before provider acceptance can be hidden.
+Pending and unsuccessful operations remain visible. The [delivery progress decision](2026-11-06-session-delivery-progress.md) distinguishes live page submissions from uncertain recovery and controls when reconciliation is offered; error details remain visible. Successful history no longer consumes the twelve visible receipt slots; more than twelve non-successful receipts remain subject to the existing display limit. The operation ledger and its storage bounds are unchanged. Future operation kinds must define their completion semantics before provider acceptance can be hidden.

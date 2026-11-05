@@ -3,10 +3,12 @@ import type { SessionControls, SessionSetting } from '../../../../daynight/src/s
 import type { SessionState } from './state';
 import type { SessionSettingIntent } from './client';
 import { useSessionMessages } from './messages';
+import { operationPresentation, type SessionOperationProgress } from './operation-presentation';
 
 export type ControlsView = 'model' | 'permissions' | 'commands' | null;
-export function SessionControlsPanel({ controls, state, intents, view, disabled, onClose, onSelect, onRefresh }: {
+export function SessionControlsPanel({ controls, state, intents, operationProgress = new Map(), view, disabled, onClose, onSelect, onRefresh }: {
   readonly controls: SessionControls | undefined; readonly state: SessionState;
+  readonly operationProgress?: SessionOperationProgress;
   readonly intents: ReadonlyMap<string, SessionSettingIntent>; readonly view: ControlsView; readonly disabled: boolean;
   readonly onClose: () => void; readonly onSelect: ((id: string, value: string, revision: string) => Promise<void>) | undefined;
   readonly onRefresh: (() => Promise<void>) | undefined;
@@ -42,6 +44,7 @@ export function SessionControlsPanel({ controls, state, intents, view, disabled,
     {settings.map(setting => {
       const intent = intents.get(setting.id), operation = intent && state.operations.get(intent.operationId);
       const pending = operation && !['confirmed', 'failed', 'rejected', 'expired'].includes(operation.state);
+      const receipt = operation && operationPresentation(operation, operationProgress);
       const actual = setting.options.find(option => option.value === setting.value)?.label ?? setting.value ?? m.unavailableValue;
       const value = pending && intent ? intent.value : setting.value ?? '';
       const failed = operation && ['failed', 'rejected', 'expired'].includes(operation.state);
@@ -51,7 +54,7 @@ export function SessionControlsPanel({ controls, state, intents, view, disabled,
           {!setting.options.some(option => option.value === value) ? <option value={value}>{value || m.unavailableValue}</option> : null}
           {setting.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
-        {pending ? <p className="session-control-note" role="status">{operation.state === 'unknown' ? m.settingUnknown : m.settingPending} {m.currentValue}: {actual}</p> : null}
+        {pending ? <p className="session-control-note" role="status">{receipt === 'unknown' ? m.settingUnknown : receipt === 'waiting' ? m.waiting : m.settingPending} {m.currentValue}: {actual}</p> : null}
         {failed ? <p className="session-error" role="alert">{operation.error?.message ?? m.failure}</p> : null}
         {setting.description ? <p className="session-control-note">{setting.description}</p> : null}
         {setting.scope === 'next_turn' ? <p className="session-control-note">{m.nextTurnSetting}</p> : null}

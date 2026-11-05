@@ -126,7 +126,7 @@ describe('composer provider controls', () => {
   it('shows target and confirmed native value separately while a setting is pending', () => {
     const s = state(), op = { protocol: s.snapshot!.protocol, sessionId: s.snapshot!.sessionId, claimId: '00000002-1111-4111-8111-111111111111', executionGeneration: '1', operationId: 'pending', kind: 'update_setting', state: 'accepted', providerResult: null, error: null } as SessionOperation;
     const intents = new Map([['model', { operationId: op.operationId, settingId: 'model', value: 'native-b', confirmedValue: 'native-a' }]]);
-    render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[op.operationId, op]]) }} intents={intents} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
+    render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[op.operationId, op]]) }} intents={intents} operationProgress={new Map([[op.operationId, 'sending']])} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
     expect(screen.getByRole('combobox')).toHaveValue('native-b');
     expect(screen.getByText('Pending provider confirmation. Current: Native A')).toBeVisible();
   });
@@ -536,4 +536,31 @@ it.each(['revision', 'description', 'availability', 'id', 'error'] as const)('re
   fireEvent.keyDown(input, { key: 'Enter' });
   await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/rev'));
   expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+
+it.each([
+  ['unknown', 'sending', 'Pending provider confirmation. Current: Native A'],
+  ['dispatching', 'waiting', 'Still awaiting acceptance… Current: Native A'],
+  ['accepted', undefined, 'Change outcome is unknown. Check the original operation. Current: Native A'],
+  ['unknown', undefined, 'Change outcome is unknown. Check the original operation. Current: Native A'],
+] as const)('distinguishes setting %s with %s page progress from an uncertain restored change', (phase, progress, label) => {
+  const s = state();
+  const operation: SessionOperation = { protocol: s.snapshot!.protocol, sessionId: s.snapshot!.sessionId, claimId: '00000002-1111-4111-8111-111111111111', executionGeneration: '1', operationId: 'setting', kind: 'update_setting', state: phase, providerResult: null, error: null };
+  const intents = new Map([['model', { operationId: operation.operationId, settingId: 'model', value: 'native-b', confirmedValue: 'native-a' }]]);
+  render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[operation.operationId, operation]]) }} intents={intents} operationProgress={progress ? new Map([[operation.operationId, progress]]) : new Map()} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
+  expect(screen.getByRole('combobox')).toBeDisabled();
+  expect(screen.getByRole('combobox')).toHaveValue('native-b');
+  expect(screen.getByText(label)).toBeVisible();
+});
+
+it.each(['send_message', 'execute_command', 'update_setting', 'refresh_controls'] as const)('keeps %s pending without a warning or a fallback read-only notice', kind => {
+  const props = base(), s = props.state.snapshot!;
+  const operation: SessionOperation = { protocol: s.protocol, sessionId: s.sessionId, claimId: '00000002-1111-4111-8111-111111111111', executionGeneration: '1', operationId: 'operation', kind, state: 'unknown', providerResult: null, error: null };
+  props.state = { ...props.state, operations: new Map([[operation.operationId, operation]]) };
+  const { container } = render(<SessionComposer {...props} operationProgress={new Map([[operation.operationId, 'sending']])} />);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Draft retained' } });
+  expect(container.querySelector('.session-notice')).toBeNull();
+  expect(screen.getByRole('button', { name: /Send|Awaiting provider confirmation/ })).toBeDisabled();
+  expect(screen.getByRole('textbox')).toHaveValue('Draft retained');
 });

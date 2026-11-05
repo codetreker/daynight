@@ -46,6 +46,9 @@
 .session-error { margin: 8px 12px; color: #9c3d48; font-size: 12px; overflow-wrap: anywhere; }
 .session-receipts { flex: none; max-height: 72px; overflow: auto; padding: 4px 26px; background: #fafbfe; font-size: 10px; color: #758096; }
 .session-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 3px 0; }
+.session-receipt-progress { flex: none; width: 7px; height: 7px; border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: session-receipt-spin 1s linear infinite; }
+@keyframes session-receipt-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .session-receipt-progress { animation: none; } }
 .session-receipt.unknown, .session-receipt.failed, .session-receipt.rejected { color: #995d32; }
 .session-resource { margin: 8px 0; font-size: 12px; }
 .session-resource a { color: #5555b6; text-decoration: underline; }
