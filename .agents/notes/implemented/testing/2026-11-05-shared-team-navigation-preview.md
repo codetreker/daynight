@@ -13,10 +13,12 @@ shard even though its browser contexts and API fixtures are already isolated.
 ## Decision
 
 `tests/navigation/team-playwright.config.ts` owns one Vite build and preview for
-three Playwright projects. `team-preference` retains both Team preference and
+the Team and Session layout Playwright projects. `team-preference` retains both Team preference and
 Worker configuration identity files; `team-management` and `team-members` retain
-their respective files. The combined inventory contains the original 79 cases
-across four files. Each test still receives its own browser context, page,
+their respective files. The original grouping contained 79 cases across four
+files. `session-record-layout` shares that preview to check the production
+Session selector with its own HTTP fixtures and output directory. Each test
+receives its own browser context, page,
 controlled API routes and mutable fixture state. The shared server serves static
 assets and holds no account, Team, request or browser storage state.
 
@@ -24,7 +26,8 @@ The complete run retains one worker, zero retries, the default English locale
 and desktop viewport, per-case overrides, and screenshots on failure. Project-specific output directories remain
 unchanged, and members retain failure traces owned by the
 [member evidence decision](2026-11-05-team-members-browser-evidence.md). Preference
-and Worker identity cases retain 45-second deadlines; management and member cases
+and Worker identity cases retain 45-second deadlines, also used by Session layout
+cases; management and member cases
 retain 30 seconds. Preview startup retains its 90-second limit, strict port 4194
 and refusal to reuse an existing server. A new run owns and stops its preview.
 
@@ -56,8 +59,8 @@ while sharing only the static server.
 
 ## Consequences
 
-The three groups pay for one static application build and preview startup. This
-removes two preparation lifetimes without relying on skipped tests, cached test
+The original three groups paid for one static application build and preview startup.
+This removed two preparation lifetimes without relying on skipped tests, cached test
 results, extra retries or longer case deadlines. The actual command and CI savings
 depend on build cost and runner variation; removing preparation is not proof of
 a particular whole-job speedup.

@@ -1878,21 +1878,24 @@ are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
 The Team navigation browser suite builds one production application preview for
-three Playwright projects: `team-preference` covers Team selection and Worker
+four Playwright projects: `team-preference` covers Team selection and Worker
 configuration identity, `team-management` covers settings and rename interactions,
-and `team-members` covers membership and self-exit. Each case owns its browser
+`team-members` covers membership and self-exit, and `session-record-layout` covers
+responsive execution-record selection, keyboard and touch input, history loading,
+errors and pagination. Each case owns its browser
 context and controlled API responses; the preview serves only static assets.
 Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
 tests/navigation/team-playwright.config.ts`; add `--project team-management` to
 focus on settings geometry, wrapping, text selection and rename interactions.
 Browser CI shard 2 runs the complete suite between editor navigation and Bot
 viewport checks before full-stack acceptance. One worker and zero retries remain
-in effect. The preference project retains its 45-second case deadline, while
+in effect. Preference and Session layout cases use 45-second deadlines, while
 management and members retain 30 seconds; preview startup retains 90 seconds.
 CI gives the grouped command a 540-second aggregate deadline, equal to the three
 former 180-second command budgets. Its output remains separated under the existing
 `.tmp/team-preference-results`, `.tmp/team-management-results` and
-`.tmp/team-members-results` directories; members retain failure traces. The
+`.tmp/team-members-results` directories; Session layout results use
+`.tmp/session-selector/results`, and members retain failure traces. The
 [shared preview decision](../../.agents/notes/implemented/testing/2026-11-05-shared-team-navigation-preview.md)
 owns preparation sharing, isolation and deadline handling.
 
