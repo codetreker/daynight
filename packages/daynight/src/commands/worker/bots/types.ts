@@ -28,9 +28,15 @@ export type BotLaunchIntent = {
   ticketPath: string; journalPath: string; credentialFile: string;
   recoveryLimit: number; roleConfiguration: BotRoleConfiguration | null;
 };
+export type BotCleanup = {
+  deletionId: string; requestedVersion: string;
+  stop: import("./session-api.js").BotDeletionStop | null;
+  targets: import("./delete-files.js").BotDeletionTarget[];
+  localCompleted: boolean;
+};
 export type BotRecord = {
   owner: BotOwner; botId: string; observed: Bot; definition: BotDefinition | null;
-  observedAt: number; intent: BotLaunchIntent | null;
+  observedAt: number; intent: BotLaunchIntent | null; cleanup?: BotCleanup;
 };
 
 export const botUUID = (value: unknown, field: string): string => {

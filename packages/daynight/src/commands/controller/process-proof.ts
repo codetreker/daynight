@@ -50,9 +50,15 @@ export const stopControllerProcesses = async (controller: ProcessProof, native: 
   if (process.platform === "win32") {
     if (controller.jobObjectName === undefined) throw new Error("The original Windows controller has no Job Object boundary; cleanup retains its unknown descendants.");
     await inspectControllerJob(controller.jobObjectName, true);
-    while (Date.now() < deadline && (await inspectControllerJob(controller.jobObjectName)).length > 0) await new Promise(resolve=>setTimeout(resolve,25));
-    if (!await confirmControllerProcessesStopped(controller,native)) throw new Error("The original Windows Job Object did not stop completely.");
-    return;
+    // Job termination is asynchronous. An empty inventory is insufficient until
+    // every retained original process identity also confirms it has stopped.
+    while (Date.now() < deadline) {
+      if (await confirmControllerProcessesStopped(controller, native)) return;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise(resolve => setTimeout(resolve, Math.min(25, remaining)));
+    }
+    throw new Error("The original Windows Job Object did not stop completely.");
   }
   if (controller.processGroupId !== controller.pid) throw new Error("Refusing a process group not owned by the original controller.");
   if ((await groupMembers(controller.pid)).length === 0) return;

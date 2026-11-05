@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { maintainControllerGrants } from "../backends/grant-renewal.js";
 import { ControllerStartupError } from "../../controller/startup.js";
+import type { BotDeletionManager } from "./delete.js";
 import { createBotInventory } from "./inventory.js";
 import type { BotProcess } from "./process.js";
 import type { BotRemote } from "./remote.js";
@@ -15,7 +16,7 @@ import { parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
  */
 export const createManagedAssistantRuntime = (options: {
   owner: BotOwner; store: BotStore; remote: BotRemote; process: BotProcess; sessionApi: BotSessionApi;
-  pollIntervalMs: number; now?: () => number; onError(message: string, botId: string | null): void;
+  deletion: BotDeletionManager; pollIntervalMs: number; now?: () => number; onError(message: string, botId: string | null): void;
   inventory?: Pick<ReturnType<typeof createBotInventory>, "reconcile">;
 }) => {
   const owner = parseBotOwner(options.owner), now = options.now ?? Date.now;
@@ -85,10 +86,12 @@ export const createManagedAssistantRuntime = (options: {
     for (const botId of result.observed) {
       signal.throwIfAborted();
       const record = options.store.get(owner, botId);
-      if (record === null || record.observed.deletion !== null) continue;
+      if (record === null) continue;
       const previous = jobs.get(botId);
       if (previous !== undefined) { scheduled.push(previous); continue; }
-      const job = advance(record, signal).finally(() => { if (jobs.get(botId) === job) jobs.delete(botId); });
+      const work = record.observed.deletion === null ? advance(record, signal)
+        : options.deletion.advance(record, signal).then(() => { errors.delete(botId); }, cause => { if (!signal.aborted) error(botId, cause); });
+      const job = work.finally(() => { if (jobs.get(botId) === job) jobs.delete(botId); });
       jobs.set(botId, job); scheduled.push(job);
     }
     return scheduled;

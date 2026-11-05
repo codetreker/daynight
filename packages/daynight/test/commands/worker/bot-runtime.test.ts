@@ -19,8 +19,9 @@ const fixture=()=>{
   const api={report:vi.fn(async(r:BotRecord,result:any)=>({...r.observed,version:"2",startupResult:{state:result.state,code:result.code??null}}))};
   const remote={owner,list:vi.fn(async()=>records.map(r=>r.observed)),read:vi.fn(async(key:string)=>records.find(r=>r.botId===key)!.observed)};
   const reconcile=vi.fn(async()=>({observed:records.map(r=>r.botId),missing:[]})); const onError=vi.fn();
-  const runtime=createManagedAssistantRuntime({owner,store:store as never,process:process as never,sessionApi:api as never,remote:remote as never,pollIntervalMs:60000,onError,inventory:{reconcile}});
-  return {runtime,process,api,remote,records,reconcile,onError};
+  const deletion={advance:vi.fn(async(_record:BotRecord,_signal:AbortSignal)=>{})};
+  const runtime=createManagedAssistantRuntime({owner,store:store as never,process:process as never,sessionApi:api as never,remote:remote as never,pollIntervalMs:60000,onError,deletion,inventory:{reconcile}});
+  return {runtime,process,api,remote,records,reconcile,onError,deletion};
 };
 
 test("isolates failed Bots and reports ready only after Controller observation",async()=>{
@@ -88,4 +89,18 @@ test("cancelling the managed loop stops all Bots with a fresh cleanup signal", a
   cancellation.abort(); await running;
   expect(f.process.shutdown).toHaveBeenCalledTimes(2);
   for (const call of f.process.shutdown.mock.calls as unknown as [BotRecord, AbortSignal][]) expect(call[1].aborted).toBe(false);
+});
+
+
+test("routes deleting inventory through its deletion owner while other Bots continue",async()=>{
+ const f=fixture(); f.records[0]!.observed={...f.records[0]!.observed,deletion:{deletionId:id(80),requestedVersion:"1",workerCleanup:{state:"pending",code:null},serverCleanup:{state:"pending",code:null}}};
+ await f.runtime.tick(new AbortController().signal);
+ expect(f.deletion.advance).toHaveBeenCalledTimes(1);expect(f.deletion.advance.mock.calls[0]![0].botId).toBe(id(3));
+ expect(f.process.advance).toHaveBeenCalledTimes(1);expect(f.process.advance.mock.calls[0]![0].botId).toBe(id(4));
+});
+test("retains deletion errors for retry and continues the other Bot",async()=>{
+ const f=fixture();f.records[0]!.observed={...f.records[0]!.observed,deletion:{deletionId:id(80),requestedVersion:"1",workerCleanup:{state:"pending",code:null},serverCleanup:{state:"pending",code:null}}};
+ f.deletion.advance.mockRejectedValueOnce(new Error("permission denied"));
+ await f.runtime.tick(new AbortController().signal);expect(f.onError).toHaveBeenCalledWith("permission denied",id(3));
+ await f.runtime.tick(new AbortController().signal);expect(f.deletion.advance).toHaveBeenCalledTimes(2);expect(f.process.advance).toHaveBeenCalledTimes(2);
 });

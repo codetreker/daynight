@@ -6,9 +6,18 @@ import { isNonemptyText } from "../../../platform/text.js";
 import { parseControllerGrantResponse, parseRegistrationResponse, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
 import { parseSessionSnapshot, SESSION_PROTOCOL, sessionFence, type SessionSnapshot } from "../../../session/protocol.js";
 import { controllerPayloadHash } from "../../controller/launch-ticket.js";
-import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotOwner, type BotRecord } from "./types.js";
+import { botUUID, botVersion, parseBot, parseBotOwner, parseBotRole, type BotDefinition, type BotDeleted, type BotOwner, type BotRecord } from "./types.js";
 
 export type BotRecoveryProof = { generation: string; instanceId: string; recordId: string; stoppedAt: string };
+export type BotDeletionStop = {
+  protocol: typeof SESSION_PROTOCOL; sessionId: string; testExecutionId: string; executionGeneration: string;
+  controllerId: string; controllerInstanceId: string;
+  stopProof: { recordId: string; previousControllerInstanceId: string; stoppedAt: string; kind?: "never_started" };
+};
+export type BotDeletionReceipt = {
+  deletionId: string; stop: BotDeletionStop | null;
+  result: { state: "completed"; code: null } | { state: "failed"; code: string };
+};
 export type BotStartupResult = { state: "ready" | "failed"; code?: string | null; nativeSessionId?: string | null };
 const same = (left: unknown, right: unknown): boolean => controllerPayloadHash(left) === controllerPayloadHash(right);
 
@@ -96,6 +105,43 @@ export const createBotSessionApi = (options: { owner: BotOwner; serverToken: str
     return checkedSnapshot(response.session, record, sessionId, response.session.executionGeneration === previous?.generation ? previous : undefined);
   };
   return {
+    /** Submit the persisted receipt unchanged; the caller observes after any uncertain result. */
+    completeDeletion: (record: BotRecord, receipt: BotDeletionReceipt, signal: AbortSignal): Promise<BotDeleted> => run(signal, async operation => {
+      if (!same(parseBotOwner(record.owner), owner)) throw new Error("Bot deletion owner differs from the original Worker binding.");
+      const bot = parseBot(record.observed, owner);
+      if (bot.id !== record.botId || bot.deletion === null) throw new Error("Bot deletion requires its original deletion responsibility.");
+      const exactKeys = (value: unknown, fields: string[]): boolean => value !== null && typeof value === "object" && !Array.isArray(value)
+        && Object.keys(value).sort().join() === [...fields].sort().join();
+      if (!exactKeys(receipt, ["deletionId", "stop", "result"]) || receipt.deletionId !== bot.deletion.deletionId
+        || !exactKeys(receipt.result, ["state", "code"])
+        || !(receipt.result.state === "completed" && receipt.result.code === null
+          || receipt.result.state === "failed" && isNonemptyText(receipt.result.code) && receipt.result.code.trim() !== "")) throw new Error("Bot deletion receipt does not match the original deletion or cleanup result.");
+      const stop = receipt.stop, intent = record.intent;
+      if (stop !== null) {
+        if (!exactKeys(stop, ["protocol", "sessionId", "testExecutionId", "executionGeneration", "controllerId", "controllerInstanceId", "stopProof"])
+          || stop.protocol !== SESSION_PROTOCOL || stop.stopProof === null || typeof stop.stopProof !== "object"
+          || !exactKeys(stop.stopProof, ["recordId", "previousControllerInstanceId", "stoppedAt", ...("kind" in stop.stopProof ? ["kind"] : [])])
+          || "kind" in stop.stopProof && stop.stopProof.kind !== "never_started") throw new Error("Bot deletion stop proof is malformed.");
+        for (const id of [stop.sessionId, stop.testExecutionId, stop.controllerId, stop.controllerInstanceId, stop.stopProof.recordId, stop.stopProof.previousControllerInstanceId]) botUUID(id, "Bot deletion stop identity");
+        botVersion(stop.executionGeneration);
+        if (stop.stopProof.previousControllerInstanceId !== stop.controllerInstanceId
+          || typeof stop.stopProof.stoppedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(stop.stopProof.stoppedAt)
+          || !Number.isFinite(Date.parse(stop.stopProof.stoppedAt)) || Date.parse(stop.stopProof.stoppedAt) > Date.now() + 1000) throw new Error("Bot deletion stop proof does not identify a stopped original controller.");
+        if (intent !== null && (stop.sessionId !== intent.sessionId || stop.testExecutionId !== intent.executionId
+          || stop.executionGeneration !== intent.executionGeneration || stop.controllerId !== intent.registration.controllerId
+          || stop.controllerInstanceId !== intent.controllerInstanceId)) throw new Error("Bot deletion stop proof differs from its durable execution fence.");
+        if (record.definition !== null && (stop.sessionId !== record.definition.sessionId || stop.testExecutionId !== record.definition.testExecutionId)) throw new Error("Bot deletion stop proof differs from its original Session binding.");
+      } else if (receipt.result.state === "completed" && (intent?.sessionId != null || record.definition?.sessionId != null)) {
+        throw new Error("A registered Bot requires its original execution stop proof before completion.");
+      }
+      // Private sources may already be gone. The durable receipt and deletion
+      // identity remain sufficient for exact replay; do not read a deleted Session.
+      const result = parseBot(await request(`/api/v1/me/workers/${owner.workerId}/bots/${record.botId}/deletion-complete`, operation, receipt), owner);
+      if (result.id !== record.botId || result.deletion === null || BigInt(result.version) < BigInt(bot.version)
+        || result.deletion.deletionId !== bot.deletion.deletionId || result.deletion.requestedVersion !== bot.deletion.requestedVersion
+        || !same(result.deletion.workerCleanup, receipt.result)) throw new ProtocolError("Bot deletion response does not confirm the original cleanup receipt.");
+      return result;
+    }),
     register: (record: BotRecord, signal: AbortSignal): Promise<{ bot: BotDefinition; snapshot: SessionSnapshot }> => run(signal, async operation => {
       const bot = active(record), intent = intentOf(record);
       if (intent.roleConfiguration === null) throw new Error("Bot role must be persisted before registration.");

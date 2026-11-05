@@ -7,6 +7,9 @@ import { openBotExecutionStore, type BotExecutionPatch } from "../../../src/comm
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import type { BotDefinition, BotOwner, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
+import { workerStoreFormat } from "../../../src/commands/worker/store-format.js";
+import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
+import { assertCurrentSqlite } from "../../../src/platform/sqlite-format.js";
 import type { ProcessProof } from "../../../src/commands/controller/process-proof.js";
 
 const root = fileURLToPath(new URL("../../../../../.tmp/bot-execution-store-tests/", import.meta.url));
@@ -124,7 +127,7 @@ describe("Bot execution evidence", () => {
     const f = fixture(); f.store.prepare(f.record); const db = new Database(f.file); handles.push(db);
     db.prepare("UPDATE bot_executions SET record=json_set(record, '$.launchSubmission', 'lost')").run();
     expect(() => f.store.get(f.record)).toThrow(/submission/i);
-    db.pragma("user_version=11"); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma("user_version=10");
+    db.pragma("user_version=12"); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma("user_version=11");
   });
   it("migrates version 8 without rewriting inventory and rolls back a failed migration", () => {
     mkdirSync(root, { recursive: true }); const home = mkdtempSync(path.join(root, "migration-")); dirs.push(home);
@@ -136,7 +139,7 @@ describe("Bot execution evidence", () => {
     expect(() => openBotExecutionStore(file, { onMigration: () => {} })).toThrow(/migration/);
     expect(db.pragma("user_version", { simple: true })).toBe(8); expect(db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all()).toEqual(schema); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     vi.restoreAllMocks(); const store = openBotExecutionStore(file, { onMigration: () => {} }); handles.push(store);
-    expect(db.pragma("user_version", { simple: true })).toBe(10); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
+    expect(db.pragma("user_version", { simple: true })).toBe(11); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     expect(db.prepare("SELECT * FROM projects").get()).toMatchObject({ project_id: id(4), local_path: home });
   });
 });
@@ -233,11 +236,71 @@ it("migrates existing format 9 intents and execution evidence atomically without
   const record = bots.get(owner, id(3))!;
   expect(record).toEqual(f.record);
   expect(store.get(record)).toEqual(f.store.get(f.record));
-  expect(db.pragma("user_version", { simple: true })).toBe(10);
+  expect(db.pragma("user_version", { simple: true })).toBe(11);
 });
 
 it("refuses recovery into a different private execution home", () => {
   const f = fixture(); submitted(f);
   expect(() => f.store.beginRecovery(f.record, stopped(f.record), path.join(f.home, "replacement"))).toThrow(/home/);
   expect(f.bots.get(owner, id(3))).toEqual(f.record);
+});
+
+
+const formatTenFixture = () => {
+  const f = fixture(); submitted(f);
+  const legacyFormat = { ...workerStoreFormat, migrations: workerStoreFormat.migrations.filter(step => step.toVersion <= 10) };
+  const file = path.join(f.home, "format-ten.sqlite");
+  const db = openSqliteDatabase({ file, format: legacyFormat, allowCreate: true, onMigration: () => {} }); handles.push(db);
+  const keys = [owner.serverOrigin, owner.ownerUserId, owner.workerId, id(3)];
+  db.prepare("INSERT INTO bots VALUES (?,?,?,?,?)").run(...keys, JSON.stringify(f.record));
+  db.prepare("INSERT INTO bot_executions VALUES (?,?,?,?,?)").run(...keys, JSON.stringify(f.store.get(f.record)));
+  db.prepare("INSERT INTO projects VALUES (?,?,?)").run(id(40), "https://example.test/repository", f.home);
+  db.prepare("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)").run(id(40), id(41), id(42), "active", "codex", id(43), "web");
+  db.prepare("INSERT INTO cleanup_schedules VALUES (?,?,?,?,?,?,?,?,?)").run(id(40), id(41), id(42), id(44), 1234, 2, 5678, "backend-close", "retained failure");
+  const tables = ["bots", "bot_executions", "projects", "tasks", "cleanup_schedules"];
+  const rows = () => Object.fromEntries(tables.map(table => [table, db.prepare(`SELECT * FROM ${table}`).all()]));
+  return { ...f, file, db, legacyFormat, rows };
+};
+
+it("upgrades format ten without rewriting Bot execution, inventory or Task cleanup responsibility", () => {
+  const f = formatTenFixture(), rows = f.rows();
+  const schema = f.db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all();
+  const bots = openBotStore(f.file, { onMigration: () => {} }), executions = openBotExecutionStore(f.file, { onMigration: () => {} }); handles.push(bots, executions);
+  expect(f.db.pragma("user_version", { simple: true })).toBe(11);
+  expect(f.rows()).toEqual(rows);
+  expect(f.db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
+  expect(bots.get(owner, id(3))).toEqual(f.record);
+  expect(executions.get(f.record)).toEqual(f.store.get(f.record));
+});
+
+it("refuses format ten readers and already-open writers after admitting Bot deletion responsibility", () => {
+  const f = formatTenFixture();
+  const legacyRead = () => f.db.transaction(() => { assertCurrentSqlite(f.db, f.legacyFormat); return f.db.prepare("SELECT record FROM bots").get(); }).deferred();
+  expect(legacyRead()).toEqual({ record: JSON.stringify(f.record) });
+  const upgraded = openBotStore(f.file, { onMigration: () => {} }); handles.push(upgraded);
+  const rows = f.rows();
+  expect(() => openSqliteDatabase({ file: f.file, format: f.legacyFormat, allowCreate: false, onMigration: () => {} })).toThrow(/unsupported-version/);
+  expect(legacyRead).toThrow(/unsupported-version/);
+  expect(() => f.db.transaction(() => {
+    assertCurrentSqlite(f.db, f.legacyFormat);
+    f.db.prepare("UPDATE bots SET record=?").run(JSON.stringify(f.record));
+  }).immediate()).toThrow(/unsupported-version/);
+  expect(f.rows()).toEqual(rows);
+});
+
+it("rolls back a failed deletion format guard without altering preexisting responsibility", () => {
+  const f = formatTenFixture(), rows = f.rows();
+  const exec = Database.prototype.exec;
+  vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
+    const result = exec.call(this, sql);
+    if (sql.includes("SELECT 1;")) throw new Error("deletion format admission interrupted");
+    return result;
+  });
+  expect(() => openBotStore(f.file, { onMigration: () => {} })).toThrow(/migration/);
+  expect(f.db.pragma("user_version", { simple: true })).toBe(10);
+  expect(f.rows()).toEqual(rows);
+  vi.restoreAllMocks();
+  const reopened = openBotStore(f.file, { onMigration: () => {} }); handles.push(reopened);
+  expect(f.db.pragma("user_version", { simple: true })).toBe(11);
+  expect(f.rows()).toEqual(rows);
 });
