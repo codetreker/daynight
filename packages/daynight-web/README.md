@@ -526,8 +526,10 @@ remain retained until read-only reconciliation or scope invalidation. Returning
 reads authoritative settings without overwriting a draft; a changed version
 shows the current saved value and blocks saving until the user cancels the draft.
 An equal current value needs no write and does not establish an unknown outcome.
-Identity or resource invalidation still rejects stale results, and cancellation
-never proves that a committed write was rolled back. The existing
+Confirmed Project revocation hides private data and invalidates reads without
+cancelling a dispatched save; its result waits for renewed access. Identity scope
+termination rejects old results, and cancellation never proves that a committed
+write was rolled back. The existing
 foreground identity guard preserves same-user drafts and focus. Ordinary access
 checks do not reload the settings resource; Save waits for the current check and
 verifies the role, ownership and observed settings version before dispatch. Ending

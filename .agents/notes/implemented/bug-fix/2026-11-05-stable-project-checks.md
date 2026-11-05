@@ -45,6 +45,8 @@ unrelated private state after normal navigation.
 The existing UI remains stable across ordinary checks while a user-initiated
 write may wait for admission. A dispatched result can keep its settings owner
 alive until the original page can present it; the settings and transfer owners
-must release independently. Real authorization changes still affect controls
-and invalidate stale operations; failed checks remain visible. The server
+must release independently. Confirmed Project revocation withdraws private
+content and invalidates reads without cancelling a dispatched save; its result
+waits for renewed access. Identity invalidation still retires the old scope,
+and failed checks remain visible. The server
 continues to enforce authorization and exact version preconditions.

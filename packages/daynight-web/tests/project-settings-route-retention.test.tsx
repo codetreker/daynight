@@ -44,7 +44,9 @@ const setup = () => {
   let denials = 0;
   let failRead = false;
   let projectReads = 0;
+  let deniedProjectReads = 0;
   let nextProjectRead: PromiseWithResolvers<Response> | null = null;
+  let heldProjectReadSignal: AbortSignal | undefined;
   let saveSignal: AbortSignal | undefined;
   let transferSignal: AbortSignal | undefined;
   const respond = (body: unknown, status = 200) => new Response(stringifyWireJson(body), {
@@ -57,9 +59,11 @@ const setup = () => {
     if (url.startsWith("/api/v1/projects?")) return Promise.resolve(respond({ items: identity.id === userId ? [savedProject] : [], nextCursor: null }));
     if (url === `/api/v1/projects/${projectId}`) {
       projectReads++;
+      if (denyAccess) deniedProjectReads++;
       if (nextProjectRead !== null) {
         const held = nextProjectRead;
         nextProjectRead = null;
+        heldProjectReadSignal = init?.signal as AbortSignal;
         return held.promise;
       }
       return failRead ? Promise.reject(new TypeError("read failed")) : Promise.resolve(respond(savedProject));
@@ -74,6 +78,8 @@ const setup = () => {
       return save.promise;
     }
     if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...target, version: 1n }, ownership: project().ownership, actorRole: null }));
+    if (url === `/api/v1/projects/${projectId}/members`) return Promise.resolve(respond({ items: [], actorAccess: access }));
+    if (url === `/api/v1/projects/${projectId}/invitations`) return Promise.resolve(respond({ items: [] }));
     if (url === `/api/v1/projects/${projectId}/transfer`) {
       transferSignal = init?.signal as AbortSignal;
       return transfer.promise;
@@ -88,7 +94,9 @@ const setup = () => {
   return {
     save, transfer, permission, fetcher,
     get saveSignal() { return saveSignal; }, get transferSignal() { return transferSignal; },
+    get heldProjectReadSignal() { return heldProjectReadSignal; },
     get projectReads() { return projectReads; },
+    get deniedProjectReads() { return deniedProjectReads; },
     get denials() { return denials; },
     setSavedProject: (value: ReturnType<typeof project>) => { savedProject = value; },
     setIdentity: (value: typeof user) => { identity = value; },
@@ -322,6 +330,132 @@ it("does not reinstall private settings from a late save after trusted access is
   expect(app.saves()).toBe(1);
 });
 
+it.each(["confirmed", "unknown", "conflict"] as const)("keeps a dispatched %s result across off-route revocation and restores it only after access recovers", async (result) => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  app.setDenyAccess(true);
+  act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
+  expect(app.saveSignal?.aborted).toBe(false);
+  app.setSavedProject(result === "conflict" ? project(120, 2n) : project(90, 2n));
+  if (result === "confirmed") await act(async () => app.save.resolve(json(project(90, 2n))));
+  else if (result === "unknown") await act(async () => app.save.reject(new TypeError("save response lost")));
+  else await act(async () => app.save.resolve(fail(409, "version_conflict", "save-conflict")));
+  expect(app.saveSignal?.aborted).toBe(false);
+  expect(screen.queryByText("Settings saved.")).toBeNull();
+  expect(screen.queryByText(/save outcome could not be confirmed/i)).toBeNull();
+  expect(screen.queryByText(/save was rejected because settings changed/i)).toBeNull();
+  expect(screen.queryByText("save-conflict")).toBeNull();
+  const denialsBeforeReturn = app.denials;
+  returnToSettings();
+  await waitFor(() => expect(app.denials).toBeGreaterThan(denialsBeforeReturn));
+  await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
+  await waitFor(() => expect(screen.queryByText("Loading project settings…")).toBeNull());
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(screen.queryByText("Settings saved.")).toBeNull();
+  expect(screen.queryByText(/save outcome could not be confirmed/i)).toBeNull();
+  expect(screen.queryByText(/save was rejected because settings changed/i)).toBeNull();
+  expect(screen.queryByText(/settings changed elsewhere/i)).toBeNull();
+  expect(screen.queryByText("save-conflict")).toBeNull();
+  expect(screen.queryByText(/current saved settings have been loaded/i)).toBeNull();
+  expect(app.deniedProjectReads).toBe(0);
+  const reads = app.projectReads;
+  app.setDenyAccess(false); fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(reads));
+  const returned = await screen.findByLabelText("Alert threshold");
+  await waitFor(() => expect(returned).toHaveValue(result === "conflict" ? 120 : 90));
+  if (result === "confirmed") expect(await screen.findByText("Settings saved.")).toBeVisible();
+  else if (result === "unknown") {
+    expect(await screen.findByText(/current saved settings have been loaded/i)).toBeVisible();
+    expect(screen.queryByText("Settings saved.")).toBeNull();
+  } else {
+    await waitFor(() => expect(screen.getByText(/settings changed/i)).toBeVisible());
+    expect(screen.queryByText("Settings saved.")).toBeNull();
+  }
+  expect(app.saves()).toBe(1);
+});
+
+it("recovers after a confirmed save aborts an older Project read following restored access", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
+  expect(app.saveSignal?.aborted).toBe(false);
+  const denials = app.denials; returnToSettings();
+  await waitFor(() => expect(app.denials).toBeGreaterThan(denials));
+  await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
+  const held = app.holdNextProjectRead(), before = app.projectReads;
+  app.setSavedProject(project(120, 3n)); app.setDenyAccess(false); fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(before));
+  const heldReadCount = app.projectReads;
+  expect(app.heldProjectReadSignal?.aborted).toBe(false);
+  await act(async () => app.save.resolve(json(project(90, 2n))));
+  await waitFor(() => expect(app.heldProjectReadSignal?.aborted).toBe(true));
+  expect(await screen.findByText("Settings saved.")).toBeVisible();
+  await waitFor(() => expect(app.projectReads > heldReadCount || screen.queryByRole("button", { name: "Retry" }) !== null).toBe(true));
+  if (app.projectReads === heldReadCount) fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  const returned = await screen.findByLabelText("Alert threshold");
+  await waitFor(() => expect(returned).toHaveValue(120));
+  await act(async () => held.resolve(json(project(60, 1n))));
+  expect(returned).toHaveValue(120);
+  await waitFor(() => expect(returned).toBeEnabled());
+  fireEvent.change(returned, { target: { value: "125" } });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled());
+  expect(app.saves()).toBe(1);
+});
+
+it("keeps a failed return-read error and retry when the confirmed save arrives later", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
+  const denials = app.denials; returnToSettings();
+  await waitFor(() => expect(app.denials).toBeGreaterThan(denials));
+  const held = app.holdNextProjectRead(), before = app.projectReads;
+  app.setDenyAccess(false); app.setFailRead(true); fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(before));
+  await act(async () => held.resolve(fail(503, "unavailable", "return-read-failed")));
+  expect(await screen.findByText("return-read-failed")).toBeVisible();
+  expect(app.saveSignal?.aborted).toBe(false);
+  app.setSavedProject(project(90, 2n)); await act(async () => app.save.resolve(json(project(90, 2n))));
+  expect(await screen.findByText("Settings saved.")).toBeVisible();
+  expect(screen.getByText("return-read-failed")).toBeVisible();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled());
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  app.setFailRead(false); fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.queryByText("return-read-failed")).toBeNull());
+  const returned = screen.getByLabelText("Alert threshold"); expect(returned).toHaveValue(90);
+  fireEvent.change(returned, { target: { value: "110" } });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled());
+  expect(app.saves()).toBe(1);
+});
+
+it("keeps a dispatched save private after a Project 404 until a successful resource reread", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
+  const denials = app.denials; returnToSettings();
+  await waitFor(() => expect(app.denials).toBeGreaterThan(denials));
+  const held = app.holdNextProjectRead(), before = app.projectReads;
+  app.setDenyAccess(false); fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(before));
+  await act(async () => held.resolve(fail(404, "not_found", "project-not-found")));
+  await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
+  expect(app.saveSignal?.aborted).toBe(false);
+  app.setSavedProject(project(90, 2n)); await act(async () => app.save.resolve(json(project(90, 2n))));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(screen.queryByText("Settings saved.")).toBeNull();
+  expect(screen.queryByLabelText("Alert threshold")).toBeNull();
+  const reads = app.projectReads;
+  const retry = screen.queryByRole("button", { name: "Retry" });
+  if (retry !== null) fireEvent.click(retry); else fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(reads));
+  expect(await screen.findByText("Settings saved.")).toBeVisible();
+  expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
+  expect(app.saves()).toBe(1);
+});
+
 it("keeps the save owner when a simultaneous rejected transfer is closed first", async () => {
   const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
   await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
@@ -348,6 +482,32 @@ it("refreshes the saved settings when only a transfer retains the page off route
   await act(async () => app.transfer.resolve(fail(400, "invalid_input", "transfer-rejected")));
   const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(await within(dialog).findByText("transfer-rejected")).toBeVisible();
+});
+
+it.each([false, true])("restarts a discarded return read after another route cycle; fresh read fails=%s", async (failFreshRead) => {
+  const app = setup(); await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
+  await act(async () => app.transfer.reject(new TypeError("transfer response lost")));
+  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
+  expect(await within(dialog).findByText(/transfer result is unknown/i)).toBeVisible();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  leave(); const held = app.holdNextProjectRead(), before = app.projectReads;
+  returnToSettings(); await waitFor(() => expect(app.projectReads).toBeGreaterThan(before));
+  const oldReadCount = app.projectReads;
+  leave(); app.setSavedProject(project(120, 2n)); app.setFailRead(failFreshRead);
+  returnToSettings();
+  await act(async () => held.resolve(json(project(60, 1n))));
+  await waitFor(() => expect(app.projectReads).toBeGreaterThan(oldReadCount));
+  if (failFreshRead) {
+    expect(await screen.findByText("The operation could not be completed. Please try again.")).toBeVisible();
+    const failedReads = app.projectReads;
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(app.projectReads).toBe(failedReads);
+    app.setFailRead(false); fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(app.projectReads).toBeGreaterThan(failedReads));
+  }
+  await waitFor(() => expect(screen.getByLabelText("Alert threshold")).toHaveValue(120));
+  expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  expect(app.saves()).toBe(0); expect(app.transfers()).toBe(1);
 });
 
 it("keeps a preexisting draft through a return access failure and recovery", async () => {

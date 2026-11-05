@@ -19,7 +19,7 @@ const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRout
     {state.reconciliation !== null ? <div className="notice warning" role="alert"><p>{state.reconciliation === "conflict" ? m.conflictPending : m.permissionPending}</p>{state.error === null && <button className="button" type="button" disabled={state.pending || state.loading} onClick={state.retry}>{common.retry}</button>}</div> : state.writeError !== null && <ManagementError error={state.writeError} retry={state.retry} />}
     {state.uncertain && <div className="notice warning" role="alert"><p>{m.uncertain}</p>{!state.loading && <button className="button" type="button" onClick={state.retry}>{m.retryRead}</button>}</div>}
     {state.loading && <div className="empty-inline" role="status">{m.loading}</div>}
-    {state.unavailable && <div className="notice error" role="alert">{common.notFound}</div>}
+    {state.unavailable && state.error === null && <div className="notice error" role="alert">{common.notFound}{state.pending && <button className="button" type="button" onClick={state.retry}>{common.retry}</button>}</div>}
     {state.project !== null && !state.unavailable && <>
       {state.role === "member" && <div className="notice">{m.memberNotice}</div>}
       <section className="panel project-settings-panel" aria-labelledby="threshold-title"><div className="panel-heading"><div><h2 id="threshold-title">{m.alertTitle}</h2><p>{m.description}</p></div><span className="badge admin">{m.scope}</span></div>
