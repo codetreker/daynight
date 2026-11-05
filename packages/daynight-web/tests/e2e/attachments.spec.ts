@@ -511,19 +511,10 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     });
     await page.setViewportSize({ width: 844, height: 390 });
     await selectFile(attachments, 'long/reading.md');
-    const changeDetailLanguage = async (locale: string): Promise<void> => {
-      const confirmation = await confirmDeletion(page, attachments, 'docs/design.md');
-      await confirmation.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
-      await confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true }).click();
-    };
     await expect(dialog.locator('.task-detail-header').getByRole('combobox')).toHaveCount(0);
-    for (const locale of ['zh-CN', 'en']) {
-      await changeDetailLanguage(locale);
-      const shortScreenshot = info.outputPath(`task-attachments-short-${locale}.png`);
-      await page.screenshot({ path: shortScreenshot, fullPage: false });
-      await info.attach(`task-attachments-short-${locale}`, { path: shortScreenshot, contentType: 'image/png' });
-    }
-    await changeDetailLanguage('zh-CN');
+    const shortScreenshot = info.outputPath('task-attachments-short-zh-CN.png');
+    await page.screenshot({ path: shortScreenshot, fullPage: false });
+    await info.attach('task-attachments-short-zh-CN', { path: shortScreenshot, contentType: 'image/png' });
     await page.setViewportSize({ width: 320, height: 800 });
     await selectFile(attachments, longPath);
     await expect(attachments.getByRole('heading', { name: longPath, exact: true })).toHaveAttribute('title', longPath);
@@ -688,8 +679,8 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await page.keyboard.press('Tab');
     await expect(cancelled.getByRole('button', { name: '删除附件', exact: true })).toBeFocused();
     await page.keyboard.press('Tab');
-    await expect(cancelled.getByRole('combobox', { name: '语言 / Language', exact: true })).toBeFocused();
-    await page.keyboard.press('Tab');
+    await expect(cancelled.getByRole('combobox', { name: '语言 / Language', exact: true })).toHaveCount(0);
+    await expect(cancelled.locator('.locale-notice')).toHaveCount(0);
     await expect(cancelled.locator('.attachment-delete-body')).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(cancelled.getByRole('button', { name: '取消', exact: true })).toBeFocused();
@@ -702,33 +693,53 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await expect(dialog).toBeVisible();
     expect(deletionRequests).toEqual([]);
 
+    const layoutPage = await page.context().newPage();
+    const layoutErrors: string[] = [];
+    const layoutWrites: string[] = [];
+    layoutPage.on('pageerror', (error) => layoutErrors.push(error.name));
+    await layoutPage.route('**/api/v1/**', async (route) => {
+      if (!['GET', 'HEAD'].includes(route.request().method())) {
+        layoutWrites.push(`${route.request().method()} ${route.request().url()}`);
+        await route.abort();
+      } else await route.continue();
+    });
+    await layoutPage.goto(attachmentPageUrl(project.id, task.id, 'docs/design.md'));
+    const layoutAttachments = layoutPage.locator('.task-attachments');
+    const pageLanguage = layoutPage.locator('.task-detail-page-topbar').getByRole('combobox', { name: '语言 / Language', exact: true });
+    await expect(pageLanguage).toBeVisible();
     const menuLayouts: unknown[] = [];
     for (const locale of ['zh-CN', 'en']) {
-      await changeDetailLanguage(locale);
+      await pageLanguage.selectOption(locale);
       for (const viewport of [{ width: 1440, height: 800 }, { width: 768, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) {
-        await page.setViewportSize(viewport);
-        await (await fileActions(attachments, longPath)).click();
-        const menu = page.getByRole('menu');
+        await layoutPage.setViewportSize(viewport);
+        await (await fileActions(layoutAttachments, longPath)).click();
+        const menu = layoutPage.getByRole('menu');
         await expect(menu).toBeInViewport({ ratio: 1 });
         const menuBounds = await menu.boundingBox();
-        await page.getByRole('menuitem', { name: locale === 'en' ? 'Delete' : '删除', exact: true }).click();
-        const confirmation = page.locator('.attachment-delete-dialog');
+        await layoutPage.getByRole('menuitem', { name: locale === 'en' ? 'Delete' : '删除', exact: true }).click();
+        const confirmation = layoutPage.locator('.attachment-delete-dialog');
         await expect(confirmation).toContainText(longPath);
         await expect(confirmation).toBeInViewport({ ratio: 1 });
         await expect(confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true })).toBeFocused();
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect(await layoutPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         menuLayouts.push({ locale, ...viewport, menu: menuBounds, confirmation: await confirmation.boundingBox() });
-        await page.keyboard.press('Escape');
-        await expect(dialog).toBeVisible();
+        await layoutPage.keyboard.press('Escape');
+        await expect(layoutAttachments).toBeVisible();
+        if (locale === 'en' && viewport.width === 844) {
+          await selectFile(layoutAttachments, 'long/reading.md');
+          const screenshot = info.outputPath('task-attachments-short-en.png');
+          await layoutPage.screenshot({ path: screenshot, fullPage: false });
+          await info.attach('task-attachments-short-en', { path: screenshot, contentType: 'image/png' });
+        }
       }
     }
     const longPathLayouts: unknown[] = [];
     await test.step('Verify long attachment deletion layouts and scrolling', async () => {
       for (const locale of ['zh-CN', 'en']) {
-        await changeDetailLanguage(locale);
-        for (const viewport of [{ width: 320, height: 780 }, { width: 320, height: 568 }, { width: 844, height: 390 }]) {
-          await page.setViewportSize(viewport);
-          const confirmation = await confirmDeletion(page, attachments, longConfirmationPath);
+        await pageLanguage.selectOption(locale);
+        for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 780 }, { width: 320, height: 568 }, { width: 844, height: 390 }]) {
+          await layoutPage.setViewportSize(viewport);
+          const confirmation = await confirmDeletion(layoutPage, layoutAttachments, longConfirmationPath);
           const body = confirmation.locator('.attachment-delete-body');
           const cancel = confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
           const submit = confirmation.getByRole('button', { name: locale === 'en' ? 'Delete attachment' : '删除附件', exact: true });
@@ -749,44 +760,49 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
           if (metrics.bodyScrollHeight > metrics.bodyClientHeight + 1) {
             const bounds = await body.boundingBox();
             if (bounds === null) throw new Error('The confirmation scroll owner has no bounds.');
-            await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-            await page.mouse.wheel(0, metrics.bodyScrollHeight);
+            await layoutPage.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+            await layoutPage.mouse.wheel(0, metrics.bodyScrollHeight);
             await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
             await expect.poll(() => pathEdges(confirmation)).toMatchObject({ tail: true });
             wheelTop = await body.evaluate((element) => element.scrollTop);
-            await page.keyboard.press('Shift+Tab');
+            await layoutPage.keyboard.press('Shift+Tab');
             await expect(body).toBeFocused();
-            await page.keyboard.press('Home');
+            await layoutPage.keyboard.press('Home');
             await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBe(0);
             await expect.poll(() => pathEdges(confirmation)).toMatchObject({ prefix: true });
-            await page.keyboard.press('End');
+            await layoutPage.keyboard.press('End');
             await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
             await expect.poll(() => pathEdges(confirmation)).toMatchObject({ tail: true });
             keyboardTop = await body.evaluate((element) => element.scrollTop);
           } else {
             await expect.poll(() => pathEdges(confirmation)).toEqual({ prefix: true, tail: true });
-            await page.keyboard.press('Shift+Tab');
+            await layoutPage.keyboard.press('Shift+Tab');
             await expect(body).toBeFocused();
           }
-          await page.keyboard.press('Tab');
+          await layoutPage.keyboard.press('Tab');
           await expect(cancel).toBeFocused();
-          await page.keyboard.press('Shift+Tab');
+          await layoutPage.keyboard.press('Shift+Tab');
           await expect(body).toBeFocused();
-          await page.keyboard.press('Shift+Tab');
-          await expect(confirmation.getByRole('combobox', { name: '语言 / Language', exact: true })).toBeFocused();
+          await layoutPage.keyboard.press('Shift+Tab');
+          await expect(submit).toBeFocused();
+          await expect(confirmation.getByRole('combobox', { name: '语言 / Language', exact: true })).toHaveCount(0);
+          await expect(confirmation.locator('.locale-notice')).toHaveCount(0);
           for (const fixed of [confirmation.locator('header'), confirmation.locator('footer'), cancel, submit]) await expect(fixed).toBeInViewport({ ratio: 1 });
-          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          expect(await layoutPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
           const screenshot = info.outputPath(`attachment-delete-long-path-${locale}-${viewport.width}x${viewport.height}.png`);
-          await page.screenshot({ path: screenshot, fullPage: false });
+          await layoutPage.screenshot({ path: screenshot, fullPage: false });
           await info.attach(`attachment-delete-long-path-${locale}-${viewport.width}x${viewport.height}`, { path: screenshot, contentType: 'image/png' });
           longPathLayouts.push({ locale, ...viewport, pathBytes: Buffer.byteLength(longConfirmationPath), ...metrics, wheelTop, keyboardTop });
           await cancel.click();
           await expect(confirmation).toBeHidden();
-          await expect(dialog).toBeVisible();
+          await expect(layoutAttachments).toBeVisible();
         }
       }
     });
-    await changeDetailLanguage('zh-CN');
+    await pageLanguage.selectOption('zh-CN');
+    expect(layoutWrites).toEqual([]);
+    expect(layoutErrors).toEqual([]);
+    await layoutPage.close();
     await page.setViewportSize({ width: 1600, height: 1100 });
     expect(deletionRequests).toEqual([]);
     expect(await retainedElement.evaluate((element) => element === document.querySelector('.attachment-preview-body'))).toBe(true);

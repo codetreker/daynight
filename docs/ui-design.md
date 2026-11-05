@@ -52,3 +52,19 @@ the interface that has already been displayed.
 Keeping existing content visible does not grant request, publication, or
 mutation permission. Existing authentication and authorization gates remain
 enforced while a check is pending.
+
+## Keep global language selection at page level
+
+The main Web interface provides its global language selector in the page
+header. Standalone pages may retain their existing language selectors in their
+existing locations.
+
+Dialogs, overlays, and their own headers must not provide additional global
+language selectors. Modal, fullscreen, or other presentation modes must not
+cause a selector to be added, duplicated, relocated, or assigned its own
+mode-dependent visibility rules. An overlay's header is not the main Web
+header.
+
+Overlays inherit the current application language. Preserve existing modal
+isolation, focus behavior, and fullscreen layouts; the containing page regions
+continue to follow their existing layout and interaction rules.

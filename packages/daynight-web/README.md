@@ -106,8 +106,9 @@ their secret/code context through login and account switching; ordinary logout
 returns to the public homepage only after confirmed success. Failed logout stays
 visible and retryable. Both
 complete catalogs provide its `messages.auth` domain, including accessible names,
-validation, notices and already displayed errors. Login, workspace, invitation, device authorization
-and management dialogs expose the shared language selector; native formatters
+validation, notices and already displayed errors. Login, workspace, invitation and device authorization
+pages expose the shared language selector. Shared management dialogs inherit the
+current language without their own selector or preference notice; native formatters
 render dates and counts. Language changes retain form inputs, dialog and
 one-time secrets, identity and pending requests without restarting operations.
 It composes the project list, graph, shared task-detail surfaces and My Workers
@@ -204,7 +205,10 @@ documents throughout the wait and recovery reads. Display retention does not
 grant request, publication or mutation permission. Each new qualifying return
 aborts and replaces pending verification, so earlier responses cannot overwrite
 the latest identity decision. A failed check retains state behind the blocking
-retry overlay until a successful check; the same user keeps their forms and view,
+retry overlay until a successful check. The native modal inherits the current language,
+contains no language selector or preference feedback, and cannot be dismissed with
+Escape; recovery attempts to restore focus if the original element remains connected.
+The same user keeps their forms and view,
 while a changed user remounts user-owned content. Previously loaded content stays
 visible until identity loss, a different identity or a verification error is
 confirmed. Leaving the top-level page pauses new API reads and writes before
@@ -1549,7 +1553,7 @@ target or edit the relative path, and upload. Activating the disclosure again
 collapses it while retaining the file, path and validation state. Tab round trips
 retain its expansion; a new project/task starts collapsed. MIME is selected
 from the target path with `mime` 4.1.1. Uploading the same path overwrites that file. Each preview offers Download,
-a neighboring Open in new tab link with an external-link icon. Each left-side file row has a right-side `…` menu. Choose Delete to open a full-path confirmation, then explicitly confirm to submit the single-file request. Cancel is initially focused; menu and confirmation Escape close only their own layer. Pending confirmation blocks duplicate/conflicting writes, while failures remain visible with deliberate retry or cancellation. The confirmation includes the current language selector. Hidden tabs dismiss unsubmitted deletion UI. Successful writes refresh only attachment data.
+a neighboring Open in new tab link with an external-link icon. Each left-side file row has a right-side `…` menu. Choose Delete to open a full-path confirmation, then explicitly confirm to submit the single-file request. Cancel is initially focused; menu and confirmation Escape close only their own layer. Pending confirmation blocks duplicate/conflicting writes, while failures remain visible with deliberate retry or cancellation. The confirmation uses the current locale without its own language selector or preference feedback; existing page controls and feedback remain in their existing locations. Hidden tabs dismiss unsubmitted deletion UI. Successful writes refresh only attachment data.
 They do not change the task version, timestamp or graph snapshot.
 
 The attachment hook owns list, write, selection and preview state for one
@@ -1985,8 +1989,9 @@ except for one exact registered fixture-file PUT in `refresh-staleness`, which
 holds its upload response across automatic reads to verify retained pending work.
 `task-attachments` and
 `language-state-preservation` allow exact fixture-scoped PUT/DELETE file routes;
-the latter holds each upload, overwrite and deletion while changing language to
-verify one write and retained state. `task-description-markdown` and the other
+the latter checks state preservation during language changes at operable entries
+and separately holds upload, overwrite and deletion to verify pending state and
+write counts. Component tests control locale changes during pending operations. `task-description-markdown` and the other
 language scenarios remain GET/HEAD-only in the browser; fixture writes use the
 installed CLI or authenticated API request context. The three task-status scenarios
 and `task-status-transitions` separately admit only registered project/task PUT status requests with exact expected
@@ -2252,7 +2257,7 @@ the remaining functional scenarios.
 | TI8–TI9, TI15 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; TD/LR/Chinese flowcharts, independent failures/source, static image safety, content switches and standalone reload share the three Markdown entries; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
 | TP-V1, TP-V7, TP-V8 | `detail-navigation`, `refresh-staleness`, `keyboard-focus`, `narrow-layout`: real API round trips for empty/NUL/control/long/HTML-looking values and duplicates, complete locally paged lists with bounded row counts, page/collection reset and focus, plain-text unsafe addresses, isolated HTTP(S) navigation, rereading properties and compact graph responses |
 | L1–L4 | `language-startup-preferences`: browser default, saved override, reload, route metadata, shared selectors and unchanged user data |
-| L2, L4–L5 | `language-state-preservation`: graph geometry/viewport, fullscreen and modal focus, PR page, file input and iframe identity; pending upload, overwrite and deletion execute once |
+| L2, L4–L5 | `language-state-preservation`: graph geometry/viewport across language changes, fullscreen and modal focus, and PR page, file input and iframe identity across detail tab switches; separately held upload, overwrite and deletion retain pending state and execute once. Component tests cover controlled locale changes during pending operations |
 | L3–L4, L6–L8 | `language-errors-and-narrow`: storage failures/retry, owned-database failure with current-language safe text and unchanged request ID, English/Chinese 1440px/320px graph/dialog/attachment layout |
 | L9–L10 | Task-attached offline mockup checks, typed catalog/component checks, and complete native/container production receipts with the existing coverage and cleanup gates |
 | Authentication | `auth-login-session`, `auth-project-isolation`, `auth-project-members`, `auth-personal-tokens`, `auth-invitations`, `auth-resource-session`: normal login/logout, private project access, roles and removal, PAT creation/revocation, explicit invitation acceptance, protected files and resource-session loss |

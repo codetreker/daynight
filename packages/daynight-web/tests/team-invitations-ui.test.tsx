@@ -34,7 +34,15 @@ it('displays the secret once and retains a dispatched result across navigation',
   vi.mocked(createTeamInvitation).mockImplementation(async (_team, _user, _signal, _mismatch, dispatch) => { dispatch?.(); return pending.promise; });
   const view = render(panel()); await openInvite();
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Create invitation link' }));
-  await waitFor(() => expect(createTeamInvitation).toHaveBeenCalledOnce()); view.rerender(panel(false, false));
+  await waitFor(() => expect(createTeamInvitation).toHaveBeenCalledOnce());
+  const dialog = screen.getByRole('dialog');
+  expect(within(dialog).queryByRole('combobox', { name: '语言 / Language' })).toBeNull();
+  view.setLocale('zh-CN');
+  expect(screen.getByRole('dialog', { name: '创建 Team 邀请链接' })).toBe(dialog);
+  expect(within(dialog).getByRole('button', { name: '正在提交…' })).toBeDisabled();
+  expect(createTeamInvitation).toHaveBeenCalledOnce();
+  view.setLocale('en');
+  view.rerender(panel(false, false));
   await act(async () => pending.resolve({ ...invitation, link })); expect(screen.queryByDisplayValue(link)).toBeNull();
   view.rerender(panel()); expect(await screen.findByDisplayValue(link)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' })); expect(screen.queryByDisplayValue(link)).toBeNull();

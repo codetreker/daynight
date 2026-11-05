@@ -37,7 +37,7 @@ it("retains an unknown transfer across route changes without replaying it", asyn
     throw new Error(`Unexpected request ${url}`);
   });
   vi.stubGlobal("fetch", fetcher);
-  render(<AuthenticatedApp />);
+  const view = render(<AuthenticatedApp />);
   fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }));
   const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
   fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
@@ -46,6 +46,13 @@ it("retains an unknown transfer across route changes without replaying it", asyn
   await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled());
   fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
   await waitFor(() => expect(transferSignal).toBeDefined());
+  expect(within(dialog).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
+  view.setLocale("zh-CN");
+  expect(screen.getByRole("dialog", { name: "转移项目" })).toBe(dialog);
+  expect(within(dialog).getByLabelText("目标 Team ID 或链接")).toHaveValue(target);
+  expect(within(dialog).getByRole("button", { name: "正在提交" })).toBeDisabled();
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
+  view.setLocale("en");
   act(() => navigate("/workers"));
   expect(transferSignal!.aborted).toBe(false);
   await act(async () => pending.reject(new Error("lost response")));

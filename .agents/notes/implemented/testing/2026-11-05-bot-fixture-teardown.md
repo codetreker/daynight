@@ -22,12 +22,16 @@ from the child's paths even when both have an explicit home directory.
 The real Bot integration file owns a separate 180-second teardown hook budget.
 It covers the thirty-second durable-proof observation, cooperative IPC stop,
 original-process observation, Windows Job termination, final confirmation and
-failure diagnostics for the controlled Controller and native process. Windows
-startup identity acquisition has a fifteen-second bound; recurring identity
-probes retain five seconds and Job Object probes retain fifteen seconds.
-Startup proof acquisition uses the separate
-[Windows startup budget](../bug-fix/2026-11-05-windows-startup-process-proof-budget.md);
-this hook does not set production launch or stop deadlines.
+failure diagnostics for the controlled Controller and native process. Startup
+identity acquisition retains fifteen seconds on Windows and five seconds on
+POSIX; recurring identity probes retain five seconds and Job Object probes
+retain fifteen seconds. Windows proof acquisition uses the
+[native process handle](../bug-fix/2026-11-05-windows-native-process-proof.md)
+implementation, whose deadline checks join native calls without preempting a
+kernel call. The separate
+[startup budget decision](../bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
+owns the caller allowances; this hook does not set production launch or stop
+deadlines.
 
 Process confirmation is polled sequentially, joining each system probe before
 starting another or escalating. A polling deadline limits another round; an

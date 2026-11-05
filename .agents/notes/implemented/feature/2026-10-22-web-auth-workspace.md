@@ -32,7 +32,7 @@ owns the reactive application selection, explicit `/login` and `/projects` entry
 `AuthenticatedApp` retains its private lifecycle. Both
 catalogs extend their complete `messages.auth` contract to login, project creation, account, members, invitations, tokens and
 management dialogs. Selectors remain available on login, invitation, workspace
-and modal surfaces. Semantic notifications and validation render through the
+and other modal surfaces. The [revalidation language decision](../bug-fix/2026-11-05-revalidation-language-entry.md) removes the recovery overlay's copy while preserving its modal isolation. Semantic notifications and validation render through the
 current catalog, while native formatters render dates and counts. Changing
 language preserves inputs, one-time secrets, current identity and pending
 requests. The

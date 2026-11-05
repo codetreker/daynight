@@ -196,7 +196,7 @@ describe("Team management", () => {
   it("retains the draft after rejection, validates names and prevents duplicate writes", async () => {
     const response = Promise.withResolvers<Team>();
     vi.mocked(renameTeam).mockImplementation(async (_id, _old, _name, _signal, _mismatch, dispatch) => { dispatch(); return response.promise; });
-    settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const view = settings(); fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
     const dialog = screen.getByRole("dialog"), input = within(dialog).getByLabelText("Team name"), save = within(dialog).getByRole("button", { name: "Save changes" });
     fireEvent.change(input, { target: { value: "\u2003\n " } }); fireEvent.click(save);
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("valid name"); expect(renameTeam).not.toHaveBeenCalled();
@@ -205,6 +205,13 @@ describe("Team management", () => {
     expect(vi.mocked(renameTeam).mock.calls[0]?.[0]).toBe(userId);
     expect(vi.mocked(renameTeam).mock.calls[0]?.[1].version).toBe(9007199254740993n);
     expect(vi.mocked(renameTeam).mock.calls[0]?.[2]).toBe(" Duplicate\nName ");
+    expect(within(dialog).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
+    view.setLocale("zh-CN");
+    expect(screen.getByRole("dialog", { name: "修改 Team 名称" })).toBe(dialog);
+    expect(input).toHaveValue(" Duplicate\nName ");
+    expect(within(dialog).getByRole("button", { name: "正在提交" })).toBeDisabled();
+    expect(renameTeam).toHaveBeenCalledTimes(1);
+    view.setLocale("en");
     await act(async () => response.reject(new ApiError("server", 400, "bad_request")));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("operation failed"); expect(input).toHaveValue(" Duplicate\nName ");
   });

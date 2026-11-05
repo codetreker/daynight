@@ -46,7 +46,7 @@ an action with another account's shared Cookie.
 
 A failed identity check preserves component state behind the existing blocking
 error overlay. Explicit retry and subsequent external returns retain that block
-until verification succeeds. Initial identity loading continues to use its
+until verification succeeds. The [revalidation language decision](2026-11-05-revalidation-language-entry.md) keeps the recovery overlay localized without a duplicate selector. Initial identity loading continues to use its
 loading page. Graph polling and resource authorization keep their existing
 owners and behavior. [Session connection reuse](2026-10-28-session-focus-connection-reuse.md)
 extends this policy with bounded transport retention and buffered publication
