@@ -27,6 +27,7 @@ export const teamPreferenceKey = (userId: string) => `daynight.selectedTeam:${us
 
 export const useTeamPreference = (personal: TeamRef, routeKey: string | null, admission: TaskCacheScope, blocked: boolean, preserveOnRevalidation = false, guardUnavailable?: (teamId: string) => boolean) => {
   const [state, setState] = useState<State>(() => ({ key: null, detail: { id: personal.id, status: "ready", team: personal } }));
+  const stateRef = useRef(state); stateRef.current = state;
   const current = useRef<TeamRef>(personal);
   const pendingSave = useRef<PendingSave | null>(null);
   const blockedRef = useRef(blocked); blockedRef.current = blocked;
@@ -55,7 +56,7 @@ export const useTeamPreference = (personal: TeamRef, routeKey: string | null, ad
   const retrySave = useCallback(() => { if (pendingSave.current !== null) save(pendingSave.current.team, pendingSave.current.replaces); }, [save]);
   useEffect(() => {
     if (routeKey === null || blocked) return;
-    if (preserveOnRevalidation && verified.current?.navigation === navigation && verified.current.revision === revision) return;
+    if (preserveOnRevalidation && verified.current?.navigation === navigation && verified.current.revision === revision && stateRef.current.key === routeKey && stateRef.current.detail.status === "ready") return;
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, admission.signal]);
     const key = routeKey;

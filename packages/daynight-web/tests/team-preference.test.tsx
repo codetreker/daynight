@@ -100,3 +100,36 @@ describe("confirmed Team departure preference", () => {
     expect(localStorage.getItem(key)).toBe(b);
   });
 });
+
+describe("Team preference during same-Team navigation", () => {
+  it.each(["ready", "unavailable"] as const)("restarts a cancelled loading read and exposes %s without dropping guarded results", async (outcome) => {
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+    const pending = Promise.withResolvers<Response>();
+    const team = { id: a, kind: "ordinary", name: "Alpha", version: 1n, createdAt: time, updatedAt: time, membership: { teamId: a, userId, role: "member", version: 1n, createdAt: time, updatedAt: time } };
+    const json = (body: unknown, status = 200) => new Response(stringifyWireJson(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
+    const guard = vi.fn(() => true);
+    const fetcher = vi.fn((_url: string, _init?: RequestInit) => {
+      if (fetcher.mock.calls.length === 2) return pending.promise;
+      if (fetcher.mock.calls.length === 3 && outcome === "unavailable") return Promise.resolve(json({ error: { code: "not_found", message: "not found", requestId: "request-1" } }, 404));
+      return Promise.resolve(json(team));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const fixture = renderHook(({ preserve, blocked }: { preserve: boolean; blocked: boolean }) => useTeamPreference(personal, a, scope, blocked, preserve, guard), { initialProps: { preserve: true, blocked: false } });
+    await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready" }));
+    fixture.rerender({ preserve: false, blocked: false });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(fixture.result.current.detail.status).toBe("loading");
+    const cancelled = fetcher.mock.calls[1]![1]?.signal as AbortSignal;
+    fixture.rerender({ preserve: true, blocked: false });
+    expect(cancelled.aborted).toBe(true);
+    await waitFor(() => expect(fixture.result.current.detail.status).toBe(outcome === "ready" ? "ready" : "error"));
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    if (outcome === "ready") {
+      fixture.rerender({ preserve: true, blocked: true }); fixture.rerender({ preserve: true, blocked: false });
+      await waitFor(() => expect(fixture.result.current.detail).toMatchObject({ id: a, status: "ready" }));
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    } else expect(guard).toHaveBeenCalledWith(a);
+    await act(async () => pending.resolve(json(team)));
+    expect(fixture.result.current.detail.status).toBe(outcome === "ready" ? "ready" : "error");
+  });
+});

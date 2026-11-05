@@ -144,7 +144,7 @@ Escape 后焦点回到触发器。菜单限制在视口内，适应窄屏、长�
 
 - `/projects` 是默认 Team 入口；`/teams/{teamId}` 读取指定 Team，`/shared-projects` 使用共享范围。没有记忆时默认使用 `/me.personalTeam`，明确项目与任务链接保持原地址。
 - Team 偏好按当前站点与账号独立保存：`localStorage` 的 `daynight.selectedTeam:<userId>` 只含已确认的 Team UUID，不保存名称、角色或成员资料。默认入口恢复记忆时以精确 `GET /teams/{id}` 验证；只有可信 404 清除该账号的记忆并回 Personal，分页 Team 目录的缺项不代表失权。网络、5xx、取消或存储读取失败保留记忆并提供重试；写入失败保留当前内存选择，提示未保存并提供重试。共享范围不写 Team ID，CLI 默认配置独立。
-- Team 偏好与读取依附认证身份生命周期；身份切换、取消及后续选择阻止旧请求安装结果或覆盖另一账号的键。明确 Project 与 Task 链接不通过默认 Team 重写。[浏览器 Team 偏好决策](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)记录恢复和失效处理的取舍。
+- Team 偏好与读取依附认证身份生命周期；身份切换、取消及后续选择阻止旧请求安装结果或覆盖另一账号的键。成员或设置页仅在已验证 Team 仍处于 ready 时保留其上下文；中途读取被取消而状态仍为 loading 时重新读取，避免快速导航使页面永久等待。明确 Project 与 Task 链接不通过默认 Team 重写。[浏览器 Team 偏好决策](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)记录恢复和失效处理的取舍。
 - Team 选择器打开创建窗口，`/teams/{teamId}/settings` 按身份读取完整 Team 和真实版本；普通 admin 可改名与删除，成员及 Personal 只读。名称输入使用多行控件，未编辑的原始名称不被控件换行规范化改写。删除确认展示重新读取的名称，比较控件规范化后的手输内容，请求仍携带原始名称和精确版本。
 - 创建和改名直接提交表单，删除复用 `ManagementDialog` 的焦点与取消行为。mutation 在派发后无法确认结果时保留 unknown 和只读核对入口；确认的版本冲突触发重新读取，不能以旧版本重发。成功回执受身份和资源校验，创建进入新 Team，删除进入 Personal 并经现有偏好机制保存。同账号重验保留设置草稿、确认和已派发操作；身份核验期间暂停弹窗，恢复后由设置页重新读取 Team。待定或未知操作期间的 404 只说明当前不可见，不能抢先导航或丢弃结果；无操作时确认失权仍由偏好所有者安全清理记忆。
 - 项目设置同时保留执行提醒表单和归属区段。`ProjectOwnership` 使用当前 `ProjectAccess.canTransfer` 控制入口，打开确认前重验权限；目标来自已加入 Team 的分页列表、UUID 或同 origin 的 Team 页面链接。预览返回目标名称、精确版本和转移后的预期角色，确认提交观察到的 ownership、目标版本与当前用户。冲突要求重新预览并确认；派发后未确认的结果保持 unknown，重读只展示当前事实，不重发或把 404 解释为成功。

@@ -13,10 +13,10 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
@@ -46,7 +46,10 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     if (method === 'GET' && path === `/api/v1/teams/${betaId}/invitations`) return send({ items: [] });
     if (path === `/api/v1/teams/${personalId}/members`) return send({ items: roster(personalId) });
     if (path === `/api/v1/teams/${teamId}` && (state.teamReadNetworkFailure || state.failReadsAfterWrite && state.writes.length > 0)) return route.abort('failed');
-    if (path === `/api/v1/teams/${teamId}`) return state.members.has(alice) ? send(team(teamId)) : send(error('not_found'), 404);
+    if (path === `/api/v1/teams/${teamId}`) {
+      const gate = state.holdTeamRead; state.holdTeamRead = null; if (gate) { gate.started(); await gate.wait; }
+      return state.members.has(alice) ? send(team(teamId)) : send(error('not_found'), 404);
+    }
     if (path === `/api/v1/teams/${teamId}/members` && method === 'GET') return state.members.has(alice) ? send({ items: roster(teamId) }) : send(error('not_found'), 404);
     if (path.startsWith(`/api/v1/teams/${teamId}/members/`) && (method === 'PATCH' || method === 'DELETE')) {
       const target = path.split('/').at(-1)!, body = request.postDataJSON() as Record<string, unknown>;
@@ -100,6 +103,23 @@ test('admin promotes and removes members and can demote self while another admin
   await expect(page.getByLabel('Team role: Bob')).toBeDisabled();
   expect(api.grant).toEqual({ userId: alice, role: 'admin', version: 7 });
   expect(api.writes.every((write) => write.path.startsWith(`/api/v1/teams/${teamId}/members/`))).toBe(true);
+});
+
+test('a retained invitation result survives returning while the Team read is in flight', async ({ page }) => {
+  const api = await install(page); await start(page); api.invitationSuccess = true;
+  const invitationStarted = Promise.withResolvers<void>(), finishInvitation = Promise.withResolvers<void>();
+  const teamReadStarted = Promise.withResolvers<void>(), finishTeamRead = Promise.withResolvers<void>();
+  api.holdInvitation = { started: invitationStarted.resolve, wait: finishInvitation.promise };
+  await page.getByRole('button', { name: 'Invite member' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click(); await invitationStarted.promise;
+  api.holdTeamRead = { started: teamReadStarted.resolve, wait: finishTeamRead.promise };
+  try {
+    await traverse(page, `/teams/${teamId}`); await teamReadStarted.promise;
+    finishInvitation.resolve();
+    await traverse(page, `/teams/${teamId}/members`);
+    await expect(page.getByRole('dialog', { name: 'Invitation link created' }).getByLabel('One-time invitation link')).toBeVisible({ timeout: 5000 });
+    expect(api.invitationWrites).toBe(1);
+  } finally { finishInvitation.resolve(); finishTeamRead.resolve(); }
 });
 
 test('a demoted member can leave after an invitation result is lost during navigation', async ({ page }) => {
