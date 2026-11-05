@@ -384,6 +384,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
             page.off('request', countRequests);
           }
           await draft.getByRole('button', { name: messages.auth.createProject.cancel }).click();
+          await expect(opener).toBeFocused();
         }
       }
       await page.setViewportSize({ width: 1600, height: 1100 });
