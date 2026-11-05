@@ -318,6 +318,23 @@ checks require no live model invocation or GitHub publication.
 
 ## Local development CLI channel
 
+The repository's [prepare-daynight-local skill](../.agents/skills/prepare-daynight-local/SKILL.md)
+guides GitHub test-repository preparation and environment refresh across the local
+site, development CLI and Worker. It covers isolated state, directory command
+routing, automatic test identities and a CLI/website/Agent test loop using only
+localhost fixtures. Its runtime checks include WebSocket Upgrade forwarding and
+the native Provider environment; normal Worker recovery preserves the original
+claim and Session without replaying confirmed input. Browser testing uses an
+isolated headless Edge instance by default. Real OAuth and device consent remain
+separate optional checks. The [UI audit reference](../.agents/skills/prepare-daynight-local/references/ui-audit.md)
+guides user-path exploration, representative fixtures, responsive and interaction
+checks, and the distinction between confirmed issues and candidates. Evidence
+capture binds selected page state to its artifact; a local package validator
+checks files and hashes before individual production handoff. Each confirmed
+improvement has its own task, evidence, prototype and acceptance criteria.
+Retesting merged fixes and correcting demonstrated false positives improve the
+reusable audit guidance while local fixtures remain separate from delivery work.
+
 On macOS and Linux, install a development build alongside the npm installation:
 
 ```bash
