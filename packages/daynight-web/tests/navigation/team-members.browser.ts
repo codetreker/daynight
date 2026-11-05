@@ -89,7 +89,7 @@ const foreground = async (page: Page, api: State) => {
   return { finish: finish.resolve };
 };
 
-for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN']) {
+for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN']) {
   test(`member role columns align at ${width}px in ${locale}`, async ({ page }, testInfo) => {
     const api = await install(page);
     api.members.get(bob)!.role = 'member';
@@ -121,6 +121,10 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN']) {
       return { available: element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), required: Math.max(...Array.from(element.options, (option) => context.measureText(option.text).width)) };
     });
     expect(textSpace.available).toBeGreaterThanOrEqual(textSpace.required);
+    if (width === 601 && locale === 'en') {
+      const caption = await page.locator('.team-member-caption').evaluate((element) => ({ height: element.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(element).lineHeight) }));
+      expect(caption.height).toBeGreaterThan(caption.lineHeight);
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await selects.nth(1).focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
     await expect(selects.nth(1)).toBeFocused();
