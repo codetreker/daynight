@@ -19,8 +19,11 @@
 .session-control-setting[data-setting-state="pending"] select { border-color: #a77f34; }
 .session-control-note, .session-controls-foot, .session-composer-keyboard { font-size: 11px; color: var(--muted, #72717e); margin: 0; }
 .session-command-menu [role="listbox"] { display: grid; gap: 3px; }
-.session-command-menu [role="option"] { display: grid; grid-template-columns: minmax(90px, auto) 1fr; text-align: left; gap: 4px 12px; border: 0; padding: 8px; background: transparent; border-radius: 5px; color: inherit; font: inherit; }
+.session-command-menu [role="option"] { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); min-width: 0; overflow-wrap: anywhere; text-align: left; gap: 4px 12px; border: 0; padding: 8px; background: transparent; border-radius: 5px; color: inherit; font: inherit; }
 .session-command-menu [role="option"][aria-selected="true"] { background: var(--surface-muted, #eeedf8); }
+.session-command-menu [role="option"] > * { min-width: 0; }
+.session-command-menu [role="option"] span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.session-command-menu [role="option"][aria-selected="true"] span { display: block; -webkit-line-clamp: unset; }
 .session-command-menu [role="option"] span, .session-command-menu [role="option"] small { overflow-wrap: anywhere; font-size: 12px; }
 .session-command-menu [role="option"] small { grid-column: 1/-1; color: var(--muted, #72717e); }
 .session-composer-activity { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
@@ -52,7 +55,7 @@
 .session-command-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
 .session-command-actions button { min-height: 36px; }
 .session-command-close { min-width: 44px; }
-.session-command-body { position: relative; min-height: 36px; overflow: auto; overscroll-behavior: contain; }
+.session-command-body { position: relative; min-height: 36px; overflow: auto; overflow-anchor: none; overscroll-behavior: contain; }
 
 @media (max-height: 500px) {
   .session-composer { padding-block: 6px; }

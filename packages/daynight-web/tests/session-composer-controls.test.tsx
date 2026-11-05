@@ -586,3 +586,88 @@ it.each([
   expect(button).toHaveAccessibleName(refresh); expect(screen.queryByRole('alert')).toBeNull();
   expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
 });
+
+
+it('shows only the highlighted command hint while retaining full accessible descriptions and argument completion', () => {
+  const props = base(); render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/' } });
+  const review = screen.getByRole('option', { name: /Review changes/ });
+  expect(screen.queryByText('Review instructions')).toBeNull();
+  fireEvent.pointerMove(review, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(review).toHaveAttribute('aria-selected', 'true');
+  expect(input).toHaveAttribute('aria-activedescendant', review.id);
+  expect(screen.getByText('Review instructions')).toBeVisible();
+  fireEvent.keyDown(input, { key: 'ArrowDown' });
+  expect(screen.queryByText('Review instructions')).toBeNull();
+  fireEvent.keyDown(input, { key: 'ArrowUp' });
+  fireEvent.keyDown(input, { key: 'Tab' });
+  expect(input).toHaveValue('/review ');
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it('keeps touch movement from expanding rows before a tap chooses a command', () => {
+  const props = base(); render(<SessionComposer {...props} />);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '/' } });
+  const review = screen.getByRole('option', { name: /Review changes/ });
+  fireEvent.pointerMove(review, { pointerType: 'touch', clientX: 20, clientY: 40 });
+  expect(review).toHaveAttribute('aria-selected', 'false');
+  fireEvent.click(review);
+  expect(screen.getByRole('textbox')).toHaveValue('/review ');
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it('anchors pointer highlighting when the previous expanded row collapses above it', () => {
+  render(<SessionComposer {...base()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const body = screen.getByRole('listbox').parentElement!;
+  const options = screen.getAllByRole('option');
+  const review = options[2]!;
+  Object.defineProperty(body, 'clientHeight', { value: 180 });
+  Object.defineProperties(review, {
+    offsetTop: { get: () => options[0]!.getAttribute('aria-selected') === 'true' ? 350 : 150 },
+    offsetHeight: { value: 250 },
+  });
+  body.scrollTop = 300;
+  fireEvent.pointerMove(review, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(body.scrollTop).toBe(100);
+  expect(review.offsetTop - body.scrollTop).toBe(50);
+  // Layout changes under a stationary pointer must not highlight a different row.
+  fireEvent.pointerMove(options[3]!, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(review).toHaveAttribute('aria-selected', 'true');
+});
+
+it('does not turn a hovered prefix into explicit Enter selection', async () => {
+  const props = base(); render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/rev' } });
+  fireEvent.pointerMove(screen.getByRole('option'), { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/rev'));
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+
+it.each(['top', 'bottom'] as const)('preserves pointer targets at the %s scroll boundary and clears space for keyboard navigation', edge => {
+  render(<SessionComposer {...base()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const list = screen.getByRole('listbox'), body = list.parentElement!;
+  const options = within(list).getAllByRole('option'), review = options[2]!;
+  let scrollTop = edge === 'top' ? 0 : 100;
+  const padding = (side: 'paddingTop' | 'paddingBottom') => parseFloat(list.style[side]) || 0;
+  Object.defineProperties(body, {
+    clientHeight: { value: 180 },
+    scrollTop: { get: () => scrollTop, set: value => { scrollTop = Math.max(0, Math.min(value, 100 + padding('paddingBottom'))); } },
+  });
+  Object.defineProperties(review, {
+    offsetTop: { get: () => (review.getAttribute('aria-selected') === 'true' ? edge === 'top' ? 150 : 450 : 350) + padding('paddingTop') },
+    offsetHeight: { value: 250 },
+  });
+  const originalTop = review.offsetTop - body.scrollTop;
+  fireEvent.pointerMove(review, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(review.offsetTop - body.scrollTop).toBe(originalTop);
+  expect(padding(edge === 'top' ? 'paddingTop' : 'paddingBottom')).toBe(edge === 'top' ? 200 : 100);
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'ArrowDown' });
+  expect(list.style.paddingTop).toBe('');
+  expect(list.style.paddingBottom).toBe('');
+});

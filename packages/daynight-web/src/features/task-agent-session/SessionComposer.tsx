@@ -50,6 +50,9 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   }, [keyboardHintVisible]);
   const [commandIndex, setCommandIndex] = useState(0), [commandsDismissed, dismissCommands] = useState(false);
   const [candidateExplicit, setCandidateExplicit] = useState(false);
+  const commandHighlightSource = useRef<'keyboard' | 'pointer'>('keyboard');
+  const commandPointer = useRef<{ x: number; y: number } | null>(null);
+  const commandAnchor = useRef<{ id: string; top: number } | null>(null);
   const commandIntent = useRef<CommandIntent | null>(null);
   const [commandPending, setCommandPending] = useState(false), [refreshing, setRefreshing] = useState(false);
   const commandInFlight = useRef(false);
@@ -141,7 +144,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const submission = classifySubmission(text, commands, intent);
   // Snapshots reconstruct controls; only catalog changes invalidate keyboard selection.
   const catalogSignature = JSON.stringify(controls ? [controls.revision, controls.commandsError, controls.commands.map(command => [command.id, command.name, command.description, command.argumentHint, command.available])] : null);
-  useLayoutEffect(() => { setCommandIndex(0); setCandidateExplicit(false); }, [text, catalogSignature, showCommands, controlView, active]);
+  useLayoutEffect(() => { setCommandIndex(0); setCandidateExplicit(false); commandHighlightSource.current = 'keyboard'; commandAnchor.current = null; commandPointer.current = null; }, [text, catalogSignature, showCommands, controlView, active]);
   const controlsAllowed = !authPaused && !pending && !commandPending && sessionControlGate(state, connected);
   const closeControls = useCallback(() => { setControlView(null); dismissCommands(true); inputRef.current?.focus({ preventScroll: true }); }, []);
   useEffect(() => {
@@ -179,7 +182,29 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
       menu.style.setProperty('--session-command-min-height', `${heading.offsetHeight + pixels(getComputedStyle(body).minHeight) + pixels(title.marginTop) + pixels(title.marginBottom) + pixels(frame.paddingTop) + pixels(frame.paddingBottom) + pixels(frame.borderTopWidth) + pixels(frame.borderBottomWidth)}px`);
     };
     reserveHeading();
+    const list = body.querySelector<HTMLElement>('[role="listbox"]');
+    const anchor = commandAnchor.current;
+    commandAnchor.current = null;
+    if (list && (anchor || commandHighlightSource.current === 'keyboard')) {
+      list.style.paddingTop = '';
+      list.style.paddingBottom = '';
+    }
+    if (anchor && list) {
+      const target = document.getElementById(anchor.id);
+      if (target && body.contains(target)) {
+        const desired = target.offsetTop - anchor.top;
+        // At either scroll boundary, temporary space keeps the pointer's target
+        // stationary. Keyboard navigation removes that space before revealing.
+        if (desired < 0) list.style.paddingTop = `${-desired}px`;
+        body.scrollTop = Math.max(0, desired);
+        if (desired > body.scrollTop) {
+          list.style.paddingBottom = `${desired - body.scrollTop}px`;
+          body.scrollTop = desired;
+        }
+      }
+    }
     const reveal = () => {
+      if (commandHighlightSource.current === 'pointer') return;
       const selected = body.querySelector<HTMLElement>('[aria-selected="true"]');
       if (!selected) return;
       const top = selected.offsetTop, bottom = top + selected.offsetHeight;
@@ -193,7 +218,20 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     const headingObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserveHeading);
     headingObserver?.observe(heading);
     return () => { observer?.disconnect(); headingObserver?.disconnect(); };
-  }, [active, showCommands, selectedIndex, text, controls]);
+  }, [active, showCommands, selectedIndex, candidateExplicit, text, controls]);
+  function highlightCommand(event: React.PointerEvent<HTMLButtonElement>, index: number) {
+    if (event.pointerType === 'touch') return;
+    const previous = commandPointer.current;
+    commandPointer.current = { x: event.clientX, y: event.clientY };
+    // Expanding a row can move another row under an otherwise stationary pointer.
+    if (previous?.x === event.clientX && previous.y === event.clientY) return;
+    commandHighlightSource.current = 'pointer';
+    if (index === selectedIndex) return;
+    const body = commandBodyRef.current;
+    if (!body) return;
+    commandAnchor.current = { id: event.currentTarget.id, top: event.currentTarget.offsetTop - body.scrollTop };
+    setCommandIndex(index);
+  }
   async function refreshCommands() {
     if (!controlsAllowed || refreshing || !onRefreshControls) return;
     setRefreshing(true); setError(null);
@@ -327,7 +365,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
         return;
       }
       if (showCommands && matchingCommands.length && !authPaused) {
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setCandidateExplicit(true); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); commandHighlightSource.current = 'keyboard'; commandAnchor.current = null; setCandidateExplicit(true); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
         if ((event.key === 'Enter' && !event.shiftKey && candidateExplicit) || event.key === 'Tab') { event.preventDefault(); chooseCommand(matchingCommands[selectedIndex]!); return; }
       }
       if (event.key !== 'Enter' || event.shiftKey) return;
@@ -353,7 +391,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
       <div className="session-command-body" ref={commandBodyRef}>
       {controls?.commandsError ? <p className="session-error" role="alert">{controls.commandsError}</p> : null}
       {!controls ? <p className="session-control-note">{m.controlsUnavailable}</p> : null}
-      {matchingCommands.length ? <div role="listbox" id={`${menuId}-commands`} aria-label={m.nativeCommands}>{matchingCommands.map((command, index) => <button key={command.id} id={`${menuId}-command-${index}`} type="button" role="option" aria-selected={index === selectedIndex} disabled={!command.available || authPaused || !connected || pending || commandPending} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)}><strong>/{command.name}</strong><span>{controlMessages.commandDescription(command)}</span>{command.argumentHint ? <small>{command.argumentHint}</small> : null}</button>)}</div> : <p className="session-control-note">{m.noCommands}</p>}
+      {matchingCommands.length ? <div role="listbox" id={`${menuId}-commands`} aria-label={m.nativeCommands}>{matchingCommands.map((command, index) => <button key={command.id} id={`${menuId}-command-${index}`} type="button" role="option" aria-selected={index === selectedIndex} disabled={!command.available || authPaused || !connected || pending || commandPending} onPointerMove={event => highlightCommand(event, index)} onMouseDown={event => event.preventDefault()} onClick={() => chooseCommand(command)}><strong>/{command.name}</strong><span>{controlMessages.commandDescription(command)}</span>{index === selectedIndex && command.argumentHint ? <small>{command.argumentHint}</small> : null}</button>)}</div> : <p className="session-control-note">{m.noCommands}</p>}
       </div>
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}
