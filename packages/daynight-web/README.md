@@ -491,7 +491,8 @@ new preview and confirmation. Direct grants and invitations remain intact.
 
 A validated receipt determines success. Retained access is installed in the
 Project access session; loss of access revokes the matching Task cache generation
-and clears open private views. The source Team is checked by ID for navigation:
+and clears open private views, including unsubmitted transfer previews. A dispatched
+transfer retains its result and a private-data-free unknown check. The source Team is checked by ID for navigation:
 a confirmed 404 goes to Personal, while network errors preserve the success
 notice and offer a retry. A lost response remains unknown, even if a later read
 returns 404; checking current state never replays the transfer. See the

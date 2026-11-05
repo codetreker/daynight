@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest";
 import { AuthenticatedApp } from "../src/app/AuthenticatedApp";
 import { navigate } from "../src/app/router";
+import { TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { personalTeamPage } from "./helpers/team";
 import { directAccessFixture, viewerHeaders } from "./helpers/taskSync";
@@ -38,6 +39,7 @@ const setup = () => {
   const transfer = Promise.withResolvers<Response>();
   const permission = Promise.withResolvers<Response>();
   let savedProject = project();
+  let currentAccess = access;
   let identity: typeof user = user;
   let holdPermission = false;
   let denyAccess = false;
@@ -71,7 +73,7 @@ const setup = () => {
     if (url === `/api/v1/projects/${projectId}/access`) {
       if (holdPermission) return permission.promise;
       if (denyAccess) { denials++; return Promise.resolve(fail(404, "not_found", "revoked-access")); }
-      return Promise.resolve(respond({ ...access, directGrant: { ...access.directGrant!, userId: identity.id } }));
+      return Promise.resolve(respond({ ...currentAccess, directGrant: { ...currentAccess.directGrant!, userId: identity.id } }));
     }
     if (url === `/api/v1/projects/${projectId}/settings` && init?.method === "PATCH") {
       saveSignal = init.signal as AbortSignal;
@@ -99,6 +101,7 @@ const setup = () => {
     get deniedProjectReads() { return deniedProjectReads; },
     get denials() { return denials; },
     setSavedProject: (value: ReturnType<typeof project>) => { savedProject = value; },
+    setAccess: (value: typeof access) => { currentAccess = value; },
     setIdentity: (value: typeof user) => { identity = value; },
     setFailRead: (value: boolean) => { failRead = value; },
     holdNextProjectRead: () => { const held = Promise.withResolvers<Response>(); nextProjectRead = held; return held; },
@@ -117,7 +120,7 @@ const submitSave = async () => {
 };
 const leave = () => act(() => navigate("/workers"));
 const returnToSettings = () => act(() => navigate(`/projects/${projectId}/settings`));
-const startTransfer = async () => {
+const previewTransfer = async () => {
   const open = await screen.findByRole("button", { name: /^Transfer project$/ });
   await waitFor(() => expect(open).toBeEnabled());
   fireEvent.click(open);
@@ -126,6 +129,10 @@ const startTransfer = async () => {
   await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
   fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
   await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled());
+  return dialog;
+};
+const startTransfer = async () => {
+  const dialog = await previewTransfer();
   fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
 };
 
@@ -495,6 +502,152 @@ it("retires a private draft on Project 404 but keeps the dispatched rejection un
   expect(screen.queryByText("Settings saved.")).toBeNull();
   expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled();
   expect(app.saves()).toBe(1);
+});
+
+it("hides an unconfirmed transfer preview after revocation while a settings save is retained", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  const dialog = await previewTransfer();
+  expect(within(dialog).getByText("Destination")).toBeVisible();
+  expect(within(dialog).getByLabelText("Team ID or link")).toHaveValue(targetId);
+  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
+  expect(app.saveSignal?.aborted).toBe(false); expect(app.transfers()).toBe(0);
+  const denials = app.denials; returnToSettings();
+  await waitFor(() => expect(app.denials).toBeGreaterThan(denials));
+  await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull());
+  expect(dialog).not.toBeVisible();
+  for (const element of screen.queryAllByText("Destination")) expect(element).not.toBeVisible();
+  expect(screen.queryByRole("heading", { name: /^Project$/ })).toBeNull();
+  app.setSavedProject(project(90, 2n)); await act(async () => app.save.resolve(json(project(90, 2n))));
+  expect(screen.queryByText("Settings saved.")).toBeNull();
+  app.setDenyAccess(false); fireEvent(window, new Event("focus"));
+  expect(await screen.findByText("Settings saved.")).toBeVisible();
+  expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
+  expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
+  expect(app.saves()).toBe(1); expect(app.transfers()).toBe(0);
+});
+
+it("keeps an unsubmitted transfer preview during checking and a recoverable access error", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  const dialog = await previewTransfer();
+  const targetField = within(dialog).getByLabelText("Team ID or link");
+  const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" });
+  const reads = app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
+  app.setHoldPermission(true); fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(reads));
+  expect(dialog).toBeVisible(); expect(targetField).toHaveValue(targetId);
+  expect(within(dialog).getByText("Destination")).toBeVisible();
+  await act(async () => app.permission.resolve(fail(503, "internal", "access-failed")));
+  expect(dialog).toBeVisible(); expect(targetField).toHaveValue(targetId);
+  expect(within(dialog).getByText("Destination")).toBeVisible();
+  expect(app.saveSignal?.aborted).toBe(false); expect(app.transfers()).toBe(0);
+  app.setHoldPermission(false); fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(confirm).toBeEnabled());
+  expect(dialog).toBeVisible(); expect(targetField).toHaveValue(targetId);
+  expect(within(dialog).getByText("Destination")).toBeVisible();
+  expect(app.transfers()).toBe(0);
+});
+
+it("retires an unsubmitted transfer preview when the account changes", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  const dialog = await previewTransfer(); leave();
+  expect(app.saveSignal?.aborted).toBe(false);
+  app.setIdentity({ ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" });
+  vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
+  vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
+  await screen.findByRole("button", { name: "Account menu: Bob" });
+  await waitFor(() => expect(app.saveSignal?.aborted).toBe(true));
+  expect(dialog).not.toBeVisible(); expect(screen.queryByText("Destination")).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
+  expect(app.transfers()).toBe(0);
+});
+
+it.each(["unknown", "confirmed", "rejected"] as const)("keeps a dispatched %s transfer private after revocation and restores its outcome", async (result) => {
+  const app = setup(); await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
+  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
+  expect(app.transferSignal?.aborted).toBe(false);
+  const ownership = { teamId: targetId, version: 2n };
+  const restoredAccess = { ...access, ownerTeam: target, ownership };
+  if (result === "unknown") await act(async () => app.transfer.reject(new TypeError("transfer response lost")));
+  else if (result === "rejected") await act(async () => app.transfer.resolve(fail(400, "invalid_input", "transfer-rejected")));
+  else {
+    app.setSavedProject({ ...project(), ownership }); app.setAccess(restoredAccess);
+    await act(async () => app.transfer.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: target, ownership, actorAccess: restoredAccess })));
+  }
+  expect(app.transferSignal?.aborted).toBe(false);
+  const denials = app.denials; returnToSettings(); await waitFor(() => expect(app.denials).toBeGreaterThan(denials));
+  await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
+  if (result === "unknown") {
+    await waitFor(() => expect(screen.getByText(/transfer result is unknown/i)).toBeVisible());
+    const check = screen.getByRole("button", { name: "Check current state" });
+    expect(check).toBeEnabled(); fireEvent.click(check);
+    expect(await screen.findByText("The project is currently unavailable. The original transfer result remains unknown.")).toBeVisible();
+  } else if (result === "rejected") {
+    expect(await screen.findByText("transfer-rejected")).toBeVisible();
+    expect(screen.queryByLabelText("Team ID or link")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
+  } else {
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull());
+  }
+  for (const element of screen.queryAllByText("Destination")) expect(element).not.toBeVisible();
+  if (result === "confirmed") {
+    expect(await screen.findByText(/Project transferred to Destination/i)).toBeVisible();
+  } else {
+    expect(screen.queryByText(/Project transferred to Destination/i)).toBeNull();
+  }
+  expect(app.transfers()).toBe(1);
+  app.setDenyAccess(false); fireEvent(window, new Event("focus"));
+  if (result === "unknown") {
+    await waitFor(() => expect(screen.getByText(/transfer result is unknown/i)).toBeVisible());
+  } else if (result === "confirmed") {
+    expect(await screen.findByText(/Project transferred to Destination/i)).toBeVisible();
+  }
+  expect(app.transfers()).toBe(1);
+});
+
+it("keeps confirmed transfer cleanup retry actionable without exposing a revoked preview", async () => {
+  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
+  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  await waitFor(() => expect(app.denials).toBeGreaterThan(0));
+  expect(app.saveSignal?.aborted).toBe(false); expect(app.transferSignal?.aborted).toBe(false);
+  const revoke = vi.spyOn(TaskCacheScope.prototype, "revokeProject").mockRejectedValueOnce(new Error("cleanup failed")).mockResolvedValueOnce(true);
+  const ownership = { teamId: targetId, version: 2n };
+  await act(async () => app.transfer.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: target, ownership, actorAccess: null })));
+  returnToSettings();
+  expect(await screen.findByText(/transfer succeeded, but project cache cleanup failed/i)).toBeVisible();
+  for (const element of screen.queryAllByText("Destination")) expect(element).not.toBeVisible();
+  expect(screen.queryByLabelText("Team ID or link")).toBeNull();
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(revoke).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText(/Project transferred to Destination/i)).toBeVisible();
+  expect(app.transferSignal?.aborted).toBe(false); expect(app.saveSignal?.aborted).toBe(false);
+  expect(app.transfers()).toBe(1); expect(app.saves()).toBe(1);
+});
+
+it.each(["unknown", "confirmed"] as const)("does not publish an old account's late %s transfer after identity changes", async (result) => {
+  const app = setup(); await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
+  leave(); expect(app.transferSignal?.aborted).toBe(false);
+  app.setIdentity({ ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" });
+  vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
+  vi.mocked(document.hasFocus).mockReturnValue(true); fireEvent(window, new Event("focus"));
+  await screen.findByRole("button", { name: "Account menu: Bob" });
+  expect(app.transferSignal?.aborted).toBe(true);
+  if (result === "unknown") await act(async () => app.transfer.reject(new TypeError("transfer response lost")));
+  else {
+    const ownership = { teamId: targetId, version: 2n }, actorAccess = { ...access, ownerTeam: target, ownership };
+    await act(async () => app.transfer.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: target, ownership, actorAccess })));
+  }
+  expect(screen.queryByText(/transfer result is unknown/i)).toBeNull();
+  expect(screen.queryByText(/Project transferred to Destination/i)).toBeNull();
+  expect(screen.queryByText("Destination")).toBeNull();
+  expect(app.transfers()).toBe(1);
 });
 
 it("keeps the save owner when a simultaneous rejected transfer is closed first", async () => {

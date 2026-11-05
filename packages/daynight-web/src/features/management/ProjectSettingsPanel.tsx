@@ -31,6 +31,6 @@ const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRout
         </form>
       </section>
     </>}
-    <ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={active} onRoute={onRoute} onRetentionChange={onRetentionChange} />
+    <ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={active} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} />
   </>;
 };
