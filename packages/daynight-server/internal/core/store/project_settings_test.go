@@ -98,16 +98,16 @@ func TestProjectSettingsStoreUpdatesAndRollbackKeepOneProjectResource(t *testing
 	}); !errors.Is(err, failure) {
 		t.Fatalf("rollback lost its original cause: %v", err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		read, err := snapshot.Project(ctx, project.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		read, err := snapshot.ProjectDAO().Project(ctx, project.ID)
 		if err != nil {
 			return err
 		}
-		unchanged, err := snapshot.Project(ctx, other.ID)
+		unchanged, err := snapshot.ProjectDAO().Project(ctx, other.ID)
 		if err != nil {
 			return err
 		}
-		page, err := snapshot.Projects(ctx, Page{Limit: 10})
+		page, err := snapshot.ProjectDAO().Projects(ctx, Page{Limit: 10})
 		if err != nil {
 			return err
 		}

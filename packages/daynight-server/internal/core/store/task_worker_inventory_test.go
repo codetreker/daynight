@@ -27,9 +27,9 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 	query := TaskQuery{Page: Page{Limit: 1}, Worker: &WorkerQuery{UserID: owner, WorkerID: workerID}}
 	for _, number := range []int{12, 13} {
 		var page TaskPage
-		err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+		err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 			var err error
-			page, err = snapshot.Tasks(context.Background(), project.ID, query)
+			page, err = snapshot.TaskDAO().Tasks(context.Background(), project.ID, query)
 			return err
 		})
 		if err != nil || len(page.Items) != 1 || page.Items[0].ID != queryID(number) || page.HasMore != (number == 12) {

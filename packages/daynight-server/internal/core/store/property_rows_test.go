@@ -83,12 +83,12 @@ func TestPropertyRowsMigrationPreservesValuesAndTaskFacts(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t`).Scan(&after); err != nil || before != after {
 		t.Fatalf("parent task facts changed: %v", err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		ids := make([]string, 0, len(expected))
 		for id := range expected {
 			ids = append(ids, id)
 		}
-		actual, err := loadTaskProperties(ctx, snapshot.tx, ids)
+		actual, err := loadTaskProperties(ctx, snapshot.(*Snapshot).tx, ids)
 		if err != nil {
 			return err
 		}
@@ -213,8 +213,8 @@ func TestPropertyRowsInvalidStoredValuePreservesValidationError(t *testing.T) {
 	for _, value := range []struct{ name, raw string }{{"unknown", "[]"}, {"pullRequests", "null"}, {"worker", "{}"}} {
 		mustQueryExec(t, database, `DELETE FROM task_properties WHERE task_id=$1`, task.ID)
 		mustQueryExec(t, database, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3)`, task.ID, value.name, value.raw)
-		err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-			_, err := snapshot.Task(context.Background(), project.ID, task.ID)
+		err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+			_, err := snapshot.TaskDAO().Task(context.Background(), project.ID, task.ID)
 			return err
 		})
 		var validation *taskproperties.ValidationError

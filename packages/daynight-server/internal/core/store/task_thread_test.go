@@ -76,14 +76,14 @@ func TestThreadMigrationDefaultsCompositeIdentityAndRestart(t *testing.T) {
 	if !errors.As(err, &postgres) || postgres.Code != "23505" {
 		t.Fatalf("same-task duplicate accepted: %v", err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		for _, taskID := range []string{queryID(2), queryID(3)} {
-			message, err := snapshot.ThreadMessage(ctx, taskID, queryID(99))
+			message, err := snapshot.TaskDAO().ThreadMessage(ctx, taskID, queryID(99))
 			if err != nil || message.Body != taskID {
 				t.Fatalf("cross-task identity: %#v %v", message, err)
 			}
 		}
-		_, err := snapshot.ThreadMessage(ctx, queryID(1), queryID(99))
+		_, err := snapshot.TaskDAO().ThreadMessage(ctx, queryID(1), queryID(99))
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("foreign task message resolved: %v", err)
 		}
@@ -176,28 +176,28 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustQueryExec(t, database, `UPDATE users SET name='Renamed' WHERE id=$1`, principal.UserID)
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return err
 		}
-		presence, err := snapshot.TaskPresence(ctx, project.ID, task.ID)
+		presence, err := snapshot.TaskDAO().TaskPresence(ctx, project.ID, task.ID)
 		if err != nil || !presence.Found {
 			t.Fatalf("snapshot presence: %#v %v", presence, err)
 		}
-		missing, err := snapshot.TaskPresence(ctx, project.ID, queryID(999))
+		missing, err := snapshot.TaskDAO().TaskPresence(ctx, project.ID, queryID(999))
 		if err != nil || missing.Found {
 			t.Fatalf("missing presence: %#v %v", missing, err)
 		}
-		read, err := snapshot.ThreadMessage(ctx, task.ID, first.ID)
+		read, err := snapshot.TaskDAO().ThreadMessage(ctx, task.ID, first.ID)
 		if err != nil || !reflect.DeepEqual(read, first) || read.Author.DisplayName != nil {
 			t.Fatalf("immutable original: %#v %v", read, err)
 		}
-		read, err = snapshot.ThreadMessage(ctx, task.ID, reply.ID)
+		read, err = snapshot.TaskDAO().ThreadMessage(ctx, task.ID, reply.ID)
 		if err != nil || !reflect.DeepEqual(read, reply) {
 			t.Fatalf("immutable reply/source: %#v %v", read, err)
 		}
 		for _, before := range []bool{false, true} {
-			items, err := snapshot.ThreadCandidates(ctx, task.ID, nil, before, 1)
+			items, err := snapshot.TaskDAO().ThreadCandidates(ctx, task.ID, nil, before, 1)
 			want := first
 			if before {
 				want = reply
@@ -207,11 +207,11 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 			}
 		}
 		anchor := first.Position()
-		items, err := snapshot.ThreadCandidates(ctx, task.ID, &anchor, false, 2)
+		items, err := snapshot.TaskDAO().ThreadCandidates(ctx, task.ID, &anchor, false, 2)
 		if err != nil || len(items) != 1 || items[0].ID != reply.ID {
 			t.Fatalf("after cursor: %#v %v", items, err)
 		}
-		before, after, err := snapshot.ThreadSides(ctx, task.ID, first.Position(), first.Position())
+		before, after, err := snapshot.TaskDAO().ThreadSides(ctx, task.ID, first.Position(), first.Position())
 		if err != nil || before || !after {
 			t.Fatalf("sides: %v %v %v", before, after, err)
 		}
@@ -257,7 +257,10 @@ func TestThreadCredentialKindsAndExpiry(t *testing.T) {
 	}
 	mustQueryExec(t, database, `UPDATE sessions SET expires_at=$2 WHERE id=$1`, session.ID, session.CreatedAt.Add(time.Microsecond))
 	for _, principal := range []model.Principal{principal, {Kind: "invalid", UserID: principal.UserID, CredentialID: principal.CredentialID}, {Kind: model.PATCredential, UserID: queryID(999), CredentialID: pat.ID}} {
-		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { _, err := snapshot.Credential(ctx, principal); return err })
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.CredentialDAO().Credential(ctx, principal)
+			return err
+		})
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("invalid credential accepted: %#v %v", principal, err)
 		}
@@ -322,14 +325,17 @@ func TestThreadClosedTransactionsKeepStoreFailures(t *testing.T) {
 			t.Fatalf("closed method %d cause lost or leaked: %v", index, err)
 		}
 	}
-	var snapshot *Snapshot
-	if err := database.ReadSnapshot(ctx, func(tx *Snapshot) error { snapshot = tx; return nil }); err != nil {
+	var snapshot SnapshotScope
+	if err := database.ReadSnapshot(ctx, func(tx SnapshotScope) error { snapshot = tx; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	for _, check := range []func() error{
-		func() error { _, err := snapshot.ThreadCandidates(ctx, queryID(1), nil, false, 2); return err },
 		func() error {
-			_, _, err := snapshot.ThreadSides(ctx, queryID(1), model.ThreadPosition{}, model.ThreadPosition{})
+			_, err := snapshot.TaskDAO().ThreadCandidates(ctx, queryID(1), nil, false, 2)
+			return err
+		},
+		func() error {
+			_, _, err := snapshot.TaskDAO().ThreadSides(ctx, queryID(1), model.ThreadPosition{}, model.ThreadPosition{})
 			return err
 		},
 	} {

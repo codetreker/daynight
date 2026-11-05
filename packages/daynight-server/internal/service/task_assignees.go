@@ -54,8 +54,8 @@ func (s *Tasks) Assignees(ctx context.Context, principal model.Principal, projec
 	}
 	var result model.TaskAssignees
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
@@ -63,9 +63,9 @@ func (s *Tasks) Assignees(ctx context.Context, principal model.Principal, projec
 		}
 		var err error
 		if userIDs == nil {
-			result, err = snapshot.TaskAssignees(ctx, projectID)
+			result, err = snapshot.TaskDAO().TaskAssignees(ctx, projectID)
 		} else {
-			result, err = snapshot.ResolveTaskAssignees(ctx, projectID, userIDs)
+			result, err = snapshot.TaskDAO().ResolveTaskAssignees(ctx, projectID, userIDs)
 		}
 		return err
 	})

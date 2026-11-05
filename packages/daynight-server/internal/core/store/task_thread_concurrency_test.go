@@ -423,24 +423,24 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	first := appendStoredThread(t, database, task.ID, principal.UserID, "original")
 	ctx := context.Background()
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return err
 		}
-		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err != nil {
+		if _, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID); err != nil {
 			return err
 		}
 		appendStoredThread(t, database, task.ID, principal.UserID, "outside snapshot")
 		mustQueryExec(t, database, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, task.ID)
 		mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, principal.UserID)
-		presence, err := snapshot.TaskPresence(ctx, project.ID, task.ID)
+		presence, err := snapshot.TaskDAO().TaskPresence(ctx, project.ID, task.ID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
 			t.Fatalf("snapshot presence changed: %#v %v", presence, err)
 		}
-		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err != nil {
+		if _, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID); err != nil {
 			t.Fatalf("snapshot membership changed: %v", err)
 		}
-		items, err := snapshot.ThreadCandidates(ctx, task.ID, nil, false, 10)
+		items, err := snapshot.TaskDAO().ThreadCandidates(ctx, task.ID, nil, false, 10)
 		if err != nil || len(items) != 1 || items[0].ID != first.ID {
 			t.Fatalf("snapshot messages changed: %#v %v", items, err)
 		}
@@ -448,12 +448,12 @@ func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		presence, err := snapshot.TaskPresence(ctx, project.ID, task.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		presence, err := snapshot.TaskDAO().TaskPresence(ctx, project.ID, task.ID)
 		if err != nil || presence.DeletedAt == nil {
 			t.Fatalf("new snapshot missed deletion: %#v %v", presence, err)
 		}
-		if _, err := snapshot.ProjectAccess(ctx, principal, project.ID); err == nil {
+		if _, err := snapshot.ProjectDAO().ProjectAccess(ctx, principal, project.ID); err == nil {
 			t.Fatal("new snapshot retained revoked membership")
 		}
 		return nil

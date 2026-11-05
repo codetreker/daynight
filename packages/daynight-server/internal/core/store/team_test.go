@@ -27,9 +27,9 @@ func storeTeamFixture(t *testing.T) (*Store, model.Principal, model.Team) {
 func readStoreTeam(t *testing.T, s *Store, userID, teamID string) model.Team {
 	t.Helper()
 	var team model.Team
-	err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 		var err error
-		team, err = snapshot.Team(context.Background(), userID, teamID)
+		team, err = snapshot.TeamDAO().Team(context.Background(), userID, teamID)
 		return err
 	})
 	if err != nil {

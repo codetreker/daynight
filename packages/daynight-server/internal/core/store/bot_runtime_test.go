@@ -60,8 +60,8 @@ func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE bot_id=$1`, bot.ID).Scan(&sessions); err != nil || sessions != 0 {
 		t.Fatalf("rolled back Session survived: count=%d error=%v", sessions, err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		current, err := snapshot.Bot(ctx, bot.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.BotDAO().Bot(ctx, bot.ID)
 		if err == nil && (current.Version != 1 || current.SessionID != nil || current.RoleConfiguration != nil) {
 			t.Fatalf("rollback froze a partial role: %+v", current)
 		}
@@ -175,8 +175,8 @@ func TestBotReadyAndSuccessfulPreferencesShareOneTransaction(t *testing.T) {
 	if input := readBotDefaults(t, database, bot.OwnerUserID); input.PreferredWorkerID != nil {
 		t.Fatalf("failed report committed preference: %+v", input)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		current, err := snapshot.Bot(ctx, bot.ID)
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.BotDAO().Bot(ctx, bot.ID)
 		if err == nil && (current.Version != 2 || current.StartupResult.State != "pending") {
 			t.Fatalf("failed report committed readiness: %+v", current)
 		}

@@ -127,16 +127,16 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		page, err := snapshot.Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		page, err := snapshot.TaskDAO().Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
 		if err != nil || len(page.Items) != 4 || !reflect.DeepEqual(page.Items[2], target) {
 			t.Fatalf("scoped list lost classification: %#v, %v", page, err)
 		}
-		graph, err := snapshot.TaskGraphTasks(ctx, project.ID, target.ID, 160)
+		graph, err := snapshot.TaskDAO().TaskGraphTasks(ctx, project.ID, target.ID, 160)
 		if err != nil || len(graph) != 3 || !slices.Equal(graph[2].ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatalf("scoped graph lost classification: %#v, %v", graph, err)
 		}
-		size, err := snapshot.TaskGraphSize(ctx, project.ID)
+		size, err := snapshot.TaskDAO().TaskGraphSize(ctx, project.ID)
 		if err != nil || size != (TaskGraphSize{NodeCount: 4, EdgeCount: 4}) {
 			t.Fatalf("external edges changed graph budget: %#v, %v", size, err)
 		}
@@ -164,13 +164,13 @@ func TestExternalDependencyStoreReadFailuresPreserveCauses(t *testing.T) {
 			if !canceled {
 				mustQueryExec(t, database, "ALTER TABLE task_dependencies DROP COLUMN external")
 			}
-			err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+			err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				if canceled {
 					cancel()
 				}
-				_, err := snapshot.Task(ctx, project.ID, target.ID)
+				_, err := snapshot.TaskDAO().Task(ctx, project.ID, target.ID)
 				return err
 			})
 			if canceled {

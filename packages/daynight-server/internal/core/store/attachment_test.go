@@ -29,16 +29,16 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	if _, _, err := database.PutAttachment(ctx, input); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		attachment, err := snapshot.Attachment(ctx, projectID, taskID, "docs/a.md")
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		attachment, err := snapshot.AttachmentDAO().Attachment(ctx, projectID, taskID, "docs/a.md")
 		if err != nil || !reflect.DeepEqual(attachment, updated) {
 			t.Fatalf("read: %#v, %v", attachment, err)
 		}
-		page, err := snapshot.Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1})
+		page, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1})
 		if err != nil || len(page.Items) != 1 || !page.HasMore || page.Items[0].Path != "docs/a.md" {
 			t.Fatalf("page: %#v, %v", page, err)
 		}
-		page, err = snapshot.Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1, After: &page.Items[0].Path})
+		page, err = snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1, After: &page.Items[0].Path})
 		if err != nil || len(page.Items) != 1 || page.HasMore || page.Items[0].Path != "docs/b.md" {
 			t.Fatalf("final page: %#v, %v", page, err)
 		}
@@ -46,7 +46,7 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 			path     string
 			conflict bool
 		}{{"docs", true}, {"docs/a.md/child", true}, {"docs/a.md", false}, {"docs2", false}} {
-			got, err := snapshot.AttachmentPathConflict(ctx, projectID, taskID, test.path)
+			got, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, projectID, taskID, test.path)
 			if err != nil || got != test.conflict {
 				t.Fatalf("prefix %q: %v, %v", test.path, got, err)
 			}
@@ -61,8 +61,8 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	if err := database.DeleteAttachment(ctx, projectID, taskID, "docs/a.md"); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing delete: %v", err)
 	}
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Attachment(ctx, projectID, taskID, "docs/a.md")
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.AttachmentDAO().Attachment(ctx, projectID, taskID, "docs/a.md")
 		return err
 	})
 	if !errors.Is(err, model.ErrNotFound) {
@@ -86,17 +86,17 @@ func TestAttachmentSchemaConstraintsAndStoreFailures(t *testing.T) {
 	_, _, err = database.PutAttachment(ctx, input)
 	assertAttachmentStoreError(t, err)
 	assertAttachmentStoreError(t, database.DeleteAttachment(ctx, input.ProjectID, input.TaskID, input.Path))
-	for _, operation := range []func(*Snapshot) error{
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.Attachment(ctx, input.ProjectID, input.TaskID, input.Path)
+	for _, operation := range []func(SnapshotScope) error{
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.AttachmentDAO().Attachment(ctx, input.ProjectID, input.TaskID, input.Path)
 			return err
 		},
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.Attachments(ctx, input.ProjectID, input.TaskID, AttachmentQuery{Limit: 1})
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.AttachmentDAO().Attachments(ctx, input.ProjectID, input.TaskID, AttachmentQuery{Limit: 1})
 			return err
 		},
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.AttachmentPathConflict(ctx, input.ProjectID, input.TaskID, input.Path)
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, input.ProjectID, input.TaskID, input.Path)
 			return err
 		},
 	} {

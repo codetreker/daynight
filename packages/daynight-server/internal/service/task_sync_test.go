@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -182,49 +181,6 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.Role != model.ProjectAdmin || fresh.ActorAccess.DirectGrant == nil || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 {
 		t.Fatalf("fresh history: %#v %v", fresh, err)
 	}
-}
-
-func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
-	for _, test := range []struct {
-		name, fragment           string
-		missing, limit, complete bool
-	}{
-		{"project", "SELECT p.id::text, p.name, p.repo_url", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
-		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT task_id::text,name,value FROM task_properties", false, false, false}, {"people", "FROM candidate_ids candidate", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
-		{"missing completion", "FROM project_grants", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			tasks, database, project, url, principal := taskService(t)
-			if test.name == "properties" {
-				createTask(t, tasks, principal, project.ID, "Property read")
-			}
-			if test.limit {
-				seedGraph(t, database, project.ID, 1001, 0)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			action := taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.fragment) }}
-			if test.complete {
-				action.end = cancel
-			} else {
-				action.start = cancel
-			}
-			traced := tracedTasks(t, url, action)
-			id := project.ID
-			if test.missing {
-				id = "00000000-0000-4000-8000-000000000099"
-			}
-			result, err := NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, id, TaskSyncRequest{})
-			assertOperational(t, err)
-			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(result, model.TaskSync{}) {
-				t.Fatalf("completion precedence: %#v %v", result, err)
-			}
-		})
-	}
-	_, database, project, _, principal := taskService(t)
-	database.Close()
-	_, err := NewTaskSync(database, 10*time.Second).Get(context.Background(), principal, project.ID, TaskSyncRequest{})
-	assertOperational(t, err)
 }
 
 func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {

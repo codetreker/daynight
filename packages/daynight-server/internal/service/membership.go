@@ -66,7 +66,7 @@ func membershipLookupError(err error) error {
 	return err
 }
 
-func RequireProjectRead(ctx context.Context, snapshot *store.Snapshot, principal model.Principal, projectID string) (model.ProjectAccess, error) {
+func RequireProjectRead(ctx context.Context, reader store.ProjectReader, principal model.Principal, projectID string) (model.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return model.ProjectAccess{}, err
 	}
@@ -74,7 +74,7 @@ func RequireProjectRead(ctx context.Context, snapshot *store.Snapshot, principal
 	if err != nil {
 		return model.ProjectAccess{}, err
 	}
-	access, err := snapshot.ProjectAccess(ctx, principal, id)
+	access, err := reader.ProjectAccess(ctx, principal, id)
 	return access, membershipLookupError(err)
 }
 
@@ -102,7 +102,7 @@ func completeMembershipOperation(operation func() error, refusal **model.Fault) 
 	return err
 }
 
-func (s *Memberships) read(ctx context.Context, principal model.Principal, projectID string, admin bool, operation func(*store.Snapshot, model.ProjectAccess) error) error {
+func (s *Memberships) read(ctx context.Context, principal model.Principal, projectID string, admin bool, operation func(store.ProjectReader, model.ProjectAccess) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -111,9 +111,9 @@ func (s *Memberships) read(ctx context.Context, principal model.Principal, proje
 		return err
 	}
 	var refusal *model.Fault
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			access, err := RequireProjectRead(ctx, snapshot, principal, id)
+			access, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, id)
 			if err != nil {
 				return err
 			}
@@ -122,7 +122,7 @@ func (s *Memberships) read(ctx context.Context, principal model.Principal, proje
 					return err
 				}
 			}
-			return operation(snapshot, access)
+			return operation(snapshot.ProjectDAO(), access)
 		}, &refusal)
 	})
 	if err != nil {
@@ -176,10 +176,10 @@ func (s *Memberships) List(ctx context.Context, principal model.Principal, proje
 
 func (s *Memberships) ListWithAccess(ctx context.Context, principal model.Principal, projectID string) (ProjectParticipants, error) {
 	var result ProjectParticipants
-	err := s.read(ctx, principal, projectID, false, func(snapshot *store.Snapshot, access model.ProjectAccess) error {
+	err := s.read(ctx, principal, projectID, false, func(reader store.ProjectReader, access model.ProjectAccess) error {
 		var err error
 		result.ActorAccess = access
-		result.Items, err = snapshot.ProjectParticipants(ctx, projectID)
+		result.Items, err = reader.ProjectParticipants(ctx, projectID)
 		return err
 	})
 	if err != nil {
@@ -315,9 +315,9 @@ func (s *Memberships) CreateInvitation(ctx context.Context, principal model.Prin
 
 func (s *Memberships) ListInvitations(ctx context.Context, principal model.Principal, projectID string) ([]model.ProjectInvitation, error) {
 	var invitations []model.ProjectInvitation
-	err := s.read(ctx, principal, projectID, true, func(snapshot *store.Snapshot, _ model.ProjectAccess) error {
+	err := s.read(ctx, principal, projectID, true, func(reader store.ProjectReader, _ model.ProjectAccess) error {
 		var err error
-		invitations, err = snapshot.Invitations(ctx, projectID, s.now().UTC())
+		invitations, err = reader.Invitations(ctx, projectID, s.now().UTC())
 		return err
 	})
 	return invitations, err
@@ -345,7 +345,7 @@ func invitationAvailable(invitation model.ProjectInvitation, now time.Time) bool
 	return invitation.ConsumedAt == nil && invitation.RevokedAt == nil && invitation.ExpiresAt.After(now)
 }
 
-func (s *Memberships) inspect(ctx context.Context, principal model.Principal, secret string, operation func(*store.Snapshot, model.ProjectInvitation) error) error {
+func (s *Memberships) inspect(ctx context.Context, principal model.Principal, secret string, operation func(store.ProjectReader, model.ProjectInvitation) error) error {
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
@@ -353,9 +353,9 @@ func (s *Memberships) inspect(ctx context.Context, principal model.Principal, se
 		return invitationUnavailable(nil)
 	}
 	var refusal *model.Fault
-	err := s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
+	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			invitation, err := snapshot.Invitation(ctx, secretHash(secret))
+			invitation, err := snapshot.ProjectDAO().Invitation(ctx, secretHash(secret))
 			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(err)
 			}
@@ -365,7 +365,7 @@ func (s *Memberships) inspect(ctx context.Context, principal model.Principal, se
 			if !invitationAvailable(invitation, s.now().UTC()) {
 				return invitationUnavailable(nil)
 			}
-			return operation(snapshot, invitation)
+			return operation(snapshot.ProjectDAO(), invitation)
 		}, &refusal)
 	})
 	if err != nil {
@@ -379,8 +379,8 @@ func (s *Memberships) inspect(ctx context.Context, principal model.Principal, se
 
 func (s *Memberships) InspectInvitation(ctx context.Context, principal model.Principal, secret string) (InvitationInspection, error) {
 	var result InvitationInspection
-	err := s.inspect(ctx, principal, secret, func(snapshot *store.Snapshot, invitation model.ProjectInvitation) error {
-		project, err := snapshot.Project(ctx, invitation.ProjectID)
+	err := s.inspect(ctx, principal, secret, func(reader store.ProjectReader, invitation model.ProjectInvitation) error {
+		project, err := reader.Project(ctx, invitation.ProjectID)
 		if errors.Is(err, model.ErrNotFound) {
 			return invitationUnavailable(err)
 		}
@@ -388,7 +388,7 @@ func (s *Memberships) InspectInvitation(ctx context.Context, principal model.Pri
 			return err
 		}
 		result.ProjectID, result.ProjectName = project.ID, project.Name
-		access, err := snapshot.ProjectAccess(ctx, principal, project.ID)
+		access, err := reader.ProjectAccess(ctx, principal, project.ID)
 		if errors.Is(err, model.ErrNotFound) {
 			return nil
 		}
@@ -409,7 +409,7 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal model.Prin
 		return InvitationAcceptance{}, err
 	}
 	var projectID string
-	if err := s.inspect(ctx, principal, secret, func(_ *store.Snapshot, invitation model.ProjectInvitation) error {
+	if err := s.inspect(ctx, principal, secret, func(_ store.ProjectReader, invitation model.ProjectInvitation) error {
 		projectID = invitation.ProjectID
 		return nil
 	}); err != nil {

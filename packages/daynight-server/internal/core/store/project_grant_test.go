@@ -36,8 +36,8 @@ func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Phase != "commit" || failure.Outcome != TransactionUnknown || !failure.CommitAttempted || failure.CleanupFailed || !errors.Is(err, lost) {
 		t.Fatalf("lost receipt: %#v %v", failure, err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		member, err := snapshot.DirectProjectMember(ctx, target.UserID, project.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		member, err := snapshot.ProjectDAO().DirectProjectMember(ctx, target.UserID, project.ID)
 		if err != nil {
 			return err
 		}
@@ -61,8 +61,8 @@ func TestCreateGrantPropagatesConstraintFailure(t *testing.T) {
 	if !errors.As(err, &databaseError) || databaseError.Code != "23505" {
 		t.Fatalf("duplicate grant failure lost its cause: %v", err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		member, err := snapshot.DirectProjectMember(ctx, owner.UserID, project.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		member, err := snapshot.ProjectDAO().DirectProjectMember(ctx, owner.UserID, project.ID)
 		if err != nil {
 			return err
 		}

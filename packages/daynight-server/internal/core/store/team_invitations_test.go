@@ -29,40 +29,40 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	if err := s.Pool.QueryRow(ctx, `SELECT id::text FROM teams WHERE personal_user_id=$1`, admin.UserID).Scan(&personal); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		got, err := snapshot.TeamInvitation(ctx, invitation.TokenHash)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		got, err := snapshot.TeamDAO().TeamInvitation(ctx, invitation.TokenHash)
 		if err != nil {
 			return err
 		}
 		if got.ID != invitation.ID || got.TeamID != team.ID || got.ExpiresAt.Sub(got.CreatedAt) != 7*24*time.Hour {
 			t.Fatal("invitation persistence")
 		}
-		list, err := snapshot.TeamInvitations(ctx, team.ID, time.Now())
+		list, err := snapshot.TeamDAO().TeamInvitations(ctx, team.ID, time.Now())
 		if err != nil {
 			return err
 		}
 		if len(list) != 1 || list[0].TokenHash != nil {
 			t.Fatal("metadata exposed hash")
 		}
-		ordinary, err := snapshot.InvitationTeam(ctx, team.ID)
+		ordinary, err := snapshot.TeamDAO().InvitationTeam(ctx, team.ID)
 		if err != nil {
 			return err
 		}
 		if ordinary.Kind != "ordinary" || ordinary.Name == nil || *ordinary.Name != "Ordinary" {
 			t.Fatal("ordinary Team reference")
 		}
-		ref, err := snapshot.InvitationTeam(ctx, personal)
+		ref, err := snapshot.TeamDAO().InvitationTeam(ctx, personal)
 		if err != nil {
 			return err
 		}
 		if ref.Kind != "personal" || ref.Name != nil {
 			t.Fatal("personal Team reference")
 		}
-		_, err = snapshot.InvitationTeam(ctx, uuid.NewString())
+		_, err = snapshot.TeamDAO().InvitationTeam(ctx, uuid.NewString())
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing Team: %v", err)
 		}
-		_, err = snapshot.InvitationTeamMember(ctx, team.ID, member.UserID)
+		_, err = snapshot.TeamDAO().InvitationTeamMember(ctx, team.ID, member.UserID)
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing member: %v", err)
 		}
@@ -90,12 +90,12 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		memberRow, err := snapshot.InvitationTeamMember(ctx, team.ID, member.UserID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		memberRow, err := snapshot.TeamDAO().InvitationTeamMember(ctx, team.ID, member.UserID)
 		if err != nil || memberRow.Role != model.ProjectMemberRole {
 			return errors.New("stored member")
 		}
-		list, err := snapshot.TeamInvitations(ctx, team.ID, time.Now())
+		list, err := snapshot.TeamDAO().TeamInvitations(ctx, team.ID, time.Now())
 		if err != nil {
 			return err
 		}
@@ -166,8 +166,8 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 	if _, err := s.Pool.Exec(ctx, `DROP TABLE team_invitations`); err != nil {
 		t.Fatal(err)
 	}
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.TeamInvitations(ctx, team.ID, time.Now())
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TeamDAO().TeamInvitations(ctx, team.ID, time.Now())
 		return err
 	})
 	if err == nil {

@@ -24,9 +24,9 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 	read := func() []model.TaskStep {
 		t.Helper()
 		var rows []model.TaskStep
-		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			rows, err = snapshot.TaskSteps(ctx, task.ID)
+			rows, err = snapshot.TaskDAO().TaskSteps(ctx, task.ID)
 			return err
 		}); err != nil {
 			t.Fatal(err)

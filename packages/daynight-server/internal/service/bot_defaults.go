@@ -41,11 +41,11 @@ func (s *Bots) Defaults(ctx context.Context, principal model.Principal, workerID
 		workerID = &id
 	}
 	var result BotDefaults
-	err := s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return botCredentialError(err)
 		}
-		input, err := snapshot.BotDefaults(ctx, principal.UserID)
+		input, err := snapshot.BotDAO().BotDefaults(ctx, principal.UserID)
 		if err != nil {
 			return err
 		}

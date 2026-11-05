@@ -14,7 +14,7 @@ type Snapshot struct {
 	tx pgx.Tx
 }
 
-func (s *Store) ReadSnapshot(ctx context.Context, operation func(*Snapshot) error) error {
+func (s *Store) ReadSnapshot(ctx context.Context, operation func(SnapshotScope) error) error {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return queryError("begin snapshot", err)
@@ -24,6 +24,14 @@ func (s *Store) ReadSnapshot(ctx context.Context, operation func(*Snapshot) erro
 	}
 	return nil
 }
+
+func (s *Snapshot) CredentialDAO() CredentialReader { return s }
+func (s *Snapshot) TeamDAO() TeamReader             { return s }
+func (s *Snapshot) ProjectDAO() ProjectReader       { return s }
+func (s *Snapshot) TaskDAO() TaskReader             { return s }
+func (s *Snapshot) WorkerDAO() WorkerReader         { return s }
+func (s *Snapshot) BotDAO() BotReader               { return s }
+func (s *Snapshot) AttachmentDAO() AttachmentReader { return s }
 
 func (s *Snapshot) Project(ctx context.Context, id string) (model.Project, error) {
 	return readProject(ctx, s.tx, id)

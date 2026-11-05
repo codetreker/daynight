@@ -263,14 +263,14 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 		return ThreadPageDocument{}, err
 	}
 	var result ThreadPageDocument
-	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
-		if _, err := snapshot.Credential(ctx, principal); err != nil {
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return threadCredentialError(err)
 		}
-		if _, err := RequireProjectRead(ctx, snapshot, principal, projectID); err != nil {
+		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			return threadAccessError(err)
 		}
-		presence, err := snapshot.TaskPresence(ctx, projectID, taskID)
+		presence, err := snapshot.TaskDAO().TaskPresence(ctx, projectID, taskID)
 		if err != nil {
 			return err
 		}
@@ -283,7 +283,7 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 			id = input.BeforeID
 		}
 		if id != nil {
-			message, err := snapshot.ThreadMessage(ctx, taskID, *id)
+			message, err := snapshot.TaskDAO().ThreadMessage(ctx, taskID, *id)
 			if err != nil {
 				return threadMessageError(err)
 			}
@@ -291,7 +291,7 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 			anchor = &position
 		}
 		before := input.AfterID == nil && !input.FromBeginning
-		candidates, err := snapshot.ThreadCandidates(ctx, taskID, anchor, before, input.Count+1)
+		candidates, err := snapshot.TaskDAO().ThreadCandidates(ctx, taskID, anchor, before, input.Count+1)
 		if err != nil {
 			return err
 		}
@@ -300,7 +300,7 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 			return err
 		}
 		if len(page.Items) > 0 {
-			page.HasMoreBefore, page.HasMoreAfter, err = snapshot.ThreadSides(ctx, taskID, page.Items[0].Position(), page.Items[len(page.Items)-1].Position())
+			page.HasMoreBefore, page.HasMoreAfter, err = snapshot.TaskDAO().ThreadSides(ctx, taskID, page.Items[0].Position(), page.Items[len(page.Items)-1].Position())
 			if err != nil {
 				return err
 			}
