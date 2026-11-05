@@ -4,10 +4,11 @@ import type { SessionSnapshot } from '../../src/api/types';
 
 // Only the Bot transport is controlled. AuthenticatedApp, the cache, client,
 // renderer, composer and pagination hooks are production implementations.
-const metrics = { tail: 0, before: 0, commands: 0, channels: 0, closed: 0 };
+const metrics = { tail: 0, before: 0, commands: 0, channels: 0, closed: 0, bindings: [] as string[] };
 declare global { interface Window { botViewport: { metrics: typeof metrics } } }
 window.botViewport = { metrics };
 export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
+  metrics.bindings.push(JSON.stringify(binding));
   const snapshot: SessionSnapshot = {
     protocol: 'daynight.session.v1', schemaVersion: 1, projectionVersion: 1,
     sessionId: binding.sessionId, testExecutionId: binding.testExecutionId,

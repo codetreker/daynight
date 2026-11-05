@@ -29,7 +29,7 @@ and current Worker availability remain separate observations. The
 [background-check decision](../bug-fix/2026-11-05-bot-background-check-display.md)
 separates retained presentation from temporary request admission.
 
-The routes reuse the Session shell's viewport height constraint. The Bot grid
+The routes reuse the Session shell's viewport height constraint. The Bot workspace
 and conversation can shrink within it; the list and shared timeline own separate
 scroll regions. Timeline pagination and retained reading positions therefore use
 the actual visible conversation viewport.
