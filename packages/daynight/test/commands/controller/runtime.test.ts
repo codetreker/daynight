@@ -220,3 +220,46 @@ test.each(["task", "test"])("omits role options for a legacy %s startup", async 
     expect(fixture.options).toMatchObject({ unattended: scope === "task", model: null, args: [], resumeNativeSessionId: null });
   } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
 });
+
+
+test("startup rejection is retained separately from shutdown lifecycle", async () => {
+  setup();
+  const { NativeRpcError } = await import("../../../src/commands/controller/providers/native-rpc.js");
+  const error = new NativeRpcError(-32602, "Rejected /private/secret input");
+  fixture.open.mockRejectedValue(error);
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(error);
+    expect(fixture.journal().getSnapshot()).toMatchObject({ startup: { state: "failed", reasonCode: "native_rejected" }, error: error.message });
+  } finally { log.mockRestore(); }
+});
+
+test("startup is not ready until the provider opening promise has completed", async () => {
+  setup(); let opened!: (value: unknown) => void;
+  fixture.open.mockImplementation(() => new Promise(resolve => { opened = resolve; }));
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    const native = fixture.options as { onState(state: unknown): void };
+    native.onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: true } });
+    expect(fixture.journal().getSnapshot().startup).toEqual({ state: "starting", reasonCode: "initializing" });
+    opened({ nativeSessionId: "native", close: fixture.close });
+    await vi.waitFor(() => expect(fixture.journal().getSnapshot().startup).toEqual({ state: "ready", reasonCode: "ready" }));
+  } finally { opened({ nativeSessionId: "native", close: fixture.close }); process.emit("SIGTERM", "SIGTERM"); await running; }
+});
+
+
+test("a subsequent shutdown error cannot replace the original initialization timeout", async () => {
+  setup(); const { NativeRpcTimeoutError } = await import("../../../src/commands/controller/providers/native-rpc.js");
+  const timeout = new NativeRpcTimeoutError("initialize");
+  fixture.open.mockImplementation(async () => {
+    const native = fixture.options as { onFatalError(error: Error): void };
+    native.onFatalError(timeout);
+    throw new Error("Cleanup transport lost /private/profile");
+  });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toThrow("Cleanup transport lost");
+    expect(fixture.journal().getSnapshot().startup).toEqual({ state: "unknown", reasonCode: "native_timeout" });
+  } finally { log.mockRestore(); }
+});

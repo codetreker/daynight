@@ -50,7 +50,7 @@ describe('localized task graph presentation', () => {
       ],
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
-    const view = renderWithLocale(<ChainList projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
       openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en', taskCache: true });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
@@ -67,7 +67,7 @@ describe('localized task graph presentation', () => {
     const user = userEvent.setup();
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
-    const view = renderWithLocale(<ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
       openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en', taskCache: true });
     await ready(view.container);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
@@ -223,11 +223,11 @@ describe('localized task graph presentation', () => {
   it('renders empty and hidden-completed chain states in the chosen language', () => {
     const props = { index, allRepresentativeIds: [], representativeIds: [], openChainId: null,
       onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showAll: false, onShowAllChange: noop };
-    const view = renderWithLocale(<ChainList projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
     const completeIndex = buildGraphIndex({ ...graph, summary: { total: 5, todo: 0, inProgress: 0, done: 5, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
-    view.rerender(<ChainList projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
     expect(screen.getByRole('heading', { name: 'No recent task chains' })).toBeTruthy();
     expect(screen.getByText('3 completed task chains are outside the current filter. Select “Show all” to view them.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Show all' })).toBeTruthy();

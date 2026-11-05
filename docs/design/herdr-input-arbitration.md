@@ -6,7 +6,7 @@
 
 所有 macOS Daynight 输入由同一 `HerdrInputArbiter` 派发：首次 assignment、自动 continuation、服务端转发的 paste/keys、终态 cleanup prompt。`durable.ts` 不调用 legacy `agent.prompt` 输入路径；`launch` 只启动进程，原 daemon、shell、native agent 的身份和运行 ledger 可靠提交后才开放输入。Linux/Windows legacy 与 Web Controller 保留各自既有路径。
 
-Session 注册继续声明 `observe=false`、`control=false`、`archive=false`。输入组件与服务端消费接口可隔离验证，但录制、网页预览、最终归档和产品组合能力尚未满足，不能仅凭输入传输成功启用完整 Herdr Session。
+macOS Worker 将输入仲裁与[持续录制及归档](herdr-recording.md)组合后声明 Session observe/control/archive 能力。输入组件的独立传输成功仍不证明页面端到端验收；控制结果不改变录制与归档的完整性。
 
 ## 按用途读取输入状态
 
@@ -17,6 +17,8 @@ Session 注册继续声明 `observe=false`、`control=false`、`archive=false`�
 | `automatic`、`cleanup` | Codex/Claude 以 `format=text`、`strip_ansi=true` 读取，使用共享 `nativeInputBlocker`，只拒绝明确的菜单或禁用输入；自定义或未知正常布局不等待正向识别。返回 `composer: unavailable`，不伪造空输入证据。 |
 | `manual` | 跳过可见界面排除，使 lease 持有人可以处理菜单；返回 `composer: unavailable`。原目标、lease、fence、进程和传输准入仍须满足。 |
 | `resume` | 显式交还和干净正常退出后的自动恢复使用专用 `hasEmptyResumeComposer`，通过 `pane.read` 的 `format=ansi`、`strip_ansi=false` 保留 renderer 属性。只有当前支持的真实空字段证据才可返回 empty，菜单、草稿、未知或样式不明的布局拒绝；可选 model、cwd、状态栏不是条件。Copilot 继续报告 unavailable，保留其显式交还责任。 |
+
+共享 blocker 将 Codex Session picker 的完整 Resume/Fork 标题、标题与 footer 之间的原生搜索或选中会话行、单独的 resume/fork/restore 主动作组合为菜单证据。原生 footer 会按优先级裁去次级控件，不能要求它们始终存在；搜索行覆盖空列表，选中行（含展开态的 `⌄` 标记）覆盖搜索位置被 inline error 替代的情况，包括视图密度保存失败。后续正常 prompt 排除历史菜单，单独的标题或正文中的动作说明不足以拒绝。其余菜单和禁用输入规则由同一 blocker 保留。
 
 Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 source/format、字符串正文及未截断事实；读取失败或目标/几何变化不授予输入。读取后重新核对目标、结构化状态和适用的最终 claim/paused 授权。一个批次已经写入 paste 后，后续帧仍核验原目标、权限和 fence，不把该批次自己的正文当作新的人工草稿而拒绝。
 
@@ -38,13 +40,15 @@ Codex/Claude 的非人工读取须确认原 pane/workspace/tab、请求的 sourc
 
 首次 assignment 有跨运行不变的身份和正文摘要。一次确定未写的失败保留其 rejected receipt；只有 pending 且自动准入再次有效时才生成新的持久尝试 ID。服务端接受原受校验 Worker 的 `dispatching → pending` 状态投影，使零写入拒绝之后的 heartbeat 保持通道可用；零写入证明由输入 journal 的 rejected receipt 承担。服务端不能把 `unknown`、`unconfirmed` 或 `transport_completed` 退回 `pending`，这项投影也不能将 suspended 恢复为 automation。未知尝试不会轮转 ID，也不因 idle、重启或释放 lease 重发。其他操作重复 ID 仅返回原结果；同 ID 异正文拒绝。
 
-旧生命周期存在但输入 journal 缺失时按 `unconfirmed` 接入，不推断可继续自动输入。生命周期中的原始首次结果继续保留；人工选择 `delivered_continue` 单独记录 actor、operation 和时间，不修改 unknown 操作结果。现有 v2 `control_state.initialAssignment=transport_completed` 在这项处置后投影为可继续的进度；它不是对原 unknown 操作的 provider ACK。
+旧生命周期存在但输入 journal 缺失时按 `unconfirmed` 接入，不推断可继续自动输入。生命周期中的原始首次结果继续保留；人工通过 `resolve_initial_assignment` 选择 `delivered_continue`，单独记录 actor、operation 和时间，不修改 unknown 操作结果。该动作只允许无 lease 的 suspended 状态，增加 controlEpoch 后仍保持 suspended，保留草稿和未知输入风险。v2 `control_state.initialAssignment=transport_completed` 在这项处置后投影为允许另行交还的进度；它不是对原 unknown 操作的 provider ACK。持久处置后的重启和重复请求都不会自行恢复自动执行。
 
 ## 人工控制与交还
 
 获取 lease 只做原身份、任务权限和可用原生状态的读取，不 attach。批次进行中返回 `input_busy`，不会排队等到首次输入完成再悄悄授予。租约 TTL 为 30 秒，调用方每 10 秒续约；Worker 使用本进程单调时限，重启撤销旧 lease。普通释放、失联、隐藏页签的服务端撤权和超时均保持 suspended。
 
 交还要求当前 fence/controlEpoch、无在途批次、明确 `draftHandled`、原生 readiness 和 `resume` 用途的输入检查。resume 使用保留 ANSI 属性的可见读取。Codex 需要当前非 DIM 的正常 prompt glyph、renderer DIM 的精确空占位符、下一空输入行及正常键盘 footer；允许一个不要求特定内容的状态行。占位文案本身不足以证明为空，相同字面的普通样式草稿、多行草稿、未知控制或样式均拒绝。RGB/indexed color 的参数值不能被当成 DIM。Claude 只接受真实空白的 bordered prompt field 及正常 footer，含 Try 文本的歧义字段拒绝。不要求 model、cwd 或状态栏；未知界面与草稿不能因自动输入布局限制已移除而被当成空字段。这是受限样式与字段几何观察，不是通用 ANSI 终端框架。Copilot 没有可用的通用空 composer 证明，记录为 unavailable；其人工草稿责任必须由显式交还承担，native idle 不会自动解除 manual/suspended。系统不擅自发送清空草稿快捷键。
+
+`resolve_initial_assignment` 要求 `draftHandled=false` 和明确 `initialUnknownDisposition=delivered_continue`；`resume_automation` 要求 `draftHandled=true`、`initialUnknownDisposition=null`，且未知首次结果已单独处置。两者 `leaseId=null`，不能借恢复动作同时作出处置。Worker 只在 unresolved 的 suspended 状态公布处置动作，处置完成后才公布恢复动作；旧 Worker 缺少独立动作时浏览器禁用处置。服务端对尚未处置的 unknown/unconfirmed 独立拒绝恢复，即使旧 Worker 仍公布该动作。
 
 服务端控制请求包含原 actor 与请求摘要，Worker 持久提交状态和关联 ACK 后才回传。每次实际写入前再读取服务端 Session 状态、任务权限和原进程证明，已撤 lease、旧连接或控制代次不能借轮询间隔迟到写入。
 
@@ -72,4 +76,4 @@ prepare 或消费响应丢失只读原 recoveryId 的回执；没有已确认结
 
 ## 验证边界
 
-真实 SQLite 与 socket 测试覆盖崩溃恢复、幂等、lease/epoch 竞争、未写与已写取消、cleanup 撤销、自动/清理/人工/交还的用途分离，以及 Web/legacy 回归。自动输入的未知正常布局放行、已知阻塞零写入持久等待、首次 pending 投影、写后未知结果不重放，与交还拒绝未知/草稿、区分 DIM 占位符与相同字面的普通样式正文、拒绝多行/歧义样式及 RGB/indexed color 伪 DIM、接受真实空字段分别验证。macOS 三 provider 的隔离界面验证覆盖 Unicode、多行 paste、Enter/Escape/Ctrl+C/方向键、同名错误目标和实际 PTY 尺寸。模拟协议、原生界面验证和完整产品组合验收是不同证据，不互相替代。
+真实 SQLite 与 socket 测试覆盖崩溃恢复、幂等、lease/epoch 竞争、未写与已写取消、cleanup 撤销、自动/清理/人工/交还的用途分离，以及 Web/legacy 回归。自动输入的未知正常布局放行、Resume/Fork/restore 的窄宽度重绑定主动作 footer 拒绝及其标题/搜索/列表证据与历史 prompt 反例、已知阻塞零写入持久等待、首次 pending 投影、写后未知结果不重放，与交还拒绝未知/草稿、区分 DIM 占位符与相同字面的普通样式正文、拒绝多行/歧义样式及 RGB/indexed color 伪 DIM、接受真实空字段分别验证。macOS 三 provider 的隔离界面验证覆盖 Unicode、多行 paste、Enter/Escape/Ctrl+C/方向键、同名错误目标和实际 PTY 尺寸。模拟协议、原生界面验证和完整产品组合验收是不同证据，不互相替代。

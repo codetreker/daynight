@@ -774,3 +774,35 @@ describe("detail freshness", () => {
     expect(isTaskStale({ ...node, titlePreview: "😀".repeat(160), titleTruncated: true }, { ...detail, title })).toBe(false);
   });
 });
+
+it('publishes the matching claim through sync, removes it on later updates, and fences old project responses', async () => {
+  const claim = (name: string, state: 'active' | 'released' | 'completed') => ({ claimId: '00000000-0000-4000-8000-000000000101', state, userId: '00000000-0000-4000-8000-000000000102', workerId: '00000000-0000-4000-8000-000000000103', machine: { id: '00000000-0000-4000-8000-000000000104', name }, platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000105', phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time });
+  let properties: TaskDetail['properties'] = {};
+  const fixture = createGraphSyncFixture({ propertiesForTask: (_task, project) => project === projectId ? properties : {} });
+  vi.mocked(getTaskSync).mockImplementation(async (id, query) => fixture.toSync(graph(id), query));
+  const { result, rerender } = renderHook(({ id }) => useTaskGraph(id), { initialProps: { id: projectId } });
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.size).toBe(0));
+  expect(getTaskSync).toHaveBeenCalledTimes(1); expect(detailRequest).not.toHaveBeenCalled();
+  properties = { worker: claim('first machine', 'active') };
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.get(taskId)?.machine.name).toBe('first machine'));
+  properties = { worker: claim('finished machine', 'completed') };
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.get(taskId)).toMatchObject({ state: 'completed', machine: { name: 'finished machine' } }));
+  properties = {};
+  act(() => result.current.refresh());
+  await waitFor(() => expect(result.current.snapshot?.workerMachines.has(taskId)).toBe(false));
+  expect(getTaskSync).toHaveBeenCalledTimes(4); expect(detailRequest).not.toHaveBeenCalled();
+  const old = deferred<ReturnType<typeof fixture.toSync>>();
+  vi.mocked(getTaskSync).mockReturnValueOnce(old.promise);
+  act(() => result.current.refresh());
+  await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(5));
+  rerender({ id: otherProject });
+  await waitFor(() => expect(result.current.snapshot?.graph.project.id).toBe(otherProject));
+  expect(result.current.snapshot?.workerMachines.size).toBe(0);
+  properties = { worker: claim('late private machine', 'active') };
+  await act(async () => { old.resolve(fixture.toSync(graph(), {})); });
+  expect(result.current.snapshot?.graph.project.id).toBe(otherProject);
+  expect(result.current.snapshot?.workerMachines.size).toBe(0);
+  expect(detailRequest).not.toHaveBeenCalled();
+});

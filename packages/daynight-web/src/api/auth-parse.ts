@@ -2,7 +2,7 @@ import { array, boolean, id, malformed, nonemptyString, record, string, timestam
 import { parseTeamRef, parseProjectOwnership } from "./team-parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
-import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, User, TeamInvitationMember, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
+import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, CreatedTeamInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipant, ProjectParticipants, ProjectRole, ProjectAccess, ProjectGrant, ProjectGrantResult, RemoveProjectGrantResult, RevokeTeamInvitationResult, User, TeamInvitation, TeamInvitationMember, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
 
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const unique = <T>(items: T[], key: (item: T) => string): T[] => {
@@ -93,8 +93,9 @@ export const parseMembers = (value: unknown, projectId: string, actorUserId?: st
   return { items, actorAccess };
 };
 
-export const parseInvitation = (value: unknown, projectId?: string): ProjectInvitation => {
+export const parseInvitation = (value: unknown, projectId?: string, created = false): ProjectInvitation => {
   const data = record(value);
+  if (Object.keys(data).some((key) => !["id", "projectId", "createdBy", "createdAt", "expiresAt", "consumedBy", "consumedAt", "revokedAt"].includes(key) && !(created && key === "link"))) return malformed();
   const invitation: ProjectInvitation = {
     id: id(data.id), projectId: id(data.projectId), createdBy: id(data.createdBy), createdAt: timestamp(data.createdAt), expiresAt: timestamp(data.expiresAt),
     consumedBy: nullable(data.consumedBy, id), consumedAt: nullable(data.consumedAt, timestamp), revokedAt: nullable(data.revokedAt, timestamp),
@@ -102,8 +103,11 @@ export const parseInvitation = (value: unknown, projectId?: string): ProjectInvi
   if (projectId !== undefined && invitation.projectId !== projectId) return malformed();
   return invitation;
 };
-export const parseInvitations = (value: unknown, projectId: string): ProjectInvitation[] =>
-  unique(array(record(value).items, (item) => parseInvitation(item, projectId)), (item) => item.id);
+export const parseInvitations = (value: unknown, projectId: string): ProjectInvitation[] => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => key !== "items")) return malformed();
+  return unique(array(data.items, (item) => parseInvitation(item, projectId)), (item) => item.id);
+};
 
 export const parseCreatedInvitation = (value: unknown, projectId: string, expectedUserId?: string): CreatedProjectInvitation => {
   const data = record(value);
@@ -111,9 +115,43 @@ export const parseCreatedInvitation = (value: unknown, projectId: string, expect
   let url: URL;
   try { url = new URL(link); } catch { return malformed(); }
   if (url.origin !== window.location.origin || url.pathname !== "/invitations" || url.search !== "" || url.username !== "" || url.password !== "" || url.hash.length < 2 || /[\s\p{Cc}]/u.test(link)) return malformed();
-  const invitation = parseInvitation(data, projectId);
+  const invitation = parseInvitation(data, projectId, true);
   if (expectedUserId !== undefined && invitation.createdBy !== expectedUserId) return malformed();
   return { ...invitation, link };
+};
+
+const teamInvitationFields = ["id", "teamId", "createdBy", "createdAt", "expiresAt", "consumedBy", "consumedAt", "revokedAt"];
+const parseTeamInvitation = (value: unknown, teamId: string, created = false): TeamInvitation => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !teamInvitationFields.includes(key) && !(created && key === "link"))) return malformed();
+  const invitation = {
+    id: id(data.id), teamId: id(data.teamId), createdBy: id(data.createdBy), createdAt: timestamp(data.createdAt), expiresAt: timestamp(data.expiresAt),
+    consumedBy: nullable(data.consumedBy, id), consumedAt: nullable(data.consumedAt, timestamp), revokedAt: nullable(data.revokedAt, timestamp),
+  };
+  if (invitation.teamId !== teamId || (invitation.consumedBy === null) !== (invitation.consumedAt === null)) return malformed();
+  return invitation;
+};
+export const parseTeamInvitations = (value: unknown, teamId: string): TeamInvitation[] => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => key !== "items")) return malformed();
+  return unique(array(data.items, (item) => parseTeamInvitation(item, teamId)), (item) => item.id);
+};
+export const parseCreatedTeamInvitation = (value: unknown, teamId: string, expectedUserId: string): CreatedTeamInvitation => {
+  const data = record(value), link = nonemptyString(data.link);
+  let url: URL;
+  try { url = new URL(link); } catch { return malformed(); }
+  // A 32-byte unpadded base64url secret has 43 characters and two zero pad bits.
+  if (url.origin !== window.location.origin || url.pathname !== "/team-invitations" || url.search !== "" || url.username !== "" || url.password !== "" || !/^#dnteam_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(url.hash) || /[\s\p{Cc}\p{Cs}]/u.test(link)) return malformed();
+  const invitation = parseTeamInvitation(data, teamId, true);
+  if (invitation.createdBy !== expectedUserId || invitation.consumedBy !== null || invitation.revokedAt !== null) return malformed();
+  return { ...invitation, link };
+};
+export const parseRevokeTeamInvitationResult = (value: unknown, teamId: string, invitationId: string): RevokeTeamInvitationResult => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !["teamId", "invitationId", "changed"].includes(key))) return malformed();
+  const result = { teamId: id(data.teamId), invitationId: id(data.invitationId), changed: boolean(data.changed) };
+  if (result.teamId !== teamId || result.invitationId !== invitationId) return malformed();
+  return result;
 };
 
 const sameGrant = (a: ProjectGrant | null, b: ProjectGrant | null): boolean =>
@@ -229,6 +267,32 @@ export const projectAccessSource = (text: string): unknown => {
   return parsed;
 };
 export const decodeProjectAccessJson = async (response: Response): Promise<unknown> => projectAccessSource(await response.text());
+
+export const decodeGrantResultJson = async (response: Response): Promise<unknown> => {
+  const text = await response.text(), data = record(JSON.parse(text)), fields = jsonObjectSources(text);
+  if (Object.hasOwn(data, "grant")) data.grant = parseApiJson(fields.get("grant")!);
+  if (Object.hasOwn(data, "actorAccess") && data.actorAccess !== null) data.actorAccess = projectAccessSource(fields.get("actorAccess")!);
+  return data;
+};
+
+export const parseGrantResult = (value: unknown, projectId: string, userId: string, actorId: string, role: ProjectRole, version: bigint | null): ProjectGrantResult => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => key !== "grant" && key !== "actorAccess")) return malformed();
+  const grant = parseProjectGrant(data.grant, projectId, userId);
+  const actorAccess = data.actorAccess === null ? null : parseProjectAccess(data.actorAccess, projectId, actorId);
+  if (grant.role !== role || version !== null && grant.version < version ||
+    userId === actorId && (actorAccess === null || !sameGrant(grant, actorAccess.directGrant))) return malformed();
+  return { grant, actorAccess };
+};
+
+export const parseRemoveGrantResult = (value: unknown, projectId: string, userId: string, actorId: string): RemoveProjectGrantResult => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !["projectId", "userId", "deleted", "actorAccess"].includes(key)) ||
+    id(data.projectId) !== projectId || id(data.userId) !== userId || data.deleted !== true) return malformed();
+  const actorAccess = data.actorAccess === null ? null : parseProjectAccess(data.actorAccess, projectId, actorId);
+  if (userId === actorId && actorAccess !== null && actorAccess.directGrant !== null) return malformed();
+  return { projectId, userId, deleted: true, actorAccess };
+};
 
 export const decodeMembersJson = async (response: Response): Promise<unknown> => {
   const text = await response.text();

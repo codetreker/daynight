@@ -11,11 +11,12 @@ import (
 	"strconv"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/jackc/pgx/v5"
 )
 
-const archiveBucket = "session-archives"
+const archiveBucket = sessionarchive.Bucket
 
 // Archive access follows the original session's scope, independently of a later
 // task claim. This path grants no authority to reconnect or control an agent.
@@ -151,7 +152,10 @@ func (s *Service) PutArchive(ctx context.Context, p core.Principal, project, tas
 		if s.files == nil {
 			return fault("controller_offline", "Archive file storage is unavailable.")
 		}
-		path := id + "/" + digest + ".json"
+		path, err := archiveObjectPath(r.Snapshot.Identity.ProjectID, r.Owner, id, digest)
+		if err != nil {
+			return err
+		}
 		info, err := s.files.Put(ctx, archiveBucket, path, bytes.NewReader(data))
 		if err != nil {
 			return err

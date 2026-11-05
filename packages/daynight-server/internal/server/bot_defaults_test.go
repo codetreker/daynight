@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
 )
 
@@ -174,7 +175,7 @@ func TestBotDefaultsHTTPBrowserCreationRequiresOrigin(t *testing.T) {
 	cookie := h.login(t, "bot-owner")
 	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
 	mux := http.NewServeMux()
-	botsRoutes(mux, service.NewBots(h.database), h.auth, logger)
+	botsRoutes(mux, service.NewBots(h.database), sessionrelay.New(h.database), h.auth, logger)
 	h.handler = RequestLogging(logger, mux)
 	body := `{"id":"` + uuid.NewString() + `","name":"browser"}`
 	for _, origin := range []string{"", "https://another.example"} {

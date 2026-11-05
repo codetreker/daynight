@@ -440,9 +440,30 @@ to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
 
+### Race instrumentation
+
+`DAYNIGHT_TEST_RACE` selects race instrumentation for both coverage and E2E
+orchestration. The only accepted values are literal `true` and `false`; an absent
+value enables it for ordinary local validation, while empty or invalid values
+fail before fixture preparation. The two Go workflow jobs set it explicitly:
+PR events use `false`, and main push events use `true`.
+
+The orchestrator passes explicit `--race=<value>` to `go-cov` and
+`-race=<value>` to `go test`; the checked-in `.go-cov.toml` keeps its enabled
+local default. Disabled coverage also appends `-race=false` to its inherited
+`GOFLAGS`, retaining other flags; enabled coverage leaves them unchanged. The E2E
+package builds its service with the actual test binary's race mode, including direct `go test -race` invocations, and records that mode as
+`raceEnabled` in `.tmp/acceptance-evidence.json`. The orchestration receipts retain
+the actual coverage and E2E command arguments. Build, vet, functional and
+concurrency cases, atomic statement coverage and all coverage thresholds run in
+both modes. The [Go validation timing decision](../../.agents/notes/implemented/testing/2026-11-04-go-validation-timing.md)
+records the event policy and its limits.
+
+### Coverage and E2E responsibilities
+
 Coverage mode builds the executable, runs `go vet`, expires project-local Go test
-results so database changes cannot be hidden by cached coverage, and runs
-race-enabled package tests through `go-cov` pinned to commit
+results so database changes cannot be hidden by cached coverage, and runs package
+tests with the selected race mode through `go-cov` pinned to commit
 `d6caf2759e330b48d69a543695e37002a48feb1d`. The checked-in `.go-cov.toml`
 requires at least 85% coverage per production package and 80% per function,
 with critical blocks enforced and no production exclusions. The Node orchestrator
@@ -460,9 +481,10 @@ normally issued PAT producer, followed by the two deadline probes and installed
 fixture cleanup. It writes `.tmp/project-task-service-evidence.json` at the
 repository root and `.tmp/coverage.out` in this module.
 
-E2E mode runs `go test -race -count=1 -timeout=10m ./cmd/e2e_tests`. Its own packed
-and installed CLI belongs to that run; the package freshly builds a race-enabled
-server and retains every process, concurrency, error-path and cleanup assertion.
+E2E mode runs `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests` with the
+selected race mode. Its own packed and installed CLI belongs to that run; the
+package freshly builds a server with matching instrumentation and retains every
+process, concurrency, error-path and cleanup assertion.
 It writes this module's `.tmp/acceptance-evidence.json` and the repository-root
 `.tmp/project-task-e2e-evidence.json`, which records command results, installed
 artifact identity and installed-fixture removal. Deadline probes and their PAT
@@ -529,6 +551,22 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
+New Session archives use `internal/sessionarchive.Namespace` for project/user
+and Session UUID directories. Task Web/Herdr objects use
+`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
+independent Test/Bot objects use
+`session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
+PostgreSQL retains the object path, length, digest and archive status or receipt.
+Readers continue to open the persisted `object_path` and apply the existing
+length/digest/structure checks. Existing files and metadata stay in place;
+read behavior, same-hash ready upload retries and public URLs remain unchanged.
+The restricted `DeleteSessionArchives` operation receives a validated Namespace
+and removes that current Session directory, including unregistered objects,
+while preserving same-owner/shard siblings. Old direct-directory files are
+outside this physical cleanup scope and do not block it. The
+[Session design](../../docs/design/task-session-protocol.md#服务端归档布局)
+owns the address rule.
+
 Writes stream through an owned temporary file and publish complete contents.
 An empty internal directory can be reused as a file path; existing child files
 remain conflicts. Internal namespace synchronization belongs to this storage
@@ -540,7 +578,8 @@ Both Compose deployments mount a project-scoped `attachment-data` volume at
 `DAYNIGHT_STORAGE_ROOT=/var/lib/daynight/storage`. Fresh-volume initialization
 preserves the image directory's UID/GID `10001:10001`, and the normal nonroot
 server writes without a privileged startup process. Normal restart and rebuild
-retain PostgreSQL metadata and attachment bytes; dev-ci removes both owned data
+retain PostgreSQL metadata, attachment bytes and Session archive bodies; dev-ci
+removes both owned data
 volumes on cleanup. The [deployment guide](../../deployment/localhost/README.md#persistence-and-backup)
 owns retention and the stopped-write, paired PostgreSQL/directory backup and
 restore commands. Before reopening a restored/imported history, rotate affected
@@ -1610,9 +1649,9 @@ for only this suite, including Web, UniAuth and installed CLI preparation. With
 sessions/PATs and explicit membership;
 installed commands use private origin-matched PAT configuration. Authentication
 and authorization remain on the production resource path. The E2E package's
-`TestMain` freshly builds a race-enabled server, starts only owned loopback
-children against isolated real PostgreSQL schemas, and checks HTTP workflows, restart persistence, competing
-mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
+`TestMain` freshly builds a server with the test binary's race mode, starts only
+owned loopback children against isolated real PostgreSQL schemas, and checks HTTP
+workflows, restart persistence, competing mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
 cancellation, graceful/forced SIGTERM,
 migration failures and simultaneous startup. This signal acceptance runs in the
 Ubuntu Go E2E CI job. Independent scenario subtests run with at most four concurrent
@@ -1660,7 +1699,7 @@ Thread scenario also verifies the [discussion contract](../../docs/spec/daynight
 | V5: revisions and no-ops | Workflow/refusal scenarios and `concurrent_same_version`; actual changes compete on one version and matching semantic no-ops retain fields/timestamps |
 | V6: listing and HTTP contract | `refusals_scopes_filters_and_cursors`, [HTTP tests](internal/server/tasks_test.go) and service tests cover tied keysets, scoped filters, initialized empty resources, DTOs and error mapping |
 | V7: transactions and lifecycle | Partial-failure, cancellation, graceful/forced-signal, unsupported/failed-migration-history, concurrent-startup and `installed_cli_pre_lifecycle_migration_restart` scenarios; owning store tests prove finer snapshot and cross-migration interleavings |
-| V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
+| V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the [event-specific race policy](#race-instrumentation), raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
 | Task Steps: installed CLI Add | [`installed_cli_task_steps_add` and `installed_cli_task_steps_add_unknown`](cmd/e2e_tests/task_steps_cli_add_acceptance_test.go) cover options, saved placement, explicit one-POST/default GET+POST budgets, exact identities/versions, known refusals and current-fact-only observation after a real committed Add loses its response |

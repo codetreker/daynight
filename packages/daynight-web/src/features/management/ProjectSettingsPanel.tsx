@@ -3,11 +3,13 @@ import type { CurrentUser } from "../../api/auth";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { ManagementError } from "./feedback";
 import { useProjectSettings } from "./useProjectSettings";
+import { ProjectOwnership } from "./ProjectOwnership";
+import type { ProjectTransferReceipt } from "../../api/project-transfer";
 
-export const ProjectSettingsPanel = ({ projectId, user }: { readonly projectId: string; readonly user: CurrentUser }) =>
-  <ProjectAccessBoundary projectId={projectId} initialRead><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} /></ProjectAccessBoundary>;
+export const ProjectSettingsPanel = ({ projectId, user, onTransferred, active = true, onRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) =>
+  <ProjectAccessBoundary projectId={projectId} initialRead active={active}><ProjectSettingsContent key={`${user.id}:${projectId}`} projectId={projectId} user={user} onTransferred={onTransferred} active={active} onRetentionChange={onRetentionChange} /></ProjectAccessBoundary>;
 
-const ProjectSettingsContent = ({ projectId, user }: { readonly projectId: string; readonly user: CurrentUser }) => {
+const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) => {
   const { messages: { auth: { management: { settings: m, common } } } } = useI18n();
   const state = useProjectSettings(projectId, user.id);
   const disabled = state.pending || state.loading || state.uncertain || state.role !== "admin";
@@ -27,5 +29,6 @@ const ProjectSettingsContent = ({ projectId, user }: { readonly projectId: strin
         </form>
       </section>
     </>}
+    <ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={active} onRetentionChange={onRetentionChange} />
   </>;
 };

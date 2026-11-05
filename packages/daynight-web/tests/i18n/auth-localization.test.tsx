@@ -273,20 +273,21 @@ describe("authentication language changes", () => {
 
   it("keeps the observed member and role while switching the pending role dialog", async () => {
     const pending = deferred<Response>();
-    const fetcher = install((url, init) => init?.method === "PATCH" ? pending.promise : defaults(url));
+    const fetcher = install((url, init) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT" ? pending.promise : defaults(url));
     const interaction = userEvent.setup();
     const view = renderWithLocale(<MembersPanel projectId={projectId} projectName="项目 Raw" user={user} onRemoved={vi.fn()} />, { locale: "en", taskCache: { viewerId: userId } });
     const role = await screen.findByRole("combobox", { name: en.auth.management.members.roleLabel({ name: "协作者 Raw" }) });
     await interaction.selectOptions(role, "admin");
     const dialog = screen.getByRole("dialog", { name: en.auth.management.members.roleTitle({ name: "协作者 Raw" }) });
     await interaction.click(within(dialog).getByRole("button", { name: en.auth.management.members.saveRole }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([url, init]) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT")).toBe(true));
     const requests = fetcher.mock.calls.length;
     expect(within(dialog).queryByRole("combobox", { name: "语言 / Language" })).toBeNull();
     view.setLocale("zh-CN");
     expect(screen.getByRole("dialog", { name: zhCN.auth.management.members.roleTitle({ name: "协作者 Raw" }) })).toBe(dialog);
     expect(within(dialog).getByRole("button", { name: zhCN.auth.management.common.submitPending })).toBeDisabled();
     expect(fetcher).toHaveBeenCalledTimes(requests);
-    const mutation = fetcher.mock.calls.find(([, init]) => init?.method === "PATCH")!;
+    const mutation = fetcher.mock.calls.find(([url, init]) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT")!;
     expect(mutation[1]!.body).toBe(`{"version":12,"role":"admin","expectedUserId":"${userId}"}`);
     expect(mutation[1]!.signal!.aborted).toBe(false);
     await act(async () => pending.resolve(failure(503, "internal_error")));
@@ -294,7 +295,7 @@ describe("authentication language changes", () => {
     expect(screen.getByText(zhCN.auth.management.members.grantUnknown)).toBeVisible();
     expect(screen.getByRole("button", { name: zhCN.auth.management.members.readCurrentMembers })).toBeVisible();
     expect(screen.getByText("auth-locale-request")).toBeVisible();
-    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url, init]) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT")).toHaveLength(1);
   });
 
   it.each(["token", "member", "invitation"] as const)("keeps the %s revocation target while translating confirmation and cancellation", async (kind) => {

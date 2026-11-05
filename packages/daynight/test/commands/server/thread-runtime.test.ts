@@ -46,6 +46,31 @@ const expectReleased = (signals: EventEmitter): void => {
 };
 
 describe("confirmed Thread post runtime lifecycle", () => {
+  it("keeps secret output failures and nested cleanup causes out of the error chain", async () => {
+    const f = await fixture();
+    const secret = "dnteam_private-secret";
+    f.context.stdoutBytes.mockRejectedValue(new TypeError(`failed to write ${secret}`, { cause: new Error(secret) }));
+    f.context.closeStdoutBytes.mockRejectedValue(new Error(`close ${secret}`));
+    const result = runServerCommand(f.context, async () => ({
+      kind: "confirmed-mutation", output: secret, containsSecret: true,
+      failureText: (phase) => `Invitation creation confirmed, but local ${phase} failed.`,
+    }), { signalEmitter: f.signals });
+    await result.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(PublicDiagnosticError);
+      expect(formatError(error)).toContain("Invitation creation confirmed");
+      const causes: unknown[] = [];
+      const walk = (value: unknown) => {
+        if (!(value instanceof Error)) return;
+        causes.push(value.message);
+        if (value instanceof AggregateError) value.errors.forEach(walk);
+        walk(value.cause);
+      };
+      walk(error);
+      expect(JSON.stringify(causes)).not.toContain(secret);
+      expect(causes).toContain("Sensitive failure details withheld.");
+    });
+    expectReleased(f.signals);
+  });
   it("keeps a fully validated POST confirmed when cancellation arrives before callback completion", async () => {
     const f = await fixture();
     let session: ServerSession | undefined;

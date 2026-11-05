@@ -35,6 +35,13 @@ without PUT replay. A matching current target describes the resource's state;
 it does not establish that the preceding request caused it. Later edits remain
 separate from that submitted value.
 
+Field feedback compares each valid parsed field with the current saved target,
+independently of errors in other fields. Project native feedback compares the
+explicit overrides, retaining the distinction between inheritance and clears.
+Invalid input remains unsaved. Formatting differences do not mask the actual
+application result, and the raw draft is never rewritten for this comparison.
+The form's edit baseline continues to track raw input separately.
+
 The [configuration protocol](../../../../docs/spec/daynight-worker-configuration.md)
 owns fields, revisions, initialization and access. The editor preserves omitted
 Project overrides separately from model null and an empty argument array. It
@@ -60,6 +67,12 @@ is replaced on each refresh.
 **Retry a save after a lost response.** The server may already have committed
 the target. Reading current state preserves the exact-version decision and
 prevents a second write from being mistaken for recovery of the first.
+
+**Compare field feedback as raw text.** Equivalent JSON whitespace or integer
+leading zeroes would appear unsaved after the server accepted the same value.
+Rewriting input into canonical form would instead disturb the editor and its
+selection. Comparing the complete parsed draft would also let an unrelated
+invalid field obscure another field's saved state.
 
 ## Consequences
 

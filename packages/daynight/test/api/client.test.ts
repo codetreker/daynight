@@ -736,6 +736,10 @@ describe("response DTO contract", () => {
     await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId.toUpperCase(), teamId: teamId.toUpperCase() })).resolves.toEqual(project);
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId });
     const receipt = creationReceipt(project, projectId);
+    for (const mismatch of [{ name: "Different" }, { repoUrl: "https://example.test/other/repo" }]) {
+      fetch.mockResolvedValueOnce(jsonResponse({ ...receipt, ...mismatch }, 201, projectId));
+      await expect(api.createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: projectId, teamId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    }
     for (const access of [
       { ...receipt.access, ownership: { ...receipt.access.ownership, version: 2n } },
       { ...receipt.access, directGrant: null },

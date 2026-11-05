@@ -84,7 +84,10 @@ const experimentalStatus = ["Saving… Closing this popup will not cancel the wr
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker/layout.rs#L54-L90
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2480-L2597
 const sessionControl = `${footerShortcut}(?:/${footerShortcut})?${footerGap}(?:archive|(?:start${footerGap})?new|exit|clear(?:${footerGap}search)?|quit|focus(?:${footerGap}sort/filter)?|(?:change${footerGap})?option)`;
-const sessionFooter = `${footerShortcut}${footerGap}(?:resume|fork|restore)(?:[ \\t]{2,}${sessionControl})+`;
+const sessionPrimary = `${footerShortcut}${footerGap}(?:resume|fork|restore)`;
+const sessionFooter = `${sessionPrimary}(?:[ \\t]{2,}${sessionControl})+`;
+const codexSessionHeader = /^\s*(?:Resume|Fork) a previous session\s*$/;
+const codexSessionPrimaryFooter = new RegExp(`^[ \\t]*(?:${sessionPrimary})[ \\t]*$`, "gmi");
 const namedCodexMenus = [
   { header: /^\s*Configuration\s*$/, footer: codexConfigurationFooter },
   { header: /^\s*Keymap\s*$/, footer: codexKeymapFooter },
@@ -98,7 +101,7 @@ const namedCodexMenus = [
   { header: new RegExp(`^\\s*(?:${hookEvents}) hooks\\s*$`), footer: new RegExp(`^[ \\t]*(?:${checkboxFooter}|${hooksHandlerFooter})[ \\t]*$`, "gmi") },
   { header: /^\s*> (?:Import setup|Choose what to import)\s*$/, footer: new RegExp(`^[ \\t]*(?:${importFooter})[ \\t]*$`, "gmi") },
   { header: /^\s*Choose an import source\s*$/, footer: codexFooter },
-  { header: /^\s*(?:Resume|Fork) a previous session\s*$/, footer: new RegExp(`^[ \\t]*(?:${sessionFooter})[ \\t]*$`, "gmi") },
+  { header: codexSessionHeader, footer: new RegExp(`^[ \\t]*(?:${sessionFooter})[ \\t]*$`, "gmi") },
 ];
 
 export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeInputBlocker | null => {
@@ -136,6 +139,14 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
       const end = footerEnd(menu.footer);
       if (header >= 0 && end > header && !laterPrompt(end)) return "menu";
     }
+    // Narrow session footers prune secondary controls before dropping the primary label.
+    // Require the full title and a search/list row so a lone action in prose is not evidence.
+    // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2174-L2183
+    // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2597-L2618
+    const sessionHeader = lines.findLastIndex(line => codexSessionHeader.test(line));
+    const sessionEnd = footerEnd(codexSessionPrimaryFooter);
+    const sessionRows = lines.slice(sessionHeader + 1, sessionEnd);
+    if (sessionHeader >= 0 && sessionEnd > sessionHeader && sessionRows.some(line => /^\s*(?:Type to search|Search: .+|[›»⌄]\s+\S.*)$/.test(line)) && !laterPrompt(sessionEnd)) return "menu";
     return null;
   }
   if (agent === "claude") {

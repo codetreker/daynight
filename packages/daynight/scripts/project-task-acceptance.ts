@@ -16,6 +16,18 @@ const coverageArgs = ["run", "github.com/codetreker/go-cov/cmd/go-cov@d6caf2759e
 
 type ValidationMode = "all" | "coverage" | "e2e";
 
+export const goValidationArguments = (setting: string | undefined, goFlags?: string) => {
+  if (setting !== undefined && setting !== "true" && setting !== "false") throw new Error("DAYNIGHT_TEST_RACE must be true or false.");
+  const race = setting === undefined || setting === "true";
+  return {
+    coverage: [...coverageArgs, `--race=${race}`],
+    // go-cov omits -race=false, so GOFLAGS must prevent inherited race instrumentation.
+    // https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/run.go#L159-L169
+    coverageGoFlags: race ? goFlags : goFlags === undefined || goFlags === "" ? "-race=false" : `${goFlags} -race=false`,
+    e2e: ["test", `-race=${race}`, "-count=1", "-timeout=10m", "./cmd/e2e_tests"],
+  };
+};
+
 export const coveragePackages = (packages: readonly string[]): string[] => {
   if (!packages.includes(e2ePackage) || packages.some((name) => name.includes(e2ePackage) && name !== e2ePackage)) {
     throw new Error("Coverage exclusion must match exactly the cmd/e2e_tests package.");
@@ -95,6 +107,7 @@ const runCommand = async (command: string, args: readonly string[], cwd: string,
 
 export const runProjectTaskAcceptance = async (suite: BudgetProbeSuite = "deadlines", mode: ValidationMode = "all"): Promise<void> => {
   if (suite === "stress-budgets" && process.env.CI) throw new Error("CLI resource-budget stress tests run only on local machines.");
+  const goArguments = goValidationArguments(process.env.DAYNIGHT_TEST_RACE, process.env.GOFLAGS);
   if (mode === "all") {
     await runProjectTaskAcceptance(suite, "coverage");
     await runProjectTaskAcceptance("deadlines", "e2e");
@@ -133,13 +146,13 @@ export const runProjectTaskAcceptance = async (suite: BudgetProbeSuite = "deadli
     const budgetTokenFile = path.join(fixture.receipt.root, "budget-token.json");
     const env = { ...process.env, DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT: fixture.receiptPath, ...(mode === "coverage" ? { DAYNIGHT_TEST_CLI_BUDGET_TOKEN_FILE: budgetTokenFile } : {}) };
     if (mode === "e2e") {
-      try { evidence.goE2E = await runCommand("go", ["test", "-race", "-count=1", "-timeout=10m", "./cmd/e2e_tests"], serverRoot, env, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
+      try { evidence.goE2E = await runCommand("go", goArguments.e2e, serverRoot, env, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
       catch (error) {
         if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.goE2E = error.commandReceipt as CommandReceipt;
         throw error;
       }
     } else {
-      try { evidence.goCoverage = await runCommand("go", coverageArgs, serverRoot, env, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
+      try { evidence.goCoverage = await runCommand("go", goArguments.coverage, serverRoot, { ...env, GOFLAGS: goArguments.coverageGoFlags }, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
       catch (error) {
         if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.goCoverage = error.commandReceipt as CommandReceipt;
         throw error;

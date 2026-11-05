@@ -18,7 +18,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, active = true, activ
   readonly unfinishedStandaloneTaskCount: number;
   readonly unfinishedChainTaskCount: number;
   readonly onViewChange: (view: TaskView) => void;
-  readonly chains: Omit<ComponentProps<typeof ChainList>, "index">;
+  readonly chains: Omit<ComponentProps<typeof ChainList>, "index" | "workerMachines">;
   readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index">;
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
@@ -30,7 +30,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, active = true, activ
           unfinishedChainTaskCount={unfinishedChainTaskCount} onViewChange={onViewChange} />
         {filter}
         <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
-          {activeView === "chains" && <TaskSessionSummaryProvider projectId={projectId} active={active}><section aria-label={m.chains}><ChainList index={snapshot.index} {...chains} /></section></TaskSessionSummaryProvider>}
+          {activeView === "chains" && <TaskSessionSummaryProvider projectId={projectId} active={active}><section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section></TaskSessionSummaryProvider>}
         </div>
         <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
           {activeView === "standalone" && <StandaloneList index={snapshot.index} {...standalone} />}

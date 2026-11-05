@@ -545,7 +545,7 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		}
 		process := fixture.launch(t, nil).started(t)
 		cli.configure(t, process)
-		projectID := acceptanceCLIResourceID(t, cli.run(t, filepath.Join(cli.repo, "source"), "project", "create", "Installed CLI 项目"))
+		projectID := acceptanceCLIResourceID(t, cli.run(t, filepath.Join(cli.repo, "source"), "project", "create", "Installed CLI 项目", "--confirm"))
 		for _, arguments := range [][]string{
 			{"project", "create", "Preserve existing name"},
 			{"project", "create", "Explicit existing project", "--repo", "https://Git.Example/Org/Repo.git"},

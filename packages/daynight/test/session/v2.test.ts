@@ -10,6 +10,19 @@ const manifest = JSON.parse(readFileSync(new URL("manifest.json", root), "utf8")
 const fixture = (name: string): any => JSON.parse(readFileSync(new URL(name + ".json", root), "utf8"));
 
 describe("Session v2 strict wire values", () => {
+  it("separates initial delivery disposition from automation handback", () => {
+    const resolve = fixture("valid-request");
+    resolve.payload = { ...resolve.payload, action: "resolve_initial_assignment", leaseId: null, draftHandled: false, initialUnknownDisposition: "delivered_continue" };
+    expect(() => parseSessionV2Message(resolve)).not.toThrow();
+    for (const change of [{ leaseId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { draftHandled: true }, { initialUnknownDisposition: null }]) {
+      expect(() => parseSessionV2Message({ ...resolve, payload: { ...resolve.payload, ...change } })).toThrow();
+    }
+    const resume = { ...resolve, payload: { ...resolve.payload, action: "resume_automation", draftHandled: true, initialUnknownDisposition: null } };
+    expect(() => parseSessionV2Message(resume)).not.toThrow();
+    for (const change of [{ leaseId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { draftHandled: false }, { initialUnknownDisposition: "delivered_continue" }]) {
+      expect(() => parseSessionV2Message({ ...resume, payload: { ...resume.payload, ...change } })).toThrow();
+    }
+  });
   it("rejects duplicate decoded object keys before JSON loses them", () => {
     expect(() => decodeStrictSessionJson('{"a":1,"\\u0061":2}')).toThrow();
   });

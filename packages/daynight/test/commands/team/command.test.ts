@@ -31,7 +31,7 @@ const fixture = async (defaultValue?: string) => {
     return new Response(stringifyApiJson({ items: [], nextCursor: null }), { headers });
   });
   const stdout = vi.fn<(value: string) => void>();
-  const context = { version: "0", packageDirectory: "unused", homeDirectory: () => dir, workingDirectory: () => dir, stdout, stderr: vi.fn(), stdoutBytes: vi.fn(async () => {}) };
+  const context = { version: "0", packageDirectory: "unused", homeDirectory: () => dir, workingDirectory: () => dir, stdout, stderr: vi.fn(), stdoutBytes: vi.fn(async (_value: Uint8Array) => {}) };
   const dependencies = { runServerCommand: ((ctx, command) => runServerCommand(ctx, command, { fetch })) as typeof runServerCommand };
   return { dir, config, calls, stdout, context, dependencies };
 };
@@ -71,6 +71,30 @@ describe("Team command context", () => {
     await runTeamCommand(["list"], f.context, f.dependencies);
     await runTeamCommand(["show", "--team", teamId], f.context, f.dependencies);
     expect(f.stdout).toHaveBeenCalledTimes(2);
+  });
+  it("repairs an invalid default and saves the real Personal Team", async () => {
+    const f = await fixture("not-a-uuid");
+    await runTeamCommand(["default", "set", "personal", "--confirm", "--json"], f.context, f.dependencies);
+    const saved = await readFile(path.join(f.dir, "config.yml"), "utf8");
+    expect(saved).toContain(`${userId}: ${personalId}`);
+    expect(saved).toContain(`${wrongId}: ${wrongId}`);
+    expect(JSON.parse(Buffer.from(f.context.stdoutBytes.mock.calls[0]![0]).toString())).toMatchObject({ configured: personalId, team: { id: personalId } });
+    await runTeamCommand(["default", "show", "--json"], f.context, f.dependencies);
+    expect(JSON.parse(f.stdout.mock.calls[0]![0]).configured).toBe(personalId);
+  });
+  it.each(["token", "pair"])("refuses a concurrent %s change during confirmation", async (changed) => {
+    const f = await fixture(teamId);
+    const configPath = path.join(f.dir, "config.yml");
+    const next = changed === "token" ? f.config.replace("test-token", "rotated-token") : f.config.replace(`${userId}: ${teamId}`, `${userId}: ${wrongId}`);
+    const context = { ...f.context, prompt: { isInteractive: true, ask: vi.fn(async () => { await writeFile(configPath, next); return "y"; }), close: vi.fn(), select: vi.fn(), selectMany: vi.fn() } };
+    await expect(runTeamCommand(["default", "set", "personal"], context, f.dependencies)).rejects.toThrow("changed during the Team operation");
+    expect(await readFile(configPath, "utf8")).toBe(next);
+  });
+  it.each([["--confirm", "--confirm"], ["--confirm=false"], ["--confirm", "false"]])("rejects invalid default confirmation syntax %#", async (...args) => {
+    const f = await fixture(teamId);
+    await expect(runTeamCommand(["default", "set", "personal", ...args], f.context, f.dependencies)).rejects.toThrow();
+    expect(f.calls).toEqual([]);
+    expect(await readFile(path.join(f.dir, "config.yml"), "utf8")).toBe(f.config);
   });
   it("does not borrow another account's or server's default", async () => {
     const f = await fixture();
