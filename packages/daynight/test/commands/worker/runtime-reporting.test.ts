@@ -84,6 +84,7 @@ beforeEach(async () => {
   mocks.telemetry.mockReturnValue({ collect }); mocks.probe.mockResolvedValue("0.164.0");
   mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
   mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) });
+  mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockResolvedValue(() => "prompt");
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), updateConfiguration: update, shutdown }));
 });
@@ -244,9 +245,10 @@ describe("worker runtime configuration reporting", () => {
       expect(waitingSignal()).toBeDefined(); expect(waitingSignal()!.aborted).toBe(false);
     });
     const preparationWait = waitingSignal()!;
-    expect(mocks.coordinator).not.toHaveBeenCalled();
+    if (mocks.coordinator.mock.calls.length > 0) expect(mocks.coordinator.mock.calls[0]![0]).toMatchObject({ repositories: [], readyProjectIds: [] });
     prepared.resolve();
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
+    await eventually(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ readyProjectIds: [uuid(1)] })));
     expect(preparationWait.aborted).toBe(true);
     await eventually(() => { expect(tick).toHaveBeenCalled(); expect(waitingSignal()).not.toBe(preparationWait); expect(waitingSignal()!.aborted).toBe(false); });
     const previousWait = waitingSignal()!, ticksBeforeAcknowledgment = tick.mock.calls.length, updatesBeforeAcknowledgment = update.mock.calls.length;
@@ -287,7 +289,8 @@ describe("worker runtime configuration reporting", () => {
       ]));
     });
     expect(JSON.stringify(report.mock.calls.at(-1)![2])).not.toContain("private-native-probe-output");
-    expect(mocks.coordinator).not.toHaveBeenCalled();
+    expect(mocks.coordinator).toHaveBeenCalledOnce();
+    expect(mocks.coordinator.mock.calls[0]![0]).toMatchObject({ globalConfiguration: null, repositories: [], maxConcurrent: 4 });
     f.signal.abort(); await running;
   });
 

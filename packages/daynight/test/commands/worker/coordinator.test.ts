@@ -464,20 +464,21 @@ describe("minimal worker resource reconciliation", () => {
   it("advances one stopped archive per round and deletes only after its receipt", async () => {
     const f = await fixture();
     f.options.repositories = [];
+    const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true });
     const owners = [1, 2].map(n => ({ projectId: f.project.projectId, taskId: uuid(970 + n), claimId: uuid(980 + n), worktreeId: uuid(990 + n) }));
     const retained = owners.map((owner, i) => ({ owner, sessionId: uuid(1000 + i), stopped: true, stopEvidence: archiveFixture.runs.map(run => run.stopProof), terminal: true, worktreePath: f.bind(owner).worktreePath, sourcePath: path.join(f.root, `source-${i}`), sourceBytes: "10", state: "pending" as "pending" | "ready", error: null, nextAttemptAt: null, worktreeDeleted: false, disposition: null }));
     for (const owner of owners) { f.store.completeTask(f.store.registerPending({ ...owner, agent: "codex" })); f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) }); }
     let receiptReady = false;
     const archive = { resources: () => retained, advance: vi.fn(async (owner: ResourceOwner) => { if (receiptReady) retained.find(value => value.owner.claimId === owner.claimId)!.state = "ready"; return receiptReady; }), cleaned: (owner: ResourceOwner) => { retained.find(value => value.owner.claimId === owner.claimId)!.worktreeDeleted = true; } };
     Object.assign(f.herdr, { lifecycle: { responsibilities: () => owners.filter(owner => !retained.find(value => value.owner.claimId === owner.claimId)!.worktreeDeleted), isStopped: () => true, archive, registerClaim: () => {}, assertCanAdvance: () => {} } });
-    await f.coordinator.tick();
+    await coordinator.tick();
     await eventually(() => expect(archive.advance).toHaveBeenCalledTimes(1));
     expect(f.worktrees.size).toBe(2);
     receiptReady = true;
-    await f.coordinator.tick();
+    await coordinator.tick();
     await eventually(() => expect(f.worktrees.size).toBe(1));
     expect(archive.advance).toHaveBeenCalledTimes(2);
-    await f.coordinator.tick();
+    await coordinator.tick();
     await eventually(() => expect(f.worktrees.size).toBe(0));
     expect(archive.advance).toHaveBeenCalledTimes(3);
   });
