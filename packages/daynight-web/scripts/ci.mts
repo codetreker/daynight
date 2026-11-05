@@ -54,9 +54,7 @@ export const runCi = async (mode: string, cancellation: AbortController,
   await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium'], { timeoutMs: 600_000 });
   if (ownsSharedChecks(shard)) {
     await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/playwright.config.ts'], { timeoutMs: 180_000 });
-    await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-preference-playwright.config.ts'], { timeoutMs: 180_000 });
-    await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-management-playwright.config.ts'], { timeoutMs: 180_000 });
-    await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-members-playwright.config.ts'], { timeoutMs: 180_000 });
+    await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-playwright.config.ts'], { timeoutMs: 540_000 });
     await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/bots-viewport-playwright.config.ts'], { timeoutMs: 180_000 });
   }
   cancellation.signal.throwIfAborted();
