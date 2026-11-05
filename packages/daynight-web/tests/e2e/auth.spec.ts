@@ -266,7 +266,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           await page.keyboard.press('Shift+Tab');
           await expect(nameInput).toBeFocused();
           const close = draft.getByRole('button', { name: messages.auth.createProject.close });
-          const submit = draft.getByRole('button', { name: messages.auth.createProject.submit });
+          const submit = draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true });
           await submit.focus();
           await page.keyboard.press('Tab');
           expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
@@ -279,7 +279,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           await nameInput.focus();
           await page.locator('.topbar select').evaluate((element: HTMLSelectElement) => element.focus());
           await expect(nameInput).toBeFocused();
-          await draft.getByRole('button', { name: messages.auth.createProject.submit }).click();
+          await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
           await expect(nameInput).toBeFocused();
           expect(await nameInput.evaluate((input: HTMLInputElement) => input.validity.valueMissing)).toBe(true);
           await page.keyboard.press('Escape');
@@ -299,7 +299,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
           };
           await page.route(`${baseURL}/api/v1/projects`, creationRoute);
           try {
-            await draft.getByRole('button', { name: messages.auth.createProject.submit }).click();
+            await draft.getByRole('button', { name: messages.auth.createProject.submit, exact: true }).click();
             await expect.poll(() => createRequests).toBe(1);
             await expect(nameInput).toBeDisabled();
             await expect(repositoryInput).toBeDisabled();
