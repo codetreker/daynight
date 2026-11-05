@@ -11,7 +11,7 @@ import (
 
 func commandFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "daynight", "test", "session", "fixtures", name+".json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "daynight", "test", "session", "fixtures", name+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}

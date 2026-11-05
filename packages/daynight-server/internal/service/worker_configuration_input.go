@@ -11,8 +11,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonobject"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/jsonunicode"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
 func configurationObject(raw json.RawMessage, path string, optional bool, keys ...string) (map[string]json.RawMessage, error) {

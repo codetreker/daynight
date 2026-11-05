@@ -8,7 +8,7 @@ import (
 )
 
 func TestRecordingSourceProvenance(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2")
+	root := filepath.Join("..", "..", "..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2")
 	raw, err := os.ReadFile(filepath.Join(root, "responsibility-digests.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +45,7 @@ func TestRecordingSourceProvenance(t *testing.T) {
 }
 
 func TestControlDispatchDigestBindsActorAndIntent(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2")
+	root := filepath.Join("..", "..", "..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2")
 	raw, err := os.ReadFile(filepath.Join(root, "valid-control-dispatch.json"))
 	if err != nil {
 		t.Fatal(err)
