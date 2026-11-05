@@ -7,6 +7,10 @@ export default defineConfig({
   use: { baseURL: 'http://127.0.0.1:4194', viewport: { width: 1280, height: 900 }, locale: 'en-US', screenshot: 'only-on-failure' },
   projects: [
     {
+      name: 'session-record-layout', testMatch: '**/session-record-layout.browser.ts', timeout: 45_000,
+      outputDir: fileURLToPath(new URL('../../../../.tmp/session-selector/results', import.meta.url)),
+    },
+    {
       name: 'team-preference', testMatch: ['**/team-preference.browser.ts', '**/worker-configuration-identity.browser.ts'], timeout: 45_000,
       outputDir: fileURLToPath(new URL('../../../../.tmp/team-preference-results', import.meta.url)),
     },
