@@ -6,7 +6,7 @@
 
 ## 产品组合
 
-Server 的正式构造入口将同一 Store、文件存储和 `sessionrelay.Service` 注入 Bot 管理与 Worker 生命周期路由。Bot 继续使用原独立 Session 的传输身份与共享 renderer，任务 Session 和独立 Test 不转换成 Bot。
+Server 的正式构造入口将同一 Store、文件存储和 `sessionrelay.Service` 注入 Bot 管理与 Worker 生命周期路由。`/bots` 与 `/bots/{botId}` 同时注册为 SPA 页面入口，使直接访问和刷新能加载应用；登录配置将 `/bots` 保留为产品路由，避免自定义认证端点覆盖它。Bot 继续使用原独立 Session 的传输身份与共享 renderer，任务 Session 和独立 Test 不转换成 Bot。
 
 Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行、授权维护、恢复和删除组合为独立管理循环。它不等待项目准备，也不占用 Task coordinator 的执行槽。托管预检与当前有效的全局原生配置共同生成 `assistantHost`；旧 Worker 缺少该报告时，默认解析保留 unsupported。新配置更新报告和后续首次意图，已有配置与角色按持久身份保持冻结。退出先停止管理循环并汇总所有执行停止结果，再关闭 stores 与释放实例锁；失败不能转成成功。
 

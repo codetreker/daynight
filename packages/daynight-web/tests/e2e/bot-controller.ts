@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { EventEmitter } from 'node:events';
-import { parseControllerGrantResponse, parseRelayMessage, type ControllerMessage, type RelayMessage } from '../../../daynight/src/session/controller-protocol';
+import { parseControllerGrantResponse, parseControllerMessage, parseRelayMessage, type ControllerMessage, type RelayMessage } from '../../../daynight/src/session/controller-protocol';
 import { SESSION_PROTOCOL, parseSessionSnapshot, type ControllerFence, type SessionCommand, type TimelineEntry } from '../../../daynight/src/session/protocol';
 import type { Bot, BotDefinition, DeletedBot } from '../../src/api/bots';
 import type { AuthenticatedAPI } from './authentication';
@@ -50,15 +50,16 @@ export async function openBotController(api: AuthenticatedAPI, origin: string, i
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let waiter: { type: RelayMessage['type']; resolve(message: RelayMessage): void; reject(error: Error): void } | null = null;
   const queued: RelayMessage[] = [], commands: SessionCommand[] = [];
-  const entries: TimelineEntry[] = Array.from({ length: 30 }, (_, index) => ({ kind: 'assistant_message', entryId: `${initial.id}-${index}`, entrySeq: String(index + 1), revision: '1', content: [{ type: 'text', text: `${initial.name} history ${index + 1}\n\nThis controlled conversation exercises the production relay and shared Session rendering.` }] }));
+  const entries: TimelineEntry[] = Array.from({ length: 30 }, (_, index) => ({ kind: 'assistant_message', entryId: randomUUID(), entrySeq: String(index + 1), revision: '1', content: [{ type: 'text', text: `${initial.name} history ${index + 1}\n\nThis controlled conversation exercises the production relay and shared Session rendering.` }] }));
   const prefix = () => { if (fence === null) throw new Error('Bot writer is not connected.'); return { protocol: SESSION_PROTOCOL, ...fence }; };
-  const send = (message: ControllerMessage) => socket.send(JSON.stringify(message));
-  const fail = () => { if (!closing) { failure = new Error('Controlled Bot writer transport failed.'); waiter?.reject(failure); } };
-  socket.on('error', fail);
+  const send = (message: ControllerMessage) => socket.send(JSON.stringify(parseControllerMessage(message)));
+  const fail = (message = 'Controlled Bot writer transport failed.') => { if (!closing) { failure = new Error(message); waiter?.reject(failure); } };
+  socket.on('error', () => fail());
+  socket.on('close', (code: number) => fail(`Controlled Bot writer closed unexpectedly (${code}).`));
   socket.on('message', (data: { toString(): string }) => {
     try {
       const message = parseRelayMessage(JSON.parse(data.toString()));
-      if (message.type === 'error') { fail(); return; }
+      if (message.type === 'error') { fail(`Controlled Bot relay rejected a frame (${message.code}).`); return; }
       if (message.type === 'content_request') {
         if (message.kind !== 'timeline') throw new Error('Unexpected Bot resource request.');
         send({ ...prefix(), type: 'content_response', requestId: message.requestId, sourceThrough: '30', error: null,
@@ -75,7 +76,7 @@ export async function openBotController(api: AuthenticatedAPI, origin: string, i
         if (waiter?.type === message.type) { const current = waiter; waiter = null; current.resolve(message); }
         else queued.push(message);
       }
-    } catch { fail(); }
+    } catch { fail('Controlled Bot writer received an invalid protocol message.'); }
   });
   async function wait<T extends RelayMessage['type']>(type: T): Promise<Extract<RelayMessage, { type: T }>> {
     if (failure !== null) throw failure;

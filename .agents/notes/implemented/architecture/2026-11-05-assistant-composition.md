@@ -1,4 +1,4 @@
-# Compose assistant hosting and navigation
+# Agent Note: Compose assistant hosting and navigation
 
 Status: implemented
 
@@ -20,7 +20,9 @@ configuration supplies hosting observations and new execution defaults; existing
 Bot configuration and role text remain frozen. Shutdown joins management work and
 all execution stop attempts before stores close and the instance lock releases.
 
-The authenticated sidebar exposes the existing `/bots` routes. The management
+The authenticated sidebar exposes `/bots` and `/bots/{botId}`. The server serves
+the application shell at both paths for direct navigation and reload, and reserves
+the `/bots` namespace against custom authentication endpoints. The management
 page retains its shared Session View, bounded pane cache, identity fences and
 deletion coordinator. Server construction continues to inject the same persistent
 store, file storage and Session relay into public and Worker Bot routes.
