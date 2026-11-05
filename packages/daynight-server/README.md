@@ -805,7 +805,7 @@ checksums remain immutable; the new checksum includes the frozen transform.
 Public mutations reject protected worker values. Missing properties are not
 materialized, and illegal stored properties fail the complete HTTP operation
 with 400 invalid_input; database failures remain 500 internal_error. The HTTP
-boundary and value codecs share strict object decoding in `internal/jsonobject/`.
+boundary and value codecs share strict object decoding in `internal/utils/jsonobject/`.
 Property PUT receives unchanged argument text as valueText; it decodes JSON or
 string shorthand through the definition rather than trusting client validation.
 The complete JSON envelope, including its extra escaping, shares the 1 MiB request

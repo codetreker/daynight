@@ -39,6 +39,10 @@ receipts. Human confirmations retain their execution and control identity, plus
 the operation ID for unknown acknowledgements; submission checks that identity
 again so an old checkbox cannot authorize a new control context.
 
+The [stable terminal recovery decision](../bug-fix/2026-11-05-stable-terminal-recovery.md)
+separates retained presentation from transport and input admission during a
+visibility or identity check; closing the channel and fencing input still apply.
+
 Operation submission and receipt polling share one deadline. Explicit reads of
 an already unknown operation have a separate bounded window without replaying
 input. A missing receipt is ambiguous because admission can fail before the

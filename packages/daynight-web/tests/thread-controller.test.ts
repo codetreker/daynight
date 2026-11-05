@@ -105,6 +105,60 @@ describe('Thread controller continuous reading', () => {
     list.mockResolvedValueOnce(page([])); await controller.refresh(); await vi.advanceTimersByTimeAsync(5_000);
     expect(list).toHaveBeenCalledTimes(count + 2);
   });
+
+  it('keeps details and reading state through hidden and blocked admission while rejecting stale reads', async () => {
+    const { controller, list, post } = make();
+    const original = message(20), late = deferred<ThreadPage>(), resumed = deferred<ThreadPage>();
+    list.mockResolvedValueOnce(page([original], true)); await start(controller);
+    controller.setDraft('draft'); controller.setReply(original.id); controller.setFollowing(false); controller.setReadingAnchor(original.id);
+    await controller.openDetails(original.id);
+    list.mockReturnValueOnce(late.promise); const oldRead = controller.loadOlder(); await flush();
+    const oldCall = list.mock.calls.at(-1)!;
+    controller.setDocumentVisible(false);
+    expect(oldCall[2].aborted).toBe(true); expect(() => oldCall[3].assertCurrent()).toThrow();
+    controller.setAdmissionBlocked(true); controller.setDocumentVisible(true);
+    await controller.refresh(); await controller.loadOlder(); await controller.send();
+    expect(list).toHaveBeenCalledTimes(2); expect(post).not.toHaveBeenCalled();
+    expect(controller.snapshot()).toMatchObject({ detailsMessage: original, draft: 'draft', replyTo: original.id, hasMoreBefore: true, consumedAfterId: original.id, canSend: false });
+    list.mockReturnValueOnce(resumed.promise); controller.setAdmissionBlocked(false); await flush();
+    expect(list).toHaveBeenCalledTimes(3);
+    late.resolve(page([message(19)], true, true)); await oldRead;
+    expect(controller.snapshot().visible).toEqual([original]);
+    expect(controller.snapshot().detailsMessage).toEqual(original);
+    resumed.resolve(page([])); await controller.refresh();
+    expect(controller.snapshot()).toMatchObject({ detailsMessage: original, draft: 'draft', replyTo: original.id, hasMoreBefore: true, consumedAfterId: original.id, canSend: true });
+    controller.retire();
+    expect(controller.snapshot()).toMatchObject({ retired: true, visible: [], detailsMessage: null, draft: '', replyTo: null, hasMoreBefore: false, consumedAfterId: null });
+  });
+
+  it('retains the open details while resumed requests wait for scope readiness', async () => {
+    const resume = deferred<void>(); let hold = false;
+    const ready = vi.fn(async (_signal: AbortSignal) => { if (hold) await resume.promise; });
+    const { controller, list, post } = make({ ready }); const original = message(10);
+    list.mockResolvedValueOnce(page([original], true)); await start(controller);
+    controller.setDraft('draft'); controller.setReply(original.id); await controller.openDetails(original.id);
+    controller.setAdmissionBlocked(true); hold = true; controller.setAdmissionBlocked(false); await flush();
+    const sending = controller.send(); await flush();
+    expect(list).toHaveBeenCalledTimes(1); expect(post).not.toHaveBeenCalled();
+    expect(controller.snapshot()).toMatchObject({ detailsMessage: original, draft: 'draft', replyTo: original.id, hasMoreBefore: true, postOutcome: 'waiting_auth' });
+    const sent = { ...message(11, 'draft'), replyTo: original.id };
+    post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(sent); return sent; });
+    hold = false; resume.resolve(); await sending; await flush();
+    expect(list).toHaveBeenCalledTimes(2); expect(post).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot().detailsMessage).toEqual(original);
+  });
+
+  it.each(['forward', 'reference'] as const)('ignores a late %s scope-loss error after admission is cancelled', async (kind) => {
+    const { controller, list } = make(); const original = message(20), late = deferred<ThreadPage>();
+    list.mockResolvedValueOnce(page([original], true)); await start(controller);
+    controller.setDraft('draft'); controller.setReply(original.id); await controller.openDetails(original.id);
+    list.mockReturnValueOnce(late.promise);
+    const old = kind === 'forward' ? controller.refresh() : controller.showReference(id(10)); await flush();
+    controller.setAdmissionBlocked(true); controller.setAdmissionBlocked(false); await flush();
+    late.reject(new ApiError('server', 403, 'forbidden')); await old;
+    expect(controller.snapshot()).toMatchObject({ retired: false, readError: null, referenceError: null, detailsMessage: original, draft: 'draft', replyTo: original.id });
+    expect(controller.snapshot().visible).toEqual([original]);
+  });
 });
 
 describe('Thread scope and replies', () => {
@@ -175,6 +229,24 @@ describe('Thread sending', () => {
     await vi.advanceTimersByTimeAsync(20_000); expect(controller.snapshot().remoteOutcome).toBe('confirmed');
     controller.setAdmissionBlocked(false); hold = false; resume.resolve(); await sending;
     expect(controller.snapshot().draft).toBe(''); expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11)); expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not replay a dispatched post hidden during admission and publishes its confirmed result only after ready', async () => {
+    const result = deferred<ThreadMessage>(), resume = deferred<void>(); let hold = false;
+    const ready = vi.fn(async (_signal: AbortSignal) => { if (hold) await resume.promise; });
+    const { controller, list, post } = make({ ready }); list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+    post.mockImplementationOnce(async (_scope, _input, signal, admission) => {
+      admission.onDispatch?.(); const item = await result.promise; expect(signal.aborted).toBe(false); admission.onConfirmed?.(item); return item;
+    });
+    controller.setDraft('submitted'); const sending = controller.send(); await flush();
+    controller.setDocumentVisible(false); controller.setAdmissionBlocked(true); hold = true;
+    result.resolve(message(11, 'submitted')); await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', postOutcome: 'confirmed', draft: 'submitted' });
+    expect(controller.snapshot().visible.map(item => item.id)).not.toContain(id(11));
+    await vi.advanceTimersByTimeAsync(20_000); expect(post).toHaveBeenCalledTimes(1);
+    controller.setDocumentVisible(true); controller.setAdmissionBlocked(false); hold = false; resume.resolve(); await sending; await flush();
+    expect(controller.snapshot()).toMatchObject({ remoteOutcome: 'confirmed', draft: '' });
+    expect(controller.snapshot().visible.map(item => item.id)).toContain(id(11)); expect(post).toHaveBeenCalledTimes(1);
   });
 
   it('preserves unknown drafts without replay and distinguishes confirmed refusal', async () => {

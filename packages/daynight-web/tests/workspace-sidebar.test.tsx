@@ -13,17 +13,18 @@ const render = createLocaleRender("en");
 type HarnessProps = {
   readonly collapsed?: boolean;
   readonly routeKey?: string;
+  readonly selectedTeamId?: string;
   readonly blocked?: boolean;
   readonly initiallyInert?: boolean;
   readonly anotherLock?: boolean;
   readonly onToggle?: () => void;
   readonly onNavigate?: () => void;
 };
-const Harness = ({ collapsed = false, routeKey = "/", blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
+const Harness = ({ collapsed = false, routeKey = "/", selectedTeamId = "00000000-0000-4000-8000-000000000701", blocked = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId="00000000-0000-4000-8000-000000000701" workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} sharedActive={false} teamMembersActive={routeKey === "/members"} personalId="00000000-0000-4000-8000-000000000701" selectedTeamId={selectedTeamId} workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} botsActive={routeKey === "/bots" || routeKey.startsWith("/bots/")} activeProjectId={null} blocked={blocked} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
@@ -89,9 +90,9 @@ describe("workspace sidebar", () => {
   });
 
   it("provides a native Team members link and marks the active page", () => {
-    render(<Harness collapsed routeKey="/members" />);
+    render(<Harness collapsed routeKey="/members" selectedTeamId="00000000-0000-4000-8000-000000000702" />);
     const link = screen.getByRole("link", { name: "Team members" });
-    expect(link).toHaveAttribute("href", "/teams/00000000-0000-4000-8000-000000000701/members");
+    expect(link).toHaveAttribute("href", "/teams/00000000-0000-4000-8000-000000000702/members");
     expect(link).toHaveAttribute("aria-current", "page");
   });
 

@@ -88,10 +88,11 @@ afterEach(() => {
   document.body.style.overflow = previousOverflow;
 });
 
-const openDialog = async (fullscreen = false) => {
+const openDialog = async (fullscreen = false, filterTodo = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
   await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toBeVisible());
+  if (filterTodo) fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
   fireEvent.click(document.getElementById(`task-chain-graph-${rootId}`)!);
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
@@ -160,7 +161,7 @@ describe('project dialog focus restoration', () => {
       ...item, status: 'done' as const, ready: false, blockedBy: [],
     }));
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...completed, ...remainingChain]));
-    const { trigger, dialog } = await openDialog(true);
+    const { trigger, dialog } = await openDialog(true, true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
     expect(document.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
@@ -177,7 +178,7 @@ describe('project dialog focus restoration', () => {
       ...item, status: 'done' as const, ready: false, blockedBy: [],
     }));
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(keepRemaining ? graph([...completed, ...remainingChain]) : resetSnapshot(graph(completed)));
-    const { trigger, dialog } = await openDialog();
+    const { trigger, dialog } = await openDialog(false, true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
     expect(dialog).toBeVisible();
@@ -185,10 +186,8 @@ describe('project dialog focus restoration', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
     await waitFor(() => expect(keepRemaining ? document.getElementById(`task-root-${remainingId}`)! : screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expectModalReleased();
-    const checkbox = screen.getByRole('checkbox', { name: /^显示所有/ });
     if (!keepRemaining) {
-      fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
-      expect(checkbox).toHaveFocus();
+      fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }

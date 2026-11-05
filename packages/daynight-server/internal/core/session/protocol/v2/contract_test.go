@@ -51,7 +51,7 @@ func TestCanonicalJSONAndVersionSelection(t *testing.T) {
 }
 
 func TestSharedFixtures(t *testing.T) {
-	root := filepath.Join("..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2")
+	root := filepath.Join("..", "..", "..", "..", "..", "..", "daynight", "test", "session", "fixtures", "v2")
 	data, err := os.ReadFile(filepath.Join(root, "manifest.json"))
 	if err != nil {
 		t.Fatal(err)

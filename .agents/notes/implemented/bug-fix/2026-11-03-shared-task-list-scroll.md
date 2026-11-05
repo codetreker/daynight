@@ -38,7 +38,8 @@ scroll record retained by the [project sections decision](../feature/2026-10-25-
 and [section restoration decision](2026-10-25-project-section-restoration.md).
 Those decisions originally preserved each list's reading position across
 category visits. The separate Overview position, per-project section/category
-choices, independent Show all choices and conditional category mounting remain.
+choices and conditional category mounting remain. The [status filter decision](../feature/2026-11-05-task-list-status-filter.md)
+replaces the independent Show all choices with shared list conditions.
 The [Web specification](../../../../docs/spec/daynight-web.md) owns observable
 behavior and the [Web design](../../../../docs/design/daynight-web.md) owns the
 current composition and stored formats.

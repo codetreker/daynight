@@ -28,8 +28,8 @@ const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState =
 
 const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <ProjectTaskWorkspace projectId={project.id} snapshot={value} activeView={activeView}
   unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
-  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showAll: true, onShowAllChange: noop }}
-  standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop, showAll: true, onShowAllChange: noop }} />;
+  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
+  standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} />;
 
 describe('paused task discovery', () => {
   it('derives only true pause flags without changing status statistics or graph node shape', () => {

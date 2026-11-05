@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 	"testing"
 	"time"

@@ -5,7 +5,7 @@
 [行为要求](../spec/session-v2.md)规定生产者和消费者必须维持的保证。本设计定义
 可交换的字节、对象和验证入口。TS 的
 [`session/v2/`](../../packages/daynight/src/session/v2/) 是 browser-safe 源码；
-Go 的 [`sessionprotocol/v2/`](../../packages/daynight-server/internal/sessionprotocol/v2/)
+Go 的 [`core/session/protocol/v2/`](../../packages/daynight-server/internal/core/session/protocol/v2/)
 为独立包。v1 模块保留原类型和解析规则，不通过放宽旧 parser 接收新内容。
 
 TS `values.ts` 拥有版本、限额、原始 JSON 解码、基本值和规范序列化；`types.ts`

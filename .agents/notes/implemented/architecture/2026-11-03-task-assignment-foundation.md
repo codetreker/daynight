@@ -88,8 +88,10 @@ Captured profile versions and current-manifest checks reject obsolete results,
 while project/user fences protect history and authorization. A trusted parent-project denial is processed even
 when presentation demand changes, without letting an old history revoke a new one.
 
-The Web keeps status and assignee in one compact control group and matches
-assignees only in displayed list selections. Full chain progress, dependencies,
+The Web keeps status and assignee in one compact detail control group and matches
+assignees only in displayed list selections. The [status filter decision](../feature/2026-11-05-task-list-status-filter.md)
+combines list status and assignee conditions on the same task while preserving
+complete chain members. Full chain progress, dependencies,
 readiness and overview facts retain the complete index. Mutable profile data
 never enters Task versions or persistent task records.
 
