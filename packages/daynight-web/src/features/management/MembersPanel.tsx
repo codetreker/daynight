@@ -12,6 +12,7 @@ type MemberDialog = { readonly kind: 'role'; readonly member: ProjectParticipant
   | { readonly kind: 'invite' }
   | { readonly kind: 'revoke'; readonly invitation: ProjectInvitation }
   | { readonly kind: 'secret'; readonly secret: string };
+type MembersRead = { readonly invitations: boolean };
 
 const sameParticipant = (a: ProjectParticipant, b: ProjectParticipant) =>
   a.userId === b.userId && a.profile.name === b.profile.name && a.profile.email === b.profile.email && a.profile.avatarUrl === b.profile.avatarUrl &&
@@ -74,7 +75,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const controller = useRef<AbortController | null>(null);
   const admissionController = useRef<AbortController | null>(null);
   const readController = useRef<AbortController | null>(null);
-  const readPromise = useRef<Promise<boolean | undefined> | null>(null);
+  const readPromise = useRef<Promise<MembersRead | undefined> | null>(null);
+  const latestRead = useRef<Promise<MembersRead | undefined> | null>(null);
   const internalAccessRead = useRef(false);
   const refreshQueued = useRef(false);
   const writeInFlight = useRef(false);
@@ -97,7 +99,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     finally { internalAccessRead.current = false; }
   };
 
-  const readMembers = async (lifetime: AbortSignal, requireInvitations: boolean, background: boolean): Promise<boolean | undefined> => {
+  const readMembers = async (lifetime: AbortSignal, background: boolean): Promise<MembersRead | undefined> => {
     readController.current?.abort();
     const read = new AbortController(); readController.current = read;
     const signal = AbortSignal.any([lifetime, read.signal, access.session.scope.signal]);
@@ -106,16 +108,21 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     setError(null);
     try {
       let invitationsLoaded = false;
-      if (!background) await checkAccessForRead();
-      const freshAccess = await access.session.waitForFreshAccess(signal, true);
-      if (signal.aborted || request !== generation.current || freshAccess === null) return;
+      if (!background) {
+        await checkAccessForRead();
+        await access.session.scope.ready(signal);
+        if (signal.aborted || request !== generation.current || access.session.snapshot().status === 'unavailable') return;
+      } else {
+        const freshAccess = await access.session.waitForFreshAccess(signal, true);
+        if (signal.aborted || request !== generation.current || freshAccess === null) return;
+      }
       const observation = access.session.beginObservation();
       const result = await listMembers(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch });
       let items = result.items;
       await access.session.scope.ready(signal);
       if (signal.aborted || request !== generation.current || access.session.snapshot().status === 'unavailable') return;
       if (!access.session.publishSync(observation, result.actorAccess)) {
-        if (!access.session.scope.isInvalidated) return load(lifetime, requireInvitations, background);
+        if (!access.session.scope.isInvalidated) return startRead(lifetime, background);
         return;
       }
       const admitted = await access.session.waitForFreshAccess(signal);
@@ -136,7 +143,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
           const refreshedObservation = access.session.beginObservation();
           const refreshed = await listMembers(projectId, signal, { userId: access.session.scope.userId, onPrincipalMismatch: access.session.scope.principalMismatch });
           if (await access.session.waitForFreshAccess(signal) === null || signal.aborted || request !== generation.current) return;
-          if (!access.session.publishSync(refreshedObservation, refreshed.actorAccess)) return load(lifetime, requireInvitations);
+          if (!access.session.publishSync(refreshedObservation, refreshed.actorAccess)) return startRead(lifetime, background);
           items = refreshed.items;
           const currentAccess = await access.session.waitForFreshAccess(signal, true);
           if (signal.aborted || access.session.scope.isInvalidated || request !== generation.current || currentAccess === null) return;
@@ -152,7 +159,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
       } else publishInvitations(null);
       const current = access.session.snapshot();
       if (current.status === 'ready' && !current.refreshing && (current.access!.effectiveRole !== 'admin' || invitationsLoaded)) { publishMembers(items); setUnavailable(false); }
-      return current.status === 'ready' && !current.refreshing && (current.access!.effectiveRole === 'admin' ? invitationsLoaded : !requireInvitations);
+      if (current.status === 'ready' && !current.refreshing && (current.access!.effectiveRole !== 'admin' || invitationsLoaded)) return { invitations: invitationsLoaded };
+      return;
     } catch (failure) {
       if (!isAbortError(failure) && !signal.aborted) { try { await access.session.scope.ready(signal); } catch { return; } }
       if (!isAbortError(failure) && !signal.aborted && !access.session.scope.isInvalidated && request === generation.current) {
@@ -167,9 +175,13 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
       if (!signal.aborted && request === generation.current) setLoading(false);
     }
   };
-  const load = (lifetime: AbortSignal, requireInvitations = false, background = false): Promise<boolean | undefined> => {
-    const result = readMembers(lifetime, requireInvitations, background);
-    readPromise.current = result;
+  const startRead = (lifetime: AbortSignal, background: boolean): Promise<MembersRead | undefined> => {
+    const operation = readMembers(lifetime, background);
+    const result: Promise<MembersRead | undefined> = operation.then(async (observed) => {
+      if (!observed && latestRead.current !== null && latestRead.current !== result) return latestRead.current;
+      return observed;
+    });
+    readPromise.current = result; latestRead.current = result;
     void result.finally(() => {
       if (readPromise.current !== result) return;
       readPromise.current = null;
@@ -180,6 +192,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
     });
     return result;
   };
+  const load = (lifetime: AbortSignal, requireInvitations = false, background = false): Promise<boolean> =>
+    startRead(lifetime, background).then((observed) => observed !== undefined && (!requireInvitations || observed.invitations));
   useEffect(() => {
     let refreshing = access.session.snapshot().refreshing;
     return access.session.subscribe(() => {
@@ -302,7 +316,7 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
       while (readPromise.current !== null) {
         const reading = readPromise.current;
         const readSignal = readController.current?.signal;
-        const observed = await new Promise<boolean | undefined>((resolve) => {
+        const observed = await new Promise<MembersRead | undefined>((resolve) => {
           const abort = () => resolve(undefined);
           if (admissionSignal.aborted || readSignal?.aborted) { resolve(undefined); return; }
           admissionSignal.addEventListener('abort', abort, { once: true });
