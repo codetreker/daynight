@@ -56,9 +56,9 @@ func TestTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T) {
 	write := func(status model.TaskStatus, title string) model.Task {
 		t.Helper()
 		var updated model.Task
-		if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
 			var err error
-			updated, err = tx.UpdateTask(ctx, task.ID, TaskWrite{Title: title, Status: status})
+			updated, err = tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: title, Status: status})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -99,8 +99,8 @@ func TestTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T) {
 	}
 	beforeRollback := snapshotTask(t, database, project.ID, task.ID)
 	failure := errors.New("reject transaction after status update")
-	err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		if _, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "Must roll back", Status: model.TaskDone}); err != nil {
+	err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		if _, err := tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: "Must roll back", Status: model.TaskDone}); err != nil {
 			return err
 		}
 		return failure
@@ -109,9 +109,9 @@ func TestTaskTimingReplacesTheLatestIntervalAndPreservesEdits(t *testing.T) {
 		t.Fatalf("failed transaction partially committed timing: %v", err)
 	}
 	legacy := queryTask(t, database, project.ID, 12, model.TaskInProgress)
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
 		var err error
-		legacy, err = tx.UpdateTask(ctx, legacy.ID, TaskWrite{Title: "Legacy completion", Status: model.TaskDone})
+		legacy, err = tx.TaskDAO().UpdateTask(ctx, legacy.ID, TaskWrite{Title: "Legacy completion", Status: model.TaskDone})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -130,16 +130,16 @@ func TestTaskStartAndSnapshotClockFollowTheActualLockWait(t *testing.T) {
 	var releaseAt time.Time
 	var started model.Task
 	result := make(chan error, 1)
-	if err := database.WriteProject(ctx, project.ID, func(holder *ProjectTx) error {
+	if err := writeProjectForTest(database, ctx, project.ID, func(holder ProjectWriteScope) error {
 		go func() {
-			result <- database.WriteProject(ctx, project.ID, func(waiter *ProjectTx) error {
+			result <- writeProjectForTest(database, ctx, project.ID, func(waiter ProjectWriteScope) error {
 				var err error
-				started, err = waiter.UpdateTask(ctx, task.ID, TaskWrite{Title: task.Title, Status: model.TaskInProgress})
+				started, err = waiter.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: task.Title, Status: model.TaskInProgress})
 				return err
 			})
 		}()
 		waitForQueryLock(t, database, "SELECT id::text FROM projects WHERE")
-		return holder.tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&releaseAt)
+		return holder.(*ProjectTx).tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&releaseAt)
 	}); err != nil {
 		t.Fatal(err)
 	}

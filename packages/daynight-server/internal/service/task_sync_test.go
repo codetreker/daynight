@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -151,7 +153,7 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 	a := createTask(t, tasks, principal, project.ID, "Before")
 	createTask(t, tasks, principal, project.ID, "Dependent", a.ID)
 	reader := workerMember(t, database, project.ID)
-	beforeAccess, err := NewProjects(database).Access(ctx, reader, project.ID)
+	beforeAccess, err := projectservice.NewProjects(database).Access(ctx, reader, project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,8 +162,8 @@ func TestTaskSyncInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	traced := tracedTasks(t, url, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "SELECT count(*) FROM tasks") }, end: func() {
-		if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "After", Status: model.TaskDone})
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
+			_, err := tx.TaskDAO().UpdateTask(ctx, a.ID, store.TaskWrite{Title: "After", Status: model.TaskDone})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -191,7 +193,7 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	var first, later model.Task
-	err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
+	err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
 		go func() {
 			var err error
 			title := "Later"
@@ -205,7 +207,7 @@ func TestTaskSyncLongProjectLockWaitPreservesLaterWatermark(t *testing.T) {
 			return err
 		}
 		var err error
-		first, err = tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "First", Status: model.TaskTodo})
+		first, err = tx.TaskDAO().UpdateTask(ctx, a.ID, store.TaskWrite{Title: "First", Status: model.TaskTodo})
 		return err
 	})
 	if err != nil {
@@ -247,9 +249,9 @@ func TestTaskSyncUncommittedWriteBeyondOverlapRemainsDiscoverable(t *testing.T) 
 	result := make(chan error, 1)
 	var first, later model.Task
 	var heldFor time.Duration
-	err = database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
+	err = writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
 		var err error
-		first, err = tx.UpdateTask(ctx, a.ID, store.TaskWrite{Title: "Committed first", Status: model.TaskTodo})
+		first, err = tx.TaskDAO().UpdateTask(ctx, a.ID, store.TaskWrite{Title: "Committed first", Status: model.TaskTodo})
 		if err != nil {
 			return err
 		}

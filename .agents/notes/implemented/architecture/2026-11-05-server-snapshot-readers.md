@@ -23,7 +23,8 @@ staged business refusals and transaction completion failures.
 existing error types retain their phase, cause chains and cleanup facts. The
 current concrete implementation and SQL remain in the store root. Identity writes
 use the [identity boundary](2026-11-05-server-identity-boundaries.md);
-Team writes use the [Team boundary](2026-11-05-server-team-boundaries.md).
+Team writes use the [Team boundary](2026-11-05-server-team-boundaries.md),
+and Project writes use the [Project boundary](2026-11-05-server-project-boundaries.md).
 Other write scopes continue to use their existing contracts.
 
 ## Alternatives

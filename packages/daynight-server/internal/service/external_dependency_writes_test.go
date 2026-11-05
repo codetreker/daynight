@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -111,7 +114,7 @@ func TestExternalDependencyWritesRejectInvalidCandidatesAndAllEdgeCycles(t *test
 	ctx := context.Background()
 	a := createTask(t, tasks, principal, project.ID, "A")
 	b := createTask(t, tasks, principal, project.ID, "B")
-	foreignProject, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Foreign", RepoURL: "https://example.com/foreign"})
+	foreignProject, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Foreign", RepoURL: "https://example.com/foreign"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +210,13 @@ func TestExternalDependencyWriteChecksMembershipAfterProjectLock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := make(chan taskResult, 1)
-	if err := f.database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
+	if _, err := f.database.WriteProject(ctx, project.ID, func(tx store.ProjectWriteScope) error {
 		go func() {
 			task, err := tasks.Update(ctx, member, project.ID, target.ID, UpdateTask{Version: target.Version, ExternalDependsOn: pointer([]string{a.ID})})
 			result <- taskResult{task: task, err: err}
 		}()
 		waitForTaskWriters(t, ctx, f.database, 1)
-		return tx.RemoveMember(ctx, member.UserID)
+		return tx.ProjectDAO().RemoveMember(ctx, member.UserID)
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,9 @@ import (
 	"sync"
 	"testing"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -71,7 +74,7 @@ func TestTaskAssigneesCatalogueAndResolutionScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	outsider := servicePrincipal(t, database)
-	otherProject, err := NewProjects(database).Create(ctx, outsider, CreateProject{ExpectedUserID: outsider.UserID, Name: "Other project", RepoURL: "host:other"})
+	otherProject, err := projectservice.NewProjects(database).Create(ctx, outsider, coreproject.CreateProject{ExpectedUserID: outsider.UserID, Name: "Other project", RepoURL: "host:other"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +156,7 @@ func TestTaskAssigneesReadOneMembershipAndProfileSnapshot(t *testing.T) {
 		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: func() {
 			once.Do(func() {
 				writes++
-				if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error { return tx.RemoveMember(ctx, target.UserID) }); err != nil {
+				if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error { return tx.ProjectDAO().RemoveMember(ctx, target.UserID) }); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := database.Pool.Exec(ctx, `UPDATE users SET name=$2,updated_at=statement_timestamp() WHERE id=$1`, target.UserID, newName); err != nil {

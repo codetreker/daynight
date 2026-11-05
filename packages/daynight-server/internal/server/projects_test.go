@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,13 +16,17 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
@@ -136,12 +141,28 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 	}
 }
 
+func createPrivateProjectFixture(database *store.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
+	var project model.Project
+	completion, err := database.WriteProjectCreation(ctx, principal.UserID, func(dao store.ProjectCreationDAO) error {
+		var err error
+		project, _, err = coreproject.Create(ctx, dao, principal.UserID, id, coreproject.CreateProject{Name: name, RepoURL: repoURL, ExpectedUserID: principal.UserID})
+		return err
+	})
+	if err != nil {
+		return model.Project{}, err
+	}
+	if completion.Outcome != store.TransactionCommitted {
+		return model.Project{}, fmt.Errorf("project fixture not committed: %s", completion.Outcome)
+	}
+	return project, nil
+}
+
 func TestProjectHTTPPaginationWithTiedTimestamps(t *testing.T) {
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003"}
 	for _, id := range ids {
-		if _, err := database.CreatePrivateProject(context.Background(), handler.principal, id, "same time", "https://github.com/example/repo"); err != nil {
+		if _, err := createPrivateProjectFixture(database, context.Background(), handler.principal, id, "same time", "https://github.com/example/repo"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -206,7 +227,7 @@ func TestProjectHTTPScopedPagination(t *testing.T) {
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
 	var teamID string
 	for _, id := range ids {
-		project, err := database.CreatePrivateProject(ctx, handler.principal, id, "project", "https://github.com/example/repo")
+		project, err := createPrivateProjectFixture(database, ctx, handler.principal, id, "project", "https://github.com/example/repo")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -241,14 +262,14 @@ func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
-	projectRoutes(mux, service.NewProjects(h.Database), h.Auth, logger)
+	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
 	admin, err := h.Identity.Authenticate(ctx, model.SessionCredential, h.admin.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.NewProjects(h.Database).Create(ctx, admin, service.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
+	second, err := projectservice.NewProjects(h.Database).Create(ctx, admin, coreproject.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +305,7 @@ func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testi
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
 	ctx := context.Background()
-	project, err := database.CreatePrivateProject(ctx, handler.principal, "00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo")
+	project, err := createPrivateProjectFixture(database, ctx, handler.principal, "00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,35 +530,5 @@ func TestProjectCreateIdentityTargetAndAccess(t *testing.T) {
 	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusNotFound, "not_found")
 	if after := snapshot(); before != after {
 		t.Fatal("rejected writes changed domain rows or versions")
-	}
-}
-
-func TestProjectCreateUnknownOutcomeClassification(t *testing.T) {
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", nil)
-	request.Header.Set("X-Request-ID", "project-test")
-	for _, test := range []struct {
-		err    error
-		status int
-		code   string
-	}{
-		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
-		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &model.Fault{Code: "forbidden", Message: "private"}}, 500, "internal_error"},
-		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
-	} {
-		response := httptest.NewRecorder()
-		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeProjectCreateError(w, r, logger, test.err) })).ServeHTTP(response, request)
-		assertProjectError(t, response, test.status, test.code)
-	}
-	for _, short := range []bool{false, true} {
-		writer := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder(), short: short}
-		httpx.WriteMutationJSON(writer, request, logger, "project", 201, api.ProjectDocument{})
-		if writer.calls != 1 {
-			t.Fatal("response replayed")
-		}
-	}
-	if strings.Contains(logs.String(), "private") {
-		t.Fatal("private errors leaked")
 	}
 }

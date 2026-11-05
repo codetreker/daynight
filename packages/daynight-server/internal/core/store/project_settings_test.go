@@ -73,15 +73,15 @@ func TestProjectSettingsStoreUpdatesAndRollbackKeepOneProjectResource(t *testing
 		t.Fatalf("new project has no explicit settings default: %#v", project)
 	}
 	var saved model.Project
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		before, err := tx.Project(ctx)
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		before, err := tx.ProjectDAO().Project(ctx)
 		if err != nil {
 			return err
 		}
 		if !reflect.DeepEqual(before, project) {
 			t.Fatalf("locked project disagrees with creation: %#v", before)
 		}
-		saved, err = tx.UpdateProjectSettings(ctx, 90)
+		saved, err = tx.ProjectDAO().UpdateProjectSettings(ctx, 90)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -90,8 +90,8 @@ func TestProjectSettingsStoreUpdatesAndRollbackKeepOneProjectResource(t *testing
 		t.Fatalf("settings write changed the wrong metadata: %#v", saved)
 	}
 	failure := errors.New("reject project transaction after setting write")
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		if _, err := tx.UpdateProjectSettings(ctx, 120); err != nil {
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		if _, err := tx.ProjectDAO().UpdateProjectSettings(ctx, 120); err != nil {
 			return err
 		}
 		return failure

@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -56,7 +59,7 @@ func competeTaskWrites(t *testing.T, database *store.Store, projectID string, op
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := make(chan taskResult, len(operations))
-	if err := database.WriteProject(ctx, projectID, func(*store.ProjectTx) error {
+	if err := writeProjectForTest(database, ctx, projectID, func(store.ProjectWriteScope) error {
 		for _, operation := range operations {
 			go func() {
 				task, err := operation(ctx)
@@ -232,7 +235,7 @@ func TestConcurrentReopenAndSuccessorStartPreserveStateInvariant(t *testing.T) {
 func TestTaskLockWaitCancellationAndIndependentProjectProgress(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Target")
-	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:repo"})
+	otherProject, err := projectservice.NewProjects(database).Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +243,7 @@ func TestTaskLockWaitCancellationAndIndependentProjectProgress(t *testing.T) {
 	ctx, finish := context.WithTimeout(context.Background(), 10*time.Second)
 	defer finish()
 	result := make(chan taskResult, 1)
-	if err := database.WriteProject(ctx, project.ID, func(*store.ProjectTx) error {
+	if err := writeProjectForTest(database, ctx, project.ID, func(store.ProjectWriteScope) error {
 		waiting, cancel := context.WithCancel(ctx)
 		defer cancel()
 		go func() {

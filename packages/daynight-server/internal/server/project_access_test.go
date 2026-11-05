@@ -12,6 +12,10 @@ import (
 	"testing"
 	"time"
 
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
@@ -27,7 +31,7 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	projectRoutes(mux, service.NewProjects(h.Database), h.Auth, logger)
+	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
 	taskSyncRoutes(mux, service.NewTaskSync(h.Database, 10*time.Second), h.Auth, logger, 10*time.Second)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	path := "/api/v1/projects/" + strings.ToUpper(h.project.ID) + "/access"
@@ -117,10 +121,10 @@ func TestOwnershipProjectionExactVersionsAcrossCurrentReaders(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Auth.RegisterRoutes(mux)
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
-	projectRoutes(mux, service.NewProjects(h.Database), h.Auth, logger)
+	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
 	taskRoutes(mux, service.NewTasks(h.Database), h.Auth, logger)
 	taskSyncRoutes(mux, service.NewTaskSync(h.Database, time.Second), h.Auth, logger, time.Second)
-	NewMembershipRoutes(service.NewMemberships(h.Database), h.Auth, logger).RegisterRoutes(mux)
+	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(h.Database), h.Auth, logger).RegisterRoutes(mux)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
 	if _, err := h.Database.Pool.Exec(ctx, `UPDATE project_ownership SET version=9007199254740993 WHERE project_id=$1`, h.project.ID); err != nil {

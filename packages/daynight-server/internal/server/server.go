@@ -3,7 +3,9 @@ package server
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -39,8 +41,8 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	}
 	mux := http.NewServeMux()
 	auth.RegisterRoutes(mux)
-	NewMembershipRoutes(service.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
-	projectRoutes(mux, service.NewProjects(dependencies.Store), auth, logger)
+	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
+	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(dependencies.Store), auth, logger)
 	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(dependencies.Store), auth, logger)
 	workersRoutes(mux, service.NewWorkers(dependencies.Store), auth, logger)
 	taskRoutes(mux, service.NewTasks(dependencies.Store), auth, logger)

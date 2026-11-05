@@ -16,7 +16,7 @@ func TestTaskStepsWriteCompletionRetainsTransactionFactsAndCauses(t *testing.T) 
 		{Phase: "cleanup", Cause: errors.Join(cause, cleanup), Outcome: store.TransactionCommitted, CommitAttempted: true, CleanupFailed: true},
 		{Phase: "cleanup", Cause: errors.Join(&model.Fault{Code: "not_found", Message: "business refusal"}, cleanup), Outcome: store.TransactionUnknown, CleanupFailed: true},
 	} {
-		result, err := finishStepsWrite(StepsWriteResult{Phase: "persist", Changed: true, StepsDocument: StepsDocument{JSON: []byte("unconfirmed bytes")}}, true, failure)
+		result, err := finishStepsWrite(StepsWriteResult{Phase: "persist", Changed: true, StepsDocument: StepsDocument{JSON: []byte("unconfirmed bytes")}}, true, store.Completion{Outcome: failure.Outcome}, failure)
 		if !errors.Is(err, failure) || result.TransactionOutcome != failure.Outcome || result.CleanupFailed != failure.CleanupFailed || result.JSON != nil || !result.Changed {
 			t.Fatal("write completion replaced causes or completion facts")
 		}

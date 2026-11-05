@@ -44,8 +44,8 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 		}
 		input.ClaimID = &claimID
 	}
-	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
-		current, err := tx.Task(ctx, id)
+	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskMutation, error) {
+		current, err := tx.TaskDAO().Task(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskMutation{}, taskNotFound(err)
 		}
@@ -69,7 +69,7 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 			return taskMutation{}, &model.Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
 		}
 		if current.Status == model.TaskDone {
-			dependents, err := tx.ActiveDependentIDs(ctx, id)
+			dependents, err := tx.TaskDAO().ActiveDependentIDs(ctx, id)
 			if err != nil {
 				return taskMutation{}, err
 			}

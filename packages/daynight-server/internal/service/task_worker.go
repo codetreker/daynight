@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
@@ -63,7 +64,7 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal model.Principal, proj
 	if err := requireCompatibleWorker(ctx, &model.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
 		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskMutation, error) {
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
@@ -96,7 +97,7 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal model.Principal, pro
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskMutation, error) {
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
@@ -146,7 +147,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, pro
 			return model.Task{}, invalidInput("Invalid startup report.")
 		}
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
@@ -162,7 +163,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, pro
 			if worker.AgentControlMode != model.AgentControlModeWeb || input.StartupReport.ClaimID != claimID {
 				return taskMutation{}, claimConflict()
 			}
-			matched, err := tx.MatchSessionStartup(ctx, current.ID, worker, *input.StartupReport)
+			matched, err := tx.SessionDAO().MatchSessionStartup(ctx, current.ID, worker, *input.StartupReport)
 			if err != nil {
 				return taskMutation{}, err
 			}
@@ -218,7 +219,7 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, pr
 	if !input.StoppedConfirmed {
 		return model.Task{}, invalidInput("Stopped execution must be explicitly confirmed.")
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
@@ -243,7 +244,7 @@ func (s *Tasks) WithdrawWorker(ctx context.Context, principal model.Principal, p
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current model.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, current model.Task) (taskMutation, error) {
 		worker, err := taskproperties.Worker(current.Properties)
 		if err != nil {
 			return taskMutation{}, err
@@ -315,8 +316,8 @@ func freshWorkerExecution(worker *model.WorkerClaim, descriptor WorkerDescriptor
 	return nil
 }
 
-func acquireWorker(ctx context.Context, tx *store.ProjectTx, current model.Task, userID string, descriptor WorkerDescriptor) (taskMutation, error) {
-	claimedAt, err := tx.ObservedAt(ctx)
+func acquireWorker(ctx context.Context, tx store.ProjectWriteScope, current model.Task, userID string, descriptor WorkerDescriptor) (taskMutation, error) {
+	claimedAt, err := tx.TaskDAO().ObservedAt(ctx)
 	if err != nil {
 		return taskMutation{}, err
 	}
@@ -345,13 +346,13 @@ func claimConflict() error {
 	return &model.Fault{Code: "claim_conflict", Message: "Task worker claim does not match the active execution."}
 }
 
-func requireWorkerOperator(ctx context.Context, tx *store.ProjectTx, principal model.Principal, worker *model.WorkerClaim) error {
+func requireWorkerOperator(ctx context.Context, tx store.ProjectWriteScope, principal model.Principal, worker *model.WorkerClaim) error {
 	if principal.UserID == worker.UserID {
 		return nil
 	}
-	access, err := tx.ProjectAccess(ctx, principal)
+	access, err := tx.ProjectDAO().ProjectAccess(ctx, principal)
 	if err != nil {
 		return err
 	}
-	return requireProjectAdmin(access)
+	return projectcore.RequireProjectAdmin(access)
 }

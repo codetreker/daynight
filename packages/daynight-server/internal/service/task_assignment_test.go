@@ -124,7 +124,7 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 	alice := workerMember(t, database, project.ID)
 	before := createAssignedTask(t, tasks, admin, project.ID, &alice.UserID)
 	before = updateTask(t, tasks, admin, before, UpdateTask{AllowAgents: pointer(true)})
-	if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error { return tx.RemoveMember(ctx, alice.UserID) }); err != nil {
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error { return tx.ProjectDAO().RemoveMember(ctx, alice.UserID) }); err != nil {
 		t.Fatal(err)
 	}
 	assertTaskUnchanged(t, tasks, admin, before)
@@ -292,7 +292,7 @@ func TestTaskAssignmentRechecksMemberRemoval(t *testing.T) {
 		actor, target := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 		before := createAssignedTask(t, tasks, admin, project.ID, nil)
 		result := make(chan taskResult, 1)
-		if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
 			go func() {
 				task, err := tasks.Update(ctx, actor, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&target.UserID)})
 				result <- taskResult{task: task, err: err}
@@ -302,7 +302,7 @@ func TestTaskAssignmentRechecksMemberRemoval(t *testing.T) {
 			if removeActor {
 				removed = actor.UserID
 			}
-			return tx.RemoveMember(ctx, removed)
+			return tx.ProjectDAO().RemoveMember(ctx, removed)
 		}); err != nil {
 			t.Fatal(err)
 		}

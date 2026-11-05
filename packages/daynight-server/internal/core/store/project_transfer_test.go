@@ -95,11 +95,11 @@ func TestTransferUpdateFailureRollsBackOwnershipAndProject(t *testing.T) {
 			mustQueryExec(t, s, `CREATE FUNCTION refuse_transfer_update() RETURNS trigger LANGUAGE plpgsql AS $$
  BEGIN RAISE EXCEPTION USING ERRCODE='P0001', MESSAGE='transfer update rejected'; END $$;
  CREATE TRIGGER refuse_transfer_update BEFORE UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION refuse_transfer_update()`)
-			err = s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-				if _, err := tx.LockTransferOwnership(ctx); err != nil {
+			err = writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+				if _, err := tx.ProjectDAO().LockTransferOwnership(ctx); err != nil {
 					return err
 				}
-				_, err := tx.MoveOwnership(ctx, target.ID)
+				_, err := tx.ProjectDAO().MoveOwnership(ctx, target.ID)
 				return err
 			})
 			var postgres *pgconn.PgError

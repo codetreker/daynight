@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
@@ -53,7 +55,7 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 }
 
 func taskSyncResponse(sync model.TaskSync) api.TaskSync {
-	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projectResponse(sync.Project), ActorAccess: projectAccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
 	for _, person := range sync.AssigneeVersions {
 		result.AssigneeVersions = append(result.AssigneeVersions, api.TaskAssigneeVersion{UserID: person.UserID, Version: person.Version, HasProjectAccess: person.HasProjectAccess})
 	}

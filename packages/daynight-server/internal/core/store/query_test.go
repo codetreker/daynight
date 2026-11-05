@@ -28,9 +28,9 @@ func queryProject(t *testing.T, s *Store, number int) model.Project {
 func queryTask(t *testing.T, s *Store, projectID string, number int, status model.TaskStatus, dependencies ...string) model.Task {
 	t.Helper()
 	var task model.Task
-	err := s.WriteProject(context.Background(), projectID, func(tx *ProjectTx) error {
+	err := writeProjectForTest(s, context.Background(), projectID, func(tx ProjectWriteScope) error {
 		var err error
-		task, err = tx.CreateTask(context.Background(), queryID(number), TaskWrite{
+		task, err = tx.TaskDAO().CreateTask(context.Background(), queryID(number), TaskWrite{
 			Title: "Task", Description: "Description", Status: status, DependsOn: dependencies,
 		})
 		return err
@@ -122,7 +122,7 @@ func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 	}); !errors.Is(err, model.ErrNotFound) || !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("missing project: %v", err)
 	}
-	if err := s.WriteProject(ctx, queryID(999), func(*ProjectTx) error {
+	if err := writeProjectForTest(s, ctx, queryID(999), func(ProjectWriteScope) error {
 		t.Fatal("missing project invoked write callback")
 		return nil
 	}); !errors.Is(err, model.ErrNotFound) {
@@ -139,9 +139,9 @@ func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 	if done.DependsOn == nil || done.BlockedBy == nil || pending.Ready != true {
 		t.Fatalf("empty dependencies and ready: %#v, %#v", done, pending)
 	}
-	if err := s.WriteProject(ctx, first.ID, func(tx *ProjectTx) error {
+	if err := writeProjectForTest(s, ctx, first.ID, func(tx ProjectWriteScope) error {
 		for _, ids := range [][]string{nil, {}, {other.ID, pending.ID, done.ID, queryID(999)}} {
-			tasks, err := tx.TasksByID(ctx, ids)
+			tasks, err := tx.TaskDAO().TasksByID(ctx, ids)
 			if err != nil || tasks == nil {
 				t.Fatalf("prerequisites: %#v, %v", tasks, err)
 			}
@@ -149,15 +149,15 @@ func TestQueriesScopedResourcesAndUpdates(t *testing.T) {
 				t.Fatalf("project-scoped prerequisites: %#v", tasks)
 			}
 		}
-		_, err := tx.Task(ctx, other.ID)
+		_, err := tx.TaskDAO().Task(ctx, other.ID)
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("cross-project task: %v", err)
 		}
-		_, err = tx.UpdateTask(ctx, other.ID, TaskWrite{Title: "Forbidden", Status: model.TaskTodo})
+		_, err = tx.TaskDAO().UpdateTask(ctx, other.ID, TaskWrite{Title: "Forbidden", Status: model.TaskTodo})
 		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("cross-project update: %v", err)
 		}
-		updated, err := tx.UpdateTask(ctx, dependent.ID, TaskWrite{Title: "Updated", Status: model.TaskInProgress, DependsOn: []string{done.ID}})
+		updated, err := tx.TaskDAO().UpdateTask(ctx, dependent.ID, TaskWrite{Title: "Updated", Status: model.TaskInProgress, DependsOn: []string{done.ID}})
 		if err != nil {
 			return err
 		}
@@ -247,7 +247,7 @@ func TestQueriesCandidateGraphReplacesWholeSet(t *testing.T) {
 	b := queryTask(t, s, project.ID, 12, model.TaskTodo, a.ID)
 	c := queryTask(t, s, project.ID, 13, model.TaskTodo, b.ID)
 	z := queryTask(t, s, other.ID, 14, model.TaskTodo, a.ID)
-	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+	if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
 		for _, test := range []struct {
 			from, to string
 			replace  DependencyReplacement
@@ -262,7 +262,7 @@ func TestQueriesCandidateGraphReplacesWholeSet(t *testing.T) {
 			{z.ID, a.ID, DependencyReplacement{a.ID, nil}, false},
 			{a.ID, z.ID, DependencyReplacement{a.ID, []string{c.ID}}, false},
 		} {
-			got, err := tx.Reachable(ctx, test.from, test.to, test.replace)
+			got, err := tx.TaskDAO().Reachable(ctx, test.from, test.to, test.replace)
 			if err != nil || got != test.want {
 				t.Fatalf("candidate reachability %#v: %v, %v", test, got, err)
 			}
@@ -293,8 +293,8 @@ func TestQueriesPartialWriteRollbackRestoresResource(t *testing.T) {
 		RETURN NEW;
 		END $$;
 		CREATE TRIGGER reject_second_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_second_edge()`)
-	err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, before.ID, TaskWrite{Title: "Changed", Description: "Changed", Status: model.TaskDone, DependsOn: []string{first.ID, second.ID}})
+	err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, before.ID, TaskWrite{Title: "Changed", Description: "Changed", Status: model.TaskDone, DependsOn: []string{first.ID, second.ID}})
 		return err
 	})
 	var cause *pgconn.PgError
@@ -322,11 +322,11 @@ func TestQueriesSnapshotRetainsCompleteOldGraph(t *testing.T) {
 		if err := snapshot.(*Snapshot).tx.QueryRow(ctx, "SELECT current_setting('transaction_isolation'), current_setting('transaction_read_only')").Scan(&isolation, &readOnly); err != nil || isolation != "repeatable read" || readOnly != "on" {
 			t.Fatalf("snapshot transaction modes: %s %s, %v", isolation, readOnly, err)
 		}
-		if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			if _, err := tx.UpdateTask(ctx, a.ID, TaskWrite{Title: "Done", Status: model.TaskDone}); err != nil {
+		if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+			if _, err := tx.TaskDAO().UpdateTask(ctx, a.ID, TaskWrite{Title: "Done", Status: model.TaskDone}); err != nil {
 				return err
 			}
-			_, err := tx.UpdateTask(ctx, b.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, DependsOn: []string{c.ID}})
+			_, err := tx.TaskDAO().UpdateTask(ctx, b.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, DependsOn: []string{c.ID}})
 			return err
 		}); err != nil {
 			return err
@@ -400,8 +400,8 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 		}); err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("task decode failure became an empty page: %v", err)
 		}
-		if err := s.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
-			_, err := tx.TasksByID(context.Background(), []string{task.ID})
+		if err := writeProjectForTest(s, context.Background(), project.ID, func(tx ProjectWriteScope) error {
+			_, err := tx.TaskDAO().TasksByID(context.Background(), []string{task.ID})
 			return err
 		}); err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("prerequisite decode failure became an empty result: %v", err)

@@ -20,8 +20,8 @@ func workerDescriptor() WorkerDescriptor {
 func workerMember(t *testing.T, database *store.Store, projectID string) model.Principal {
 	t.Helper()
 	principal := servicePrincipal(t, database)
-	if err := database.WriteProject(context.Background(), projectID, func(tx *store.ProjectTx) error {
-		_, err := tx.AddInvitedMember(context.Background(), principal.UserID)
+	if err := writeProjectForTest(database, context.Background(), projectID, func(tx store.ProjectWriteScope) error {
+		_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -401,13 +401,13 @@ func TestWorkerClaimRechecksMembershipAndRollsBackUnknownWrites(t *testing.T) {
 	result := make(chan taskResult, 1)
 	lockContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := database.WriteProject(lockContext, project.ID, func(tx *store.ProjectTx) error {
+	if err := writeProjectForTest(database, lockContext, project.ID, func(tx store.ProjectWriteScope) error {
 		go func() {
 			claimed, err := tasks.ClaimWorker(lockContext, member, project.ID, task.ID, ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor})
 			result <- taskResult{task: claimed, err: err}
 		}()
 		waitForTaskWriters(t, lockContext, database, 1)
-		return tx.RemoveMember(lockContext, member.UserID)
+		return tx.ProjectDAO().RemoveMember(lockContext, member.UserID)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -552,8 +552,8 @@ func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
 				tasks, database, project, _, admin := taskService(t)
 				ctx := context.Background()
 				owner, manager := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-				if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-					_, err := tx.SetMemberRole(ctx, manager.UserID, model.ProjectAdmin)
+				if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
+					_, err := tx.ProjectDAO().SetMemberRole(ctx, manager.UserID, model.ProjectAdmin)
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -573,7 +573,7 @@ func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
 				result := make(chan taskResult, 1)
 				lockContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 				defer cancel()
-				if err := database.WriteProject(lockContext, project.ID, func(tx *store.ProjectTx) error {
+				if err := writeProjectForTest(database, lockContext, project.ID, func(tx store.ProjectWriteScope) error {
 					go func() {
 						descriptor := workerDescriptor()
 						var actual model.Task
@@ -591,9 +591,9 @@ func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
 					waitForTaskWriters(t, lockContext, database, 1)
 					switch permission {
 					case "removed owner":
-						return tx.RemoveMember(lockContext, owner.UserID)
+						return tx.ProjectDAO().RemoveMember(lockContext, owner.UserID)
 					default:
-						_, err := tx.SetMemberRole(lockContext, manager.UserID, model.ProjectMemberRole)
+						_, err := tx.ProjectDAO().SetMemberRole(lockContext, manager.UserID, model.ProjectMemberRole)
 						return err
 					}
 				}); err != nil {

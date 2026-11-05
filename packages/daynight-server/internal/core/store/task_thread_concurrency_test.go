@@ -166,15 +166,15 @@ func TestThreadTaskShareLockAllowsAppendWhileProjectMutationWaits(t *testing.T) 
 			started := make(chan uint32, 1)
 			completed := make(chan error, 1)
 			go func() {
-				completed <- database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-					started <- tx.tx.Conn().PgConn().PID()
-					if _, err := tx.Task(ctx, task.ID); err != nil {
+				completed <- writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+					started <- tx.(*ProjectTx).tx.Conn().PgConn().PID()
+					if _, err := tx.TaskDAO().Task(ctx, task.ID); err != nil {
 						return err
 					}
 					if mutation == "delete" {
-						return tx.DeleteTask(ctx, task.ID, false)
+						return tx.TaskDAO().DeleteTask(ctx, task.ID, false)
 					}
-					_, err := tx.tx.Exec(ctx, `UPDATE tasks SET status='in_progress' WHERE id=$1`, task.ID)
+					_, err := tx.(*ProjectTx).tx.Exec(ctx, `UPDATE tasks SET status='in_progress' WHERE id=$1`, task.ID)
 					return err
 				})
 			}()
@@ -255,8 +255,8 @@ func TestThreadAuthorizationRechecksGrantAfterLockWait(t *testing.T) {
 	for _, mutation := range []string{"role", "delete"} {
 		t.Run(mutation, func(t *testing.T) {
 			database, _, principal, project := membershipFixture(t)
-			if err := database.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
-				_, err := tx.AddInvitedMember(context.Background(), principal.UserID)
+			if err := writeProjectForTest(database, context.Background(), project.ID, func(tx ProjectWriteScope) error {
+				_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -414,8 +414,8 @@ func TestThreadAuthorizationUsesDestinationAfterOwnershipLockWait(t *testing.T) 
 
 func TestThreadSnapshotRetainsItsAuthorizedMessagesAndTaskPresence(t *testing.T) {
 	database, _, principal, project := membershipFixture(t)
-	if err := database.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
-		_, err := tx.AddInvitedMember(context.Background(), principal.UserID)
+	if err := writeProjectForTest(database, context.Background(), project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), principal.UserID)
 		return err
 	}); err != nil {
 		t.Fatal(err)

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -20,7 +23,7 @@ import (
 func taskService(t *testing.T) (*Tasks, *store.Store, model.Project, string, model.Principal) {
 	t.Helper()
 	projects, database, databaseURL, principal := projectService(t)
-	project, err := projects.Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Tasks", RepoURL: "git@host:repo"})
+	project, err := projects.Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Tasks", RepoURL: "git@host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +176,7 @@ func TestTaskInputValidation(t *testing.T) {
 
 func TestTaskScopeAndDependencyReferences(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
-	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:repo"})
+	otherProject, err := projectservice.NewProjects(database).Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +307,7 @@ func TestTaskSetStatusAllPairsAndVersionOrder(t *testing.T) {
 func TestTaskSetStatusValidationAndScope(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Target")
-	otherProject, err := NewProjects(database).Create(context.Background(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
+	otherProject, err := projectservice.NewProjects(database).Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,8 +457,8 @@ func TestTaskCandidateDependencyRules(t *testing.T) {
 		requireFault(t, err, "dependency_unsatisfied")
 		assertTaskUnchanged(t, tasks, principal, active)
 		// Store fixtures bypass policy to verify full candidate checks on metadata-only updates.
-		if err := database.WriteProject(context.Background(), project.ID, func(tx *store.ProjectTx) error {
-			_, err := tx.UpdateTask(context.Background(), active.ID, store.TaskWrite{Title: active.Title, Status: status, DependsOn: []string{undone.ID}})
+		if err := writeProjectForTest(database, context.Background(), project.ID, func(tx store.ProjectWriteScope) error {
+			_, err := tx.TaskDAO().UpdateTask(context.Background(), active.ID, store.TaskWrite{Title: active.Title, Status: status, DependsOn: []string{undone.ID}})
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -568,7 +571,7 @@ func TestTaskListKeysetsFiltersAndCursorScopes(t *testing.T) {
 	}
 	_, err = tasks.List(ctx, principal, "00000000-0000-0000-0000-000000000000", TaskListRequest{PageRequest: model.PageRequest{Limit: 10, Cursor: firstCursor}})
 	requireFault(t, err, "invalid_input")
-	_, err = NewProjects(database).List(ctx, principal, model.PageRequest{Limit: 10, Cursor: firstCursor})
+	_, err = projectservice.NewProjects(database).List(ctx, principal, model.PageRequest{Limit: 10, Cursor: firstCursor})
 	requireFault(t, err, "invalid_input")
 	projectCursor, err := query.EncodeProjectCursor(project, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
 	if err != nil {

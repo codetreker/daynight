@@ -10,9 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 type attachmentStorageCall struct {
@@ -44,7 +47,7 @@ func (s *attachmentRecordedStorage) Delete(ctx context.Context, bucket, path str
 func TestAttachmentProjectAndTaskShardIsolation(t *testing.T) {
 	ctx := t.Context()
 	tasks, database, project, _, principal := taskService(t)
-	otherProject, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other attachment project", RepoURL: "host:other-attachments"})
+	otherProject, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Other attachment project", RepoURL: "host:other-attachments"})
 	if err != nil {
 		t.Fatal(err)
 	}

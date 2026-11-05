@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
@@ -39,7 +40,7 @@ func (s *TaskSteps) read(ctx context.Context, principal model.Principal, project
 		return err
 	}
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			return err
 		}
 		header, err := snapshot.TaskDAO().TaskHeader(ctx, projectID, taskID)
@@ -198,16 +199,16 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		*anchor = &canonical
 	}
 	projectLocked := false
-	err = s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
+	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
 		projectLocked = true
-		if _, err := RequireProjectWrite(ctx, tx, principal); err != nil {
+		if _, err := projectcore.RequireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
 		header, err := taskWriteHeader(ctx, tx, taskID, input.Version)
 		if err != nil {
 			return err
 		}
-		current, err := tx.TaskSteps(ctx, taskID)
+		current, err := tx.TaskDAO().TaskSteps(ctx, taskID)
 		if err != nil {
 			return err
 		}
@@ -227,7 +228,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if header.Version == math.MaxInt64 {
 			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
-		observed, err := tx.ObservedAt(ctx)
+		observed, err := tx.TaskDAO().ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
@@ -239,15 +240,16 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		}
 		result.Changed = true
 		result.Phase = "persist"
-		if err := tx.InsertTaskStep(ctx, taskID, candidate[position]); err != nil {
+		if err := tx.TaskDAO().InsertTaskStep(ctx, taskID, candidate[position]); err != nil {
 			return err
 		}
-		return tx.TouchTask(ctx, taskID, observed)
+		return tx.TaskDAO().TouchTask(ctx, taskID, observed)
 	})
-	return finishStepsWrite(result, projectLocked, err)
+	return finishStepsWrite(result, projectLocked, completion, err)
 }
 
-func finishStepsWrite(result StepsWriteResult, projectLocked bool, err error) (StepsWriteResult, error) {
+func finishStepsWrite(result StepsWriteResult, projectLocked bool, completion store.Completion, err error) (StepsWriteResult, error) {
+	result.TransactionOutcome = completion.Outcome
 	if err != nil {
 		var transaction *store.TransactionError
 		if errors.As(err, &transaction) {
@@ -257,12 +259,16 @@ func finishStepsWrite(result StepsWriteResult, projectLocked bool, err error) (S
 			}
 		}
 		if !projectLocked && errors.Is(err, model.ErrNotFound) && transaction != nil && transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed {
-			err = projectNotFound(err)
+			err = projectcore.ProjectNotFound(err)
 		}
 		result.StepsDocument = StepsDocument{}
 		return result, fmt.Errorf("write task steps: %w", err)
 	}
-	result.Phase, result.TransactionOutcome = "commit", store.TransactionCommitted
+	if completion.Outcome != store.TransactionCommitted {
+		result.StepsDocument = StepsDocument{}
+		return result, fmt.Errorf("write task steps: transaction did not confirm commit")
+	}
+	result.Phase = "commit"
 	return result, nil
 }
 

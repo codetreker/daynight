@@ -8,7 +8,8 @@ import (
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/google/uuid"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 )
 
 func TestPersonalTeamConcurrentAndRepeatedLoginReusesCanonicalOwner(t *testing.T) {
@@ -114,7 +115,7 @@ func TestPersonalIntegrityFailuresAreNotRepairedByLogin(t *testing.T) {
 			if _, err := f.identity.User(ctx, principal); err == nil || errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("account read hid invalid Personal ownership: %v", err)
 			}
-			if _, err := f.database.CreatePrivateProject(ctx, principal, uuid.NewString(), "Invalid", "host:repo"); err == nil || errors.Is(err, model.ErrNotFound) {
+			if _, err := projectservice.NewProjects(f.database).Create(ctx, principal, projectcore.CreateProject{Name: "Invalid", RepoURL: "host:repo", ExpectedUserID: principal.UserID}); err == nil || errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("project creation hid invalid Personal ownership: %v", err)
 			}
 			var name string

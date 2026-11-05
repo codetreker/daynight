@@ -108,8 +108,8 @@ func TestTaskSyncAssigneeVersionsTrackContentAndLiveQualification(t *testing.T) 
 	if _, exists := removed[former.UserID]; exists {
 		t.Fatal("deleted-only assignment remained a qualified profile")
 	}
-	if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-		_, err := tx.AddInvitedMember(ctx, former.UserID)
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
+		_, err := tx.ProjectDAO().AddInvitedMember(ctx, former.UserID)
 		return err
 	}); err != nil {
 		t.Fatal(err)

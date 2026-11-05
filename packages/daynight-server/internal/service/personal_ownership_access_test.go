@@ -3,11 +3,14 @@ package service
 import (
 	"context"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
@@ -16,7 +19,7 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 	project := f.project(t, owner, "  Personal inherited resources  ")
 	ctx := context.Background()
 	grant := f.member(t, owner, project.ID).Grant
-	if err := f.memberships.Remove(ctx, owner, project.ID, owner.UserID, RemoveProjectMember{Version: grant.Version, ExpectedUserID: owner.UserID}); err != nil {
+	if err := f.memberships.Remove(ctx, owner, project.ID, owner.UserID, coreproject.RemoveProjectMember{Version: grant.Version, ExpectedUserID: owner.UserID}); err != nil {
 		t.Fatal("last direct administrator could not remove its grant", err)
 	}
 	access, err := f.projects.Access(ctx, owner, project.ID)
@@ -31,7 +34,7 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.Items[0] != project || page.NextCursor != nil {
 		t.Fatalf("inherited project pagination: %#v %v", page, err)
 	}
-	if _, err := f.projects.UpdateSettings(ctx, owner, project.ID, UpdateProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: 45}); err != nil {
+	if _, err := f.projects.UpdateSettings(ctx, owner, project.ID, coreproject.UpdateProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: 45}); err != nil {
 		t.Fatal("inherited administrator could not edit project settings", err)
 	}
 	participants, err := f.memberships.List(ctx, owner, project.ID)
@@ -189,5 +192,23 @@ func TestOrdinaryTaskAdmissionDoesNotHoldThreadSourceFences(t *testing.T) {
 	changed := receiveTaskResult(t, ctx, result)
 	if changed.err != nil || changed.task.Title != "Admitted task write" || changed.task.Version != task.Version+1 {
 		t.Fatalf("ordinary admitted Task write: %#v %v", changed.task, changed.err)
+	}
+}
+
+func TestTaskGraphProjectsSavedSettings(t *testing.T) {
+	f := newMembershipFixture(t)
+	owner, member := f.user(t), f.user(t)
+	project := f.project(t, owner, "Settings context")
+	f.join(t, owner, member, project.ID)
+	ctx := context.Background()
+	saved, err := f.projects.UpdateSettings(ctx, owner, project.ID, coreproject.UpdateProjectSettings{Version: project.Settings.Version, ExecutionWarningMinutes: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewTasks(f.database)
+	task := createTask(t, tasks, member, project.ID, "Settings context")
+	graph, err := tasks.Graph(ctx, member, project.ID, task.ID)
+	if err != nil || !reflect.DeepEqual(graph.Project, saved) {
+		t.Fatalf("graph project projection lost settings: %#v, %v", graph, err)
 	}
 }

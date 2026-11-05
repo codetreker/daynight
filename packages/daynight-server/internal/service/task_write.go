@@ -36,7 +36,7 @@ func taskWriteFault(err error) *model.Fault {
 	return propertyValidationFault(err)
 }
 
-func enforceAssignmentTransition(ctx context.Context, tx *store.ProjectTx, mutation taskMutation) (taskMutation, error) {
+func enforceAssignmentTransition(ctx context.Context, tx store.ProjectWriteScope, mutation taskMutation) (taskMutation, error) {
 	if model.EqualOptional(mutation.current.AssignedTo, mutation.values.AssignedTo) {
 		return mutation, nil
 	}
@@ -44,7 +44,7 @@ func enforceAssignmentTransition(ctx context.Context, tx *store.ProjectTx, mutat
 		return taskMutation{}, &model.Fault{Code: "invalid_transition", Message: "Task assignment cannot change while the task is in progress."}
 	}
 	if mutation.values.AssignedTo != nil {
-		if _, err := tx.ProjectAccess(ctx, model.Principal{UserID: *mutation.values.AssignedTo}); err != nil {
+		if _, err := tx.ProjectDAO().ProjectAccess(ctx, model.Principal{UserID: *mutation.values.AssignedTo}); err != nil {
 			if errors.Is(err, model.ErrNotFound) {
 				return taskMutation{}, &model.Fault{Code: "invalid_input", Message: "Assigned user must have access to the project.", Cause: err}
 			}

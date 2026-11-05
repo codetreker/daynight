@@ -32,10 +32,10 @@ type DependencyReplacement struct {
 	DependsOn []string
 }
 
-func (s *Store) WriteProject(ctx context.Context, projectID string, operation func(*ProjectTx) error) error {
+func (s *Store) WriteProject(ctx context.Context, projectID string, operation func(ProjectWriteScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return queryError("begin project write", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin project write", err)
 	}
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		var id string
@@ -44,11 +44,12 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 		}
 		return operation(&ProjectTx{tx: tx, projectID: projectID})
 	})
-	if err != nil {
-		return queryError("project write", err)
-	}
-	return nil
+	return teamCompletion("project write", err)
 }
+
+func (tx *ProjectTx) ProjectDAO() ProjectWriteDAO   { return tx }
+func (tx *ProjectTx) TaskDAO() TaskWriteDAO         { return tx }
+func (tx *ProjectTx) SessionDAO() ProjectSessionDAO { return tx }
 
 func (tx *ProjectTx) Task(ctx context.Context, id string) (model.Task, error) {
 	return readTaskWithLock(ctx, tx.tx, tx.projectID, id, " FOR UPDATE OF t")

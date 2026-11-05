@@ -3,14 +3,16 @@ package team_test
 import (
 	"context"
 	"errors"
-	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
-	rootservice "github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"math"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -116,7 +118,7 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 	_, err = teams.Rename(ctx, actor, personal.ID, coreteam.ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID})
 	teamFault(t, err, "personal_team_immutable")
 	teamFault(t, teams.Delete(ctx, actor, personal.ID, coreteam.ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID}), "personal_team_immutable")
-	project, err := rootservice.NewProjects(db).Create(ctx, actor, rootservice.CreateProject{ExpectedUserID: actor.UserID, Name: "Owned", RepoURL: "host:repo"})
+	project, err := projectservice.NewProjects(db).Create(ctx, actor, coreproject.CreateProject{ExpectedUserID: actor.UserID, Name: "Owned", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +130,7 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, team) {
 		t.Fatalf("nonempty refusal changed Team %#v %v", got, err)
 	}
-	if _, err := rootservice.NewProjects(db).Get(ctx, actor, project.ID); err != nil {
+	if _, err := projectservice.NewProjects(db).Get(ctx, actor, project.ID); err != nil {
 		t.Fatal("nonempty deletion changed Project", err)
 	}
 }

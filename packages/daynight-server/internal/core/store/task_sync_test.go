@@ -102,8 +102,8 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 		t.Fatal("existing project has no epoch")
 	}
 	other := queryProject(t, s, 2)
-	if err := s.WriteProject(ctx, queryID(1), func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, queryID(11), TaskWrite{Title: "Changed", Status: model.TaskTodo})
+	if err := writeProjectForTest(s, ctx, queryID(1), func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, queryID(11), TaskWrite{Title: "Changed", Status: model.TaskTodo})
 		return err
 	}); err != nil {
 		t.Fatal(err)
