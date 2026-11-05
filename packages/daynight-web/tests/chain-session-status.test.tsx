@@ -33,7 +33,7 @@ const index = buildGraphIndex(graph);
 const noop = () => {};
 const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
   representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null} onOpenChain={noop} onCloseChain={noop}
-  onOpenTask={onOpenTask} onOpenSession={onOpenSession} showAll onShowAllChange={noop} />;
+  onOpenTask={onOpenTask} onOpenSession={onOpenSession} />;
 const child = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!.closest('.goal-task-row')!;
 const expand = () => fireEvent.click(document.getElementById('task-root-Goal')!);
 beforeEach(() => {

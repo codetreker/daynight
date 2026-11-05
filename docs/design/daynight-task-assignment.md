@@ -104,7 +104,7 @@ profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 
 
 TaskAssigneeIdentity 显示真实 nullable 姓名/头像，name 缺失显示短 UUID，图片失败使用当前身份首字形态；不生成 email。TaskAssigneeSelect 紧邻状态 24px 成组，TaskAssigneeFilter 拥有 all/me/unassigned/user 显示状态。AssigneePicker 的 fixed 菜单在 surface 的焦点所有者子树内，尺寸和 12px 边界按视口计算，随 scroll/resize/fullscreen 及进入动画稳定定位；键盘与 Escape/Tab/外部点击保留现有详情层级和焦点。
 
-ProjectPage 从完整 index 导出匹配 ID，再在显示集合和分页前相交；ChainList 保留完整 component 进度和依赖，仅裁剪展示的子任务集合。概览与图不继承负责人过滤，显式概览定位可回到 all 以展示目标。新增界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
+ProjectPage 在完整 index 上逐任务联合计算负责人和状态匹配，再筛选顶层条目并分页。ChainList 只要普通分量中有联合匹配成员即保留真实代表，展开全部普通成员，并保留完整 component 进度和依赖；外部前置不充当匹配成员。概览与图不继承列表过滤，显式概览定位调整遮挡目标的条件。界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
 
 ## 观测与验证
 

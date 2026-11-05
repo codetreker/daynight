@@ -17,6 +17,7 @@ export const workspace: WorkspaceMessages = {
     moreFailed: "More projects could not be loaded. Previously loaded projects remain available.", loadingMore: "Loading more…", retryMore: "Retry loading more", loadMore: "Load more", allLoaded: "All projects loaded",
   },
   project: {
+    statusFilter: "Status", allStatuses: "All statuses", statusOptions: { todo: "To do", in_progress: "In progress", done: "Done" },
     back: "← Projects", lastRefreshed: ({ time }) => `Last successful refresh ${time}`, refreshing: "Refreshing…", loading: "Loading task graph", loadingDetail: "Reading project tasks and dependencies.",
     notFound: "Project not found", graphLimit: "Task graph exceeds the display limit", incomplete: "Task graph data is incomplete", loadingFailed: "Project could not be loaded",
     networkError: "Cannot connect to the service. Check the local service and try again.", protocolError: "Task graph data is incomplete or inconsistent. Try again.",
@@ -35,8 +36,7 @@ export const workspace: WorkspaceMessages = {
     list: "Standalone task list",
     summary: ({ visible, total }) => `Newest first · ${number(visible)} / ${number(total)} standalone ${total === 1 ? "task" : "tasks"}`,
     summaryLabel: ({ visible, total }) => `Showing ${number(visible)} of ${number(total)} standalone ${total === 1 ? "task" : "tasks"}`,
-    explanation: "Sorted by creation time, newest first. Unfinished tasks and tasks completed today or in the previous 6 days are shown by default. Standalone tasks have no ordinary dependencies or successors. External prerequisites can still block execution. Select a task to view its details.", empty: "No standalone tasks", emptyDetail: "All current tasks are connected by ordinary dependencies. View them in the task chains tab.", allCompleted: "No recent standalone tasks",
-    hiddenCompleted: ({ count }) => `${number(count)} completed standalone ${count === 1 ? "task is" : "tasks are"} outside the current filter. Select “Show all” to view them.`, showAll: "Show all", createdOn: ({ date }) => `Created on ${date}`,
+    empty: "No standalone tasks", emptyDetail: "All current tasks are connected by ordinary dependencies. View them in the task chains tab.", createdOn: ({ date }) => `Created on ${date}`,
   },
   pagination: {
     label: ({ list }) => `${list} pagination`, range: ({ start, end, total }) => `${number(start)}–${number(end)} of ${number(total)}`,
@@ -46,9 +46,7 @@ export const workspace: WorkspaceMessages = {
   tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", unfinishedCount: "Unfinished task count" },
   preferences: {
     section: { read: "The saved project view could not be read. You can continue browsing.", invalid: "The saved project view is invalid. Overview is shown by default. You can continue browsing.", write: "The project view could not be saved. It may not return after a reload. You can continue browsing." },
-    completedChains: { read: "The saved task chain “Show all” preference could not be read. You can continue browsing.", invalid: "The saved task chain “Show all” preference is invalid. Recent chains are shown by default. You can continue browsing.", write: "The task chain “Show all” preference could not be saved. It may not return after a reload. You can continue browsing." },
     tab: { read: "The saved task tab could not be read. You can continue browsing.", invalid: "The saved task tab is invalid. Task chains are shown by default. You can continue browsing.", write: "The task tab could not be saved. It may not return after a reload. You can continue browsing." },
-    standalone: { read: "The saved standalone task “Show all” preference could not be read. You can continue browsing.", invalid: "The saved standalone task “Show all” preference is invalid. Recent tasks are shown by default. You can continue browsing.", write: "The standalone task “Show all” preference could not be saved. It may not return after a reload. You can continue browsing." },
     scroll: { read: "The saved task browsing position could not be read. You can continue browsing.", invalid: "The saved task browsing position is invalid. Browsing starts at the top. You can continue browsing.", write: "The task browsing position could not be saved. It may not return after a reload. You can continue browsing." },
   },
 };

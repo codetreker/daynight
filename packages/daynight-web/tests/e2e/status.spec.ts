@@ -51,7 +51,6 @@ const open = async (page: Page, project: string, task: string): Promise<void> =>
   const standalone = index.components.get(representative)!.memberIds.size === 1;
   await selectTaskList(page);
   await page.getByRole('tab', { name: standalone ? /^(独立任务|Standalone tasks)$/ : /^(任务链|Task chains)$/, exact: true }).click();
-  await page.locator('.completed-chain-control input').check();
   if (standalone) await page.locator(`#standalone-task-${task}`).click();
   else {
     await openChain(page, representative);
