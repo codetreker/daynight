@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
@@ -21,7 +24,7 @@ import (
 func TestResourceServicesRejectAbsentPrincipals(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.NewString()
-	projects, tasks, attachments := NewProjects(nil), NewTasks(nil), NewAttachments(nil, nil)
+	projects, tasks, attachments := projectservice.NewProjects(nil), NewTasks(nil), NewAttachments(nil, nil)
 	for _, principal := range []model.Principal{{}, {UserID: id, CredentialID: id, Kind: "unknown"}} {
 		calls := []func() error{
 			func() error { _, err := projects.Get(ctx, principal, id); return err },
@@ -140,7 +143,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 			t.Fatalf("member resource authority: %v", err)
 		}
 	}
-	if err := f.memberships.Remove(ctx, admin, project.ID, member.UserID, RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
+	if err := f.memberships.Remove(ctx, admin, project.ID, member.UserID, coreproject.RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	before := probe.count()
@@ -219,7 +222,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err := f.memberships.Remove(context.Background(), admin, project.ID, member.UserID, RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
+	if err := f.memberships.Remove(context.Background(), admin, project.ID, member.UserID, coreproject.RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
 		close(probe.release)
 		t.Fatal(err)
 	}
@@ -290,8 +293,8 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	results := make(chan taskResult, writerCount)
-	if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-		if err := tx.RemoveMember(ctx, member.UserID); err != nil {
+	if _, err := database.WriteProject(ctx, project.ID, func(tx store.ProjectWriteScope) error {
+		if err := tx.ProjectDAO().RemoveMember(ctx, member.UserID); err != nil {
 			return err
 		}
 		go func() {

@@ -33,8 +33,8 @@ func requireTaskVersion(current, observed int64) error {
 	return nil
 }
 
-func taskWriteHeader(ctx context.Context, tx *store.ProjectTx, taskID string, version int64) (model.TaskHeader, error) {
-	header, err := tx.TaskHeader(ctx, taskID)
+func taskWriteHeader(ctx context.Context, tx store.ProjectWriteScope, taskID string, version int64) (model.TaskHeader, error) {
+	header, err := tx.TaskDAO().TaskHeader(ctx, taskID)
 	if errors.Is(err, model.ErrNotFound) {
 		return model.TaskHeader{}, taskNotFound(err)
 	}

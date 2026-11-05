@@ -10,6 +10,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/google/uuid"
@@ -102,7 +103,7 @@ func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID
 	if err := validateTaskValues(values); err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
+	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskMutation, error) {
 		if err := validateCandidate(ctx, tx, id.String(), values); err != nil {
 			return taskMutation{}, err
 		}
@@ -118,8 +119,8 @@ func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID
 	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && len(input.Properties) == 0 && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil {
 		return model.Task{}, invalidInput("At least one task field must be provided.")
 	}
-	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
-		current, err := tx.Task(ctx, id)
+	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskMutation, error) {
+		current, err := tx.TaskDAO().Task(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskMutation{}, taskNotFound(err)
 		}
@@ -155,11 +156,11 @@ func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID
 	})
 }
 
-func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID string, prepare func(*store.ProjectTx) (taskMutation, error)) (model.Task, error) {
+func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID string, prepare func(store.ProjectWriteScope) (taskMutation, error)) (model.Task, error) {
 	var result model.Task
 	var refusal *model.Fault
-	err := s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
-		if _, err := RequireProjectWrite(ctx, tx, principal); err != nil {
+	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
+		if _, err := projectcore.RequireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			if errors.As(err, &refusal) {
 				return nil
 			}
@@ -177,7 +178,7 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 			return nil
 		}
 		if mutation.deleted {
-			return tx.DeleteTask(ctx, mutation.id, mutation.removeDepends)
+			return tx.TaskDAO().DeleteTask(ctx, mutation.id, mutation.removeDepends)
 		}
 		mutation, err = enforceAssignmentTransition(ctx, tx, mutation)
 		if err != nil {
@@ -187,17 +188,20 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 			return err
 		}
 		if mutation.create {
-			result, err = tx.CreateTask(ctx, mutation.id, mutation.values)
+			result, err = tx.TaskDAO().CreateTask(ctx, mutation.id, mutation.values)
 		} else {
-			result, err = tx.UpdateTask(ctx, mutation.id, mutation.values)
+			result, err = tx.TaskDAO().UpdateTask(ctx, mutation.id, mutation.values)
 		}
 		return err
 	})
 	if errors.Is(err, model.ErrNotFound) {
-		return model.Task{}, projectNotFound(err)
+		return model.Task{}, projectcore.ProjectNotFound(err)
 	}
 	if err != nil {
 		return model.Task{}, fmt.Errorf("write task: %w", err)
+	}
+	if completion.Outcome != store.TransactionCommitted {
+		return model.Task{}, fmt.Errorf("write task: transaction did not confirm commit")
 	}
 	if refusal != nil {
 		return model.Task{}, refusal
@@ -205,13 +209,13 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 	return result, nil
 }
 
-func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, projectID, id string, version int64, prepare func(*store.ProjectTx, model.Task) (taskMutation, error)) (model.Task, error) {
+func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, projectID, id string, version int64, prepare func(store.ProjectWriteScope, model.Task) (taskMutation, error)) (model.Task, error) {
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, version)
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
-		current, err := tx.Task(ctx, id)
+	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskMutation, error) {
+		current, err := tx.TaskDAO().Task(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskMutation{}, taskNotFound(err)
 		}

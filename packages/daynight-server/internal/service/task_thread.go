@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 )
@@ -267,7 +268,7 @@ func (s *TaskThreads) List(ctx context.Context, principal model.Principal, proje
 		if _, err := snapshot.CredentialDAO().Credential(ctx, principal); err != nil {
 			return threadCredentialError(err)
 		}
-		if _, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
 			return threadAccessError(err)
 		}
 		presence, err := snapshot.TaskDAO().TaskPresence(ctx, projectID, taskID)

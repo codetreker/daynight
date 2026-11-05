@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
@@ -23,7 +26,7 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 	tasks, database, project, databaseURL, principal := taskService(t)
 	task := createTask(t, tasks, principal, project.ID, "Snapshot completion")
 	missing := uuid.NewString()
-	projectSecret := secretutil.Random(invitationPrefix)
+	projectSecret := secretutil.Random("dninvite_")
 	teamSecret := secretutil.Random("dnteam_")
 	page := model.PageRequest{Limit: 10}
 	for _, test := range []struct {
@@ -32,16 +35,16 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 		read    func(context.Context, *store.Store) (any, error)
 	}{
 		{"project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewProjects(db).Get(ctx, principal, missing)
+			return projectservice.NewProjects(db).Get(ctx, principal, missing)
 		}},
 		{"project access missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewProjects(db).Access(ctx, principal, missing)
+			return projectservice.NewProjects(db).Access(ctx, principal, missing)
 		}},
 		{"scoped projects missing team", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewProjects(db).ListScoped(ctx, principal, ProjectListRequest{Page: page, TeamID: &missing})
+			return projectservice.NewProjects(db).ListScoped(ctx, principal, coreproject.ProjectListRequest{Page: page, TeamID: &missing})
 		}},
 		{"project transfer missing team", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewProjects(db).TransferPreview(ctx, principal, project.ID, missing)
+			return projectservice.NewProjects(db).TransferPreview(ctx, principal, project.ID, missing)
 		}},
 		{"team missing", true, func(ctx context.Context, db *store.Store) (any, error) {
 			return teamservice.NewTeams(db).Get(ctx, principal, missing)
@@ -53,10 +56,10 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return teamservice.NewTeams(db).InspectInvitation(ctx, principal, teamSecret)
 		}},
 		{"membership missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewMemberships(db).List(ctx, principal, missing)
+			return projectservice.NewMemberships(db).List(ctx, principal, missing)
 		}},
 		{"project invitation missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewMemberships(db).InspectInvitation(ctx, principal, projectSecret)
+			return projectservice.NewMemberships(db).InspectInvitation(ctx, principal, projectSecret)
 		}},
 		{"task missing", true, func(ctx context.Context, db *store.Store) (any, error) {
 			return NewTasks(db).Get(ctx, principal, project.ID, missing)
@@ -80,7 +83,7 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return NewWorkers(db).Get(ctx, principal, missing)
 		}},
 		{"project success", false, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewProjects(db).Get(ctx, principal, project.ID)
+			return projectservice.NewProjects(db).Get(ctx, principal, project.ID)
 		}},
 		{"bot list success", false, func(ctx context.Context, db *store.Store) (any, error) {
 			return NewBots(db).List(ctx, principal, page)
@@ -146,7 +149,7 @@ func TestSnapshotCompletionFailureDominatesMissingProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	_, err = NewProjects(&store.Store{Pool: pool}).Get(ctx, principal, "00000000-0000-0000-0000-000000000001")
+	_, err = projectservice.NewProjects(&store.Store{Pool: pool}).Get(ctx, principal, "00000000-0000-0000-0000-000000000001")
 	var fault *model.Fault
 	if err == nil || errors.As(err, &fault) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("failed snapshot completion must not become not_found: %#v", err)
@@ -155,13 +158,13 @@ func TestSnapshotCompletionFailureDominatesMissingProject(t *testing.T) {
 
 func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
 	ctx := context.Background()
-	_, err := NewProjects(nil).Access(ctx, model.Principal{}, uuid.NewString())
+	_, err := projectservice.NewProjects(nil).Access(ctx, model.Principal{}, uuid.NewString())
 	requireFault(t, err, "unauthenticated")
 	principal := model.Principal{Kind: model.SessionCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
-	_, err = NewProjects(nil).Access(ctx, principal, "invalid")
+	_, err = projectservice.NewProjects(nil).Access(ctx, principal, "invalid")
 	requireFault(t, err, "invalid_input")
 	projects, database, databaseURL, admin := projectService(t)
-	project, err := projects.Create(ctx, admin, CreateProject{ExpectedUserID: admin.UserID, Name: "Completion precedence", RepoURL: "host:repo"})
+	project, err := projects.Create(ctx, admin, coreproject.CreateProject{ExpectedUserID: admin.UserID, Name: "Completion precedence", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +172,7 @@ func TestProjectAccessValidationAndCompletionFailures(t *testing.T) {
 	for _, actor := range []model.Principal{admin, outsider} {
 		canceled, cancel := context.WithCancel(ctx)
 		traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: cancel})
-		access, err := NewProjects(traced.store).Access(canceled, actor, project.ID)
+		access, err := projectservice.NewProjects(traced.store).Access(canceled, actor, project.ID)
 		cancel()
 		assertOperational(t, err)
 		if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(access, model.ProjectAccess{}) {

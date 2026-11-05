@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -41,7 +43,7 @@ func TestWorkerConfigurationBootstrapCloudAuthorityAndPersistence(t *testing.T) 
 	ctx := context.Background()
 	workers := NewWorkers(database)
 	id := uuid.NewString()
-	project, err := projects.Create(ctx, principal, CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git", ExpectedUserID: principal.UserID})
+	project, err := projects.Create(ctx, principal, coreproject.CreateProject{Name: "Configuration project", RepoURL: "https://example.com/configuration.git", ExpectedUserID: principal.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}

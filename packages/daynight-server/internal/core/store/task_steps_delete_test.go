@@ -52,7 +52,9 @@ func TestTaskStepsDeleteStoreDeletesTargetAndUpdatesOnlyTail(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, `TRUNCATE deleted_rows,compacted_rows`); err != nil {
 			t.Fatal(err)
 		}
-		if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error { return tx.DeleteTaskStep(ctx, task.ID, tc.id, tc.position, tc.tail) }); err != nil {
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+			return tx.TaskDAO().DeleteTaskStep(ctx, task.ID, tc.id, tc.position, tc.tail)
+		}); err != nil {
 			t.Fatal(err)
 		}
 		actual := read()
@@ -101,19 +103,19 @@ func TestTaskStepsDeleteStoreFailureCausesAndRollback(t *testing.T) {
 				return result
 			}
 			before := state()
-			err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+			err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
 				switch mode {
 				case "missing":
-					return tx.DeleteTaskStep(ctx, task.ID, "ffffffff", 0, 3)
+					return tx.TaskDAO().DeleteTaskStep(ctx, task.ID, "ffffffff", 0, 3)
 				case "query":
-					if _, err := tx.tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN id TO invalid_id`); err != nil {
+					if _, err := tx.(*ProjectTx).tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN id TO invalid_id`); err != nil {
 						return err
 					}
-					return tx.DeleteTaskStep(ctx, task.ID, "00000000", 0, 3)
+					return tx.TaskDAO().DeleteTaskStep(ctx, task.ID, "00000000", 0, 3)
 				case "tail_count":
-					return tx.DeleteTaskStep(ctx, task.ID, "00000000", 0, 4)
+					return tx.TaskDAO().DeleteTaskStep(ctx, task.ID, "00000000", 0, 4)
 				default:
-					return tx.DeleteTaskStep(ctx, task.ID, "00000000", 0, 3)
+					return tx.TaskDAO().DeleteTaskStep(ctx, task.ID, "00000000", 0, 3)
 				}
 			})
 			var failure *TransactionError

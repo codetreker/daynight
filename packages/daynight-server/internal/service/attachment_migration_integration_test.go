@@ -19,6 +19,9 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -40,7 +43,7 @@ type attachmentMigrationIntegrationFixture struct {
 func attachmentMigrationIntegrationSetup(t *testing.T) *attachmentMigrationIntegrationFixture {
 	t.Helper()
 	_, database, project, databaseURL, principal := taskService(t)
-	other, err := NewProjects(database).Create(t.Context(), principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Migration secondary", RepoURL: "host:migration-secondary"})
+	other, err := projectservice.NewProjects(database).Create(t.Context(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Migration secondary", RepoURL: "host:migration-secondary"})
 	if err != nil {
 		t.Fatal(err)
 	}

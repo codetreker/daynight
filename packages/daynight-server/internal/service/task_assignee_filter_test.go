@@ -129,7 +129,7 @@ func TestTaskAssignedToFilterComposesBeforePagination(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("filtered pagination hid matching tasks: %v", got)
 	}
-	if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error { return tx.RemoveMember(ctx, alice.UserID) }); err != nil {
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error { return tx.ProjectDAO().RemoveMember(ctx, alice.UserID) }); err != nil {
 		t.Fatal(err)
 	}
 	former, err := tasks.List(ctx, admin, project.ID, TaskListRequest{PageRequest: model.PageRequest{Limit: 100}, AssignedTo: &alice.UserID})

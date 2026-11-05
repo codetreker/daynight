@@ -206,15 +206,15 @@ func TestTaskStepsDeferredPositionFailureIsInternalAndRollsBack(t *testing.T) {
 	project := queryProject(t, database, 1)
 	task := queryTask(t, database, project.ID, 10, model.TaskTodo)
 	seedStoreStep(t, database, task.ID, "00000000", 0)
-	err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		stamp, err := tx.ObservedAt(ctx)
+	err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		stamp, err := tx.TaskDAO().ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.tx.Exec(ctx, `INSERT INTO task_steps SELECT task_id,'abcdef01',position,title,description,status,created_at,updated_at FROM task_steps WHERE task_id=$1`, task.ID); err != nil {
+		if _, err := tx.(*ProjectTx).tx.Exec(ctx, `INSERT INTO task_steps SELECT task_id,'abcdef01',position,title,description,status,created_at,updated_at FROM task_steps WHERE task_id=$1`, task.ID); err != nil {
 			return err
 		}
-		return tx.TouchTask(ctx, task.ID, stamp)
+		return tx.TaskDAO().TouchTask(ctx, task.ID, stamp)
 	})
 	var failure *TransactionError
 	var cause *pgconn.PgError
@@ -246,36 +246,36 @@ func TestTaskStepsWriteStoreFailureChainsAndRollback(t *testing.T) {
 	before = state()
 	for _, operation := range []string{"shift", "insert", "touch", "missing"} {
 		t.Run(operation, func(t *testing.T) {
-			err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-				if _, err := tx.TaskHeader(ctx, task.ID); err != nil {
+			err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+				if _, err := tx.TaskDAO().TaskHeader(ctx, task.ID); err != nil {
 					return err
 				}
-				rows, err := tx.TaskSteps(ctx, task.ID)
+				rows, err := tx.TaskDAO().TaskSteps(ctx, task.ID)
 				if err != nil {
 					return err
 				}
 				if len(rows) != 1 || rows[0].ID != "00000000" {
 					t.Fatal("wrong locked collection")
 				}
-				stamp, err := tx.ObservedAt(ctx)
+				stamp, err := tx.TaskDAO().ObservedAt(ctx)
 				if err != nil {
 					return err
 				}
 				switch operation {
 				case "shift":
-					if _, err := tx.tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN position TO invalid_position`); err != nil {
+					if _, err := tx.(*ProjectTx).tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN position TO invalid_position`); err != nil {
 						return err
 					}
-					return tx.InsertTaskStep(ctx, task.ID, model.TaskStep{ID: "abcdef01", Position: 0, Title: "x", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
+					return tx.TaskDAO().InsertTaskStep(ctx, task.ID, model.TaskStep{ID: "abcdef01", Position: 0, Title: "x", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
 				case "insert":
-					return tx.InsertTaskStep(ctx, task.ID, model.TaskStep{ID: "00000000", Position: 0, Title: "x", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
+					return tx.TaskDAO().InsertTaskStep(ctx, task.ID, model.TaskStep{ID: "00000000", Position: 0, Title: "x", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
 				case "touch":
-					if _, err := tx.tx.Exec(ctx, `ALTER TABLE tasks RENAME COLUMN updated_at TO invalid_updated_at`); err != nil {
+					if _, err := tx.(*ProjectTx).tx.Exec(ctx, `ALTER TABLE tasks RENAME COLUMN updated_at TO invalid_updated_at`); err != nil {
 						return err
 					}
-					return tx.TouchTask(ctx, task.ID, stamp)
+					return tx.TaskDAO().TouchTask(ctx, task.ID, stamp)
 				default:
-					return tx.TouchTask(ctx, queryID(999), stamp)
+					return tx.TaskDAO().TouchTask(ctx, queryID(999), stamp)
 				}
 			})
 			var transaction *TransactionError

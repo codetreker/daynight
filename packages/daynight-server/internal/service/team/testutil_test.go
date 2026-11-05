@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	rootservice "github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 
@@ -60,7 +61,7 @@ func serviceDatabaseURL(t *testing.T) string {
 	return parsed.String()
 }
 
-func projectService(t *testing.T) (*rootservice.Projects, *store.Store, string, model.Principal) {
+func projectService(t *testing.T) (*projectservice.Projects, *store.Store, string, model.Principal) {
 	t.Helper()
 	databaseURL := serviceDatabaseURL(t)
 	database, err := store.Open(context.Background(), databaseURL)
@@ -68,7 +69,7 @@ func projectService(t *testing.T) (*rootservice.Projects, *store.Store, string, 
 		t.Fatal(err)
 	}
 	t.Cleanup(database.Close)
-	return rootservice.NewProjects(database), database, databaseURL, servicePrincipal(t, database)
+	return projectservice.NewProjects(database), database, databaseURL, servicePrincipal(t, database)
 }
 
 func servicePrincipal(t *testing.T, database *store.Store) model.Principal {

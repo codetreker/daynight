@@ -8,8 +8,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func validateCandidate(ctx context.Context, tx *store.ProjectTx, id string, values store.TaskWrite) error {
-	prerequisites, err := tx.TasksByID(ctx, values.DependsOn)
+func validateCandidate(ctx context.Context, tx store.ProjectWriteScope, id string, values store.TaskWrite) error {
+	prerequisites, err := tx.TaskDAO().TasksByID(ctx, values.DependsOn)
 	if err != nil {
 		return err
 	}
@@ -28,7 +28,7 @@ func validateCandidate(ctx context.Context, tx *store.ProjectTx, id string, valu
 	}
 	cycles := make([]string, 0)
 	for _, dependency := range values.DependsOn {
-		reachable, err := tx.Reachable(ctx, dependency, id, store.DependencyReplacement{TaskID: id, DependsOn: values.DependsOn})
+		reachable, err := tx.TaskDAO().Reachable(ctx, dependency, id, store.DependencyReplacement{TaskID: id, DependsOn: values.DependsOn})
 		if err != nil {
 			return err
 		}

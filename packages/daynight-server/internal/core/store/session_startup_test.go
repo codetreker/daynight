@@ -25,9 +25,9 @@ func TestSessionStartupFenceRejectsForeignAndStaleIdentity(t *testing.T) {
 	mustQueryExec(t, db, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,'{}',$7)`, report.SessionID, project.ID, queryID(2), worker.ClaimID, worker.UserID, uuid.NewString(), raw)
 	check := func(ctx context.Context, w model.WorkerClaim, r sp.StartupReport) (bool, error) {
 		var matched bool
-		err := db.WriteProject(context.Background(), project.ID, func(tx *ProjectTx) error {
+		err := writeProjectForTest(db, context.Background(), project.ID, func(tx ProjectWriteScope) error {
 			var err error
-			matched, err = tx.MatchSessionStartup(ctx, queryID(2), &w, r)
+			matched, err = tx.SessionDAO().MatchSessionStartup(ctx, queryID(2), &w, r)
 			return err
 		})
 		return matched, err

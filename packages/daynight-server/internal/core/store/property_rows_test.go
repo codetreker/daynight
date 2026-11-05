@@ -172,8 +172,8 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 	properties := model.TaskProperties{"pullRequests": json.RawMessage(`[{"url":"opaque","title":"PR"}]`)}
 	for _, table := range []string{"tasks", "task_properties"} {
 		mustQueryExec(t, database, `CREATE FUNCTION refuse_property_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'property transaction refusal'; END $$; CREATE TRIGGER refuse_property_write BEFORE INSERT OR UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION refuse_property_write()`)
-		err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, Properties: properties})
+		err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+			_, err := tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, Properties: properties})
 			return err
 		})
 		if err == nil {
@@ -185,8 +185,8 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 		}
 		mustQueryExec(t, database, `DROP TRIGGER refuse_property_write ON `+table+`; DROP FUNCTION refuse_property_write()`)
 	}
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, Properties: properties})
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: "Changed", Status: model.TaskTodo, Properties: properties})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -195,8 +195,8 @@ func TestPropertyRowsWritesAreAtomicWithTaskMetadata(t *testing.T) {
 	if actual.Version != task.Version+1 || len(actual.Properties) != 1 {
 		t.Fatalf("successful property write missing: %#v", actual)
 	}
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.UpdateTask(ctx, task.ID, TaskWrite{Title: actual.Title, Status: actual.Status, Properties: model.TaskProperties{}})
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.TaskDAO().UpdateTask(ctx, task.ID, TaskWrite{Title: actual.Title, Status: actual.Status, Properties: model.TaskProperties{}})
 		return err
 	}); err != nil {
 		t.Fatal(err)

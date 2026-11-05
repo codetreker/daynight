@@ -81,8 +81,8 @@ func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
 	traced := tracedTasks(t, databaseURL, taskQueryAction{
 		match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") },
 		end: func() {
-			if err := database.WriteProject(context.Background(), project.ID, func(tx *store.ProjectTx) error {
-				_, err := tx.UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: propertyPatch([]model.PullRequestProperty{{URL: "new", Title: "New"}}...)})
+			if err := writeProjectForTest(database, context.Background(), project.ID, func(tx store.ProjectWriteScope) error {
+				_, err := tx.TaskDAO().UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: propertyPatch([]model.PullRequestProperty{{URL: "new", Title: "New"}}...)})
 				return err
 			}); err != nil {
 				t.Fatal(err)

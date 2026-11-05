@@ -88,11 +88,11 @@ func TestTaskGraphCountAndProjectionShareSnapshot(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			if _, err := tx.UpdateTask(ctx, a.ID, TaskWrite{Title: "Changed", Status: model.TaskDone}); err != nil {
+		if err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+			if _, err := tx.TaskDAO().UpdateTask(ctx, a.ID, TaskWrite{Title: "Changed", Status: model.TaskDone}); err != nil {
 				return err
 			}
-			_, err := tx.CreateTask(ctx, queryID(13), TaskWrite{Title: "New", Status: model.TaskTodo, DependsOn: []string{b.ID}})
+			_, err := tx.TaskDAO().CreateTask(ctx, queryID(13), TaskWrite{Title: "New", Status: model.TaskTodo, DependsOn: []string{b.ID}})
 			return err
 		}); err != nil {
 			return err

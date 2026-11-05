@@ -30,8 +30,8 @@ func TestTaskSessionFreezeAndReceiptFailureRollBackTaskCompletion(t *testing.T) 
 	mustQueryExec(t, s, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,'{}',$7)`, session, project.ID, queryID(2), claim, uuid.NewString(), uuid.NewString(), raw)
 	mustQueryExec(t, s, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt) VALUES($1,$2,1,'\x01','{}',$3,$4,'pat',$5)`, session, operation, uuid.NewString(), uuid.NewString(), receipt)
 	complete := func() error {
-		return s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-			_, err := tx.UpdateTask(ctx, queryID(2), TaskWrite{Title: "Completed", Status: model.TaskDone, Properties: fixtureTaskProperties(t, nil)})
+		return writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+			_, err := tx.TaskDAO().UpdateTask(ctx, queryID(2), TaskWrite{Title: "Completed", Status: model.TaskDone, Properties: fixtureTaskProperties(t, nil)})
 			return err
 		})
 	}

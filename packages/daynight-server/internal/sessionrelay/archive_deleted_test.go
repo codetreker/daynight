@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -215,11 +215,11 @@ func TestArchiveWaitsForDeletionCommitThenFinalizes(t *testing.T) {
 	release := make(chan struct{})
 	deletion := make(chan error, 1)
 	go func() {
-		deletion <- f.s.DB.WriteProject(ctx, f.project, func(tx *store.ProjectTx) error {
-			if _, err := tx.Task(ctx, f.task); err != nil {
+		_, err := f.s.DB.WriteProject(ctx, f.project, func(tx store.ProjectWriteScope) error {
+			if _, err := tx.TaskDAO().Task(ctx, f.task); err != nil {
 				return err
 			}
-			if err := tx.DeleteTask(ctx, f.task, false); err != nil {
+			if err := tx.TaskDAO().DeleteTask(ctx, f.task, false); err != nil {
 				return err
 			}
 			close(deleted)
@@ -230,6 +230,7 @@ func TestArchiveWaitsForDeletionCommitThenFinalizes(t *testing.T) {
 				return ctx.Err()
 			}
 		})
+		deletion <- err
 	}()
 	select {
 	case <-deleted:

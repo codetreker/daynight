@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -57,7 +60,7 @@ func TestTaskGraphScopedProjectionAndSummary(t *testing.T) {
 	ctx := context.Background()
 	_, err := tasks.Graph(ctx, principal, strings.ToUpper(project.ID), "00000000-0000-4000-8000-000000000099")
 	requireFault(t, err, "not_found")
-	other, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
+	other, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Other", RepoURL: "host:other"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +150,11 @@ func TestTaskGraphInterleavedWriteKeepsOneSnapshot(t *testing.T) {
 		match: func(sql string) bool { return strings.Contains(sql, "SELECT count(*) FROM selected") },
 		end: func() {
 			writes++
-			if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
-				if _, err := tx.UpdateTask(ctx, predecessor.ID, store.TaskWrite{Title: "Completed", Status: model.TaskDone}); err != nil {
+			if err := writeProjectForTest(database, ctx, project.ID, func(tx store.ProjectWriteScope) error {
+				if _, err := tx.TaskDAO().UpdateTask(ctx, predecessor.ID, store.TaskWrite{Title: "Completed", Status: model.TaskDone}); err != nil {
 					return err
 				}
-				_, err := tx.CreateTask(ctx, "00000000-0000-4000-8000-000000000001", store.TaskWrite{Title: "New", Status: model.TaskTodo, DependsOn: []string{dependent.ID}})
+				_, err := tx.TaskDAO().CreateTask(ctx, "00000000-0000-4000-8000-000000000001", store.TaskWrite{Title: "New", Status: model.TaskTodo, DependsOn: []string{dependent.ID}})
 				return err
 			}); err != nil {
 				t.Fatal(err)

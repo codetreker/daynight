@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -32,74 +33,83 @@ func (tx *ProjectTx) DirectProjectMember(ctx context.Context, userID string) (mo
 	return readDirectProjectMember(ctx, tx.tx, userID, tx.projectID)
 }
 
-func (s *Store) CreatePrivateProject(ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
-	project, _, err := s.CreateProjectInTeam(ctx, principal, id, name, repoURL, nil)
-	return project, err
+type projectCreationTx struct {
+	tx     pgx.Tx
+	userID string
 }
 
-func (s *Store) CreateProjectInTeam(ctx context.Context, principal model.Principal, id, name, repoURL string, targetTeamID *string) (model.Project, model.ProjectAccess, error) {
+// WriteProjectCreation locks the creator before the callback selects and locks
+// the Team. A Project row cannot be locked until it exists.
+func (s *Store) WriteProjectCreation(ctx context.Context, userID string, operation func(ProjectCreationDAO) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return model.Project{}, model.ProjectAccess{}, queryError("begin project creation", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin project creation", err)
 	}
-	project, access, err := createProjectInTeamTx(ctx, tx, principal, id, name, repoURL, targetTeamID)
-	return project, access, authQueryError("create project", err)
+	err = writeProjectCreationTx(ctx, tx, userID, operation)
+	return teamCompletion("create project", err)
 }
 
-func createProjectInTeamTx(ctx context.Context, tx pgx.Tx, principal model.Principal, id, name, repoURL string, targetTeamID *string) (model.Project, model.ProjectAccess, error) {
-	var project model.Project
-	var access model.ProjectAccess
-	var err error
-	err = transact(ctx, tx, func(tx pgx.Tx) error {
-		// The user must still exist; no implicit membership is created for an external ID.
-		var userID string
-		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, principal.UserID).Scan(&userID); err != nil {
-			return err
+func writeProjectCreationTx(ctx context.Context, tx pgx.Tx, userID string, operation func(ProjectCreationDAO) error) error {
+	return transact(ctx, tx, func(tx pgx.Tx) error {
+		var user string
+		if err := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR KEY SHARE`, userID).Scan(&user); err != nil {
+			return authQueryError("read project creator", err)
 		}
-		var teamID string
-		if targetTeamID == nil {
-			teamID, err = personalTeam(ctx, tx, userID, " FOR UPDATE")
-			if err != nil {
-				return err
-			}
-		} else {
-			var personalOwner *string
-			if err := tx.QueryRow(ctx, `SELECT id::text,personal_user_id::text FROM teams WHERE id=$1 FOR UPDATE`, *targetTeamID).Scan(&teamID, &personalOwner); err != nil {
-				return err
-			}
-			if personalOwner != nil {
-				if *personalOwner != userID {
-					return pgx.ErrNoRows
-				}
-				if _, err := personalTeam(ctx, tx, userID, ""); err != nil {
-					return err
-				}
-			} else {
-				var role string
-				if err := tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, userID).Scan(&role); err != nil {
-					return err
-				}
-			}
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)`, id, name, repoURL)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO project_ownership (project_id,team_id) VALUES ($1,$2)`, id, teamID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO project_grants (project_id,user_id,role) VALUES ($1,$2,'admin')`, id, principal.UserID); err != nil {
-			return err
-		}
-		project, err = readProject(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		access, err = ReadProjectAccess(ctx, tx, userID, id)
-		return err
+		return operation(&projectCreationTx{tx: tx, userID: userID})
 	})
+}
+
+func (tx *projectCreationTx) CreationPersonalTeam(ctx context.Context, lock bool) (PersonalTeamFacts, error) {
+	var facts PersonalTeamFacts
+	clause := ""
+	if lock {
+		clause = " FOR UPDATE"
+	}
+	err := tx.tx.QueryRow(ctx, `SELECT id::text FROM teams WHERE personal_user_id=$1`+clause, tx.userID).Scan(&facts.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PersonalTeamFacts{}, nil
+	}
+	if err != nil {
+		return PersonalTeamFacts{}, queryError("read personal Team", err)
+	}
+	err = tx.tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE user_id=$2 AND role='admin') FROM team_members WHERE team_id=$1`, facts.ID, tx.userID).Scan(&facts.MemberCount, &facts.OwnerAdminCount)
+	return facts, authQueryError("read personal Team membership", err)
+}
+
+func (tx *projectCreationTx) LockCreationTeam(ctx context.Context, teamID string) (ProjectCreationTeam, error) {
+	var team ProjectCreationTeam
+	err := tx.tx.QueryRow(ctx, `SELECT id::text,personal_user_id::text FROM teams WHERE id=$1 FOR UPDATE`, teamID).Scan(&team.ID, &team.PersonalUserID)
+	return team, authQueryError("lock creation Team", err)
+}
+
+func (tx *projectCreationTx) CreationTeamMember(ctx context.Context, teamID string) (bool, error) {
+	var role string
+	err := tx.tx.QueryRow(ctx, `SELECT role FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, tx.userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, authQueryError("read creation Team membership", err)
+}
+
+func (tx *projectCreationTx) InsertProject(ctx context.Context, id, name, repoURL, teamID string) (model.Project, model.ProjectAccess, error) {
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO projects (id,name,repo_url) VALUES ($1,$2,$3)`, id, name, repoURL); err != nil {
+		return model.Project{}, model.ProjectAccess{}, queryError("insert project", err)
+	}
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO project_ownership (project_id,team_id) VALUES ($1,$2)`, id, teamID); err != nil {
+		return model.Project{}, model.ProjectAccess{}, queryError("insert project ownership", err)
+	}
+	if _, err := tx.tx.Exec(ctx, `INSERT INTO project_grants (project_id,user_id,role) VALUES ($1,$2,'admin')`, id, tx.userID); err != nil {
+		return model.Project{}, model.ProjectAccess{}, queryError("insert project administrator", err)
+	}
+	project, err := readProject(ctx, tx.tx, id)
+	if err != nil {
+		return model.Project{}, model.ProjectAccess{}, err
+	}
+	access, err := ReadProjectAccess(ctx, tx.tx, tx.userID, id)
 	return project, access, err
 }
+
+var _ ProjectCreationDAO = (*projectCreationTx)(nil)
 
 func (s *Snapshot) ProjectParticipants(ctx context.Context, projectID string) ([]model.ProjectParticipant, error) {
 	rows, err := s.tx.Query(ctx, `SELECT a.user_id::text,u.id::text,u.name,u.email,u.avatar_url,a.role,tm.role,t.id::text,t.name,t.personal_user_id::text,

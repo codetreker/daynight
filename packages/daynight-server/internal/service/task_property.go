@@ -33,7 +33,7 @@ func (s *Tasks) SetProperty(ctx context.Context, principal model.Principal, proj
 	if err != nil {
 		return model.Task{}, propertyInputFault(err)
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ *store.ProjectTx, current model.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ store.ProjectWriteScope, current model.Task) (taskMutation, error) {
 		values := currentTaskWrite(current)
 		values.Properties[name] = value
 		return taskMutation{id: current.ID, current: current, values: values, changed: !taskproperties.Equal(current.Properties, values.Properties)}, nil
@@ -47,7 +47,7 @@ func (s *Tasks) RemoveProperty(ctx context.Context, principal model.Principal, p
 	if err := taskprops.CheckWritable(name); err != nil {
 		return model.Task{}, propertyInputFault(err)
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ *store.ProjectTx, current model.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, version, func(_ store.ProjectWriteScope, current model.Task) (taskMutation, error) {
 		values := currentTaskWrite(current)
 		delete(values.Properties, name)
 		return taskMutation{id: current.ID, current: current, values: values, changed: !taskproperties.Equal(current.Properties, values.Properties)}, nil

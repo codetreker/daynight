@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"time"
 
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -11,7 +13,7 @@ import (
 
 func taskGraphResponse(graph model.TaskGraph) api.TaskGraph {
 	response := api.TaskGraph{
-		Project:    projectResponse(graph.Project),
+		Project:    projecthttp.ProjectResponse(graph.Project),
 		ObservedAt: graph.ObservedAt.UTC(),
 		Summary: api.TaskGraphSummary{
 			Total: graph.Summary.Total, Todo: graph.Summary.Todo, InProgress: graph.Summary.InProgress,

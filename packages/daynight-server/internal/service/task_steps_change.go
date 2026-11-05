@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
@@ -64,16 +65,16 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		return result, err
 	}
 	projectLocked := false
-	err = s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
+	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
 		projectLocked = true
-		if _, err := RequireProjectWrite(ctx, tx, principal); err != nil {
+		if _, err := projectcore.RequireProjectWrite(ctx, tx.ProjectDAO(), principal); err != nil {
 			return err
 		}
 		header, err := taskWriteHeader(ctx, tx, taskID, version)
 		if err != nil {
 			return err
 		}
-		current, err := tx.TaskSteps(ctx, taskID)
+		current, err := tx.TaskDAO().TaskSteps(ctx, taskID)
 		if err != nil {
 			return err
 		}
@@ -94,7 +95,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		if header.Version == math.MaxInt64 {
 			return &model.Fault{Code: "version_exhausted", Message: "Task version is exhausted."}
 		}
-		observed, err := tx.ObservedAt(ctx)
+		observed, err := tx.TaskDAO().ObservedAt(ctx)
 		if err != nil {
 			return err
 		}
@@ -105,10 +106,10 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 			return taskStepsEncodingFault(err)
 		}
 		result.Changed, result.Phase = true, "persist"
-		if err := tx.UpdateTaskStep(ctx, taskID, candidate[index]); err != nil {
+		if err := tx.TaskDAO().UpdateTaskStep(ctx, taskID, candidate[index]); err != nil {
 			return err
 		}
-		return tx.TouchTask(ctx, taskID, observed)
+		return tx.TaskDAO().TouchTask(ctx, taskID, observed)
 	})
-	return finishStepsWrite(result, projectLocked, err)
+	return finishStepsWrite(result, projectLocked, completion, err)
 }

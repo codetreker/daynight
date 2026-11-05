@@ -47,7 +47,9 @@ func TestTaskStepsMoveStoreWritesOnlyInclusivePositionInterval(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, `DELETE FROM moved_rows`); err != nil {
 			t.Fatal(err)
 		}
-		if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error { return tx.MoveTaskStep(ctx, task.ID, tc.target, tc.from, tc.to) }); err != nil {
+		if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+			return tx.TaskDAO().MoveTaskStep(ctx, task.ID, tc.target, tc.from, tc.to)
+		}); err != nil {
 			var driver *pgconn.PgError
 			if errors.As(err, &driver) {
 				t.Fatalf("move did not commit: code=%s message=%s", driver.Code, driver.Message)
@@ -88,17 +90,17 @@ func TestTaskStepsMoveStoreFailuresPreserveCausesAndRollback(t *testing.T) {
 	before := state()
 	for _, mode := range []string{"query", "count", "constraint"} {
 		t.Run(mode, func(t *testing.T) {
-			err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+			err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
 				switch mode {
 				case "query":
-					if _, err := tx.tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN position TO invalid_position`); err != nil {
+					if _, err := tx.(*ProjectTx).tx.Exec(ctx, `ALTER TABLE task_steps RENAME COLUMN position TO invalid_position`); err != nil {
 						return err
 					}
-					return tx.MoveTaskStep(ctx, task.ID, "00000000", 0, 3)
+					return tx.TaskDAO().MoveTaskStep(ctx, task.ID, "00000000", 0, 3)
 				case "count":
-					return tx.MoveTaskStep(ctx, task.ID, "00000000", 0, 5)
+					return tx.TaskDAO().MoveTaskStep(ctx, task.ID, "00000000", 0, 5)
 				default:
-					return tx.MoveTaskStep(ctx, task.ID, "00000000", 0, -1)
+					return tx.TaskDAO().MoveTaskStep(ctx, task.ID, "00000000", 0, -1)
 				}
 			})
 			var failure *TransactionError

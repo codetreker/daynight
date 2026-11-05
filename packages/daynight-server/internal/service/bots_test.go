@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -287,7 +290,7 @@ func TestBotsPaginationAndCompositeWorkerIdentity(t *testing.T) {
 func TestBotsVersionsBoundSessionAndIndependentTasks(t *testing.T) {
 	bots, database, principal, workerID := botService(t)
 	ctx := context.Background()
-	project, err := NewProjects(database).Create(ctx, principal, CreateProject{ExpectedUserID: principal.UserID, Name: "Independent tasks", RepoURL: "https://github.com/example/independent"})
+	project, err := projectservice.NewProjects(database).Create(ctx, principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Independent tasks", RepoURL: "https://github.com/example/independent"})
 	if err != nil {
 		t.Fatal(err)
 	}
