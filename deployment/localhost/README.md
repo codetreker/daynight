@@ -237,8 +237,8 @@ Two Compose-managed named volumes hold application data:
 
 | Volume | Container path | Content |
 |---|---|---|
-| `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership and attachment metadata |
-| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` |
+| `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership, attachment metadata and Session archive metadata/receipts |
+| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` and Session archive bodies under the project/user and Session UUID shards described in the [archive upgrade](#session-archive-layout-upgrade) |
 
 Names are scoped to the Compose project. Server startup applies its embedded
 migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
@@ -252,20 +252,21 @@ docker compose down
 ```
 
 To deliberately delete projects, tasks, authentication records, attachment
-metadata and attachment files, remove both volumes:
+metadata/files and Session archive metadata/bodies, remove both volumes:
 
 ```bash
 docker compose down --volumes
 ```
 
-The database and attachment directory form one backup pair. Retain the affected
+The database and file-storage directory form one backup pair, including Session
+archive metadata, receipts and bodies. Retain the affected
 projects' current epoch values from authenticated task-sync snapshots for restore
 validation. Stop all server instances and direct database or file writers before
 capturing both; keep writes stopped until both artifacts are complete. This makes
 a normal backup stable but does
 not repair a mismatch that already existed: file operations and PostgreSQL
 metadata changes are not atomic. A database-only or directory-only restore does
-not restore task attachments completely.
+not restore task attachments or Session archives completely.
 
 From `deployment/localhost/`, create a pair using the running stack's production
 image for the archive. The temporary directory is local staging; retain the two
@@ -328,8 +329,9 @@ snapshot, so UUID rotation alone does not correct that data.
 
 After restore, sign in, confirm the affected project's epoch changed and a
 request with its saved old epoch returns a complete task snapshot. Check project
-membership, attachment lists, downloads and relative preview resources, and
-upload a new file. This is a manual paired backup/restore procedure; it adds no
+membership, attachment lists, downloads and relative preview resources, read
+existing ready Session archives, and upload a new file. This is a manual paired
+backup/restore procedure; it adds no
 backup service or cross-store recovery mechanism. The
 [deployment decision](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-persistence.md)
 owns the volume and validation rationale. The
@@ -463,6 +465,98 @@ Before new writes resume, this restores the captured state. After writers resume
 restoring that backup would discard subsequent changes and requires a separate
 data-preservation decision. Maintenance is not a backup system or general
 filesystem/PG reconciliation service.
+
+## Session archive layout upgrade
+
+Task Web/Herdr archive bodies use
+`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
+Independent Test/Bot bodies use
+`session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
+The original `session-archives/<sessionId>/<sha256>.json` directories require
+explicit maintenance. Ordinary service startup and requests do not relocate or
+read a legacy object; mismatched ready metadata reports `source_corrupt`. Bot
+cleanup also rejects an unmigrated direct Session directory, including one with
+only unregistered objects.
+
+Stop every server instance and all direct database/file writers. Keep them
+stopped until conversion and verification finish. Retain an independently tagged
+old image and a matching pre-migration database/storage backup. The normal backup
+procedure reopens the server, so use the sequence below for this upgrade. The
+`attachments.tar` artifact contains the whole storage volume, including archive
+bodies. Maintenance uses the new image's normal UID/GID `10001:10001` and only
+the configured database/root settings; it does not need UniAuth.
+
+From `deployment/localhost/`, retain the old image and backup pair, build the new
+image, and run the offline conversion:
+
+```bash
+(
+  set -eu
+  ARCHIVE_MIGRATION_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+  ARCHIVE_MIGRATION_DIR="../../.tmp/daynight-session-archive-layout-$ARCHIVE_MIGRATION_STAMP"
+  mkdir -p "$ARCHIVE_MIGRATION_DIR"
+  ARCHIVE_OLD_IMAGE="$(docker inspect --format '{{.Image}}' "$(docker compose ps --all -q server)")"
+  ARCHIVE_OLD_TAG="daynight-session-archive-layout-before:$ARCHIVE_MIGRATION_STAMP"
+  docker image tag "$ARCHIVE_OLD_IMAGE" "$ARCHIVE_OLD_TAG"
+  printf '%s\n' "$ARCHIVE_OLD_TAG" > "$ARCHIVE_MIGRATION_DIR/old-server-image"
+  docker compose stop server
+  docker compose exec -T postgres pg_dump --no-owner --no-acl \
+    -U daynight -d daynight > "$ARCHIVE_MIGRATION_DIR/postgres.sql"
+  docker compose run --rm --no-deps -T --entrypoint tar server \
+    -C /var/lib/daynight/storage -cpf - . > "$ARCHIVE_MIGRATION_DIR/attachments.tar"
+  docker compose build server
+  docker compose run --rm --no-deps -T server \
+    migrate-session-archive-layout > "$ARCHIVE_MIGRATION_DIR/result.json"
+  cat "$ARCHIVE_MIGRATION_DIR/result.json"
+  printf 'Migration artifacts: %s\n' "$ARCHIVE_MIGRATION_DIR"
+)
+```
+
+A successful command exits 0 and emits a compact JSON summary with
+`phase="complete"`, `sessionCount`, `movedCount`, `fileCount` and `totalBytes`.
+The command checks all known ownership and legacy/new locations, registered
+lengths/digests and directory safety before moving whole Session directories.
+Unregistered objects and empty directories belonging to known Sessions move with
+the directory; unknown ownership, missing or corrupt registered files, symlinks,
+special files and source/target conflicts fail without guessing or merging.
+The PostgreSQL advisory lock serializes maintenance calls but cannot fence normal
+application writers.
+
+Each moved namespace is synchronized before its new `object_path` commits. A
+failure or terminated command can leave verified files in their new location
+while the database still records the old path. Keep writers stopped and repeat
+`migrate-session-archive-layout` using the same database and root. The command
+verifies the known destination and finishes that metadata update. A repeated
+completed conversion verifies the current layout and moves no directories; an
+output failure likewise requires this readback because it does not prove that
+conversion failed. Retain stderr diagnostics and the backup pair. Conflicting or
+unexplained states remain failures; do not manually overwrite either tree.
+
+After a successful conversion, repeat the command once while writers remain
+stopped, then start the new image:
+
+```bash
+docker compose run --rm --no-deps -T server migrate-session-archive-layout
+docker compose up --no-build --detach --wait --wait-timeout 120
+```
+
+Before business writers resume, read existing Web Task, independent Test/Bot and
+Herdr ready archives and compare their original bytes, SHA-256, lengths and
+terminal receipts. Public Session URLs and access permissions stay the same.
+Conversion changes only physical object locations, preserving schema and task
+cache epochs. The [shared Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
+owns validation and failure semantics; the
+[server guide](../../packages/daynight-server/README.md#session-archive-layout-maintenance)
+owns command output.
+
+For rollback, keep writers stopped and restore the matching pre-migration SQL and
+whole storage archive with the retained prior image through the
+[fresh-volume restore](#persistence-and-backup) procedure. Historical content
+restoration still requires affected task_cache_epoch rotation under that image's
+schema before its server reopens. Once new writes resume, restoring the old pair
+would discard them and requires a separate preservation decision. Maintenance
+provides bounded layout conversion, not a general filesystem/database repair or
+backup service.
 
 ## Exposure
 

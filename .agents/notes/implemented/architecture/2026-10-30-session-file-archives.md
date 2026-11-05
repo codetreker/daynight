@@ -37,7 +37,11 @@ resynchronizes file updates that survived a rolled-back SQL transaction.
 
 After native stop is confirmed, the launcher uploads one versioned archive to the
 service's existing file-storage abstraction. PostgreSQL stores only identity,
-status, object location, size and checksum. A matching ready receipt permits
+status, object location, size and checksum. The
+[ownership-grouped layout decision](2026-11-05-session-archive-layout.md) replaces
+the direct Session directory arrangement with project/user ownership and UUID
+shards, while preserving the archive format and lifecycle described here.
+A matching ready receipt permits
 normal Worker worktree cleanup. Failed uploads retain their source and retry
 without restarting the Agent or repeating the task. Historical catch-up attempts
 at most one execution per round and advances an in-process execution cursor on

@@ -551,6 +551,21 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
+Session archives use `internal/sessionarchive.Namespace` to derive ownership and
+Session UUID shards. Task Web/Herdr bodies use
+`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
+independent Test/Bot bodies use
+`session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
+PostgreSQL retains the object path, length, digest and archive status or receipt.
+Runtime requires the stored path to match the original Session ownership; an
+unmigrated or mismatched path fails with `source_corrupt`. Public URLs and archive
+bytes retain their identity. The restricted `DeleteSessionArchives` operation
+accepts a validated Namespace, removes its whole Session directory including
+unregistered objects, and preserves same-owner/shard siblings. A direct legacy
+Session directory blocks cleanup until explicit migration. The
+[Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
+owns the address and conversion mechanism.
+
 Writes stream through an owned temporary file and publish complete contents.
 An empty internal directory can be reused as a file path; existing child files
 remain conflicts. Internal namespace synchronization belongs to this storage
@@ -562,7 +577,8 @@ Both Compose deployments mount a project-scoped `attachment-data` volume at
 `DAYNIGHT_STORAGE_ROOT=/var/lib/daynight/storage`. Fresh-volume initialization
 preserves the image directory's UID/GID `10001:10001`, and the normal nonroot
 server writes without a privileged startup process. Normal restart and rebuild
-retain PostgreSQL metadata and attachment bytes; dev-ci removes both owned data
+retain PostgreSQL metadata, attachment bytes and Session archive bodies; dev-ci
+removes both owned data
 volumes on cleanup. The [deployment guide](../../deployment/localhost/README.md#persistence-and-backup)
 owns retention and the stopped-write, paired PostgreSQL/directory backup and
 restore commands. Before reopening a restored/imported history, rotate affected
@@ -645,6 +661,54 @@ before reopening writers to avoid discarding new writes. The
 state and failure rules; the
 [upgrade runbook](../../deployment/localhost/README.md#attachment-layout-upgrade)
 owns the operator sequence.
+
+## Session archive layout maintenance
+
+The same executable converts the legacy direct Session directories explicitly:
+
+```bash
+daynight-server migrate-session-archive-layout
+```
+
+Only `DAYNIGHT_DATABASE_URL` and `DAYNIGHT_STORAGE_ROOT` are required. Maintenance
+opens the existing database without starting HTTP, authentication or automatic
+SQL schema migration. Stop every service instance and all direct database/file
+writers, retain the prior image, and capture a matching database/storage backup.
+Keep writers stopped through conversion and verification. The advisory lock
+serializes maintenance invocations only.
+
+Success exits 0 and writes one compact JSON summary to stdout:
+
+| Field | Meaning |
+|---|---|
+| `phase` | `complete` |
+| `sessionCount` | Existing Session directory trees verified, excluding registry rows without files |
+| `movedCount` | Whole Session directory renames in this invocation |
+| `fileCount` | Verified regular files, including unregistered and temporary objects |
+| `totalBytes` | Total verified regular-file bytes |
+
+Failures exit 1 with structured JSON diagnostics on stderr, including phase,
+category and Session correlation while excluding credentials and host paths.
+An output failure does not undo completed conversion; rerun the command to verify
+its actual state before reopening writers.
+
+The command validates registry ownership, exact legacy/new paths, directory
+inventories and registered file lengths/digests before moving complete Session
+directories, including unregistered files and empty directories. Unknown owners,
+missing or corrupt registered objects, symlinks, special files and conflicting
+source/target directories fail explicitly. It synchronizes each moved directory
+entry before committing the Session's new `object_path`. A repeat verifies a
+completed conversion or finishes the known file-before-SQL interruption; it never
+merges, overwrites or guesses a conflicting location. The reserved `projects` and
+`users` roots distinguish new layout from legacy UUID roots without a separate
+operation manifest. Archive bytes, lengths, digests, receipts, SQL schema and task
+cache epochs are preserved.
+
+The [shared Session design](../../docs/design/task-session-protocol.md#服务端归档布局与迁移)
+owns the conversion and failure rules. The
+[upgrade runbook](../../deployment/localhost/README.md#session-archive-layout-upgrade)
+owns the stopped-write sequence, verification and paired restore. Ordinary
+startup and requests do not perform this conversion or read an old location.
 
 ## Task attachment API
 

@@ -7,56 +7,96 @@ import (
 	"io"
 	"io/fs"
 	"os"
-
-	"github.com/google/uuid"
+	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionarchive"
 )
 
 // DeleteSessionArchives never accepts a caller-selected bucket or path prefix.
 // Directory handles confine every recursive operation to the selected Session;
 // unlike ordinary object access, cleanup rejects symlink directory aliases.
-func (s *Storage) DeleteSessionArchives(ctx context.Context, sessionID string) (result error) {
-	id, err := uuid.Parse(sessionID)
-	if err != nil || id == uuid.Nil || id.String() != sessionID {
-		return fmt.Errorf("%w: session ID must be a nonzero canonical UUID", filestorage.ErrInvalidAddress)
+func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionarchive.Namespace) (result error) {
+	if err := namespace.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", filestorage.ErrInvalidAddress, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.namespace.Lock()
 	defer s.namespace.Unlock()
-	if err := s.checkSpelling("session-archives"); err != nil {
+	directories := []*os.Root{s.root}
+	infos := []fs.FileInfo{nil}
+	components := append([]string{sessionarchive.Bucket}, strings.Split(namespace.Directory(), "/")...)
+	defer func() {
+		for i := len(directories) - 1; i > 0; i-- {
+			result = errors.Join(result, directories[i].Close())
+		}
+	}()
+	for i, component := range components {
+		if err := s.checkSpelling(strings.Join(components[:i+1], "/")); err != nil {
+			return err
+		}
+		directory, info, err := openArchiveDirectory(directories[i], component)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := s.syncArchiveDirectory(directories[i]); err != nil {
+				return err
+			}
+			return s.pruneArchiveParents(ctx, directories, infos, components, i)
+		}
+		if err != nil {
+			return err
+		}
+		directories = append(directories, directory)
+		infos = append(infos, info)
+		if i == 0 {
+			if _, err := directory.Lstat(namespace.SessionID()); err == nil {
+				return fmt.Errorf("%w: Session archive layout migration is required before cleanup", filestorage.ErrInvalidAddress)
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	last := len(directories) - 1
+	if err := removeArchiveContents(ctx, directories[last]); err != nil {
 		return err
 	}
-	bucket, _, err := openArchiveDirectory(s.root, "session-archives")
-	if errors.Is(err, fs.ErrNotExist) {
-		return s.syncArchiveDirectory(s.root)
-	}
-	if err != nil {
+	if err := removeArchiveEntry(ctx, directories[last-1], components[last-1], infos[last]); err != nil {
 		return err
 	}
-	defer func() { result = errors.Join(result, bucket.Close()) }()
-	if err := s.checkSpelling("session-archives/" + sessionID); err != nil {
+	// A retry repeats this barrier even after the Session directory disappeared.
+	if err := s.syncArchiveDirectory(directories[last-1]); err != nil {
 		return err
 	}
-	session, info, err := openArchiveDirectory(bucket, sessionID)
-	if errors.Is(err, fs.ErrNotExist) {
-		return s.syncArchiveDirectory(bucket)
+	return s.pruneArchiveParents(ctx, directories, infos, components, last-1)
+}
+
+func (s *Storage) pruneArchiveParents(ctx context.Context, directories []*os.Root, infos []fs.FileInfo, components []string, last int) error {
+	// Shared shard and ownership directories are removed only after proving them
+	// empty; the bucket remains the common namespace boundary.
+	for i := last; i > 1; i-- {
+		file, err := directories[i].Open(".")
+		if err != nil {
+			return err
+		}
+		entries, readErr := file.ReadDir(1)
+		if errors.Is(readErr, io.EOF) {
+			readErr = nil
+		}
+		if err := errors.Join(readErr, file.Close()); err != nil {
+			return err
+		}
+		if len(entries) != 0 {
+			return nil
+		}
+		if err := removeArchiveEntry(ctx, directories[i-1], components[i-1], infos[i]); err != nil {
+			return err
+		}
+		if err := s.syncArchiveDirectory(directories[i-1]); err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-	defer func() { result = errors.Join(result, session.Close()) }()
-	if err := removeArchiveContents(ctx, session); err != nil {
-		return err
-	}
-	if err := removeArchiveEntry(ctx, bucket, sessionID, info); err != nil {
-		return err
-	}
-	// A retry must repeat this barrier even when the previous attempt removed
-	// the namespace but could not make that removal durable.
-	return s.syncArchiveDirectory(bucket)
+	return nil
 }
 
 func openArchiveDirectory(parent *os.Root, name string) (*os.Root, fs.FileInfo, error) {

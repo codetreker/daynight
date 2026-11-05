@@ -131,7 +131,7 @@ func TestArchiveStorageFailureAndIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := v.SessionID + "/" + *status.SHA256 + ".json"
+	path := "projects/" + f.project + "/" + v.SessionID[:2] + "/" + v.SessionID + "/" + *status.SHA256 + ".json"
 	if _, err = storage.Put(ctx, archiveBucket, path, strings.NewReader("corrupt")); err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +204,14 @@ func TestStandaloneArchiveAfterStop(t *testing.T) {
 	if _, err = f.s.PutArchive(ctx, f.p, "", "", v.SessionID, data); err != nil {
 		t.Fatal(err)
 	}
+	var physicalPath string
+	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT object_path FROM session_archives WHERE session_id=$1`, v.SessionID).Scan(&physicalPath); err != nil {
+		t.Fatal(err)
+	}
+	expected := "users/" + f.p.UserID + "/" + v.SessionID[:2] + "/" + v.SessionID + "/"
+	if !strings.HasPrefix(physicalPath, expected) {
+		t.Fatalf("standalone archive is outside its user's shard: %s", physicalPath)
+	}
 	if _, err = f.s.ArchiveContent(ctx, f.p, "", "", v.SessionID); err != nil {
 		t.Fatal(err)
 	}
@@ -212,6 +220,43 @@ func TestStandaloneArchiveAfterStop(t *testing.T) {
 	}
 	if _, err = f.s.ArchiveContent(ctx, f.p, "", "", v.SessionID); err == nil {
 		t.Fatal("revoked credential")
+	}
+}
+
+func TestArchiveRejectsUnmigratedObjectPathAndMissingRetryObject(t *testing.T) {
+	f, v, data := archiveFixture(t)
+	ctx := t.Context()
+	archiveTerminal(t, f)
+	status, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current string
+	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT object_path FROM session_archives WHERE session_id=$1`, v.SessionID).Scan(&current); err != nil {
+		t.Fatal(err)
+	}
+	legacy := v.SessionID + "/" + *status.SHA256 + ".json"
+	if _, err := f.s.files.Put(ctx, archiveBucket, legacy, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE session_archives SET object_path=$2 WHERE session_id=$1`, v.SessionID, legacy); err != nil {
+		t.Fatal(err)
+	}
+	for name, read := range map[string]func() error{
+		"status":  func() error { _, err := f.s.ArchiveStatus(ctx, f.p, f.project, f.task, v.SessionID); return err },
+		"content": func() error { _, err := f.s.ArchiveContent(ctx, f.p, f.project, f.task, v.SessionID); return err },
+		"retry":   func() error { _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); return err },
+	} {
+		t.Run(name, func(t *testing.T) { botFault(t, read(), "source_corrupt") })
+	}
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE session_archives SET object_path=$2 WHERE session_id=$1`, v.SessionID, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.files.Delete(ctx, archiveBucket, current); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.PutArchive(ctx, f.p, f.project, f.task, v.SessionID, data); err == nil {
+		t.Fatal("ready retry accepted a missing immutable object")
 	}
 }
 

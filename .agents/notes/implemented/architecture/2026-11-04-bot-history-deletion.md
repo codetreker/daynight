@@ -33,9 +33,14 @@ before server cleanup, which can fail and retry independently. Repeating the
 same failed state and code preserves its version; changed failure information
 or completion advances the recorded result.
 
-Server cleanup enumerates actual Bot associations, removes each restricted
-Session archive namespace, explicitly removes all SQL children and the Session,
-and reduces the Bot to deletion responsibility. Filesystem failures and SQL
+Server cleanup enumerates actual Bot associations, derives each typed archive
+namespace from the original owner and Session, removes its whole user/shard/Session
+directory, explicitly removes all SQL children and the Session, and reduces the
+Bot to deletion responsibility. The
+[archive layout decision](2026-11-05-session-archive-layout.md) owns these grouped
+addresses and explicit legacy conversion. Cleanup rejects an unmigrated direct
+Session directory, including one containing only unregistered objects, and
+preserves other Sessions under the same owner or shard. Filesystem failures and SQL
 rollback never restore admission. A retry tolerates already removed files and
 cannot downgrade a concurrent completed cleanup. Live caches are invalidated
 locally after deletion and on other instances when persistent removal is observed.
