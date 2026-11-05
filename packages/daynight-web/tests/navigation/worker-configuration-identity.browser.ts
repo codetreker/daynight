@@ -10,7 +10,7 @@ const project = { id: projectId, name: 'Alpha project', repoUrl: 'https://exampl
 type Gate = { started: () => void; wait: Promise<void> };
 const gate = () => { const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(); return { value: { started: started.resolve, wait: finish.promise }, started: started.promise, finish: finish.resolve }; };
 const install = async (page: Page) => {
-  const state: { me: Gate | null; config: Gate | null; projects: Gate | null; writes: string[]; configReads: number; projectReads: number } = { me: null, config: null, projects: null, writes: [], configReads: 0, projectReads: 0 };
+  const state: { me: Gate | null; config: Gate | null; projects: Gate | null; writes: string[]; configReads: number; projectReads: number; revision: string; projectName: string } = { me: null, config: null, projects: null, writes: [], configReads: 0, projectReads: 0, revision: '1', projectName: project.name };
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (request.method() !== 'GET') state.writes.push(`${request.method()} ${path}`);
@@ -21,9 +21,9 @@ const install = async (page: Page) => {
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') {
       if (url.searchParams.get('limit') === '100') { state.projectReads++; await wait('projects'); }
-      return send({ items: [project], nextCursor: null });
+      return send({ items: [{ ...project, name: state.projectName }], nextCursor: null });
     }
-    if (path === `/api/v1/me/workers/${target}/configuration`) { state.configReads++; await wait('config'); return send(configurationResource(), { 'Daynight-Worker-Configuration': '1' }); }
+    if (path === `/api/v1/me/workers/${target}/configuration`) { state.configReads++; await wait('config'); return send(configurationResource(state.revision), { 'Daynight-Worker-Configuration': '1' }); }
     if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
     return route.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': WORKER_USER } });
   });
@@ -76,13 +76,28 @@ for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choos
     const configResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/me/workers/${target}/configuration` && response.request().method() === 'GET');
     const projectsResponse = page.waitForResponse(response => { const url = new URL(response.url()); return url.pathname === '/api/v1/projects' && url.searchParams.get('limit') === '100'; });
     config.finish(); projects.finish();
-    expect((await configResponse).status()).toBe(200); expect((await projectsResponse).status()).toBe(200);
+    const configResult = await configResponse, projectsResult = await projectsResponse;
+    expect(configResult.status()).toBe(200); expect(projectsResult.status()).toBe(200);
+    expect(await configResult.finished()).toBeNull(); expect(await projectsResult.finished()).toBeNull();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expect.poll(() => state.configReads).toBeGreaterThan(1);
     await expect.poll(() => state.projectReads).toBeGreaterThan(1);
     await assertStable();
+    // Same-content reads have no visible publication marker. A separate changed
+    // response verifies that both readers can publish after the stable wait.
+    state.revision = '2'; state.projectName = 'Alpha updated';
+    const changedConfig = gate(), changedProjects = gate(); state.config = changedConfig.value; state.projects = changedProjects.value;
+    const changedIdentity = await revalidate(page, state);
+    await assertStable(); changedIdentity.finish(); await Promise.all([changedConfig.started, changedProjects.started]);
+    changedConfig.finish(); changedProjects.finish();
+    await expect(dialog.getByText('Alpha updated')).toBeVisible();
+    await expect(page.locator('.configuration-summary').getByText('2', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('checkbox')).toBeChecked(); await expect(search).toBeFocused();
+    expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
+    await expect(args).toHaveValue('[invalid JSON');
     await dialog.getByRole('button', { name: scenario.done }).click();
     await expect(dialog).toHaveCount(0);
-    await expect(page.locator('.project-config-item').getByText('Alpha project')).toBeVisible();
+    await expect(page.locator('.project-config-item').getByText('Alpha updated')).toBeVisible();
     await expect(args).toHaveValue('[invalid JSON');
     expect(state.writes).toEqual([]);
   });
