@@ -17,7 +17,7 @@ type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
 type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
-const task = detailFixture(projectId, taskId, { title: 'Retained Task' });
+const task = detailFixture(projectId, taskId, { title: 'Retained Task', version: 9_223_372_036_854_775_807n });
 const graph = graphFixture([task]);
 const access = directAccessFixture(projectId, alice, 'admin');
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
@@ -35,7 +35,8 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
     if (path === `/api/v1/projects/${projectId}/task-sync`) return sendWire(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return sendWire(task);
-    if (path.startsWith(`/api/v1/projects/${projectId}/tasks/${taskId}/`) && (path.endsWith('/sessions') || path.endsWith('/attachments') || path.endsWith('/steps'))) return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`) return sendWire({ projectId, taskId, version: task.version, steps: [] });
+    if (path.startsWith(`/api/v1/projects/${projectId}/tasks/${taskId}/`) && (path.endsWith('/sessions') || path.endsWith('/attachments'))) return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.members.has(alice) ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
     if (path === `/api/v1/teams/${betaId}`) return send(team(betaId));
@@ -104,6 +105,20 @@ const foreground = async (page: Page, api: State) => {
   await started.promise;
   return { finish: finish.resolve };
 };
+
+test('Task Steps use the empty resource contract after Team navigation', async ({ page }) => {
+  await install(page); await start(page);
+  await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
+  await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
+  const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`);
+  await page.getByRole('tab', { name: 'Steps' }).click();
+  const steps = await response;
+  expect(steps.status()).toBe(200);
+  expect(steps.headers()['daynight-user-id']).toBe(alice);
+  expect(await steps.text()).toBe(`{"projectId":"${projectId}","taskId":"${taskId}","version":${task.version},"steps":[]}`);
+  await expect(page.getByText('No steps yet')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
 
 for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN']) {
   test(`member role columns align at ${width}px in ${locale}`, async ({ page }, testInfo) => {
@@ -489,7 +504,9 @@ test('same-account checking retains a pending exit until a confirmed Team 404', 
   api.holdWrite = { started: started.resolve, wait: finish.promise }; api.lost = true;
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Leave Team' }).click(); await started.promise;
-  api.holdTeamRead = { started: teamStarted.resolve, wait: teamFinish.promise };
+  await page.route(`**/api/v1/teams/${teamId}`, async (route) => {
+    teamStarted.resolve(); await teamFinish.promise; await route.fallback();
+  });
   api.holdRosterRead = { started: rosterStarted.resolve, wait: rosterFinish.promise };
   const revalidation = await foreground(page, api);
   try {
