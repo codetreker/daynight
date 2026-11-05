@@ -61,6 +61,41 @@ const put = (page: Page, id: string, value: string) => page.evaluate(([k, v]) =>
 const openPicker = (page: Page) => page.locator('.team-selector .team-switch').click();
 const heading = (page: Page, name: string) => page.getByRole('main').getByRole('heading', { name, exact: true });
 
+for (const viewport of [{ width: 1360, height: 900 }, { width: 390, height: 844 }]) {
+  for (const locale of ['en', 'zh-CN']) {
+    test(`shows Team empty guidance at ${viewport.width}px in ${locale}`, async ({ page }, testInfo) => {
+      await page.setViewportSize(viewport);
+      const api = await install(page);
+      const name = '跨团队协作 Team — checking a very long workspace name in the project list';
+      api.ordinaryName = name;
+      await page.goto(`/teams/${alpha}`);
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      const chinese = locale === 'zh-CN';
+      const detail = page.getByText(chinese ? '在这个 Team 中创建第一个项目，Team 成员都可以访问。' : 'Create the first project in this Team. Team members can access it.', { exact: true });
+      const first = page.getByRole('button', { name: chinese ? '创建第一个项目' : 'Create your first project', exact: true });
+      await expect(detail).toBeVisible();
+      await expect(heading(page, name)).toBeVisible();
+      await expect(first).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      const titleBox = (await heading(page, name).boundingBox())!;
+      const detailBox = (await detail.boundingBox())!;
+      const buttonBox = (await first.boundingBox())!;
+      for (const box of [titleBox, detailBox, buttonBox]) {
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+      }
+      expect(titleBox.y + titleBox.height).toBeLessThanOrEqual(detailBox.y);
+      expect(detailBox.y + detailBox.height).toBeLessThanOrEqual(buttonBox.y);
+      await page.screenshot({ path: testInfo.outputPath('team-empty.png'), fullPage: true });
+      await first.click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByText(name, { exact: true })).toBeVisible();
+      await expect(dialog.getByText(chinese ? '创建到：' : 'Create in:', { exact: false })).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath('team-create.png'), fullPage: true });
+    });
+  }
+}
+
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 500 }, { width: 320, height: 320 }]) {
   for (const locale of ['en-US', 'zh-CN']) {
     test(`keeps a long Team popover reachable at ${viewport.width}x${viewport.height} in ${locale}`, async ({ page }) => {

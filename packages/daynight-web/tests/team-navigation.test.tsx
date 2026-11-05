@@ -30,6 +30,34 @@ const install = (extra?: (url: string, init?: RequestInit) => Response | Promise
 beforeEach(() => { focused = true; vi.spyOn(document, "hasFocus").mockImplementation(() => focused); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 
 describe("Team workspace navigation", () => {
+  it.each(["en", "zh-CN"] as const)("keeps empty project guidance specific to each workspace in %s", async (locale) => {
+    window.history.replaceState(null, "", `/teams/${a}`);
+    install();
+    createLocaleRender(locale)(<AuthenticatedApp />);
+    const chinese = locale === "zh-CN";
+    const teamDetail = chinese ? "在这个 Team 中创建第一个项目，Team 成员都可以访问。" : "Create the first project in this Team. Team members can access it.";
+    const personalDetail = chinese ? "创建私有项目来整理工作，或使用管理员发给你的邀请链接加入团队。" : "Create a private project to organize your work, or join your team using an administrator's invitation link.";
+    const sharedDetail = chinese ? "其他人邀请你加入项目后，项目会出现在这里。" : "Projects appear here when someone grants you access.";
+    const createFirst = chinese ? "创建第一个项目" : "Create your first project";
+
+    expect(await screen.findByText(teamDetail)).toBeInTheDocument();
+    expect(screen.queryByText(personalDetail)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: createFirst }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Alpha")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: chinese ? "关闭创建项目" : "Close create project" }));
+
+    act(() => navigate(`/teams/${personal}`));
+    expect(await screen.findByText(personalDetail)).toBeInTheDocument();
+    expect(screen.queryByText(teamDetail)).toBeNull();
+    expect(screen.getByRole("button", { name: createFirst })).toBeInTheDocument();
+
+    act(() => navigate("/shared-projects"));
+    expect(await screen.findByText(sharedDetail)).toBeInTheDocument();
+    expect(screen.queryByText(teamDetail)).toBeNull();
+    expect(screen.queryByText(personalDetail)).toBeNull();
+    expect(screen.queryByRole("button", { name: createFirst })).toBeNull();
+  });
   it.each(["/shared-projects", `/projects/${projectId}/tasks/00000000-0000-4000-8000-000000000006`])("preserves another tab's newer Team after a delayed self exit on %s", async (route) => {
     window.history.replaceState(null, "", `/teams/${a}/members`);
     const receipt = Promise.withResolvers<Response>();
