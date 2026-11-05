@@ -40,7 +40,9 @@ The existing detail surface supplies the Steps panel to `TaskDetailReading`,
 which owns one Task-root Markdown renderer and attachment controller. This keeps
 ordinary reading independently composable and gives Steps the same link,
 preview and keyboard ownership. Local pages mount at most 100 rows with global
-numbering and numeric navigation; paging does not change the service resource.
+numbering and numeric navigation; paging does not change the service resource. The
+[detail order decision](2026-11-05-task-detail-order-and-records.md) places
+Attachments before Steps while retaining this shared panel ownership.
 Narrow layouts wrap the expanded tab set when height permits. At heights up to
 500px, one horizontally scrollable row preserves reading space. The tab owner
 reveals the target both on activation and after selection or locale layout;

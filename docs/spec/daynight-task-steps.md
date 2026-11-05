@@ -58,7 +58,7 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 
 ## Web 阅读
 
-弹窗与独立 Task 详情始终提供位于概览之后的 Steps 页签，不依赖 Session、自动执行许可或 Task 状态。`tab=steps` 支持独立深链接、刷新和 Back/Forward；保留附件路径的 Steps 链接仍使用同一 Task 身份。页签沿用 roving tabindex、Arrow/Home/End 和隐藏面板的 `inert`。
+弹窗与独立 Task 详情（含全屏）的页签顺序为概览、附件、Steps、讨论（如有）、Session（如有）。Steps 始终提供，不依赖 Session、自动执行许可或 Task 状态。`tab=steps` 支持独立深链接、刷新和 Back/Forward；保留附件路径的 Steps 链接仍使用同一 Task 身份。页签沿用 roving tabindex，Arrow/Home/End 按可见顺序导航，隐藏面板保持 `inert`。
 
 Steps 首次激活才读取完整集合。加载、合法空集合、首次错误和保留内容的刷新失败分别表达；错误保留安全说明与可信 request ID，并提供重读。未得到有效资源前不显示零项事实。Web 支持刷新、展开、分页、单项状态设置、添加、内容编辑、位置调整和删除。
 
