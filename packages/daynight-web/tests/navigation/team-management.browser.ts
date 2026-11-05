@@ -2,16 +2,16 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const personalId = '00000000-0000-4000-8000-000000000011';
-const teamId = '00000000-0000-4000-8000-000000000021';
+const teamId = 'be34edc4-af6d-4b40-a33f-55d6c18b7e6a';
 const time = '2026-10-20T09:00:00Z';
 const key = `daynight.selectedTeam:${userId}`;
 const personal = { id: personalId, kind: 'personal', name: null };
 const profile = { id: userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
-type State = { name: string; version: number; exists: boolean; refusal: string | null; lost: boolean; holdRead?: { started: () => void; wait: Promise<void> }; writes: { method: string; body: Record<string, unknown> }[] };
+type State = { role: 'admin' | 'member'; name: string; version: number; exists: boolean; refusal: string | null; lost: boolean; holdRead?: { started: () => void; wait: Promise<void> }; writes: { method: string; body: Record<string, unknown> }[] };
 const install = async (page: Page): Promise<State> => {
-  const state: State = { name: 'Alpha', version: 1, exists: true, refusal: null, lost: false, writes: [] };
-  const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : state.name, version: state.version, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
+  const state: State = { role: 'admin', name: 'Alpha', version: 1, exists: true, refusal: null, lost: false, writes: [] };
+  const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : state.name, version: state.version, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: state.role, version: 1, createdAt: time, updatedAt: time } });
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
     const headers = { 'Daynight-User-ID': userId };
@@ -42,6 +42,61 @@ const install = async (page: Page): Promise<State> => {
 const selected = (page: Page) => page.evaluate((k) => localStorage.getItem(k), key);
 const openCreate = async (page: Page) => { await page.locator('details.team-selector summary').click(); await page.getByRole('button', { name: 'Create Team', exact: true }).click(); };
 const settings = async (page: Page) => { await page.getByRole('link', { name: 'Team settings' }).click(); await expect(page.getByRole('heading', { name: 'Team settings' })).toBeVisible(); };
+
+test('copies the displayed Team ID with accessible feedback and responsive layout', async ({ page, context }, testInfo) => {
+  const api = await install(page); api.name = 'AI Native Studio';
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  for (const role of ['admin', 'member'] as const) {
+    api.role = role;
+    for (const width of [1280, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/teams/${teamId}/settings`);
+      for (const [locale, label] of [['en', 'Copy Team ID'], ['zh-CN', '复制 Team ID']] as const) {
+        await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+        const button = page.getByRole('button', { name: label });
+        const text = page.locator('.team-settings-id span');
+        await expect(text).toHaveText(teamId);
+        await expect(button).toHaveAttribute('title', label);
+        const textBox = await text.boundingBox(), buttonBox = await button.boundingBox();
+        if (!textBox || !buttonBox) throw new Error('ID or copy button is not visible');
+        expect(textBox.x + textBox.width <= buttonBox.x || textBox.y + textBox.height <= buttonBox.y).toBe(true);
+        expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(width);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        if (Math.abs(textBox.y - buttonBox.y) < 10) expect(Math.abs(textBox.y + textBox.height / 2 - buttonBox.y - buttonBox.height / 2)).toBeLessThanOrEqual(1);
+        await button.focus(); await expect(button).toBeFocused();
+        expect(await button.evaluate(el => getComputedStyle(el).outlineStyle)).not.toBe('none');
+        await page.keyboard.press(locale === 'en' ? 'Enter' : 'Space');
+        await expect(page.getByRole('status').filter({ hasText: locale === 'en' ? 'Copied' : '已复制' })).toBeVisible();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(teamId);
+        await page.screenshot({ path: testInfo.outputPath(`copy-${role}-${width}-${locale}.png`) });
+      }
+    }
+  }
+  expect(api.writes).toHaveLength(0);
+});
+
+test('copy errors and a pending write retain keyboard focus and permit retry', async ({ page }) => {
+  const api = await install(page); await page.goto(`/teams/${teamId}/settings`);
+  const button = page.getByRole('button', { name: 'Copy Team ID' }); await expect(button).toBeVisible();
+  await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined }); });
+  await button.click(); await expect(page.getByRole('alert')).toContainText('Select and copy the Team ID manually');
+  await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } }); });
+  await button.click(); await expect(page.getByRole('alert')).toContainText('Select and copy the Team ID manually');
+  await page.evaluate(() => {
+    const state = window as unknown as { copyCalls: number; finishCopy: () => void };
+    state.copyCalls = 0;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => { state.copyCalls++; return new Promise<void>(resolve => { state.finishCopy = resolve; }); } } });
+  });
+  await page.getByRole('button', { name: 'Edit', exact: true }).focus();
+  await page.keyboard.press('Tab'); await expect(button).toBeFocused();
+  await page.keyboard.press('Enter'); await expect(button).toHaveAttribute('aria-disabled', 'true');
+  await expect(button).toBeFocused(); await page.keyboard.press('Space');
+  expect(await page.evaluate(() => (window as unknown as { copyCalls: number }).copyCalls)).toBe(1);
+  await page.evaluate(() => (window as unknown as { finishCopy: () => void }).finishCopy());
+  await expect(page.getByRole('status').filter({ hasText: 'Copied' })).toBeVisible();
+  await expect(button).toBeFocused(); await expect(button).toHaveAttribute('aria-disabled', 'false');
+  expect(api.writes).toHaveLength(0);
+});
 
 test('Team name and edit action remain aligned and readable across viewport sizes', async ({ page }, testInfo) => {
   const api = await install(page);
