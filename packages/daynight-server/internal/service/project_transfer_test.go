@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/google/uuid"
 )
 
@@ -27,7 +28,7 @@ func transferInput(p TransferPreview, actor model.Principal) TransferInput {
 func TestTransferAuthorizationVersionsAndReceipts(t *testing.T) {
 	projects, db, _, actor := projectService(t)
 	ctx := context.Background()
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	other := servicePrincipal(t, db)
 	target := newTestTeam(t, teams, other, "Target")
 	project, err := projects.Create(ctx, actor, CreateProject{Name: "Project", RepoURL: "host:repo", ExpectedUserID: actor.UserID})
@@ -212,7 +213,7 @@ func TestTransferUnavailableAndVersionExhaustion(t *testing.T) {
 		t.Fatalf("missing project error: %v", err)
 	}
 	other := servicePrincipal(t, db)
-	target := newTestTeam(t, NewTeams(db), other, "Destination")
+	target := newTestTeam(t, teamservice.NewTeams(db), other, "Destination")
 	if _, err := db.Pool.Exec(ctx, `UPDATE project_ownership SET version=$2 WHERE project_id=$1`, project.ID, int64(math.MaxInt64)); err != nil {
 		t.Fatal(err)
 	}

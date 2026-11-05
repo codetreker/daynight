@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
@@ -81,15 +82,6 @@ func requireProjectAdmin(access model.ProjectAccess) error {
 	return nil
 }
 
-// Domain refusals still complete the transaction, so cancellation and commit errors remain visible.
-func completeMembershipOperation(operation func() error, refusal **model.Fault) error {
-	err := operation()
-	if errors.As(err, refusal) {
-		return nil
-	}
-	return err
-}
-
 func (s *Memberships) read(ctx context.Context, principal model.Principal, projectID string, admin bool, operation func(store.ProjectReader, model.ProjectAccess) error) error {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return err
@@ -100,7 +92,7 @@ func (s *Memberships) read(ctx context.Context, principal model.Principal, proje
 	}
 	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		return completeMembershipOperation(func() error {
+		return completion.Capture(func() error {
 			access, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, id)
 			if err != nil {
 				return err
@@ -132,7 +124,7 @@ func (s *Memberships) write(ctx context.Context, principal model.Principal, proj
 	}
 	var refusal *model.Fault
 	err = s.store.WriteProject(ctx, id, func(tx *store.ProjectTx) error {
-		return completeMembershipOperation(func() error {
+		return completion.Capture(func() error {
 			access, err := RequireProjectWrite(ctx, tx, principal)
 			if err != nil {
 				return err
@@ -325,10 +317,6 @@ func (s *Memberships) RevokeInvitation(ctx context.Context, principal model.Prin
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) error { return tx.RevokeInvitation(ctx, id, s.now().UTC()) })
 }
 
-func invitationUnavailable(cause error) error {
-	return &model.Fault{Code: "invitation_unavailable", Message: "Invitation is unavailable.", Cause: cause}
-}
-
 func invitationAvailable(invitation model.ProjectInvitation, now time.Time) bool {
 	return invitation.ConsumedAt == nil && invitation.RevokedAt == nil && invitation.ExpiresAt.After(now)
 }
@@ -338,20 +326,20 @@ func (s *Memberships) inspect(ctx context.Context, principal model.Principal, se
 		return err
 	}
 	if !secretutil.Valid(secret, invitationPrefix) {
-		return invitationUnavailable(nil)
+		return model.InvitationUnavailable(nil)
 	}
 	var refusal *model.Fault
 	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		return completeMembershipOperation(func() error {
+		return completion.Capture(func() error {
 			invitation, err := snapshot.ProjectDAO().Invitation(ctx, secretutil.Hash(secret))
 			if errors.Is(err, model.ErrNotFound) {
-				return invitationUnavailable(err)
+				return model.InvitationUnavailable(err)
 			}
 			if err != nil {
 				return err
 			}
 			if !invitationAvailable(invitation, s.now().UTC()) {
-				return invitationUnavailable(nil)
+				return model.InvitationUnavailable(nil)
 			}
 			return operation(snapshot.ProjectDAO(), invitation)
 		}, &refusal)
@@ -370,7 +358,7 @@ func (s *Memberships) InspectInvitation(ctx context.Context, principal model.Pri
 	err := s.inspect(ctx, principal, secret, func(reader store.ProjectReader, invitation model.ProjectInvitation) error {
 		project, err := reader.Project(ctx, invitation.ProjectID)
 		if errors.Is(err, model.ErrNotFound) {
-			return invitationUnavailable(err)
+			return model.InvitationUnavailable(err)
 		}
 		if err != nil {
 			return err
@@ -406,17 +394,17 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal model.Prin
 	var result InvitationAcceptance
 	var refusal *model.Fault
 	err := s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
-		return completeMembershipOperation(func() error {
+		return completion.Capture(func() error {
 			invitation, err := tx.LockInvitation(ctx, secretutil.Hash(secret))
 			if errors.Is(err, model.ErrNotFound) {
-				return invitationUnavailable(err)
+				return model.InvitationUnavailable(err)
 			}
 			if err != nil {
 				return err
 			}
 			now := s.now().UTC()
 			if !invitationAvailable(invitation, now) {
-				return invitationUnavailable(nil)
+				return model.InvitationUnavailable(nil)
 			}
 			member, err := tx.DirectProjectMember(ctx, principal.UserID)
 			if err != nil && !errors.Is(err, model.ErrNotFound) {
@@ -438,7 +426,7 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal model.Prin
 		}, &refusal)
 	})
 	if errors.Is(err, model.ErrNotFound) {
-		return InvitationAcceptance{}, invitationUnavailable(err)
+		return InvitationAcceptance{}, model.InvitationUnavailable(err)
 	}
 	if err != nil {
 		return InvitationAcceptance{}, err

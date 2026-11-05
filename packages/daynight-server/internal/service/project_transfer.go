@@ -7,6 +7,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 )
 
 type TeamVersion struct {
@@ -47,14 +49,14 @@ func (s *Projects) TransferPreview(ctx context.Context, principal model.Principa
 	if err != nil {
 		return TransferPreview{}, err
 	}
-	target, err := canonicalTeamID(targetTeamID)
+	target, err := team.CanonicalID(targetTeamID)
 	if err != nil {
 		return TransferPreview{}, err
 	}
 	var result TransferPreview
 	var refusal *model.Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
-		return completeMembershipOperation(func() error {
+		return completion.Capture(func() error {
 			access, err := RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, id)
 			if err != nil {
 				return err
@@ -87,18 +89,18 @@ func (s *Projects) TransferPreview(ctx context.Context, principal model.Principa
 }
 
 func (s *Projects) Transfer(ctx context.Context, principal model.Principal, projectID string, input TransferInput) (TransferReceipt, error) {
-	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
+	if err := team.RequireActor(principal, input.ExpectedUserID); err != nil {
 		return TransferReceipt{}, err
 	}
 	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return TransferReceipt{}, err
 	}
-	source, err := canonicalTeamID(input.Ownership.TeamID)
+	source, err := team.CanonicalID(input.Ownership.TeamID)
 	if err != nil {
 		return TransferReceipt{}, err
 	}
-	target, err := canonicalTeamID(input.TargetTeam.ID)
+	target, err := team.CanonicalID(input.TargetTeam.ID)
 	if err != nil {
 		return TransferReceipt{}, err
 	}

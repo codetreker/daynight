@@ -1,8 +1,11 @@
-package service
+package team_test
 
 import (
 	"context"
 	"errors"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	rootservice "github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"math"
 	"reflect"
 	"strings"
@@ -17,7 +20,7 @@ import (
 
 func teamFault(t *testing.T, err error, code string) {
 	t.Helper()
-	fault, classified := TeamResponseFault(err)
+	fault, classified := coreteam.WriteFault(err)
 	if !classified {
 		_ = errors.As(err, &fault)
 	}
@@ -26,9 +29,9 @@ func teamFault(t *testing.T, err error, code string) {
 	}
 }
 
-func newTestTeam(t *testing.T, teams *Teams, p model.Principal, name string) model.Team {
+func newTestTeam(t *testing.T, teams *teamservice.Teams, p model.Principal, name string) model.Team {
 	t.Helper()
-	team, err := teams.Create(context.Background(), p, CreateTeam{Name: name, ExpectedUserID: p.UserID})
+	team, err := teams.Create(context.Background(), p, coreteam.CreateTeam{Name: name, ExpectedUserID: p.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +40,7 @@ func newTestTeam(t *testing.T, teams *Teams, p model.Principal, name string) mod
 
 func TestTeamLifecycleUsesRealMembershipAndExactMetadata(t *testing.T) {
 	_, db, _, actor := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	raw := " \t研发😀\u2003 " + strings.Repeat("x", 180)
 	team := newTestTeam(t, teams, actor, raw)
@@ -52,18 +55,18 @@ func TestTeamLifecycleUsesRealMembershipAndExactMetadata(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, team) {
 		t.Fatalf("get %#v %v", got, err)
 	}
-	same, err := teams.Rename(ctx, actor, team.ID, ChangeTeam{Name: raw, Version: team.Version, ExpectedUserID: actor.UserID})
+	same, err := teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: raw, Version: team.Version, ExpectedUserID: actor.UserID})
 	if err != nil || !reflect.DeepEqual(same, team) {
 		t.Fatalf("no-op %#v %v", same, err)
 	}
-	_, err = teams.Rename(ctx, actor, team.ID, ChangeTeam{Name: raw, Version: 2, ExpectedUserID: actor.UserID})
+	_, err = teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: raw, Version: 2, ExpectedUserID: actor.UserID})
 	teamFault(t, err, "version_conflict")
-	changed, err := teams.Rename(ctx, actor, team.ID, ChangeTeam{Name: " Renamed ", Version: 1, ExpectedUserID: actor.UserID})
+	changed, err := teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: " Renamed ", Version: 1, ExpectedUserID: actor.UserID})
 	if err != nil || changed.Version != 2 || *changed.Name != " Renamed " || !changed.UpdatedAt.After(team.UpdatedAt) || !reflect.DeepEqual(changed.Membership, team.Membership) {
 		t.Fatalf("rename %#v %v", changed, err)
 	}
-	teamFault(t, teams.Delete(ctx, actor, team.ID, ChangeTeam{Name: raw, Version: changed.Version, ExpectedUserID: actor.UserID}), "version_conflict")
-	if err := teams.Delete(ctx, actor, team.ID, ChangeTeam{Name: *changed.Name, Version: changed.Version, ExpectedUserID: actor.UserID}); err != nil {
+	teamFault(t, teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: raw, Version: changed.Version, ExpectedUserID: actor.UserID}), "version_conflict")
+	if err := teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: *changed.Name, Version: changed.Version, ExpectedUserID: actor.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = teams.Get(ctx, actor, team.ID)
@@ -72,12 +75,12 @@ func TestTeamLifecycleUsesRealMembershipAndExactMetadata(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM team_members WHERE team_id=$1`, team.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("orphan members %d %v", count, err)
 	}
-	teamFault(t, teams.Delete(ctx, actor, team.ID, ChangeTeam{Name: *changed.Name, Version: changed.Version, ExpectedUserID: actor.UserID}), "not_found")
+	teamFault(t, teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: *changed.Name, Version: changed.Version, ExpectedUserID: actor.UserID}), "not_found")
 }
 
 func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 	_, db, _, actor := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	team := newTestTeam(t, teams, actor, "Team")
 	member, outsider := servicePrincipal(t, db), servicePrincipal(t, db)
@@ -93,9 +96,9 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 		if principal.UserID == outsider.UserID {
 			code = "not_found"
 		}
-		_, err := teams.Rename(ctx, principal, team.ID, ChangeTeam{Name: "other", Version: 1, ExpectedUserID: principal.UserID})
+		_, err := teams.Rename(ctx, principal, team.ID, coreteam.ChangeTeam{Name: "other", Version: 1, ExpectedUserID: principal.UserID})
 		teamFault(t, err, code)
-		teamFault(t, teams.Delete(ctx, principal, team.ID, ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: principal.UserID}), code)
+		teamFault(t, teams.Delete(ctx, principal, team.ID, coreteam.ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: principal.UserID}), code)
 	}
 	page, err := teams.List(ctx, actor, model.PageRequest{Limit: 100})
 	if err != nil {
@@ -110,29 +113,29 @@ func TestTeamPermissionsPersonalAndNonemptyDeletion(t *testing.T) {
 	if personal.ID == "" || personal.Name != nil || personal.Membership.Role != model.ProjectAdmin {
 		t.Fatalf("Personal %#v", personal)
 	}
-	_, err = teams.Rename(ctx, actor, personal.ID, ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID})
+	_, err = teams.Rename(ctx, actor, personal.ID, coreteam.ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID})
 	teamFault(t, err, "personal_team_immutable")
-	teamFault(t, teams.Delete(ctx, actor, personal.ID, ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID}), "personal_team_immutable")
-	project, err := NewProjects(db).Create(ctx, actor, CreateProject{ExpectedUserID: actor.UserID, Name: "Owned", RepoURL: "host:repo"})
+	teamFault(t, teams.Delete(ctx, actor, personal.ID, coreteam.ChangeTeam{Name: "Personal", Version: 1, ExpectedUserID: actor.UserID}), "personal_team_immutable")
+	project, err := rootservice.NewProjects(db).Create(ctx, actor, rootservice.CreateProject{ExpectedUserID: actor.UserID, Name: "Owned", RepoURL: "host:repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Pool.Exec(ctx, `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, project.ID, team.ID); err != nil {
 		t.Fatal(err)
 	}
-	teamFault(t, teams.Delete(ctx, actor, team.ID, ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: actor.UserID}), "team_not_empty")
+	teamFault(t, teams.Delete(ctx, actor, team.ID, coreteam.ChangeTeam{Name: "Team", Version: 1, ExpectedUserID: actor.UserID}), "team_not_empty")
 	got, err = teams.Get(ctx, actor, team.ID)
 	if err != nil || !reflect.DeepEqual(got, team) {
 		t.Fatalf("nonempty refusal changed Team %#v %v", got, err)
 	}
-	if _, err := NewProjects(db).Get(ctx, actor, project.ID); err != nil {
+	if _, err := rootservice.NewProjects(db).Get(ctx, actor, project.ID); err != nil {
 		t.Fatal("nonempty deletion changed Project", err)
 	}
 }
 
 func TestTeamPaginationBindsCurrentActorAndRealVersions(t *testing.T) {
 	_, db, _, actor := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	other := servicePrincipal(t, db)
 	newTestTeam(t, teams, other, "Invisible older Team")
@@ -181,35 +184,35 @@ func TestTeamValidationAndIdentityGuardPrecedeSQL(t *testing.T) {
 	other := servicePrincipal(t, db)
 	var count atomic.Int32
 	traced := tracedTasks(t, url, taskQueryAction{match: func(string) bool { count.Add(1); return false }})
-	teams := NewTeams(traced.store)
-	_, err := teams.Create(ctx, actor, CreateTeam{Name: "Good", ExpectedUserID: other.UserID})
+	teams := teamservice.NewTeams(traced)
+	_, err := teams.Create(ctx, actor, coreteam.CreateTeam{Name: "Good", ExpectedUserID: other.UserID})
 	teamFault(t, err, "identity_mismatch")
-	_, err = teams.Rename(ctx, actor, uuid.NewString(), ChangeTeam{Name: "Good", Version: 1, ExpectedUserID: other.UserID})
+	_, err = teams.Rename(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: "Good", Version: 1, ExpectedUserID: other.UserID})
 	teamFault(t, err, "identity_mismatch")
-	teamFault(t, teams.Delete(ctx, actor, uuid.NewString(), ChangeTeam{Name: "Good", Version: 1, ExpectedUserID: other.UserID}), "identity_mismatch")
+	teamFault(t, teams.Delete(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: "Good", Version: 1, ExpectedUserID: other.UserID}), "identity_mismatch")
 	if count.Load() != 0 {
 		t.Fatalf("identity mismatch executed %d SQL queries", count.Load())
 	}
-	teams = NewTeams(nil)
+	teams = teamservice.NewTeams(nil)
 	for _, name := range []string{"", " \t\n\u2003\u0085", "bad\x00name", "bad\xffname"} {
-		_, err := teams.Create(ctx, actor, CreateTeam{Name: name, ExpectedUserID: actor.UserID})
+		_, err := teams.Create(ctx, actor, coreteam.CreateTeam{Name: name, ExpectedUserID: actor.UserID})
 		teamFault(t, err, "invalid_input")
-		_, err = teams.Rename(ctx, actor, uuid.NewString(), ChangeTeam{Name: name, Version: 1, ExpectedUserID: actor.UserID})
+		_, err = teams.Rename(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: name, Version: 1, ExpectedUserID: actor.UserID})
 		teamFault(t, err, "invalid_input")
 	}
 	for _, id := range []string{"invalid", strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")} {
 		_, err := teams.Get(ctx, actor, id)
 		teamFault(t, err, "invalid_input")
-		_, err = teams.Rename(ctx, actor, id, ChangeTeam{Name: "valid", Version: 1, ExpectedUserID: actor.UserID})
+		_, err = teams.Rename(ctx, actor, id, coreteam.ChangeTeam{Name: "valid", Version: 1, ExpectedUserID: actor.UserID})
 		teamFault(t, err, "invalid_input")
 	}
-	_, err = teams.Rename(ctx, actor, uuid.NewString(), ChangeTeam{Name: "valid", Version: 0, ExpectedUserID: actor.UserID})
+	_, err = teams.Rename(ctx, actor, uuid.NewString(), coreteam.ChangeTeam{Name: "valid", Version: 0, ExpectedUserID: actor.UserID})
 	teamFault(t, err, "invalid_input")
 	for _, expected := range []string{"", strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")} {
-		_, err := teams.Create(ctx, actor, CreateTeam{Name: "valid", ExpectedUserID: expected})
+		_, err := teams.Create(ctx, actor, coreteam.CreateTeam{Name: "valid", ExpectedUserID: expected})
 		teamFault(t, err, "invalid_input")
 	}
-	_, err = teams.Create(ctx, model.Principal{}, CreateTeam{Name: "valid", ExpectedUserID: actor.UserID})
+	_, err = teams.Create(ctx, model.Principal{}, coreteam.CreateTeam{Name: "valid", ExpectedUserID: actor.UserID})
 	teamFault(t, err, "unauthenticated")
 	_, err = teams.Get(ctx, model.Principal{}, uuid.NewString())
 	teamFault(t, err, "unauthenticated")
@@ -219,17 +222,17 @@ func TestTeamValidationAndIdentityGuardPrecedeSQL(t *testing.T) {
 
 func TestTeamMetadataVersionExhaustionAndFaultPriority(t *testing.T) {
 	_, db, _, actor := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	team := newTestTeam(t, teams, actor, "Full")
 	if _, err := db.Pool.Exec(ctx, `UPDATE teams SET version=$2 WHERE id=$1`, team.ID, int64(math.MaxInt64)); err != nil {
 		t.Fatal(err)
 	}
-	same, err := teams.Rename(ctx, actor, team.ID, ChangeTeam{Name: "Full", Version: math.MaxInt64, ExpectedUserID: actor.UserID})
+	same, err := teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: "Full", Version: math.MaxInt64, ExpectedUserID: actor.UserID})
 	if err != nil || same.Version != math.MaxInt64 {
 		t.Fatalf("exhausted no-op %#v %v", same, err)
 	}
-	_, err = teams.Rename(ctx, actor, team.ID, ChangeTeam{Name: "Changed", Version: math.MaxInt64, ExpectedUserID: actor.UserID})
+	_, err = teams.Rename(ctx, actor, team.ID, coreteam.ChangeTeam{Name: "Changed", Version: math.MaxInt64, ExpectedUserID: actor.UserID})
 	teamFault(t, err, "version_exhausted")
 	sentinel := &pgconn.PgError{Code: "08006", Message: "private database failure"}
 	refusal := &model.Fault{Code: "forbidden", Message: "refused"}
@@ -241,12 +244,12 @@ func TestTeamMetadataVersionExhaustionAndFaultPriority(t *testing.T) {
 		{&store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: errors.Join(refusal, sentinel)}, "internal_error"},
 		{&store.TransactionError{Phase: "commit", Outcome: store.TransactionNotCommitted, CommitAttempted: true, Cause: sentinel}, "internal_error"},
 	} {
-		fault, ok := TeamResponseFault(test.tx)
+		fault, ok := coreteam.WriteFault(test.tx)
 		if !ok || fault.Code != test.code || !errors.Is(fault, sentinel) {
 			t.Fatalf("completion priority %#v %v", fault, ok)
 		}
 	}
-	if _, ok := TeamResponseFault(refusal); ok {
+	if _, ok := coreteam.WriteFault(refusal); ok {
 		t.Fatal("plain refusal gained transaction evidence")
 	}
 }

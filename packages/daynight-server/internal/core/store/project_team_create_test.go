@@ -19,7 +19,7 @@ func TestProjectCreationWaitsForTeamDeletion(t *testing.T) {
 			done := make(chan error, 1)
 			projectID := uuid.NewString()
 			abort := errors.New("abort deletion")
-			err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+			err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 				if err := tx.Delete(ctx); err != nil {
 					return err
 				}
@@ -77,7 +77,7 @@ func TestTeamDeletionWaitsForActualProjectCreation(t *testing.T) {
 			occupied := errors.New("Team has projects")
 			deleted := make(chan error, 1)
 			go func() {
-				deleted <- s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+				deleted <- testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 					found, err := tx.HasProjects(ctx)
 					if err != nil {
 						return err

@@ -17,8 +17,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
@@ -39,7 +41,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	auth.RegisterRoutes(mux)
 	NewMembershipRoutes(service.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
 	projectRoutes(mux, service.NewProjects(dependencies.Store), auth, logger)
-	teamRoutes(mux, service.NewTeams(dependencies.Store), auth, logger)
+	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(dependencies.Store), auth, logger)
 	workersRoutes(mux, service.NewWorkers(dependencies.Store), auth, logger)
 	taskRoutes(mux, service.NewTasks(dependencies.Store), auth, logger)
 	taskStepsRoutes(mux, service.NewTaskSteps(dependencies.Store), auth, logger)

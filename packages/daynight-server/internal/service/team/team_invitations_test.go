@@ -1,9 +1,11 @@
-package service
+package team_test
 
 import (
 	"bytes"
 	"context"
 	"errors"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +17,7 @@ import (
 
 func TestTeamInvitationLifecycle(t *testing.T) {
 	_, db, _, admin := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	other := servicePrincipal(t, db)
 	team := newTestTeam(t, teams, admin, " Team ")
@@ -25,7 +27,7 @@ func TestTeamInvitationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !secretutil.Valid(minted.Secret, teamInvitationPrefix) || minted.Invitation.TokenHash != nil || minted.Invitation.ExpiresAt.Sub(minted.Invitation.CreatedAt) != 7*24*time.Hour {
+	if !secretutil.Valid(minted.Secret, "dnteam_") || minted.Invitation.TokenHash != nil || minted.Invitation.ExpiresAt.Sub(minted.Invitation.CreatedAt) != 7*24*time.Hour {
 		t.Fatalf("mint: %#v", minted.Invitation)
 	}
 	var hash []byte
@@ -83,7 +85,7 @@ func TestTeamInvitationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = teams.Delete(ctx, admin, team.ID, ChangeTeam{Name: *team.Name, Version: team.Version, ExpectedUserID: admin.UserID}); err != nil {
+	if err = teams.Delete(ctx, admin, team.ID, coreteam.ChangeTeam{Name: *team.Name, Version: team.Version, ExpectedUserID: admin.UserID}); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -110,7 +112,7 @@ func TestTeamInvitationLifecycle(t *testing.T) {
 
 func TestTeamInvitationConcurrencyAndRollback(t *testing.T) {
 	_, db, _, admin := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	team := newTestTeam(t, teams, admin, "Race")
 	a, b := servicePrincipal(t, db), servicePrincipal(t, db)
@@ -169,7 +171,7 @@ func TestTeamInvitationConcurrencyAndRollback(t *testing.T) {
 
 func TestTeamInvitationAcceptRevokeRace(t *testing.T) {
 	_, db, _, admin := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	team := newTestTeam(t, teams, admin, "Race")
 	member := servicePrincipal(t, db)
@@ -204,7 +206,7 @@ func TestTeamInvitationAcceptRevokeRace(t *testing.T) {
 
 func TestTeamInvitationInspectIntegrityAndReadErrors(t *testing.T) {
 	_, db, _, admin := projectService(t)
-	teams := NewTeams(db)
+	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
 	team := newTestTeam(t, teams, admin, "Inspect")
 	invitation, err := teams.CreateInvitation(ctx, admin, team.ID, admin.UserID)
@@ -247,7 +249,7 @@ func TestTeamInvitationRechecksAfterTeamLockWait(t *testing.T) {
 	for _, outcome := range []string{"revoked", "deleted"} {
 		t.Run(outcome, func(t *testing.T) {
 			_, db, _, admin := projectService(t)
-			teams := NewTeams(db)
+			teams := teamservice.NewTeams(db)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			member := servicePrincipal(t, db)
@@ -308,5 +310,68 @@ func TestTeamInvitationRechecksAfterTeamLockWait(t *testing.T) {
 				t.Fatalf("unavailable invitation added a member: %d %v", count, err)
 			}
 		})
+	}
+}
+
+func TestTeamInvitationExpiryAfterInvitationLockWait(t *testing.T) {
+	_, db, _, admin := projectService(t)
+	teams := teamservice.NewTeams(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	member := servicePrincipal(t, db)
+	team := newTestTeam(t, teams, admin, "Expiry during lock")
+	invitation, err := teams.CreateInvitation(ctx, admin, team.ID, admin.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(context.Background())
+	if _, err = blocker.Exec(ctx, `SELECT id FROM team_invitations WHERE id=$1 FOR UPDATE`, invitation.Invitation.ID); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { _, err := teams.AcceptInvitation(ctx, member, invitation.Secret, member.UserID); result <- err }()
+	for {
+		var waiting bool
+		if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, blocker.Conn().PgConn().PID()).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("accept did not wait for invitation lock")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	// Keep the initial snapshot valid until acceptance is blocked, then set the
+	// locked row to expire while that operation waits for its current value.
+	var expiry time.Time
+	if err = blocker.QueryRow(ctx, `UPDATE team_invitations SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1 RETURNING expires_at`, invitation.Invitation.ID).Scan(&expiry); err != nil {
+		t.Fatal(err)
+	}
+	timer := time.NewTimer(time.Until(expiry) + 50*time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		t.Fatal("waiting for expiry timed out")
+	}
+	if err = blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-result:
+		teamFault(t, err, "invitation_unavailable")
+	case <-ctx.Done():
+		t.Fatal("accept did not finish")
+	}
+	var count int
+	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM team_members WHERE team_id=$1 AND user_id=$2`, team.ID, member.UserID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expired invitation added member: %d %v", count, err)
 	}
 }

@@ -1,4 +1,4 @@
-package server
+package team
 
 import (
 	"net/http"
@@ -38,7 +38,11 @@ func (h *teamHandler) createInvitation(w http.ResponseWriter, r *http.Request, p
 	_, err := httpx.QueryValues(r)
 	var expected string
 	if err == nil {
-		expected, err = invitationActor(w, r)
+		fields, decodeErr := httpx.DecodeObject(w, r, "expectedUserId")
+		err = decodeErr
+		if err == nil {
+			expected, err = httpx.RequiredString(fields, "expectedUserId")
+		}
 	}
 	if err != nil {
 		writeTeamError(w, r, logger, "create_invitation", err)
@@ -58,7 +62,11 @@ func (h *teamHandler) revokeInvitation(w http.ResponseWriter, r *http.Request, p
 	_, err := httpx.QueryValues(r)
 	var expected string
 	if err == nil {
-		expected, err = invitationActor(w, r)
+		fields, decodeErr := httpx.DecodeObject(w, r, "expectedUserId")
+		err = decodeErr
+		if err == nil {
+			expected, err = httpx.RequiredString(fields, "expectedUserId")
+		}
 	}
 	if err == nil {
 		changed, revokeErr := h.teams.RevokeInvitation(r.Context(), p, r.PathValue("teamId"), r.PathValue("inviteId"), expected)
@@ -84,7 +92,11 @@ func (h *teamHandler) inspectInvitation(w http.ResponseWriter, r *http.Request, 
 	_, err := httpx.QueryValues(r)
 	var token string
 	if err == nil {
-		token, err = invitationToken(w, r)
+		fields, decodeErr := httpx.DecodeObject(w, r, "token")
+		err = decodeErr
+		if err == nil {
+			token, err = httpx.RequiredString(fields, "token")
+		}
 	}
 	if err != nil {
 		httpx.WriteError(w, r, logger, "team", "inspect_invitation", err)

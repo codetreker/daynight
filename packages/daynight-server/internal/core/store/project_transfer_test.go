@@ -16,7 +16,7 @@ import (
 func TestTransferTeamReadsMinimalMetadataAndPreservesFailures(t *testing.T) {
 	s, actor, _, project := membershipFixture(t)
 	ctx := context.Background()
-	ordinary, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Target")
+	ordinary, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "Target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestTransferUpdateFailureRollsBackOwnershipAndProject(t *testing.T) {
 		t.Run(table, func(t *testing.T) {
 			s, actor, _, project := membershipFixture(t)
 			ctx := context.Background()
-			target, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Target")
+			target, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "Target")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -129,7 +129,7 @@ func TestTransferCommitResponseLossRemainsUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := s.CreateTeam(ctx, other.UserID, uuid.NewString(), "Target")
+	target, err := testCreateTeam(s, ctx, other.UserID, uuid.NewString(), "Target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestTransferPreviewRoleCombinesDestinationAndDirectGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	team, err := s.CreateTeam(ctx, other.UserID, uuid.NewString(), "Destination")
+	team, err := testCreateTeam(s, ctx, other.UserID, uuid.NewString(), "Destination")
 	if err != nil {
 		t.Fatal(err)
 	}

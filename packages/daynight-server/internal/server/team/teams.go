@@ -1,4 +1,4 @@
-package server
+package team
 
 import (
 	"encoding/json"
@@ -9,18 +9,19 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
 )
 
 type teamHandler struct {
-	teams  *service.Teams
+	teams  *teamservice.Teams
 	logger *slog.Logger
 	origin string
 }
 
-func teamRoutes(mux *http.ServeMux, teams *service.Teams, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &teamHandler{teams: teams, logger: logger, origin: auth.Origin()}
 	mux.HandleFunc("GET /api/v1/teams", auth.Require(h.list))
 	mux.HandleFunc("POST /api/v1/teams", auth.Require(h.create))
@@ -78,7 +79,7 @@ func (h *teamHandler) create(w http.ResponseWriter, r *http.Request, p model.Pri
 		writeTeamError(w, r, logger, "create", err)
 		return
 	}
-	team, err := h.teams.Create(r.Context(), p, service.CreateTeam{Name: name, ExpectedUserID: expected})
+	team, err := h.teams.Create(r.Context(), p, coreteam.CreateTeam{Name: name, ExpectedUserID: expected})
 	if err != nil {
 		writeTeamError(w, r, logger, "create", err)
 		return
@@ -120,24 +121,24 @@ func (h *teamHandler) get(w http.ResponseWriter, r *http.Request, p model.Princi
 	httpx.WriteJSON(w, r, logger.With("team_id", team.ID), http.StatusOK, teamResponse(team))
 }
 
-func teamChangeInput(w http.ResponseWriter, r *http.Request) (service.ChangeTeam, error) {
+func teamChangeInput(w http.ResponseWriter, r *http.Request) (coreteam.ChangeTeam, error) {
 	if _, err := httpx.QueryValues(r); err != nil {
-		return service.ChangeTeam{}, err
+		return coreteam.ChangeTeam{}, err
 	}
 	fields, err := httpx.DecodeObject(w, r, "name", "version", "expectedUserId")
 	if err != nil {
-		return service.ChangeTeam{}, err
+		return coreteam.ChangeTeam{}, err
 	}
 	name, err := teamNameInput(fields)
 	if err != nil {
-		return service.ChangeTeam{}, err
+		return coreteam.ChangeTeam{}, err
 	}
 	version, err := httpx.VersionInput(fields)
 	if err != nil {
-		return service.ChangeTeam{}, err
+		return coreteam.ChangeTeam{}, err
 	}
 	expected, err := httpx.RequiredString(fields, "expectedUserId")
-	return service.ChangeTeam{Name: name, Version: version, ExpectedUserID: expected}, err
+	return coreteam.ChangeTeam{Name: name, Version: version, ExpectedUserID: expected}, err
 }
 
 func (h *teamHandler) rename(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -171,7 +172,7 @@ func (h *teamHandler) remove(w http.ResponseWriter, r *http.Request, p model.Pri
 }
 
 func writeTeamError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, phase string, err error) {
-	if fault, classified := service.TeamResponseFault(err); classified {
+	if fault, classified := coreteam.WriteFault(err); classified {
 		if fault.Code == "write_outcome_unknown" || fault.Code == "internal_error" {
 			logger = logger.With("team_error_code", fault.Code)
 			status := http.StatusInternalServerError

@@ -21,9 +21,10 @@ staged business refusals and transaction completion failures.
 
 `Completion` and `TransactionOutcome` describe durable outcome facts, while the
 existing error types retain their phase, cause chains and cleanup facts. The
-current concrete implementation and SQL remain in the store root. Identity
-writes use the [identity boundary](2026-11-05-server-identity-boundaries.md);
-other write scopes continue to use their existing contracts.
+current concrete implementation and SQL remain in the store root. Identity writes
+use the [identity boundary](2026-11-05-server-identity-boundaries.md);
+Team writes use the [Team boundary](2026-11-05-server-team-boundaries.md).
+Other write scopes continue to use their existing contracts.
 
 ## Alternatives
 

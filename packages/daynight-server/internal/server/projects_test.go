@@ -18,9 +18,11 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
 func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
@@ -469,7 +471,7 @@ func TestProjectCreateIdentityTargetAndAccess(t *testing.T) {
 	handler := projectTestHandler(t, database, io.Discard)
 	ctx := context.Background()
 	actor := handler.principal
-	team, err := service.NewTeams(database).Create(ctx, actor, service.CreateTeam{Name: "Team", ExpectedUserID: actor.UserID})
+	team, err := teamservice.NewTeams(database).Create(ctx, actor, coreteam.CreateTeam{Name: "Team", ExpectedUserID: actor.UserID})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
@@ -87,7 +88,7 @@ func (h *projectHandler) create(w http.ResponseWriter, request *http.Request, pr
 }
 
 func writeProjectCreateError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
-	if fault, classified := service.TeamResponseFault(err); classified {
+	if fault, classified := team.WriteFault(err); classified {
 		if fault.Code == "write_outcome_unknown" || fault.Code == "internal_error" {
 			status := http.StatusInternalServerError
 			phase := "completion"

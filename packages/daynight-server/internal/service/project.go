@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/google/uuid"
 )
 
@@ -43,11 +44,11 @@ func (s *Projects) Create(ctx context.Context, principal model.Principal, input 
 }
 
 func (s *Projects) CreateWithAccess(ctx context.Context, principal model.Principal, input CreateProject) (model.Project, model.ProjectAccess, error) {
-	if err := requireTeamActor(principal, input.ExpectedUserID); err != nil {
+	if err := team.RequireActor(principal, input.ExpectedUserID); err != nil {
 		return model.Project{}, model.ProjectAccess{}, err
 	}
 	if input.TeamID != nil {
-		if _, err := canonicalTeamID(*input.TeamID); err != nil {
+		if _, err := team.CanonicalID(*input.TeamID); err != nil {
 			return model.Project{}, model.ProjectAccess{}, err
 		}
 	}

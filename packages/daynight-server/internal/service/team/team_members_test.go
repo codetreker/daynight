@@ -1,8 +1,10 @@
-package service
+package team_test
 
 import (
 	"context"
 	"errors"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,7 +18,7 @@ import (
 func TestTeamMemberServiceLifecycle(t *testing.T) {
 	_, db, _, admin := projectService(t)
 	ctx := context.Background()
-	s := NewTeams(db)
+	s := teamservice.NewTeams(db)
 	member := servicePrincipal(t, db)
 	outsider := servicePrincipal(t, db)
 	team := newTestTeam(t, s, admin, "members")
@@ -34,31 +36,31 @@ func TestTeamMemberServiceLifecycle(t *testing.T) {
 	}
 	_, err = s.Members(ctx, outsider, team.ID)
 	teamFault(t, err, "not_found")
-	_, err = s.SetMemberRole(ctx, member, team.ID, admin.UserID, ChangeTeamMember{Version: team.Membership.Version, Role: model.ProjectMemberRole, ExpectedUserID: member.UserID})
+	_, err = s.SetMemberRole(ctx, member, team.ID, admin.UserID, coreteam.ChangeTeamMember{Version: team.Membership.Version, Role: model.ProjectMemberRole, ExpectedUserID: member.UserID})
 	teamFault(t, err, "forbidden")
-	_, err = s.RemoveMember(ctx, member, team.ID, admin.UserID, ChangeTeamMember{Version: team.Membership.Version, ExpectedUserID: member.UserID})
+	_, err = s.RemoveMember(ctx, member, team.ID, admin.UserID, coreteam.ChangeTeamMember{Version: team.Membership.Version, ExpectedUserID: member.UserID})
 	teamFault(t, err, "forbidden")
-	_, err = s.SetMemberRole(ctx, admin, team.ID, uuid.NewString(), ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
+	_, err = s.SetMemberRole(ctx, admin, team.ID, uuid.NewString(), coreteam.ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
 	teamFault(t, err, "not_found")
-	_, err = s.SetMemberRole(ctx, admin, team.ID, member.UserID, ChangeTeamMember{Version: joined.Membership.Version + 1, Role: model.ProjectMemberRole, ExpectedUserID: admin.UserID})
+	_, err = s.SetMemberRole(ctx, admin, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: joined.Membership.Version + 1, Role: model.ProjectMemberRole, ExpectedUserID: admin.UserID})
 	teamFault(t, err, "version_conflict")
-	_, err = s.SetMemberRole(ctx, admin, team.ID, admin.UserID, ChangeTeamMember{Version: team.Membership.Version, Role: model.ProjectMemberRole, ExpectedUserID: admin.UserID})
+	_, err = s.SetMemberRole(ctx, admin, team.ID, admin.UserID, coreteam.ChangeTeamMember{Version: team.Membership.Version, Role: model.ProjectMemberRole, ExpectedUserID: admin.UserID})
 	teamFault(t, err, "last_admin")
-	_, err = s.RemoveMember(ctx, admin, team.ID, admin.UserID, ChangeTeamMember{Version: team.Membership.Version, ExpectedUserID: admin.UserID})
+	_, err = s.RemoveMember(ctx, admin, team.ID, admin.UserID, coreteam.ChangeTeamMember{Version: team.Membership.Version, ExpectedUserID: admin.UserID})
 	teamFault(t, err, "last_admin")
-	promoted, err := s.SetMemberRole(ctx, admin, team.ID, member.UserID, ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
+	promoted, err := s.SetMemberRole(ctx, admin, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
 	if err != nil || promoted.Membership.Role != model.ProjectAdmin || promoted.Membership.Version <= joined.Membership.Version || *promoted.ActorRole != model.ProjectAdmin {
 		t.Fatalf("promotion %#v %v", promoted, err)
 	}
-	same, err := s.SetMemberRole(ctx, admin, team.ID, member.UserID, ChangeTeamMember{Version: promoted.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
+	same, err := s.SetMemberRole(ctx, admin, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: promoted.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
 	if err != nil || !reflect.DeepEqual(same, promoted) {
 		t.Fatalf("no-op %#v %v", same, err)
 	}
-	demoted, err := s.SetMemberRole(ctx, member, team.ID, member.UserID, ChangeTeamMember{Version: promoted.Membership.Version, Role: model.ProjectMemberRole, ExpectedUserID: member.UserID})
+	demoted, err := s.SetMemberRole(ctx, member, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: promoted.Membership.Version, Role: model.ProjectMemberRole, ExpectedUserID: member.UserID})
 	if err != nil || *demoted.ActorRole != model.ProjectMemberRole {
 		t.Fatalf("self demote %#v %v", demoted, err)
 	}
-	removed, err := s.RemoveMember(ctx, member, team.ID, member.UserID, ChangeTeamMember{Version: demoted.Membership.Version, ExpectedUserID: member.UserID})
+	removed, err := s.RemoveMember(ctx, member, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: demoted.Membership.Version, ExpectedUserID: member.UserID})
 	if err != nil || removed.ActorRole != nil || removed.Membership != demoted.Membership {
 		t.Fatalf("self exit %#v %v", removed, err)
 	}
@@ -72,9 +74,9 @@ func TestTeamMemberServiceLifecycle(t *testing.T) {
 	if err != nil || rejoined.Membership.Version <= demoted.Membership.Version {
 		t.Fatalf("ABA %#v %v", rejoined, err)
 	}
-	_, err = s.RemoveMember(ctx, admin, team.ID, member.UserID, ChangeTeamMember{Version: demoted.Membership.Version, ExpectedUserID: admin.UserID})
+	_, err = s.RemoveMember(ctx, admin, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: demoted.Membership.Version, ExpectedUserID: admin.UserID})
 	teamFault(t, err, "version_conflict")
-	removed, err = s.RemoveMember(ctx, admin, team.ID, member.UserID, ChangeTeamMember{Version: rejoined.Membership.Version, ExpectedUserID: admin.UserID})
+	removed, err = s.RemoveMember(ctx, admin, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: rejoined.Membership.Version, ExpectedUserID: admin.UserID})
 	if err != nil || removed.ActorRole == nil || *removed.ActorRole != model.ProjectAdmin {
 		t.Fatalf("remove %#v %v", removed, err)
 	}
@@ -83,7 +85,7 @@ func TestTeamMemberServiceLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, remove := range []bool{false, true} {
-		input := ChangeTeamMember{Version: 1, Role: model.ProjectMemberRole, ExpectedUserID: admin.UserID}
+		input := coreteam.ChangeTeamMember{Version: 1, Role: model.ProjectMemberRole, ExpectedUserID: admin.UserID}
 		if remove {
 			_, err = s.RemoveMember(ctx, admin, personal, admin.UserID, input)
 		} else {
@@ -99,9 +101,9 @@ func TestTeamMemberServiceValidationAndFailures(t *testing.T) {
 	ctx := context.Background()
 	var count atomic.Int32
 	traced := tracedTasks(t, url, taskQueryAction{match: func(string) bool { count.Add(1); return false }})
-	s := NewTeams(traced.store)
+	s := teamservice.NewTeams(traced)
 	for _, remove := range []bool{false, true} {
-		input := ChangeTeamMember{Version: 1, Role: model.ProjectMemberRole, ExpectedUserID: other.UserID}
+		input := coreteam.ChangeTeamMember{Version: 1, Role: model.ProjectMemberRole, ExpectedUserID: other.UserID}
 		var err error
 		if remove {
 			_, err = s.RemoveMember(ctx, actor, uuid.NewString(), actor.UserID, input)
@@ -113,7 +115,7 @@ func TestTeamMemberServiceValidationAndFailures(t *testing.T) {
 	if count.Load() != 0 {
 		t.Fatalf("identity mismatch issued %d SQL queries", count.Load())
 	}
-	s = NewTeams(nil)
+	s = teamservice.NewTeams(nil)
 	_, err := s.Members(ctx, model.Principal{}, uuid.NewString())
 	teamFault(t, err, "unauthenticated")
 	_, err = s.Members(ctx, actor, "invalid")
@@ -121,19 +123,19 @@ func TestTeamMemberServiceValidationAndFailures(t *testing.T) {
 	for _, input := range []struct {
 		p          model.Principal
 		team, user string
-		change     ChangeTeamMember
+		change     coreteam.ChangeTeamMember
 		code       string
 	}{
-		{model.Principal{}, uuid.NewString(), actor.UserID, ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "unauthenticated"},
-		{actor, "invalid", actor.UserID, ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "invalid_input"},
-		{actor, uuid.NewString(), strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "invalid_input"},
-		{actor, uuid.NewString(), actor.UserID, ChangeTeamMember{Version: 0, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "invalid_input"},
-		{actor, uuid.NewString(), actor.UserID, ChangeTeamMember{Version: 1, Role: "invalid", ExpectedUserID: actor.UserID}, "invalid_input"},
+		{model.Principal{}, uuid.NewString(), actor.UserID, coreteam.ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "unauthenticated"},
+		{actor, "invalid", actor.UserID, coreteam.ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "invalid_input"},
+		{actor, uuid.NewString(), strings.ToUpper("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), coreteam.ChangeTeamMember{Version: 1, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "invalid_input"},
+		{actor, uuid.NewString(), actor.UserID, coreteam.ChangeTeamMember{Version: 0, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID}, "invalid_input"},
+		{actor, uuid.NewString(), actor.UserID, coreteam.ChangeTeamMember{Version: 1, Role: "invalid", ExpectedUserID: actor.UserID}, "invalid_input"},
 	} {
 		_, err = s.SetMemberRole(ctx, input.p, input.team, input.user, input.change)
 		teamFault(t, err, input.code)
 	}
-	s = NewTeams(db)
+	s = teamservice.NewTeams(db)
 	team := newTestTeam(t, s, actor, "broken")
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -141,7 +143,7 @@ func TestTeamMemberServiceValidationAndFailures(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("read cancellation %v", err)
 	}
-	_, err = s.SetMemberRole(canceled, actor, team.ID, actor.UserID, ChangeTeamMember{Version: team.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID})
+	_, err = s.SetMemberRole(canceled, actor, team.ID, actor.UserID, coreteam.ChangeTeamMember{Version: team.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: actor.UserID})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("write cancellation %v", err)
 	}
@@ -159,7 +161,7 @@ func TestTeamMemberServiceConcurrentAdminTransitions(t *testing.T) {
 	_, db, _, admin := projectService(t)
 	member := servicePrincipal(t, db)
 	ctx := context.Background()
-	s := NewTeams(db)
+	s := teamservice.NewTeams(db)
 	for _, remove := range []bool{false, true} {
 		team := newTestTeam(t, s, admin, "race")
 		invitation, err := s.CreateInvitation(ctx, admin, team.ID, admin.UserID)
@@ -170,7 +172,7 @@ func TestTeamMemberServiceConcurrentAdminTransitions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		promoted, err := s.SetMemberRole(ctx, admin, team.ID, member.UserID, ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
+		promoted, err := s.SetMemberRole(ctx, admin, team.ID, member.UserID, coreteam.ChangeTeamMember{Version: joined.Membership.Version, Role: model.ProjectAdmin, ExpectedUserID: admin.UserID})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -187,7 +189,7 @@ func TestTeamMemberServiceConcurrentAdminTransitions(t *testing.T) {
 				if i == 1 {
 					v = promoted.Membership.Version
 				}
-				input := ChangeTeamMember{Version: v, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
+				input := coreteam.ChangeTeamMember{Version: v, Role: model.ProjectMemberRole, ExpectedUserID: p.UserID}
 				if remove {
 					_, errs[i] = s.RemoveMember(ctx, p, team.ID, p.UserID, input)
 				} else {
@@ -231,7 +233,7 @@ func TestTeamMemberQueryCancellationPreservesFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, db, url, actor := projectService(t)
 			other := servicePrincipal(t, db)
-			s := NewTeams(db)
+			s := teamservice.NewTeams(db)
 			ctx := context.Background()
 			team := newTestTeam(t, s, actor, "cancel")
 			var version int64
@@ -248,14 +250,14 @@ func TestTeamMemberQueryCancellationPreservesFailure(t *testing.T) {
 			opctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			traced := tracedTasks(t, url, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, tc.fragment) }, start: cancel})
-			guarded := NewTeams(traced.store)
+			guarded := teamservice.NewTeams(traced)
 			var err error
 			if tc.read {
 				_, err = guarded.Members(opctx, actor, team.ID)
 			} else if tc.remove {
-				_, err = guarded.RemoveMember(opctx, actor, team.ID, target, ChangeTeamMember{Version: version, ExpectedUserID: actor.UserID})
+				_, err = guarded.RemoveMember(opctx, actor, team.ID, target, coreteam.ChangeTeamMember{Version: version, ExpectedUserID: actor.UserID})
 			} else {
-				_, err = guarded.SetMemberRole(opctx, actor, team.ID, target, ChangeTeamMember{Version: version, Role: role, ExpectedUserID: actor.UserID})
+				_, err = guarded.SetMemberRole(opctx, actor, team.ID, target, coreteam.ChangeTeamMember{Version: version, Role: role, ExpectedUserID: actor.UserID})
 			}
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("lost cancellation cause: %v", err)
