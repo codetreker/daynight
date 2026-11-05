@@ -19,7 +19,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -56,11 +56,11 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 	candidate[0].Title = title
 	candidate[0].Description = description
 	header := model.TaskHeader{ProjectID: task.ProjectID, ID: task.ID, Version: math.MaxInt64}
-	_, base, err := tasksteps.EncodeCollection(header, candidate)
+	_, base, err := taskcodec.EncodeCollection(header, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remaining := tasksteps.MaxEncodedBytes - len(base)
+	remaining := taskcodec.MaxEncodedBytes - len(base)
 	for index := range rows {
 		if index != 0 {
 			size := min(remaining, 524288)
@@ -101,7 +101,7 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer response.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(response.Body, tasksteps.MaxEncodedBytes+1))
+		data, err := io.ReadAll(io.LimitReader(response.Body, taskcodec.MaxEncodedBytes+1))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +156,7 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 				t.Fatalf("calibration changed other row %d", index)
 			}
 		}
-		if len(data) > tasksteps.MaxEncodedBytes || audit.clock.Load() != 1 || audit.updates.Load() != 1 || audit.touches.Load() != 1 {
+		if len(data) > taskcodec.MaxEncodedBytes || audit.clock.Load() != 1 || audit.updates.Load() != 1 || audit.touches.Load() != 1 {
 			t.Fatal("successful calibration exceeded capacity or persistence stages")
 		}
 	}
@@ -173,7 +173,7 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 				measured = len(data)
 			case 409:
 				var refusal api.ErrorResponse
-				if json.Unmarshal(data, &refusal) != nil || refusal.Error.Code != "steps_limit_exceeded" || refusal.Error.Details == nil || refusal.Error.Details.EncodedBytes == nil || refusal.Error.Details.MaxEncodedBytes == nil || *refusal.Error.Details.MaxEncodedBytes != tasksteps.MaxEncodedBytes || *refusal.Error.Details.EncodedBytes <= tasksteps.MaxEncodedBytes {
+				if json.Unmarshal(data, &refusal) != nil || refusal.Error.Code != "steps_limit_exceeded" || refusal.Error.Details == nil || refusal.Error.Details.EncodedBytes == nil || refusal.Error.Details.MaxEncodedBytes == nil || *refusal.Error.Details.MaxEncodedBytes != taskcodec.MaxEncodedBytes || *refusal.Error.Details.EncodedBytes <= taskcodec.MaxEncodedBytes {
 					t.Fatal("invalid calibration refusal")
 				}
 				measured = int(*refusal.Error.Details.EncodedBytes)
@@ -192,7 +192,7 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 		t.Fatalf("capacity calibration did not converge: %s", strings.Join(history, "; "))
 		return nil
 	}
-	exact := calibrate(tasksteps.MaxEncodedBytes)
+	exact := calibrate(taskcodec.MaxEncodedBytes)
 	status, data := request("GET", "", "")
 	if status != 200 || !bytes.Equal(exact, data) {
 		t.Fatal("exact GET differs from PATCH frozen collection")
@@ -205,8 +205,8 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 	}
 	t.Logf("PATCH and GET returned exactly %d bytes; maximum-version no-op preserved every byte without clock/update/touch", len(exact))
 	padding++
-	calibrate(tasksteps.MaxEncodedBytes + 1)
-	t.Logf("one-byte-over content candidate refused %d bytes before target update and parent touch", tasksteps.MaxEncodedBytes+1)
+	calibrate(taskcodec.MaxEncodedBytes + 1)
+	t.Logf("one-byte-over content candidate refused %d bytes before target update and parent touch", taskcodec.MaxEncodedBytes+1)
 	status, large := request("GET", "", "")
 	if status != 200 {
 		t.Fatal("legal pre-change collection is unreadable")
@@ -226,11 +226,11 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 	current[0].Status = model.TaskStepDone
 	current[0].UpdatedAt = zeroStamp
 	current[128].Description += strings.Repeat("X", padding)
-	_, currentJSON, err := tasksteps.EncodeCollection(header, current)
+	_, currentJSON, err := taskcodec.EncodeCollection(header, current)
 	if err != nil {
 		t.Fatal(err)
 	}
-	extra := tasksteps.MaxEncodedBytes - len(currentJSON)
+	extra := taskcodec.MaxEncodedBytes - len(currentJSON)
 	if extra < 0 {
 		t.Fatal("status fixture is over capacity")
 	}
@@ -242,14 +242,14 @@ func TestStepsHTTPChangeCapacityStress(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, data = request("GET", "", "")
-	if status != 200 || len(data) != tasksteps.MaxEncodedBytes {
+	if status != 200 || len(data) != taskcodec.MaxEncodedBytes {
 		t.Fatal("status fixture was not legal exact capacity")
 	}
 	before = snapshot()
 	audit.reset()
 	status, data = request("PUT", "/00000000/status", `{"version":9223372036854775806,"status":"in_progress"}`)
 	var refusal api.ErrorResponse
-	if status != 409 || json.Unmarshal(data, &refusal) != nil || refusal.Error.Code != "steps_limit_exceeded" || refusal.Error.Details == nil || *refusal.Error.Details.EncodedBytes < tasksteps.MaxEncodedBytes+7 || audit.updates.Load() != 0 || audit.touches.Load() != 0 || snapshot() != before {
+	if status != 409 || json.Unmarshal(data, &refusal) != nil || refusal.Error.Code != "steps_limit_exceeded" || refusal.Error.Details == nil || *refusal.Error.Details.EncodedBytes < taskcodec.MaxEncodedBytes+7 || audit.updates.Load() != 0 || audit.touches.Load() != 0 || snapshot() != before {
 		t.Fatal("status growth bypassed full candidate capacity or changed data")
 	}
 	t.Logf("longer status refused complete candidate of %d bytes with zero changes", *refusal.Error.Details.EncodedBytes)

@@ -1,4 +1,4 @@
-package tasksteps
+package codec
 
 import (
 	"bytes"

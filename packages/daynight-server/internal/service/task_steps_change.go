@@ -7,7 +7,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
 
 type UpdateTaskStep struct {
@@ -34,12 +35,12 @@ func validateStepChanges(changes tasksteps.Changes) error {
 		return invalidInput("At least one step field must be provided.")
 	}
 	if changes.Title != nil {
-		if err := tasksteps.ValidateTitle(*changes.Title); err != nil {
+		if err := taskcodec.ValidateTitle(*changes.Title); err != nil {
 			return invalidInput(err.Error())
 		}
 	}
 	if changes.Description != nil {
-		if err := tasksteps.ValidateDescription(*changes.Description); err != nil {
+		if err := taskcodec.ValidateDescription(*changes.Description); err != nil {
 			return invalidInput(err.Error())
 		}
 	}
@@ -55,7 +56,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 	if err != nil {
 		return result, err
 	}
-	stepID, err = tasksteps.CanonicalID(stepID)
+	stepID, err = taskcodec.CanonicalID(stepID)
 	if err != nil {
 		return result, invalidInput(err.Error())
 	}
@@ -76,7 +77,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		if err != nil {
 			return err
 		}
-		if _, err := tasksteps.Collection(header, current); err != nil {
+		if _, err := taskcodec.Collection(header, current); err != nil {
 			return err
 		}
 		candidate, index, changed, err := tasksteps.ChangeCandidate(current, stepID, changes)
@@ -87,7 +88,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 			return err
 		}
 		if !changed {
-			result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, current)
+			result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, current)
 			return err
 		}
 		if header.Version == math.MaxInt64 {
@@ -99,7 +100,7 @@ func (s *TaskSteps) change(ctx context.Context, principal model.Principal, proje
 		}
 		candidate[index].UpdatedAt = observed
 		header.Version++
-		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
+		result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}

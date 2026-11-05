@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -74,7 +74,7 @@ func (w *WorkerTx) ReportTaskSnapshots(ctx context.Context, userID, workerID str
 		if properties == nil {
 			continue
 		}
-		value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*properties), false)
+		value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*properties))
 		if err != nil {
 			return nil, queryError("decode reported task source", err)
 		}

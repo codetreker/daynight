@@ -5,8 +5,9 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 type SetTaskStatus struct {
@@ -89,7 +90,7 @@ func (s *Tasks) SetStatus(ctx context.Context, principal model.Principal, projec
 			}
 			next := *worker
 			next.State = model.WorkerCompleted
-			values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
+			values.Properties, err = taskprops.WithWorker(values.Properties, &next)
 			if err != nil {
 				return taskMutation{}, err
 			}

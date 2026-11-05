@@ -8,7 +8,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 )
 
 type TaskSteps struct{ store *store.Store }
@@ -16,12 +17,12 @@ type TaskSteps struct{ store *store.Store }
 func NewTaskSteps(database *store.Store) *TaskSteps { return &TaskSteps{store: database} }
 
 type StepsDocument struct {
-	Resource tasksteps.StepsResource
+	Resource taskcodec.StepsResource
 	JSON     []byte
 }
 
 type StepDocument struct {
-	Resource tasksteps.StepResource
+	Resource taskcodec.StepResource
 	JSON     []byte
 }
 
@@ -66,7 +67,7 @@ func (s *TaskSteps) List(ctx context.Context, principal model.Principal, project
 		if err != nil {
 			return err
 		}
-		document.Resource, document.JSON, err = tasksteps.EncodeCollection(header, steps)
+		document.Resource, document.JSON, err = taskcodec.EncodeCollection(header, steps)
 		return err
 	})
 	if err != nil {
@@ -79,7 +80,7 @@ func (s *TaskSteps) Get(ctx context.Context, principal model.Principal, projectI
 	if err := requirePrincipal(principal); err != nil {
 		return StepDocument{}, err
 	}
-	id, err := tasksteps.CanonicalID(stepID)
+	id, err := taskcodec.CanonicalID(stepID)
 	if err != nil {
 		return StepDocument{}, invalidInput(err.Error())
 	}
@@ -92,7 +93,7 @@ func (s *TaskSteps) Get(ctx context.Context, principal model.Principal, projectI
 		if err != nil {
 			return err
 		}
-		document.Resource, document.JSON, err = tasksteps.EncodeItem(header, step)
+		document.Resource, document.JSON, err = taskcodec.EncodeItem(header, step)
 		return err
 	})
 	if err != nil {
@@ -169,11 +170,11 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 	if err != nil {
 		return result, err
 	}
-	input.ID, err = tasksteps.CanonicalID(input.ID)
+	input.ID, err = taskcodec.CanonicalID(input.ID)
 	if err != nil {
 		return result, invalidInput(err.Error())
 	}
-	if err := tasksteps.ValidateText(input.Title, input.Description); err != nil {
+	if err := taskcodec.ValidateText(input.Title, input.Description); err != nil {
 		return result, invalidInput(err.Error())
 	}
 	status := model.TaskStepTodo
@@ -190,7 +191,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if *anchor == nil {
 			continue
 		}
-		canonical, err := tasksteps.CanonicalID(**anchor)
+		canonical, err := taskcodec.CanonicalID(**anchor)
 		if err != nil {
 			return result, invalidInput(err.Error())
 		}
@@ -210,7 +211,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		if err != nil {
 			return err
 		}
-		if _, err := tasksteps.Collection(header, current); err != nil {
+		if _, err := taskcodec.Collection(header, current); err != nil {
 			return err
 		}
 		candidate, position, err := tasksteps.AddCandidate(current, model.TaskStep{ID: input.ID, Title: input.Title, Description: input.Description, Status: status}, input.Before, input.After)
@@ -232,7 +233,7 @@ func (s *TaskSteps) Add(ctx context.Context, principal model.Principal, projectI
 		}
 		candidate[position].CreatedAt, candidate[position].UpdatedAt = observed, observed
 		header.Version++
-		result.Resource, result.JSON, err = tasksteps.EncodeCollection(header, candidate)
+		result.Resource, result.JSON, err = taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			return taskStepsEncodingFault(err)
 		}
@@ -266,10 +267,10 @@ func finishStepsWrite(result StepsWriteResult, projectLocked bool, err error) (S
 }
 
 func taskStepsEncodingFault(err error) error {
-	var limit *tasksteps.LimitError
+	var limit *taskcodec.LimitError
 	if errors.As(err, &limit) {
 		return &model.Fault{Code: "steps_limit_exceeded", Message: "Task steps exceed the encoded resource limit.", Cause: err,
-			StepsLimit: &model.StepsLimitDetails{EncodedBytes: limit.EncodedBytes, MaxEncodedBytes: tasksteps.MaxEncodedBytes}}
+			StepsLimit: &model.StepsLimitDetails{EncodedBytes: limit.EncodedBytes, MaxEncodedBytes: taskcodec.MaxEncodedBytes}}
 	}
 	return err
 }

@@ -5,7 +5,8 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func propertyJSON(value any) json.RawMessage {
@@ -44,7 +45,7 @@ func testPRs(t *testing.T, properties model.TaskProperties) []model.PullRequestP
 
 func testWithWorker(t *testing.T, properties model.TaskProperties, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	values, err := taskproperties.WithWorker(properties, worker)
+	values, err := taskprops.WithWorker(properties, worker)
 	if err != nil {
 		t.Fatal(err)
 	}

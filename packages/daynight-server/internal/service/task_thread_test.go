@@ -14,7 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskthreadjson"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 )
 
@@ -47,7 +47,7 @@ func listThread(t *testing.T, threads *TaskThreads, principal model.Principal, t
 		t.Fatal(err)
 	}
 	var resource api.ThreadPage
-	if err := json.Unmarshal(result.JSON, &resource); err != nil || len(resource.Items) != len(result.Page.Items) || len(result.JSON) > taskthreadjson.PageLimit {
+	if err := json.Unmarshal(result.JSON, &resource); err != nil || len(resource.Items) != len(result.Page.Items) || len(result.JSON) > taskcodec.PageLimit {
 		t.Fatalf("page document: %#v, %v", resource, err)
 	}
 	return result
@@ -126,7 +126,7 @@ func TestThreadInputAndScopedAuthorization(t *testing.T) {
 		_, err := threads.Post(ctx, principal, project.ID, task.ID, input)
 		requireThreadFault(t, err, "invalid_input")
 	}
-	_, err := threads.Post(ctx, principal, project.ID, task.ID, CreateThreadMessage{Body: strings.Repeat("x", taskthreadjson.MessageLimit+1)})
+	_, err := threads.Post(ctx, principal, project.ID, task.ID, CreateThreadMessage{Body: strings.Repeat("x", taskcodec.MessageLimit+1)})
 	requireThreadFault(t, err, "payload_too_large")
 	for _, request := range []ThreadListRequest{
 		{Count: -1}, {Count: 101}, {BeforeID: pointer("bad")}, {AfterID: pointer("bad")},
@@ -221,14 +221,14 @@ func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 			reply := postThread(t, threads, principal, task, CreateThreadMessage{Body: "reply target"})
 			prefix := " <>&\"\\\n\t中文🌛\u2028\u2029 "
 			template := model.ThreadMessage{ID: uuid.NewString(), TaskID: task.ID, Author: author, Body: prefix, ReplyTo: &reply.Message.ID, CreatedAt: time.Now().UTC()}
-			base, err := taskthreadjson.EncodeMessage(template, true)
+			base, err := taskcodec.EncodeMessage(template, true)
 			if err != nil {
 				t.Fatal(err)
 			}
-			body := prefix + strings.Repeat("x", taskthreadjson.MessageLimit-len(base))
+			body := prefix + strings.Repeat("x", taskcodec.MessageLimit-len(base))
 			first := postThread(t, threads, principal, task, CreateThreadMessage{Body: body, ClaimID: claimID, ReplyTo: &reply.Message.ID})
-			detailed, err := taskthreadjson.EncodeMessage(first.Message, true)
-			if err != nil || len(detailed) != taskthreadjson.MessageLimit {
+			detailed, err := taskcodec.EncodeMessage(first.Message, true)
+			if err != nil || len(detailed) != taskcodec.MessageLimit {
 				t.Fatalf("exact admission boundary: %d, %v", len(detailed), err)
 			}
 			before := threadStoredState(t, database, task.ID)
@@ -328,11 +328,11 @@ func TestThreadPageByteLimitKeepsCompleteBodiesAndActualSides(t *testing.T) {
 	threads := NewTaskThreads(database)
 	task := createTask(t, tasks, principal, project.ID, "Byte page")
 	template := model.ThreadMessage{ID: uuid.NewString(), Author: model.ThreadAuthor{UserID: principal.UserID}, CreatedAt: time.Now()}
-	base, err := taskthreadjson.EncodeMessage(template, false)
+	base, err := taskcodec.EncodeMessage(template, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Repeat("x", taskthreadjson.MessageLimit-len(base))
+	body := strings.Repeat("x", taskcodec.MessageLimit-len(base))
 	var ids []string
 	for range 7 {
 		ids = append(ids, postThread(t, threads, principal, task, CreateThreadMessage{Body: body}).Message.ID)
@@ -390,13 +390,13 @@ func TestThreadSameMillisecondBytePagesTraverseBothResourceForms(t *testing.T) {
 		if i > 0 {
 			message.ReplyTo = &want[0].ID
 		}
-		encoded, err := taskthreadjson.EncodeMessage(message, true)
+		encoded, err := taskcodec.EncodeMessage(message, true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		message.Body += strings.Repeat("x", taskthreadjson.MessageLimit-len(encoded))
-		encoded, err = taskthreadjson.EncodeMessage(message, true)
-		if err != nil || len(encoded) != taskthreadjson.MessageLimit {
+		message.Body += strings.Repeat("x", taskcodec.MessageLimit-len(encoded))
+		encoded, err = taskcodec.EncodeMessage(message, true)
+		if err != nil || len(encoded) != taskcodec.MessageLimit {
 			t.Fatalf("detailed fixture is not exactly 64 KiB: %d, %v", len(encoded), err)
 		}
 		// Equal-time rows isolate UUID pagination from clock preparation. The

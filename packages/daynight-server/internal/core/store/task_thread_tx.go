@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 const threadClockBudget = 100 * time.Millisecond
@@ -53,7 +53,7 @@ func (tx *ThreadTx) SourceTask(ctx context.Context, projectID, taskID string) (m
 		return model.Task{}, queryError("read thread source", err)
 	}
 	if workerValue != nil {
-		result.Properties["worker"], err = taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue), false)
+		result.Properties["worker"], err = taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue))
 		if err != nil {
 			return model.Task{}, queryError("decode thread source", err)
 		}

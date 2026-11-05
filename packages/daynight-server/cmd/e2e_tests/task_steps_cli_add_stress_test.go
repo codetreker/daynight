@@ -20,7 +20,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 )
 
@@ -121,11 +121,11 @@ func TestInstalledCLITaskStepsAddCapacityStress(t *testing.T) {
 			rows[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 		}
 		candidate := append(append([]model.TaskStep{}, rows...), model.TaskStep{ID: "ffffffff", Position: 128, Title: "New <&> 中文", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp})
-		_, base, err := tasksteps.EncodeCollection(header, candidate)
+		_, base, err := taskcodec.EncodeCollection(header, candidate)
 		if err != nil {
 			t.Fatal(err)
 		}
-		remaining := tasksteps.MaxEncodedBytes - len(base)
+		remaining := taskcodec.MaxEncodedBytes - len(base)
 		for index := range rows {
 			size := min(remaining, 524288)
 			rows[index].Description = strings.Repeat("X", size)
@@ -200,7 +200,7 @@ func TestInstalledCLITaskStepsAddCapacityStress(t *testing.T) {
 					measured = wireBytes
 				case code == 1 && status == 409 && stdoutBytes == 0 && strings.Contains(diagnostic, "code=steps_limit_exceeded") && !strings.Contains(strings.ToLower(diagnostic), "outcome is unknown"):
 					measured = taskStepsAddCapacityDetail(t, diagnostic, "encodedBytes")
-					if measured <= tasksteps.MaxEncodedBytes || taskStepsAddCapacityDetail(t, diagnostic, "maxEncodedBytes") != tasksteps.MaxEncodedBytes || before != snapshot() {
+					if measured <= taskcodec.MaxEncodedBytes || taskStepsAddCapacityDetail(t, diagnostic, "maxEncodedBytes") != taskcodec.MaxEncodedBytes || before != snapshot() {
 						t.Fatal("known capacity refusal details/state invalid")
 					}
 				default:
@@ -227,7 +227,7 @@ func TestInstalledCLITaskStepsAddCapacityStress(t *testing.T) {
 			t.Fatalf("Add capacity calibration exhausted: %s", strings.Join(history, "; "))
 			return api.StepsResource{}, ""
 		}
-		exact, digest := calibrate(tasksteps.MaxEncodedBytes)
+		exact, digest := calibrate(taskcodec.MaxEncodedBytes)
 		if digest == "" {
 			t.Fatal("exact capacity Add did not return a confirmed full receipt")
 		}
@@ -251,7 +251,7 @@ func TestInstalledCLITaskStepsAddCapacityStress(t *testing.T) {
 			}
 		}
 		padding++
-		calibrate(tasksteps.MaxEncodedBytes + 1)
+		calibrate(taskcodec.MaxEncodedBytes + 1)
 		process.signal(t)
 		process.stopped(t, 0)
 	})
