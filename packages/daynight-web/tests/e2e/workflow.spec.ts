@@ -200,12 +200,12 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
   await expect(stat(page, '任务总数')).toHaveText('0');
 
   await test.step('browses a Team and creates a project in its captured context', async () => {
-    const selector = page.locator('details.team-selector');
-    await selector.locator('summary').click();
+    const selector = page.locator('.team-selector');
+    await selector.locator('.team-switch').click();
     await expect(selector.getByRole('status')).toHaveCount(0);
     const teamLink = selector.locator(`a[href="/teams/${team.id}"]`);
     for (let count = 0; count < 200 && !await teamLink.isVisible(); count++) {
-      const more = selector.getByRole('button', { name: '加载更多 Team', exact: true });
+      const more = selector.getByRole('menuitem', { name: '加载更多 Team', exact: true });
       await expect(more).toBeVisible();
       await more.click();
       await expect(selector.getByRole('status')).toHaveCount(0);
