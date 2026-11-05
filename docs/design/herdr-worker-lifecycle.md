@@ -47,7 +47,7 @@ lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`re
 
 普通 Worker 重启接入仍存活的原运行时，重新确认 Session 连接并增加 `connectionEpoch`，保持 `sessionId` 与 `executionGeneration`。只有原运行具有普通 shell+agent 停止证明、原 claim 仍有效且原 native ID 与首次输入结果可用于恢复，才创建下一代实际运行。准备资源停止证明不授予下一代运行或自动恢复，即使该代继承了前代非空 nativeSessionId。
 
-仅 relay 连接断开、Worker 与原生运行仍存活时，普通 observe 也会核对连接是否缺失，不依赖 nativeSessionId、账本或画面发生变化。重连前再次验证原 claim、allowAgents 与原 daemon/socket peer/shell/agent 身份，并沿用持久注册和未知请求只读对账路径。重连只提高 connectionEpoch，保持原 Session、运行代次和录制段；先前断线造成的 suspended、未知输入回执和草稿责任不解除，不触发原始输入或 continuation。任务 paused 仍可恢复只读观察连接，但不由此获得输入或自动恢复权限。claim 已失效、执行权限被撤销或原进程身份不能确认时不创建新连接。
+仅 relay 连接断开、Worker 与原生运行仍存活时，普通 observe 也会核对连接是否缺失，不依赖 nativeSessionId、账本或画面发生变化。重连前再次验证原 claim、allowAgents 与原 daemon/socket peer/shell/agent 身份，并沿用持久注册和未知请求只读对账路径。重连只提高 connectionEpoch，保持原 Session、运行代次和录制段；先前断线造成的 suspended、未知输入回执和草稿责任不解除，不触发原始输入或 continuation。任务 paused 仍可恢复只读观察连接，但不由此获得输入或自动恢复权限。claim 已失效、执行权限被撤销或原进程身份不能确认时不创建新连接。浏览器隐藏、租约撤销或过期只暂停输入，仍在线的原 relay 连接保持已确认状态；不能据此重注册或提高 connectionEpoch。只有输入通道实际关闭后才清除连接标记。
 
 注册请求先落盘再发送。请求或响应未知时读取原 Session 状态核对，不自动重放或生成替代注册。服务端历史可以落后于本地停止或 native ID 补齐，但不能替换原 owner、binding、已确认停止记录或段前缀。准备好下一代但尚未发布 ledger 时，先按服务端仍注册的代次 reconnect，再提交新运行。
 

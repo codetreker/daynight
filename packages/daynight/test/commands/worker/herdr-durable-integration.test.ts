@@ -1006,6 +1006,26 @@ it("retains pending responsibility when the completed deletion journal belongs t
   expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ state: "failed", worktreeDeleted: false });
 });
 
+it("retains the original live connection when service lease revocation suspends input", async () => {
+  const create = inputSessionModule.createHerdrInputSession; let revoke!: () => void;
+  vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => {
+    revoke = () => options.suspend(f.context);
+    return { ...create(options), connected: () => true };
+  });
+  const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const original = f.read(), registrations = f.registrations.length;
+  revoke();
+  await f.facade.tasks.observe(f.context, binding, operation());
+  expect(f.registrations).toHaveLength(registrations);
+  const after = f.read();
+  expect(after.sessionId).toBe(original.sessionId); expect(after.connectionEpoch).toBe(original.connectionEpoch);
+  expect(after.runs).toEqual(original.runs); expect(after.segments).toEqual(original.segments);
+  expect(after.registrationRequest).toBeNull();
+  expect(f.facade.input!.state(f.context)).toMatchObject({ state: "suspended", lease: null, availableActions: ["acquire_control", "resume_automation"] });
+  await expect(f.facade.tasks.submitPrompt(f.context, binding, "Must remain suspended", operation())).rejects.toThrow();
+  expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+});
+
 it.each([false, true])("reconnects an unchanged active observation without input replay, paused: %s", async paused => {
   const create = inputSessionModule.createHerdrInputSession; let disconnect!: () => void;
   vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => { disconnect = () => options.suspend(f.context); return create(options); });

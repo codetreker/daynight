@@ -47,6 +47,10 @@ connection advances only its connection epoch, preserving the Session, native
 generation, segment and suspended input state. Task pause permits read-only
 observation to reconnect but grants no input or automation recovery. An unknown
 registration is read back before any new registration; input is never replayed.
+Browser lease revocation or expiry suspends input without invalidating a live
+relay registration. Only actual channel closure clears the connected state;
+ordinary observation cannot replace a live channel merely because its writer
+lease ended.
 An automatic known-menu or disabled-input rejection with no native write clears
 only the current admission and preserves initial pending state when applicable.
 The typed waiting result survives input-journal serialization, while any

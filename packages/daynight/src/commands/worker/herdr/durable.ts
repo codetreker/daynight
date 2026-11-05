@@ -276,7 +276,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const record = need(owner), input = arbiters.get(record.sessionId);
       if (input) input.suspend();
       else disconnectedBeforeInput.add(record.sessionId);
-      connected.delete(record.sessionId);
+      // Revoking a browser lease suspends input while the relay remains live.
+      // Only channel closure invalidates the confirmed connection registration.
+      if (!inputSession.connected(record.sessionId)) connected.delete(record.sessionId);
     },
   });
   const recordingRoot = path.join(options.paths.workerDirectory, "herdr-recordings");
