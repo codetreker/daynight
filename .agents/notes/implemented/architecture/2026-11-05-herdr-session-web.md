@@ -21,7 +21,9 @@ Managed entries occupy a separate section of the attachment sidebar and share
 the existing preview column. An additional vertical recording region would
 starve ordinary readers in short viewports. Switching to a recording hides and
 disables the retained file preview without discarding upload drafts or iframe
-state; selecting a file restores the ordinary reader.
+state; selecting a file restores the ordinary reader. The
+[detail order and empty-record decision](2026-11-05-task-detail-order-and-records.md)
+sets the conditions for omitting the section when history is confirmed empty.
 
 State admission compares the stable execution and terminal address separately
 from native Session ID discovery. A late state with a missing known native ID
