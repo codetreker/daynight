@@ -188,6 +188,7 @@ func TestProjectCreateUnknownOutcomeClassification(t *testing.T) {
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionUnknown, Cause: context.DeadlineExceeded}, 503, "write_outcome_unknown"},
 		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionUnknown, Cause: &model.Fault{Code: "forbidden", Message: "private"}}, 500, "internal_error"},
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
+		{&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: model.ErrNotFound}, 404, "not_found"},
 	} {
 		response := httptest.NewRecorder()
 		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeProjectCreateError(w, r, logger, test.err) })).ServeHTTP(response, request)
@@ -243,5 +244,18 @@ func TestTransferHTTPCompletionClassification(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "private") || !strings.Contains(logs.String(), `"outcome":"unknown"`) || !strings.Contains(logs.String(), `"error_code":"write_outcome_unknown"`) {
 		t.Fatalf("unsafe or unclassified log: %s", &logs)
+	}
+}
+
+func TestTransferCanceledResponseIsNotWritten(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	writeTransferJSON(w, r, logger, time.Now(), api.TransferReceipt{})
+	if w.Body.Len() != 0 || w.Header().Get("Content-Type") != "" || !strings.Contains(logs.String(), `"outcome":"unknown"`) {
+		t.Fatalf("canceled response wrote data or lost classification: %s", logs.String())
 	}
 }
