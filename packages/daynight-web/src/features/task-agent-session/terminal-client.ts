@@ -5,7 +5,8 @@ import type { SessionV2Key, SessionV2Payloads } from '../../../../daynight/src/s
 
 export type TerminalClientSnapshot = {
   phase: 'loading' | 'ready' | 'disconnected' | 'unavailable' | 'error';
-  session: TerminalSessionState | null; pending: boolean; ownsControl: boolean;
+  transport: 'paused' | 'connecting' | 'connected' | 'disconnected';
+  session: TerminalSessionState | null; pending: boolean; inputReady: boolean; ownsControl: boolean;
   result: SessionV2Payloads['operation_result'] | null; error: unknown | null; unknownAcknowledged: boolean;
 };
 type Options = { api: TerminalSessionApi; claimId: string; userId: string; browserClientId?: string; isCurrent?: () => boolean; storage?: Storage | null };
@@ -13,20 +14,29 @@ type TrackedCommand = Pick<TerminalCommand, 'sessionId' | 'claimId' | 'execution
 type Pending = { command: TrackedCommand; generation: number; startedAt: number };
 // Native conversation identity may be enriched without changing the execution target.
 export const sameTerminalFence = (a: TerminalSessionState, b: TerminalSessionState) => a.sessionId === b.sessionId && a.claimId === b.claimId && a.executionGeneration === b.executionGeneration && a.connectionEpoch === b.connectionEpoch && canonicalSessionJson({ ...a.binding, nativeSessionId: null }) === canonicalSessionJson({ ...b.binding, nativeSessionId: null });
+const sameAdmissionState = (a: TerminalSessionState, b: TerminalSessionState) => sameTerminalFence(a, b)
+  && a.binding.nativeSessionId === b.binding.nativeSessionId && a.connected === b.connected
+  && canonicalSessionJson(a.control) === canonicalSessionJson(b.control)
+  && canonicalSessionJson(a.capabilities) === canonicalSessionJson(b.capabilities);
 const terminal = (state: SessionV2Payloads['operation_result']['state']) => state === 'transport_completed' || state === 'rejected' || state === 'unknown';
 
 /** Owns one visible viewer, never a native attach or an automatic input retry. */
 export class TerminalSessionClient {
   readonly browserClientId: string;
-  private view: TerminalClientSnapshot = { phase: 'loading', session: null, pending: false, ownsControl: false, result: null, error: null, unknownAcknowledged: false };
+  private view: TerminalClientSnapshot = { phase: 'loading', transport: 'paused', session: null, pending: false, inputReady: false, ownsControl: false, result: null, error: null, unknownAcknowledged: false };
   private listeners = new Set<() => void>();
   private visible = false;
   private ended = false;
   private generation = 0;
   private channel: { close(): void } | null = null;
+  private channelState: TerminalSessionState | null = null;
+  private channelRevision = 0;
+  private needsReconciliation = false;
   private requests = new Set<AbortController>();
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconciling: number | null = null;
   private renewTimer: ReturnType<typeof setInterval> | null = null;
   private pendingOperation: Pending | null = null;
   private leaseKey: string | null = null;
@@ -62,20 +72,29 @@ export class TerminalSessionClient {
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   private owned() { return !this.ended; }
   private live(generation = this.generation) { return this.owned() && this.visible && (this.options.isCurrent?.() ?? true) && generation === this.generation; }
-  private ownsLease() { const lease = this.view.session?.control?.lease; return this.live() && this.view.phase === 'ready' && this.view.session?.connected === true && this.view.session.control?.state === 'manual' && lease?.holderUserId === this.options.userId && lease.browserClientId === this.browserClientId && Date.parse(lease.expiresAt) > Date.now(); }
+  private channelMatches(state: TerminalSessionState | null) {
+    const channel = this.channelState;
+    return state !== null && channel !== null && sameAdmissionState(state, channel);
+  }
+  private channelConfirmed() {
+    return !this.needsReconciliation && this.view.transport === 'connected' && this.channelMatches(this.view.session);
+  }
+  private ownsLease() { const lease = this.view.session?.control?.lease; return this.live() && this.channelConfirmed() && this.view.phase === 'ready' && this.view.session?.connected === true && this.view.session.control?.state === 'manual' && lease?.holderUserId === this.options.userId && lease.browserClientId === this.browserClientId && Date.parse(lease.expiresAt) > Date.now(); }
   private publish(change: Partial<TerminalClientSnapshot>) {
     this.view = { ...this.view, ...change, ...(this.persistenceError === null ? {} : { error: this.persistenceError, phase: 'error' as const }) };
-    this.view = { ...this.view, ownsControl: this.ownsLease() };
+    this.view = { ...this.view, inputReady: this.live() && this.channelConfirmed(), ownsControl: this.ownsLease() };
     for (const listener of this.listeners) listener();
   }
   private request() { const controller = new AbortController(); this.requests.add(controller); return controller; }
   private forget(controller: AbortController) { this.requests.delete(controller); }
   private stopTransport() {
     this.generation++; this.opening = false;
+    this.channelState = null; this.needsReconciliation = false;
     this.channel?.close(); this.channel = null;
     for (const c of this.requests) c.abort(); this.requests.clear();
     if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
     if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
+    if (this.reconcileTimer !== null) clearTimeout(this.reconcileTimer); this.reconcileTimer = null; this.reconciling = null;
     if (this.renewTimer !== null) clearInterval(this.renewTimer); this.renewTimer = null;
     if (this.view.pending && this.pendingOperation !== null) this.publish({ pending: false, result: { operationId: this.pendingOperation.command.payload.operationId, state: 'unknown', errorCode: 'input_unknown' } });
   }
@@ -83,11 +102,12 @@ export class TerminalSessionClient {
     if (!this.owned()) return;
     if (this.visible === visible) { if (visible && this.channel === null) void this.start(); return; }
     this.visible = visible;
-    if (!visible) { this.stopTransport(); this.publish({ phase: 'disconnected', ownsControl: false }); }
+    if (!visible) { this.stopTransport(); this.publish({ transport: 'paused' }); }
     else void this.start();
   };
-  private receive(next: TerminalSessionState, generation: number, phase?: 'loading') {
+  private receive(next: TerminalSessionState, generation: number, source: 'read' | 'channel', readRevision = this.channelRevision) {
     if (!this.live(generation)) return;
+    const received = next;
     if (next.claimId !== this.options.claimId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
     const previous = this.view.session;
     if (previous !== null && (BigInt(next.executionGeneration) < BigInt(previous.executionGeneration) || BigInt(next.connectionEpoch) < BigInt(previous.connectionEpoch))) return;
@@ -97,10 +117,25 @@ export class TerminalSessionClient {
         if (next.binding.nativeSessionId !== previous.binding.nativeSessionId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
       }
       if (previous.control && (next.control === null || BigInt(next.control.controlEpoch) < BigInt(previous.control.controlEpoch))) next = { ...next, control: previous.control };
+      if (source === 'read' && readRevision < this.channelRevision && this.channelState !== null && sameTerminalFence(next, this.channelState) && next.connected !== this.channelState.connected) {
+        // The read and a newer channel event disagree about connectivity. Keep the
+        // last presented state until another read resolves their ordering.
+        this.needsReconciliation = true; next = { ...next, connected: previous.connected };
+      }
+      const oldLease = next.control?.lease, freshLease = previous.control?.lease;
+      // A read begun before the channel's renewal may finish after it. Preserve only
+      // that newer expiry, and only when every other control field agrees.
+      if (source === 'read' && readRevision < this.channelRevision && oldLease && freshLease && this.channelState !== null
+        && sameTerminalFence(previous, this.channelState) && canonicalSessionJson(previous.control) === canonicalSessionJson(this.channelState.control)
+        && Date.parse(oldLease.expiresAt) < Date.parse(freshLease.expiresAt)
+        && canonicalSessionJson({ ...next.control, lease: { ...oldLease, expiresAt: freshLease.expiresAt } }) === canonicalSessionJson(previous.control)) {
+        next = { ...next, control: previous.control };
+      }
       const before = previous.snapshot, after = next.snapshot;
       if (before && after && (BigInt(after.segmentOrdinal) < BigInt(before.segmentOrdinal) || after.segmentId === before.segmentId && BigInt(after.frame.frameSeq) < BigInt(before.frame.frameSeq))) next = { ...next, snapshot: { ...before, binding: next.binding } };
     }
     if (previous !== null && previous.sessionId !== next.sessionId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
+    if (source === 'read' && readRevision === this.channelRevision) this.needsReconciliation = false;
     if (previous !== null && (!sameTerminalFence(previous, next) || this.pendingOperation?.command.type === 'operation' && previous.control?.controlEpoch !== next.control?.controlEpoch)) {
       if (this.view.pending && this.pendingOperation !== null) {
         if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null;
@@ -112,24 +147,30 @@ export class TerminalSessionClient {
     const lease = next.control?.lease;
     const key = lease === null || lease === undefined ? null : `${lease.leaseId}:${lease.controlEpoch}`;
     if (key !== this.leaseKey) { this.leaseKey = key; this.leaseSeq = 0n; }
-    this.publish({ session: next, phase: phase ?? (next.connected ? 'ready' : 'disconnected'), error: null });
+    if (source === 'channel') {
+      if (this.channelState === null || !sameAdmissionState(this.channelState, received)) this.channelRevision++;
+      this.channelState = received;
+    }
+    const phase = !next.connected ? 'disconnected' : source === 'channel' || !this.needsReconciliation && this.view.transport === 'connected' && this.channelMatches(next) ? 'ready' : this.view.session === null ? 'loading' : this.view.phase;
+    this.publish({ session: next, phase, ...(source === 'channel' ? { transport: 'connected' as const, error: null } : {}) });
+    this.scheduleReconciliation();
   }
   private async start() {
     if (!this.live() || this.opening) return;
     this.opening = true; const generation = this.generation, controller = this.request();
-    this.publish({ phase: 'loading', error: null });
+    this.publish({ transport: 'connecting', ...(this.view.session === null ? { phase: 'loading' as const, error: null } : {}) });
     try {
       const current = this.view.session === null ? await this.options.api.current(controller.signal) : await this.options.api.state(this.view.session.sessionId, controller.signal);
       if (!this.live(generation)) return;
       if (current.status !== 'registered') { this.publish({ phase: 'unavailable', session: null }); this.scheduleReconnect(); return; }
       if (current.claimId !== this.options.claimId) { this.invalidate(new ApiError('protocol', null, 'stale_fence')); return; }
-      this.receive(current, generation, 'loading');
+      this.receive(current, generation, 'read');
       if (!this.live(generation) || this.view.session === null) return;
-      this.channel = this.options.api.channel(this.view.session.sessionId, this.browserClientId, state => this.receive(state, generation), error => {
+      this.channel = this.options.api.channel(this.view.session.sessionId, this.browserClientId, state => this.receive(state, generation, 'channel'), error => {
         if (!this.live(generation)) return;
-        this.stopTransport(); this.publish({ phase: 'disconnected', error: error ?? null }); this.scheduleReconnect();
+        this.stopTransport(); this.publish({ phase: 'disconnected', transport: 'disconnected', error: error ?? null }); this.scheduleReconnect();
       });
-      this.renewTimer = setInterval(() => { if (!this.live()) { this.stopTransport(); this.publish({ phase: 'disconnected' }); return; } this.publish({}); if (this.view.ownsControl && !this.view.pending) void this.control('renew_control'); }, SESSION_V2_LIMITS.leaseRenewMs);
+      this.renewTimer = setInterval(() => { if (!this.live()) { this.stopTransport(); this.publish({ transport: 'paused' }); return; } this.publish({}); if (this.view.ownsControl && !this.view.pending) void this.control('renew_control'); }, SESSION_V2_LIMITS.leaseRenewMs);
     } catch (error) { if (this.live(generation)) this.failure(error); }
     finally { this.forget(controller); if (generation === this.generation) this.opening = false; }
   }
@@ -137,22 +178,42 @@ export class TerminalSessionClient {
     if (!this.live() || this.reconnectTimer !== null) return;
     this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; void this.start(); }, 1500);
   }
+  private scheduleReconciliation() {
+    if (!this.live() || this.view.transport !== 'connected' || this.channelConfirmed()) {
+      if (this.reconcileTimer !== null) clearTimeout(this.reconcileTimer); this.reconcileTimer = null;
+      return;
+    }
+    if (this.reconcileTimer !== null || this.reconciling !== null) return;
+    this.reconcileTimer = setTimeout(() => {
+      this.reconcileTimer = null;
+      if (!this.live() || this.view.transport !== 'connected' || this.channelConfirmed()) return;
+      const generation = this.generation; this.reconciling = generation;
+      void this.refreshState(true).finally(() => {
+        if (this.reconciling === generation) this.reconciling = null;
+        if (this.live(generation)) this.scheduleReconciliation();
+      });
+    }, 1500);
+  }
   private failure(error: unknown) {
     if (error instanceof ApiError && ([401, 403, 404, 410].includes(error.status ?? 0) || error.code === 'principal_mismatch')) { this.invalidate(error); return; }
-    this.stopTransport(); this.publish({ phase: this.view.session === null ? 'error' : 'disconnected', error });
+    this.stopTransport(); this.publish({ phase: this.view.session === null ? 'error' : 'disconnected', transport: 'disconnected', error });
     this.scheduleReconnect();
   }
-  refresh = async (): Promise<void> => {
+  refresh = (): Promise<void> => this.refreshState(false);
+  private async refreshState(bounded: boolean): Promise<void> {
     if (!this.live()) return;
     if (this.channel === null || this.view.session === null) { await this.start(); return; }
-    const generation = this.generation, controller = this.request();
-    try { this.receive(await this.options.api.state(this.view.session.sessionId, controller.signal), generation); }
+    const generation = this.generation, controller = this.request(), readRevision = this.channelRevision;
+    try {
+      const read = () => this.options.api.state(this.view.session!.sessionId, controller.signal);
+      this.receive(bounded ? await this.boundedRequest(controller, 10_000, read) : await read(), generation, 'read', readRevision);
+    }
     catch (error) { if (this.live(generation)) this.failure(error); }
     finally { this.forget(controller); }
-  };
+  }
   private admitted(action: string): TerminalSessionState | null {
     const state = this.view.session;
-    if (!this.live() || this.view.phase !== 'ready' || this.view.pending || this.view.result?.state === 'unknown' && !this.view.unknownAcknowledged || state === null || !state.connected || !state.capabilities.observe || !state.capabilities.control || !state.capabilities.archive || !state.control?.availableActions.some(a => a === action)) return null;
+    if (!this.live() || !this.channelConfirmed() || this.view.phase !== 'ready' || this.view.pending || this.view.result?.state === 'unknown' && !this.view.unknownAcknowledged || state === null || !state.connected || !state.capabilities.observe || !state.capabilities.control || !state.capabilities.archive || !state.control?.availableActions.some(a => a === action)) return null;
     return state;
   }
   control = async (action: SessionV2Payloads['control_request']['action'], confirmation: { draftHandled?: boolean; initialUnknownDisposition?: 'delivered_continue' | null } = {}): Promise<void> => {
@@ -240,6 +301,6 @@ export class TerminalSessionClient {
     } finally { this.forget(controller); }
   }
   acknowledgeUnknown = (): void => { if (!this.owned() || this.view.result?.state !== 'unknown' || !this.persist(this.pendingOperation, true)) return; this.publish({ unknownAcknowledged: true, pending: false, error: null }); };
-  invalidate = (reason: unknown = new ApiError('server', 403, 'permission_denied')): void => { this.ended = true; this.visible = false; this.stopTransport(); this.pendingOperation = null; this.publish({ phase: 'unavailable', session: null, pending: false, ownsControl: false, result: null, error: reason }); };
+  invalidate = (reason: unknown = new ApiError('server', 403, 'permission_denied')): void => { this.ended = true; this.visible = false; this.stopTransport(); this.pendingOperation = null; this.publish({ phase: 'unavailable', transport: 'disconnected', session: null, pending: false, ownsControl: false, result: null, error: reason }); };
   close = (): void => { this.ended = true; this.visible = false; this.stopTransport(); this.listeners.clear(); };
 }
