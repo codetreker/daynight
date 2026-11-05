@@ -836,8 +836,11 @@ authenticated user, project and task. Opening or reactivating the view refreshes
 the first page even when cached: confirmed empty stays hidden during refresh and
 existing entries remain readable. An incomplete page is not a confirmed empty
 catalogue; failures retain eligible content and offer retry. Task version does
-not establish history freshness. Fences and generations prevent revoked or stale
-results from being republished. This cache grants no live control or archive access.
+not establish history freshness. Fences and generations guard revoked or stale
+results; complete storage failure can conservatively hide a newer result or lose
+a denial across a restart after all tabs close, as described in the
+[cache design](../../docs/design/daynight-task-sync.md#5-indexeddb-与去重).
+This cache grants no live control or archive access.
 Verified complete frames support direct seeking, stepping and playback; partial
 recordings remain labeled and playback stops at every gap until the reader
 explicitly continues. Archive reading establishes no control connection.

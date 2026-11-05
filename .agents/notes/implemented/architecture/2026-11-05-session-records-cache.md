@@ -30,12 +30,17 @@ active leases; a trusted denial can evict a lease to retain its marker. When
 denial markers occupy every slot, the cache generation rotates while retaining
 the project, summaries and authorization and clearing old details and catalogues.
 When protected slots also include active leases and none is free, a reader waits
-for a lease to settle or expire before retrying. If a clear or generation rotation
-cannot be persisted, live tabs conservatively withdraw the matching old
-catalogue. If every tab closes while durable storage remains unwritable, that
-in-memory fence cannot survive restart. A change of identity, revoked
-access, task deletion or a retired generation prevents old contents and late
-responses from being republished. The cache is a display aid; it grants no access to live Sessions,
+for a lease to settle or expire before retrying. With functioning storage,
+identity changes, revoked access, task deletion and retired generations fence
+old content and late responses. If a clear or generation rotation cannot be
+persisted, live tabs use matching lifecycle broadcasts and in-memory fences to
+withdraw the catalogue and offer retry; invalidated in-flight responses cannot
+republish after the notice. If IndexedDB is completely unreadable and unwritable,
+a delayed old denial notice can arrive after a newer network success, and the
+receiver may conservatively hide that newer catalogue. If every relevant tab
+closes after a denial that no durable medium could record, the in-memory fence
+is lost; the next opening may briefly show the old catalogue before the network
+denial. The cache is a display aid; it grants no access to live Sessions,
 controls or archive content. The [Web design](../../../../docs/design/herdr-session-web.md)
 owns the visible directory and replay behavior.
 
