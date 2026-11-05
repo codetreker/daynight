@@ -39,10 +39,10 @@ content without a local control.
 
 The shared management and project creation dialogs no longer offer a local language
 entry. Existing focus isolation, keyboard interaction, page entry and preference
-failure recovery remain owned by their respective surfaces. The current graph and attachment deletion overlays still
-contain their existing selectors and need separate changes to satisfy the UI
+failure recovery remain owned by their respective surfaces. The current graph overlay still
+contains its existing selector and needs a separate change to satisfy the UI
 principle. Their removal can be performed at each owning surface without
-changing the locale runtime or moving the retained page entries; those surfaces
-continue to show their present controls until changed. The rule does not require
+changing the locale runtime or moving the retained page entries; that surface
+continues to show its present control until changed. The rule does not require
 the page entry to be active while a modal is open or visible when an entire page
 region is hidden in fullscreen.

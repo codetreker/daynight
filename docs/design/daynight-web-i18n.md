@@ -93,7 +93,7 @@ Session 的指定操作和活动标签从已有英语目录导出只读子集，
 
 Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻译字符串。语言变化更新资源、版本、时间和 last-confirmed 文案，不改变 Worker ID、hook 的读取依赖、冻结状态或单调锚点，不额外发起请求。普通任务状态和 phase 复用已有目录；机器名、路径和实际版本原样显示。
 
-项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。
+项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。附件删除确认订阅共享语言状态，但不复制语言选择器或偏好提示；页面的既有入口和反馈保留。
 
 图结构与几何继续只依赖 `index/rootId` 和原有布局输入。memoized 的 `TaskNode`、`ChainRow` 和 `DependencyEdges` 在内部订阅展示 Context，更新文案与 ARIA，同时保留节点数据、边路径、视口和初始定位机制。依赖边的昂贵绘制分解以 geometry 为 memo 依赖，语言变化更新可访问文本，同时保留 canonical 路线坐标与绘制片段。React Flow 的无障碍配置由当前消息生成；英文文案必须适配现有节点尺寸。
 
@@ -115,7 +115,7 @@ Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻�
 | 场景 | 验证内容 |
 |---|---|
 | `language-startup-preferences` | 浏览器语言、显式保存、重载与路由、标题和 HTML `lang`，以及用户原始数据。 |
-| `language-state-preservation` | 图节点/边/视口、全屏与模态焦点、PR 页码、附件输入/iframe 身份及内容；待完成上传、覆盖和删除期间切换，每项写入只执行一次。 |
+| `language-state-preservation` | 通过可操作入口切换并检查图节点/边/视口；检查全屏与模态焦点，并验证详情页签往返保留 PR 页码、附件输入和 iframe 身份及内容；分别挂起上传、覆盖和删除，验证待完成状态和每项写入次数。 |
 | `language-errors-and-narrow` | 读/无效值/写入故障与重试、真实隔离数据库故障下错误重译及相同 request ID，两种语言的 1440px/320px 图、对话框与附件布局。 |
 
 三个场景使用现有受监控页面与场景级 `en-US` 浏览器 locale，继续由单一 Playwright project 执行一次、零 retry。需要精确比较语言切换前后业务请求数量的隔离阶段控制浏览器时钟，排除独立项目定时器触发；真实周期刷新由 `refresh-staleness` 单独验证。滚动恢复读取实际 `scrollTop`，以测试进程单调时钟观察其连续稳定状态，不依赖受控浏览器定时器。functional inventory、报告聚合与严格预期测试使用相同 annotation；

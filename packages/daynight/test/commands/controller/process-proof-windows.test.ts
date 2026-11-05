@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-const f = vi.hoisted(() => ({ exec: vi.fn(), job: vi.fn() }));
-vi.mock("node:child_process", () => ({ execFile: f.exec }));
+const f = vi.hoisted(() => ({ native: vi.fn(), job: vi.fn() }));
+vi.mock("../../../src/commands/controller/windows-process-proof.js", () => ({ captureWindowsProcessProof: f.native }));
 vi.mock("../../../src/commands/controller/windows-job.js", () => ({ createControllerJob: vi.fn(), inspectControllerJob: f.job }));
-import { stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const controller: ProcessProof = { pid: 4101, parentPid: 4000, processGroupId: null, startedAt: "fixture-birth", commandHash: createHash("sha256").update("fixture-controller").digest("hex"), jobObjectName: "Local\\Daynight-11111111-1111-4111-8111-111111111111" };
@@ -11,10 +11,19 @@ beforeEach(() => {
   Object.defineProperty(process, "platform", { ...platform, value: "win32" });
   vi.useFakeTimers(); vi.clearAllMocks();
   f.job.mockResolvedValue([]);
-  f.exec.mockImplementation((_file, args, _options, callback) => callback(null, JSON.stringify({ ProcessId: Number(/ProcessId = (\d+)/u.exec(args.at(-1))![1]), ParentProcessId: controller.parentPid, Birth: controller.startedAt, CommandLine: "fixture-controller" })));
+  f.native.mockImplementation(async pid => ({ ...controller, pid }));
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); Object.defineProperty(process, "platform", platform); });
 const missing = () => { throw Object.assign(new Error("Gone"), { code: "ESRCH" }); };
+
+test("retains a live original birth with different command evidence even when the named Job is missing", async () => {
+  vi.spyOn(process, "kill").mockReturnValue(true);
+  const command = "fixture-controller 📖";
+  const retained = { ...controller, commandHash: createHash("sha256").update(command.replace("📖", "??")).digest("hex") };
+  f.native.mockResolvedValue({ ...controller, commandHash: createHash("sha256").update(command).digest("hex") });
+  await expect(confirmControllerProcessesStopped(retained, [])).rejects.toThrow("ownership remains unknown");
+  expect(f.job).not.toHaveBeenCalled();
+});
 
 test("waits for the original process after the Windows Job inventory becomes empty", async () => {
   let probes = 0;
