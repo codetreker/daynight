@@ -231,6 +231,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         response.setHeader("Daynight-Worker-Configuration", "1");
         send(response, { desired: cloudDesired, observationRevision: cloudObservationRevision, observation: cloudObservation }); return;
       }
+      if (configurationWorkerId !== null && request.method === "GET" && request.url === `/api/v1/me/workers/${configurationWorkerId}/bots?limit=100`) {
+        send(response, { items: [], nextCursor: null }); return;
+      }
       if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "report" && request.method === "POST") {
         if (request.headers["daynight-worker-configuration"] !== "1") throw new Error("Installed Worker must use the configuration report capability.");
         const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as WorkerReport & { readonly configuration: WorkerCloudReport };
@@ -561,6 +564,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     expect(firstConfigurationRead).toBeGreaterThanOrEqual(0);
     expect(firstProjectRead).toBeGreaterThan(firstConfigurationRead);
     expect(new Set(reports.map((report) => report.workerId))).toEqual(new Set([originalClaims.get(first.id)!.workerId]));
+    const botInventoryRequests = requests.filter(request => new URL(request.path, "http://localhost").pathname.endsWith("/bots"));
+    expect(botInventoryRequests.length).toBeGreaterThan(0);
+    expect(botInventoryRequests.every(request => request.method === "GET" && request.path === `/api/v1/me/workers/${originalClaims.get(first.id)!.workerId}/bots?limit=100`)).toBe(true);
     const awaitHome = await realpath(home);
     expect(reports.every(({ input }) => input.workingDirectory === awaitHome && input.versions.daynight === installed!.receipt.packageVersion)).toBe(true);
     expect(JSON.stringify(reports)).not.toContain("worker-fixture-token");
