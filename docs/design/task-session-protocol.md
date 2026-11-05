@@ -107,6 +107,12 @@ Codex 和 Copilot 仅在活动 turn 匹配且原生能力允许时执行 steer�
 
 文件路径、改动类型、重命名目标、原因和请求写入目录在 diff 之前展示，避免单个长 patch 挤掉其他文件或权限范围。已知身份和按钮字段不进入正文；无法解释的请求扩展或改动保留可读原文，包括网络与额外权限信息。Web 渲染及原生响应通路复用原有实现。选择理由与边界见[审批正文决策](../../.agents/notes/implemented/bug-fix/2026-11-06-codex-approval-detail.md)。
 
+### Claude 审批正文
+
+`claudeApprovalDetail` 在 `canUseTool` 构造审批交互时生成纯文本，保留原生 `toolInput` 对象用于允许响应。`Bash` 的 `command` 保持原始字符并放在首行，随后是 `description` 和其他参数；`Write` 以 `file_path` 开头，内容置于 `Content` 段落；`Edit` / `MultiEdit` 使用 `Before` / `After` 段落，多项编辑按原顺序编号。字符串直接写入正文，数字、布尔、`null`、数组和对象按紧凑 JSON 表示；不剥离未知字段或空值。
+
+文件级额外参数以及 `MultiEdit` 每条编辑的额外参数先于全部替换片段展示，避免第一段长内容挤掉 `replace_all` 等决策信息。格式化结果在截断前检查 NUL 和非良构 Unicode；存在这些字符时回退到原对象的 `readable` JSON 转义表示，避免违反 Session 文本契约，原生工具入参保持不变。最终结果统一经过 `limited`，沿用 200000 字符上限、Unicode 边界保护与明确截断提示。专用格式只接受对应字段类型；不符合形状的已知工具、非对象输入回退到原有 `readable` 输出。其他工具按键值逐行显示，空对象仍显示 `{}`。Web 继续按保留换行的纯文本呈现，不解析工具 JSON。交互身份、动作、SDK 返回与匹配原生 tool result 的确认边界保持独立；取舍见[Claude 审批正文决策](../../.agents/notes/implemented/bug-fix/2026-11-06-claude-approval-detail.md)。
+
 ### 角色指令的共享传递
 
 launch ticket 与 `ProviderOptions` 使用同名可选 `instructions`，共享要求见[角色指令契约](../spec/controller-role-instructions.md)。严格解析器只在字段实际存在时允许该键，并检查非空白、良构 Unicode 与 64 KiB UTF-8 上限；返回原对象，不为旧 ticket 注入默认值。既有 canonical payload hash 自然包含提供的角色文本，省略字段的旧 hash 不变；私有 ticket 的不可覆盖写入继续绑定整份启动内容。读写共用 6 MiB 序列化预算：保留原 5 MiB 空间并容纳角色的 JSON 转义。writer 在落盘前检查实际编码字节数并写入同一串内容，reader 在读取前检查文件大小，避免角色与初始输入单独合法但组合文件不可读。
