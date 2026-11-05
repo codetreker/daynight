@@ -634,7 +634,9 @@ export class TaskDetailSessions {
         mutation: reconciliation ? { ...entry.state.mutation, reconciling: false, reconciliationError: new ApiError("protocol") } : entry.state.mutation });
       return;
     }
-    if (admitted.kind === "newer") {
+    const summaryVersion = this.summaryVersion(projectId, taskId);
+    // Another page may commit the summary before this page receives its cache hint.
+    if (admitted.kind === "newer" || summaryVersion !== null && detail.version > summaryVersion) {
       entry.pending = { detail, ticket, revision, reconciliation, generation, writeGeneration, readOpeningGeneration };
       if (writeGeneration !== null) entry.mismatch = detail;
       this.publish(entry, { ...entry.state, refreshing: false, requiresFreshRead: true,
@@ -657,6 +659,7 @@ export class TaskDetailSessions {
     this.publish(entry, { ...entry.state, revision, loadedRevision: revision,
       detail: preserveCollection(entry.state.detail, materializeDetail(admitted.detail, node)), status: "ready", refreshing: false,
       requiresFreshRead: entry.liveVersion !== detail.version || entry.liveOpeningGeneration !== entry.openingGeneration || entry.mismatch !== null, graphMismatch: entry.mismatch !== null, error: storageError, mutation });
+    if (storageError !== null && isStepOperation(entry.state.mutation.operation) && entry.state.mutation.reconciling) this.failRead(entry, storageError, false);
     if (entry.mismatch !== null || reconciliation) this.refreshProject(projectId);
     if (entry.liveOpeningGeneration !== entry.openingGeneration) {
       if (entry.queuedRead === null) entry.queuedRead = { revision, reconciliation: false };
