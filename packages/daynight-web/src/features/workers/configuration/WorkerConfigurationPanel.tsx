@@ -11,6 +11,7 @@ import { ConfigurationProjectsDialog, ConfigurationRemovalDialog } from './Confi
 import { configurationFieldChanges, emptyProjectDraft, parseConfigurationDraft, resolvedProjectNative, type ConfigurationDraft } from './model';
 import { useConfigurationProjects } from './useConfigurationProjects';
 import { useWorkerConfiguration } from './useWorkerConfiguration';
+import { useWorkerConfigurationNavigation } from './WorkerConfigurationNavigation';
 import './configuration.css';
 
 const agentName = (agent: string) => agent === 'claude' ? 'Claude Code' : agent === 'copilot' ? 'Copilot' : 'Codex';
@@ -52,18 +53,21 @@ const ConfigurationError = ({ error, write, retained }: { readonly error: unknow
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 
-export const WorkerConfigurationPanel = ({ workerId, visible = true, readEnabled, online, tasks }: {
+export const WorkerConfigurationPanel = ({ workerId, visible = true, readEnabled, online, tasks, onContinueEditing }: {
   readonly workerId: string;
   readonly visible?: boolean;
   readonly readEnabled: boolean;
   readonly online: boolean | null;
   readonly tasks: readonly WorkerTaskSnapshot[];
+  readonly onContinueEditing?: () => void;
 }) => {
   const state = useWorkerConfiguration(workerId, { readEnabled });
   const choices = useConfigurationProjects(readEnabled);
   const { messages: { workers: { configuration: m }, workers }, format } = useI18n();
   const scope = useTaskCacheScope();
   const [dialog, setDialog] = useState<'projects' | 'removal' | null>(null);
+  const navigation = useWorkerConfigurationNavigation({ workerId, dirty: state.dirty, unavailable: state.unavailable, discard: state.discard, visible, ...(onContinueEditing === undefined ? {} : { onContinueEditing }) });
+  useLayoutEffect(() => { if (navigation.confirming) setDialog(null); }, [navigation.confirming]);
   useLayoutEffect(() => { setDialog(null); }, [workerId, scope]);
   useLayoutEffect(() => { if (!visible) setDialog(null); }, [visible]);
   useLayoutEffect(() => { if (state.unavailable || state.resource !== null && state.resource.desired === null) setDialog(null); }, [state.unavailable, state.resource]);
@@ -85,7 +89,7 @@ export const WorkerConfigurationPanel = ({ workerId, visible = true, readEnabled
     else void state.save();
   };
   const chooseProjects = () => { choices.refresh(); setDialog('projects'); };
-  return <div className="worker-configuration">
+  return <div className="worker-configuration" ref={navigation.owner} onFocusCapture={navigation.rememberFocus}>
     <div className="configuration-toolbar"><button className="button" type="button" disabled={!readEnabled || state.refreshing || state.pending} onClick={state.refresh}>{state.refreshing ? workers.refreshing : workers.refresh}</button></div>
     {online === false && <div className="notice warning configuration-notice" role="status">{m.offlineNotice}</div>}
     {state.conflict || state.notice === 'conflict' ? <div className="notice warning configuration-notice" role="alert"><p className="notice-heading">{m.conflict}</p><p>{m.retainedDraft}</p><details><summary>{m.viewLatest}</summary><pre>{JSON.stringify(desired.value, null, 2)}</pre></details><div className="notice-actions"><button className="button" type="button" disabled={disabled || state.pending || state.uncertain} onClick={state.loadLatest}>{m.loadLatest}</button></div></div> : null}
@@ -115,7 +119,8 @@ export const WorkerConfigurationPanel = ({ workerId, visible = true, readEnabled
       })}</div></section>}
       <footer className="config-save-bar"><span className="draft-summary" role="status">{state.dirty ? m.unsaved : m.noChanges}</span><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || !state.dirty} onClick={state.discard}>{m.discard}</button><button className="button primary" type="submit" disabled={actionsDisabled || state.pending || state.uncertain || !state.dirty || parsed.value === null || state.conflict}>{state.pending ? m.saving : m.save}</button></footer>
     </form></div><ConfigurationSummary resource={resource} online={online} /></div>
-    {dialog === 'projects' && <ConfigurationProjectsDialog projects={choices.items} selected={draft.projects.map(project => project.projectId)} loading={choices.loading} error={choices.error} refresh={choices.refresh} onClose={() => setDialog(null)} onApply={ids => { state.setDraft(old => ({ ...old, projects: ids.map(id => old.projects.find(project => project.projectId === id) ?? emptyProjectDraft(id)) })); setDialog(null); }} />}
-    {dialog === 'removal' && <ConfigurationRemovalDialog disabled={actionsDisabled} projects={removed} tasks={tasks} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void state.save(); }} />}
+    {!navigation.confirming && dialog === 'projects' && <ConfigurationProjectsDialog projects={choices.items} selected={draft.projects.map(project => project.projectId)} loading={choices.loading} error={choices.error} refresh={choices.refresh} onClose={() => setDialog(null)} onApply={ids => { state.setDraft(old => ({ ...old, projects: ids.map(id => old.projects.find(project => project.projectId === id) ?? emptyProjectDraft(id)) })); setDialog(null); }} />}
+    {!navigation.confirming && dialog === 'removal' && <ConfigurationRemovalDialog disabled={actionsDisabled} projects={removed} tasks={tasks} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void state.save(); }} />}
+    {navigation.confirmation}
   </div>;
 };
