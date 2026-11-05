@@ -6,16 +6,17 @@ const teamId = '00000000-0000-4000-8000-000000000021';
 const time = '2026-10-20T09:00:00Z';
 const personal = { id: personalId, kind: 'personal', name: null };
 const profile = { id: userId, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
+const otherProfile = { ...profile, id: '00000000-0000-4000-8000-000000000002', name: 'Bob' };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { exists: boolean; lost: boolean; holdMe: Gate | null; holdDetail: Gate | null; holdDelete: Gate | null; writes: number; details: number };
+type State = { profile: typeof profile; exists: boolean; lost: boolean; holdMe: Gate | null; holdDetail: Gate | null; holdDelete: Gate | null; writes: number; details: number };
 const install = async (page: Page): Promise<State> => {
-  const state: State = { exists: true, lost: false, holdMe: null, holdDetail: null, holdDelete: null, writes: 0, details: 0 };
-  const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: { teamId: id, userId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
+  const state: State = { profile, exists: true, lost: false, holdMe: null, holdDetail: null, holdDelete: null, writes: 0, details: 0 };
+  const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: { teamId: id, userId: state.profile.id, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
-    const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': userId } });
-    if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send(profile); }
+    const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': state.profile.id } });
+    if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send(state.profile); }
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.exists ? [team(teamId)] : [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team(personalId));
@@ -178,4 +179,71 @@ test('retains the editor while the same Team is reread after identity confirmati
   expect(await dialog.boundingBox()).toEqual(box);
   finish.resolve(); await expect(name).toHaveValue('Unsubmitted draft'); await expect(name).toBeFocused();
   expect(state.writes).toBe(0); await check.other.close();
+});
+
+
+type ClipboardProbe = { calls: string[]; resolve?: () => void };
+const installClipboardProbe = async (page: Page) => {
+  await page.addInitScript(() => {
+    const probe: ClipboardProbe = { calls: [] };
+    (window as unknown as { clipboardProbe: ClipboardProbe }).clipboardProbe = probe;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (value: string) => {
+      probe.calls.push(value);
+      return new Promise<void>((resolve) => { probe.resolve = resolve; });
+    } } });
+  });
+};
+const clipboardCalls = (page: Page) => page.evaluate(() => (window as unknown as { clipboardProbe: ClipboardProbe }).clipboardProbe.calls);
+const resolveClipboard = (page: Page) => page.evaluate(() => (window as unknown as { clipboardProbe: ClipboardProbe }).clipboardProbe.resolve?.());
+
+test('retains a pending Team ID copy through same-user verification', async ({ page }) => {
+  await installClipboardProbe(page);
+  const state = await install(page); await start(page);
+  const copy = page.getByRole('button', { name: 'Copy Team ID' });
+  await copy.focus(); await page.keyboard.press('Enter');
+  await expect(copy).toHaveAttribute('aria-disabled', 'true');
+  await expect(copy).toBeFocused();
+  expect(await clipboardCalls(page)).toEqual([teamId]);
+  const check = await foreground(page, state);
+  await expect(copy).toBeFocused();
+  await page.keyboard.press('Space');
+  expect(await clipboardCalls(page)).toEqual([teamId]);
+  await resolveClipboard(page);
+  await expect(copy).toHaveAttribute('aria-disabled', 'true');
+  await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
+  await expect(copy).toBeFocused();
+  check.finish();
+  await expect(page.getByRole('status').filter({ hasText: 'Copied' })).toBeVisible();
+  await expect(copy).toHaveAttribute('aria-disabled', 'false');
+  await expect(copy).toBeFocused();
+  expect(state.writes).toBe(0);
+  await check.other.close();
+});
+
+test('discards a pending Team ID copy after an account switch', async ({ page }) => {
+  await installClipboardProbe(page);
+  const state = await install(page); await start(page);
+  const copy = page.getByRole('button', { name: 'Copy Team ID' });
+  await copy.click(); await expect(copy).toHaveAttribute('aria-disabled', 'true');
+  const check = await foreground(page, state);
+  state.profile = otherProfile; check.finish();
+  await expect(page.getByText('Bob', { exact: true }).first()).toBeVisible();
+  await resolveClipboard(page);
+  await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
+  expect(state.writes).toBe(0);
+  await check.other.close();
+});
+
+test('discards a pending Team ID copy after leaving and returning to settings', async ({ page }) => {
+  await installClipboardProbe(page);
+  const state = await install(page); await start(page);
+  await page.getByRole('button', { name: 'Copy Team ID' }).click();
+  await expect.poll(() => clipboardCalls(page)).toEqual([teamId]);
+  await page.getByRole('link', { name: 'My projects', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Copy Team ID' })).toHaveCount(0);
+  await resolveClipboard(page);
+  await page.getByRole('link', { name: 'Team settings', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Copy Team ID' })).toBeVisible();
+  await expect(page.getByText('Copied', { exact: true })).toHaveCount(0);
+  expect(state.writes).toBe(0);
 });

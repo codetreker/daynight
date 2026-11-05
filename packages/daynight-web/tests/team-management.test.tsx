@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import type { Team } from "../src/api/teams";
 import { CreateTeamDialog, TeamSettingsPanel } from "../src/features/teams/TeamManagement";
@@ -245,4 +245,117 @@ describe("Team management", () => {
     expect(vi.mocked(renameTeam).mock.calls[1]?.[2]).toBe("Draft");
   });
 
+});
+
+describe("Team ID copy", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(["admin", "member"] as const)("copies the complete displayed ID for an %s without business writes", async (role) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.mocked(getTeam).mockResolvedValue(team("Alpha", 1n, role));
+    settings();
+    const copy = await screen.findByRole("button", { name: "Copy Team ID" });
+    expect(copy).toHaveAttribute("title", "Copy Team ID");
+    expect(copy.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText(teamId)).toBeInTheDocument();
+    fireEvent.click(copy);
+    expect(await screen.findByRole("status", { name: "" })).toHaveTextContent("Copied");
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(teamId);
+    expect(renameTeam).not.toHaveBeenCalled(); expect(deleteTeam).not.toHaveBeenCalled();
+  });
+
+  it("localizes the accessible name, hover text, success and failure", async () => {
+    const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    createLocaleRender("zh-CN")(<TeamSettingsPanel teamId={teamId} admission={scope} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />);
+    const copy = await screen.findByRole("button", { name: "复制 Team ID" });
+    expect(copy).toHaveAttribute("title", "复制 Team ID");
+    fireEvent.click(copy);
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法复制，请手动选择 Team ID 复制。");
+    expect(screen.getByText(teamId)).toBeInTheDocument();
+    fireEvent.click(copy);
+    expect(await screen.findByText("已复制")).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledTimes(2);
+    expect(writeText).toHaveBeenLastCalledWith(teamId);
+  });
+
+  it("reports unavailable clipboard access and permits retry", async () => {
+    vi.stubGlobal("navigator", {});
+    settings(); const copy = await screen.findByRole("button", { name: "Copy Team ID" });
+    fireEvent.click(copy);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Clipboard unavailable. Select and copy the Team ID manually.");
+    expect(screen.getByText(teamId)).toBeInTheDocument();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    fireEvent.click(copy);
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(teamId);
+  });
+
+  it("prevents repeated activation while the clipboard write is pending", async () => {
+    const result = Promise.withResolvers<void>();
+    const writeText = vi.fn().mockReturnValue(result.promise);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    settings(); const copy = await screen.findByRole("button", { name: "Copy Team ID" });
+    fireEvent.click(copy); fireEvent.click(copy);
+    expect(copy).toHaveAttribute("aria-disabled", "true"); expect(writeText).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Copied")).toBeNull();
+    await act(async () => result.resolve());
+    expect(await screen.findByText("Copied")).toBeInTheDocument(); expect(copy).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("does not show a late result on another Team after unmount", async () => {
+    const result = Promise.withResolvers<void>();
+    vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockReturnValue(result.promise) } });
+    const view = settings(); fireEvent.click(await screen.findByRole("button", { name: "Copy Team ID" }));
+    view.unmount();
+    const nextId = "00000000-0000-4000-8000-000000000003";
+    vi.mocked(getTeam).mockResolvedValue({ ...team("Next"), id: nextId, membership: { ...team().membership, teamId: nextId } });
+    render(<TeamSettingsPanel teamId={nextId} admission={scope} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />);
+    await screen.findByText(nextId);
+    await act(async () => result.resolve());
+    expect(screen.queryByText("Copied")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("retains pending and focus across a same-user identity recheck until admission is ready", async () => {
+    const result = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const writeText = vi.fn().mockReturnValue(result.promise);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    let checking = false;
+    const checkedScope = scope;
+    vi.spyOn(checkedScope, "ready").mockImplementation(async (signal: AbortSignal) => { if (checking) await gate.promise; signal.throwIfAborted(); });
+    const panel = (blocked: boolean) => <TeamSettingsPanel teamId={teamId} admission={checkedScope} admissionBlocked={blocked} onIdentityMismatch={mismatch} onUpdated={updated} onDeleted={deleted} />;
+    const view = render(panel(false));
+    const copy = await screen.findByRole("button", { name: "Copy Team ID" });
+    copy.focus(); fireEvent.click(copy);
+    checking = true; view.rerender(panel(true));
+    await act(async () => result.resolve());
+    expect(copy).toHaveFocus(); expect(copy).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByText("Copied")).toBeNull();
+    fireEvent.click(copy); expect(writeText).toHaveBeenCalledTimes(1);
+    checking = false; view.rerender(panel(false));
+    expect(screen.queryByText("Copied")).toBeNull();
+    await act(async () => gate.resolve());
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+    expect(copy).toHaveFocus(); expect(copy).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("suppresses a clipboard result after identity invalidation", async () => {
+    const result = Promise.withResolvers<void>();
+    vi.stubGlobal("navigator", { clipboard: { writeText: vi.fn().mockReturnValue(result.promise) } });
+    settings(); fireEvent.click(await screen.findByRole("button", { name: "Copy Team ID" }));
+    await act(async () => { controller.abort(); result.reject(new Error("denied")); });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Copied")).toBeNull();
+  });
+
+  it("offers no copy action while the initial Team read has no data", async () => {
+    const result = Promise.withResolvers<Team>(); vi.mocked(getTeam).mockReturnValue(result.promise);
+    settings();
+    expect(screen.queryByRole("button", { name: "Copy Team ID" })).toBeNull();
+    await act(async () => result.resolve(team()));
+    expect(await screen.findByRole("button", { name: "Copy Team ID" })).toBeInTheDocument();
+  });
 });

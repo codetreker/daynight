@@ -261,7 +261,10 @@ identity-bound representation. An unchanged authenticated response is bodyless
 current login without retransferring an unchanged avatar. A different account,
 changed profile or missing HTTP cache receives 200. Authentication and profile
 read failures retain no-store errors; no custom `/me` IndexedDB is used.
-Team settings, members and invitations retain loaded content, drafts and open
+Team settings display the selectable Team ID with an adjacent copy button for every
+viewer. Clipboard success and failure are reported locally; failure leaves the ID
+selectable and retryable. Pending copies are guarded and results are discarded when
+the Team or identity context changes. Team settings, members and invitations retain loaded content, drafts and open
 confirmations during ordinary identity checks. Same-account recovery rereads them
 in the background; writes require fresh Team, membership and invitation admission.
 A changed selected member role or version invalidates its confirmation. Project
