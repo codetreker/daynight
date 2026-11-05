@@ -22,37 +22,42 @@ export const orchestrationIdentity = (task: LocalTask): OrchestrationIdentity =>
 export const sameOrchestrationIdentity = (task: LocalTask, blocker: OrchestrationBlocker): boolean =>
   JSON.stringify(orchestrationIdentity(task)) === JSON.stringify(blocker.identity);
 
-export const healthyOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
-  const execution = task.webExecution;
-  return execution !== null && task.resources.nativeSession !== null && snapshot.executionId === execution.executionId
-    && snapshot.claimId === task.claimId && snapshot.testExecutionId === undefined && snapshot.sessionId === execution.sessionId
-    && snapshot.executionGeneration === execution.executionGeneration && snapshot.controllerInstanceId === execution.controllerInstanceId
-    && snapshot.nativeSessionId === task.resources.nativeSession.sessionId && (snapshot.lifecycle === "ready" || snapshot.lifecycle === "working")
-    && snapshot.startup?.state === "ready" && !snapshot.nativeStopped && snapshot.stoppedAt === null && snapshot.error === null
-    && snapshot.initialInputState === "confirmed"
-    && snapshot.controllerProcess !== null && execution.controllerProcess !== null
-    && JSON.stringify(snapshot.controllerProcess) === JSON.stringify(execution.controllerProcess)
-    && snapshot.nativeProcesses.length > 0 && JSON.stringify(snapshot.nativeProcesses) === JSON.stringify(execution.nativeProcesses);
-};
 /** Controller startup appends captured processes; every previously captured identity must remain unchanged. */
 export const preservesNativeProcessPrefix = (previous: ControllerSnapshot["nativeProcesses"], observed: ControllerSnapshot["nativeProcesses"]): boolean =>
   previous.length <= observed.length && previous.every((proof, index) => JSON.stringify(proof) === JSON.stringify(observed[index]));
+
+/** Fresh IPC or journal observations cannot replace identities or undo delivery already recorded by the same Controller. */
+export const preservesControllerEvidence = (previous: ControllerSnapshot, observed: ControllerSnapshot): boolean =>
+  (previous.nativeSessionId === null || observed.nativeSessionId === previous.nativeSessionId)
+  && (previous.controllerProcess === null || JSON.stringify(observed.controllerProcess) === JSON.stringify(previous.controllerProcess))
+  && preservesNativeProcessPrefix(previous.nativeProcesses, observed.nativeProcesses)
+  && (previous.initialInputState === "not_submitted" || observed.initialInputState !== "not_submitted");
+
+/** Process capture can continue after any generation's first observation. Delivery and retry authorization are separate gates. */
+const runningOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot, allowFirstNativeBinding = false): boolean => {
+  const execution = task.webExecution;
+  return execution !== null && snapshot.executionId === execution.executionId
+    && snapshot.claimId === task.claimId && snapshot.testExecutionId === undefined && snapshot.sessionId === execution.sessionId
+    && snapshot.executionGeneration === execution.executionGeneration && snapshot.controllerInstanceId === execution.controllerInstanceId
+    && (task.resources.nativeSession === null ? allowFirstNativeBinding : snapshot.nativeSessionId === task.resources.nativeSession.sessionId)
+    && (snapshot.lifecycle === "ready" || snapshot.lifecycle === "working")
+    && snapshot.startup?.state === "ready" && !snapshot.nativeStopped && snapshot.stoppedAt === null && snapshot.error === null
+    && snapshot.controllerProcess !== null && execution.controllerProcess !== null
+    && JSON.stringify(snapshot.controllerProcess) === JSON.stringify(execution.controllerProcess)
+    && snapshot.nativeProcesses.length > 0 && preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses);
+};
+
+export const healthyOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean =>
+  runningOriginalGeneration(task, snapshot) && snapshot.initialInputState === "confirmed";
 
 /** An authenticated first-generation observation can establish its first native identity without creating another conversation. */
 export const continuingInitialGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
   const execution = task.webExecution;
   return execution !== null && execution.executionGeneration === "1" && task.recovery.count === 0 && task.recovery.pauseReason === null
     && !task.recovery.retryAuthorized && !execution.restartAfterShutdown && execution.initialInputState !== "failed"
-    && snapshot.executionId === execution.executionId && snapshot.claimId === task.claimId && snapshot.testExecutionId === undefined
-    && snapshot.sessionId === execution.sessionId && snapshot.executionGeneration === "1" && snapshot.controllerInstanceId === execution.controllerInstanceId
-    && (task.resources.nativeSession === null || snapshot.nativeSessionId === task.resources.nativeSession.sessionId)
-    && (snapshot.lifecycle === "ready" || snapshot.lifecycle === "working") && snapshot.startup?.state === "ready"
-    && !snapshot.nativeStopped && snapshot.stoppedAt === null && snapshot.error === null
+    && runningOriginalGeneration(task, snapshot, true)
     && ["not_submitted", "dispatching", "provider_accepted", "unknown", "confirmed"].includes(snapshot.initialInputState)
-    && (snapshot.initialInputState !== "not_submitted" || execution.initialInputState === "not_submitted")
-    && snapshot.controllerProcess !== null && execution.controllerProcess !== null
-    && JSON.stringify(snapshot.controllerProcess) === JSON.stringify(execution.controllerProcess)
-    && snapshot.nativeProcesses.length > 0 && preservesNativeProcessPrefix(execution.nativeProcesses, snapshot.nativeProcesses);
+    && (snapshot.initialInputState !== "not_submitted" || execution.initialInputState === "not_submitted");
 };
 export const stoppedOriginalGeneration = (task: LocalTask, snapshot: ControllerSnapshot): boolean => {
   const execution = task.webExecution;

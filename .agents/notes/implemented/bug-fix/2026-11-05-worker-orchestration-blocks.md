@@ -27,7 +27,13 @@ first launch may bind its native identity from the authenticated original
 Controller and submit the original operation only when both durable and live
 observations prove it has not been submitted. Unknown delivery stays fenced.
 An allocated retry completes on the same healthy generation; its retained
-authorization flag does not authorize or require another replacement.
+authorization flag does not authorize or require another replacement. All allocated
+generations permit verified append-only native process evidence because the
+Controller may be observed before provider startup finishes. Existing Worker
+and journal proof prefixes remain binding; every new proof is checked against
+the OS. Verified first native binding updates the execution and matching blocker
+identity atomically, including during shutdown. This avoids treating a missing
+native ID as a wildcard or leaving a stale blocker after a legitimate binding.
 A proven stopped original generation can hand back to the existing native
 recovery path, preserving its pause, budget and authorization checks. Clearing
 an orchestration block does not grant a replacement writer.

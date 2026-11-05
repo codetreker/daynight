@@ -8,7 +8,7 @@ import { requestController } from "../../controller/local-client.js";
 import { readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../controller/process-proof.js";
 import { WorktreePreconditionError } from "../worktrees.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
+import { continuingInitialGeneration, healthyOriginalGeneration, legacyBranchLatch, preservesControllerEvidence, preservesNativeProcessPrefix, sameOrchestrationIdentity, verifyLegacyBranchProvenance, type OrchestrationBlocker } from "./orchestration.js";
 import { workerOperation, type WorkerGitManager } from "../execution.js";
 import { workerCleanupPrompt } from "../prompts.js";
 import { WorkerCleanupError, type WorkerCleanupStage } from "../cleanup-error.js";
@@ -101,9 +101,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     if (observed !== null && !matchesGeneration(task, observed)) throw new Error("Orchestration verification found a conflicting controller generation.");
     const initialContinuation = blocker.source !== "legacy_worktree" && observed !== null && continuingInitialGeneration(task, observed);
     const liveObservation = observed !== null && (healthyOriginalGeneration(task, observed) || initialContinuation);
-    if (initialContinuation && observed !== null && ((saved.nativeSessionId !== null && observed.nativeSessionId !== saved.nativeSessionId)
-      || !preservesNativeProcessPrefix(saved.nativeProcesses, observed.nativeProcesses)
-      || (saved.initialInputState !== "not_submitted" && observed.initialInputState === "not_submitted"))) throw new Error("The first native observation conflicts with the original controller journal.");
+    if (liveObservation && observed !== null && !preservesControllerEvidence(saved, observed)) throw new Error("The live native observation conflicts with the original controller journal.");
     if (observed !== null && ((!firstNativeObservation && observed.nativeSessionId !== task.resources.nativeSession?.sessionId)
       || ((observed.lifecycle === "ready" || observed.lifecycle === "working") && !liveObservation))) throw new Error("Orchestration verification found conflicting original native evidence.");
     const unusedRetry = task.recovery.retryAuthorized && task.recovery.pauseReason !== null;
@@ -298,20 +296,21 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
               const observed = readControllerSnapshot(journal(task));
               if (observed !== null) {
                 if (!matchesGeneration(task, observed)) throw new Error("The original controller journal belongs to a different generation.", { cause: error });
+                if (saved !== null && !preservesControllerEvidence(saved, observed)) throw new Error("The cleanup observation conflicts with the original controller journal.");
                 saved = observed;
               }
             }
             const reachable = response !== undefined;
             if (response !== undefined) {
               if (!matchesGeneration(task, response.snapshot)) throw new Error("The observed controller belongs to a different generation.");
+              if (saved !== null && !preservesControllerEvidence(saved, response.snapshot)) throw new Error("The cleanup observation conflicts with the original controller journal.");
               saved = response.snapshot;
             }
-            if (saved?.nativeSessionId != null && task.status !== "done") task = options.store.bindNativeSession(task, { source: "controller", sessionId: saved.nativeSessionId }, options.now());
             if (saved?.controllerProcess != null && execution.controllerProcess !== null) {
-              const original = execution.controllerProcess, observed = saved.controllerProcess;
-              if (observed.pid !== original.pid || observed.startedAt !== original.startedAt || observed.commandHash !== original.commandHash
-                || observed.processGroupId !== original.processGroupId) throw new Error("The original controller process identity conflicts with its journal.");
+              if (JSON.stringify(saved.controllerProcess) !== JSON.stringify(execution.controllerProcess)) throw new Error("The original controller process identity conflicts with its journal.");
             }
+            if (saved !== null && !preservesNativeProcessPrefix(execution.nativeProcesses, saved.nativeProcesses)) throw new Error("The original native process identities conflict with their journal.");
+            if (saved?.nativeSessionId != null && task.status !== "done") task = options.store.bindNativeSession(task, { source: "controller", sessionId: saved.nativeSessionId }, options.now(), saved);
             const proof = saved?.controllerProcess ?? execution.controllerProcess;
             const native = saved?.nativeProcesses ?? execution.nativeProcesses;
             if (proof === null) throw new Error("The original controller process identity is missing; cleanup cannot infer stop.");

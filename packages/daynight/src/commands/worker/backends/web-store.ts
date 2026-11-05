@@ -7,7 +7,7 @@ import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
 import type { LocalTask, ClaimIdentity, CleanupState, WorktreeBinding, WebExecutionState, RecoveryState } from "./web-types.js";
 import { webRecordInteger as integer, webRecordChoice as oneOf, webRecordText as text, webRecordId as id, parseWebWorktreeV1 as parseWorktree, parseWebExecutionV1 as parseWebExecution, parseWebCleanupV1 as parseCleanup, webClaimKey as key, parseWebTaskV1 as validate } from "./web-record.js";
 import { webExecutionStoreFormat } from "./web-store-format.js";
-import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
+import { continuingInitialGeneration, healthyOriginalGeneration, stoppedOriginalGeneration, legacyBranchLatch, orchestrationIdentity, preservesNativeProcessPrefix, sameOrchestrationIdentity, type OrchestrationBlocker, type OrchestrationFailure } from "./orchestration.js";
 
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
@@ -128,9 +128,27 @@ export const openWebExecutionStore = (filename: string, options: { onMigration?:
       if (execution === null || (observed.lifecycle !== "ready" && observed.lifecycle !== "working") || observed.executionId !== execution.executionId || observed.claimId !== task.claimId || observed.executionGeneration !== execution.executionGeneration || observed.controllerInstanceId !== execution.controllerInstanceId || observed.nativeSessionId === null || observed.nativeSessionId !== task.resources.nativeSession?.sessionId || task.recovery.pauseReason !== null) throw new Error("Explicit recovery completion requires the ready original generation and native identity.");
       return { ...task, recovery: { ...task.recovery, retryAuthorized: false } };
     }),
-    bindNativeSession: (identity: ClaimIdentity, reference: { source: "controller"; sessionId: string }, now: number): LocalTask => change(identity, now, task => {
+    bindNativeSession: (identity: ClaimIdentity, reference: { source: "controller"; sessionId: string }, now: number, observed?: ControllerSnapshot): LocalTask => change(identity, now, task => {
       id(reference.sessionId, "Native session");
       if (task.resources.nativeSession !== null && task.resources.nativeSession.sessionId !== reference.sessionId) throw new Error("The original native session cannot be replaced.");
+      const blocker = getOrchestrationBlocker(task);
+      if (blocker !== null) {
+        if (!sameOrchestrationIdentity(task, blocker)) throw new Error("The blocked orchestration belongs to another execution identity.");
+        if (task.resources.nativeSession === null) {
+          const execution = task.webExecution;
+          if (execution === null || execution.executionGeneration !== "1" || observed === undefined
+            || observed.executionId !== execution.executionId || observed.claimId !== task.claimId || observed.testExecutionId !== undefined
+            || observed.sessionId !== execution.sessionId || observed.executionGeneration !== execution.executionGeneration
+            || observed.controllerInstanceId !== execution.controllerInstanceId || observed.nativeSessionId !== reference.sessionId
+            || observed.controllerProcess === null || execution.controllerProcess === null || !same(observed.controllerProcess, execution.controllerProcess)
+            || observed.nativeProcesses.length === 0 || !preservesNativeProcessPrefix(execution.nativeProcesses, observed.nativeProcesses)) {
+            throw new Error("Binding a blocked native session requires evidence from the original generation.");
+          }
+          // A lost initial response can leave only the native ID unknown. Persist its verified
+          // first binding with the blocker; shutdown must not leave their ownership diverged.
+          db.prepare("UPDATE orchestration_blockers SET data=? WHERE identity=?").run(JSON.stringify({ ...blocker, identity: { ...blocker.identity, nativeSessionId: reference.sessionId } }), key(task));
+        }
+      }
       return { ...task, resources: { ...task.resources, nativeSession: reference } };
     }),
     completeTask: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {

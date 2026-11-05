@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { openSqliteDatabase } from "../../../src/platform/sqlite-access.js";
 import { webExecutionStoreFormat } from "../../../src/commands/worker/backends/web-store-format.js";
+import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
 const roots: string[] = [], stores = new Set<WebExecutionStore>(), databases = new Set<Database.Database>();
@@ -86,6 +87,73 @@ it("retains shutdown provenance across worker reopen without resetting recovery 
   const next = reopened.beginWebGeneration(claim, { executionGeneration: task.webExecution!.executionGeneration, controllerInstanceId: task.webExecution!.controllerInstanceId, nativeSessionId: id(7), nativeStopped: true }, 11);
   expect(next.webExecution).toHaveProperty("restartAfterShutdown", false);
   expect(next.recovery).toEqual(task.recovery);
+});
+
+const blockedInitialFixture = () => {
+  const f = fixture();
+  f.store.register({ ...f.claim, project: f.project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, userId: id(6) }, 1);
+  f.store.initializeWebExecution(f.claim, 2);
+  const controllerProcess = { pid: 123, parentPid: 1, processGroupId: 123, startedAt: "birth", commandHash: "a".repeat(64) };
+  const nativeProcess = { pid: 124, parentPid: 123, processGroupId: 123, startedAt: "native", commandHash: "b".repeat(64) };
+  const task = f.store.updateWebExecution(f.claim, { sessionId: id(8), controllerProcess, nativeProcesses: [nativeProcess], launchSubmission: "acknowledged", initialInputState: "unknown" }, 3);
+  const execution = task.webExecution!;
+  const observed: ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: execution.sessionId!, executionGeneration: "1", controllerInstanceId: execution.controllerInstanceId, lifecycle: "stopped", nativeSessionId: id(7), initialInputState: "confirmed", activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess, nativeProcesses: [nativeProcess, { ...nativeProcess, pid: 125 }], nativeStopped: true, stoppedAt: new Date(0).toISOString(), error: null };
+  const blocker = f.store.blockOrchestration(task, { source: "worktree", code: "branch_mismatch", message: "Original branch differs." }, 4);
+  return { ...f, task, observed, blocker };
+};
+
+it.each([false, true])("binds the first verified native identity and its blocker atomically across shutdown and reopen (retry=%s)", retry => {
+  const f = blockedInitialFixture();
+  if (retry) f.store.pauseRecovery(f.task, "Original native failure", 5);
+  f.store.beginCleanup(f.task, { kind: "shutdown", deadline: 100 }, 6);
+  const bound = f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(7) }, 7, f.observed);
+  const expected = { ...f.blocker, identity: { ...f.blocker.identity, nativeSessionId: id(7) } };
+  expect(f.store.getOrchestrationBlocker(f.task)).toEqual(expected);
+  expect(bound.webExecution).toEqual(f.task.webExecution);
+  expect(f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(7) }, 8).resources).toEqual(bound.resources);
+  close(f.store);
+  const reopened = open(f.file);
+  expect(reopened.getOrchestrationBlocker(f.task)).toEqual(expected);
+  reopened.clearShutdown(f.task, 9);
+  if (retry) reopened.authorizeRecoveryRetry(f.task, 10);
+  const before = reopened.getTask(f.task)!;
+  const cleared = reopened.clearOrchestration(f.task, expected, f.observed, 11);
+  expect(cleared.recovery).toEqual(before.recovery);
+  expect(reopened.getOrchestrationBlocker(f.task)).toBeNull();
+  expect(cleared.resources.nativeSession?.sessionId).toBe(id(7));
+});
+
+it.each(["missing", "claim", "execution", "session", "generation", "controller", "test", "native", "process", "native-prefix", "empty-processes"] as const)("rejects %s evidence without rebinding a blocked first native identity", conflict => {
+  const f = blockedInitialFixture();
+  let observed = structuredClone(f.observed);
+  if (conflict === "claim") observed = { ...observed, claimId: id(20) };
+  if (conflict === "execution") observed.executionId = id(20);
+  if (conflict === "session") observed.sessionId = id(20);
+  if (conflict === "generation") observed.executionGeneration = "2";
+  if (conflict === "controller") observed.controllerInstanceId = id(20);
+  if (conflict === "test") observed = { ...observed, testExecutionId: id(20) } as unknown as typeof observed;
+  if (conflict === "native") observed.nativeSessionId = id(20);
+  if (conflict === "process") observed.controllerProcess = { ...observed.controllerProcess!, parentPid: 999 };
+  if (conflict === "native-prefix") observed.nativeProcesses = observed.nativeProcesses.map((proof, index) => index === 0 ? { ...proof, commandHash: "c".repeat(64) } : proof);
+  if (conflict === "empty-processes") observed.nativeProcesses = [];
+  expect(() => f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(7) }, 5, conflict === "missing" ? undefined : observed)).toThrow(/original generation/);
+  expect(f.store.getTask(f.task)).toEqual(f.task);
+  expect(f.store.getOrchestrationBlocker(f.task)).toEqual(f.blocker);
+});
+
+it("retains conflicting or previously drifted blocker identities and rolls back failed binding writes", () => {
+  const f = blockedInitialFixture();
+  expect(() => f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(7) }, -1, f.observed)).toThrow();
+  expect(f.store.getTask(f.task)).toEqual(f.task);
+  expect(f.store.getOrchestrationBlocker(f.task)).toEqual(f.blocker);
+  f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(7) }, 5, f.observed);
+  const bound = f.store.getTask(f.task)!;
+  expect(() => f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(9) }, 6, { ...f.observed, nativeSessionId: id(9) })).toThrow("cannot be replaced");
+  const db = connect(f.file);
+  db.prepare("UPDATE orchestration_blockers SET data=?").run(JSON.stringify(f.blocker));
+  expect(() => f.store.bindNativeSession(f.task, { source: "controller", sessionId: id(7) }, 7, f.observed)).toThrow("another execution identity");
+  expect(f.store.getTask(f.task)).toEqual(bound);
+  expect(f.store.getOrchestrationBlocker(f.task)).toEqual(f.blocker);
 });
 
 it("keeps completed versioned executions available for archive backfill after reopening", () => {
