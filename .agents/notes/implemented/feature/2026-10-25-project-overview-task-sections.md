@@ -40,7 +40,9 @@ decision](2026-10-22-project-task-views.md) retains conditional content
 mounting. The [shared-scroll decision](../bug-fix/2026-11-03-shared-task-list-scroll.md)
 replaces independent category page positions with one task-list offset.
 
-The section, category and filter records retain their project scope. The original
+The section and category records retain their project scope. The [status filter
+decision](2026-11-05-task-list-status-filter.md) replaces the former persistent
+completion filters with shared in-memory list conditions. The original
 [browsing preference records](../../archived/feature/2026-10-21-task-browsing-preferences.md)
 used one offset per category; the shared-scroll decision replaces only that
 scroll record. The former expansion record is no longer read or written. Task page scroll ownership is active only

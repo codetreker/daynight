@@ -1,13 +1,15 @@
 package sessionrelay
 
+import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
@@ -73,7 +75,7 @@ func TestControllerUpgradeAuthenticationRechecksGrantAuthority(t *testing.T) {
 			case "membership_removed":
 				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, f.p.UserID)
 			case "claim_withdrawn":
-				_, err = service.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, service.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
+				_, err = taskservice.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, taskcore.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
 			case "storage_failure":
 				_, err = f.s.DB.Pool.Exec(ctx, `ALTER TABLE task_sessions RENAME TO unavailable_task_sessions`)
 			}
@@ -85,7 +87,7 @@ func TestControllerUpgradeAuthenticationRechecksGrantAuthority(t *testing.T) {
 				t.Fatal("changed grant authority authenticated", condition)
 			}
 			if condition == "storage_failure" {
-				var refusal *service.Fault
+				var refusal *model.Fault
 				if errors.As(err, &refusal) {
 					t.Fatal("storage failure was hidden as invalid credentials", err)
 				}

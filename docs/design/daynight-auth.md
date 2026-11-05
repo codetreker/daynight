@@ -21,7 +21,7 @@
 `server.New(Dependencies, Config, logger)` 先校验必需配置并构造真实 UniAuth SDK，
 再注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI；失败返回
 error，运行时关闭已获得的 listener、数据库和文件根句柄。业务服务显式接受
-core.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
+model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
 直接实现私有创建和按成员过滤。正式 Application 在常驻 LocaleProvider 下选择公开首页、
 公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
 [公开入口设计](daynight-landing.md)拥有路由组合与公开身份提示，后者不参与私有资源准入。
@@ -81,9 +81,12 @@ access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规
 `{id,kind,name}`：kind 为 personal/ordinary，Personal name 为 null，普通 Team 保留原始名称。
 
 `ProjectMember` 仍是 grant 与 nullable 资料的内部直接关系投影，供现有授权目标检查、
-邀请及其他尚未改变的运行时调用使用；邀请 HTTP 结果保留其既有扁平 DTO。
-角色 PATCH 成功直接返回 ProjectGrant，删除保留 204；它们不返回 participant 或有效角色。
-修改授权只比较真实 grant 版本，邀请 no-op 也读取实际直接关系，不以计算的准入结果代替。
+邀请及其他运行时调用使用；邀请 HTTP 结果分别返回真实 grant 与有效 access。
+既有成员角色 PATCH 成功直接返回 ProjectGrant，删除保留 204；它们不返回 participant 或有效角色。
+新的 grants 路径通过 `version:null` 表示必须不存在，通过正版本比较真实 grant；新建目标须已有
+有效项目准入。PUT 成功返回指定 grant 与 actorAccess，DELETE 返回项目和目标 ID、deleted 与
+actorAccess；actorAccess 是事务中变更后的完整访问投影，可以为 null。邀请 no-op 读取实际直接关系，
+不以计算的准入结果代替。
 [participant 决策](../../.agents/notes/implemented/architecture/2026-11-04-project-participant-projection.md)
 拥有资料、有效角色与可写记录分离的原因及范围。
 
@@ -139,27 +142,36 @@ projectID, taskID, input) 沿用同一项目锁，在取锁后检查当前准入
 Team 元数据 version 与真实成员 version 各自归属原始记录，不用计算角色或 Project 版本替代。
 server 统一映射创建、分页、详情和改名的 Team DTO；有限删除回执只包含 teamId 和 deleted。
 
-`Teams` service 接受显式 Principal。管理输入先严格核对 expectedUserId，再进入任何领域查询或
-事务；JSON 字符串先验证原始 Unicode 转义，service 同时验证合法 Unicode、无 NUL 和非全
+`core/team` 接受显式 Principal 并拥有 Team 业务规则；`service/team` 选择事务或快照并处理
+完成结果，`server/team` 负责 HTTP 适配。管理输入先严格核对 expectedUserId，再进入任何领域查询或
+事务；JSON 字符串先验证原始 Unicode 转义，core 同时验证合法 Unicode、无 NUL 和非全
 Unicode `White_Space`。名称按原文存储，重复名称合法。资源 ID 和 expectedUserId 使用规范
 小写 UUID，正 int64 元数据版本在 no-op 比较之前校验。
 
-创建使用单一事务写入普通 Team 与创建者 admin 行。读取和列表使用同一只读 Repeatable Read
-快照取得 Team 与当前主体真实成员关系，列表 SQL 在 `(created_at,id)` 排序、游标和 LIMIT 之前
+创建作用域先锁定创建者 user，再在单一事务写入普通 Team 与创建者 admin 行；不预锁不存在的
+Team。读取和列表使用同一只读 Repeatable Read 快照取得 Team 与当前主体真实成员关系，列表 SQL 在 `(created_at,id)` 排序、游标和 LIMIT 之前
 过滤当前成员资格。HTTP Team cursor 使用 kind `teams`、version 1，绑定认证 userId 与页位置；
 不按名称解析身份，不返回全量 count。缺失或不可见 Team 同为 not_found，外部 Project grant
 不会授予 Team 元数据访问权。
 
-`Store.WriteTeam` 开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，随后把 `TeamTx`
-交给 service。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据
+已有 Team 写作用域开启 Read Committed 事务并取得目标 Team `FOR UPDATE`，通过事务绑定的
+Team DAO 向 core 提供能力。取锁后读取当前真实成员并重验 admin，Personal 禁用操作先于变更；比较元数据
 version 后才接受相同原文。真实改名只更新 Team 名称、元数据 version 和 updatedAt，不触碰
 成员版本、Project ownership 或 grant；同值 no-op 不采样变更时钟或执行 UPDATE。
+
+成员目录与主体资格在同一个只读快照中读取；成员行关联规范用户资料，缺少用户行是完整性
+错误而不是静默丢弃。成员管理沿用 Team 排他锁，锁内重新读取操作者和目标的真实关系，先
+比较目标 version，再决定是否同角色 no-op。降低或移除 admin 时在同一锁内计数，保证并发
+自行降级或退出后仍有 admin。角色变化从 `team_member_versions` sequence 取得新版本，删除
+重加同样产生新版本；删除和变更均不访问 Project grant。提交确认后回执携带操作者剩余角色，
+不确定提交遵守相同的 unknown 合同。详细取舍见
+[成员管理决策](../../.agents/notes/implemented/architecture/2026-11-04-team-membership-management.md)。
 
 删除在取得 Team 锁后，另发一条不加行锁的 ownership `EXISTS` 查询。Read Committed 的新语句
 快照能看见取锁等待期间已提交的 ownership；把检查合并进最初的锁定查询会使用等待前的快照。
 检查使用既有 `project_ownership(team_id,project_id)` 索引。非空返回 team_not_empty，空集才在
 同一事务删除成员和 Team。事务不取得已有 Project、Task 或 Thread head 锁，避免把 Team-only
-操作引入那些资源的锁序。创建 Project 的既有入口先锁真实 Personal Team；任何建立目标
+操作引入那些资源的锁序。创建 Project 先锁目标 Team；任何建立目标
 ownership 的写入必须先锁定并重读该 Team，和删除共享其存在性锁，不能在 Team 删除后插入孤立归属。
 
 生命周期调用复用既有 `TransactionError` 的 callback、rollback、commit 和 completion 事实，
@@ -268,11 +280,14 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 | project_ownership | project_id 唯一；真实 team_id、正 version 与 updated_at；每个 Project 恰一行。 |
 | project_grants | `(project_id,user_id)` 唯一；role 为 admin/member；bigint version 来自独立 sequence。 |
 | project_invitations | ID、project_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
+| team_invitations | ID、team_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 
 使用既有迁移机制、唯一索引和角色 CHECK，不要求新增 foreign key；关联由业务事务验证。
 迁移 `018_device_authorization.sql` 建立设备授权和共享限流表，
 `019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
 ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
+`035_team_invitations.sql` 随真实邀请入口建立独立邀请表、唯一散列及 Team/到期索引；
+删除 Team 的事务负责清除子记录，不引入 foreign key。
 
 `032_personal_project_ownership.sql` 在一份编号迁移中建立真实归属并切换授权来源。
 迁移先验证既有用户、项目、grant 与邀请引用；任何 Project 没有现任 admin 或存在坏引用
@@ -285,22 +300,49 @@ ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessio
 重置 sequence；已经删除的高版本仍保护删除后重加的 ABA。SQL、必要 transform 与 ledger
 在原迁移事务内提交，任一失败均回滚；历史 migration checksum 保持。
 
-当前项目创建先锁定并验证调用者真实 Personal Team，再在同一事务插入 Project、
-ownership 与 creator direct admin grant。`core.Project.Ownership` 是真实内部聚合，
+项目创建在任何领域 SQL 前核对 `expectedUserId` 与 principal。指定 Team 时锁定目标行并在
+锁后读取当前成员资格；省略时锁定并验证调用者真实 Personal Team。随后在同一事务插入
+Project、ownership 与 creator direct admin grant。创建和删除共享 Team 存在性锁，删除的
+独立 Read Committed 查询能看到锁等待前提交的 ownership。未确认 COMMIT 与清理失败沿用
+Team 事务的结果分类，不自动重放。`model.Project.Ownership` 是真实内部聚合，
 Project 点读通过 LEFT JOIN 投影并校验必需归属；缺行是完整性错误，没有运行时旧数据回退。
-当前公开 Project 与 `/me` 合同保持，归属与完整来源的公开字段由其实际协议转换拥有。
+创建在同一事务投影当前 access，提交确认后与 Project 一并返回；公开归属与权限来源使用真实记录。
 
-独立授权管理提交观察版本，锁项目后重查有效 admin 与 grant 版本。真实角色变更与新加入
-从 `project_grant_versions` sequence 取得新版本，观察值不要求连续或每次恰好加一；
-无变化保持版本。移除后重加入不复用旧版本，过期返回 version_conflict。有效 admin
-可以删除或降级最后一条 direct admin grant；owner Team 的继承权限独立计算。
-Team 成员变化不重写 Project grant，grant 变更不改 task.version。
+项目转移预览使用 Repeatable Read 快照，先验证当前 owner Team admin，再按目标 UUID
+读取最小 Team 引用与元数据版本，并结合目标成员角色和现存 direct grant 计算预期角色。
+转移使用 Read Committed，先锁 Project，再锁 ownership，最后按 UUID 升序锁 source/target
+Team（相同时只锁一次）；锁后重新检查主体、归属及版本。Team 删除持有同一 Team 锁，
+随后以新语句检查 ownership，因此转入和删除不会留下悬空归属。转移不取得 Task、credential
+或 Thread head 锁，不修改 grant 或邀请；回执中的当前 access 在事务内计算，提交确认后发送。
+Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team_id 对应的 Team，再锁
+实际成员及 grant；等待期间提交的新目标不会被旧语句快照中的连接行误判为完整性错误。
+
+独立授权管理在验证 expectedUserId 后锁项目，重查有效 admin 与目标真实 grant；新增还检查
+目标已有有效项目准入。null 版本仅在 grant 不存在时允许新增，正版本仅在真实版本匹配时允许
+替换或移除；存在性与版本不匹配均返回 version_conflict。项目锁串行化授权和邀请写入。
+真实角色变更与新加入从 `project_grant_versions` sequence 取得新版本，观察值不要求连续或
+每次恰好加一；版本匹配的无变化保持版本。移除后重加入不复用旧版本。有效 admin 可以删除或
+降级本人及他人的最后一条 direct admin grant；owner Team 的继承权限独立计算。变更后在同一
+事务重新计算 actor access，确认 COMMIT 后才发送有限回执；失权时返回 null，不依赖后续有权限
+的 GET。无法确认 COMMIT 则报告 write_outcome_unknown，不能重放。Team 成员变化不重写 Project
+grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/implemented/architecture/2026-11-04-project-grant-management.md)
+拥有存在性条件、有限回执与外部加入范围的取舍。
 
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
-接受按项目→邀请顺序加锁，验证状态、插入成员后消费。已有成员返回当前成员状态而
-不消费，两个非成员并发仅一个成功，另一个 410 invitation_unavailable。inspect 只
-返回名称等最小摘要。到期查询即时拒绝，不依赖后台任务；写入时有界清理到期记录，
-不新增调度器。过期索引支持每次最多清理 100 条记录。
+接受按项目→邀请顺序加锁，验证状态后检查真实 direct grant。已有 grant 保持原角色且
+不消费；只有继承权限时插入 direct member 并消费。新 grant 与消费原子提交，两个
+无 direct grant 的接收者并发仅一个成功。inspect 返回项目 ID、名称及当前主体的可空
+directGrant/access；accept 返回 projectId、真实 directGrant、提交后 access、joined 和
+consumed。无效、到期、消费、撤销和目标删除统一为 404 invitation_unavailable。到期
+查询即时拒绝，不依赖后台任务；写入时有界清理到期记录，过期索引支持每次最多清理 100 条。
+
+Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。接受按 Team →
+邀请 → 当前成员顺序锁定，先重验邀请有效，再检查真实成员；已有成员保留角色且不消费，
+新 member 与消费同事务提交。撤销与接受共享 Team 和邀请锁；删除 Team 同事务清除邀请。
+Personal 不可创建邀请。inspect 仅返回 Team 引用和当前主体关系，accept 返回真实成员及
+joined/consumed。两种邀请都通过 POST body 传秘密，响应 no-store，失效原因统一为
+invitation_unavailable；[Team 邀请决策](../../.agents/notes/implemented/architecture/2026-11-04-team-invitations.md)
+拥有接收入口及交付边界。
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
@@ -333,17 +375,21 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
 | PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
+| POST .../projects/{id}/transfer-preview、POST .../transfer | owner Team admin；最小目标预览及按 ownership/目标版本确认转移。 |
 | GET .../projects/{id}/access | 当前主体的真实归属、owner Team、双来源有效角色与 canTransfer；要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一有效成员读取 items participant 和同快照 actorAccess；资料与继承来源不授予 Team 目录访问权。 |
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
+| PUT/DELETE .../projects/{id}/grants/{userId} | 有效 admin；PUT 的 version 为 null 或正版本，DELETE 为正版本，均携带 expectedUserId；新建目标须已有项目准入。成功返回有限回执与可空 actorAccess。 |
 | PATCH/DELETE .../members/{userId} | admin；携带真实 grant version 与必填 expectedUserId，PATCH 另含存储 role；成功分别返回 ProjectGrant / 204。 |
-| GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin，创建一次显示链接，删除撤销。 |
-| POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；明确 accept 才入会。 |
+| GET/POST .../projects/{id}/invitations、DELETE .../{inviteId} | admin；创建和撤销携带 expectedUserId，创建一次显示链接。 |
+| POST /api/v1/invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；accept 另携带 expectedUserId，由本人明确提交。 |
+| GET/POST /api/v1/teams/{id}/invitations、DELETE .../{inviteId} | 当前 Team admin；写入携带 expectedUserId，创建一次返回链接。 |
+| POST /api/v1/team-invitations/inspect、POST .../accept | 已登录用户，body 携带秘密；accept 另携带 expectedUserId。 |
 
 unauthenticated/forbidden/invitation_unavailable 保留原 envelope/requestId。
-Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；授权修改/移除的 guard
-在 Memberships.write 及其 Project 行锁之前执行，
-错主体返回 409 identity_mismatch；认证与独立请求日志不属于领域 SQL。
+Team 管理的 expectedUserId guard 在 Teams 领域查询或事务之前执行；项目转移、授权新增/修改/移除及
+邀请创建、撤销、接受的 guard 在领域事务及相应 Team 或 Project 行锁之前执行。错主体返回 409 identity_mismatch；
+认证与独立请求日志不属于领域 SQL。
 该 fault 同时进入 HTTP 409 映射和日志已知类型集合，避免误变为 internal_error。
 非成员与不存在的 Team/项目均 not_found。Team 生命周期的 personal_team_immutable、
 team_not_empty、version_exhausted 与 version_conflict 同时进入 HTTP 409 映射和日志已知类型集合；
@@ -365,7 +411,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 用户核验与语言切换不重建 Provider。状态设置依赖当前完整详情的精确版本，冲突与未知
 结果遵守[三状态设计](daynight-task-status.md)。
 它通过 /me 取得身份，401 进入带有效目标的独立登录流程；资源 404 不退出全局会话。
-登录地址的有效目标仍是 invitations 时保留现有 tab 内凭据，fragment 在请求之前捕获
+登录地址的有效目标仍是相应邀请路径时保留现有 tab 内凭据，fragment 在请求之前捕获
 并移出地址。离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理
 与失败可见性。设备授权保留原始 user_code；普通退出成功回公开首页，账号切换保留
 邀请/设备目标，退出失败保持当前错误与重试。
@@ -375,18 +421,24 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 不确定 PATCH 先重读 Project 和当前 access，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
 仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
-成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
+项目成员页分别展示有效、Team 继承和单独授权，按 participant 的真实 grant 存在性与版本操作；确认回执提供提交后本人 access，失权时清除项目缓存并保留成功结果。成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
+成员表格在所有视口宽度使用局部 overflow-x:auto，按自身容器宽度决定是否滚动。五列的最小宽度和既有 ≤700px 布局保留；侧栏展开压缩内容区时，操作列仍可完整滚入表格，不把溢出转交给页面。
+普通 Team 成员页与 Project 成员页分别管理本范围的邀请；列表只显示元数据，创建回执中的链接只保存在一次结果对话框中。邀请的读取和写入响应核对主体；Project 接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。Team 接受页展示真实 Team 和本人关系，确认后的回执显示名称、ID、加入结果并提供真实 Team 路由；该路由通过现有 Team 选择机制验证并保存当前上下文。
+未确认的写入不自动重放，创建结果未知时一次性秘密无法恢复；重读只能观察当前列表，不能证明原操作结果。权限降级或失去访问后仍显示当前主体已确认的一次性创建结果，或未知结果及无法读取的原因；Team 普通成员可以退出，重新取得管理权限后须明确读取列表才能继续管理。
 401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
 失败不伪装成空列表。ownership.version、settings.version 与 nested directGrant.version 只在声明的资源路径无损解码，
-角色修改/移除以 bigint 提交真实 grant 观察值。其 JSON 与 204 响应均核对当前请求绑定的 principal；
+新增授权提交 null，角色修改/移除以 bigint 提交真实 grant 观察值。grants 回执核对当前请求绑定的 principal、目标和结果；
 身份错配清理旧 scope 并重验。已发送而未确认的授权写入关闭旧确认，保留 unknown 和读取当前状态入口；
 读取失败继续阻止写入，成功读取可建立新观察供重新审阅，不能据此声称找回原提交回执。
 顶层曾离开后重新可见且聚焦时，在后台重新核验 /me。正常等待状态与失败后的
 阻塞恢复状态分别管理：正常等待保留工作空间正文、详情和管理弹窗的可见性与交互，
 不添加隐藏样式、inert 或 aria-hidden，不打开身份模态层，因此输入和 frame
-生命周期不会被核验打断。侧栏的窄屏临时覆盖导航在核验开始时关闭并释放自己的焦点约束、
-背景隔离和滚动锁，避免与后续身份恢复对话框竞争；桌面折叠偏好和正文挂载身份保持，
-导航机制由[工作空间导航设计](daynight-web.md#工作空间导航)拥有。同一用户成功沿用 session generation 与组件实例；确认
+生命周期不会被核验打断。工作空间按真实路由、资源和阻塞恢复管理展示生命周期，普通 checking
+不结束设置或成员页面及 Team 创建弹窗的 active，也不使管理弹窗 suspended。窄屏导航在普通
+检查期间保留焦点约束、背景隔离和滚动锁；实际阻塞恢复时关闭并释放自身隔离，避免与恢复
+对话框竞争。展示生命周期与 `admissionBlocked`、`readEnabled`、`TaskCacheScope.ready/signal`
+及 `client.waitForAuthRequests` 的请求和发布准入分离，继续使用原有 generation、principal 和
+失败恢复规则。导航机制由[工作空间导航设计](daynight-web.md#工作空间导航)拥有。同一用户成功沿用 session generation 与组件实例；确认
 身份变化时使共享请求失效并重建身份域，401 则清除会话。未另行确认资源撤权时，核验结果返回前继续展示
 已加载的内容。鉴权层在 layout effect 中注册顶层焦点与可见性生命周期；首次
 鉴权挂载若已隐藏或外部失焦，在子组件 passive 请求 effect 前暂停。后续顶层
@@ -398,21 +450,32 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 /me 和退出请求绕过等待，失败及恢复重试持续保留等待。最新的有效返回总是
 立即中止旧核验、推进核验请求 generation 并发起新核验，较早响应不能覆盖最新
 结果。核验失败保留组件状态并显示阻塞错误层；
-重试及失败后的前台返回保持遮蔽，成功后才恢复原页面或切换身份。
+重试及失败后的前台返回保持遮蔽，成功后才恢复原页面或切换身份。阻塞层使用原生模态隔离，Escape 不能关闭；它继承当前应用语言，但不提供自己的语言选择器或偏好反馈。原焦点元素仍连接时，恢复后尝试将焦点返回原位置。
 [前台身份核验决策](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
+
+Team 设置、成员及邀请将首次读取、后台重读和显式核对区分，并将已加载展示与写入新鲜度分开：普通身份检查撤销当前写入新鲜度，同账号恢复后后台重读，保留已显示资源、邀请区域、打开的确认和草稿；请求与发布都等待 scope 准入。后台读取不插入加载行或禁止本地编辑。成员重读比对待确认对象的身份、角色与版本，变化使确认失效；邀请区域依据已确认角色展示，邀请写入还要求成员权限和邀请读取都已就绪。显式核对保留原操作的版本和结果归属，读取不能恢复丢失的回执或重放写入。真实读取失败沿用错误和失权处理，首次读取仍显示加载状态。
+Project 设置、成员和转移的在途读取与写入保留原 scope 和资源归属，处理正向结果或普通错误前
+等待 scope.ready 并核对失效状态；重新检查当前 ProjectAccess 后才发布受权限约束的结果。
+已确认设置写入若访问尚未就绪，等待准入后重新读取，不重发写入。转移和成员回执的访问变化
+按当前准入重新核验。已确认的一次性邀请回执绑定原主体，经身份准入后展示并保留至关闭；
+权限降级或失权不撤销该回执，目录和新的管理操作仍受当前权限约束。可信失权仍沿原路径撤回资源。
+
 任务缓存的 TaskCacheProvider 在认证分支内、TaskDetailSessionProvider 外提供用户/会话 scope，覆盖项目、独立任务及附件路径页。身份核验后，项目可先发布通过完整性与生命周期校验的本地摘要并后台同步；详情正文与写操作继续等待本挂载成功的实际用户匹配同步，摘要展示不增加 scope 的在线授权集合。持久读取与正向内容发布和普通 API 一样等待 foreground gate。可信资源 not_found 的负向撤权及匹配 userFence/generation 提示立即处理，不等待暂停结束；其 scope 所有的 CAS 持久清理仍等待 gate。同步、详情 GET 与全部任务写响应先核对 `Daynight-User-ID`；缺失或畸形头作为协议错误保留原缓存，可信不同用户立即同步失效旧 scope 并卸载旧认证内容，再发起 `/me`。项目同步，以及启动时已知任务的详情 GET 或任务写入返回同用户可信 `404 not_found`，先检查捕获 ticket 是否仍属于当前 userFence/cacheGeneration，再同步清正文和项目准入，随后只清理匹配的持久 generation。未知任务地址 404 局部处理，可信 `410 task_deleted` 只清对应任务正文并请求项目同步，不撤回项目访问，旧 E1 响应不得清 E2；清理失败仍拒绝复用，新的在线项目同步成功后才重新显示。退出、换号或 401 同步释放内存与旧请求，再轮换持久 userFence 并清理该用户任务及人员记录；普通同用户核验保留 scope，页面卸载仅关闭连接而保留可重建缓存。详情/写接口的 `TaskResponseAdmission` 明确当前 userId 和 mismatch 回调，正文与资源错误处理都在 principal 核对之后。已确认写响应与正文安装、缓存保存分开，后两者失败不重发远端操作。[缓存架构](daynight-task-sync.md)拥有完整事务、新鲜度和失效规则。
 
 现有图、项目浏览偏好和居中 TaskDetailDialog 继续复用，不增加任务字段编辑。
 `messages.auth` 的英语与简体中文契约覆盖所有新界面、标题、校验、无障碍名称、
 错误和异步通知；通知存语义，渲染时取当前语言，日期/计数使用原生格式化器。
-登录、工作空间、邀请及管理模态均提供共用 LanguageSelector。切换不以 locale
+登录、工作空间和邀请等页面提供共用 LanguageSelector；共享 ManagementDialog 和 CreateProjectDialog
+不提供自己的语言入口或偏好提示，内容继承应用当前语言。切换不以 locale
 重建组件或进入请求依赖，保持输入、一次性秘密、成员版本、当前身份和 pending
 操作。[语言设计](daynight-web-i18n.md)拥有公共机制，鉴权组件遵守相同状态规则。
 
-邀请入口 /invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
-跨登录保存，确认/取消/失效后删除；秘密不进请求路径/Referer/日志。一次性 token/
+邀请入口 /invitations#<secret> 和 /team-invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
+跨登录保存，确认/取消/失效后删除；捕获时同步清理导航快照及 history marker，
+未编号历史条目的清理 replace 开始新 segment，同标签再次打开也重新捕获。
+秘密不进请求路径/Referer/日志。一次性 token/
 邀请复制失败可恢复，关闭前清楚提示无法再次读取。界面验证覆盖桌面、窄屏、长内容、加载、空、错误、
 失效、禁用和键盘焦点。
 
@@ -568,11 +631,19 @@ reconfigure --bootstrap 允许先恢复配对 SQL/附件，私有 UniAuth 目录
 Playwright action/network trace 在固定版本会保留凭据 header 与响应体，因此普通
 trace 和 capacity override 均关闭；PNG 只在秘密关闭或遮蔽后捕获。自定义 CDP
 性能 trace、全部断言、原始报告校验、截图 oracle、请求/容量/时间预算保持。
+`auth-login-session` 为等待操作命名，并在成功和失败时保存 `auth-login-operations`
+附件；字段仅包含操作名、状态、耗时和可选的错误类型，不保存 URL、OAuth 参数、凭据或响应体。
+身份 route 与 provider 的每个清理操作独立限时五秒，`Fetch.disable` 失败后仍尝试
+CDP detach。原始错误、清理错误与附件保存错误共同保留，唯一错误原样抛出，多项失败用
+`AggregateError` 保留原对象及首个错误原因链。[登录诊断决策](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
+拥有这些诊断和错误传播规则；历史产物或操作栈缺失时，后续成功不能证明原超时的触发原因。
 [启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 保存包版本、源码位置、隐私证据与诊断能力取舍。各适用 gate 和真实上游人工登录
 仍须提供源码绑定结果；受控组件或协议成功不冒充第三方人工登录。
 
 ## 可观测性与验证
+
+成员表格的局部滚动不新增生产事件、指标或日志，也不发送视口或滚动位置。布局成功由既有 project-grants 浏览器 fixture 的容器边界、按钮指针命中、删除确认与单次 DELETE 断言衡量；裁切、页面横向溢出或请求不符均使测试失败。截图和数值只进入源码绑定的测试产物。
 
 入口保留 requestId；网页登录增加非秘密 login transaction ID，设备授权关联非秘密授权记录 ID，
 身份后关联 userId/credentialId，业务关联已知 teamId/projectId，身份领取关联 UniAuth 返回的 requestId。SDK HTTP、
@@ -602,7 +673,6 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ## 交付边界
 
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
-普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；成员管理、邀请与转移保持
-各自的功能所有权。当前 Project、access 与 participant
+普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；项目转移提供服务端预览和提交，CLI 与 Web 使用该预览及回执；Web 项目设置负责确认、缓存撤权和结果导航。Team 邀请的公开接收入口可登录、确认并加入；Team 与 Project 成员页管理各自邀请，Team 接收回执可进入真实 Team 上下文。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
 可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。

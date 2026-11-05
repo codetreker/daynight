@@ -87,10 +87,30 @@ describe('task dependency canvas', () => {
     expect(within(external).queryByText('被阻塞')).toBeNull();
   });
 
+  it('changes direction with keyboard, retains inspection, and restores a saved choice after reopening', async () => {
+    const user = userEvent.setup();
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    await ready(view.container);
+    const horizontal = screen.getByRole('radio', { name: '水平' });
+    const vertical = screen.getByRole('radio', { name: '垂直' });
+    expect(horizontal).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(nodeButton('合流实现…'));
+    const canvas = view.container.querySelector('.react-flow');
+    horizontal.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(vertical).toHaveFocus();
+    expect(vertical).toHaveAttribute('aria-checked', 'true');
+    expect(nodeShell('合流实现…')).toHaveClass('task-node-selected');
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    view.unmount();
+    render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    expect(screen.getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('switches the same modal canvas to fullscreen and back without changing its viewport or layout', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -135,7 +155,7 @@ describe('task dependency canvas', () => {
   it('contains keyboard focus in the modal and handles only local Escape one layer at a time', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<><button type="button">图外按钮</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
+    const view = render(<><button type="button">图外按钮</button><TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     expect(view.container.querySelector('.task-chain-close')).toHaveFocus();
@@ -161,7 +181,7 @@ describe('task dependency canvas', () => {
   it.each(['.task-chain-heading h2', '.graph-toolbar-summary', '.task-graph-canvas'])('closes with Escape after clicking noninteractive content at %s', async (target) => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     await user.click(view.container.querySelector<HTMLElement>(target)!);
@@ -174,7 +194,7 @@ describe('task dependency canvas', () => {
   it('leaves fullscreen before closing after clicking blank canvas content', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     const canvas = view.container.querySelector('.task-graph-canvas');
@@ -196,13 +216,13 @@ describe('task dependency canvas', () => {
 
   it.each([false, true])('keeps Tab navigation inside the modal after clicking its canvas (shift: %s)', async (shift) => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
     expect(dialog).toHaveFocus();
     await user.tab({ shift });
-    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog).getByRole('combobox', { name: '语言 / Language' })).toHaveFocus();
+    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog).getByRole('button', { name: '关闭依赖图' })).toHaveFocus();
   });
 
   it('inerts background ancestors for the whole modal and restores their original state without touching body portals', async () => {
@@ -212,7 +232,7 @@ describe('task dependency canvas', () => {
     document.body.append(portal);
     const Wrapper = () => {
       const [opened, setOpened] = useState(false);
-      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
+      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
     };
     const view = render(<Wrapper />);
     const background = [screen.getByTestId('outer-background'), screen.getByTestId('inner-background')];
@@ -245,7 +265,7 @@ describe('task dependency canvas', () => {
     const onClose = vi.fn();
     const originalRestore = vi.fn();
     const latestRestore = vi.fn();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
     fireEvent.click(dialog);
@@ -263,7 +283,7 @@ describe('task dependency canvas', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     fireEvent.click(view.container.querySelector('.task-chain-close')!);
     expect(onClose).toHaveBeenCalledTimes(2);
-    view.rerender(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
+    view.rerender(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
     view.unmount();
     expect(originalRestore).not.toHaveBeenCalled();
     expect(latestRestore).toHaveBeenCalledOnce();
@@ -271,10 +291,10 @@ describe('task dependency canvas', () => {
 
   it('wraps both keyboard boundaries and recovers focus entering from outside the modal', async () => {
     const user = userEvent.setup();
-    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    const view = render(<TaskChainDialog projectId="project" index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
     await ready(view.container);
     const dialog = screen.getByRole('dialog');
-    const first = within(dialog).getByRole('combobox', { name: '语言 / Language' });
+    const first = within(dialog).getByRole('button', { name: '关闭依赖图' });
     first.focus();
     await user.tab({ shift: true });
     const last = document.activeElement as HTMLElement;
@@ -754,6 +774,28 @@ describe('progressive task visibility', () => {
     expect(layout).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps expanded tasks and inspection when the direction changes', async () => {
+    const Example = () => {
+      const [direction, setDirection] = useState<'horizontal' | 'vertical'>('horizontal');
+      return <TaskGraph index={progressiveIndex} rootId={rootId} onOpenTask={noop} direction={direction} onDirectionChange={setDirection} />;
+    };
+    const view = render(<Example />);
+    const { taskBody, expansion } = controls(view.container);
+    await rendered(view.container, 50, 49);
+    fireEvent.click(expansion('合流任务 · 40 个外部前置', 'prerequisites'));
+    await rendered(view.container, 70, 69);
+    fireEvent.click(taskBody('合流任务 · 40 个外部前置'));
+    const ids = visibleIds(view.container);
+    const canvas = view.container.querySelector('.react-flow');
+    fireEvent.click(screen.getByRole('radio', { name: '垂直' }));
+    expect(screen.getByRole('radio', { name: '垂直' })).toHaveAttribute('aria-checked', 'true');
+    expect(visibleIds(view.container)).toEqual(ids);
+    expect(taskBody('合流任务 · 40 个外部前置')).toHaveAttribute('aria-pressed', 'true');
+    expect(view.container.querySelector('.react-flow')).toBe(canvas);
+    fireEvent.click(screen.getByRole('radio', { name: '水平' }));
+    expect(visibleIds(view.container)).toEqual(ids);
+  });
+
   it('expands direct neighbors with exact task, induced-edge and remaining counts, retains keyboard anchor focus, and resets deterministically', async ({ signal }) => {
     const user = userEvent.setup();
     const open = vi.fn();
@@ -896,6 +938,37 @@ describe('progressive task visibility', () => {
 });
 
 describe('initial task viewport policy', () => {
+  it('frames the first vertical rank using its centers even with mixed card heights', () => {
+    const geometry: layoutModule.CanvasLayout = {
+      direction: 'vertical',
+      nodes: [
+        { id: 'root', kind: 'main', width: 220, height: 96, position: { x: 300, y: 52 } },
+        { id: 'peer', kind: 'external', width: 220, height: 136, position: { x: 32, y: 32 } },
+        { id: 'tail', kind: 'main', width: 220, height: 96, position: { x: 300, y: 5000 } },
+      ], edges: [], width: 552, height: 5128,
+    };
+    const actual = getInitialTaskViewport(geometry, 'root', 800, 445);
+    expect(actual.zoom).toBe(0.8);
+    expect((300 + 110) * actual.zoom + actual.x).toBeCloseTo(400);
+    expect(32 * actual.zoom + actual.y).toBe(32);
+    const folded = getInitialTaskViewport(geometry, 'root', 800, 445, true);
+    expect(52 * folded.zoom + folded.y).toBe(32);
+    expect((300 + 110) * folded.zoom + folded.x).toBeCloseTo(400);
+  });
+
+  it('frames upstream vertical context before a later root', () => {
+    const geometry: layoutModule.CanvasLayout = {
+      direction: 'vertical',
+      nodes: [
+        { id: 'root', kind: 'main', width: 220, height: 96, position: { x: 800, y: 5000 } },
+        { id: 'external', kind: 'external', width: 220, height: 96, position: { x: 32, y: 32 } },
+      ], edges: [], width: 1052, height: 5128,
+    };
+    const actual = getInitialTaskViewport(geometry, 'root', 320, 445);
+    expect(32 * actual.zoom + actual.x).toBe(32);
+    expect(32 * actual.zoom + actual.y).toBe(32);
+  });
+
   it('fits and centers the actual mixed-height card bounds', () => {
     const geometry: layoutModule.CanvasLayout = {
       nodes: [
@@ -985,7 +1058,7 @@ describe('task chain dialog entries', () => {
 
   it.each(['body', 'footer', 'fullscreen'] as const)('keeps %s focus inside the modal when a merge changes the representative', async (control) => {
     const { before, after } = mergingGraphs();
-    const list = (index: typeof before, openChainId: string) => <ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index}
+    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50));
@@ -1009,12 +1082,12 @@ describe('task chain dialog entries', () => {
     const before = buildGraphIndex({ ...graph, tasks, summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 } });
     const after = buildGraphIndex({ ...graph, tasks: tasks.map((task) => task.id === 'B' ? { ...task, externalDependsOn: ['A'] } : task),
       summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 } });
-    const view = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={false} onShowAllChange={noop} index={before} allRepresentativeIds={['A']}
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} allRepresentativeIds={['A']}
       representativeIds={['A']} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
     const focused = view.container.querySelector<HTMLButtonElement>('.react-flow__node[data-id="B"] .task-node-body')!;
     focused.focus();
-    view.rerender(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={false} onShowAllChange={noop} index={after} allRepresentativeIds={[]}
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={after} allRepresentativeIds={[]}
       representativeIds={[]} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     expect(view.container.querySelector('.completed-chain-control')).toBeNull();
@@ -1027,7 +1100,7 @@ describe('task chain dialog entries', () => {
     const outside = document.createElement('button');
     outside.textContent = '详情关闭控件';
     document.body.append(outside);
-    const list = (index: typeof before, openChainId: string) => <ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index}
+    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50));
@@ -1042,7 +1115,7 @@ describe('task chain dialog entries', () => {
 
   it('renders the presented root order without changing the complete graph index', () => {
     const representativeIds = index.representativeIds.toReversed();
-    const view = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect([...view.container.querySelectorAll('.root-toggle')].map((root) => root.id)).toEqual(['task-root-F', 'task-root-E', 'task-root-B', 'task-root-A']);
     expect(index.representativeIds).toEqual(['A', 'B', 'E', 'F']);
     expect(index.successors.get('A')).toEqual(['C']);
@@ -1052,14 +1125,14 @@ describe('task chain dialog entries', () => {
 
   it('retains collapsed root renders during selection and still applies their new snapshot progress', async () => {
     const progressReads = vi.spyOn(index.components, 'get');
-    const view = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await ready(view.container);
     const originalRoots = [...view.container.querySelectorAll('.root-toggle')];
     const originalCanvas = view.container.querySelector('.task-graph-canvas');
-    expect(originalRoots[0]!.querySelector('.root-status')).toHaveTextContent('进行中');
-    expect(originalRoots[0]!.querySelector('.root-status')).toHaveClass('graph-status-in_progress');
-    expect(originalRoots[2]!.querySelector('.root-status')).toHaveClass('graph-status-todo');
-    expect(originalRoots[3]!.querySelector('.root-status')).toHaveTextContent('待处理');
+    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveClass('graph-status-in_progress');
+    expect(originalRoots[2]!.parentElement!.querySelector('.root-status')).toHaveClass('graph-status-todo');
+    expect(originalRoots[3]!.parentElement!.querySelector('.root-status')).toHaveTextContent('待处理');
 
     for (const selectedTaskId of ['C', 'D', null]) {
       progressReads.mockClear();
@@ -1081,20 +1154,19 @@ describe('task chain dialog entries', () => {
       tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })),
       summary: { total: 6, todo: 0, inProgress: 0, done: 6, ready: 0, blocked: 0 },
     });
-    view.rerender(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(originalRoots[2]!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
-    expect(originalRoots[2]!.querySelector('.root-status')).toHaveTextContent('已完成');
+    expect(originalRoots[2]!.parentElement!.querySelector('.root-status')).toHaveTextContent('已完成');
     expect(originalRoots[0]!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
-    expect(originalRoots[0]!.querySelector('.root-status')).toHaveTextContent('已完成');
-    expect(originalRoots[0]!.querySelector('.root-status')).toHaveClass('graph-status-done');
-    expect(screen.getByRole('checkbox', { name: '显示所有' })).toBeChecked();
+    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveTextContent('已完成');
+    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveClass('graph-status-done');
     expect(view.container.querySelectorAll('.root-toggle')[2]).toBe(originalRoots[2]);
   });
 
   it('opens one graph through its explicit action while preserving the task disclosure and list identity', async () => {
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
-      return <ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)} onOpenTask={noop} />;
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)} onOpenTask={noop} />;
     };
     const { container } = render(<Wrapper />);
     const roots = container.querySelectorAll<HTMLButtonElement>('.root-toggle');
@@ -1102,7 +1174,7 @@ describe('task chain dialog entries', () => {
     expect(roots).toHaveLength(4);
     expect(roots[0]!.id).toBe('task-root-A');
     expect(roots[0]!.textContent).toContain('1/3 已完成');
-    expect(roots[0]!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(roots[0]!.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
     for (const root of roots) {
       expect(root).not.toHaveAttribute('aria-haspopup');
       expect(root).toHaveAttribute('aria-expanded', 'false');
@@ -1139,7 +1211,7 @@ describe('task chain dialog entries', () => {
   it('renders task previews as plain text in the list, modal title and graph nodes', () => {
     const untrusted = '<img src=x onerror=alert(1)>'.repeat(6);
     const snapshot = { ...graph, tasks: graph.tasks.map((task) => task.id === 'A' ? { ...task, titlePreview: untrusted, titleTruncated: true } : task) };
-    const { container } = render(<ChainList projectId="00000000-0000-4000-8000-000000000101" showAll={true} onShowAllChange={noop} index={buildGraphIndex(snapshot)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const { container } = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={buildGraphIndex(snapshot)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(screen.getAllByText(`${untrusted}…`)).toHaveLength(3);
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('script')).toBeNull();

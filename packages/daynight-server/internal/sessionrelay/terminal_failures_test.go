@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/google/uuid"
 )
 
@@ -18,7 +18,7 @@ func TestTerminalMessagesRejectMalformedAndForeignFences(t *testing.T) {
 	f, m, run, rid := terminalRunFixture(t, true)
 	ctx := context.Background()
 	browser := f.p
-	browser.Kind = core.SessionCredential
+	browser.Kind = model.SessionCredential
 	if _, err := f.s.RegisterTerminal(ctx, browser, f.project, f.task, m); err == nil {
 		t.Fatal("browser registered Worker session")
 	}
@@ -55,28 +55,28 @@ func TestTerminalMessagesRejectMalformedAndForeignFences(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		message v2.Message
-		call    func(core.Principal, v2.Message) error
+		call    func(model.Principal, v2.Message) error
 	}{
-		{"ledger", ledger, func(p core.Principal, in v2.Message) error {
+		{"ledger", ledger, func(p model.Principal, in v2.Message) error {
 			_, err := f.s.UpdateTerminalLedger(ctx, p, f.project, f.task, m.SessionID, "1", in)
 			return err
 		}},
-		{"finalization", final, func(p core.Principal, in v2.Message) error {
+		{"finalization", final, func(p model.Principal, in v2.Message) error {
 			_, err := f.s.FinalizeTerminal(ctx, p, f.project, f.task, m.SessionID, "1", in)
 			return err
 		}},
-		{"recording", recording, func(p core.Principal, in v2.Message) error {
+		{"recording", recording, func(p model.Principal, in v2.Message) error {
 			_, err := f.s.UpdateTerminalRecording(ctx, p, f.project, f.task, m.SessionID, "1", in)
 			return err
 		}},
-		{"archive", status, func(p core.Principal, in v2.Message) error {
+		{"archive", status, func(p model.Principal, in v2.Message) error {
 			_, err := f.s.UpdateTerminalArchive(ctx, p, f.project, f.task, m.SessionID, in)
 			return err
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			browser := f.p
-			browser.Kind = core.SessionCredential
+			browser.Kind = model.SessionCredential
 			if err := tc.call(browser, tc.message); err == nil {
 				t.Fatal("browser accepted as Worker")
 			}

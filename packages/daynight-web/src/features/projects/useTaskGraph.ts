@@ -1,7 +1,8 @@
 import { useProjectAccessSession } from "./ProjectAccess";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getTaskSync, isAbortError } from "../../api/client";
-import type { TaskGraph } from "../../api/types";
+import { pollingInterval } from "../../app/polling";
+import type { TaskGraph, WorkerClaim } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
@@ -11,6 +12,7 @@ export type GraphSnapshot = {
   readonly graph: TaskGraph;
   readonly index: GraphIndex;
   readonly pausedTaskIds: ReadonlySet<string>;
+  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
 } & ({
   readonly observedAt: string;
   readonly receivedMonotonic: number;
@@ -45,7 +47,7 @@ export const useTaskGraph = (projectId: string) => {
   const publish = useCallback((project: CachedProject) => {
     const sample = receipt.current;
     if (!liveAccess.current || sample === null) return;
-    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, ...sample }, status: "ready", refreshing: false, error: null });
+    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready", refreshing: false, error: null });
   }, [projectId, scope]);
   const request = useCallback(async (automatic = false) => {
     if (automatic && active.current !== null) return;
@@ -70,11 +72,11 @@ export const useTaskGraph = (projectId: string) => {
         if (project !== null && scope.canPreviewProject(projectId)) {
           const localTime = Date.now();
           const receivedMonotonic = performance.now();
-          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, observedAt: null,
+          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, observedAt: null,
             receivedMonotonic, receivedAt: null, revision: 0, localTime };
           setState((previous) => {
             const current = previous.projectId === projectId && previous.scope === scope;
-            return { projectId, scope, snapshot: current && previous.snapshot?.graph === project.graph ? previous.snapshot : snapshot,
+            return { projectId, scope, snapshot: current && previous.snapshot?.graph === project.graph && previous.snapshot.workerMachines === project.workerMachines ? previous.snapshot : snapshot,
               status: "ready", refreshing: current && previous.refreshing, error: current ? previous.error : null };
           });
         }
@@ -120,6 +122,7 @@ export const useTaskGraph = (projectId: string) => {
     const lifetime = new AbortController();
     const unsubscribe = scope.subscribe((event) => {
       if (event.projectId !== projectId) return;
+      if (event.accessRestored === true) { void request(); return; }
       if (event.accessRevoked === true) {
         liveAccess.current = false; receipt.current = null;
         setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error: event.error });
@@ -142,7 +145,7 @@ export const useTaskGraph = (projectId: string) => {
     });
     let timer: ReturnType<typeof setInterval> | null = null;
     const pause = () => { if (timer !== null) clearInterval(timer); timer = null; };
-    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, 15_000); };
+    const resume = () => { pause(); if (document.visibilityState !== "hidden") timer = setInterval(() => { void request(true); }, pollingInterval('taskSync')); };
     const onVisibilityChange = () => { resume(); if (document.visibilityState !== "hidden") void request(true); };
     resume(); document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {

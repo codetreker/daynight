@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,7 +27,7 @@ func ordinaryProjectTeam(t *testing.T, database *Store, projectID string) string
 func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing.T) {
 	database, owner, person, first := membershipFixture(t)
 	ctx := context.Background()
-	projects := []core.Project{first}
+	projects := []model.Project{first}
 	for i := 1; i < 6; i++ {
 		project, err := database.CreatePrivateProject(ctx, owner, uuid.NewString(), "Project", "https://example.com/project")
 		if err != nil {
@@ -69,9 +69,9 @@ func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing
 			var after *Position
 			for {
 				var page ProjectPage
-				err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+				err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 					var err error
-					page, err = snapshot.ScopedProjects(ctx, person, test.scope, Page{Limit: 1, After: after})
+					page, err = snapshot.ProjectDAO().ScopedProjects(ctx, person, test.scope, Page{Limit: 1, After: after})
 					return err
 				})
 				if err != nil || len(page.Items) != 1 {
@@ -95,30 +95,30 @@ func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing
 			}
 		})
 	}
-	err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamB}, Page{Limit: 1})
+	err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.ProjectDAO().ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamB}, Page{Limit: 1})
 		return err
 	})
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("direct grants must not imply team membership: %v", err)
 	}
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		page, err := snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: emptyTeam}, Page{Limit: 1})
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		page, err := snapshot.ProjectDAO().ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: emptyTeam}, Page{Limit: 1})
 		if err != nil || page.Items == nil || len(page.Items) != 0 || page.HasMore {
 			t.Fatalf("member's empty team: %#v %v", page, err)
 		}
-		_, err = snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: uuid.NewString()}, Page{Limit: 1})
+		_, err = snapshot.ProjectDAO().ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: uuid.NewString()}, Page{Limit: 1})
 		return err
 	})
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing team: %v", err)
 	}
 	for _, scope := range []ProjectScope{{}, {Kind: ProjectScopeTeam}, {Kind: ProjectScopeAll, TeamID: teamA}, {Kind: ProjectScopeShared, TeamID: teamA}} {
-		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-			_, err := snapshot.ScopedProjects(ctx, person, scope, Page{Limit: 1})
+		err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.ProjectDAO().ScopedProjects(ctx, person, scope, Page{Limit: 1})
 			return err
 		})
-		if err == nil || errors.Is(err, core.ErrNotFound) {
+		if err == nil || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("invalid scope %#v: %v", scope, err)
 		}
 	}
@@ -127,11 +127,11 @@ func TestScopedProjectsFilterBeforePaginationAndRequireTeamMembership(t *testing
 		t.Fatalf("shared list altered membership: %d %v", memberships, err)
 	}
 	mustQueryExec(t, database, `DROP TABLE team_members`)
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamA}, Page{Limit: 1})
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.ProjectDAO().ScopedProjects(ctx, person, ProjectScope{Kind: ProjectScopeTeam, TeamID: teamA}, Page{Limit: 1})
 		return err
 	})
-	if err == nil || errors.Is(err, core.ErrNotFound) {
+	if err == nil || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("database failure mistaken for missing membership: %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T)
 	ctx := context.Background()
 	teamID := ordinaryProjectTeam(t, database, project.ID)
 	mustQueryExec(t, database, `UPDATE project_ownership SET version=9007199254740993 WHERE project_id=$1`, project.ID)
-	roles := []core.ProjectRole{"", core.ProjectMemberRole, core.ProjectAdmin}
+	roles := []model.ProjectRole{"", model.ProjectMemberRole, model.ProjectAdmin}
 	for _, teamRole := range roles {
 		for _, directRole := range roles {
 			t.Run(fmt.Sprintf("team=%s/direct=%s", teamRole, directRole), func(t *testing.T) {
@@ -153,40 +153,40 @@ func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T)
 				if directRole != "" {
 					mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,$3)`, project.ID, person.UserID, directRole)
 				}
-				var before *core.ProjectGrant
+				var before *model.ProjectGrant
 				if directRole != "" {
-					if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-						m, err := snapshot.DirectProjectMember(ctx, person.UserID, project.ID)
+					if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+						m, err := snapshot.ProjectDAO().DirectProjectMember(ctx, person.UserID, project.ID)
 						before = &m.Grant
 						return err
 					}); err != nil {
 						t.Fatal(err)
 					}
 				}
-				expected := core.ProjectMemberRole
-				if teamRole == core.ProjectAdmin || directRole == core.ProjectAdmin {
-					expected = core.ProjectAdmin
+				expected := model.ProjectMemberRole
+				if teamRole == model.ProjectAdmin || directRole == model.ProjectAdmin {
+					expected = model.ProjectAdmin
 				}
 				absent := teamRole == "" && directRole == ""
-				if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-					access, err := snapshot.ProjectAccess(ctx, person, project.ID)
+				if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+					access, err := snapshot.ProjectDAO().ProjectAccess(ctx, person, project.ID)
 					if absent {
-						if !errors.Is(err, core.ErrNotFound) {
+						if !errors.Is(err, model.ErrNotFound) {
 							t.Fatalf("absent access: %#v %v", access, err)
 						}
 					} else if err != nil || access.Role != expected || !reflect.DeepEqual(access.DirectGrant, before) {
 						t.Fatalf("source access: %#v expectedRole=%s grant=%#v %v", access, expected, before, err)
 					}
 					if !absent {
-						if access.OwnerTeam.ID != teamID || access.OwnerTeam.Kind != "ordinary" || access.OwnerTeam.Name == nil || *access.OwnerTeam.Name != "Owner team" || access.Ownership.TeamID != teamID || access.Ownership.Version != 9007199254740993 || access.CanTransfer != (teamRole == core.ProjectAdmin) || (access.TeamRole == nil) != (teamRole == "") || access.TeamRole != nil && *access.TeamRole != teamRole {
+						if access.OwnerTeam.ID != teamID || access.OwnerTeam.Kind != "ordinary" || access.OwnerTeam.Name == nil || *access.OwnerTeam.Name != "Owner team" || access.Ownership.TeamID != teamID || access.Ownership.Version != 9007199254740993 || access.CanTransfer != (teamRole == model.ProjectAdmin) || (access.TeamRole == nil) != (teamRole == "") || access.TeamRole != nil && *access.TeamRole != teamRole {
 							t.Fatalf("real ownership and actor source: %#v", access)
 						}
 					}
-					page, err := snapshot.AccessibleProjects(ctx, person, Page{Limit: 10})
+					page, err := snapshot.ProjectDAO().AccessibleProjects(ctx, person, Page{Limit: 10})
 					if err != nil || len(page.Items) != btoi(!absent) {
 						t.Fatalf("filtered inherited project list: %#v %v", page, err)
 					}
-					people, err := snapshot.ProjectParticipants(ctx, project.ID)
+					people, err := snapshot.ProjectDAO().ProjectParticipants(ctx, project.ID)
 					if err != nil || len(people) != 1+btoi(!absent) {
 						t.Fatalf("deduplicated source roster: %#v %v", people, err)
 					}
@@ -210,7 +210,7 @@ func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T)
 				}
 				locked, err := LockProjectAuthorization(ctx, tx, person.UserID, project.ID)
 				if absent {
-					if !errors.Is(err, core.ErrNotFound) {
+					if !errors.Is(err, model.ErrNotFound) {
 						t.Fatalf("locked absent access: %#v %v", locked, err)
 					}
 				} else if err != nil || locked.Role != expected || !reflect.DeepEqual(locked.DirectGrant, before) {
@@ -220,8 +220,8 @@ func TestProjectAccessCombinesEveryRealSourceWithoutChangingGrants(t *testing.T)
 					t.Fatal(err)
 				}
 				if directRole != "" {
-					if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-						m, err := snapshot.DirectProjectMember(ctx, person.UserID, project.ID)
+					if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+						m, err := snapshot.ProjectDAO().DirectProjectMember(ctx, person.UserID, project.ID)
 						if !reflect.DeepEqual(m.Grant, *before) {
 							t.Fatalf("effective access rewrote direct grant: %#v %#v", m.Grant, before)
 						}
@@ -257,7 +257,7 @@ func TestProjectAccessMissingOwnershipIsIntegrityFailure(t *testing.T) {
 			_, err = ReadProjectAccess(ctx, tx, owner.UserID, project.ID)
 		}
 		var failure *Error
-		if !errors.As(err, &failure) || errors.Is(err, core.ErrNotFound) || !strings.Contains(failure.Cause.Error(), "ownership or owner Team is missing") {
+		if !errors.As(err, &failure) || errors.Is(err, model.ErrNotFound) || !strings.Contains(failure.Cause.Error(), "ownership or owner Team is missing") {
 			t.Fatalf("corrupt ownership hidden: %v", err)
 		}
 		if err := tx.Rollback(ctx); err != nil {
@@ -281,7 +281,7 @@ func TestThreadSourceFencesBlockOnlyRealAuthorizationChanges(t *testing.T) {
 			}
 			defer tx.Rollback(context.Background())
 			access, err := LockProjectAuthorization(ctx, tx, person.UserID, project.ID)
-			if err != nil || access.Role != core.ProjectAdmin {
+			if err != nil || access.Role != model.ProjectAdmin {
 				t.Fatalf("source admission: %#v %v", access, err)
 			}
 			writer, err := database.Pool.Acquire(ctx)
@@ -338,7 +338,7 @@ func TestThreadDoesNotAdmitSourceInsertedAfterItsAbsentLockRead(t *testing.T) {
 		mustQueryExec(t, database, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, person.UserID)
 	}}
 	access, err := LockProjectAuthorization(ctx, wrapped, person.UserID, project.ID)
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("unlocked inserted source admitted: %#v %v", access, err)
 	}
 	mustQueryExec(t, database, `DELETE FROM team_members WHERE team_id=$1 AND user_id=$2`, teamID, person.UserID)
@@ -359,7 +359,7 @@ func TestProjectAccessMissingOwnerTeamCannotAuthorizeEitherSource(t *testing.T) 
 			_, err = ReadProjectAccess(ctx, tx, owner.UserID, project.ID)
 		}
 		var failure *Error
-		if !errors.As(err, &failure) || errors.Is(err, core.ErrNotFound) || !strings.Contains(failure.Cause.Error(), "Team is missing") {
+		if !errors.As(err, &failure) || errors.Is(err, model.ErrNotFound) || !strings.Contains(failure.Cause.Error(), "Team is missing") {
 			t.Fatalf("orphan ownership authorized or hidden: %v", err)
 		}
 		if err := tx.Rollback(ctx); err != nil {
@@ -398,7 +398,7 @@ func TestThreadAuthorizationRechecksTeamSourceAfterLockWait(t *testing.T) {
 			}
 			defer reader.Rollback(context.Background())
 			done := make(chan error, 1)
-			var access core.ProjectAccess
+			var access model.ProjectAccess
 			go func() {
 				var err error
 				access, err = LockProjectAuthorization(ctx, reader, person.UserID, project.ID)
@@ -410,10 +410,10 @@ func TestThreadAuthorizationRechecksTeamSourceAfterLockWait(t *testing.T) {
 			}
 			err = <-done
 			if mutation == "delete" {
-				if !errors.Is(err, core.ErrNotFound) {
+				if !errors.Is(err, model.ErrNotFound) {
 					t.Fatalf("deleted team source admitted: %#v %v", access, err)
 				}
-			} else if err != nil || access.Role != core.ProjectMemberRole {
+			} else if err != nil || access.Role != model.ProjectMemberRole {
 				t.Fatalf("pre-wait Team role retained: %#v %v", access, err)
 			}
 		})
@@ -460,15 +460,15 @@ func TestLockedProjectAccessDoesNotPublishAnUnlockedNewSource(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	access, err := LockProjectAuthorization(ctx, tx, person.UserID, project.ID)
-	if err != nil || tracer.afterGrant != nil || access.Role != core.ProjectMemberRole || access.TeamRole != nil || access.CanTransfer || access.DirectGrant == nil || access.DirectGrant.Role != core.ProjectMemberRole {
+	if err != nil || tracer.afterGrant != nil || access.Role != model.ProjectMemberRole || access.TeamRole != nil || access.CanTransfer || access.DirectGrant == nil || access.DirectGrant.Role != model.ProjectMemberRole {
 		t.Fatalf("unlocked source entered strong admission: %#v %v", access, err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		current, err := snapshot.ProjectAccess(ctx, person, project.ID)
-		if err != nil || current.Role != core.ProjectAdmin || !current.CanTransfer {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		current, err := snapshot.ProjectDAO().ProjectAccess(ctx, person, project.ID)
+		if err != nil || current.Role != model.ProjectAdmin || !current.CanTransfer {
 			t.Fatalf("new source was not actually committed: %#v %v", current, err)
 		}
-		_, err = snapshot.ProjectAccess(ctx, owner, project.ID)
+		_, err = snapshot.ProjectDAO().ProjectAccess(ctx, owner, project.ID)
 		return err
 	}); err != nil {
 		t.Fatal(err)

@@ -85,6 +85,41 @@ export type TeamRef = {
   readonly name: string | null;
 };
 
+export type TeamRole = "member" | "admin";
+export type TeamMember = {
+  readonly teamId: string;
+  readonly userId: string;
+  readonly role: TeamRole;
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+export type TeamMemberWithProfile = TeamMember & {
+  readonly profile: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null };
+};
+export type TeamMemberRoleReceipt = { readonly membership: TeamMember; readonly actorRole: TeamRole };
+export type RemoveTeamMemberReceipt = { readonly teamId: string; readonly userId: string; readonly removed: true; readonly actorRole: TeamRole | null };
+
+export type Team = TeamRef & {
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly membership: TeamMember;
+};
+
+export type TeamInvitation = {
+  readonly id: string;
+  readonly teamId: string;
+  readonly createdBy: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly consumedBy: string | null;
+  readonly consumedAt: string | null;
+  readonly revokedAt: string | null;
+};
+export type CreatedTeamInvitation = TeamInvitation & { readonly link: string };
+export type TeamInvitationRevokeReceipt = { readonly teamId: string; readonly invitationId: string; readonly changed: boolean };
+
 export type ProjectOwnership = {
   readonly teamId: string;
   readonly version: bigint;
@@ -117,6 +152,31 @@ export type ProjectAccess = {
   readonly canTransfer: boolean;
   readonly effectiveRole: "admin" | "member";
   readonly directGrant: ProjectGrant | null;
+};
+
+export type InvitationScope = "project" | "team";
+export type TeamInvitationMember = Team["membership"];
+export type ProjectInvitationInspection = { readonly projectId: string; readonly projectName: string; readonly directGrant: ProjectGrant | null; readonly access: ProjectAccess | null };
+export type ProjectInvitationAcceptance = { readonly projectId: string; readonly directGrant: ProjectGrant; readonly access: ProjectAccess; readonly joined: boolean; readonly consumed: boolean };
+export type TeamInvitationInspection = { readonly team: TeamRef; readonly membership: TeamInvitationMember | null };
+export type TeamInvitationAcceptance = { readonly team: TeamRef; readonly membership: TeamInvitationMember; readonly joined: boolean; readonly consumed: boolean };
+export type InvitationInspection = ProjectInvitationInspection | TeamInvitationInspection;
+export type InvitationAcceptance = ProjectInvitationAcceptance | TeamInvitationAcceptance;
+
+export type ProjectTransferPreview = {
+  readonly sourceTeam: TeamRef;
+  readonly targetTeam: TeamRef & { readonly version: bigint };
+  readonly ownership: ProjectOwnership;
+  readonly actorRole: "admin" | "member" | null;
+};
+
+export type ProjectTransferReceipt = {
+  readonly projectId: string;
+  readonly changed: boolean;
+  readonly sourceTeam: TeamRef;
+  readonly ownerTeam: TeamRef;
+  readonly ownership: ProjectOwnership;
+  readonly actorAccess: ProjectAccess | null;
 };
 
 export type ProjectParticipant = {
@@ -163,6 +223,21 @@ export type WorkerVersions = {
   readonly codex: WorkerExecutableProbe;
   readonly copilot: WorkerExecutableProbe;
 };
+export type WorkerAssistantHostReason = "unsupported_arguments" | "invalid_cwd" | "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "unavailable";
+export type WorkerAssistantProvider = {
+  readonly provider: WorkerAgent;
+  readonly available: boolean;
+  readonly reason: WorkerAssistantHostReason | null;
+  readonly model: string | null;
+  readonly args: readonly string[];
+};
+export type WorkerAssistantHost = {
+  readonly protocolVersion: 1;
+  readonly observedAt: string;
+  readonly defaultCwd: string;
+  readonly defaultProvider: WorkerAgent;
+  readonly providers: readonly WorkerAssistantProvider[];
+};
 export type WorkerTelemetry = {
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
@@ -173,6 +248,7 @@ export type WorkerTelemetry = {
   readonly memory: WorkerProbe<WorkerMemory>;
   readonly disk: WorkerProbe<WorkerDisk>;
   readonly versions: WorkerVersions;
+  readonly assistantHost?: WorkerAssistantHost;
 };
 export type WorkerTaskReference = { readonly projectId: string; readonly taskId: string; readonly claimId: string };
 export type WorkerTaskInventory = { readonly observedAt: string; readonly claims: readonly WorkerTaskReference[] };
@@ -257,7 +333,7 @@ export type TaskGraph = {
 };
 
 export type Page<T> = { readonly items: readonly T[]; readonly nextCursor: string | null };
-export type CreateProjectInput = { readonly name: string; readonly repoUrl: string };
+export type CreateProjectInput = { readonly name: string; readonly repoUrl: string; readonly expectedUserId: string; readonly teamId?: string };
 export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;
@@ -296,6 +372,7 @@ export type UpdateWorkerClaimInput = {
   readonly phase?: WorkerPhase;
   readonly herdr?: WorkerHerdr | null;
   readonly nativeSessionId?: string | null;
+  readonly startupReport?: import("../session/startup.js").SessionStartupReport;
 };
 export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claimId: string };
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };

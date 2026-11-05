@@ -23,7 +23,7 @@ import { matchesAgentPermissionReview, TaskAgentPermissionConfirmation, TaskAgen
 import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } from './TaskStatusConfirmation';
 import { useSessionMessages } from '../task-agent-session/messages';
 import { SessionFullscreenContext, type SessionFullscreenRegistration } from '../task-agent-session/useSessionFullscreen';
-import { TaskAgentSession } from '../task-agent-session/TaskAgentSession';
+import { TaskSessionHost, ManagedSessionRecords } from '../task-agent-session/TaskSessionHost';
 import { TaskStepsPanel } from './steps/TaskStepsPanel';
 import { TaskDetailReading } from './TaskDetailReading';
 import { TaskDetailActions } from './TaskDetailActions';
@@ -109,7 +109,11 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   const m = messages.inspection.detail;
   const task = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
   const { detail, status, error, retry } = task;
+  const readingScope = useRef<string | null>(null);
+  if (detail !== null) readingScope.current = scope;
   const worker = detail === null ? undefined : readWorkerClaim(detail.properties);
+  const hasWebSession = useRef(false);
+  if (detail !== null) hasWebSession.current = worker !== null && worker !== undefined;
   const currentClaim = worker !== undefined && worker.state !== 'completed' ? worker : null;
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
@@ -130,7 +134,8 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
     : confirmation.kind === 'allowAgents' ? matchesAgentPermissionReview(confirmation, detail) && task.canSetAgentPermission
       : matchesPlatformReview(confirmation, detail) && task.canSetRequiredPlatform);
   const draftDecision = useDraftNavigationDecision();
-  const confirmationOpen = draftDecision !== null || confirmation !== null && confirmationValid;
+  const [stepConfirmationOpen, setStepConfirmationOpen] = useState(false);
+  const confirmationOpen = draftDecision !== null || stepConfirmationOpen || confirmation !== null && confirmationValid;
   useLayoutEffect(() => { if (draftDecision !== null) setConfirmation(null); }, [draftDecision]);
   const threadDetailsOccupied = useRef(false);
   const [sessionLayoutChanged, setSessionLayoutChanged] = useState(false);
@@ -315,7 +320,9 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry} profileRecoveryUrl={popout}
                   canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => { const review = { kind: 'withdraw' as const, detail, claimId: currentClaim.claimId }; void access.session.revalidate().then((fresh) => { if (fresh !== null && dialogRef.current?.isConnected && mayWithdrawClaim(currentClaim, viewer.userId, fresh.effectiveRole)) requestConfirmation(review); }); } } : {})} />}
               </div>
-              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} renderMarkdown={renderMarkdown} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={worker!.claimId} projectId={projectId} taskId={taskId} claimId={worker!.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
+            </>
+          )}
+          {readingScope.current === scope && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} available={detail !== null} description={detail?.description ?? ''} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} available={detail !== null} renderMarkdown={renderMarkdown} confirmationOwner={dialogRef} confirmationFallback={titleRef} onConfirmationChange={setStepConfirmationOpen} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(worker !== null && worker !== undefined ? { session: (active: boolean) => <TaskSessionHost mode={worker.agentControlMode} projectId={projectId} taskId={taskId} claimId={worker.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : detail === null && hasWebSession.current ? { session: () => null } : {})} sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection}>{render}</ManagedSessionRecords>} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className="task-detail-section" aria-label={m.description}>
@@ -345,9 +352,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
                       <div><dt>{m.taskId}</dt><dd className="task-detail-full-id"><TaskId key={`${projectId}/${taskId}`} value={detail.id} /></dd></div>
                     </dl>
                   </aside>
-                </div></>} />
-            </>
-          )}
+                </div></>} />}
         </div>
         <footer className="task-detail-footer">{m.footer}</footer>
         {status !== 'deleted' && <TaskDeletionFeedback key={`${scope}/deletion`} mutation={task.mutation} onReconcile={task.reconcile} />}

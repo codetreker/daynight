@@ -10,27 +10,6 @@ import (
 
 const cleanupTimeout = 5 * time.Second
 
-type TransactionOutcome string
-
-const (
-	TransactionCommitted    TransactionOutcome = "committed"
-	TransactionNotCommitted TransactionOutcome = "not_committed"
-	TransactionUnknown      TransactionOutcome = "unknown"
-)
-
-// TransactionError preserves completion facts separately from the original
-// operation and cleanup causes. An unsuccessful COMMIT is not proof of rollback.
-type TransactionError struct {
-	Phase           string
-	Cause           error
-	Outcome         TransactionOutcome
-	CommitAttempted bool
-	CleanupFailed   bool
-}
-
-func (err *TransactionError) Error() string { return "transaction " + err.Phase + " failed" }
-func (err *TransactionError) Unwrap() error { return err.Cause }
-
 func transact(ctx context.Context, tx pgx.Tx, operation func(pgx.Tx) error) (err error) {
 	stage := &TransactionError{Phase: "operation", Outcome: TransactionUnknown}
 	defer func() {

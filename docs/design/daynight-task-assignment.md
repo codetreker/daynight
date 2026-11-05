@@ -4,7 +4,7 @@
 
 ## 数据所有权
 
-`core.Task`、`store.TaskWrite` 和 HTTP Task/summary/graph DTO 使用可空 `AssignedTo`。数据库列为 `tasks.assigned_to uuid NULL`；响应的 assignedTo 不使用 omitempty。它是普通 Task 元数据，properties 的静态定义与独立行模型保持原有职责。
+`model.Task`、`store.TaskWrite` 和 HTTP Task/summary/graph DTO 使用可空 `AssignedTo`。数据库列为 `tasks.assigned_to uuid NULL`；响应的 assignedTo 不使用 omitempty。它是普通 Task 元数据，properties 的静态定义与独立行模型保持原有职责。
 
 迁移 `028_task_assignment.sql` 增加列及 `(project_id, assigned_to, created_at, id) WHERE deleted_at IS NULL` 索引。既有行包括软删除行取得 NULL，其他任务事实与历史迁移 checksum 不变；不添加外键或历史身份推断。负责人查询直接复用该索引，不增加 DDL。
 
@@ -104,7 +104,7 @@ profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 
 
 TaskAssigneeIdentity 显示真实 nullable 姓名/头像，name 缺失显示短 UUID，图片失败使用当前身份首字形态；不生成 email。TaskAssigneeSelect 紧邻状态 24px 成组，TaskAssigneeFilter 拥有 all/me/unassigned/user 显示状态。AssigneePicker 的 fixed 菜单在 surface 的焦点所有者子树内，尺寸和 12px 边界按视口计算，随 scroll/resize/fullscreen 及进入动画稳定定位；键盘与 Escape/Tab/外部点击保留现有详情层级和焦点。
 
-ProjectPage 从完整 index 导出匹配 ID，再在显示集合和分页前相交；ChainList 保留完整 component 进度和依赖，仅裁剪展示的子任务集合。概览与图不继承负责人过滤，显式概览定位可回到 all 以展示目标。新增界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
+ProjectPage 在完整 index 上逐任务联合计算负责人和状态匹配，再筛选顶层条目并分页。ChainList 只要普通分量中有联合匹配成员即保留真实代表，展开全部普通成员，并保留完整 component 进度和依赖；外部前置不充当匹配成员。概览与图不继承列表过滤，显式概览定位调整遮挡目标的条件。界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
 
 ## 观测与验证
 

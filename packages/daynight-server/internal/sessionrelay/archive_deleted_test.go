@@ -7,24 +7,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
-func endArchiveTask(t *testing.T, f fixture, state string) core.Task {
+func endArchiveTask(t *testing.T, f fixture, state string) model.Task {
 	t.Helper()
 	ctx := context.Background()
-	tasks := service.NewTasks(f.s.DB)
-	var ended core.Task
+	tasks := taskservice.NewTasks(f.s.DB)
+	var ended model.Task
 	var err error
 	if state == "released" {
-		ended, err = tasks.ReleaseWorker(ctx, f.p, f.project, f.task, service.ReleaseWorker{Version: 1, ClaimID: f.r.ClaimID, StoppedConfirmed: true})
+		ended, err = tasks.ReleaseWorker(ctx, f.p, f.project, f.task, taskcore.ReleaseWorker{Version: 1, ClaimID: f.r.ClaimID, StoppedConfirmed: true})
 	} else {
-		ended, err = tasks.SetStatus(ctx, f.p, f.project, f.task, service.SetTaskStatus{Version: 1, Status: core.TaskDone, ClaimID: &f.r.ClaimID})
+		ended, err = tasks.SetStatus(ctx, f.p, f.project, f.task, taskcore.SetTaskStatus{Version: 1, Status: model.TaskDone, ClaimID: &f.r.ClaimID})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +35,7 @@ func endArchiveTask(t *testing.T, f fixture, state string) core.Task {
 
 func deleteArchiveTask(t *testing.T, f fixture, version int64) {
 	t.Helper()
-	if err := service.NewTasks(f.s.DB).Delete(context.Background(), f.p, f.project, f.task, service.DeleteTask{Version: version}); err != nil {
+	if err := taskservice.NewTasks(f.s.DB).Delete(context.Background(), f.p, f.project, f.task, taskcore.DeleteTask{Version: version}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -85,8 +86,8 @@ func TestDeletedTaskArchiveCanFinishWithoutReopeningSession(t *testing.T) {
 				if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, sp.Command{Fence: v.Fence, Kind: "refresh_controls", OperationID: uuid.NewString()}); err == nil {
 					t.Fatal("deleted task allowed control")
 				}
-				_, err = service.NewTasks(f.s.DB).Get(ctx, f.p, f.project, f.task)
-				var fault *service.Fault
+				_, err = taskservice.NewTasks(f.s.DB).Get(ctx, f.p, f.project, f.task)
+				var fault *model.Fault
 				if !errors.As(err, &fault) || fault.Code != "task_deleted" {
 					t.Fatal("ordinary deleted task became visible", err)
 				}
@@ -106,9 +107,9 @@ func TestDeletedTaskArchiveRequiresCurrentOwnerCredentialAndMembership(t *testin
 			var err error
 			switch kind {
 			case "browser":
-				principal = listCredential(t, f, f.p.UserID, core.SessionCredential)
+				principal = listCredential(t, f, f.p.UserID, model.SessionCredential)
 			case "other member":
-				principal = listCredential(t, f, uuid.NewString(), core.PATCredential)
+				principal = listCredential(t, f, uuid.NewString(), model.PATCredential)
 				_, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, f.project, principal.UserID)
 			case "removed member":
 				_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, f.project, principal.UserID)
@@ -215,11 +216,11 @@ func TestArchiveWaitsForDeletionCommitThenFinalizes(t *testing.T) {
 	release := make(chan struct{})
 	deletion := make(chan error, 1)
 	go func() {
-		deletion <- f.s.DB.WriteProject(ctx, f.project, func(tx *store.ProjectTx) error {
-			if _, err := tx.Task(ctx, f.task); err != nil {
+		_, err := f.s.DB.WriteProject(ctx, f.project, func(tx store.ProjectWriteScope) error {
+			if _, err := tx.TaskDAO().Task(ctx, f.task); err != nil {
 				return err
 			}
-			if err := tx.DeleteTask(ctx, f.task, false); err != nil {
+			if err := tx.TaskDAO().DeleteTask(ctx, f.task, false); err != nil {
 				return err
 			}
 			close(deleted)
@@ -230,6 +231,7 @@ func TestArchiveWaitsForDeletionCommitThenFinalizes(t *testing.T) {
 				return ctx.Err()
 			}
 		})
+		deletion <- err
 	}()
 	select {
 	case <-deleted:
@@ -281,7 +283,7 @@ func TestDeletionWaitsForArchiveCommitAndPreservesReceipt(t *testing.T) {
 	}
 	deletion := make(chan error, 1)
 	go func() {
-		deletion <- service.NewTasks(f.s.DB).Delete(ctx, f.p, f.project, f.task, service.DeleteTask{Version: ended.Version})
+		deletion <- taskservice.NewTasks(f.s.DB).Delete(ctx, f.p, f.project, f.task, taskcore.DeleteTask{Version: ended.Version})
 	}()
 	waitErr := waitArchiveLock(ctx, f, "SELECT t.id::text")
 	close(files.release)

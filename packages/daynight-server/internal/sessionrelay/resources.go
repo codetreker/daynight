@@ -6,12 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
 )
 
-func (s *Service) Resource(ctx context.Context, p core.Principal, project, taskID, id, resource string) ([]byte, sp.Resource, error) {
+func (s *Service) Resource(ctx context.Context, p model.Principal, project, taskID, id, resource string) ([]byte, sp.Resource, error) {
 	var descriptor sp.Resource
 	if _, err := uuid.Parse(resource); err != nil {
 		return nil, descriptor, fault("invalid_input", "Invalid session resource identity.")

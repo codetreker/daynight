@@ -45,6 +45,8 @@ export type ProjectAccess = {
   readonly effectiveRole: ProjectRole;
   readonly directGrant: ProjectGrant | null;
 };
+export type ProjectGrantResult = { readonly grant: ProjectGrant; readonly actorAccess: ProjectAccess | null };
+export type RemoveProjectGrantResult = { readonly projectId: string; readonly userId: string; readonly deleted: true; readonly actorAccess: ProjectAccess | null };
 
 export type ProjectPersonVersion = {
   readonly userId: string;
@@ -95,12 +97,38 @@ export type ProjectInvitation = {
   readonly revokedAt: string | null;
 };
 export type CreatedProjectInvitation = ProjectInvitation & { readonly link: string };
+export type TeamInvitation = {
+  readonly id: string;
+  readonly teamId: string;
+  readonly createdBy: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly consumedBy: string | null;
+  readonly consumedAt: string | null;
+  readonly revokedAt: string | null;
+};
+export type CreatedTeamInvitation = TeamInvitation & { readonly link: string };
+export type RevokeTeamInvitationResult = { readonly teamId: string; readonly invitationId: string; readonly changed: boolean };
 export type ProjectInvitationInspection = {
   readonly projectId: string;
   readonly projectName: string;
-  readonly member?: ProjectMember;
+  readonly directGrant: ProjectGrant | null;
+  readonly access: ProjectAccess | null;
+};
+export type ProjectInvitationAcceptance = {
+  readonly projectId: string;
+  readonly directGrant: ProjectGrant;
+  readonly access: ProjectAccess;
+  readonly joined: boolean;
+  readonly consumed: boolean;
 };
 export type InvitationInspection = ProjectInvitationInspection;
+export type TeamInvitationMember = {
+  readonly teamId: string; readonly userId: string; readonly role: ProjectRole; readonly version: bigint;
+  readonly createdAt: string; readonly updatedAt: string;
+};
+export type TeamInvitationInspection = { readonly team: TeamRef; readonly membership: TeamInvitationMember | null };
+export type TeamInvitationAcceptance = { readonly team: TeamRef; readonly membership: TeamInvitationMember; readonly joined: boolean; readonly consumed: boolean };
 
 export type DeviceAuthorizationStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
 export type DeviceAuthorizationInspection = {

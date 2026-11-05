@@ -27,6 +27,11 @@ stop-proof references. Finalization records bind all stopped generations before
 the service can freeze the Session; validators do not substitute for that lock
 or for trustworthy native stop observations.
 
+The [preparation stop decision](../bug-fix/2026-11-05-herdr-prepared-stop-proof.md)
+adds an explicit proof for a generation whose native launch was never submitted.
+Ordinary proofs keep their original shell and agent requirements and JSON shape;
+the added branch requires coordinated reader support and cannot grant recovery.
+
 Ready receipts bind actual archive bytes. Unavailable receipts require explicit
 zero-content evidence and a distinct disposition digest; missing registered
 content remains corruption. Canonical serialization provides portable receipt

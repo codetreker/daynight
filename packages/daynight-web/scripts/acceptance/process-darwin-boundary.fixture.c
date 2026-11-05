@@ -20,11 +20,12 @@ static const char *scenario;
 static unsigned int inspections;
 static bool argument_failure;
 static unsigned int exit_inspections;
+static int argument_error = EINVAL;
 
 int fixture_sysctl(int *name, u_int length, void *output, size_t *size, void *input, size_t input_size) {
   if (length == 3 && name[1] == KERN_PROCARGS2 && strncmp(scenario, "args-", 5) == 0) {
     argument_failure = true;
-    errno = strcmp(scenario, "args-permission") == 0 ? EPERM : EINVAL;
+    errno = strcmp(scenario, "args-permission") == 0 ? EPERM : argument_error;
     return -1;
   }
   return sysctl(name, length, output, size, input, input_size);
@@ -63,8 +64,12 @@ int fixture_pidinfo(int pid, int flavor, uint64_t argument, void *buffer, int si
 
 /* Inject only the kernel boundary; execute the actual helper parser and decisions. */
 int main(int argc, char **argv) {
-  if (argc != 2) return 2;
+  if (argc != 2 && argc != 3) return 2;
   scenario = argv[1];
+  if (argc == 3) {
+    if (strcmp(argv[2], "EIO") != 0) return 2;
+    argument_error = EIO;
+  }
   alarm(10);
   pid_t target = getpid();
   if (strcmp(scenario, "path-exit") == 0) {

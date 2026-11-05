@@ -41,6 +41,14 @@ standalone Git operations retain their independent groups. Normal signal handlin
 uses the shared installer cleanup; forced supervisor termination cannot promise
 stage cleanup or atomic replacement.
 
+Windows update subprocesses retain the caller's console connection. Detaching a
+Windows process while inheriting console handles makes writes fail with `EBADF`,
+including the refresh helper's progress and error reports. Windows interruption
+and timeout cleanup uses `taskkill /PID /T /F` without detachment; POSIX still
+creates an owned process group. Native ConPTY regression tests exercise both
+captured stdout with inherited stderr and fully inherited output, since pipes
+alone hide the invalid-console-handle failure.
+
 This partially supersedes the manual-refresh boundary of the
 [public distribution decision](../../archived/architecture/2026-10-21-public-agent-skill-design.md)
 and extends the [self-update decision](../../archived/feature/2026-10-20-cli-self-update.md) beyond its
@@ -64,6 +72,11 @@ makes the same update command a recovery path.
 **Require agent launchers on PATH.** A copied skill can remain installed when its
 launcher is temporarily unavailable. Directory-based discovery updates that
 installation without inventing an agent-runtime dependency.
+
+**Detach supervised subprocesses on every platform.** POSIX needs an owned group
+for descendant termination, but Windows detachment severs inherited console
+handles. Keeping Windows attached preserves output while PID-based tree cleanup
+retains supervision.
 
 **Track or scan every project installation.** No existing installation registry
 provides this inventory. Recursive scans widen filesystem ownership and runtime

@@ -1,6 +1,8 @@
 import type { WorkersMessages } from '../workers';
+import { workerConfiguration } from './worker-configuration';
 
 export const workers: WorkersMessages = {
+  configuration: workerConfiguration,
   title: '我的 Worker', subtitle: '查看最近活跃的 Worker，以及它们的运行状态。', list: 'Worker 列表',
   loading: '正在加载 Worker', loadingDetail: '正在读取最近活跃的 Worker 及其运行状态。',
   detailLoading: '正在加载 Worker', detailLoadingDetail: '正在读取 Worker 的运行环境和任务观测。', detailLoadingFailed: '无法加载 Worker 详情',

@@ -3,69 +3,34 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
+	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
-func projectTestStore(t *testing.T) *store.Store {
-	t.Helper()
-	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	admin, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := "http_" + strings.ToLower(rand.Text())
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		admin.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
-			t.Error(err)
-		}
-		admin.Close()
-	})
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	query.Set("timezone", "UTC")
-	query.Set("application_name", schema)
-	parsed.RawQuery = query.Encode()
-	database, err := store.Open(ctx, parsed.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(database.Close)
-	return database
-}
+func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
 
 func projectTestHandler(t *testing.T, database *store.Store, output io.Writer) *resourceTestHandler {
 	t.Helper()
@@ -83,23 +48,10 @@ func projectRequest(handler http.Handler, method, path, body string) *httptest.R
 }
 
 func decodeResponse[T any](t *testing.T, response *httptest.ResponseRecorder, status int) T {
-	t.Helper()
-	if response.Code != status || response.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
-	}
-	var value T
-	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
-		t.Fatal(err)
-	}
-	return value
+	return testsupport.DecodeResponse[T](t, response, status)
 }
-
 func assertProjectError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
-	t.Helper()
-	value := decodeResponse[api.ErrorResponse](t, response, status)
-	if value.Error.Code != code || value.Error.Message == "" || value.Error.RequestID != response.Header().Get("X-Request-ID") || value.Error.RequestID != "project-test" {
-		t.Fatalf("unexpected error correlation: %+v", value)
-	}
+	testsupport.AssertProjectError(t, response, status, code)
 }
 
 func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
@@ -111,7 +63,7 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 	if page.Items == nil || len(page.Items) != 0 || page.NextCursor != nil || !strings.Contains(empty.Body.String(), `"items":[]`) || !strings.Contains(empty.Body.String(), `"nextCursor":null`) {
 		t.Fatalf("empty list shape: %s", empty.Body)
 	}
-	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", `{"name":"API work","repoUrl":"git@github.com:example/repository.git"}`)
+	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "API work", RepoURL: "git@github.com:example/repository.git", ExpectedUserID: handler.principal.UserID}))
 	project := decodeResponse[api.Project](t, response, http.StatusCreated)
 	if project.Name != "API work" || project.RepoURL != "git@github.com:example/repository.git" || project.ID == "" || project.CreatedAt.IsZero() || project.CreatedAt.Location() != time.UTC || project.UpdatedAt != project.CreatedAt {
 		t.Fatalf("created project: %+v", project)
@@ -120,10 +72,10 @@ func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
 		t.Fatalf("invalid resource location: %s", response.Header().Get("Location"))
 	}
 	var fields map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 7 {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 8 {
 		t.Fatalf("unexpected project DTO: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership"} {
+	for _, key := range []string{"id", "name", "repoUrl", "createdAt", "updatedAt", "settings", "ownership", "access"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing DTO field %s: %s", key, response.Body)
 		}
@@ -160,19 +112,19 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 		`{"name":{},"repoUrl":"https://github.com/example/repo"}`,
 		`{"repoUrl":"https://github.com/example/repo"}`,
 		`{"name":"ok"}`, `{"name":"ok","repoUrl":null}`, `{"name":"ok","repoUrl":1}`,
-		`{"name":" ","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"\u0000","repoUrl":"https://github.com/example/repo"}`,
-		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo"}`,
-		`{"name":"ok","repoUrl":"not-a-repository"}`,
-		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\"}",
-		`{"name":"` + strings.Repeat("x", maxJSONBody) + `","repoUrl":"https://github.com/example/repo"}`,
+		`{"name":" ","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"\u0000","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"ok","repoUrl":"not-a-repository","expectedUserId":"` + handler.principal.UserID + `"}`,
+		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\",\"expectedUserId\":\"" + handler.principal.UserID + "\"}",
+		`{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
 	} {
 		t.Run(string(body[:min(len(body), 80)]), func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
 		})
 	}
 	for _, contentType := range []string{"", "text/plain", "application/json; charset=iso-8859-1", "application/json; charset=", "application/json; charset=utf-8; charset=us-ascii"} {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(`{"name":"ok","repoUrl":"https://github.com/example/repo"}`))
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(jsonBody(t, api.CreateProjectRequest{Name: "ok", RepoURL: "https://github.com/example/repo", ExpectedUserID: handler.principal.UserID})))
 		authorizeResourceRequest(handler, request)
 		request.Header.Set("Content-Type", contentType)
 		request.Header.Set("X-Request-ID", "project-test")
@@ -189,12 +141,28 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 	}
 }
 
+func createPrivateProjectFixture(database *store.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
+	var project model.Project
+	completion, err := database.WriteProjectCreation(ctx, principal.UserID, func(dao store.ProjectCreationDAO) error {
+		var err error
+		project, _, err = coreproject.Create(ctx, dao, principal.UserID, id, coreproject.CreateProject{Name: name, RepoURL: repoURL, ExpectedUserID: principal.UserID})
+		return err
+	})
+	if err != nil {
+		return model.Project{}, err
+	}
+	if completion.Outcome != store.TransactionCommitted {
+		return model.Project{}, fmt.Errorf("project fixture not committed: %s", completion.Outcome)
+	}
+	return project, nil
+}
+
 func TestProjectHTTPPaginationWithTiedTimestamps(t *testing.T) {
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003"}
 	for _, id := range ids {
-		if _, err := database.CreatePrivateProject(context.Background(), handler.principal, id, "same time", "https://github.com/example/repo"); err != nil {
+		if _, err := createPrivateProjectFixture(database, context.Background(), handler.principal, id, "same time", "https://github.com/example/repo"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -259,7 +227,7 @@ func TestProjectHTTPScopedPagination(t *testing.T) {
 	ids := []string{"00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"}
 	var teamID string
 	for _, id := range ids {
-		project, err := database.CreatePrivateProject(ctx, handler.principal, id, "project", "https://github.com/example/repo")
+		project, err := createPrivateProjectFixture(database, ctx, handler.principal, id, "project", "https://github.com/example/repo")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -291,28 +259,28 @@ func TestProjectHTTPScopedPagination(t *testing.T) {
 
 func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T) {
 	h := membershipTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
-	h.handler = RequestLogging(logger, mux)
+	h.Auth.RegisterRoutes(mux)
+	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
-	admin, err := h.auth.identity.Authenticate(ctx, core.SessionCredential, h.admin.Value)
+	admin, err := h.Identity.Authenticate(ctx, model.SessionCredential, h.admin.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.NewProjects(h.database).Create(ctx, admin, service.CreateProject{Name: "Second shared", RepoURL: "https://example.com/second.git"})
+	second, err := projectservice.NewProjects(h.Database).Create(ctx, admin, coreproject.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.outsider), http.StatusOK)
 	member := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.member), http.StatusOK)
-	for index, project := range []core.Project{h.project, second} {
-		if _, err := h.database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
+	for index, project := range []model.Project{h.project, second} {
+		if _, err := h.Database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
 			t.Fatal(err)
 		}
 		for _, userID := range []string{h.memberID, other.ID} {
-			if _, err := h.database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, userID); err != nil {
+			if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, userID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -337,7 +305,7 @@ func TestProjectHTTPTeamScopeRefusesNonmembersAndExposesDatabaseFailure(t *testi
 	var logs bytes.Buffer
 	handler := projectTestHandler(t, database, &logs)
 	ctx := context.Background()
-	project, err := database.CreatePrivateProject(ctx, handler.principal, "00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo")
+	project, err := createPrivateProjectFixture(database, ctx, handler.principal, "00000000-0000-4000-8000-000000000189", "Externally shared", "https://example.com/repo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +348,7 @@ func TestProjectHTTPDatabaseFailuresAreVisibleAndSafe(t *testing.T) {
 	for _, request := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/v1/projects", ""},
 		{http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""},
-		{http.MethodPost, "/api/v1/projects", `{"name":"secret-body","repoUrl":"https://github.com/example/private-secret"}`},
+		{http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "secret-body", RepoURL: "https://github.com/example/private-secret", ExpectedUserID: handler.principal.UserID})},
 	} {
 		response := projectRequest(handler, request.method, request.path, request.body)
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
@@ -450,32 +418,32 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, err := range []error{
-		errors.Join(core.ErrNotFound, errors.New("private-database-secret")),
-		&service.Fault{Code: "unexpected", Message: "private-service-secret"},
+		errors.Join(model.ErrNotFound, errors.New("private-database-secret")),
+		&model.Fault{Code: "unexpected", Message: "private-service-secret"},
 	} {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		request.Header.Set("X-Request-ID", "project-test")
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-			writeError(w, request, logger, "project", "get", err)
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			httpx.WriteError(w, request, logger, "project", "get", err)
 		})).ServeHTTP(response, request)
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
 	}
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
-	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		writeError(w, request, logger, "project", "get", &service.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
+	httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		httpx.WriteError(w, request, logger, "project", "get", &model.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
 	})).ServeHTTP(response, request)
 	value := decodeResponse[api.ErrorResponse](t, response, http.StatusBadRequest)
 	if value.Error.Details == nil || len(value.Error.Details.TaskIDs) != 1 || value.Error.Details.TaskIDs[0] != "task-id" {
 		t.Fatalf("missing error details: %+v", value)
 	}
-	writeJSON(&failingResponseWriter{header: make(http.Header)}, request, logger, http.StatusOK, api.Project{})
+	httpx.WriteJSON(&failingResponseWriter{header: make(http.Header)}, request, logger, http.StatusOK, api.Project{})
 	ctx, cancel := context.WithCancel(request.Context())
 	cancel()
 	canceled := httptest.NewRecorder()
-	writeJSON(canceled, request.WithContext(ctx), logger, http.StatusOK, api.Project{})
+	httpx.WriteJSON(canceled, request.WithContext(ctx), logger, http.StatusOK, api.Project{})
 	if canceled.Body.Len() != 0 || len(canceled.Header()) != 0 {
 		t.Fatalf("already canceled request wrote a response: %s %+v", canceled.Body, canceled.Header())
 	}
@@ -487,7 +455,7 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
-	created := projectRequest(handler, http.MethodPost, "/api/v1/projects", `{"name":"private-health-project","repoUrl":"https://example.test/private.git"}`)
+	created := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "private-health-project", RepoURL: "https://example.test/private.git", ExpectedUserID: handler.principal.UserID}))
 	decodeResponse[api.Project](t, created, http.StatusCreated)
 	request := func(method, path string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -517,4 +485,50 @@ func TestPublicHealthAndReadinessUseLiveDatabase(t *testing.T) {
 		t.Fatalf("readiness failure exposed data or cached state: %s %+v", response.Body, response.Header())
 	}
 	decodeResponse[map[string]string](t, request(http.MethodGet, "/healthz"), http.StatusOK)
+}
+
+func TestProjectCreateIdentityTargetAndAccess(t *testing.T) {
+	database := projectTestStore(t)
+	handler := projectTestHandler(t, database, io.Discard)
+	ctx := context.Background()
+	actor := handler.principal
+	team, err := teamservice.NewTeams(database).Create(ctx, actor, coreteam.CreateTeam{Name: "Team", ExpectedUserID: actor.UserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := api.CreateProjectRequest{Name: " 原文 ", RepoURL: "git@example.com:Org/Repo.git", TeamID: &team.ID, ExpectedUserID: actor.UserID}
+	response := projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input))
+	doc := decodeResponse[api.ProjectDocument](t, response, http.StatusCreated)
+	if doc.Name != input.Name || doc.RepoURL != input.RepoURL || doc.Ownership.TeamID != team.ID || doc.Access.Ownership != doc.Ownership || doc.Access.ProjectID != doc.ID || doc.Access.DirectGrant == nil || doc.Access.DirectGrant.UserID != actor.UserID || doc.Access.DirectGrant.Role != "admin" || doc.Access.EffectiveRole != "admin" {
+		t.Fatalf("created document: %+v", doc)
+	}
+	snapshot := func() string {
+		var state string
+		err := database.Pool.QueryRow(ctx, `SELECT jsonb_build_object('teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),'members',(SELECT jsonb_agg(to_jsonb(m) ORDER BY team_id,user_id) FROM team_members m),'projects',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM projects p),'ownership',(SELECT jsonb_agg(to_jsonb(o) ORDER BY project_id) FROM project_ownership o),'grants',(SELECT jsonb_agg(to_jsonb(g) ORDER BY project_id,user_id) FROM project_grants g))::text`).Scan(&state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := snapshot()
+	input.ExpectedUserID = "00000000-0000-4000-8000-000000000001"
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusConflict, "identity_mismatch")
+	for _, body := range []string{
+		`{"name":"x","repoUrl":"host:repo"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":null}`,
+		`{"name":"\ud800","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `"}`,
+		`{"name":"x","repoUrl":"host:\udfff","expectedUserId":"` + actor.UserID + `"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"bad"}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":null}`,
+		`{"name":"x","repoUrl":"host:repo","expectedUserId":"` + actor.UserID + `","teamId":"bad"}`,
+	} {
+		assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
+	}
+	input.ExpectedUserID = actor.UserID
+	missing := "00000000-0000-4000-8000-000000000002"
+	input.TeamID = &missing
+	assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", jsonBody(t, input)), http.StatusNotFound, "not_found")
+	if after := snapshot(); before != after {
+		t.Fatal("rejected writes changed domain rows or versions")
+	}
 }

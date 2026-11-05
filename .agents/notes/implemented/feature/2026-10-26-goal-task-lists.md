@@ -35,16 +35,24 @@ The [status ordering decision](../bug-fix/2026-10-28-project-status-order.md)
 applies the same priority to top-level Goals using their complete aggregate
 status, with exact newest-first ties. Other starting tasks and merged descendants are included;
 chain-external context remains in the graph. The list retains `done`, `in_progress` and `todo` children, including
-completed tasks. The chain-level Show all control changes whole-Goal visibility; it never filters
-child rows by status or completion date. The [recent browsing and pagination
-decision](2026-10-27-recent-task-pages.md) owns the shared local-calendar default
-while the compact-list decision sets 15-Goal pages. Expanded children remain complete and do not consume separate
-parent-page entries; standalone rows apply the same recent policy individually. Child rows show
+completed tasks. The [status filter decision](2026-11-05-task-list-status-filter.md)
+retains complete children when a member matches the combined status and assignee
+conditions. The [recent browsing and pagination decision](2026-10-27-recent-task-pages.md)
+retains the local-calendar Overview policy while the compact-list decision sets
+15-Goal pages. Expanded children remain complete and do not consume separate
+parent-page entries. Child rows show
 individual task status, applicable ready or blocked markers and known execution
 duration immediately after the title. They open the existing task-detail dialog,
 and the list heading offers the representative task's own details. Aggregate
 progress still counts that representative, so the child count is one less than
 the aggregate total.
+
+Each child row also shows its own automatic execution permission and the machine
+recorded in its worker claim. A released or completed claim is labeled as a
+recorded execution, and an absent claim is explicit. Permission does not imply a
+claim, and the recorded name does not assert machine availability. The authorized
+project snapshot supplies this information without per-row requests; invalid
+claims remain errors rather than absent records.
 
 Each memoized child row consumes the existing project execution clock. Running
 intervals advance from the server sample and monotonic elapsed time; completed
@@ -101,7 +109,17 @@ ordinary roots. Title matching would reclassify existing tasks, while following
 only the representative's descendants would omit other roots. Reusing the
 complete component preserves the established membership contract.
 
+**Use Session summaries or per-row detail reads for machine names.** Session
+summaries cover only some active Web claims, so they omit retained and Herdr
+records. Per-row reads add requests and independent consistency boundaries where
+the authorized project snapshot already contains the claims.
+
 ## Consequences
+
+The full project snapshot supplies child execution metadata independently of the
+graph projection. This avoids per-row reads and covers retained claims as well as
+active claims; the list does not infer a machine from a session, assignee,
+platform or permission.
 
 Routine task browsing and dependency inspection have independent controls and
 state. Opening a graph preserves the expanded list and its page position.

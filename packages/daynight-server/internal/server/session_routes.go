@@ -13,11 +13,15 @@ import (
 	"sync"
 	"time"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/coder/websocket"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
 )
@@ -28,9 +32,10 @@ const relayMaxConnections = 1024
 
 type sessionRoutes struct {
 	service         *sessionrelay.Service
-	auth            *Authentication
+	auth            *authhttp.Authentication
 	logger          *slog.Logger
 	instance        string
+	pingInterval    time.Duration
 	mutex           sync.Mutex
 	closing         bool
 	reserved        int
@@ -45,18 +50,19 @@ type sessionApplication struct {
 
 func (a *sessionApplication) Shutdown(ctx context.Context) error { return a.relay.shutdown(ctx) }
 
-func newSessionRoutes(s *sessionrelay.Service, auth *Authentication, logger *slog.Logger) *sessionRoutes {
+func newSessionRoutes(s *sessionrelay.Service, auth *authhttp.Authentication, logger *slog.Logger) *sessionRoutes {
 	if s != nil && auth != nil {
-		s.Origin = auth.origin
+		s.Origin = auth.Origin()
 	}
-	return &sessionRoutes{service: s, auth: auth, logger: logger, instance: uuid.NewString(), connections: make(map[*websocket.Conn]context.CancelFunc)}
+	return &sessionRoutes{service: s, auth: auth, logger: logger, instance: uuid.NewString(), pingInterval: 10 * time.Second, connections: make(map[*websocket.Conn]context.CancelFunc)}
 }
 func (h *sessionRoutes) register(mux *http.ServeMux) {
 	h.registerTerminalRoutes(mux)
 	h.registerTestRoutes(mux)
+	h.registerBotRuntimeRoutes(mux)
 	h.registerArchiveRoutes(mux)
-	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
-		if _, err := queryValues(r); err != nil {
+	mux.HandleFunc("GET /api/v1/session-capabilities", h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
+		if _, err := httpx.QueryValues(r); err != nil {
 			h.failure(w, r, err)
 			return
 		}
@@ -66,17 +72,17 @@ func (h *sessionRoutes) register(mux *http.ServeMux) {
 			return
 		}
 		if protocol == v2.Protocol {
-			writeJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": v2.Protocol, "schemaVersion": 2, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "backends": []string{"herdr"}, "recordingResponsibilityVersion": 1, "controlDispatchVersion": 1, "workerCapabilitiesRequired": true})
+			httpx.WriteJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": v2.Protocol, "schemaVersion": 2, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "backends": []string{"herdr"}, "recordingResponsibilityVersion": 1, "controlDispatchVersion": 1, "workerCapabilitiesRequired": true})
 			return
 		}
-		writeJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": sp.Protocol, "schemaVersion": 1, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}})
+		httpx.WriteJSON(w, r, h.logger, http.StatusOK, map[string]any{"protocol": sp.Protocol, "schemaVersion": 1, "projectionVersion": 1, "providers": []string{"codex", "claude", "copilot"}, "startupReportVersion": 1})
 	}))
-	capabilityMethod := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) {
-		methodNotAllowed(h.logger, "GET")(w, r)
+	capabilityMethod := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
+		httpx.MethodNotAllowed(h.logger, "GET")(w, r)
 	})
 	mux.HandleFunc("HEAD /api/v1/session-capabilities", capabilityMethod)
 	mux.HandleFunc("/api/v1/session-capabilities", capabilityMethod)
-	handlers := map[string]AuthenticatedHandler{
+	handlers := map[string]httpx.AuthenticatedHandler{
 		"POST " + sessionBase:                                                h.registerSession,
 		"GET " + sessionBase + "/current":                                    h.current,
 		"POST " + sessionBase + "/{sessionId}/controller-grant":              h.grant,
@@ -90,23 +96,23 @@ func (h *sessionRoutes) register(mux *http.ServeMux) {
 		mux.HandleFunc(route, h.auth.Require(h.parameters(handler)))
 	}
 	for path, methods := range map[string]string{sessionBase: "GET, POST", sessionBase + "/current": "GET", sessionBase + "/{sessionId}/controller-grant": "POST", sessionBase + "/{sessionId}/timeline": "GET", sessionBase + "/{sessionId}/commands": "POST", sessionBase + "/{sessionId}/operations/{operationId}": "GET", sessionBase + "/{sessionId}/resources/{resourceId}/content": "GET", sessionBase + "/{sessionId}/channel": "GET"} {
-		fallback := methodNotAllowed(h.logger, methods)
-		mux.HandleFunc(path, h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) { fallback(w, r) }))
+		fallback := httpx.MethodNotAllowed(h.logger, methods)
+		mux.HandleFunc(path, h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) { fallback(w, r) }))
 		if methods == "GET" {
-			mux.HandleFunc("HEAD "+path, h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ core.Principal) { fallback(w, r) }))
+			mux.HandleFunc("HEAD "+path, h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) { fallback(w, r) }))
 		}
 	}
 	mux.HandleFunc("GET /api/v1/controller-channel", h.controllerChannel)
-	mux.HandleFunc("HEAD /api/v1/controller-channel", methodNotAllowed(h.logger, "GET"))
-	mux.HandleFunc("/api/v1/controller-channel", methodNotAllowed(h.logger, "GET"))
+	mux.HandleFunc("HEAD /api/v1/controller-channel", httpx.MethodNotAllowed(h.logger, "GET"))
+	mux.HandleFunc("/api/v1/controller-channel", httpx.MethodNotAllowed(h.logger, "GET"))
 	mux.HandleFunc("PUT /api/v1/controller-resources/{resourceId}", h.putResource)
-	mux.HandleFunc("/api/v1/controller-resources/{resourceId}", methodNotAllowed(h.logger, "PUT"))
+	mux.HandleFunc("/api/v1/controller-resources/{resourceId}", httpx.MethodNotAllowed(h.logger, "PUT"))
 }
-func (h *sessionRoutes) parameters(next AuthenticatedHandler) AuthenticatedHandler {
-	return func(w http.ResponseWriter, r *http.Request, p core.Principal) {
-		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId", "evidenceId"} {
+func (h *sessionRoutes) parameters(next httpx.AuthenticatedHandler) httpx.AuthenticatedHandler {
+	return func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		for _, name := range []string{"projectId", "taskId", "sessionId", "operationId", "resourceId", "evidenceId", "workerId", "botId"} {
 			if raw := r.PathValue(name); raw != "" {
-				id, err := service.CanonicalID(raw)
+				id, err := model.CanonicalID(raw)
 				if err != nil {
 					h.failure(w, r, err)
 					return
@@ -127,7 +133,7 @@ func (h *sessionRoutes) parameters(next AuthenticatedHandler) AuthenticatedHandl
 	}
 }
 func (h *sessionRoutes) failure(w http.ResponseWriter, r *http.Request, err error) {
-	writeError(w, r, h.logger, "session", "relay", err)
+	httpx.WriteError(w, r, h.logger, "session", "relay", err)
 }
 func (h *sessionRoutes) result(w http.ResponseWriter, r *http.Request, status int, value any, err error) {
 	if err != nil {
@@ -145,28 +151,28 @@ func (h *sessionRoutes) result(w http.ResponseWriter, r *http.Request, status in
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, writeErr := w.Write(data); writeErr != nil {
-		LogFailure(h.logger, r.Context(), "session", "response", writeErr)
+		httpx.LogFailure(h.logger, r.Context(), "session", "response", writeErr)
 	}
 }
 func relayBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		return nil, err
 	}
 	kind, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || kind != "application/json" || parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8") {
-		return nil, invalidInput("Content-Type must be application/json with UTF-8 encoding.")
+		return nil, httpx.InvalidInput("Content-Type must be application/json with UTF-8 encoding.")
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, sp.MaxFrameBytes))
 	if err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {
-			return nil, &service.Fault{Code: "payload_too_large", Message: "Session request exceeds the 2 MiB limit."}
+			return nil, &model.Fault{Code: "payload_too_large", Message: "Session request exceeds the 2 MiB limit."}
 		}
-		return nil, invalidInput("Unable to read session request.")
+		return nil, httpx.InvalidInput("Unable to read session request.")
 	}
 	return body, nil
 }
-func (h *sessionRoutes) registerSession(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) registerSession(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)
@@ -174,21 +180,25 @@ func (h *sessionRoutes) registerSession(w http.ResponseWriter, r *http.Request, 
 	}
 	input, err := sp.DecodeRegistration(body)
 	if err != nil {
-		h.failure(w, r, invalidInput("Invalid session registration."))
+		h.failure(w, r, httpx.InvalidInput("Invalid session registration."))
 		return
 	}
 	snapshot, err := h.service.Register(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), input)
 	h.result(w, r, http.StatusOK, map[string]any{"session": snapshot}, err)
 }
-func (h *sessionRoutes) current(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	if _, err := queryValues(r); err != nil {
+func (h *sessionRoutes) current(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if _, err := httpx.QueryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
 	}
-	result, err := h.service.Current(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"))
+	read := h.service.Current
+	if r.Header.Get("X-Daynight-Startup-Version") == "1" {
+		read = h.service.CurrentWithStartup
+	}
+	result, err := read(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"))
 	h.result(w, r, http.StatusOK, result, err)
 }
-func (h *sessionRoutes) grant(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) grant(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)
@@ -199,14 +209,14 @@ func (h *sessionRoutes) grant(w http.ResponseWriter, r *http.Request, p core.Pri
 		input, err = sp.DecodeTestGrant(body)
 	}
 	if err != nil {
-		h.failure(w, r, invalidInput("Invalid controller grant request."))
+		h.failure(w, r, httpx.InvalidInput("Invalid controller grant request."))
 		return
 	}
 	result, err := h.service.Grant(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), input)
 	h.result(w, r, http.StatusOK, result, err)
 }
-func (h *sessionRoutes) timeline(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	values, err := queryValues(r, "direction", "cursor", "limit")
+func (h *sessionRoutes) timeline(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	values, err := httpx.QueryValues(r, "direction", "cursor", "limit")
 	if err != nil {
 		h.failure(w, r, err)
 		return
@@ -220,13 +230,13 @@ func (h *sessionRoutes) timeline(w http.ResponseWriter, r *http.Request, p core.
 		limit, err = strconv.Atoi(raw)
 	}
 	if err != nil || limit < 1 || limit > 200 || (direction != "tail" && direction != "before" && direction != "after") || (direction != "tail" && values.Get("cursor") == "") || (direction == "tail" && values.Get("cursor") != "") {
-		h.failure(w, r, invalidInput("Invalid session timeline direction, cursor, or limit."))
+		h.failure(w, r, httpx.InvalidInput("Invalid session timeline direction, cursor, or limit."))
 		return
 	}
 	result, err := h.service.Timeline(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), direction, values.Get("cursor"), limit)
 	h.result(w, r, http.StatusOK, result, err)
 }
-func (h *sessionRoutes) submit(w http.ResponseWriter, r *http.Request, p core.Principal) {
+func (h *sessionRoutes) submit(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	body, err := relayBody(w, r)
 	if err != nil {
 		h.failure(w, r, err)
@@ -234,7 +244,7 @@ func (h *sessionRoutes) submit(w http.ResponseWriter, r *http.Request, p core.Pr
 	}
 	command, err := sp.DecodeCommand(body)
 	if err != nil {
-		h.failure(w, r, invalidInput("Invalid session command."))
+		h.failure(w, r, httpx.InvalidInput("Invalid session command."))
 		return
 	}
 	operation, err := h.service.Submit(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), command)
@@ -247,16 +257,16 @@ func (h *sessionRoutes) submit(w http.ResponseWriter, r *http.Request, p core.Pr
 	}
 	h.result(w, r, http.StatusAccepted, map[string]any{"operation": operation, "operationUrl": location}, err)
 }
-func (h *sessionRoutes) operation(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	if _, err := queryValues(r); err != nil {
+func (h *sessionRoutes) operation(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if _, err := httpx.QueryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
 	}
 	result, err := h.service.Operation(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), r.PathValue("operationId"))
 	h.result(w, r, http.StatusOK, map[string]any{"operation": result}, err)
 }
-func (h *sessionRoutes) resource(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	if _, err := queryValues(r); err != nil {
+func (h *sessionRoutes) resource(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if _, err := httpx.QueryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
 	}
@@ -275,17 +285,17 @@ func (h *sessionRoutes) resource(w http.ResponseWriter, r *http.Request, p core.
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": resource.Name}))
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	if _, err = w.Write(data); err != nil {
-		LogFailure(h.logger, r.Context(), "session", "resource", err)
+		httpx.LogFailure(h.logger, r.Context(), "session", "resource", err)
 	}
 }
 func controllerToken(r *http.Request) (string, error) {
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 {
-		return "", authFailure()
+		return "", authhttp.Failure()
 	}
 	parts := strings.Fields(values[0])
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || !strings.HasPrefix(parts[1], "dncontroller_") {
-		return "", authFailure()
+		return "", authhttp.Failure()
 	}
 	return parts[1], nil
 }
@@ -306,32 +316,32 @@ func (h *sessionRoutes) putResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err = queryValues(r); err != nil {
+	if _, err = httpx.QueryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
 	}
-	id, err := service.CanonicalID(r.PathValue("resourceId"))
+	id, err := model.CanonicalID(r.PathValue("resourceId"))
 	if err != nil {
 		h.failure(w, r, err)
 		return
 	}
 	epochs := r.Header.Values("Daynight-Connection-Epoch")
 	if len(epochs) != 1 {
-		h.failure(w, r, invalidInput("A controller connection epoch is required."))
+		h.failure(w, r, httpx.InvalidInput("A controller connection epoch is required."))
 		return
 	}
 	epoch, err := strconv.ParseInt(epochs[0], 10, 64)
 	if err != nil || epoch < 1 || strconv.FormatInt(epoch, 10) != epochs[0] {
-		h.failure(w, r, invalidInput("Invalid controller connection epoch."))
+		h.failure(w, r, httpx.InvalidInput("Invalid controller connection epoch."))
 		return
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, sp.MaxResourceBytes))
 	if err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {
-			h.failure(w, r, &service.Fault{Code: "payload_too_large", Message: "Session resources are limited to 8 MiB."})
+			h.failure(w, r, &model.Fault{Code: "payload_too_large", Message: "Session resources are limited to 8 MiB."})
 		} else {
-			h.failure(w, r, invalidInput("Unable to read session resource."))
+			h.failure(w, r, httpx.InvalidInput("Unable to read session resource."))
 		}
 		return
 	}
@@ -341,8 +351,8 @@ func (h *sessionRoutes) putResource(w http.ResponseWriter, r *http.Request) {
 func (h *sessionRoutes) origin(r *http.Request, cookie bool) error {
 	origins := r.Header.Values("Origin")
 	if cookie || len(origins) > 0 {
-		if len(origins) != 1 || origins[0] != h.auth.origin {
-			return &service.Fault{Code: "forbidden", Message: "Session channels require the exact main-site Origin."}
+		if len(origins) != 1 || origins[0] != h.auth.Origin() {
+			return &model.Fault{Code: "forbidden", Message: "Session channels require the exact main-site Origin."}
 		}
 	}
 	return nil
@@ -351,7 +361,7 @@ func (h *sessionRoutes) accept(w http.ResponseWriter, r *http.Request) (*websock
 	h.mutex.Lock()
 	if h.closing || h.reserved >= relayMaxConnections {
 		h.mutex.Unlock()
-		return nil, nil, nil, &service.Fault{Code: "rate_limited", Message: "Session channel capacity is unavailable."}
+		return nil, nil, nil, &model.Fault{Code: "rate_limited", Message: "Session channel capacity is unavailable."}
 	}
 	h.reserved++
 	h.active.Add(1)
@@ -425,7 +435,7 @@ func relayWrite(ctx context.Context, conn *websocket.Conn, value any) error {
 		limit = 4 * 1024 * 1024
 	}
 	if len(data) > limit {
-		return &service.Fault{Code: "payload_too_large", Message: "Session frame exceeds the negotiated protocol limit."}
+		return &model.Fault{Code: "payload_too_large", Message: "Session frame exceeds the negotiated protocol limit."}
 	}
 	write, cancel := context.WithTimeout(ctx, relayWriteTimeout)
 	defer cancel()
@@ -439,11 +449,11 @@ func relayRead(ctx context.Context, conn *websocket.Conn, timeout time.Duration)
 		return sp.ControllerMessage{}, err
 	}
 	if kind != websocket.MessageText {
-		return sp.ControllerMessage{}, invalidInput("Controller messages must be JSON text.")
+		return sp.ControllerMessage{}, httpx.InvalidInput("Controller messages must be JSON text.")
 	}
 	value, err := sp.DecodeController(data)
 	if err != nil {
-		return sp.ControllerMessage{}, invalidInput("Invalid controller message.")
+		return sp.ControllerMessage{}, httpx.InvalidInput("Invalid controller message.")
 	}
 	return value, nil
 }
@@ -451,9 +461,9 @@ func (h *sessionRoutes) channelFailure(ctx context.Context, conn *websocket.Conn
 	if ctx.Err() != nil {
 		return
 	}
-	LogFailure(h.logger, ctx, "session", "channel", err)
+	httpx.LogFailure(h.logger, ctx, "session", "channel", err)
 	code, message := "internal_error", "Session channel failed."
-	if fault, ok := knownFault(err); ok {
+	if fault, ok := httpx.KnownFault(err); ok {
 		code, message = fault.Code, fault.Message
 	}
 	_ = relayWrite(ctx, conn, sp.BindingFields(fence.Fence, map[string]any{"type": "error", "protocol": sp.Protocol, "sessionId": fence.SessionID, "claimId": fence.ClaimID, "executionGeneration": fence.ExecutionGeneration, "connectionEpoch": fence.ConnectionEpoch, "code": code, "message": message}))
@@ -475,7 +485,7 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if _, err = queryValues(r); err != nil {
+	if _, err = httpx.QueryValues(r); err != nil {
 		h.failure(w, r, err)
 		return
 	}
@@ -489,7 +499,7 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 	}
 	conn, ctx, cleanup, err := h.accept(w, r)
 	if err != nil {
-		if fault, ok := knownFault(err); ok {
+		if fault, ok := httpx.KnownFault(err); ok {
 			h.failure(w, r, fault)
 		}
 		return
@@ -550,7 +560,7 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 				return
 			}
 			if input.message.Type == "hello" || input.message.ControllerFence != fence {
-				h.channelFailure(ctx, conn, fence, &service.Fault{Code: "session_conflict", Message: "Controller connection fence changed."})
+				h.channelFailure(ctx, conn, fence, &model.Fault{Code: "session_conflict", Message: "Controller connection fence changed."})
 				return
 			}
 			response, err := h.service.Handle(ctx, input.message)
@@ -577,12 +587,12 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 		}
 	}
 }
-func (h *sessionRoutes) browserChannel(w http.ResponseWriter, r *http.Request, p core.Principal) {
-	if err := h.origin(r, p.Kind == core.SessionCredential); err != nil {
+func (h *sessionRoutes) browserChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if err := h.origin(r, p.Kind == model.SessionCredential); err != nil {
 		h.failure(w, r, err)
 		return
 	}
-	values, err := queryValues(r, "after")
+	values, err := httpx.QueryValues(r, "after")
 	if err != nil {
 		h.failure(w, r, err)
 		return
@@ -591,7 +601,7 @@ func (h *sessionRoutes) browserChannel(w http.ResponseWriter, r *http.Request, p
 	snapshot, events, cursor, err := h.service.BrowserPoll(r.Context(), p, project, task, id, values.Get("after"))
 	reset := false
 	if err != nil {
-		var fault *service.Fault
+		var fault *model.Fault
 		if errors.As(err, &fault) && fault.Code == "reset_required" {
 			reset = true
 		} else {
@@ -601,7 +611,7 @@ func (h *sessionRoutes) browserChannel(w http.ResponseWriter, r *http.Request, p
 	}
 	conn, ctx, cleanup, err := h.accept(w, r)
 	if err != nil {
-		if fault, ok := knownFault(err); ok {
+		if fault, ok := httpx.KnownFault(err); ok {
 			h.failure(w, r, fault)
 		}
 		return
@@ -639,7 +649,7 @@ func (h *sessionRoutes) browserChannel(w http.ResponseWriter, r *http.Request, p
 	}
 	ticker := time.NewTicker(sessionrelay.PollInterval)
 	defer ticker.Stop()
-	ping := time.NewTicker(10 * time.Second)
+	ping := time.NewTicker(h.pingInterval)
 	defer ping.Stop()
 	for {
 		select {
@@ -655,7 +665,7 @@ func (h *sessionRoutes) browserChannel(w http.ResponseWriter, r *http.Request, p
 		case <-ticker.C:
 			next, batch, position, err := h.service.BrowserPoll(ctx, p, project, task, id, cursor)
 			if err != nil {
-				var fault *service.Fault
+				var fault *model.Fault
 				if errors.As(err, &fault) && fault.Code == "reset_required" {
 					_ = relayWrite(ctx, conn, map[string]any{"type": "reset_required", "protocol": sp.Protocol, "reason": fault.Message})
 				}

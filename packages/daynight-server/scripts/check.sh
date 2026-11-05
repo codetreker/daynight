@@ -19,7 +19,7 @@ cd -- "$DAYNIGHT_MODULE_ROOT"
 export COREPACK_HOME="$DAYNIGHT_MODULE_ROOT/.tmp/corepack"
 pnpm --dir "$DAYNIGHT_MODULE_ROOT/../.." web:build
 
-# Both local and CI runs use the checked-in coverage rules.
+# Coverage gates use the checked-in rules; the runner selects race instrumentation.
 unset COVERPROFILE MODULE_PREFIX PROJECT_NAME HTML_OUT THRESHOLD_FUNC \
   THRESHOLD_PACKAGE THRESHOLD_PRINT THRESHOLD_TOTAL UNCOVERED_LIMIT \
   EXCLUDE_PACKAGES SKIP_RESULT_PACKAGES EXCLUDE_FILES EXCLUDE_FUNCS \

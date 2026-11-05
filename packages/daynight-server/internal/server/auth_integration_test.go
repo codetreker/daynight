@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -85,7 +87,7 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 		t.Fatal(err)
 	}
 	requests := &identityCLIRequests{}
-	server.Config.Handler = RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	server.Config.Handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		observed := request.URL.Path == "/api/v1/projects"
 		bearer := strings.HasPrefix(request.Header.Get("Authorization"), "Bearer ")
 		if observed {
@@ -96,12 +98,12 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 				requests.anonymous.Add(1)
 			}
 		}
-		response := &responseRecorder{ResponseWriter: w}
+		response := &httpx.ResponseRecorder{ResponseWriter: w}
 		handler.ServeHTTP(response, request)
-		if observed && response.status == http.StatusUnauthorized {
+		if observed && response.Status == http.StatusUnauthorized {
 			requests.unauthorized.Add(1)
 		}
-		if observed && bearer && response.status >= 200 && response.status < 300 {
+		if observed && bearer && response.Status >= 200 && response.Status < 300 {
 			requests.authenticatedPAT.Add(1)
 		}
 	}))

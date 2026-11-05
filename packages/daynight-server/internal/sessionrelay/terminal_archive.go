@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -38,7 +38,7 @@ func terminalArchive(ctx context.Context, tx pgx.Tx, r *terminalRecord) (v2.Arch
 	}
 	return out, receipt, object, nil
 }
-func (s *Service) TerminalArchiveStatus(ctx context.Context, p core.Principal, project, taskID, id string) (v2.Message, error) {
+func (s *Service) TerminalArchiveStatus(ctx context.Context, p model.Principal, project, taskID, id string) (v2.Message, error) {
 	var out v2.Message
 	err := s.terminalAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
 		status, _, _, err := terminalArchive(ctx, tx, r)
@@ -47,7 +47,7 @@ func (s *Service) TerminalArchiveStatus(ctx context.Context, p core.Principal, p
 	})
 	return out, err
 }
-func (s *Service) TerminalReceipt(ctx context.Context, p core.Principal, project, taskID, id string) (v2.Message, error) {
+func (s *Service) TerminalReceipt(ctx context.Context, p model.Principal, project, taskID, id string) (v2.Message, error) {
 	var out v2.Message
 	err := s.terminalAccess(ctx, p, project, taskID, id, true, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
 		_, receipt, _, err := terminalArchive(ctx, tx, r)
@@ -170,7 +170,7 @@ func (s *Service) readTerminalObject(ctx context.Context, path string, hash stri
 
 // PutTerminalArchive reads the stored object back before publishing its immutable
 // receipt; forwarding or a successful upload alone does not establish integrity.
-func (s *Service) PutTerminalArchive(ctx context.Context, p core.Principal, project, taskID, id string, data []byte) (v2.Message, error) {
+func (s *Service) PutTerminalArchive(ctx context.Context, p model.Principal, project, taskID, id string, data []byte) (v2.Message, error) {
 	var out v2.Message
 	doc, err := v2.DecodeArchive(data)
 	if err != nil {
@@ -201,7 +201,10 @@ func (s *Service) PutTerminalArchive(ctx context.Context, p core.Principal, proj
 		if s.files == nil {
 			return fault("archive_pending", "Archive file storage is unavailable.")
 		}
-		path := id + "/" + hash + ".json"
+		path, err := archiveObjectPath(r.Owner.ProjectID, r.Owner.OwnerUserID, id, hash)
+		if err != nil {
+			return err
+		}
 		info, err := s.files.Put(ctx, archiveBucket, path, bytes.NewReader(data))
 		if err != nil {
 			return err
@@ -225,7 +228,7 @@ func (s *Service) PutTerminalArchive(ctx context.Context, p core.Principal, proj
 	})
 	return out, err
 }
-func (s *Service) UpdateTerminalArchive(ctx context.Context, p core.Principal, project, taskID, id string, m v2.Message) (v2.Message, error) {
+func (s *Service) UpdateTerminalArchive(ctx context.Context, p model.Principal, project, taskID, id string, m v2.Message) (v2.Message, error) {
 	var out v2.Message
 	if m.Type != "archive_status" && m.Type != "receipt" {
 		return out, fault("invalid_payload", "Expected archive status or unavailable receipt.")
@@ -308,7 +311,7 @@ func (s *Service) UpdateTerminalArchive(ctx context.Context, p core.Principal, p
 	})
 	return out, err
 }
-func (s *Service) TerminalArchiveContent(ctx context.Context, p core.Principal, project, taskID, id string) (json.RawMessage, error) {
+func (s *Service) TerminalArchiveContent(ctx context.Context, p model.Principal, project, taskID, id string) (json.RawMessage, error) {
 	var out json.RawMessage
 	err := s.terminalAccess(ctx, p, project, taskID, id, false, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
 		status, receipt, path, err := terminalArchive(ctx, tx, r)

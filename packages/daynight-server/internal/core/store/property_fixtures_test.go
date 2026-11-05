@@ -6,20 +6,21 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
-func fixtureTaskProperties(t *testing.T, worker *core.WorkerClaim) core.TaskProperties {
+func fixtureTaskProperties(t *testing.T, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	properties, err := taskproperties.WithWorker(core.TaskProperties{"pullRequests": json.RawMessage(`[]`)}, worker)
+	properties, err := taskprops.WithWorker(model.TaskProperties{"pullRequests": json.RawMessage(`[]`)}, worker)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return properties
 }
 
-func fixturePullRequests(t *testing.T, properties core.TaskProperties) []core.PullRequestProperty {
+func fixturePullRequests(t *testing.T, properties model.TaskProperties) []model.PullRequestProperty {
 	t.Helper()
 	values, err := taskproperties.PullRequests(properties)
 	if err != nil {
@@ -28,7 +29,7 @@ func fixturePullRequests(t *testing.T, properties core.TaskProperties) []core.Pu
 	return values
 }
 
-func fixtureWorker(t *testing.T, properties core.TaskProperties) *core.WorkerClaim {
+func fixtureWorker(t *testing.T, properties model.TaskProperties) *model.WorkerClaim {
 	t.Helper()
 	value, err := taskproperties.Worker(properties)
 	if err != nil {
@@ -47,7 +48,7 @@ func putTaskPropertyFixture(t *testing.T, database *Store, taskID, name string, 
 
 // Historical assertions normalize only the schema they own; runtime readers
 // accept neither a legacy column nor an explicit null execution property.
-func decodeHistoricalPropertiesFixture(data []byte) (core.TaskProperties, error) {
+func decodeHistoricalPropertiesFixture(data []byte) (model.TaskProperties, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, err

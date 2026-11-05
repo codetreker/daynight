@@ -9,7 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,22 +26,29 @@ func storeAssigneeUser(t *testing.T, database *Store, projectID string, number i
 	return id
 }
 
-func storeAssigneeRead(t *testing.T, database *Store, projectID string, ids []string) (core.TaskAssignees, error) {
+func storeAssigneeRead(t *testing.T, database *Store, projectID string, ids []string) (model.TaskAssignees, error) {
 	t.Helper()
-	var result core.TaskAssignees
-	err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	var result model.TaskAssignees
+	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+		var facts []model.TaskAssigneeFact
 		var err error
 		if ids == nil {
-			result, err = snapshot.TaskAssignees(context.Background(), projectID)
+			facts, err = snapshot.TaskDAO().TaskAssignees(context.Background(), projectID)
+			if err == nil {
+				result, err = projection.Catalogue(facts)
+			}
 		} else {
-			result, err = snapshot.ResolveTaskAssignees(context.Background(), projectID, ids)
+			facts, err = snapshot.TaskDAO().ResolveTaskAssignees(context.Background(), projectID, ids)
+			if err == nil {
+				result, err = projection.ResolveAssignees(ids, facts)
+			}
 		}
 		return err
 	})
 	return result, err
 }
 
-func assertStoreAssignees(t *testing.T, result core.TaskAssignees, expected map[string]bool, unresolved []string) {
+func assertStoreAssignees(t *testing.T, result model.TaskAssignees, expected map[string]bool, unresolved []string) {
 	t.Helper()
 	if result.Items == nil || result.UnresolvedUserIDs == nil || len(result.Items) != len(expected) {
 		t.Fatalf("assignee result shape: %#v want %v", result, expected)
@@ -74,11 +82,11 @@ func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
 	for _, seed := range []struct {
 		projectID, userID string
 		number            int
-		status            core.TaskStatus
+		status            model.TaskStatus
 	}{
-		{project.ID, named, 11, core.TaskTodo}, {project.ID, former, 12, core.TaskDone},
-		{project.ID, former, 13, core.TaskInProgress}, {project.ID, deleted, 14, core.TaskTodo},
-		{other.ID, foreign, 15, core.TaskTodo},
+		{project.ID, named, 11, model.TaskTodo}, {project.ID, former, 12, model.TaskDone},
+		{project.ID, former, 13, model.TaskInProgress}, {project.ID, deleted, 14, model.TaskTodo},
+		{other.ID, foreign, 15, model.TaskTodo},
 	} {
 		queryTask(t, database, seed.projectID, seed.number, seed.status)
 		mustQueryExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, queryID(seed.number), seed.userID)
@@ -98,7 +106,7 @@ func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertStoreAssignees(t, catalogue, map[string]bool{ownerID: true, current: true, named: true, former: false}, nil)
-	people := make(map[string]core.TaskAssignee, len(catalogue.Items))
+	people := make(map[string]model.TaskAssignee, len(catalogue.Items))
 	for _, person := range catalogue.Items {
 		people[person.UserID] = person
 	}
@@ -124,13 +132,13 @@ func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
 
 func TestTaskAssigneeProfileRequiresMatchingIdentity(t *testing.T) {
 	id, other := queryID(100), queryID(200)
-	person, err := taskAssigneeProfile(id, &id, nil, nil, false)
+	person, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: id, ProfileID: &id})
 	if err != nil || person.UserID != id || person.Name != nil || person.AvatarURL != nil || person.HasProjectAccess {
 		t.Fatalf("valid nullable profile rejected: %#v %v", person, err)
 	}
 	for _, profileID := range []*string{nil, &other} {
-		person, err := taskAssigneeProfile(id, profileID, nil, nil, true)
-		if err == nil || !reflect.DeepEqual(person, core.TaskAssignee{}) {
+		person, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: id, ProfileID: profileID, HasProjectAccess: true})
+		if err == nil || !reflect.DeepEqual(person, model.TaskAssignee{}) {
 			t.Fatal("missing or different person's profile became a qualified identity")
 		}
 	}
@@ -149,17 +157,17 @@ func TestTaskAssigneeContentVersionDistinguishesPublicProfileFacts(t *testing.T)
 	}
 	versions := make(map[string]bool, len(profiles))
 	for _, profile := range profiles {
-		version := taskAssigneeContentVersion(profile.userID, profile.name, profile.avatar)
+		version := projection.AssigneeContentVersion(profile.userID, profile.name, profile.avatar)
 		decoded, err := hex.DecodeString(version)
 		if err != nil || len(decoded) != 32 || version != strings.ToLower(version) || versions[version] {
 			t.Fatalf("distinct public profile facts produced an invalid or repeated version: %q %v", version, err)
 		}
 		versions[version] = true
-		member, err := taskAssigneeProfile(profile.userID, &profile.userID, profile.name, profile.avatar, true)
+		member, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: profile.userID, ProfileID: &profile.userID, Name: profile.name, AvatarURL: profile.avatar, HasProjectAccess: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		former, err := taskAssigneeProfile(profile.userID, &profile.userID, profile.name, profile.avatar, false)
+		former, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: profile.userID, ProfileID: &profile.userID, Name: profile.name, AvatarURL: profile.avatar})
 		if err != nil || member.Version != version || former.Version != version {
 			t.Fatalf("project access changed the content version: %#v %#v %v", member, former, err)
 		}
@@ -181,7 +189,7 @@ func BenchmarkTaskAssigneeContentVersion(b *testing.B) {
 				b.SetBytes(int64(len(*test.avatar)))
 			}
 			for b.Loop() {
-				taskAssigneeContentVersion("00000000-0000-4000-8000-000000000100", nil, test.avatar)
+				projection.AssigneeContentVersion("00000000-0000-4000-8000-000000000100", nil, test.avatar)
 			}
 		})
 	}
@@ -194,7 +202,7 @@ func TestTaskAssigneeStoreRejectsMissingQualifiedProfiles(t *testing.T) {
 		storeAssigneeUser(t, database, project.ID, 101, true)
 		missing := storeAssigneeUser(t, database, project.ID, 102, true)
 		if retained {
-			queryTask(t, database, project.ID, 11, core.TaskDone)
+			queryTask(t, database, project.ID, 11, model.TaskDone)
 			mustQueryExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, queryID(11), missing)
 			mustQueryExec(t, database, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, project.ID, missing)
 		}
@@ -206,8 +214,7 @@ func TestTaskAssigneeStoreRejectsMissingQualifiedProfiles(t *testing.T) {
 		assertStoreAssignees(t, resolved, map[string]bool{queryID(101): true}, nil)
 		for _, ids := range [][]string{nil, {queryID(101), missing}} {
 			result, err := storeAssigneeRead(t, database, project.ID, ids)
-			var failure *Error
-			if !errors.As(err, &failure) || errors.Is(err, core.ErrNotFound) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
+			if err == nil || errors.Is(err, model.ErrNotFound) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
 				t.Fatalf("qualified missing profile became partial/unresolved: %#v %v", result, err)
 			}
 		}
@@ -280,19 +287,19 @@ func TestTaskAssigneeStoreQueryCancellation(t *testing.T) {
 			t.Fatal(err)
 		}
 		traced := &Store{Pool: pool}
-		var result core.TaskAssignees
-		err = traced.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		var result []model.TaskAssigneeFact
+		err = traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
 			if resolve {
-				result, err = snapshot.ResolveTaskAssignees(ctx, project.ID, []string{queryID(101)})
+				result, err = snapshot.TaskDAO().ResolveTaskAssignees(ctx, project.ID, []string{queryID(101)})
 			} else {
-				result, err = snapshot.TaskAssignees(ctx, project.ID)
+				result, err = snapshot.TaskDAO().TaskAssignees(ctx, project.ID)
 			}
 			return err
 		})
 		cancel()
 		pool.Close()
-		if !errors.Is(err, context.Canceled) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
+		if !errors.Is(err, context.Canceled) || len(result) != 0 {
 			t.Fatalf("directory cancellation lost cause or returned data: %#v %v", result, err)
 		}
 	}
@@ -301,21 +308,21 @@ func TestTaskAssigneeStoreQueryCancellation(t *testing.T) {
 func TestTaskAssignmentStoreFiltersAndInvalidSelectors(t *testing.T) {
 	database := isolatedStore(t)
 	project := queryProject(t, database, 1)
-	first := queryTask(t, database, project.ID, 11, core.TaskTodo)
-	second := queryTask(t, database, project.ID, 12, core.TaskTodo)
-	queryTask(t, database, project.ID, 13, core.TaskTodo)
+	first := queryTask(t, database, project.ID, 11, model.TaskTodo)
+	second := queryTask(t, database, project.ID, 12, model.TaskTodo)
+	queryTask(t, database, project.ID, 13, model.TaskTodo)
 	userID := queryID(101)
 	mustQueryExec(t, database, `UPDATE tasks SET assigned_to=$2 WHERE id=$1`, second.ID, userID)
 	for _, test := range []struct {
-		filter core.TaskAssignmentFilter
+		filter model.TaskAssignmentFilter
 		want   []string
 	}{
-		{core.TaskAssignmentFilter{}, []string{first.ID, second.ID, queryID(13)}},
-		{core.TaskAssignmentFilter{Mode: core.TaskAssignmentUnassigned}, []string{first.ID, queryID(13)}},
-		{core.TaskAssignmentFilter{Mode: core.TaskAssignmentUser, UserID: userID}, []string{second.ID}},
+		{model.TaskAssignmentFilter{}, []string{first.ID, second.ID, queryID(13)}},
+		{model.TaskAssignmentFilter{Mode: model.TaskAssignmentUnassigned}, []string{first.ID, queryID(13)}},
+		{model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: userID}, []string{second.ID}},
 	} {
-		if err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-			page, err := snapshot.Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: test.filter})
+		if err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+			page, err := snapshot.TaskDAO().Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: test.filter})
 			var ids []string
 			for _, item := range page.Items {
 				ids = append(ids, item.ID)
@@ -328,9 +335,9 @@ func TestTaskAssignmentStoreFiltersAndInvalidSelectors(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, invalid := range []core.TaskAssignmentFilter{{Mode: core.TaskAssignmentAll, UserID: userID}, {Mode: core.TaskAssignmentUnassigned, UserID: userID}, {Mode: "unknown"}} {
-		err := database.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
-			page, err := snapshot.Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: invalid})
+	for _, invalid := range []model.TaskAssignmentFilter{{Mode: model.TaskAssignmentAll, UserID: userID}, {Mode: model.TaskAssignmentUnassigned, UserID: userID}, {Mode: "unknown"}} {
+		err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+			page, err := snapshot.TaskDAO().Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}, AssignedTo: invalid})
 			if len(page.Items) != 0 {
 				t.Fatal("invalid selector returned an unfiltered page")
 			}

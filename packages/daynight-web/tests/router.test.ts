@@ -146,10 +146,31 @@ describe("explicit login destinations", () => {
 
   it("rejects duplicate destinations and retains the invitation lifetime only for its effective destination", () => {
     expect(parseLoginReturnPath("?returnPath=%2Fprojects&returnPath=%2Finvitations")).toBeNull();
+    expect(parseAuthRoute("/team-invitations")).toEqual({ kind: "teamInvitations" });
+    expect(isLoginReturnPath("/team-invitations")).toBe(true);
+    expect(invitationLocation("/team-invitations", "")).toBe(true);
+    expect(invitationLocation("/login", "?returnPath=%2Fteam-invitations")).toBe(true);
     expect(invitationLocation("/invitations", "")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Finvitations&authError=login_failed")).toBe(true);
     expect(invitationLocation("/login", "?returnPath=%2Fprojects")).toBe(false);
     expect(invitationLocation("/login", "?returnPath=//elsewhere")).toBe(false);
     expect(invitationLocation("/projects", "?returnPath=%2Finvitations")).toBe(false);
+  });
+});
+
+describe("Team workspace routes", () => {
+  it("parses Team and shared paths and admits them as login destinations", () => {
+    expect(parseAuthRoute(`/teams/${projectId.toUpperCase()}`)).toEqual({ kind: "team", teamId: projectId });
+    expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}`)).toEqual({ kind: "team", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
+    expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
+    expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
+    expect(parseAuthRoute("/shared-projects")).toEqual({ kind: "sharedProjects" });
+    for (const path of [`/teams/${projectId}`, `/teams/${projectId}/settings`, `/teams/${projectId}/members`, "/shared-projects"]) expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: path })}`)).toBe(path);
+    for (const path of ["/teams/", "/teams/invalid", "/teams/%ZZ", "/teams/%2f", `/teams/${projectId}/extra`, `/teams/${projectId}/settings/extra`, `/teams/${projectId}/members/extra`, "/teams/invalid/members", "/teams/invalid/settings", "/shared-projects/"]) {
+      expect(parseAuthRoute(path)).toEqual({ kind: "notFound" });
+      expect(isLoginReturnPath(path)).toBe(false);
+    }
   });
 });

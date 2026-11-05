@@ -484,8 +484,8 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		for index, entry := range migration.AfterLedger {
 			versions[index] = entry.Version
 		}
-		if !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33}) || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
-			t.Fatal("startup did not append the property-row, session archive, assignment, Thread, Steps, terminal Session, Personal ownership and Bot schemas while preserving prior ledger, dependencies and attachments")
+		if !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37}) || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
+			t.Fatal("startup did not append the property-row, session archive, assignment, Thread, Steps, terminal Session, Personal ownership, Bot, Worker configuration, Team invitation, Bot preference and Bot Session schemas while preserving prior ledger, dependencies and attachments")
 		}
 		acceptanceBotOwnershipSchema(t, fixture)
 		acceptanceStatusMigrationRows(t, migration.StatusBeforeRows, migration.AfterRows)
@@ -615,7 +615,7 @@ func TestInstalledCLIStatusRacesAcceptance(t *testing.T) {
 			evidence := newLifecycleEvidence(t, scenario)
 			process := fixture.launch(t, nil).started(t)
 			cli.configure(t, process)
-			projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "Installed status race"))
+			projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "Installed status race", "--confirm"))
 			prerequisiteID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Unfinished prerequisite"))
 			id := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Competing task", "--description", "Complete preserved description. Attachment: plans/lifecycle.md\nReview before execution."))
 			before := acceptanceCLISetPullRequests(t, cli, cli.task(t, id), acceptanceProperties(t, []api.PullRequestProperty{{URL: "https://github.com/example/race/pull/9", Title: "Preserved PR reference"}}))

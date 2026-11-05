@@ -1,3 +1,4 @@
+import { parseStartupObservation, type SessionStartupReport, type StartupObservation } from "../../../session/startup.js";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../../cleanup-operation.js";
 import path from "node:path";
 import { lstat, unlink } from "node:fs/promises";
@@ -9,7 +10,7 @@ import { confirmControllerProcessesStopped, stopControllerProcesses } from "../.
 import { workerOperation, type WorkerGitManager } from "../execution.js";
 import { workerCleanupPrompt } from "../prompts.js";
 import { WorkerCleanupError, type WorkerCleanupStage } from "../cleanup-error.js";
-import { taskAgentControlMode, type CleanupState, type LocalTask } from "./web-types.js";
+import { taskAgentControlMode, type CleanupState, type LocalTask, type RecoveryState } from "./web-types.js";
 import type { WebExecutionStore } from "./web-store.js";
 import type { TaskPlatform } from "../../../api/types.js";
 import type { createWebControllerLauncher } from "./web-process.js";
@@ -19,6 +20,9 @@ export type WebBackendOptions = {
   request?: typeof requestController;
   archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
 };
+export class WebRecoveryBlockedError extends Error {
+  constructor(readonly reasonCode: NonNullable<RecoveryState["reasonCode"]>, message: string, options?: ErrorOptions) { super(message, options); }
+}
 export type WebCleanupOutcome = { task: LocalTask; complete: boolean };
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const request = options.request ?? requestController;
@@ -26,6 +30,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const journal = (task: LocalTask): string => path.join(controllerExecutionDirectory(options.homeDirectory, task.webExecution!.executionId), "journal.sqlite");
   const remember = (input: LocalTask, snapshot: ControllerSnapshot): LocalTask => {
     let task = current(input);
+    if (!matchesGeneration(task, snapshot)) throw new Error("Controller observation does not match the original execution generation.");
+    if (snapshot.startup !== undefined) options.store.observeStartup(task, parseStartupObservation(snapshot.startup), options.now());
     task = options.store.updateWebExecution(task, { launchSubmission: "acknowledged", initialInputState: snapshot.initialInputState, activity: snapshot.activity, controllerProcess: snapshot.controllerProcess ?? task.webExecution!.controllerProcess, nativeProcesses: snapshot.nativeProcesses }, options.now());
     if (snapshot.nativeSessionId !== null) task = options.store.bindNativeSession(task, { source: "controller", sessionId: snapshot.nativeSessionId }, options.now());
     return task;
@@ -41,14 +47,27 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     return snapshot.executionId === execution.executionId && snapshot.claimId === task.claimId && snapshot.sessionId === execution.sessionId
       && snapshot.executionGeneration === execution.executionGeneration && snapshot.controllerInstanceId === execution.controllerInstanceId;
   };
+  const observeStartupReport = (input: LocalTask): SessionStartupReport | null => {
+    const task = current(input), execution = task.webExecution;
+    if (execution === null || execution.sessionId === null) return null;
+    const saved = readControllerSnapshot(journal(task));
+    let startup: StartupObservation = saved !== null && matchesGeneration(task, saved) && saved.startup !== undefined
+      ? parseStartupObservation(saved.startup)
+      : execution.startupReport?.startup ?? { state: "unknown", reasonCode: "evidence_missing" };
+    if (startup.state === "starting" && saved !== null && matchesGeneration(task, saved) && ["stopped", "stopping", "failed", "paused"].includes(saved.lifecycle)) {
+      startup = { state: "unknown", reasonCode: "controller_start_unknown" };
+    }
+    return options.store.observeStartup(task, startup, options.now());
+  };
   return {
+    observeStartupReport,
     advance: async (input: LocalTask, signal: AbortSignal): Promise<LocalTask> => {
       let task = current(input);
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) return task;
       if (task.cleanup !== null || task.control !== null || task.configuration === null) throw new Error("Ordinary Web execution is fenced by cleanup or management.");
       const retryAttempt = task.recovery.retryAuthorized;
       let recovering = retryAttempt;
-      const pause = (error: unknown): LocalTask => options.store.pauseRecovery(task, error instanceof Error ? error.message : String(error), options.now());
+      const pause = (error: unknown): LocalTask => options.store.pauseRecovery(task, error instanceof Error ? error.message : String(error), options.now(), error instanceof WebRecoveryBlockedError ? error.reasonCode : undefined);
       const originalSnapshot = (): ControllerSnapshot => {
         const saved = readControllerSnapshot(journal(task)), execution = task.webExecution!;
         if (saved === null || saved.executionId !== execution.executionId || saved.claimId !== task.claimId || saved.sessionId !== execution.sessionId || saved.executionGeneration !== execution.executionGeneration || saved.controllerInstanceId !== execution.controllerInstanceId) throw new Error("The original controller generation evidence is unavailable.");
@@ -57,7 +76,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       try {
         if (retryAttempt && task.recovery.pauseReason !== null) {
           // Authorization permits one replacement generation only after proving the old writer stopped.
-          if (task.webExecution === null || task.resources.nativeSession === null) throw new Error("Web retry requires the original native session identity.");
+          if (task.webExecution === null || task.resources.nativeSession === null) throw new WebRecoveryBlockedError("native_identity_missing", "Web retry requires the original native session identity.");
           if (task.webExecution.launchSubmission === "not-submitted" && BigInt(task.webExecution.executionGeneration) > 1n) {
             // Preparation may fail after allocating a generation but before any writer is launched.
             const previous = readControllerSnapshot(journal(task));
@@ -68,7 +87,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             task = options.store.retryUnsubmittedWebGeneration(task, previous, options.now());
           } else {
             const saved = originalSnapshot();
-            if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new Error("Web retry requires the original native session identity.");
+            if (saved.nativeSessionId === null || saved.nativeSessionId !== task.resources.nativeSession.sessionId) throw new WebRecoveryBlockedError("native_identity_missing", "Web retry requires the original native session identity.");
             task = remember(task, saved);
             const proof = task.webExecution!.controllerProcess;
             if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("Web retry requires complete original controller and native process stop.");
@@ -85,7 +104,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
             if (proof === null) throw new Error("The exhausted execution has no complete original process stop evidence.");
             const stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);
             if (stopped) {
-              if (!task.webExecution!.restartAfterShutdown || saved.error !== null) return pause(new Error("The execution recovery budget is exhausted."));
+              if (!task.webExecution!.restartAfterShutdown || saved.error !== null) return pause(new WebRecoveryBlockedError("recovery_limit", "The execution recovery budget is exhausted."));
             } else {
               if (["stopped", "stopping", "failed", "paused"].includes(saved.lifecycle)) throw new Error("The exhausted execution is stopped or failed, but complete original process stop is unproven.");
               const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution!.launchId);
@@ -112,7 +131,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           task = remember(task, saved);
           const proof = task.webExecution!.controllerProcess;
           if (proof === null || !await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses)) throw new Error("The original controller is unreachable; its native writer may still be alive and will not be replaced.", { cause: error });
-          if (saved.nativeSessionId === null) throw new Error("The stopped native launch has no proven session identity; recovery cannot create another conversation.");
+          if (saved.nativeSessionId === null) throw new WebRecoveryBlockedError("native_identity_missing", "The stopped native launch has no proven session identity; recovery cannot create another conversation.");
           const stopped = await recordStoppedControllerGeneration(journal(task), ticket);
           if (!task.webExecution!.restartAfterShutdown) task = options.store.beginRecovery(task, options.now());
           if (task.recovery.pauseReason !== null) return task;

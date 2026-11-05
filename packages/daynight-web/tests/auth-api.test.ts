@@ -1,7 +1,7 @@
 import { directAccessFixture } from "./helpers/taskSync";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
+import { acceptTeamInvitation, inspectTeamInvitation, acceptInvitation, createInvitation, createProject, createToken, getAuthConfig, inspectInvitation, listInvitations, listMembers, listTokens, logout, me, removeMember, revokeInvitation, revokeToken, setMemberRole } from "../src/api/auth";
 import { ApiError, checkAttachmentPreview, invalidateAuthRequests, listProjects, pauseAuthRequests, request, subscribeUnauthorized } from "../src/api/client";
 
 const projectId = "10000000-0000-0000-0000-00000000000a";
@@ -17,6 +17,7 @@ const { email: memberEmail, name: memberName, avatarUrl: memberAvatar, ...grant 
 const participant = { inheritedFrom: null, userId, profile: { email: memberEmail, name: memberName, avatarUrl: memberAvatar }, effectiveRole: member.role, directGrant: grant };
 const invitation = { id: inviteId, projectId, createdBy: userId, createdAt: time, expiresAt: time, consumedBy: null, consumedAt: null, revokedAt: null };
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
+const creationReceipt = { ...project, access: { ...directAccessFixture(projectId, userId, "admin"), teamRole: "admin", canTransfer: true } };
 const signal = () => new AbortController().signal;
 const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
 const response = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? rawJson.rawJSON(item.toString()) : item), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
@@ -194,17 +195,50 @@ describe("session and personal credentials API", () => {
 
 describe("private project and membership API", () => {
   it("creates a project through the existing endpoint and requires the documented creation status", async () => {
-    const fetcher = mock(response(project, 201));
-    expect(await createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).toEqual(project);
-    expect(fetcher.mock.calls[0]).toEqual(["/api/v1/projects", expect.objectContaining({ method: "POST", body: JSON.stringify({ name: project.name, repoUrl: project.repoUrl }) })]);
-    fetcher.mockResolvedValue(response(project, 200));
-    await expect(createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
+    const fetcher = mock(response(creationReceipt, 201));
+    expect(await createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn())).toEqual(project);
+    expect(fetcher.mock.calls[0]).toEqual(["/api/v1/projects", expect.objectContaining({ method: "POST", body: JSON.stringify({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }) })]);
+    fetcher.mockResolvedValue(response(creationReceipt, 200));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { kind: "protocol", status: 200 } });
+  });
+
+  it("sends an explicit team and validates the creation ownership and grant", async () => {
+    const fetcher = mock(response(creationReceipt, 201));
+    const teamId = project.ownership.teamId;
+    const input = { name: project.name, repoUrl: project.repoUrl, expectedUserId: userId.toUpperCase(), teamId: teamId.toUpperCase() };
+    await expect(createProject(input, signal(), vi.fn())).resolves.toEqual(project);
+    expect(fetcher.mock.calls[0]?.[1].body).toBe(JSON.stringify({ ...input, expectedUserId: userId, teamId }));
+    for (const access of [
+      { ...creationReceipt.access, ownership: { ...creationReceipt.access.ownership, version: 2n } },
+      { ...creationReceipt.access, directGrant: null },
+      { ...creationReceipt.access, directGrant: { ...creationReceipt.access.directGrant!, userId: otherId } },
+    ]) {
+      fetcher.mockResolvedValueOnce(response({ ...project, access }, 201));
+      await expect(createProject(input, signal(), vi.fn())).rejects.toMatchObject({ name: "ProjectCreationUnknown" });
+    }
+  });
+
+  it("preserves original project text and rejects mismatched successful principals without replay", async () => {
+    const input = { name: "  Project 名称  ", repoUrl: "git@github.com:org/repo.git", expectedUserId: userId };
+    const mismatch = vi.fn();
+    const fetcher = mock(new Response(stringifyWireJson({ ...project, name: input.name }), { status: 201, headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    await expect(createProject(input, signal(), mismatch)).rejects.toMatchObject({ name: "ProjectCreationUnknown", cause: { kind: "protocol", code: "principal_mismatch" } });
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[1].body).toBe(JSON.stringify(input));
+  });
+
+  it("revalidates identity on an explicit creation refusal without replay", async () => {
+    const mismatch = vi.fn(), fetcher = mock(refusal(409, "identity_mismatch"));
+    await expect(createProject({ name: project.name, repoUrl: project.repoUrl, expectedUserId: userId }, signal(), mismatch)).rejects.toMatchObject({ kind: "server", code: "identity_mismatch" });
+    expect(mismatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it.each([{ name: "", repoUrl: "repo" }, { name: "name", repoUrl: " " }, { name: "bad\0name", repoUrl: "repo" }, { name: "name", repoUrl: "bad\0repo" }])("rejects malformed project input before requests %#", (input) => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    expect(() => createProject(input, signal())).toThrow(ApiError);
+    expect(() => createProject({ ...input, expectedUserId: userId }, signal(), vi.fn())).toThrow(ApiError);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -250,38 +284,56 @@ describe("private project and membership API", () => {
 });
 
 describe("invitation API", () => {
-  it("lists invitations and returns only the current origin's one-time link from creation", async () => {
+  const mismatch = vi.fn();
+  const admission = { userId, onPrincipalMismatch: mismatch };
+  const access = { ...directAccessFixture(projectId, userId, "admin"), directGrant: grant };
+  it("binds creation and revocation to the current identity and returns the one-time link", async () => {
     const fetcher = mock(response({ items: [invitation] }));
-    expect(await listInvitations(projectId.toUpperCase(), signal())).toEqual([invitation]);
+    expect(await listInvitations(projectId.toUpperCase(), signal(), admission)).toEqual([invitation]);
     const created = { ...invitation, link: `${window.location.origin}/invitations#opaque-invitation` };
     fetcher.mockResolvedValue(response(created, 201));
-    expect(await createInvitation(projectId, signal())).toEqual(created);
-    expect(fetcher.mock.calls[1]).toEqual([`/api/v1/projects/${projectId}/invitations`, expect.objectContaining({ method: "POST", body: "{}" })]);
-    fetcher.mockResolvedValue(new Response(null, { status: 204 }));
-    await revokeInvitation(projectId, inviteId.toUpperCase(), signal());
-    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/invitations/${inviteId}`, expect.objectContaining({ method: "DELETE" })]);
+    expect(await createInvitation(projectId, userId, signal(), mismatch)).toEqual(created);
+    expect(fetcher.mock.calls[1]).toEqual([`/api/v1/projects/${projectId}/invitations`, expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedUserId: userId }) })]);
+    fetcher.mockResolvedValue(new Response(null, { status: 204, headers: { "Daynight-User-ID": userId } }));
+    await revokeInvitation(projectId, inviteId.toUpperCase(), userId, signal(), mismatch);
+    expect(fetcher.mock.calls[2]).toEqual([`/api/v1/projects/${projectId}/invitations/${inviteId}`, expect.objectContaining({ method: "DELETE", body: JSON.stringify({ expectedUserId: userId }) })]);
   });
 
-  it("sends invitation secrets only in JSON bodies and explicitly separates inspection from acceptance", async () => {
+  it("keeps secrets in bodies and verifies direct grant and effective access without rounding", async () => {
     const secret = "invitation-only-in-body";
-    const fetcher = mock(response({ projectId, projectName: project.name }));
-    expect(await inspectInvitation(secret, signal())).toEqual({ projectId, projectName: project.name });
+    const empty = { projectId, projectName: project.name, directGrant: null, access: null };
+    const fetcher = mock(response(empty));
+    expect(await inspectInvitation(secret, userId, signal(), mismatch)).toEqual(empty);
     expect(fetcher.mock.calls[0]).toEqual(["/api/v1/invitations/inspect", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret }) })]);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    fetcher.mockResolvedValue(response({ projectId, projectName: project.name, member }));
-    expect((await inspectInvitation(secret, signal())).member).toEqual(member);
-    fetcher.mockResolvedValue(response(member));
-    expect(await acceptInvitation(secret, signal())).toEqual(member);
-    expect(fetcher.mock.calls[2]).toEqual(["/api/v1/invitations/accept", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret }) })]);
+    fetcher.mockResolvedValue(response({ ...empty, directGrant: grant, access }));
+    expect((await inspectInvitation(secret, userId, signal(), mismatch)).directGrant).toEqual(grant);
+    const accepted = { projectId, directGrant: grant, access, joined: true, consumed: true };
+    fetcher.mockResolvedValue(response(accepted));
+    expect(await acceptInvitation(secret, projectId, userId, signal(), mismatch)).toEqual(accepted);
+    expect(fetcher.mock.calls[2]).toEqual(["/api/v1/invitations/accept", expect.objectContaining({ method: "POST", body: JSON.stringify({ token: secret, expectedUserId: userId }) })]);
     for (const [url] of fetcher.mock.calls) expect(url).not.toContain(secret);
   });
 
+  it("rejects wrong principals and malformed acceptance results without replay or secret causes", async () => {
+    const secret = "secret-in-error";
+    const fetcher = mock(new Response(JSON.stringify({ projectId }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": otherId } }));
+    await expect(acceptInvitation(secret, projectId, userId, signal(), mismatch)).rejects.toMatchObject({ code: "principal_mismatch" });
+    expect(mismatch).toHaveBeenCalled();
+    fetcher.mockResolvedValue(response({ projectId, directGrant: { ...grant, userId: otherId }, access, joined: true, consumed: true }));
+    await expect(acceptInvitation(secret, projectId, userId, signal(), mismatch)).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockRejectedValue(new Error(secret));
+    for (const call of [() => inspectInvitation(secret, userId, signal(), mismatch), () => acceptInvitation(secret, projectId, userId, signal(), mismatch)]) {
+      const failure = await call().catch((error: unknown) => error);
+      expect(failure).not.toHaveProperty("cause");
+      expect(String(failure)).not.toContain(secret);
+    }
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
+
   it.each(["", "secret\nvalue", "secret value", "secret\0value", "secret\ud800value"])("rejects malformed invitation secrets without exposing them %#", (secret) => {
-    const fetcher = vi.fn();
-    vi.stubGlobal("fetch", fetcher);
-    for (const call of [inspectInvitation, acceptInvitation]) {
-      try { call(secret, signal()); expect.unreachable(); }
-      catch (error) { expect(error).toBeInstanceOf(ApiError); if (secret !== "") expect(String(error)).not.toContain(secret); }
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    for (const call of [() => inspectInvitation(secret, userId, signal(), mismatch), () => acceptInvitation(secret, projectId, userId, signal(), mismatch)]) {
+      try { call(); expect.unreachable(); } catch (error) { expect(error).toBeInstanceOf(ApiError); if (secret !== "") expect(String(error)).not.toContain(secret); }
     }
     expect(fetcher).not.toHaveBeenCalled();
   });
@@ -402,5 +454,24 @@ describe("identity-bound grant mutation responses", () => {
     const fetcher = mock(response(member));
     await expect(setMemberRole(projectId, userId, { version: 1n, role: "member", expectedUserId: userId }, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol", status: 200 });
     expect(fetcher).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("Team invitation API", () => {
+  const team = { id: projectId, kind: "ordinary", name: "Team" };
+  const membership = { teamId: projectId, userId, role: "member", version: 9_007_199_254_740_993n, createdAt: time, updatedAt: time };
+  it("checks identity, precise membership versions and the target of an acceptance", async () => {
+    const fetcher = mock(response({ team, membership }));
+    expect(await inspectTeamInvitation("dnteam_secret", userId, signal(), vi.fn())).toEqual({ team, membership });
+    expect(fetcher.mock.calls[0]).toEqual(["/api/v1/team-invitations/inspect", expect.objectContaining({ body: JSON.stringify({ token: "dnteam_secret" }) })]);
+    fetcher.mockResolvedValueOnce(response({ team, membership, joined: true, consumed: true }));
+    expect(await acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).toEqual({ team, membership, joined: true, consumed: true });
+    fetcher.mockResolvedValueOnce(response({ team, membership: { ...membership, userId: otherId }, joined: true, consumed: true }));
+    await expect(acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockResolvedValueOnce(response({ team, membership, joined: true, consumed: false }));
+    await expect(acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
+    fetcher.mockResolvedValueOnce(response({ team: { ...team, id: otherId }, membership, joined: true, consumed: true }));
+    await expect(acceptTeamInvitation("dnteam_secret", projectId, userId, signal(), vi.fn())).rejects.toMatchObject({ kind: "protocol" });
   });
 });

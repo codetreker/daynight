@@ -5,6 +5,8 @@ import { navigate } from '../src/app/router';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { mockSidebarMediaQuery } from './helpers/mediaQuery';
 import { viewerHeaders } from './helpers/taskSync';
+import { personalTeamPage } from './helpers/team';
+import { configurationResource, configurationResponse } from './helpers/worker-configuration';
 
 const render = createLocaleRender('en');
 const owner = '00000000-0000-4000-8000-000000000001';
@@ -33,6 +35,7 @@ const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principa
 const failure = (status: number, code: string, viewer = principal) => json({ error: { code, message: 'Hidden server details', requestId: 'rq-worker-safe' } }, status, viewer);
 const defaults = (url: string): Response => {
   if (url === '/api/v1/me') return json(user(principal));
+  if (url.startsWith('/api/v1/teams?')) return json(personalTeamPage(principal));
   if (url.startsWith('/api/v1/projects?')) return json({ items: [], nextCursor: null });
   throw new Error(`Unexpected request ${url}`);
 };
@@ -80,6 +83,55 @@ describe('Worker pages in the authenticated workspace', () => {
     expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu); expect(cpu).toHaveAttribute('aria-valuenow', '67');
     expect(content.querySelector(`.worker-description time[datetime="${freshTime}"]`)).toBeInTheDocument();
     expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections); expect(heading).toHaveFocus();
+  });
+
+  it('retains the configuration editor and unapplied Project selection throughout identity and recovery reads', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const identity = Promise.withResolvers<Response>(), configurationRead = Promise.withResolvers<Response>(), projectsRead = Promise.withResolvers<Response>();
+    const project = (id: string, name: string) => ({ id, name, repoUrl: `https://example.test/${name}.git`, settings: { version: 1, executionWarningMinutes: 60 }, ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1 }, createdAt: observedAt, updatedAt: observedAt });
+    const projects = () => json({ items: [project('00000000-0000-4000-8000-000000000010', 'Project One'), project('00000000-0000-4000-8000-000000000011', 'Project Two')], nextCursor: null });
+    const config = () => configurationResponse(configurationResource(), 200, owner);
+    let identityReads = 0, configurationReads = 0, projectReads = 0, recovery = false;
+    const fetcher = install((url) => {
+      if (url === '/api/v1/me' && ++identityReads === 2) return identity.promise;
+      if (url === `/api/v1/me/workers/${firstWorker}/configuration`) { configurationReads++; return recovery ? configurationRead.promise : config(); }
+      if (url === '/api/v1/projects?limit=100') { projectReads++; return recovery ? projectsRead.promise : projects(); }
+      if (url === `/api/v1/me/workers/${firstWorker}`) return detail();
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    await screen.findByRole('heading', { name: 'Alice worker' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' }));
+    const args = await screen.findByRole('textbox', { name: 'Startup arguments' });
+    fireEvent.change(args, { target: { value: '[invalid JSON' } });
+    await waitFor(() => expect(projectReads).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!);
+    const dialog = screen.getByRole('dialog', { name: 'Choose projects' });
+    await within(dialog).findByRole('checkbox', { name: /Project Two/ });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Project Two/ }));
+    const search = within(dialog).getByRole('searchbox') as HTMLInputElement;
+    fireEvent.change(search, { target: { value: 'Project Two' } }); search.focus(); search.setSelectionRange(2, 7);
+    const selected = within(dialog).getByRole('checkbox', { name: /Project Two/ });
+    const assertRetained = () => {
+      expect(screen.getByRole('dialog', { name: 'Choose projects' })).toBe(dialog);
+      expect(within(dialog).getByRole('searchbox')).toBe(search); expect(search).toHaveValue('Project Two');
+      expect(search).toHaveFocus(); expect(search.selectionStart).toBe(2); expect(search.selectionEnd).toBe(7);
+      expect(within(dialog).getByRole('checkbox', { name: /Project Two/ })).toBe(selected); expect(selected).toBeChecked();
+      expect(args).toHaveValue('[invalid JSON'); expect(args).toBeInTheDocument();
+      expect(within(dialog).queryByRole('status')).toBeNull();
+    };
+    const initialConfigReads = configurationReads, initialProjectReads = projectReads;
+    recovery = true; returnToWorkspace();
+    await waitFor(() => expect(identityReads).toBe(2)); assertRetained();
+    expect(configurationReads).toBe(initialConfigReads); expect(projectReads).toBe(initialProjectReads);
+    await act(async () => identity.resolve(json(user())));
+    await waitFor(() => { expect(configurationReads).toBeGreaterThan(initialConfigReads); expect(projectReads).toBeGreaterThan(initialProjectReads); });
+    assertRetained();
+    await act(async () => configurationRead.resolve(config())); assertRetained();
+    await act(async () => projectsRead.resolve(projects())); assertRetained();
+    expect(fetcher.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(screen.getByRole('heading', { name: 'Project Two' })).toBeInTheDocument(); expect(args).toHaveValue('[invalid JSON');
   });
 
   it('reads account Workers when project navigation fails and browser storage is unavailable', async () => {

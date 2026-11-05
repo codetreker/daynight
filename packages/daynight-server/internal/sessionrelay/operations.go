@@ -10,9 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -20,7 +19,7 @@ type operationRecord struct {
 	Available bool
 	Command   sp.Command
 	Receipt   sp.Operation
-	Actor     core.Principal
+	Actor     model.Principal
 	Hash      []byte
 	Epoch     *int64
 	Seq       int64
@@ -35,7 +34,7 @@ func loadOperation(ctx context.Context, tx pgx.Tx, session, id string) (operatio
 	if err != nil {
 		return o, err
 	}
-	o.Actor.Kind = core.CredentialKind(kind)
+	o.Actor.Kind = model.CredentialKind(kind)
 	if err = json.Unmarshal(command, &o.Command); err != nil {
 		return o, err
 	}
@@ -337,7 +336,7 @@ func formMatches(f map[string]any, v any) bool {
 	}
 	return false
 }
-func (s *Service) Submit(ctx context.Context, p core.Principal, project, taskID, id string, c sp.Command) (sp.Operation, error) {
+func (s *Service) Submit(ctx context.Context, p model.Principal, project, taskID, id string, c sp.Command) (sp.Operation, error) {
 	var result sp.Operation
 	err := s.browser(ctx, p, project, taskID, id, func(tx pgx.Tx, r *record, t task, write bool) error {
 		if !write {
@@ -390,7 +389,7 @@ func (s *Service) Submit(ctx context.Context, p core.Principal, project, taskID,
 	})
 	return result, err
 }
-func (s *Service) Operation(ctx context.Context, p core.Principal, project, taskID, id, operationID string) (sp.Operation, error) {
+func (s *Service) Operation(ctx context.Context, p model.Principal, project, taskID, id, operationID string) (sp.Operation, error) {
 	var out sp.Operation
 	err := s.browser(ctx, p, project, taskID, id, func(tx pgx.Tx, r *record, _ task, _ bool) error {
 		o, e := loadOperation(ctx, tx, id, operationID)
@@ -496,7 +495,7 @@ func (s *Service) begin(ctx context.Context, tx pgx.Tx, r *record, t task, id st
 		return nil, conflict()
 	}
 	if err = s.operationAuthorized(ctx, tx, r, t, o); err != nil {
-		var refusal *service.Fault
+		var refusal *model.Fault
 		if o.Receipt.State != "offered" || !errors.As(err, &refusal) || (refusal.Code != "forbidden" && refusal.Code != "unauthenticated" && refusal.Code != "session_conflict") {
 			return nil, err
 		}
@@ -562,7 +561,7 @@ func (s *Service) reconcile(ctx context.Context, tx pgx.Tx, r *record, t task, i
 			} else if state == "not_submitted" {
 				admin, authorization := s.scopePermission(ctx, tx, o.Actor, r)
 				if authorization != nil {
-					var refusal *service.Fault
+					var refusal *model.Fault
 					if !errors.As(authorization, &refusal) {
 						return nil, authorization
 					}

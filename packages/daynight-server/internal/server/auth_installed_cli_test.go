@@ -218,10 +218,10 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	requests := integration.requests
 	aliceBrowser, bobBrowser := identityBrowser(t), identityBrowser(t)
 	integration.login(t, aliceBrowser, "alice")
-	integration.login(t, bobBrowser, "bob")
+	bobUser := integration.login(t, bobBrowser, "bob")
 	origin := map[string]string{"Origin": integration.server.URL}
 	repository := "https://example.test/auth-cli/shared.git"
-	_, data := identityRequest(t, bobBrowser, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Bob private project","repoUrl":"`+repository+`"}`, origin, http.StatusCreated)
+	_, data := identityRequest(t, bobBrowser, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Bob private project", RepoURL: repository, ExpectedUserID: bobUser.ID}), origin, http.StatusCreated)
 	bobProject := identityDecode[api.Project](t, data)
 	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Installed CLI acceptance","expiresAt":null}`, origin, http.StatusCreated)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
@@ -243,7 +243,7 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	}
 	before := requests.all.Load()
 	beforePAT := requests.authenticatedPAT.Load()
-	stdout, _ := cli.run(t, "", true, "project", "create", "Installed PAT project", "--repo", repository)
+	stdout, _ := cli.run(t, "", true, "project", "create", "Installed PAT project", "--repo", repository, "--confirm")
 	if !strings.HasPrefix(stdout, "Project created.\n") || !strings.Contains(stdout, "Name: Installed PAT project\n") || !strings.Contains(stdout, "Repository: "+repository+"\n") {
 		t.Fatal("installed project create did not preserve its documented command output")
 	}

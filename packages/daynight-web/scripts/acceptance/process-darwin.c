@@ -78,12 +78,13 @@ static bool arguments(pid_t pid, struct arguments *result) {
     if (absent(pid)) return false;
     struct proc_bsdinfo state;
     if (!bsd_info(pid, &state)) return false;
-    /* Exit can deactivate the task before BSD publishes its zombie state.
-     * KERN_PROCARGS2 then returns EINVAL; wait only for this confirmed exit,
+    /* Exit can deactivate the task or remove its argument mapping before BSD
+     * publishes its zombie state. KERN_PROCARGS2 can return EINVAL or EIO;
+     * wait only for this confirmed exit,
      * retaining the live-process refusal if it does not finish within 100 ms.
-     * https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_sysctl.c#L1456-L1489
+     * https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/kern_sysctl.c#L1456-L1526
      */
-    if (argument_error == EINVAL && (state.pbi_flags & PROC_FLAG_INEXIT)) {
+    if ((argument_error == EINVAL || argument_error == EIO) && (state.pbi_flags & PROC_FLAG_INEXIT)) {
       for (int attempt = 0; attempt < 10; attempt++) {
         usleep(10000);
         struct proc_bsdinfo current;

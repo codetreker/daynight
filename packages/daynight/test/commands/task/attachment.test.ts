@@ -33,7 +33,7 @@ const fixture = () => {
   const dependencies = {
     resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue(project),
     runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => {
-      const result = await command({ api: api as unknown as ApiClient, operation, serverUrl: "http://localhost:8787" });
+      const result = await command({ api: api as unknown as ApiClient, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } });
       operation.check();
       if (typeof result === "string") current.stdout(result); else if (result !== undefined) current.stdout(result.output);
     }),

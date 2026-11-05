@@ -22,13 +22,9 @@ const readPreference = <Value,>(key: string, decode: (value: unknown) => Value):
   }
 };
 
-const showAllPreference = (value: unknown): boolean => {
-  if (typeof value !== "boolean") throw new Error("Invalid task visibility preference.");
-  return value;
-};
-
 export type ProjectSection = "overview" | "tasks";
 export type TaskView = "standalone" | "chains";
+export type GraphDirection = "horizontal" | "vertical";
 
 const projectSectionPreference = (value: unknown): ProjectSection => {
   if (value !== "overview" && value !== "tasks") throw new Error("Invalid project section preference.");
@@ -37,6 +33,11 @@ const projectSectionPreference = (value: unknown): ProjectSection => {
 
 const taskViewPreference = (value: unknown): TaskView => {
   if (value !== "standalone" && value !== "chains") throw new Error("Invalid project task view preference.");
+  return value;
+};
+
+const graphDirectionPreference = (value: unknown): GraphDirection => {
+  if (value !== "horizontal" && value !== "vertical") throw new Error("Invalid graph direction preference.");
   return value;
 };
 
@@ -63,16 +64,6 @@ const useNamedPreference = <Value,>(key: string, decode: (value: unknown) => Val
   return { value, save, issue: writeIssue ?? initial.issue };
 };
 
-export const useChainVisibility = (projectId: string) => {
-  const { value, save, issue } = useNamedPreference(`daynight:completed-chains:${projectId}`, showAllPreference, false);
-  return { showAll: value, onShowAllChange: save, issue };
-};
-
-export const useStandaloneVisibility = (projectId: string) => {
-  const { value, save, issue } = useNamedPreference(`daynight:completed-standalone-tasks:${projectId}`, showAllPreference, false);
-  return { showAll: value, onShowAllChange: save, issue };
-};
-
 export const useProjectSection = (projectId: string) => {
   const { value, save, issue } = useNamedPreference(`daynight:project-section:${projectId}`, projectSectionPreference, "overview");
   return { section: value, onSectionChange: save, issue };
@@ -81,6 +72,32 @@ export const useProjectSection = (projectId: string) => {
 export const useTaskView = (projectId: string) => {
   const { value, save, issue } = useNamedPreference(`daynight:task-view:${projectId}`, taskViewPreference, "chains");
   return { activeView: value, onViewChange: save, issue };
+};
+
+export const useGraphDirection = (projectId: string, rootId: string) => {
+  const key = `daynight:graph-direction:${JSON.stringify([projectId, rootId])}`;
+  const load = () => {
+    const initial = readPreference(key, graphDirectionPreference);
+    return { key, direction: initial.value ?? "horizontal" as GraphDirection, initialIssue: initial.issue, writeIssue: null as PreferenceIssue | null };
+  };
+  const [stored, setStored] = useState(load);
+  // A graph can acquire another root while its dialog remains mounted. Never
+  // display the previous root's preference while waiting for an effect.
+  let current = stored;
+  if (stored.key !== key) {
+    current = load();
+    setStored(current);
+  }
+  const onDirectionChange = useCallback((direction: GraphDirection) => {
+    let writeIssue: PreferenceIssue | null = null;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(direction));
+    } catch (cause) {
+      writeIssue = { kind: "write", cause };
+    }
+    setStored((previous) => previous.key === key ? { ...previous, direction, writeIssue } : previous);
+  }, [key]);
+  return { direction: current.direction, onDirectionChange, issue: current.writeIssue ?? current.initialIssue };
 };
 
 export const useTaskListScroll = (projectId: string, active: boolean) => {

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test as base, expect, type TestInfo } from '@playwright/test';
 import { command } from '../../scripts/acceptance/process.mts';
-import { recordBrowserOwnership } from '../../scripts/acceptance/browser.mts';
+import { readBrowserInventory, recordBrowserOwnership } from '../../scripts/acceptance/browser.mts';
 import type { ExecutionPlatform, TaskProperties, WritableTaskProperties } from '../../src/api/types';
 import { attachmentDownloadUrl } from '../../src/api/client';
 import { bearerContext, browserAuthentication, createApiToken, tokenContext, type AuthenticatedAPI } from './authentication';
@@ -78,7 +78,7 @@ export const test = base.extend<{
       try {
         const client = await createAcceptanceCli(value, join(directory, 'cli'));
         cli = client;
-        const argv = ['project', 'create', `Status ${randomUUID()}`, '--repo', `https://example.com/status/${randomUUID()}`];
+        const argv = ['project', 'create', `Status ${randomUUID()}`, '--repo', `https://example.com/status/${randomUUID()}`, '--confirm'];
         const result = await client.run(argv);
         expect(result.exitCode).toBe(0); expect(result.stderr).toBe('');
         const ids = [...result.stdout.matchAll(/^ID: ([0-9a-f-]{36})$/gm)]; expect(ids).toHaveLength(1);
@@ -188,7 +188,7 @@ export const test = base.extend<{
   acceptanceEvidence: [async ({ browser, page, attachmentWritePolicy }, use) => {
     const directory = evidenceDirectory();
     await mkdir(directory, { recursive: true });
-    const { identity, profile } = await recordBrowserOwnership(browser, directory);
+    const { identity, profile } = await recordBrowserOwnership(browser, directory, await readBrowserInventory(directory));
     await writeFile(join(directory, 'browser.json'), `${JSON.stringify({
       name: browser.browserType().name(), version: browser.version(), platform: process.platform, arch: process.arch,
       node: process.version, ci: Boolean(process.env.CI), executableOverride: process.env.DAYNIGHT_BROWSER_EXECUTABLE !== undefined,
@@ -220,8 +220,11 @@ export type Task = {
 };
 
 export const createProject = async (request: AuthenticatedAPI, input: { name?: string; repoUrl?: string } = {}): Promise<Project> => {
+  const current = await request.get('/api/v1/me');
+  expect(current.status(), 'Project fixture identity succeeds').toBe(200);
+  const user = await current.json() as { id: string };
   const response = await request.post('/api/v1/projects', {
-    data: { name: input.name ?? `Browser ${randomUUID()}`, repoUrl: input.repoUrl ?? 'https://github.com/example/browser-fixture' },
+    data: { name: input.name ?? `Browser ${randomUUID()}`, repoUrl: input.repoUrl ?? 'https://github.com/example/browser-fixture', expectedUserId: user.id },
   });
   expect(response.status(), 'Project fixture creation succeeds').toBe(201);
   return await response.json() as Project;

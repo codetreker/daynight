@@ -66,6 +66,7 @@ const filter = async (label: string | RegExp) => {
   fireEvent.click(screen.getByRole('button', { name: /^负责人:/ }));
   fireEvent.click(await screen.findByRole('option', { name: label }));
 };
+const status = (value: string) => fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value } });
 const chains = () => screen.getByRole('tab', { name: '任务链' });
 const standalone = () => screen.getByRole('tab', { name: '独立任务' });
 const row = (value: number) => document.getElementById(`standalone-task-${id(value)}`);
@@ -73,7 +74,7 @@ const chain = (value: number) => document.getElementById(`task-root-${id(value)}
 const pagination = (name: string) => screen.getByRole('navigation', { name: `${name}分页` });
 
 describe('project assignee filtering', () => {
-  it('retains the real Goal and full progress while matching children remain blocked by hidden unfinished predecessors', async () => {
+  it('retains the real Goal and all children with full progress when a child matches', async () => {
     const fixture = install([
       task(1, otherUser, { status: 'done', completedAt: '2026-10-22T10:00:00Z' }), task(2, otherUser, { dependsOn: [id(1)], status: 'in_progress', startedAt: '2026-10-22T10:00:00Z' }),
       task(3, TEST_VIEWER_ID, { dependsOn: [id(2)], blockedBy: [id(2)], ready: false }),
@@ -87,16 +88,66 @@ describe('project assignee filtering', () => {
     expect(chain(1)).toHaveTextContent('1 进行中');
     fireEvent.click(chain(1)!);
     const children = document.getElementById(`goal-children-${id(1)}`)!;
-    expect(children).toHaveTextContent('1 个匹配子任务');
-    expect(children.querySelectorAll('.goal-task-row')).toHaveLength(1);
+    expect(children.querySelectorAll('.goal-task-row')).toHaveLength(3);
+    expect(children).toHaveTextContent('Task 2');
+    expect(children).toHaveTextContent('Task 4');
     const child = document.getElementById(`chain-task-${id(1)}-${id(3)}`)!;
-    expect(child).toHaveTextContent('被阻塞');
+    expect(child.closest('.goal-task-row')).toHaveTextContent('被阻塞');
     fireEvent.click(child);
     const detail = screen.getByRole('dialog');
     await within(detail).findByRole('heading', { name: 'Task 3' });
     expect(within(detail).getAllByRole('button', { name: 'Task 2，普通依赖' })).toHaveLength(2);
     expect(fixture.tasks.get(id(3))!.dependsOn).toEqual([id(2)]);
     expect(fixture.tasks.size).toBe(5);
+  });
+
+  it('requires both filters to match the same ordinary chain member and keeps every member', async () => {
+    install([
+      task(1, otherUser, { status: 'done' }),
+      task(2, TEST_VIEWER_ID, { dependsOn: [id(1)], status: 'todo' }),
+      task(3, otherUser, { dependsOn: [id(1)], status: 'in_progress' }),
+      task(4, otherUser, { status: 'done' }),
+      task(5, TEST_VIEWER_ID, { dependsOn: [id(4)], status: 'in_progress' }),
+      task(6, otherUser, { dependsOn: [id(4)], status: 'done' }),
+      task(7, otherUser, { dependsOn: [id(6), id(8)], status: 'todo' }),
+      task(8, otherUser, { status: 'done' }),
+      task(9, TEST_VIEWER_ID, { status: 'todo' }),
+      task(10, otherUser, { status: 'in_progress' }),
+    ]);
+    await mount();
+    await filter('分配给我');
+    status('todo');
+    expect(chain(1)).toBeVisible();
+    expect(chain(4)).toBeNull();
+    fireEvent.click(chain(1)!);
+    const children = document.getElementById(`goal-children-${id(1)}`)!;
+    expect(children.querySelectorAll('.goal-task-row')).toHaveLength(2);
+    expect(children).toHaveTextContent('Task 2');
+    expect(children).toHaveTextContent('Task 3');
+    fireEvent.click(standalone());
+    expect(row(9)).toBeVisible();
+    expect(row(10)).toBeNull();
+    status('in_progress');
+    expect(row(9)).toBeNull();
+    expect(row(10)).toBeNull();
+    fireEvent.click(chains());
+    expect(chain(4)).toBeVisible();
+    expect(chain(1)).toBeNull();
+    fireEvent.click(chain(4)!);
+    const merged = document.getElementById(`goal-children-${id(4)}`)!;
+    expect(merged.querySelectorAll('.goal-task-row')).toHaveLength(4);
+    expect(merged).toHaveTextContent('Task 8');
+  });
+
+  it('does not count an external prerequisite as a matching member of a chain', async () => {
+    install([
+      task(1, otherUser), task(2, otherUser, { dependsOn: [id(1), id(3)], externalDependsOn: [id(3)] }),
+      task(3, TEST_VIEWER_ID, { status: 'done' }),
+    ]);
+    await mount(); await filter('分配给我'); status('done');
+    expect(chain(1)).toBeNull();
+    fireEvent.click(standalone());
+    expect(row(3)).toBeVisible();
   });
 
   it('resets both category pages on every filter change even when both result sets still have multiple pages', async () => {
@@ -114,20 +165,57 @@ describe('project assignee filtering', () => {
     expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页');
     fireEvent.click(chains());
     expect(pagination('任务链列表')).toHaveTextContent('第 1 / 3 页');
+    fireEvent.click(within(pagination('任务链列表')).getByRole('button', { name: '下一页' }));
+    fireEvent.click(standalone());
+    fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
+    status('todo');
+    expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页');
+    fireEvent.click(chains());
+    expect(pagination('任务链列表')).toHaveTextContent('第 1 / 3 页');
   });
 
   it('uses an assignee-specific empty state while the full overview still navigates to an excluded Goal', async () => {
     install([task(1, otherUser), task(2, otherUser, { dependsOn: [id(1)] }), task(3, otherUser)]);
     await mount();
     await filter('分配给我');
-    expect(screen.getByRole('heading', { name: '没有匹配此负责人的任务' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '没有匹配筛选条件的任务' })).toBeVisible();
     fireEvent.click(standalone());
-    expect(screen.getByRole('heading', { name: '没有匹配此负责人的任务' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '没有匹配筛选条件的任务' })).toBeVisible();
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 1，/ }));
     await waitFor(() => expect(chain(1)).toHaveFocus());
     expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('所有负责人');
     expect(chain(1)).toBeVisible();
+  });
+
+  it('preserves matching conditions for a nonrepresentative member and clears only a blocking status', async () => {
+    install([task(1, otherUser, { status: 'done' }), task(2, TEST_VIEWER_ID, { dependsOn: [id(1)] }), task(3, otherUser)]);
+    await mount(); await filter('分配给我'); status('todo');
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    fireEvent.click(screen.getByRole('button', { name: /Task 1，/ }));
+    await waitFor(() => expect(chain(1)).toHaveFocus());
+    expect(chain(1)).toHaveClass('overview-progress-target');
+    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('分配给我');
+    status('done');
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    fireEvent.click(screen.getByRole('button', { name: /Task 1，/ }));
+    await waitFor(() => expect(chain(1)).toHaveFocus());
+    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('all');
+    expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('分配给我');
+  });
+
+  it('clears only blocking conditions for the standalone overview aggregate and focuses its panel', async () => {
+    install([task(1, TEST_VIEWER_ID), task(2, otherUser)]);
+    await mount(); await filter('分配给我'); status('todo');
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    fireEvent.click(screen.getByRole('button', { name: /^独立任务，/ }));
+    const panel = screen.getByRole('tabpanel', { name: '独立任务' });
+    await waitFor(() => expect(panel).toHaveFocus());
+    expect(panel).toHaveClass('overview-progress-target');
+    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('所有负责人');
+    expect(row(1)).toBeVisible(); expect(row(2)).toBeVisible();
   });
 
   it('filters unassigned and former assignees while excluding former members from assignment choices', async () => {

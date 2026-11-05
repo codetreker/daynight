@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
@@ -32,7 +32,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 			t.Fatalf("migration changed existing task facts: %s %s %v", before, after, err)
 		}
 	}
-	if task := snapshotHistoricalTask(t, database, project.ID, queryID(11)); task.Version != 9007199254740993 || task.Status != core.TaskDone {
+	if task := snapshotHistoricalTask(t, database, project.ID, queryID(11)); task.Version != 9007199254740993 || task.Status != model.TaskDone {
 		t.Fatal("existing task no longer decodes")
 	}
 }
@@ -41,37 +41,37 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project := queryProject(t, database, 1)
-	pre := queryTask(t, database, project.ID, 11, core.TaskDone)
-	dependent := queryTask(t, database, project.ID, 12, core.TaskTodo, pre.ID)
-	var expired *ProjectTx
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+	pre := queryTask(t, database, project.ID, 11, model.TaskDone)
+	dependent := queryTask(t, database, project.ID, 12, model.TaskTodo, pre.ID)
+	var expired ProjectWriteScope
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
 		expired = tx
-		ids, err := tx.DependentIDs(ctx, pre.ID)
+		ids, err := tx.TaskDAO().DependentIDs(ctx, pre.ID)
 		if err != nil || !reflect.DeepEqual(ids, []string{dependent.ID}) {
 			t.Fatalf("direct dependent lookup: %v %v", ids, err)
 		}
-		if err := tx.DeleteTask(ctx, queryID(99), false); !errors.Is(err, core.ErrNotFound) {
+		if err := tx.TaskDAO().DeleteTask(ctx, queryID(99), false); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing delete swallowed: %v", err)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		if err := tx.DeleteTask(ctx, dependent.ID, false); err != nil {
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		if err := tx.TaskDAO().DeleteTask(ctx, dependent.ID, false); err != nil {
 			return err
 		}
-		ids, err := tx.DependentIDs(ctx, pre.ID)
+		ids, err := tx.TaskDAO().DependentIDs(ctx, pre.ID)
 		if err != nil || len(ids) != 0 {
 			t.Fatalf("deleted sources retained as live dependents: %v %v", ids, err)
 		}
-		return tx.DeleteTask(ctx, pre.ID, false)
+		return tx.TaskDAO().DeleteTask(ctx, pre.ID, false)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Task(ctx, project.ID, pre.ID)
-		if !errors.Is(err, core.ErrTaskDeleted) {
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TaskDAO().Task(ctx, project.ID, pre.ID)
+		if !errors.Is(err, model.ErrTaskDeleted) {
 			t.Fatalf("deleted marker was not observed: %v", err)
 		}
 		return nil
@@ -79,13 +79,13 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, operation := range []func() error{
-		func() error { _, err := expired.DependentIDs(ctx, pre.ID); return err },
-		func() error { return expired.DeleteTask(ctx, pre.ID, false) },
-		func() error { return expired.DeleteTask(ctx, pre.ID, true) },
+		func() error { _, err := expired.TaskDAO().DependentIDs(ctx, pre.ID); return err },
+		func() error { return expired.TaskDAO().DeleteTask(ctx, pre.ID, false) },
+		func() error { return expired.TaskDAO().DeleteTask(ctx, pre.ID, true) },
 	} {
 		err := operation()
 		var failure *Error
-		if !errors.As(err, &failure) || errors.Is(err, core.ErrNotFound) {
+		if !errors.As(err, &failure) || errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("closed transaction lost database cause: %v", err)
 		}
 	}
@@ -95,12 +95,12 @@ func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	project, other := queryProject(t, database, 1), queryProject(t, database, 2)
-	root := queryTask(t, database, project.ID, 10, core.TaskDone)
-	target := queryTask(t, database, project.ID, 11, core.TaskTodo, root.ID)
-	source := queryTask(t, database, project.ID, 12, core.TaskTodo, target.ID, root.ID)
-	foreign := queryTask(t, database, other.ID, 13, core.TaskTodo)
-	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		return tx.DeleteTask(ctx, target.ID, true)
+	root := queryTask(t, database, project.ID, 10, model.TaskDone)
+	target := queryTask(t, database, project.ID, 11, model.TaskTodo, root.ID)
+	source := queryTask(t, database, project.ID, 12, model.TaskTodo, target.ID, root.ID)
+	foreign := queryTask(t, database, other.ID, 13, model.TaskTodo)
+	if err := writeProjectForTest(database, ctx, project.ID, func(tx ProjectWriteScope) error {
+		return tx.TaskDAO().DeleteTask(ctx, target.ID, true)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +114,28 @@ func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
 	var outgoing int
 	if err := database.Pool.QueryRow(ctx, "SELECT count(*) FROM task_dependencies WHERE project_id=$1 AND task_id=$2", project.ID, target.ID).Scan(&outgoing); err != nil || outgoing != 1 {
 		t.Fatalf("target outgoing history removed: %d %v", outgoing, err)
+	}
+}
+
+func TestInvalidateTaskCacheUsesProjectTransaction(t *testing.T) {
+	ctx := context.Background()
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	var before, after string
+	if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	var expired ProjectWriteScope
+	if err := writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
+		expired = scope
+		return scope.ProjectDAO().InvalidateTaskCache(ctx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&after); err != nil || before == after {
+		t.Fatalf("cache epoch did not change: %q %q %v", before, after, err)
+	}
+	if err := expired.ProjectDAO().InvalidateTaskCache(ctx); err == nil {
+		t.Fatal("expired transaction accepted cache invalidation")
 	}
 }

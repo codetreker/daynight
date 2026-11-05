@@ -23,7 +23,6 @@ it('rejects stale catalogs, unknown settings/commands, and auth pause before any
   await expect(f.client.updateSetting('model', 'b', '3')).rejects.toThrow();
   await expect(f.client.updateSetting('model', 'unlisted', '4')).rejects.toThrow();
   await expect(f.client.executeCommand('not-listed', '', '4')).rejects.toThrow();
-  await expect(f.client.send('/not-a-message')).rejects.toThrow();
   f.pause();
   await expect(f.client.updateSetting('model', 'b', '4')).rejects.toThrow();
   await expect(f.client.executeCommand('native-compact', '', '4')).rejects.toThrow();

@@ -21,7 +21,12 @@ bodies. The [client design](../../../../docs/design/daynight-worker-reporting.md
 owns scheduling, sampling, cancellation and diagnostics; the
 [client requirements](../../../../docs/spec/daynight-worker-reporting.md) define
 the observable guarantees. The [account snapshot decision](2026-10-28-worker-runtime-snapshots.md)
-retains ownership of server normalization, persistence and queries.
+retains ownership of server normalization, persistence and queries. The
+[cloud application decision](2026-11-04-worker-cloud-runtime-configuration.md)
+owns the independent configuration extension: each report captures an immutable
+application snapshot and returns its target and observation acknowledgment to
+the manager. Native and Project side effects stay outside the report attempt;
+only configuration application state is persisted in its separate JSON owner.
 
 The reporter reuses the coordinator's complete immutable task references. It
 keeps unknown inventory as null, preserves successful observations through read
@@ -33,7 +38,14 @@ Pure version extraction is shared with native preflight, while launch validation
 and integration repair remain in preflight. Resource reporting can therefore
 show an installed older CLI. Private Herdr versions come from an uncached
 read-only ping that neither starts the daemon nor initializes the execution
-backend, preserving pure-Web independence.
+backend, preserving pure-Web independence. macOS durable runs are selected from
+the existing read-only lifecycle journal by the current Worker and service.
+Original process and endpoint identities fence each ping; the reporting design
+owns stopped, stale, preparation and uncertain identity outcomes. Multiple live
+daemons must agree on one version, otherwise the existing field reports
+`error/unavailable`. A present journal never falls back to the shared endpoint.
+Legacy platforms and macOS installations without that journal retain their
+shared read-only probe. No lifecycle migration, recovery or control write occurs.
 
 A report has a 15-second attempt budget: up to five seconds for collection,
 including native termination and join, and up to ten seconds for HTTP. Typed
@@ -64,11 +76,22 @@ recovery protocol beside current task ownership. The latest server snapshot
 already retains the last observation; process-local state allows a restarted
 reporter to begin with fresh sampling and explicitly unknown inventory.
 
+**Report one arbitrary live run or the shared daemon.** Per-run daemons can
+coexist across versions, and a retained shared daemon can be unrelated to the
+current Worker. Choosing the first or newest result would conceal disagreement
+and make a single value depend on iteration order. Agreement uses the existing
+reporting schema and exposes uncertainty without publishing execution identities.
+
 ## Consequences
 
 Idle, busy and pure-Web Workers can supply the same snapshot protocol without
 changing task versions or claims. Report failures do not control execution, and
 sanitized transition diagnostics do not disclose native output or credentials.
+
+Durable daemon observation adds a read-only journal snapshot and local identity
+checks. Mixed versions or unavailable evidence make the Herdr field unavailable
+without blocking other resource fields or changing execution state. The snapshot
+does not promise an atomic view of independently changing daemon processes.
 
 Observation adds periodic OS and bounded subprocess work. Native version data
 may be up to 60 seconds old, with its original checkedAt. OS filesystem I/O
