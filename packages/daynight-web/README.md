@@ -519,13 +519,19 @@ replaying PATCH; missing access clears private Project data and the draft.
 
 Network, protocol or 5xx failure after PATCH leaves the write unconfirmed. The
 form reconciles Project and membership before enabling another mutation. Failed
-reconciliation leaves Save blocked and exposes a read retry. Navigation aborts
-obsolete client work without claiming that a committed write was rolled back;
-returning to the page loads authoritative state before editing. The existing
+reconciliation leaves Save blocked and exposes a read retry. Leaving the settings
+route cancels an undispatched save; a dispatched save and its result remain owned
+by the original user and Project for presentation on return. Unresolved outcomes
+remain retained until read-only reconciliation or scope invalidation. Returning
+reads authoritative settings without overwriting a draft; a changed version
+shows the current saved value and blocks saving until the user cancels the draft.
+An equal current value needs no write and does not establish an unknown outcome.
+Identity or resource invalidation still rejects stale results, and cancellation
+never proves that a committed write was rolled back. The existing
 foreground identity guard preserves same-user drafts and focus. Ordinary access
 checks do not reload the settings resource; Save waits for the current check and
-verifies the role, ownership and observed settings version before dispatch. Identity
-or project replacement invalidates old requests and results.
+verifies the role, ownership and observed settings version before dispatch. Ending
+the original identity or Project scope invalidates its requests and results.
 
 Project resources include required `settings.version`,
 `settings.executionWarningMinutes` and `ownership:{teamId,version}`. The resource

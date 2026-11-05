@@ -156,12 +156,12 @@ const WorkspaceRoutes = ({ user, route, selectedTeamId, admission, onSignOut, on
   useLayoutEffect(() => { const slot = projectMemberSlot.current; if (slot) for (const member of mountedProjectMembers.current) if (member.host.parentNode !== slot) slot.appendChild(member.host); });
   if (route.kind === "members" && !mountedProjectMembers.current.some((member) => member.id === route.projectId)) mountedProjectMembers.current.push({ id: route.projectId, host: document.createElement("div") });
   const memberSlot = useRef<HTMLDivElement>(null);
-  const mountedProjectSettings = useRef<{ id: string; host: HTMLDivElement; retained: boolean }[]>([]);
+  const mountedProjectSettings = useRef<{ id: string; host: HTMLDivElement; retained: { settings: boolean; transfer: boolean } }[]>([]);
   const [, updateProjectSettings] = useState(0);
-  const retainProjectSettings = useCallback((projectId: string, retained: boolean) => {
+  const retainProjectSettings = useCallback((projectId: string, owner: "settings" | "transfer", retained: boolean) => {
     const settings = mountedProjectSettings.current.find((entry) => entry.id === projectId);
-    if (settings === undefined || settings.retained === retained) return;
-    settings.retained = retained;
+    if (settings === undefined || settings.retained[owner] === retained) return;
+    settings.retained[owner] = retained;
     updateProjectSettings((value) => value + 1);
   }, []);
   const projectSettingsSlot = useRef<HTMLDivElement>(null);
@@ -170,8 +170,8 @@ const WorkspaceRoutes = ({ user, route, selectedTeamId, admission, onSignOut, on
   const attachMemberSlot = useCallback((slot: HTMLDivElement | null) => { memberSlot.current = slot; if (slot) for (const member of mountedMembers.current) if (member.host.parentNode !== slot) slot.appendChild(member.host); }, []);
   useLayoutEffect(() => { const slot = memberSlot.current; if (slot) for (const member of mountedMembers.current) if (member.host.parentNode !== slot) slot.appendChild(member.host); });
   useLayoutEffect(() => { const slot = projectSettingsSlot.current; if (slot) for (const settings of mountedProjectSettings.current) if (settings.host.parentNode !== slot) slot.appendChild(settings.host); });
-  mountedProjectSettings.current = mountedProjectSettings.current.filter((settings) => settings.retained || route.kind === "settings" && settings.id === route.projectId);
-  if (route.kind === "settings" && !mountedProjectSettings.current.some((settings) => settings.id === route.projectId)) mountedProjectSettings.current.push({ id: route.projectId, host: document.createElement("div"), retained: false });
+  mountedProjectSettings.current = mountedProjectSettings.current.filter((settings) => settings.retained.settings || settings.retained.transfer || route.kind === "settings" && settings.id === route.projectId);
+  if (route.kind === "settings" && !mountedProjectSettings.current.some((settings) => settings.id === route.projectId)) mountedProjectSettings.current.push({ id: route.projectId, host: document.createElement("div"), retained: { settings: false, transfer: false } });
   if (route.kind !== "teamSettings" || mountedSettings.current !== route.teamId) mountedSettings.current = null;
   const preferenceDenied = teams.detail.error instanceof ApiError && teams.detail.error.kind === "server" && (teams.detail.error.status === 403 && teams.detail.error.code === "forbidden" || teams.detail.error.status === 404 && teams.detail.error.code === "not_found");
   const settingsReady = route.kind === "teamSettings" && teams.detail.id === route.teamId && (teams.detail.status === "ready" || teams.detail.status === "error" && mountedSettings.current === route.teamId && guardedTeam(route.teamId)) && !blocked;
@@ -188,7 +188,7 @@ const WorkspaceRoutes = ({ user, route, selectedTeamId, admission, onSignOut, on
     {creating !== null && <CreateProjectDialog admission={admission} teamId={creating.id} teamName={creating.name} teamPersonal={creating.personal} userId={user.id} onIdentityMismatch={onIdentityMismatch} onClose={() => setCreating(null)} onCreated={(project) => { setCreating(null); projects.refresh(); navigate(`/projects/${project.id}`); }} />}
   </Workspace>}
     {mountedProjectMembers.current.map(({ id: projectId, host }) => { const onRoute = route.kind === "members" && route.projectId === projectId; const active = onRoute && workspaceVisible && !blocked; return createPortal(<div hidden={!active} inert={!active}><MembersPanel projectId={projectId} projectName={projectName ?? m.genericProject} user={user} active={active} onRoute={onRoute} onRemoved={() => { projects.refresh(); if (onRoute) navigate("/projects"); }} onUnavailable={projects.refresh} /></div>, host, `project:${projectId}`); })}
-    {mountedProjectSettings.current.map(({ id: projectId, host }) => { const onRoute = route.kind === "settings" && route.projectId === projectId; const active = workspaceVisible && onRoute && !blocked; return createPortal(<div hidden={!active} inert={!active}><ProjectSettingsPanel projectId={projectId} user={user} active={active} onRoute={onRoute} onRetentionChange={(retained) => retainProjectSettings(projectId, retained)} onTransferred={transfer.complete} /></div>, host, projectId); })}
+    {mountedProjectSettings.current.map(({ id: projectId, host }) => { const onRoute = route.kind === "settings" && route.projectId === projectId; const active = workspaceVisible && onRoute && !blocked; return createPortal(<div hidden={!active} inert={!active}><ProjectSettingsPanel projectId={projectId} user={user} active={active} onRoute={onRoute} onRetentionChange={(retained) => retainProjectSettings(projectId, "transfer", retained)} onSettingsRetentionChange={(retained) => retainProjectSettings(projectId, "settings", retained)} onTransferred={transfer.complete} /></div>, host, projectId); })}
     {mountedMembers.current.map(({ id: teamId, host }) => { const active = route.kind === "teamMembers" && route.teamId === teamId && membersReady; return createPortal(<div hidden={!active} inert={!active}><TeamMembersPanel teamId={teamId} active={active} admissionBlocked={identityChecking} preferenceDenied={preferenceDenied && teams.detail.id === teamId} onRoute={route.kind === "teamMembers" && route.teamId === teamId} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={(guarded) => setTeamGuard(teamId, "members", guarded)} onUnavailable={() => { if (!active) return "changed"; const result = teams.forgetUnavailable(teamId); if (result === "forgotten") navigate("/projects"); return result; }} onStart={() => clearMemberResult(teamId)} onChanged={(confirmed) => { if (confirmed) saveMemberResult(teamId, "changed"); if (route.kind === "teamMembers" && route.teamId === teamId) teams.refreshDetail(); teams.refreshList(); }} onLeft={() => { saveMemberResult(teamId, "left"); teams.leaveTeam(teamId); teams.refreshList(); const current = parseAuthRoute(window.location.pathname, window.location.search); if (route.kind === "teamMembers" && route.teamId === teamId && current.kind === "teamMembers" && current.teamId === teamId) navigate(`/teams/${user.personalTeam.id}`); }} /></div>, host, teamId); })}
   </>;
 };
