@@ -115,7 +115,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     processProof = await captureProcessProof(child.pid);
     await persist("process.json", processProof);
     let submitted = input.prompt === null, connected = false;
-    let renewalFailures = 0, nextRenewalAt = 0, ipcUnavailable = false;
+    let renewalFailures = 0, nextRenewalAt = 0, ipcUnavailable = false, hasObserved = false;
     const startupDeadline = Date.now() + 60_000;
     while (!requestedStop) {
       if (child.exitCode !== null || child.signalCode !== null) throw new Error("Test controller exited; inspect its private controller.log. No replacement native session was created.");
@@ -123,10 +123,14 @@ export const runIndependentController = async (input: IndependentControllerInput
       try { observed = await requestController(ticket, { kind: "observe" }, { timeoutMs: 2000, signal: cancellation.signal }); }
       catch (error) {
         if (requestedStop || !(error instanceof ControllerIpcOutcomeUnknownError) || !connected && Date.now() >= startupDeadline) throw error;
-        if (!ipcUnavailable) context.stderr("Controller IPC observation is temporarily unavailable; the original native execution remains supervised.\n");
-        ipcUnavailable = true;
+        // The endpoint may not exist yet until the child initializes its IPC server.
+        if (hasObserved) {
+          if (!ipcUnavailable) context.stderr("Controller IPC observation is temporarily unavailable; the original native execution remains supervised.\n");
+          ipcUnavailable = true;
+        }
       }
       if (observed) {
+        hasObserved = true;
         if (ipcUnavailable) { context.stderr("Controller IPC observation recovered for the original native execution.\n"); ipcUnavailable = false; }
         if (["paused", "failed", "stopping", "stopped"].includes(observed.snapshot.lifecycle)) throw new Error("Test controller is unavailable; its native outcome is retained in the private journal.");
         // A lost reply may settle as a definitive rejection in the journal while
