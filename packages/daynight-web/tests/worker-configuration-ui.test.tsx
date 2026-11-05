@@ -235,7 +235,7 @@ describe('Worker configuration form', () => {
     install(() => missing ? configurationError(404, 'not_found') : configurationResponse(configurationResource()), [project(3)]);
     mount(); await flush(); fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!); await flush();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    missing = true; await advance(); expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    missing = true; await advance(); expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByText('Worker configuration is unavailable')).toBeInTheDocument();
     missing = false; fireEvent.click(screen.getByRole('button', { name: 'Retry' })); await flush();
     expect(screen.queryByRole('dialog')).toBeNull(); expect(input()).toHaveValue('2');
   });
