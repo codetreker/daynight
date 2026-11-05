@@ -22,13 +22,14 @@ export const saveProjectSettings = async (
   projectId: string,
   input: { readonly version: bigint; readonly executionWarningMinutes: number },
   signal: AbortSignal,
+  onDispatch?: () => void,
 ): Promise<Project> => {
   const id = requestId(projectId);
   if (!isTaskVersion(input.version) || !isExecutionWarningMinutes(input.executionWarningMinutes)) throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${id}/settings`, signal, {
     method: "PATCH", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson(input),
-  });
+  }, onDispatch);
   return json(response, signal, (data) => {
     const saved = boundProject(data, id);
     if (response.status !== 200 || saved.settings.executionWarningMinutes !== input.executionWarningMinutes

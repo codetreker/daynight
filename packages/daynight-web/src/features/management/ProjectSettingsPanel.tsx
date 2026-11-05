@@ -11,7 +11,7 @@ export const ProjectSettingsPanel = ({ projectId, user, onTransferred, active = 
 
 const ProjectSettingsContent = ({ projectId, user, onTransferred, active, onRoute, onRetentionChange }: { readonly projectId: string; readonly user: CurrentUser; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRoute: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) => {
   const { messages: { auth: { management: { settings: m, common } } } } = useI18n();
-  const state = useProjectSettings(projectId, user.id);
+  const state = useProjectSettings(projectId, user.id, onRoute);
   const disabled = state.pending || state.loading || state.uncertain || state.role !== "admin";
   return <>
     <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{state.project?.name ?? m.title}</h1><p className="subtitle">{m.scopeHint}</p></div></div>

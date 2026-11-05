@@ -11,7 +11,15 @@ export const parseWarningDraft = (draft: string): number | null => {
   return isExecutionWarningMinutes(minutes) ? minutes : null;
 };
 
-export const useProjectSettings = (projectId: string, userId: string) => {
+const abortable = <T,>(promise: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+  if (signal.aborted) { reject(signal.reason); return; }
+  const abort = () => { cleanup(); reject(signal.reason); };
+  const cleanup = () => signal.removeEventListener("abort", abort);
+  signal.addEventListener("abort", abort, { once: true });
+  void promise.then((value) => { cleanup(); resolve(value); }, (error: unknown) => { cleanup(); reject(error); });
+});
+
+export const useProjectSettings = (projectId: string, userId: string, onRoute: boolean) => {
   const [project, setProject] = useState<Project | null>(null);
   const access = useProjectAccess(projectId);
   const role = access.status === "ready" ? access.access!.effectiveRole : null;
@@ -32,8 +40,16 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   const confirmedReadInFlight = useRef(false);
   const generation = useRef(0);
   const submitting = useRef(false);
+  const routeRef = useRef(onRoute);
+  const routeGeneration = useRef(0);
+  if (routeRef.current !== onRoute) { routeRef.current = onRoute; ++routeGeneration.current; }
+  const admission = useRef<{ readonly controller: AbortController; dispatched: boolean } | null>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
+
+  useEffect(() => {
+    if (!onRoute && admission.current !== null && !admission.current.dispatched) admission.current.controller.abort();
+  }, [onRoute]);
 
   const clearPrivate = () => { setProject(null); setDraft(""); setUncertain(false); setUnavailable(true); };
   const load = async (lifetime: AbortSignal, nextNotice: SettingsNotice = null) => {
@@ -89,22 +105,27 @@ export const useProjectSettings = (projectId: string, userId: string) => {
 
   const save = async () => {
     const admitted = access.session.snapshot();
-    if (submitting.current || confirmedNeedsRead.current || loading || uncertain || admitted.status !== "ready" || admitted.access!.effectiveRole !== "admin" || project === null) return;
+    if (!routeRef.current || submitting.current || confirmedNeedsRead.current || loading || uncertain || admitted.status !== "ready" || admitted.access!.effectiveRole !== "admin" || project === null) return;
     const minutes = parseWarningDraft(draft);
     if (minutes === null) { setInvalid(true); return; }
     submitting.current = true; setPending(true); setError(null); setNotice(null); setInvalid(false);
-    const signal = controller.current!.signal;
+    const lifetime = controller.current!;
+    const operation = { controller: new AbortController(), dispatched: false };
+    admission.current = operation;
+    const signal = AbortSignal.any([lifetime.signal, operation.controller.signal]);
     const operationGeneration = generation.current;
+    const operationRoute = routeGeneration.current;
     const ownership = admitted.access!.ownership;
-    let dispatched = false;
     try {
-      const fresh = await access.session.waitForFreshAccess(signal, true);
-      if (signal.aborted || access.session.scope.isInvalidated || operationGeneration !== generation.current || projectRef.current?.settings.version !== project.settings.version) return;
+      const fresh = await abortable(access.session.waitForFreshAccess(signal, true), signal);
+      if (signal.aborted || !routeRef.current || operationRoute !== routeGeneration.current || access.session.scope.isInvalidated || operationGeneration !== generation.current || projectRef.current?.settings.version !== project.settings.version) return;
       if (fresh === null) return;
       if (fresh.effectiveRole !== "admin") { setNotice("permission"); return; }
       if (fresh.ownership.teamId !== ownership.teamId || fresh.ownership.version !== ownership.version) { setNotice("conflict"); return; }
-      dispatched = true;
-      const saved = await saveProjectSettings(projectId, { version: project.settings.version, executionWarningMinutes: minutes }, signal);
+      const saved = await saveProjectSettings(projectId, { version: project.settings.version, executionWarningMinutes: minutes }, signal, () => {
+        if (!routeRef.current || operationRoute !== routeGeneration.current) throw new DOMException("The settings route changed.", "AbortError");
+        operation.dispatched = true;
+      });
       await access.session.scope.ready(signal);
       if (signal.aborted || access.session.scope.isInvalidated) return;
       await access.session.waitForFreshAccess(signal);
@@ -121,7 +142,7 @@ export const useProjectSettings = (projectId: string, userId: string) => {
       if (signal.aborted || isAbortError(failure)) return;
       try { await access.session.scope.ready(signal); } catch { return; }
       if (signal.aborted || access.session.scope.isInvalidated) return;
-      if (!dispatched) { setError(failure); return; }
+      if (!operation.dispatched) { setError(failure); return; }
       if (failure instanceof ApiError && failure.kind === "server" && failure.status === 404) clearPrivate();
       else if (failure instanceof ApiError && failure.kind === "server" && (failure.status === 409 || failure.status === 403)) {
         await load(signal, failure.status === 409 ? "conflict" : "permission");
@@ -131,7 +152,10 @@ export const useProjectSettings = (projectId: string, userId: string) => {
         setUncertain(true);
         await load(signal, "reconciled");
       }
-    } finally { if (!signal.aborted) { submitting.current = false; setPending(false); } }
+    } finally {
+      if (admission.current === operation) admission.current = null;
+      if (!lifetime.signal.aborted) { submitting.current = false; setPending(false); }
+    }
   };
 
   return {
