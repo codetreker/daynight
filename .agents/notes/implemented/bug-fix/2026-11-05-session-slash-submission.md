@@ -22,7 +22,9 @@ Only existing outer whitespace trimming applies.
 
 Default menu highlighting remains presentation. Tab, click or explicit arrow
 selection establishes a candidate choice; direct Enter on an unmatched prefix
-sends the text. Temporary selection resets with input, catalog and menu lifetime.
+sends the text. Temporary selection resets with input, catalog and menu lifetime. Catalog
+comparison uses descriptor values and revision, so reconstructed equivalent
+snapshots do not change an explicitly selected operation.
 A chosen parameterized command separately retains its ID and command head.
 Argument edits and menu dismissal preserve that intent; submission validates the
 same ID against the current catalog revision. Removal, same-name replacement,

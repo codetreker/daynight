@@ -418,3 +418,26 @@ it.each(['offline', 'auth', 'read-only', 'unsynchronized', 'pending', 'no-steer'
   expect(screen.getByRole('button', { name: mode === 'no-steer' ? 'Add to current turn' : 'Send' })).toBeDisabled();
   fireEvent.keyDown(input, { key: 'Enter' }); expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
 });
+
+it.each(['equivalent', 'activity', 'settings'] as const)('preserves explicit command navigation through a %s snapshot with the same catalog', async mode => {
+  const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
+  // Snapshot transport reconstructs controls even when the native catalog is unchanged.
+  const next = JSON.parse(JSON.stringify(props.state.snapshot)) as SessionSnapshot;
+  const nextSnapshot: SessionSnapshot = mode === 'activity' ? { ...next, sessionRevision: '13', activity: 'working', currentTurnId: 'turn' } : mode === 'settings' ? { ...next, controls: { ...next.controls!, settings: next.controls!.settings.map(setting => ({ ...setting, value: 'native-b' })) } } : next;
+  view.rerender(<SessionComposer {...props} state={hydrateSession(props.state, nextSnapshot, [])} />);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+  expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it.each(['revision', 'description', 'availability', 'id', 'error'] as const)('resets explicit command navigation when catalog %s changes', async mode => {
+  const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/rev' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
+  const commands = controls.commands.map((command, index) => index !== 0 ? command : { ...command, ...(mode === 'description' ? { description: 'Changed description' } : mode === 'availability' ? { available: false } : mode === 'id' ? { id: 'new-review' } : {}) });
+  const nextSnapshot: SessionSnapshot = { ...props.state.snapshot!, controls: { ...controls, commands, ...(mode === 'revision' ? { revision: '4' } : mode === 'error' ? { commandsError: 'Discovery failed' } : {}) } };
+  view.rerender(<SessionComposer {...props} state={hydrateSession(props.state, nextSnapshot, [])} />);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/rev'));
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});

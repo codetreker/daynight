@@ -133,7 +133,9 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const showCommands = controlView === 'commands' || isCommand && !commandsDismissed && !/\s/u.test(commandQuery) && controlView === null;
   const selectedIndex = Math.min(commandIndex, Math.max(0, matchingCommands.length - 1));
   const submission = classifySubmission(text, commands, intent);
-  useLayoutEffect(() => { setCommandIndex(0); setCandidateExplicit(false); }, [text, controls, showCommands, controlView, active]);
+  // Snapshots reconstruct controls; only catalog changes invalidate keyboard selection.
+  const catalogSignature = JSON.stringify(controls ? [controls.revision, controls.commandsError, controls.commands.map(command => [command.id, command.name, command.description, command.argumentHint, command.available])] : null);
+  useLayoutEffect(() => { setCommandIndex(0); setCandidateExplicit(false); }, [text, catalogSignature, showCommands, controlView, active]);
   const controlsAllowed = !authPaused && !pending && !commandPending && sessionControlGate(state, connected);
   const closeControls = useCallback(() => { setControlView(null); dismissCommands(true); inputRef.current?.focus({ preventScroll: true }); }, []);
   useEffect(() => {
