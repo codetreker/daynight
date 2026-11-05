@@ -60,6 +60,7 @@ The [Controller execution layer](2026-11-05-worker-bot-runtime.md) supplies
 registration, process startup and grant renewal. Recovery and deletion execution
 remain responsibilities of lifecycle integration. Keeping the
 fixed identity and role record separate from current observations lets that
-integration retry without replacing native sessions. No assistantHost capability
-is advertised until the complete integration is available. These records do not
-prove runtime availability or process termination.
+integration retry without replacing native sessions. The
+[assistant composition](2026-11-05-assistant-composition.md) connects that runtime
+and capability advertisement; inventory records alone do not prove runtime
+availability or process termination.

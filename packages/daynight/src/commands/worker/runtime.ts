@@ -50,6 +50,7 @@ import { createWorkerRepositoryAdmission } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { shutdownWorkerExecutions } from "./shutdown.js";
+import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { createWorkerGitManager } from "./worktrees.js";
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
@@ -204,6 +205,8 @@ export const runWorker = async (options: {
   let configuration: WorkerConfigurationManager | undefined;
   let renewal: Promise<void> | undefined;
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
+  let bots: WorkerBotHost | undefined;
+  let botRun: Promise<void> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
   const failures: unknown[] = [];
   try {
@@ -316,8 +319,17 @@ export const runWorker = async (options: {
       void job.finally(() => { if (initialRemovalsJob === job) initialRemovalsJob = undefined; }).catch(() => undefined);
       return job;
     };
+    bots = createWorkerBotHost({ ...options, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
+      configuration: () => {
+        const effective = manager.current().effective;
+        return effective.native === null || effective.recoveryLimit === null ? null : resolveCloudNative(effective.native, "web", effective.recoveryLimit);
+      },
+      pollIntervalMs: () => manager.current().effective.pollIntervalMs,
+      recoveryLimit: () => manager.current().effective.recoveryLimit,
+    });
+    botRun = bots.run(signal).catch(error => { failures.push(error); cancellation.controller.abort(error); });
     let reconcileReport = false;
-    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl });
+    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots });
     reporter = createWorkerReporter({ signal, collect: operation => telemetry.collect(operation), send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
         prepare: async operation => {
@@ -430,17 +442,19 @@ export const runWorker = async (options: {
     try { await reporter?.stop(); } catch (error) { failures.push(error); }
     try { await initialRemovalReconciliation; } catch { /* The reconciliation failure was reported when it occurred. */ }
     try { await configuration?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
-    if (coordinator !== undefined) {
+    if (coordinator !== undefined || bots !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
-        await shutdownWorkerExecutions({ tasks: async () => {
+        await shutdownWorkerExecutions({ ...(coordinator === undefined ? {} : { tasks: async () => {
           if (!await coordinator!.shutdown()) throw new Error("Some task resources could not be confirmed stopped and closed; the private Herdr instance was retained.");
           const operation = createOperation({ limits: { totalMs: 30_000 } });
           try { if (herdr !== undefined && herdr.lifecycle === undefined) await herdr.stopInstance(operation); }
           finally { operation.dispose(); }
-        } });
-      } catch (error) { failures.push(error); }
+        } }), ...(bots === undefined ? {} : { bots: () => bots!.shutdown() }) });
+      } catch (error) { if (!failures.includes(error)) failures.push(error); }
     }
+    await botRun;
+    try { bots?.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }
     try { herdr?.lifecycle?.close(); } catch (error) { failures.push(error); }

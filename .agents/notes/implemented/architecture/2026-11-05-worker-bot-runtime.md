@@ -142,8 +142,9 @@ directories from a prior Worker crash have no durable Bot attribution and are
 not guaranteed to be discovered; deleting the shared alias root would exceed
 this ownership boundary.
 
-Formal runWorker Bot scheduling, product entry and assistantHost advertising
-remain separate integration responsibilities. Provider-owned history and user
+The [assistant composition](2026-11-05-assistant-composition.md) connects formal
+runWorker scheduling, product entry and assistantHost advertising. These remain
+integration responsibilities rather than execution-layer side effects. Provider-owned history and user
 exports have no physical-erasure guarantee.
 Controlled tests establish the execution mechanics, not complete live Provider,
 browser, or production acceptance.

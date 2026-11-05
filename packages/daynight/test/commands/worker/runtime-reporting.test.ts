@@ -13,6 +13,11 @@ import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
+// These Task/configuration fixtures do not own a Bot service or native execution.
+vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
+  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, close: () => {},
+}) }));
+
 const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn() }));
 vi.mock("node:timers/promises", async original => {
   const actual = await original<typeof import("node:timers/promises")>();

@@ -54,7 +54,9 @@ these existing contracts intact without adding a separate scrolling mechanism.
 
 ## Consequences
 
-The route can be integrated without advertising an incomplete assistant product.
+The route was delivered separately from hosting to avoid advertising an incomplete
+assistant product. The [assistant composition](2026-11-05-assistant-composition.md)
+connects navigation and hosting without replacing the page identity model.
 Details and deletion controls can consume the same selection and cache. Polling
 all pages costs more for large inventories and should be reconsidered with a
 server search or change-feed contract. Unavailable browser storage cannot promise
