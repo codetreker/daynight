@@ -18,6 +18,8 @@ export class ProjectAccessSession {
   private readonly lifetime = new AbortController();
   private read: Promise<ProjectAccess | null> | null = null;
   private readAbort: AbortController | null = null;
+  private protectedRead = false;
+  private refreshAfterRead = false;
   private sequence = 0;
   private accepted = 0;
   private barrier = 0;
@@ -55,9 +57,11 @@ export class ProjectAccessSession {
     if (!this.live() || !this.active || document.visibilityState === 'hidden' || this.read !== null) return;
     this.timer = setTimeout(() => { this.timer = null; void this.revalidate(); }, Math.max(0, this.lastObservation + 30_000 - performance.now()));
   };
-  revalidate = (): Promise<ProjectAccess | null> => {
+  revalidate = (): Promise<ProjectAccess | null> => this.readAccess(false);
+  private readAccess = (protectedRead: boolean): Promise<ProjectAccess | null> => {
     if (this.read !== null) return this.read;
     if (!this.live()) return Promise.resolve(null);
+    this.protectedRead = protectedRead;
     this.barrier = this.beginObservation();
     this.update({ ...this.state, refreshing: true });
     const readAbort = new AbortController();
@@ -103,9 +107,15 @@ export class ProjectAccessSession {
         if (this.read === pending) {
           this.read = null;
           if (this.readAbort === readAbort) this.readAbort = null;
+          this.protectedRead = false;
+          const refresh = this.refreshAfterRead && this.active && document.visibilityState !== 'hidden';
+          this.refreshAfterRead = false;
           if (ticket >= this.barrier) this.lastObservation = performance.now();
-          if (ticket >= this.barrier || this.accepted >= this.barrier) this.update({ ...this.state, refreshing: false });
-          this.schedule();
+          if (refresh) void this.revalidate();
+          else {
+            if (ticket >= this.barrier || this.accepted >= this.barrier) this.update({ ...this.state, refreshing: false });
+            this.schedule();
+          }
         }
       }
     });
@@ -116,17 +126,31 @@ export class ProjectAccessSession {
     this.readAbort?.abort();
     this.readAbort = null;
     this.read = null;
-    return this.revalidate();
+    this.refreshAfterRead = false;
+    return this.readAccess(true);
   };
   setActive = (active: boolean): void => {
     if (this.active === active) return;
     this.active = active;
-    if (!active) { if (this.timer !== null) clearTimeout(this.timer); this.timer = null; }
-    else if (document.visibilityState !== "hidden") void this.revalidate();
-    else this.schedule();
+    if (!active) {
+      if (this.timer !== null) clearTimeout(this.timer);
+      this.timer = null;
+      this.refreshAfterRead = false;
+      if (!this.protectedRead) {
+        this.barrier = this.beginObservation();
+        this.readAbort?.abort();
+        this.readAbort = null;
+        this.read = null;
+        this.update({ ...this.state, refreshing: false });
+      }
+    } else if (document.visibilityState !== 'hidden') this.refreshVisible();
+  };
+  private refreshVisible = (): void => {
+    if (this.read !== null && this.protectedRead) this.refreshAfterRead = true;
+    else void this.revalidate();
   };
   start = (initialRead: boolean): (() => void) => {
-    const refresh = () => { if (!this.active) return; if (document.visibilityState !== 'hidden') void this.revalidate(); else this.schedule(); };
+    const refresh = () => { if (!this.active) return; if (document.visibilityState !== 'hidden') this.refreshVisible(); else this.schedule(); };
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     const unsubscribe = this.scope.subscribe((event) => {

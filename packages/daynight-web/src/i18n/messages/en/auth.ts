@@ -106,6 +106,7 @@ export const auth: AuthMessages = {
     alreadyMemberDetail: "Your existing role will be preserved and the invitation will not be used.", memberRole: "Joining role: Member",
     currentRole: "Current role", joined: "You joined this Team", alreadyJoined: "You are already a member of this Team", teamId: "Team ID",
     acceptUnknown: "The result is unknown. Check the invitation for current information; this cannot confirm the original result.", checkInvitation: "Check invitation",
+    open: "Open Team",
   },
   createProject: {
     open: "＋ Create project", createFirst: "Create your first project",
@@ -143,7 +144,7 @@ export const auth: AuthMessages = {
     },
     members: {
       eyebrow: "PROJECT SETTINGS", title: "Project members", subtitle: ({ projectName }) => `${projectName} · Manage collaborators and invitations`,
-      invitationUnknown: "The invitation change was not confirmed. Read current invitations before making another change. A lost link cannot be recovered.", invitationObserved: "Current invitations are shown; the original result is still unknown. Review before changing them.", readCurrentInvitations: "Read current invitations",
+      invitationUnknown: "The invitation change was not confirmed. Read current invitations before making another change. A lost link cannot be recovered.", invitationUnreadable: "Your current access does not permit reading these invitations. The original result is still unknown.", invitationObserved: "Current invitations are shown; the original result is still unknown. Review before changing them.", readCurrentInvitations: "Read current invitations",
       grantUnknown: "The service did not confirm the member change. Read current members before reviewing another change.",
       grantObserved: "Current members have been read. The original write result remains unconfirmed; review the current grant before another change.",
       readCurrentMembers: "Read current members",

@@ -42,9 +42,10 @@ and the user retries after choosing B.
 ## Consequences
 
 Members can review nullable profiles and manage relationships within the Team's
-actual scope. Independent Project grants survive these operations. Invitation
-creation and global user discovery remain outside this page; adding them later
-does not require treating Project access as Team membership.
+actual scope. Independent Project grants survive these operations. The
+[invitation management decision](2026-11-05-web-scoped-invitations.md) adds
+scoped invitations without treating Project access as Team membership. Global
+user discovery remains outside this page.
 
 The next default workspace restores a newer saved Team, and a missing preference
 remains missing. This protection compares the current stored value on each

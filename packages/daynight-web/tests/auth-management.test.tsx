@@ -323,12 +323,43 @@ describe('authoritative project management', () => {
     vi.mocked(auth.revokeInvitation).mockImplementation(async (_projectId, invitationId) => { catalogue = catalogue.filter((item) => item.id !== invitationId); });
     members(); await readyMembers(); expect(screen.getByText(/还没有有效邀请/)).toBeInTheDocument();
     click('邀请成员'); expect(screen.getByText('7 天后到期 · 单次使用 · 加入角色：成员')).toBeInTheDocument(); await dialogClick('创建邀请链接');
-    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', user.id, expect.any(AbortSignal), expect.any(Function));
+    await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', user.id, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
     expect(screen.getByLabelText('一次性邀请链接')).toHaveValue('https://daynight.test/invitations#once-secret'); await dialogClick('我已保存，关闭');
     expect(screen.queryByDisplayValue(/once-secret/)).toBeNull();
     await clickWhenReady('撤销邀请 invitation-a');
     expect(screen.getByText(/这个邀请链接将立即失效/)).toBeInTheDocument(); await dialogClick('撤销邀请');
-    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', user.id, expect.any(AbortSignal), expect.any(Function));
+    await screen.findByText(/还没有有效邀请/); expect(auth.revokeInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', 'invitation-a', user.id, expect.any(AbortSignal), expect.any(Function), expect.any(Function));
+  });
+
+  it('retains a confirmed invitation secret across navigation until explicitly closed', async () => {
+    const link = 'https://daynight.test/invitations#once-secret';
+    vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await screen.findByDisplayValue(link);
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    expect(screen.getByDisplayValue(link)).not.toBeVisible();
+    view.rerender(<MembersPanel {...props} active onRoute />);
+    expect(await screen.findByDisplayValue(link)).toBeVisible();
+    await dialogClick('我已保存，关闭');
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
+  it('discards a retained invitation secret when its identity owner unmounts', async () => {
+    const link = 'https://daynight.test/invitations#once-secret';
+    vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await screen.findByDisplayValue(link);
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    view.unmount();
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    members(); await readyMembers();
+    expect(screen.queryByDisplayValue(link)).toBeNull();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
   it('preserves unknown invitation results and requires a fresh catalogue before another action', async () => {
@@ -342,6 +373,69 @@ describe('authoritative project management', () => {
     await screen.findByText(/原操作结果仍未确认/);
     await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接'); await screen.findByLabelText('一次性邀请链接');
     expect(auth.createInvitation).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a dispatched unknown invitation across navigation without replay', async () => {
+    const result = deferred<import('../src/api/auth').CreatedProjectInvitation>();
+    const guard = vi.fn();
+    vi.mocked(auth.createInvitation).mockImplementation(async (_project, _user, _signal, _mismatch, dispatched) => { dispatched?.(); return result.promise; });
+    const view = members({ active: true, onRoute: true, onGuardChange: guard }); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await waitFor(() => expect(auth.createInvitation).toHaveBeenCalledOnce());
+    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} active={false} onRoute={false} onGuardChange={guard} />);
+    await act(async () => result.reject(new ApiError('network')));
+    expect(guard).toHaveBeenCalledWith(true);
+    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} active onRoute onGuardChange={guard} />);
+    await screen.findByText(/邀请变更结果尚未确认/);
+    expect(screen.getByRole('button', { name: '邀请成员' })).toBeDisabled();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an unknown invitation unresolved when admin access is lost and requires an authorized catalogue read after restoration', async () => {
+    const result = deferred<import('../src/api/auth').CreatedProjectInvitation>();
+    vi.mocked(auth.createInvitation).mockImplementation(async (_project, _user, _signal, _mismatch, dispatched) => { dispatched?.(); return result.promise; });
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await waitFor(() => expect(auth.createInvitation).toHaveBeenCalledOnce());
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    actorRole = 'member';
+    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'member'), member('Alice', 'admin')]));
+    await act(async () => result.reject(new ApiError('network')));
+    view.rerender(<MembersPanel {...props} active onRoute />);
+    await screen.findByText('当前权限无法读取这些邀请，原操作结果仍未确认。');
+    const readsBefore = vi.mocked(auth.listInvitations).mock.calls.length;
+    await clickWhenReady('读取当前邀请');
+    await readyMembers();
+    expect(auth.listInvitations).toHaveBeenCalledTimes(readsBefore);
+    expect(screen.queryByText(/已读取当前邀请/)).toBeNull();
+    expect(screen.getByText('当前权限无法读取这些邀请，原操作结果仍未确认。')).toBeInTheDocument();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+
+    view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
+    actorRole = 'admin';
+    vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));
+    view.rerender(<MembersPanel {...props} active onRoute />);
+    await waitFor(() => expect(auth.listInvitations).toHaveBeenCalledTimes(readsBefore + 1));
+    await readyMembers();
+    expect(screen.getByRole('button', { name: '邀请成员' })).toBeDisabled();
+    expect(screen.queryByText(/已读取当前邀请/)).toBeNull();
+    await clickWhenReady('读取当前邀请');
+    await screen.findByText(/已读取当前邀请；原操作结果仍未确认/);
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an unknown invitation visible when project access is lost', async () => {
+    vi.mocked(auth.createInvitation).mockRejectedValueOnce(new ApiError('network'));
+    members(); await readyMembers();
+    await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
+    await screen.findByText(/邀请变更结果尚未确认/);
+    vi.mocked(auth.getProjectAccess).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    vi.mocked(auth.listMembers).mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    await clickWhenReady('读取当前邀请');
+    await screen.findByText('当前权限无法读取这些邀请，原操作结果仍未确认。');
+    expect(screen.queryByText(/已读取当前邀请/)).toBeNull();
+    expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
   it('keeps both unknown invitation revocations disabled after reading the catalogue', async () => {

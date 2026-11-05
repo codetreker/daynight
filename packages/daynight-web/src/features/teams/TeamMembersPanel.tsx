@@ -4,6 +4,7 @@ import { getTeam, listTeamMembers, removeTeamMember, setTeamMemberRole, type Tea
 import { useI18n } from "../../i18n/LocaleProvider";
 import { Identity, identityName } from "../management/feedback";
 import { ManagementDialog } from "../management/ManagementDialog";
+import { TeamInvitations } from "../management/TeamInvitations";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { useOperation } from "./TeamManagement";
 
@@ -20,12 +21,14 @@ export const TeamMembersPanel = ({ teamId, active = true, onRoute = true, admiss
   const [team, setTeam] = useState<Team | null>(null), [members, setMembers] = useState<readonly TeamMember[] | null>(null);
   const [loading, setLoading] = useState(true), [error, setError] = useState<unknown>(null), [storageError, setStorageError] = useState(false);
   const [action, setAction] = useState<Action | null>(null), [stale, setStale] = useState(false), [observed, setObserved] = useState(false);
+  const [invitationGuard, setInvitationGuard] = useState({ retain: false, lock: false });
+  const invitationGuardRef = useRef(invitationGuard); invitationGuardRef.current = invitationGuard;
   const read = useRef<AbortController | null>(null), op = useOperation(admission);
   const callbacks = useRef({ onUnavailable, onChanged, onLeft }); callbacks.current = { onUnavailable, onChanged, onLeft };
   const operation = useRef(op); operation.current = op;
   const activeRef = useRef(active); activeRef.current = active;
   const guardCallback = useRef(onGuardChange); guardCallback.current = onGuardChange;
-  useEffect(() => { guardCallback.current?.(op.pending || op.result?.kind === "unknown"); }, [op.pending, op.result]);
+  useEffect(() => { guardCallback.current?.(op.pending || op.result?.kind === "unknown" || invitationGuard.retain); }, [op.pending, op.result, invitationGuard.retain]);
   const load = useCallback(async () => {
     read.current?.abort(); const controller = new AbortController(); read.current = controller;
     const signal = AbortSignal.any([controller.signal, admission.signal]); setLoading(true); setError(null); setStorageError(false);
@@ -41,7 +44,7 @@ export const TeamMembersPanel = ({ teamId, active = true, onRoute = true, admiss
       try { await admission.ready(signal); } catch { return; }
       if (signal.aborted || admission.isInvalidated) return;
       setTeam(null); setMembers(null);
-      const result = failure instanceof ApiError && failure.kind === "server" && failure.status === 404 && failure.code === "not_found" && !operation.current.guarded() ? callbacks.current.onUnavailable?.() : undefined;
+      const result = failure instanceof ApiError && failure.kind === "server" && failure.status === 404 && failure.code === "not_found" && !operation.current.guarded() && !invitationGuardRef.current.retain ? callbacks.current.onUnavailable?.() : undefined;
       if (result !== "forgotten") { setStorageError(result === "storage_error"); setError(failure); }
     } finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) setLoading(false); } }
   }, [admission, teamId, onIdentityMismatch]);
@@ -50,7 +53,7 @@ export const TeamMembersPanel = ({ teamId, active = true, onRoute = true, admiss
   const actor = members?.find((member) => member.userId === admission.userId);
   const admin = team?.kind === "ordinary" && actor?.role === "admin";
   const unknown = op.result?.kind === "unknown";
-  const locked = loading || error !== null || op.pending || unknown || !active;
+  const locked = loading || error !== null || op.pending || unknown || invitationGuard.lock || !active;
   const open = (next: Action) => { if (locked) return; op.clear(); onStart?.(); setStale(false); setObserved(false); setAction(next); };
   const submit = () => {
     if (!action || locked || stale || !team || team.kind !== "ordinary" || !actor) return;
@@ -81,6 +84,7 @@ export const TeamMembersPanel = ({ teamId, active = true, onRoute = true, admiss
       const identity = { ...member.profile, userId: member.userId };
       return <div className="team-member-row" key={member.userId}><Identity user={identity} self={self} /><div><label className="visually-hidden" htmlFor={`team-role-${teamId}-${member.userId}`}>{m.role}: {identityName(identity)}</label><select id={`team-role-${teamId}-${member.userId}`} className="role-select" value={member.role} disabled={locked || !admin || last} onChange={(event) => open({ kind: "role", member, role: event.target.value as TeamRole })}><option value="member">{roles.member}</option><option value="admin">{roles.admin}</option></select>{last && team.kind === "ordinary" && <div className="row-caption">{m.lastAdmin}</div>}</div><div><button className="button quiet" type="button" disabled={locked || team.kind === "personal" || last || !self && !admin} onClick={() => open({ kind: "remove", member })}>{self ? m.leave : m.remove}</button></div></div>;
     })}</div></section>}
+    <TeamInvitations teamId={teamId} teamName={team?.name ?? ""} active={active} onRoute={onRoute} editable={Boolean(admin) && !loading && !op.pending && !unknown && error === null} actorRole={loading || error !== null ? null : actor?.role ?? null} unavailable={error instanceof ApiError && error.kind === "server" && ((error.status === 404 && error.code === "not_found") || (error.status === 403 && error.code === "forbidden"))} admission={admission} onIdentityMismatch={onIdentityMismatch} onPermissionChange={() => { if (activeRef.current) void load(); callbacks.current.onChanged(false); }} onGuardChange={(retain, lock) => setInvitationGuard((previous) => previous.retain === retain && previous.lock === lock ? previous : { retain, lock })} />
     {action && <ManagementDialog title={action.kind === "role" ? m.change : action.member.userId === admission.userId ? m.leave : m.confirmRemove} busy={op.pending} suspended={!active} onClose={() => setAction(null)} footer={<><button className="button" type="button" disabled={op.pending} onClick={() => setAction(null)}>{unknown ? m.close : m.cancel}</button>{unknown ? <button className="button primary" type="button" disabled={loading} onClick={() => { setObserved(false); void load().then((ok) => { if (ok) setObserved(true); }); }}>{m.check}</button> : <button className={`button ${action.kind === "remove" ? "danger" : "primary"}`} type="button" disabled={locked || stale} onClick={submit}>{op.pending ? m.pending : action.kind === "role" ? m.save : action.member.userId === admission.userId ? m.leave : m.confirmRemove}</button>}</>}>
       <Identity user={{ ...action.member.profile, userId: action.member.userId }} self={action.member.userId === admission.userId} />
       {action.kind === "role" && <p>{m.from}: {roles[action.member.role]} → {roles[action.role]}</p>}<p>{m.effect}</p>{notice}
