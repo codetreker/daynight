@@ -95,19 +95,27 @@ export class ProjectAccessSession {
         return this.state.access;
       } catch (error) {
         if (!this.live() || signal.aborted || isAbortError(error) || ticket < this.barrier) return null;
-        try { await this.scope.ready(signal); } catch { return null; }
-        if (!this.live() || signal.aborted || ticket < this.barrier) return null;
         if (ticket < this.accepted) return this.state.access;
         const denied = error instanceof ApiError && error.kind === 'server' && error.status === 404 && error.code === 'not_found';
+        // A principal-bound denial withdraws its matching cache generation immediately;
+        // the scope keeps persistent cleanup behind identity admission.
+        const currentDenial = denied && cacheTicket !== null && this.scope.canRevokeProject(cacheTicket);
+        if (!currentDenial) {
+          try { await this.scope.ready(signal); } catch { return null; }
+          if (!this.live() || signal.aborted || ticket < this.barrier) return null;
+          if (ticket < this.accepted) return this.state.access;
+        }
         if (denied && (cacheTicket !== null ? !this.scope.canRevokeProject(cacheTicket) : this.scope.getAuthorizedProject(this.projectId) !== null)) {
           this.update({ ...this.state, status: 'loading', error: null });
           return null;
         }
         this.barrier = this.beginObservation();
         this.lastObservation = performance.now();
-        this.update({ access: denied ? null : this.state.access, status: denied ? 'unavailable' : 'error', refreshing: false, error });
         if (denied && cacheTicket !== null) {
-          const cleanup = this.scope.revokeProject(cacheTicket, signal, true, error as ApiError);
+          const denialBarrier = this.barrier;
+          const cleanup = this.scope.revokeProject(cacheTicket, this.scope.signal, true, error as ApiError);
+          // Scope listeners normally publish the withdrawal; avoid overwriting a newer observation.
+          if (this.barrier === denialBarrier) this.update({ access: null, status: 'unavailable', refreshing: false, error });
           const cleanupBarrier = this.barrier;
           try { await cleanup; }
           catch (failure) {
@@ -115,7 +123,7 @@ export class ProjectAccessSession {
             try { await this.scope.ready(signal); } catch { return null; }
             if (this.live() && !signal.aborted && this.barrier === cleanupBarrier) this.update({ ...this.state, status: 'error', error: failure });
           }
-        }
+        } else this.update({ access: denied ? null : this.state.access, status: denied ? 'unavailable' : 'error', refreshing: false, error });
         return null;
       } finally {
         if (this.read === pending) {
