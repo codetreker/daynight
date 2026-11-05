@@ -21,7 +21,10 @@ would make that recoverable execution permanently unavailable.
 The [Web execution evidence decision](../architecture/2026-10-28-web-execution-evidence.md)
 keeps Web recovery separate from Herdr's process-local business recovery. Web uses its
 existing `recovery.count`, `pauseReason` and `retryAuthorized` fields to retain
-automatic recovery exhaustion and execution failure pauses across restarts.
+automatic recovery exhaustion and native recovery failure pauses across restarts.
+Ordinary orchestration failures use the separate
+[orchestration block decision](2026-11-05-worker-orchestration-blocks.md), which
+supersedes the original shared failure classification.
 Saving a pause preserves identity and count, revokes consumed retry authorization,
 and commits without a later exception rolling back the same transaction.
 
@@ -93,7 +96,7 @@ facts. It preserves the recovery gates described here.
 
 A failed execution remains diagnosable and recoverable without a replacement
 native conversation. Automatic restart cannot bypass the stop, and remote
-summary failures cannot consume native recovery attempts. Operators must use
+summary failures cannot consume native recovery attempts. For genuine native recovery pauses, operators must use
 explicit retry after resolving the underlying failure; a retained claim keeps
 occupying capacity until recovery or normal claim-end cleanup.
 

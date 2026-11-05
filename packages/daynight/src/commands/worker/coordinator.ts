@@ -1,5 +1,7 @@
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../cleanup-operation.js";
 import { readWorkerClaim, readSessionStartupReport } from "../../api/task-properties.js";
+import { legacyBranchLatch } from "./backends/orchestration.js";
+import { WorktreePreconditionError } from "./worktrees.js";
 import { sameStartupReport, type SessionStartupReport } from "../../session/startup.js";
 import { WebRecoveryBlockedError, type WebExecutionBackend } from "./backends/web.js";
 import type { WebExecutionStore } from "./backends/web-store.js";
@@ -246,10 +248,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const stopStatus = stage === "archive" || stage === "worktree-removal" || stage === "backend-close" ? "Agent stop confirmed; " : "";
         cleanupMessage = `Cleanup ${key(owner)} failed at ${stage}; ${stopStatus}next retry ${new Date(nextAttemptAt).toISOString()} (${retryMs} ms). Resources retain capacity; correct the reported cause and normal reconciliation retries automatically.`;
       } else {
-        failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
         task = options.store.getTask(identity);
+        if (task?.agentControlMode !== "web") failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
       }
-      options.emit({ kind: terminal ? "cleanup-error" : "execution-error", ...(task === null ? {} : { task }), message: terminal ? cleanupMessage! : "The task operation failed; this process retains its recovery count.", error: reportedError });
+      options.emit({ kind: terminal ? "cleanup-error" : "execution-error", ...(task === null ? {} : { task }), message: terminal ? cleanupMessage! : task?.agentControlMode === "web" ? "The task operation failed; native recovery accounting remains independent of orchestration retries." : "The task operation failed; this process retains its recovery count.", error: reportedError });
     }).finally(() => { if (jobs.get(identityKey) === job) { jobs.delete(identityKey); controllers.delete(identityKey); } });
     jobs.set(identityKey, job);
   };
@@ -394,10 +396,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let record = options.webStore.getTask(task);
       if (record !== null && (record.worktreeId !== owner.worktreeId || record.workerId !== options.workerId || record.userId !== worker.userId || record.serverOrigin !== options.serverOrigin)) throw new Error("The durable Web execution does not match the observed original worker claim.");
       let observed = false;
+      let advancing = false;
       try {
-        if (!execute) {
-          if (record !== null && record.recovery.pauseReason === null) record = options.webStore.pauseRecovery(record, "The Web execution failure limit was reached; explicit retry is required.", now(), "recovery_limit");
-        } else if (record === null || record.recovery.pauseReason === null || record.recovery.retryAuthorized) {
+        if (record === null || record.recovery.pauseReason === null || record.recovery.retryAuthorized || legacyBranchLatch(record)) {
           requireImplementedWorkerBackend(configuration);
           await options.verifyWebServer?.(configuration.agent, signal);
           if (record === null) {
@@ -407,14 +408,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           }
           record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: worker.userId, configuration }, now());
           if (record.cleanup !== null) record = await finishShutdown(record, signal);
+          advancing = true;
           record = await options.webBackend.advance(record, signal);
           observed = true;
         }
       } catch (error) {
         if (isWorkerCancellation(error, signal)) throw error;
         record = options.webStore.getTask(task);
-        if (record !== null && record.cleanup === null && (record.recovery.retryAuthorized || (failures.get(key(task)) ?? 0) + 1 > configuration.recoveryLimit)) {
-          record = options.webStore.pauseRecovery(record, error instanceof Error ? error.message : String(error), now(), error instanceof WebRecoveryBlockedError ? error.reasonCode : record.recovery.retryAuthorized ? "recovery_blocked" : "recovery_limit");
+        if (record !== null && record.cleanup === null && record.recovery.pauseReason === null) {
+          if (error instanceof WebRecoveryBlockedError) record = options.webStore.pauseRecovery(record, error.message, now(), error.reasonCode);
+          else if (error instanceof WorktreePreconditionError) options.webStore.blockOrchestration(record, { source: "worktree", code: error.code, message: error.message }, now());
+          else if (!advancing) options.webStore.blockOrchestration(record, { source: "coordinator", code: "advance_failed", message: error instanceof Error ? error.message : String(error) }, now());
         }
         throw error;
       } finally {
@@ -423,7 +427,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (!signal.aborted && (observed || !execute || record !== null)) {
           const nativeSessionId = record?.resources.nativeSession?.sessionId ?? task.sessionId ?? worker.nativeSessionId;
           if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
-          const phase = !execute || record?.recovery.pauseReason != null || record?.recovery.retryAuthorized
+          const phase = (record !== null && options.webStore.getOrchestrationBlocker(record) !== null) || record?.recovery.pauseReason != null || record?.recovery.retryAuthorized
             || record?.webExecution?.activity === "initializing" ? "waiting" as const : "executing" as const;
           let startupReport: SessionStartupReport | undefined;
           try {
@@ -475,7 +479,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     startJob(task, signal => {
       if (!canAdvance(task)) return Promise.resolve();
       const current = configurationFor(task);
-      return current === null ? Promise.resolve() : ensure(task, remoteTask, signal, count <= current.recoveryLimit);
+      return current === null ? Promise.resolve() : ensure(task, remoteTask, signal, task.agentControlMode === "web" || count <= current.recoveryLimit);
     }, false);
   };
   // Stop the original execution without terminal cleanup, releasing neither claim nor worktree.
