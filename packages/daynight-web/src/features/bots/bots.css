@@ -33,13 +33,40 @@
 .bot-status-compact > span { min-width: 0; }
 .bot-startup-failed { color: #a63838; }
 .bot-conversation { container: bot-conversation / inline-size; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
-.bot-conversation-heading { flex-shrink: 0; min-height: 46px; border-bottom: 1px solid var(--line); padding: 14px 18px; margin-bottom: 0; }
-.bot-conversation-heading > .button { flex-shrink: 0; }
+.bot-conversation-heading, .bot-conversation .session-header { flex: none; flex-wrap: nowrap; gap: 12px; min-height: 72px; border-bottom: 1px solid var(--line); padding: 12px 18px; margin: 0; background: #fcfcfe; }
+.bot-header-identity { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; }
+.bot-conversation .session-header > .bot-header-identity { flex-wrap: nowrap; }
 .bot-conversation-title { flex: 1; min-width: 0; }
-.bot-conversation-title .bot-status > span { min-width: 0; overflow-wrap: anywhere; }
-@container bot-conversation (max-width: 420px) {
-  .bot-conversation-heading { flex-direction: column; align-items: flex-start; gap: 8px; }
-  .bot-conversation-title { width: 100%; }
+.bot-conversation-title h2 { margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 17px; font-weight: 600; }
+.bot-header-state { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; min-width: 0; margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.bot-header-state strong { font-weight: 400; }
+.bot-header-state .session-status { font-size: inherit; }
+.bot-header-actions, .bot-conversation .session-header > .bot-header-actions { display: flex; flex: none; flex-wrap: nowrap; align-items: center; gap: 4px; }
+.bot-header-back, .bot-header-details, .bot-header-more > .button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; }
+.bot-header-back svg, .bot-header-details svg { width: 18px; height: 18px; }
+.bot-header-actions .session-fullscreen-toggle { width: 36px; height: 36px; }
+.bot-header-actions .button { border-radius: 8px; }
+.bot-header-actions .button:focus-visible, .bot-header-back:focus-visible { outline: 2px solid var(--indigo); outline-offset: -2px; }
+.bot-header-popover { position: fixed; inset: auto; margin: 0; min-width: 160px; max-width: calc(100vw - 16px); padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: #fcfcfe; color: var(--ink); box-shadow: 0 8px 24px #17244726; }
+.bot-header-popover .button { display: block; width: 100%; min-height: 44px; padding: 10px 12px; border: 0; text-align: left; text-decoration: none; }
+.bot-header-popover .button:hover { background: #eeeef9; }
+@container bot-conversation (max-width: 600px) {
+  .bot-conversation-heading, .bot-conversation .session-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 4px; padding: 8px; }
+  .bot-conversation .session-header > .bot-header-identity, .bot-header-identity, .bot-conversation-title { display: contents; }
+  .bot-conversation-title h2 { grid-column: 2; grid-row: 1; font-size: 15px; }
+  .bot-header-back { grid-column: 1; grid-row: 1; }
+  .bot-header-actions { grid-column: 3; grid-row: 1; }
+  .bot-header-state { grid-column: 1 / -1; grid-row: 2; margin-top: 0; padding-inline: 4px; }
+  .bot-conversation-heading > h2 { grid-column: 1 / -1; }
+  .bot-header-back, .bot-header-details, .bot-header-more > .button, .bot-header-actions .session-fullscreen-toggle { width: 44px; height: 44px; }
+  .bot-header-actions .session-display-trigger { min-height: 44px; padding-inline: 8px; }
+}
+@container bot-conversation (max-width: 300px) {
+  .bot-conversation-heading, .bot-conversation .session-header { display: flex; flex-wrap: wrap; }
+  .bot-conversation .session-header > .bot-header-identity, .bot-header-identity { display: flex; flex-basis: 100%; gap: 4px; }
+  .bot-conversation-title { display: block; }
+  .bot-header-actions { margin-left: auto; }
+  .bot-header-state { padding: 0; }
 }
 .bot-conversation-session { display: flex; flex: 1; min-height: 0; min-width: 0; }
 .bot-conversation-session[hidden] { display: none; }
@@ -49,18 +76,13 @@
   .bot-list-panel { flex: 1; border-right: 0; }
   .bot-selected .bot-list-panel { display: none; }
   .bots-page:not(.bot-selected) .bot-conversation { display: none; }
-  .bot-conversation-heading { align-items: flex-start; }
+
 }
 
 .bot-conversation-body { display: flex; flex: 1; min-height: 0; min-width: 0; }
 .bot-conversation-content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
-.bot-details-toggle { display: inline-flex; max-width: 100%; min-width: 0; align-items: center; gap: 10px; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
-.bot-details-toggle:focus-visible { outline: 2px solid var(--indigo); outline-offset: 4px; }
-.bot-details-toggle:disabled { cursor: default; }
-.bot-details-name { min-width: 0; overflow-wrap: anywhere; }
-.bot-details-marker { flex: none; color: var(--muted); }
 .bot-conversation[data-session-fullscreen="true"] { position: fixed; z-index: 40; top: var(--session-viewport-top, 0px); left: var(--session-viewport-left, 0px); width: var(--session-viewport-width, 100%); height: var(--session-viewport-height, 100dvh); padding: 16px; overflow: hidden; background: var(--bg, #fff); }
-.bot-conversation[data-session-fullscreen="true"] .bot-conversation-heading { margin-bottom: 12px; }
+
 
 .bot-list-item { position: relative; border-radius: 11px; margin-bottom: 4px; }
 .bot-list-item > a { padding-right: 48px; }
@@ -86,6 +108,5 @@
 
 @media (max-height: 500px) {
   .bot-list { min-height: 88px; }
-  .bot-conversation-heading { flex-shrink: 1; min-height: 44px; max-height: 25%; padding: 6px 12px; overflow: auto; overscroll-behavior: contain; }
-  .bot-conversation[data-session-fullscreen="true"] .bot-conversation-heading { margin-bottom: 0; }
+  .bot-conversation-heading, .bot-conversation .session-header { min-height: 52px; padding-block: 4px; }
 }
