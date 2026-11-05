@@ -89,7 +89,7 @@
 .team-settings-details > div + div { margin-top: 20px; }
 .team-settings-details dt { font-size: 12px; font-weight: 600; color: #4c5870; margin-bottom: 8px; }
 .team-settings-details dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.team-settings-name { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+.team-settings-name { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .team-settings-name span { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .team-settings-name .button { flex: none; }
 .team-settings-id { user-select: text; }

@@ -1811,6 +1811,12 @@ shard 2 runs all 28 cases before its full-stack acceptance. Its results and fail
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
+The Team management browser suite exercises the production settings page against
+controlled API responses. It checks name and action geometry, wrapping, text
+selection and rename interactions. Run `pnpm --filter @codetreker/daynight-web
+exec playwright test --config tests/navigation/team-management-playwright.config.ts`.
+Browser CI shard 2 runs this suite before full-stack acceptance.
+
 The Bot viewport suite runs the production application, Session host and timeline
 against controlled HTTP and Session API responses. It checks long-history
 scrolling, bounded pagination, visible input and retained reading positions at
