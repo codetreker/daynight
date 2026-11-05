@@ -42,7 +42,7 @@ export function SessionInteractionCard({ interaction, enabled, onRespond }: {
     }
     void respond({ kind: 'form', values: result });
   }
-  return <section className="session-interaction" aria-label={interaction.title} aria-busy={pending}>
+  return <section className="session-interaction" tabIndex={-1} aria-label={interaction.title} aria-busy={pending}>
     <h4>{interaction.title}</h4>
     {interaction.state !== 'pending' || resolved ? <p>{resolved ? m.resolved : m[interaction.state]}</p> : <form onSubmit={submit}>
       <fieldset disabled={disabled}>

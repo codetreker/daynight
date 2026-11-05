@@ -7,7 +7,7 @@ import { SessionControlsPanel, type ControlsView } from './SessionControlsPanel'
 import { SessionActivity } from './SessionActivity';
 import '../../styles/session-composer.css';
 import type { SessionState } from './state';
-import { sessionCancelGate, sessionSendGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
+import { sessionCancelGate, sessionSendGate, sessionRespondGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 
 type CommandIntent = { readonly id: string; readonly name: string; readonly sessionId: string | undefined };
@@ -237,6 +237,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   else if (snapshot.initialInputState === 'failed') notice = m.initialFailed;
   else if (!['not_required', 'provider_accepted', 'confirmed'].includes(snapshot.initialInputState)) notice = m.initialPending;
   else if (snapshot.activity === 'working' && !snapshot.capabilities.steer) notice = m.noSteer;
+  else if (snapshot.activity === 'waiting_input' && state.entries.some(entry => entry.kind === 'interaction' && entry.interaction.state === 'pending' && sessionRespondGate(state, connected && !authPaused, entry.interaction))) notice = null;
   else if (!sendReady) notice = m.readOnly;
   useLayoutEffect(() => {
     if (!active) return;

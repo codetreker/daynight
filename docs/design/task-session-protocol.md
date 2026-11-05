@@ -240,6 +240,8 @@ PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次
 
 响应操作按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具提出的新 MCP form 必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；缺少旧缓存时，服务端当前在线交互校验和 Controller 原生校验仍决定能否响应。
 
+Chatbox 的只读兜底提示与发送门禁分开：`waiting_input` 中存在 pending 且通过 `sessionRespondGate` 的交互时，不因 `sessionSendGate` 为 false 显示只读。同步、待确认操作和首次输入提示仍先判断。`SessionTimeline` 从当前可显示条目中筛选可回答请求，`usePendingInteractionLocator` 观察卡片与时间线的几何交集、滚动、尺寸和本地回答状态；部分可见的大卡片不要求完整容纳在视口中。定位入口与“最新”共用底部导航区域，标题保留原生内容，入口前缀随页面语言变化。定位暂停跟随、更新阅读锚点并聚焦卡片，不发送回答；卡片本地提交或完成后，即使远端 pending 快照尚未更新，也不保留定位入口。实现取舍见[等待交互定位决策](../../.agents/notes/implemented/bug-fix/2026-11-06-pending-interaction-navigation.md)。
+
 ## 原生正文的显示转换
 
 Controller 的 `ProviderOptions.onTimeline` 在调用 `journal.projectTimeline` 前通过 `providerDisplayEntry` 生成显示副本。Codex、Claude、Copilot 的实时事件和原生历史重放均经过这个入口；转换位于 `parseSourceEvent` 之前，既有 `sessionDisplayEntry` 整条 wire 预算降级继续位于持久化投影之后。
