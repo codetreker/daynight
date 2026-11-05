@@ -52,8 +52,9 @@ const ConfigurationError = ({ error, write, retained }: { readonly error: unknow
     {error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId} <code>{error.requestId}</code></p>}</>;
 };
 
-export const WorkerConfigurationPanel = ({ workerId, readEnabled, online, tasks }: {
+export const WorkerConfigurationPanel = ({ workerId, visible = true, readEnabled, online, tasks }: {
   readonly workerId: string;
+  readonly visible?: boolean;
   readonly readEnabled: boolean;
   readonly online: boolean | null;
   readonly tasks: readonly WorkerTaskSnapshot[];
@@ -63,9 +64,12 @@ export const WorkerConfigurationPanel = ({ workerId, readEnabled, online, tasks 
   const { messages: { workers: { configuration: m }, workers }, format } = useI18n();
   const scope = useTaskCacheScope();
   const [dialog, setDialog] = useState<'projects' | 'removal' | null>(null);
-  useLayoutEffect(() => { setDialog(null); }, [workerId, readEnabled, scope]);
+  useLayoutEffect(() => { setDialog(null); }, [workerId, scope]);
+  useLayoutEffect(() => { if (!visible) setDialog(null); }, [visible]);
+  useLayoutEffect(() => { if (state.unavailable || state.resource !== null && state.resource.desired === null) setDialog(null); }, [state.unavailable, state.resource]);
   const { resource, draft } = state;
-  const disabled = !readEnabled || state.unavailable;
+  const disabled = state.unavailable;
+  const actionsDisabled = !readEnabled || disabled;
   const metadata = new Map(choices.items.map(project => [project.id, project]));
   if (state.unavailable) return <section className="state-box" role="status"><h2>{m.unavailable}</h2><button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button></section>;
   if (resource === null) return <section className="state-box" role={state.error === null ? 'status' : 'alert'}>{state.loading ? <><span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2></> : <ConfigurationError error={state.error} write={false} retained={false} />}{state.error !== null && <button className="button" type="button" disabled={!readEnabled || state.refreshing} onClick={state.refresh}>{workers.retry}</button>}</section>;
@@ -76,7 +80,7 @@ export const WorkerConfigurationPanel = ({ workerId, readEnabled, online, tasks 
   const updateProject = (projectId: string, value: ConfigurationDraft['projects'][number]['native']) => state.setDraft(old => ({ ...old, projects: old.projects.map(project => project.projectId === projectId ? { ...project, native: value } : project) }));
   const save = (event: FormEvent) => {
     event.preventDefault();
-    if (disabled || state.pending || state.uncertain || parsed.value === null || !state.dirty || state.conflict) return;
+    if (actionsDisabled || state.pending || state.uncertain || parsed.value === null || !state.dirty || state.conflict) return;
     if (removed.length > 0) setDialog('removal');
     else void state.save();
   };
@@ -109,9 +113,9 @@ export const WorkerConfigurationPanel = ({ workerId, readEnabled, online, tasks 
         const projectId = item.key.projectId;
         return <article className="project-config-item" key={projectId}><div className="project-config-heading"><div className="project-config-identity"><span className="project-config-icon" aria-hidden="true">▦</span><div><h3>{metadata.get(projectId)?.name ?? projectId}</h3><p>{m.kind.projectRemoval}</p></div></div></div><ConfigurationFeedback resource={resource} kind="projectRemoval" projectId={projectId} expected={true} /></article>;
       })}</div></section>}
-      <footer className="config-save-bar"><span className="draft-summary" role="status">{state.dirty ? m.unsaved : m.noChanges}</span><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || !state.dirty} onClick={state.discard}>{m.discard}</button><button className="button primary" type="submit" disabled={disabled || state.pending || state.uncertain || !state.dirty || parsed.value === null || state.conflict}>{state.pending ? m.saving : m.save}</button></footer>
+      <footer className="config-save-bar"><span className="draft-summary" role="status">{state.dirty ? m.unsaved : m.noChanges}</span><button className="button" type="button" disabled={disabled || state.pending || state.uncertain || !state.dirty} onClick={state.discard}>{m.discard}</button><button className="button primary" type="submit" disabled={actionsDisabled || state.pending || state.uncertain || !state.dirty || parsed.value === null || state.conflict}>{state.pending ? m.saving : m.save}</button></footer>
     </form></div><ConfigurationSummary resource={resource} online={online} /></div>
     {dialog === 'projects' && <ConfigurationProjectsDialog projects={choices.items} selected={draft.projects.map(project => project.projectId)} loading={choices.loading} error={choices.error} refresh={choices.refresh} onClose={() => setDialog(null)} onApply={ids => { state.setDraft(old => ({ ...old, projects: ids.map(id => old.projects.find(project => project.projectId === id) ?? emptyProjectDraft(id)) })); setDialog(null); }} />}
-    {dialog === 'removal' && <ConfigurationRemovalDialog projects={removed} tasks={tasks} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void state.save(); }} />}
+    {dialog === 'removal' && <ConfigurationRemovalDialog disabled={actionsDisabled} projects={removed} tasks={tasks} onClose={() => setDialog(null)} onConfirm={() => { setDialog(null); void state.save(); }} />}
   </div>;
 };

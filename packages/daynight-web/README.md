@@ -450,6 +450,11 @@ editor and draft while pausing configuration reads. The active, visible,
 identity-admitted tab performs its own five-second single-flight refresh without
 using the runtime observation clock.
 
+Background identity checks retain the editor, dialogs, local input and unapplied
+Project selection while private requests and new saves remain gated. In-flight
+saves retain their submitted snapshot and result classification until admission
+resumes. Background directory reads preserve the complete loaded collection,
+including an empty collection; actual failures retain their error semantics.
 Background results do not replace draft input, focus or selection. Saving uses
 the draft's target revision; observation updates cannot invalidate that baseline.
 A conflict retains the draft and exposes the latest cloud value for explicit

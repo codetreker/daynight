@@ -6,7 +6,7 @@ import { useTaskCacheScope } from '../../task-cache/TaskCacheProvider';
 
 export const useConfigurationProjects = (readEnabled: boolean) => {
   const scope = useTaskCacheScope();
-  const [state, setState] = useState<{ readonly scope: typeof scope; readonly items: readonly Project[]; readonly loading: boolean; readonly error: unknown }>({ scope, items: [], loading: true, error: null });
+  const [state, setState] = useState<{ readonly scope: typeof scope; readonly items: readonly Project[]; readonly loading: boolean; readonly loaded: boolean; readonly error: unknown }>({ scope, items: [], loading: true, loaded: false, error: null });
   const refreshAction = useRef<() => void>(() => {});
   const refresh = useCallback(() => refreshAction.current(), []);
   useLayoutEffect(() => {
@@ -19,7 +19,7 @@ export const useConfigurationProjects = (readEnabled: boolean) => {
       const request = new AbortController(); controller = request;
       const signal = AbortSignal.any([request.signal, scope.signal]), attempt = ++generation;
       const current = () => live() && attempt === generation && !signal.aborted;
-      setState(old => ({ scope, items: old.scope === scope ? old.items : [], loading: true, error: null }));
+      setState(old => old.scope === scope ? { ...old, loading: !old.loaded, error: null } : { scope, items: [], loading: true, loaded: false, error: null });
       try {
         await scope.ready(signal);
         const projects = new Map<string, Project>(), cursors = new Set<string>();
@@ -35,16 +35,16 @@ export const useConfigurationProjects = (readEnabled: boolean) => {
           }
         } while (cursor !== null);
         await scope.ready(signal);
-        if (current()) setState({ scope, items: [...projects.values()], loading: false, error: null });
+        if (current()) setState({ scope, items: [...projects.values()], loading: false, loaded: true, error: null });
       } catch (error) {
-        if (current()) setState({ scope, items: [], loading: false, error });
+        if (current()) setState({ scope, items: [], loading: false, loaded: false, error });
       }
     };
     const visibility = () => {
       if (document.visibilityState === 'hidden') { ++generation; controller?.abort(); }
       else void load();
     };
-    const invalidate = () => { ++generation; controller?.abort(); setState({ scope, items: [], loading: false, error: null }); };
+    const invalidate = () => { ++generation; controller?.abort(); setState({ scope, items: [], loading: false, loaded: false, error: null }); };
     refreshAction.current = () => { void load(); };
     document.addEventListener('visibilitychange', visibility);
     scope.signal.addEventListener('abort', invalidate, { once: true });
