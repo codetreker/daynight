@@ -1,1 +1,3 @@
-export { BotCreateForm as BotCreateDialog } from './BotCreateForm';
+import { BotCreateForm } from './BotCreateForm';
+
+export const BotCreateDialog = BotCreateForm;
