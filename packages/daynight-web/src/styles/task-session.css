@@ -33,6 +33,15 @@
 .session-todos [data-status='completed'] span { color: #428260; }
 .session-interaction { background: #fafaff; border: 1px solid #d6d6ef; border-radius: 9px; padding: 16px; }
 .session-interaction h4 { margin: 0 0 10px; font-size: 14px; }
+.session-interaction-status { margin: 0; }
+.session-interaction-request { margin-top: 6px; }
+.session-interaction-request summary { cursor: pointer; color: #5555b6; font-size: 12px; }
+.session-interaction-request summary:focus-visible, .session-request-content:focus-visible { outline: 2px solid #8585cf; outline-offset: 2px; border-radius: 3px; }
+.session-request-content { max-height: 220px; overflow: auto; overflow-wrap: anywhere; margin-top: 8px; padding: 8px; background: #f4f5fa; border-radius: 6px; }
+.session-request-content p { margin: 0; }
+.session-request-content ul { margin: 6px 0 0; padding-inline-start: 20px; }
+.session-request-content > ul { margin: 0; }
+.session-request-content > div + div { margin-top: 12px; }
 .session-interaction fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .session-interaction fieldset fieldset { margin: 12px 0; }
 .session-interaction legend { margin-bottom: 8px; font-weight: 600; }

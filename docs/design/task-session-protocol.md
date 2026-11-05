@@ -266,6 +266,8 @@ Task client 为 current 请求协商 `X-Daynight-Startup-Version: 1`，使用共
 
 ## Session View 的阅读与输入状态
 
+`SessionInteractionCard` 在交互为 `resolved` / `expired` 或本地回答成功后，保留标题与状态，并使用默认关闭的原生 `details` / `summary` 展示原请求。只读区域只从 `SessionInteraction` 读取审批 `detail`、问题与选项、表单字段名，不读取回答表单的局部 `values`，因此不会泄漏敏感自定义输入或把请求状态解释成批准/拒绝结果。该区域限高、允许长字符串换行，并以具名可聚焦区域支持键盘阅读。展开不调用响应接口、不修改条目或滚动意图；布局变化由既有时间线观察器处理。在线与归档复用同一组件，权限门控继续独立约束回答。取舍见[历史请求展示决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-interaction-request-history.md)。
+
 浏览器将 scope/current 失效与 auth 暂停分开。身份待复核时最多保留 WebSocket 60 秒；新帧保存在最多 1000 条、合计 4 MiB 的内存缓冲中，不推进已消费 cursor 或发布新内容。HTTP 在途结果也等待复核，负面授权结果仍立即失效。确认同一身份后按原序消费缓冲，并继续原连接与历史；到期、缓存超限或真实断线则关闭连接，使用最后已消费 cursor 恢复。scope 撤销、principal 不符和执行失效不享受此宽限。Chatbox 与审批暂时禁用操作，但保留输入、阅读位置和连接呈现；只有实际失去同步才显示同步或连接提示。该策略继承[前台身份核验](daynight-auth.md)的账号隔离规则，不停止或重新创建原生 Agent。
 
 Claude SDK 不保证实时回显提交的 user message。Controller 在本地派发时按 `operationId:0` 投影用户文本，与以后原生 echo/history 的稳定 ID 相同，避免重复行。这条本地展示不调用 `onInputObserved`、不验证原生身份、不确认回执；原生受理及恢复对账仍必须有真实输入或响应证据。unknown 状态下可查看提交原文，不能因该行存在重发或消除 unknown。
