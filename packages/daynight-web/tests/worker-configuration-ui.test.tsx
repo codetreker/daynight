@@ -230,6 +230,15 @@ describe('Worker configuration form', () => {
     expect(resource.desired!.value.projects).toEqual([]); expect(task.status).toBe('in_progress'); expect(task.claimId).toBe(workerDetail().worker.tasks[0]!.claimId);
     expect(fetch.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1); expect(fetch.mock.calls.some(([url]) => url.includes('/tasks/'))).toBe(false);
   });
+  it('does not reopen an old Project dialog after a Worker becomes unavailable and recovers', async () => {
+    let missing = false;
+    install(() => missing ? configurationError(404, 'not_found') : configurationResponse(configurationResource()), [project(3)]);
+    mount(); await flush(); fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!); await flush();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    missing = true; await advance(); expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByText('Worker unavailable')).toBeInTheDocument();
+    missing = false; fireEvent.click(screen.getByRole('button', { name: 'Retry' })); await flush();
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(input()).toHaveValue('2');
+  });
   it('paginates Project choices and retains selected inaccessible IDs when choosing another Project', async () => {
     const inaccessible = workerId(30), second = deferred<Response>(); let projectReads = 0;
     const value = { ...configurationValue(), projects: [{ projectId: inaccessible, nativeOverrides: { model: null, args: [] } }] };
@@ -264,6 +273,32 @@ describe('Worker detail configuration integration', () => {
     fireEvent.keyDown(overview, { key: 'ArrowRight' }); await flush();
     expect(screen.getByRole('tab', { name: 'Configuration' })).toHaveFocus(); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[unfinished'); expect(args).toBeVisible();
   });
+  it('keeps an open selection and its focus across background reads, and closes it on a real tab change', async () => {
+    const projectsRead = deferred<Response>(), configRead = deferred<Response>();
+    let projectReads = 0, configReads = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.startsWith('/api/v1/projects?')) return ++projectReads > 2 ? projectsRead.promise : projectPage([project(3), project(4)]);
+      if (url.endsWith('/configuration')) return ++configReads > 1 ? configRead.promise : configurationResponse(configurationResource());
+      return workerError(404);
+    }));
+    const view = renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); await flush();
+    change('Startup arguments', '[invalid'); const args = input('Startup arguments');
+    fireEvent.click(screen.getAllByRole('button', { name: /Choose projects/ })[0]!); await flush();
+    const dialog = screen.getByRole('dialog', { name: 'Choose projects' });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Project 4/ }));
+    const search = within(dialog).getByRole('searchbox') as HTMLInputElement;
+    fireEvent.change(search, { target: { value: 'Project 4' } }); search.focus(); search.setSelectionRange(2, 6);
+    view.rerender(<WorkerDetailPage workerId={workerId(1)} readEnabled={false} />);
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(search).toHaveFocus(); expect(search.selectionStart).toBe(2); expect(search.selectionEnd).toBe(6);
+    expect(within(dialog).getByRole('checkbox', { name: /Project 4/ })).toBeChecked(); expect(args).toHaveValue('[invalid');
+    view.rerender(<WorkerDetailPage workerId={workerId(1)} readEnabled />); await flush();
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(search).toHaveFocus(); expect(within(dialog).queryByRole('status')).toBeNull();
+    projectsRead.resolve(projectPage([project(3), project(4)])); configRead.resolve(configurationResponse(configurationResource())); await flush();
+    expect(search).toHaveValue('Project 4'); expect(within(dialog).getByRole('checkbox', { name: /Project 4/ })).toBeChecked();
+    fireEvent.click(screen.getByRole('tab', { name: 'Runtime overview' })); expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Configuration' })); expect(input('Startup arguments')).toBe(args); expect(args).toHaveValue('[invalid');
+  });
   it('preserves existing Task links while displaying a separate configuration panel', async () => {
     const detail = workerDetail(); install(url => url.endsWith('/configuration') ? configurationResponse(configurationResource()) : workerResponse(detail));
     renderWithLocale(<WorkerDetailPage workerId={workerId(1)} readEnabled />, { locale: 'en', taskCache: { viewerId: WORKER_USER } }); await flush();
@@ -272,14 +307,15 @@ describe('Worker detail configuration integration', () => {
     expect(screen.getByText('Snapshot task')).toBe(taskLink); expect(taskLink.getAttribute('href')).toBe(href); expect(taskLink).not.toBeVisible();
     fireEvent.click(screen.getByRole('tab', { name: 'Runtime overview' })); expect(taskLink).toBeVisible();
   });
-  it('disables paused reads without losing raw input and removes private draft on account change', async () => {
+  it('keeps local editing while reads are paused and removes private draft on account change', async () => {
     const first = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() }), nextUser = workerId(88), second = createTaskCacheScope({ userId: nextUser, onIdentityMismatch: vi.fn() }); scopes.push(first, second);
     let actor = WORKER_USER;
     vi.stubGlobal('fetch', vi.fn((url: string) => url.startsWith('/api/v1/projects?') ? projectPage([], null, actor) : configurationResponse(configurationResource('1', { ...configurationValue(), maxConcurrent: actor === WORKER_USER ? 2 : 8 }), 200, actor)));
     const ui = (scope: TaskCacheScope, enabled: boolean) => <TaskCacheProvider scope={scope}><WorkerConfigurationPanel workerId={workerId(1)} readEnabled={enabled} online tasks={[]} /></TaskCacheProvider>;
     const view = renderWithLocale(ui(first, true), { locale: 'en' }); await flush(); change('Startup arguments', '[private draft');
-    view.rerender(ui(first, false)); expect(input('Startup arguments')).toBeDisabled(); expect(input('Startup arguments')).toHaveValue('[private draft');
-    actor = nextUser; view.rerender(ui(second, true)); expect(screen.queryByDisplayValue('[private draft')).toBeNull(); await flush();
+    view.rerender(ui(first, false)); expect(input('Startup arguments')).toBeEnabled(); expect(input('Startup arguments')).toHaveValue('[private draft');
+    change('Startup arguments', '[still private'); expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    actor = nextUser; view.rerender(ui(second, true)); expect(screen.queryByDisplayValue('[still private')).toBeNull(); await flush();
     expect(input()).toHaveValue('8'); expect(input('Startup arguments')).toHaveValue('[]');
   });
 });

@@ -1,0 +1,83 @@
+import { expect, test, type Page, type Route } from '@playwright/test';
+import { WORKER_TIME, WORKER_USER, workerDetail, workerId } from '../helpers/workers';
+import { configurationResource } from '../helpers/worker-configuration';
+
+const personalId = workerId(90), target = workerId(1), projectId = workerId(3);
+const personal = { id: personalId, kind: 'personal', name: null };
+const profile = { id: WORKER_USER, personalTeam: personal, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
+const team = { ...personal, version: 1, createdAt: WORKER_TIME, updatedAt: WORKER_TIME, membership: { teamId: personalId, userId: WORKER_USER, role: 'admin', version: 1, createdAt: WORKER_TIME, updatedAt: WORKER_TIME } };
+const project = { id: projectId, name: 'Alpha project', repoUrl: 'https://example.test/alpha.git', settings: { version: 1, executionWarningMinutes: 60 }, ownership: { teamId: personalId, version: 1 }, createdAt: WORKER_TIME, updatedAt: WORKER_TIME };
+type Gate = { started: () => void; wait: Promise<void> };
+const gate = () => { const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(); return { value: { started: started.resolve, wait: finish.promise }, started: started.promise, finish: finish.resolve }; };
+const install = async (page: Page) => {
+  const state: { me: Gate | null; config: Gate | null; projects: Gate | null; writes: string[]; configReads: number; projectReads: number } = { me: null, config: null, projects: null, writes: [], configReads: 0, projectReads: 0 };
+  await page.route('**/api/v1/**', async (route: Route) => {
+    const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    if (request.method() !== 'GET') state.writes.push(`${request.method()} ${path}`);
+    const send = (json: unknown, extra: Record<string, string> = {}) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, ...extra } });
+    const wait = async (name: 'me' | 'config' | 'projects') => { const current = state[name]; state[name] = null; if (current) { current.started(); await current.wait; } };
+    if (path === '/api/v1/me') { await wait('me'); return send(profile); }
+    if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
+    if (path === `/api/v1/teams/${personalId}`) return send(team);
+    if (path === '/api/v1/projects') {
+      if (url.searchParams.get('limit') === '100') { state.projectReads++; await wait('projects'); }
+      return send({ items: [project], nextCursor: null });
+    }
+    if (path === `/api/v1/me/workers/${target}/configuration`) { state.configReads++; await wait('config'); return send(configurationResource(), { 'Daynight-Worker-Configuration': '1' }); }
+    if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
+    return route.fulfill({ status: 404, json: { error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, headers: { 'Daynight-User-ID': WORKER_USER } });
+  });
+  return state;
+};
+const foreground = async (page: Page, state: Awaited<ReturnType<typeof install>>) => {
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach();
+  await other.bringToFront(); await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  const identity = gate(); state.me = identity.value;
+  await page.bringToFront(); await identity.started;
+  return { identity, other };
+};
+
+for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choose projects', done: 'Done' }, { width: 390, height: 844, locale: 'zh-CN', choose: '选择项目', done: '完成' }]) {
+  test(`${scenario.locale} ${scenario.width}px retains unsubmitted configuration through identity and resource checks`, async ({ page }) => {
+    await page.setViewportSize({ width: scenario.width, height: scenario.height });
+    await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), scenario.locale);
+    const state = await install(page);
+    await page.goto(`/workers/${target}`);
+    await page.locator('#worker-tab-configuration').click();
+    const args = page.locator('#config-native-args'); await expect(args).toBeVisible();
+    await args.fill('[invalid JSON');
+    await page.getByRole('button', { name: scenario.choose }).first().click();
+    const dialog = page.getByRole('dialog'), search = page.locator('#configuration-project-search');
+    await expect(dialog.getByText('Alpha project')).toBeVisible();
+    await dialog.getByRole('checkbox').check();
+    await search.fill('Alpha');
+    await search.evaluate((node: HTMLInputElement) => { node.focus(); node.setSelectionRange(1, 4); });
+    const node = await dialog.elementHandle(), box = await dialog.boundingBox();
+    const assertStable = async () => {
+      await expect(dialog).toBeVisible(); await expect(search).toBeFocused(); await expect(search).toHaveValue('Alpha');
+      expect(await dialog.evaluate((element, original) => element === original, node)).toBe(true);
+      expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
+      expect(await dialog.boundingBox()).toEqual(box);
+      await expect(dialog.getByRole('checkbox')).toBeChecked();
+      await expect(args).toHaveValue('[invalid JSON');
+      await expect(dialog.locator('.configuration-project-loading')).toHaveCount(0);
+    };
+    const config = gate(), projects = gate(); state.config = config.value; state.projects = projects.value;
+    const check = await foreground(page, state);
+    await assertStable(); expect(state.writes).toEqual([]);
+    check.identity.finish(); await Promise.all([config.started, projects.started]);
+    await assertStable(); expect(state.writes).toEqual([]);
+    config.finish(); projects.finish();
+    await expect.poll(() => state.configReads).toBeGreaterThan(1);
+    await expect.poll(() => state.projectReads).toBeGreaterThan(1);
+    await assertStable();
+    await dialog.getByRole('button', { name: scenario.done }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('.project-config-item').getByText('Alpha project')).toBeVisible();
+    await expect(args).toHaveValue('[invalid JSON');
+    expect(state.writes).toEqual([]);
+    await check.other.close();
+  });
+}
