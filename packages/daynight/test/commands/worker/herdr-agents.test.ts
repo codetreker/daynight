@@ -479,6 +479,22 @@ describe("direct task resource management", () => {
     expect(f.calls.find((call) => call.method === "workspace.create")!.params.env).toEqual({ XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" });
   });
 
+  it("adds a validated shell startup nonce only to a newly created workspace", async () => {
+    const f = await fixture("codex");
+    const shellNonce = "12345678-1234-4234-8234-123456789abc";
+    const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation(), { shellNonce });
+    expect(f.calls.find(call => call.method === "workspace.create")!.params.env).toMatchObject({ DAYNIGHT_HERDR_SHELL_NONCE: shellNonce });
+    await f.manager.prepareWorkspace(f.context, taskTitle, operation(), { shellNonce: "22345678-1234-4234-8234-123456789abc" });
+    expect(f.calls.filter(call => call.method === "workspace.create")).toHaveLength(1);
+    expect(binding.paneId).toBeTruthy();
+  });
+
+  it("rejects a malformed shell startup nonce before touching a workspace", async () => {
+    const f = await fixture("codex");
+    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation(), { shellNonce: "../foreign" })).rejects.toThrow("nonce");
+    expect(f.calls).toEqual([]);
+  });
+
   it("trusts the canonical working directory when the task path traverses a symlink", async () => {
     const f = await fixture(); const canonicalCwd = await realpath(f.context.cwd);
     const alias = path.join(f.context.cwd, "linked"); await symlink(canonicalCwd, alias, "junction"); f.context.cwd = alias;

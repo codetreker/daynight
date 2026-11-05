@@ -37,6 +37,28 @@ const fixture = () => {
 };
 
 describe("macOS original process identities", () => {
+  it("does not capture a stable final image before its user-space readiness acknowledgement", async () => {
+    const f = fixture(); let checks = 0;
+    const ready = async () => {
+      if (++checks < 3) return false;
+      f.live.get(20)!.auditToken[7] = 1000;
+      return true;
+    };
+    const captured = await f.control.capture(20, "shell", { executable: "/bin/bash", operation: op(), ready });
+    expect(checks).toBeGreaterThanOrEqual(3); expect(captured.auditToken[7]).toBe(1000);
+  });
+  it("rejects PID replacement across a readiness callback even when the marker matches", async () => {
+    const f = fixture();
+    const ready = async () => { f.live.get(20)!.birthToken = "102:20"; return true; };
+    await expect(f.control.capture(20, "shell", { executable: "/bin/bash", operation: op(), ready })).rejects.toThrow("replaced");
+    expect(f.calls).toEqual([]);
+  });
+  it("keeps an absent user-space acknowledgement bounded even when the final image is visible", async () => {
+    const f = fixture();
+    const operation = createOperation({ limits: { totalMs: 40 } }); operations.push(operation);
+    await expect(f.control.capture(20, "shell", { executable: "/bin/bash", operation, ready: async () => false })).rejects.toThrow();
+    expect(f.calls).toEqual([]);
+  });
   it("waits for the final managed shell image even while the wrapper identity appears stable", async () => {
     const f = fixture(); let reads = 0;
     f.kernel.executable = async () => {
@@ -44,20 +66,20 @@ describe("macOS original process identities", () => {
       f.live.get(20)!.auditToken[7] = 999;
       return "/bin/bash";
     };
-    const captured = await f.control.capture(20, "shell", { executable: "/bin/bash", operation: op() });
+    const captured = await f.control.capture(20, "shell", { executable: "/bin/bash", operation: op(), ready: async () => true });
     expect(reads).toBeGreaterThanOrEqual(5);
     expect(captured.auditToken[7]).toBe(999); expect(f.calls).toEqual([]);
   });
   it("rejects a PID birth replacement while waiting for the managed shell image", async () => {
     const f = fixture();
     f.kernel.executable = async () => { f.live.get(20)!.birthToken = "101:20"; return "/bin/bash"; };
-    await expect(f.control.capture(20, "shell", { executable: "/bin/bash", operation: op() })).rejects.toThrow("replaced");
+    await expect(f.control.capture(20, "shell", { executable: "/bin/bash", operation: op(), ready: async () => true })).rejects.toThrow("replaced");
     expect(f.calls).toEqual([]);
   });
   it("bounds an unconfirmed shell image without capturing or signaling it", async () => {
     const f = fixture(); f.kernel.executable = async () => "/bin/sh";
     const operation = createOperation({ limits: { totalMs: 40 } }); operations.push(operation);
-    await expect(f.control.capture(20, "shell", { executable: "/bin/bash", operation })).rejects.toThrow();
+    await expect(f.control.capture(20, "shell", { executable: "/bin/bash", operation, ready: async () => true })).rejects.toThrow();
     expect(f.calls).toEqual([]);
   });
   it("reads the current boot independently of an exited original process", async () => {

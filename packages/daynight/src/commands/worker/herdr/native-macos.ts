@@ -188,7 +188,7 @@ export const createMacProcessControl = (options: { kernel?: MacProcessKernel; pl
     if ((options.platform ?? process.platform) !== "darwin") return Promise.reject(new Error("Original Herdr process control requires macOS."));
     return loaded ??= options.kernel ? Promise.resolve(options.kernel) : loadKernel();
   };
-  const capture = async (pid: number, role: MacProcessIdentity["role"], expected?: { executable: string; operation: Operation }): Promise<MacProcessIdentity> => {
+  const capture = async (pid: number, role: MacProcessIdentity["role"], expected?: { executable: string; operation: Operation; ready: () => Promise<boolean> }): Promise<MacProcessIdentity> => {
     const access = await kernel(), boot = await access.bootId();
     if (expected) {
       let original: MacProcessSample | undefined;
@@ -204,13 +204,19 @@ export const createMacProcessControl = (options: { kernel?: MacProcessKernel; pl
         let first: MacProcessSample | null;
         try { first = await access.read(pid); }
         catch { await wait(); continue; }
-        const before = validateBirth(first);
+        validateBirth(first);
+        const ready = await expected.ready();
+        let acknowledged: MacProcessSample | null;
+        try { acknowledged = await access.read(pid); }
+        catch { await wait(); continue; }
+        const before = validateBirth(acknowledged);
+        if (!ready) { await wait(); continue; }
         let executable: string, last: MacProcessSample | null;
         try { executable = await access.executable(pid); last = await access.read(pid); }
         catch { await wait(); continue; }
         const after = validateBirth(last);
-        // An unchanged token alone cannot prove that the wrapper finished exec.
-        // Read the final image between complete identity observations instead.
+        // The final shell must acknowledge from user space before image capture:
+        // kernel executable metadata can become visible during an unfinished exec.
         if (executable === expected.executable && same(before, after)) {
           expected.operation.check();
           const result = identityOf(after, role); validate(result); return result;

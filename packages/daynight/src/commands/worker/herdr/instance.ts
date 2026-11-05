@@ -1,7 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { closeSync, openSync } from "node:fs";
-import { lstat, mkdir, readFile } from "node:fs/promises";
+import { closeSync, constants, openSync } from "node:fs";
+import { lstat, mkdir, open, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -18,7 +19,24 @@ const session = "w";
 const managedConfiguration = "onboarding = false\n\n[session]\nresume_agents_on_restore = false\n";
 const isolatedConfiguration = `${managedConfiguration}\n[update]\nversion_check = false\nmanifest_check = false\n`;
 // Bash privileged mode also ignores imported shell functions and shell-option variables.
-const managedShell = '#!/bin/sh\nexec /bin/bash --noprofile --norc -p "$@"\n';
+const legacyManagedShell = '#!/bin/sh\nexec /bin/bash --noprofile --norc -p "$@"\n';
+const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const managedShell = (rc: string): string => `#!/bin/sh\nexec /bin/bash --noprofile --rcfile ${shellQuote(rc)} -p "$@"\n`;
+const managedShellRc = (readyDirectory: string): string => `builtin unset PROMPT_COMMAND
+PS1='bash$ '
+PS2='> '
+PS4='+ '
+if [[ "\${DAYNIGHT_HERDR_SHELL_NONCE-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+  daynight_startup_umask=$(builtin umask)
+  daynight_startup_options=$-
+  builtin umask 077
+  builtin set -o noclobber
+  builtin printf '%s\\n%s\\n' "$DAYNIGHT_HERDR_SHELL_NONCE" "$$" > ${shellQuote(`${readyDirectory}/`)}"$DAYNIGHT_HERDR_SHELL_NONCE.$$"
+  case "$daynight_startup_options" in *C*) ;; *) builtin set +o noclobber ;; esac
+  builtin umask "$daynight_startup_umask"
+fi
+builtin unset DAYNIGHT_HERDR_SHELL_NONCE daynight_startup_umask daynight_startup_options
+`;
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const absentConnection = (error: unknown): boolean => error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ECONNREFUSED");
 const inheritedIdentity = new Set([
@@ -26,6 +44,7 @@ const inheritedIdentity = new Set([
   "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_TERMINAL_ID",
   "HERDR_ACTIVE_PANE_ID", "HERDR_ACTIVE_TAB_ID", "HERDR_ACTIVE_WORKSPACE_ID", "HERDR_ACTIVE_PANE_CWD", "HERDR_PANE_RUNTIME_ID",
   "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+  "DAYNIGHT_HERDR_SHELL_NONCE",
 ]);
 
 export type HerdrInstancePaths = {
@@ -162,22 +181,22 @@ const ordinaryDirectory = async (directory: string): Promise<void> => {
   const entry = await lstat(directory);
   if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Private Herdr directory ${directory} must be an ordinary directory.`);
 };
-const verifyConfiguration = async (paths: HerdrInstancePaths, expected = managedConfiguration, legacy?: string): Promise<boolean> => {
+const verifyConfiguration = async (paths: HerdrInstancePaths, expected = managedConfiguration, legacy: readonly string[] = []): Promise<boolean> => {
   const entry = await lstat(paths.configurationFile);
   if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Private Herdr configuration ${paths.configurationFile} must be an ordinary file.`);
   const actual = await readFile(paths.configurationFile, "utf8");
-  if (actual !== expected && actual !== legacy) throw new Error(`Private Herdr configuration ${paths.configurationFile} differs from the managed configuration; inspect it before starting the worker.`);
+  if (actual !== expected && !legacy.includes(actual)) throw new Error(`Private Herdr configuration ${paths.configurationFile} differs from the managed configuration; inspect it before starting the worker.`);
   return actual === expected;
 };
-const verifyManagedShell = async (file: string): Promise<void> => {
+const verifyManagedShell = async (file: string, expected: string, executable: boolean): Promise<void> => {
   const entry = await lstat(file);
-  if (!entry.isFile() || entry.isSymbolicLink() || (entry.mode & 0o111) === 0 || await readFile(file, "utf8") !== managedShell) throw new Error(`Private Herdr shell ${file} differs from the managed launcher; retain the original runtime and inspect its files.`);
+  if (!entry.isFile() || entry.isSymbolicLink() || executable && (entry.mode & 0o111) === 0 || await readFile(file, "utf8") !== expected) throw new Error(`Private Herdr shell ${file} differs from the managed launcher; retain the original runtime and inspect its files.`);
 };
-const ensureManagedShell = async (file: string): Promise<void> => {
-  try { await verifyManagedShell(file); }
+const ensureManagedShell = async (file: string, expected: string, executable: boolean): Promise<void> => {
+  try { await verifyManagedShell(file, expected, executable); }
   catch (error) {
     if (!missing(error)) throw error;
-    await replaceFileAtomically(file, managedShell, 0o700);
+    await replaceFileAtomically(file, expected, executable ? 0o700 : 0o600);
   }
 };
 const ensureConfiguration = async (paths: HerdrInstancePaths, expected = managedConfiguration): Promise<void> => {
@@ -253,8 +272,10 @@ export const createHerdrInstance = (options: {
 }) => {
   const paths = resolveHerdrInstancePaths(options.paths);
   const shellFile = options.isolatedRun && process.platform === "darwin" ? path.join(paths.privateDirectory, "shell") : null;
+  const shellRcFile = path.join(paths.privateDirectory, "shell.rc"), shellReadyDirectory = path.join(paths.privateDirectory, "shell-ready");
+  const legacyShellConfiguration = `${isolatedConfiguration}\n[terminal]\ndefault_shell = ${JSON.stringify(shellFile)}\nshell_mode = "non_login"\n`;
   const configuration = shellFile === null ? options.isolatedRun ? isolatedConfiguration : managedConfiguration
-    : `${isolatedConfiguration}\n[terminal]\ndefault_shell = ${JSON.stringify(shellFile)}\nshell_mode = "non_login"\n`;
+    : `${isolatedConfiguration}\n# Managed shell startup protocol: 1\n[terminal]\ndefault_shell = ${JSON.stringify(shellFile)}\nshell_mode = "non_login"\n`;
   const executable = options.executable === undefined ? "herdr" : options.executable;
   if (executable.trim() === "" || /[\r\n\0]/.test(executable)) throw new Error("The Herdr executable must be nonempty without line breaks or NUL.");
   const environment = createHerdrEnvironment(paths, options.environment === undefined ? process.env : options.environment);
@@ -266,7 +287,7 @@ export const createHerdrInstance = (options: {
   const rpc = createHerdrRpcClient(paths.apiEndpoint);
   let owned: OwnedChild | null = null;
   let starting: Promise<HerdrInstanceReady> | null = null;
-  let managedShellExecutable: "/bin/bash" | undefined;
+  let managedShellReady = false;
   const endpoints = async (operation: Operation) => {
     const results = await Promise.allSettled([probeEndpoint(paths.apiEndpoint, operation), probeEndpoint(paths.clientEndpoint, operation)]);
     const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason as unknown);
@@ -283,9 +304,16 @@ export const createHerdrInstance = (options: {
     return { ...version, snapshot: result.snapshot };
   };
   const verifyExistingConfiguration = async (): Promise<void> => {
-    const current = await verifyConfiguration(paths, configuration, shellFile === null ? undefined : isolatedConfiguration);
-    if (current && shellFile !== null) await verifyManagedShell(shellFile);
-    managedShellExecutable = current && shellFile !== null ? "/bin/bash" : undefined;
+    const current = await verifyConfiguration(paths, configuration, shellFile === null ? [] : [isolatedConfiguration, legacyShellConfiguration]);
+    if (shellFile !== null) {
+      if (current) {
+        await verifyManagedShell(shellFile, managedShell(shellRcFile), true);
+        await verifyManagedShell(shellRcFile, managedShellRc(shellReadyDirectory), false);
+        const directory = await lstat(shellReadyDirectory);
+        if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0) throw new Error("The private Herdr shell readiness directory must be an ordinary owner-only directory.");
+      } else if (await readFile(paths.configurationFile, "utf8") === legacyShellConfiguration) await verifyManagedShell(shellFile, legacyManagedShell, true);
+    }
+    managedShellReady = current && shellFile !== null;
   };
   const version = async (operation: Operation): Promise<void> => {
     const result = await runHerdrCommand({ file: executable, args: ["--version"], environment }, operation, start);
@@ -309,8 +337,12 @@ export const createHerdrInstance = (options: {
         if (before.api || before.client) throw new Error("The private Herdr instance has only one reachable endpoint; its startup or shutdown remains unconfirmed.");
         if (owned !== null && !owned.closed) throw new Error("The owned private Herdr process is still running without both endpoints; its shutdown remains unconfirmed.");
         await ensureConfiguration(paths, configuration);
-        if (shellFile !== null) await ensureManagedShell(shellFile);
-        managedShellExecutable = shellFile === null ? undefined : "/bin/bash";
+        if (shellFile !== null) {
+          await ordinaryDirectory(shellReadyDirectory);
+          await ensureManagedShell(shellRcFile, managedShellRc(shellReadyDirectory), false);
+          await ensureManagedShell(shellFile, managedShell(shellRcFile), true);
+        }
+        await verifyExistingConfiguration();
         await version(scope);
         await ordinaryDirectory(path.dirname(paths.stdoutLogFile));
         const stdout = openSync(paths.stdoutLogFile, "a", 0o600);
@@ -353,7 +385,22 @@ export const createHerdrInstance = (options: {
   };
   return {
     paths, environment, rpc,
-    get managedShellExecutable(): "/bin/bash" | undefined { return managedShellExecutable; },
+    createShellStartup: (): { nonce: string; executable: "/bin/bash"; isReady(pid: number): Promise<boolean> } | undefined => {
+      if (!managedShellReady) return undefined;
+      const nonce = randomUUID();
+      return { nonce, executable: "/bin/bash", isReady: async pid => {
+        if (!Number.isSafeInteger(pid) || pid <= 0) throw new TypeError("A shell readiness observation requires a positive PID.");
+        let handle;
+        try { handle = await open(path.join(shellReadyDirectory, `${nonce}.${pid}`), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+        catch (error) { if (missing(error)) return false; throw error; }
+        try {
+          const entry = await handle.stat();
+          if (!entry.isFile() || entry.size > 128 || (entry.mode & 0o077) !== 0 || entry.uid !== process.getuid?.()) throw new Error("The private shell readiness marker must be a bounded owner-only ordinary file.");
+          const buffer = Buffer.alloc(129), { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+          return buffer.subarray(0, bytesRead).toString("utf8") === `${nonce}\n${pid}\n`;
+        } finally { await handle.close(); }
+      } };
+    },
     attachment: { executable, arguments: ["--session", session], environment: attachmentEnvironment, unsetEnvironment: [...inheritedIdentity] } satisfies HerdrAttachment,
     ensure,
     assertIntegrationEnvironment: (root: string): void => {

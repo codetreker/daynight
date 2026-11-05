@@ -615,9 +615,10 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       const peer = await native.peer(local.paths.apiEndpoint);
       record = need(context);
       if (!record.preparation?.daemon || JSON.stringify(record.preparation.daemon.auditToken) !== JSON.stringify(peer.auditToken)) throw new Error("The prepared Herdr endpoint does not belong to its original daemon.");
-      const binding = await local.tasks.prepareWorkspace(context, title, operation);
+      const startup = local.createShellStartup();
+      const binding = await local.tasks.prepareWorkspace(context, title, operation, startup === undefined ? undefined : { shellNonce: startup.nonce });
       const processInfo = await local.tasks.processInfo(context, binding, operation);
-      const shell = await native.capture(processInfo.shellPid, "shell", local.managedShellExecutable === undefined ? undefined : { executable: local.managedShellExecutable, operation });
+      const shell = await native.capture(processInfo.shellPid, "shell", startup === undefined ? undefined : { executable: startup.executable, operation, ready: () => startup.isReady(processInfo.shellPid) });
       const generation = String(record.runs.length + 1), startedAt = new Date().toISOString();
       const terminal: TerminalBinding = { instanceId, sessionId: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId, terminalId: binding.terminalId, nativeSessionId: record.runs.at(-1)?.run.binding.nativeSessionId ?? null };
       record = update(context, draft => { draft.runs.push({ run: { executionGeneration: generation, owner: draft.owner, binding: terminal, startedAt, stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory, daemon: draft.preparation!.daemon, processes: [shell], stopOperationId: null, stopReason: null, error: null, admission: null }); draft.preparation = null; });

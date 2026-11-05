@@ -78,7 +78,7 @@ const fixture = (realInspector = false, driverResources = false) => {
     bootIdentity: async () => "boot-one",
     capture: async (pid, role, expected) => {
       events.push(`capture:${role}`);
-      if (expected) { expected.operation.check(); events.push(`image:${expected.executable}`); if (shellSettings.captureFailure) throw new Error("Unconfirmed final shell image"); }
+      if (expected) { expected.operation.check(); events.push(`image:${expected.executable}`); if (shellSettings.captureFailure) throw new Error("Unconfirmed final shell image"); expect(await expected.ready()).toBe(true); }
       return proof(pid, role);
     },
     observe: async value => observed.get(value.pid) ?? "same",
@@ -179,11 +179,16 @@ const fixture = (realInspector = false, driverResources = false) => {
     return {
       paths: state.paths, attachment: { executable: "herdr", arguments: [], environment: {}, unsetEnvironment: [] },
       get managedShellExecutable() { return shellSettings.managed ? "/bin/bash" as const : undefined; },
+      createShellStartup: () => {
+        if (!shellSettings.managed) return undefined;
+        expect(state.started).toBe(true);
+        return { nonce: uuid(900 + state.ordinal), executable: "/bin/bash" as const, isReady: async (pid: number) => { expect(pid).toBe(state.shellPid); events.push("shell-ready"); return true; } };
+      },
       ensureInstance: async () => { if (!state.started) { events.push("daemon-launch"); expect(read().preparation?.phase).toBe("launch_requested"); await options.onDaemonSpawn?.(state.daemonPid); state.started = true; } return { reconnected: false, version: "0.9.5", protocol: 22, snapshot: {} }; },
       stopInstance: async () => { throw new Error("Unsafe daemon close must not be used"); },
       tasks: {
         pendingStops: () => [], listResources: async () => driverResources && state.launched ? [{ owner: context, workspaceId: state.binding.workspaceId, panes: [{ ...observation(), kind: "codex" as const, cwd: context.cwd }] }] : [],
-        prepareWorkspace: async () => { events.push("workspace"); return state.binding; },
+        prepareWorkspace: async (_context, _title, _operation, startup) => { expect(startup).toEqual(shellSettings.managed ? { shellNonce: uuid(900 + state.ordinal) } : undefined); events.push("workspace"); return state.binding; },
         syncWorkspaceName: async () => {}, observe: async () => observation(),
         processInfo: async () => ({ shellPid: state.shellPid, foregroundPids: state.launched ? [state.agentPid] : [state.shellPid] }),
         launch: async (_context, _binding, request, active) => {
@@ -259,6 +264,7 @@ describe("durable Herdr facade with real SQLite", () => {
   it.each([true, false])("requires the final shell image only for a managed launcher: %s", async managed => {
     const f = fixture(); f.shellSettings.managed = managed; f.register(); await f.prepare();
     expect(f.events.filter(event => event.startsWith("image:"))).toEqual(managed ? ["image:/bin/bash"] : []);
+    expect(f.events.filter(event => event === "shell-ready")).toHaveLength(managed ? 1 : 0);
     expect(f.read().runs[0]!.phase).toBe("prepared");
   });
   it("retains preparation without a run or service ledger when the final shell image is unconfirmed", async () => {
@@ -266,6 +272,13 @@ describe("durable Herdr facade with real SQLite", () => {
     await expect(f.prepare()).rejects.toThrow("Unconfirmed final shell image");
     expect(f.read().preparation?.daemon).not.toBeNull(); expect(f.read().runs).toEqual([]);
     expect(f.ledgers).toEqual([]); expect(f.launches).toEqual([]); expect(f.inputs).toEqual([]);
+  });
+  it("reconnects an active run using its original identity without a new readiness acknowledgement", async () => {
+    const f = fixture(); f.shellSettings.managed = true; f.register(); const binding = await f.prepare(); await f.start(binding);
+    const original = f.read().runs[0]!.processes;
+    f.reopen(); await f.facade.tasks.observe(f.context, binding, operation());
+    expect(f.events.filter(event => event === "shell-ready")).toHaveLength(1);
+    expect(f.read().runs[0]!.processes).toEqual(original);
   });
   it("continues a completed interactive turn through the real inspector while retaining input and process guards", async () => {
     const f = fixture(true); f.register(); const binding = await f.prepare(); await f.start(binding);

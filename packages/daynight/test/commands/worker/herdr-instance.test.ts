@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -88,14 +88,22 @@ describe("private Herdr instance", () => {
     await writeFile(path.join(home, ".bashrc"), `printf changed > '${marker}'\nexport PATH=/unrelated\n`);
     const instance = createHerdrInstance({ paths: f.worker, environment: { ...f.environment, HOME: home }, spawnProcess: f.start, isolatedRun: true });
     await instance.ensure(operation());
-    expect(instance.managedShellExecutable).toBe("/bin/bash");
+    const startup = instance.createShellStartup()!;
+    expect(startup.executable).toBe("/bin/bash");
+    expect(await startup.isReady(process.pid)).toBe(false);
     const config = parseToml(await readFile(instance.paths.configurationFile, "utf8"));
     expect(config.terminal).toMatchObject({ shell_mode: "non_login", default_shell: expect.any(String) });
     const terminal = config.terminal as { default_shell: string };
-    const launched = spawnSync(terminal.default_shell, ["-i", "-c", 'printf "%s\\n%s\\n" "$PATH" "$CODEX_HOME"'], { env: { ...process.env, HOME: home, PATH: "/checked/native/bin:/usr/bin:/bin", CODEX_HOME: "/retained/native/home" }, encoding: "utf8", timeout: 10_000 });
-    expect(launched.status).toBe(0);
-    expect(launched.stdout).toBe("/checked/native/bin:/usr/bin:/bin\n/retained/native/home\n");
+    const launched = spawnSync(terminal.default_shell, ["-i"], { input: 'printf "%s\\n%s\\nnonce:%s\\n" "$PATH" "$CODEX_HOME" "${DAYNIGHT_HERDR_SHELL_NONCE-unset}"; exit\n', env: { ...process.env, HOME: home, PATH: "/checked/native/bin:/usr/bin:/bin", CODEX_HOME: "/retained/native/home", DAYNIGHT_HERDR_SHELL_NONCE: startup.nonce, PROMPT_COMMAND: "exec /usr/bin/false", PS1: '$(printf INHERITED_PROMPT)', PS2: '$(printf INHERITED_PROMPT)' }, encoding: "utf8", timeout: 10_000 });
+    expect({ status: launched.status, signal: launched.signal, error: launched.error?.message, stdout: launched.stdout, stderr: launched.stderr }).toMatchObject({ status: 0 });
+    expect(launched.stdout).toBe("/checked/native/bin:/usr/bin:/bin\n/retained/native/home\nnonce:unset\n");
+    expect(launched.stderr).not.toContain("INHERITED_PROMPT");
     expect(existsSync(marker)).toBe(false);
+    expect(await startup.isReady(launched.pid)).toBe(true);
+    expect((await stat(path.join(f.root, "shell-ready", `${startup.nonce}.${launched.pid}`))).mode & 0o777).toBe(0o600);
+    expect((await stat(path.join(f.root, "shell-ready"))).mode & 0o777).toBe(0o700);
+    expect(await startup.isReady(launched.pid + 1)).toBe(false);
+    expect(await instance.createShellStartup()!.isReady(launched.pid)).toBe(false);
     const bin = path.join(home, "bin"); await mkdir(bin);
     await writeFile(path.join(bin, "native-provider"), '#!/bin/sh\nprintf checked-executable\n', { mode: 0o700 });
     const inheritedFunction = spawnSync(terminal.default_shell, ["-i", "-c", "native-provider"], {
@@ -103,6 +111,22 @@ describe("private Herdr instance", () => {
     });
     expect(inheritedFunction.status).toBe(0);
     expect(inheritedFunction.stdout).toBe("checked-executable");
+    expect(await readdir(path.join(f.root, "shell-ready"))).toEqual([`${startup.nonce}.${launched.pid}`]);
+    await instance.stop(operation());
+  });
+
+  it.skipIf(process.platform !== "darwin")("rejects stale or redirected managed shell readiness files", async () => {
+    const f = await fixture();
+    const instance = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: f.start, isolatedRun: true });
+    await instance.ensure(operation());
+    const startup = instance.createShellStartup()!, pid = 1234;
+    const file = path.join(f.root, "shell-ready", `${startup.nonce}.${pid}`);
+    await writeFile(file, `00000000-0000-4000-8000-000000000000\n${pid}\n`, { mode: 0o600 });
+    expect(await startup.isReady(pid)).toBe(false);
+    await writeFile(file, `${startup.nonce}\n${pid + 1}\n`);
+    expect(await startup.isReady(pid)).toBe(false);
+    await rm(file); const target = path.join(f.root, "redirected-ready"); await writeFile(target, `${startup.nonce}\n${pid}\n`); await symlink(target, file);
+    await expect(startup.isReady(pid)).rejects.toThrow();
     await instance.stop(operation());
   });
 
@@ -113,7 +137,7 @@ describe("private Herdr instance", () => {
     const other = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("Must not restart the old daemon"); }, isolatedRun: true });
     expect(await other.ensure(operation())).toMatchObject({ reconnected: true });
     expect(await other.connect(operation())).toMatchObject({ reconnected: true });
-    expect(other.managedShellExecutable).toBeUndefined();
+    expect(other.createShellStartup()).toBeUndefined();
     expect(await readFile(f.instance.paths.configurationFile, "utf8")).toBe(legacy);
     expect(existsSync(path.join(f.root, "shell"))).toBe(false);
     await f.instance.stop(operation());

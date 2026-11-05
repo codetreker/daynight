@@ -56,7 +56,7 @@ export const createWorkerHerdr = (options: {
     },
   }, workspaceEnvironment, readCodexConfig: (args, cwd, operation) => readCodexConfiguration({ args, cwd, environment: { ...nativeEnvironment, ...workspaceEnvironment } }, operation) });
   return {
-    get managedShellExecutable(): "/bin/bash" | undefined { return instance.managedShellExecutable; },
+    createShellStartup: instance.createShellStartup,
     ensureInstance: instance.ensure,
     stopInstance: instance.stop,
     attachment: instance.attachment,
