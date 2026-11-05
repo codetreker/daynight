@@ -25,7 +25,7 @@ func taskAssigneeUserIDs(userIDs []string) ([]string, error) {
 	}
 	canonical := make([]string, len(userIDs))
 	for index, userID := range userIDs {
-		value, err := CanonicalID(userID)
+		value, err := model.CanonicalID(userID)
 		if err != nil {
 			return nil, err
 		}
@@ -41,10 +41,10 @@ func taskAssigneeUserIDs(userIDs []string) ([]string, error) {
 }
 
 func (s *Tasks) Assignees(ctx context.Context, principal model.Principal, projectID string, request TaskAssigneesRequest) (model.TaskAssignees, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.TaskAssignees{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.TaskAssignees{}, err
 	}

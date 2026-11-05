@@ -7,6 +7,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
@@ -29,15 +31,15 @@ func (h *taskStepsHandler) change(w http.ResponseWriter, request *http.Request, 
 	}
 	stepID, err := taskcodec.CanonicalID(request.PathValue("stepId"))
 	if err != nil {
-		refuse(invalidInput(err.Error()))
+		refuse(httpx.InvalidInput(err.Error()))
 		return
 	}
 	logger = logger.With("step_id", stepID)
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		refuse(invalidInput("Steps do not accept query parameters."))
+		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := decodeObject(w, request, allowed...)
+	fields, err := httpx.DecodeObject(w, request, allowed...)
 	if request.Context().Err() != nil {
 		refuse(request.Context().Err())
 		return
@@ -72,15 +74,15 @@ func updateStepInput(fields map[string]json.RawMessage) (service.UpdateTaskStep,
 		return input, err
 	}
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return input, err
 	}
-	input.Title, err = optionalString(fields, "title")
+	input.Title, err = httpx.OptionalString(fields, "title")
 	if err != nil {
 		return input, err
 	}
-	input.Description, err = optionalString(fields, "description")
+	input.Description, err = httpx.OptionalString(fields, "description")
 	return input, err
 }
 
@@ -90,11 +92,11 @@ func stepStatusInput(fields map[string]json.RawMessage) (service.SetTaskStepStat
 		return input, err
 	}
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return input, err
 	}
-	status, err := requiredString(fields, "status")
+	status, err := httpx.RequiredString(fields, "status")
 	if err != nil {
 		return input, err
 	}
@@ -115,7 +117,7 @@ func writeStepChange(w http.ResponseWriter, request *http.Request, logger *slog.
 		phases = []string{"prepare", "persist", "commit"}
 	}
 	for _, phase := range phases {
-		logger.InfoContext(request.Context(), "task step change completed", "type", "resource", "component", "task_step", "phase", phase, "outcome", outcome, "version", result.Resource.Version, "request_id", RequestID(request.Context()))
+		logger.InfoContext(request.Context(), "task step change completed", "type", "resource", "component", "task_step", "phase", phase, "outcome", outcome, "version", result.Resource.Version, "request_id", httpx.RequestID(request.Context()))
 	}
 	writeStepsJSON(w, request, logger, http.StatusOK, result.JSON)
 }

@@ -143,7 +143,7 @@ func ParseWorkerConfiguration(raw json.RawMessage) (model.WorkerConfiguration, e
 		if err := configurationDecode(fields["projectId"], &project.ProjectID); err != nil {
 			return value, err
 		}
-		project.ProjectID, err = CanonicalID(project.ProjectID)
+		project.ProjectID, err = model.CanonicalID(project.ProjectID)
 		if err != nil {
 			return value, err
 		}
@@ -240,7 +240,7 @@ func ParseWorkerConfigurationExchange(raw json.RawMessage) (*model.WorkerConfigu
 			return nil, invalidInput("Configuration item kind is invalid.")
 		}
 		if projectKind {
-			item.Key.ProjectID, err = CanonicalID(item.Key.ProjectID)
+			item.Key.ProjectID, err = model.CanonicalID(item.Key.ProjectID)
 			if err != nil {
 				return nil, err
 			}

@@ -30,11 +30,11 @@ type BotWorkerDefaults struct {
 
 // Defaults reads current owner-scoped choices without recording a preference.
 func (s *Bots) Defaults(ctx context.Context, principal model.Principal, workerID *string) (BotDefaults, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return BotDefaults{}, err
 	}
 	if workerID != nil {
-		id, err := CanonicalID(*workerID)
+		id, err := model.CanonicalID(*workerID)
 		if err != nil {
 			return BotDefaults{}, err
 		}

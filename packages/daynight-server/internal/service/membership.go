@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -42,19 +43,6 @@ type InvitationAcceptance struct {
 	Consumed    bool
 }
 
-func requirePrincipal(principal model.Principal) error {
-	if principal.Kind != model.SessionCredential && principal.Kind != model.PATCredential {
-		return unauthenticated(nil)
-	}
-	if _, err := CanonicalID(principal.CredentialID); err != nil {
-		return unauthenticated(nil)
-	}
-	if _, err := CanonicalID(principal.UserID); err != nil {
-		return unauthenticated(nil)
-	}
-	return nil
-}
-
 func projectNotFound(cause error) error {
 	return &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: cause}
 }
@@ -67,10 +55,10 @@ func membershipLookupError(err error) error {
 }
 
 func RequireProjectRead(ctx context.Context, reader store.ProjectReader, principal model.Principal, projectID string) (model.ProjectAccess, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.ProjectAccess{}, err
 	}
-	id, err := CanonicalID(projectID)
+	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.ProjectAccess{}, err
 	}
@@ -79,7 +67,7 @@ func RequireProjectRead(ctx context.Context, reader store.ProjectReader, princip
 }
 
 func RequireProjectWrite(ctx context.Context, tx *store.ProjectTx, principal model.Principal) (model.ProjectAccess, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.ProjectAccess{}, err
 	}
 	access, err := tx.ProjectAccess(ctx, principal)
@@ -103,10 +91,10 @@ func completeMembershipOperation(operation func() error, refusal **model.Fault) 
 }
 
 func (s *Memberships) read(ctx context.Context, principal model.Principal, projectID string, admin bool, operation func(store.ProjectReader, model.ProjectAccess) error) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
-	id, err := CanonicalID(projectID)
+	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return err
 	}
@@ -135,10 +123,10 @@ func (s *Memberships) read(ctx context.Context, principal model.Principal, proje
 }
 
 func (s *Memberships) write(ctx context.Context, principal model.Principal, projectID string, operation func(*store.ProjectTx) error) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
-	id, err := CanonicalID(projectID)
+	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return err
 	}
@@ -203,7 +191,7 @@ func memberMutationTarget(ctx context.Context, tx *store.ProjectTx, userID strin
 }
 
 func validateMemberMutation(userID string, version int64) (string, error) {
-	id, err := CanonicalID(userID)
+	id, err := model.CanonicalID(userID)
 	if err != nil {
 		return "", err
 	}
@@ -225,7 +213,7 @@ type RemoveProjectMember struct {
 }
 
 func requireMembershipActor(principal model.Principal, expectedUserID string) error {
-	expected, err := CanonicalID(expectedUserID)
+	expected, err := model.CanonicalID(expectedUserID)
 	if err != nil {
 		return err
 	}
@@ -239,7 +227,7 @@ func requireMembershipActor(principal model.Principal, expectedUserID string) er
 }
 
 func (s *Memberships) SetRole(ctx context.Context, principal model.Principal, projectID, userID string, input SetProjectMemberRole) (model.ProjectGrant, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.ProjectGrant{}, err
 	}
 	if err := requireMembershipActor(principal, input.ExpectedUserID); err != nil {
@@ -270,7 +258,7 @@ func (s *Memberships) SetRole(ctx context.Context, principal model.Principal, pr
 }
 
 func (s *Memberships) Remove(ctx context.Context, principal model.Principal, projectID, userID string, input RemoveProjectMember) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
 	if err := requireMembershipActor(principal, input.ExpectedUserID); err != nil {
@@ -289,21 +277,21 @@ func (s *Memberships) Remove(ctx context.Context, principal model.Principal, pro
 }
 
 func (s *Memberships) CreateInvitation(ctx context.Context, principal model.Principal, projectID, expectedUserID string) (MintedInvitation, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return MintedInvitation{}, err
 	}
 	if err := requireMembershipActor(principal, expectedUserID); err != nil {
 		return MintedInvitation{}, err
 	}
-	id, err := CanonicalID(projectID)
+	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return MintedInvitation{}, err
 	}
 	var result MintedInvitation
 	err = s.write(ctx, principal, id, func(tx *store.ProjectTx) error {
 		now := s.now().UTC()
-		result.Secret = randomSecret(invitationPrefix)
-		result.Invitation = model.ProjectInvitation{ID: uuid.NewString(), ProjectID: id, CreatedBy: principal.UserID, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
+		result.Secret = secretutil.Random(invitationPrefix)
+		result.Invitation = model.ProjectInvitation{ID: uuid.NewString(), ProjectID: id, CreatedBy: principal.UserID, TokenHash: secretutil.Hash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
 		return tx.CreateInvitation(ctx, result.Invitation)
 	})
 	if err != nil {
@@ -324,13 +312,13 @@ func (s *Memberships) ListInvitations(ctx context.Context, principal model.Princ
 }
 
 func (s *Memberships) RevokeInvitation(ctx context.Context, principal model.Principal, projectID, invitationID, expectedUserID string) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
 	if err := requireMembershipActor(principal, expectedUserID); err != nil {
 		return err
 	}
-	id, err := CanonicalID(invitationID)
+	id, err := model.CanonicalID(invitationID)
 	if err != nil {
 		return err
 	}
@@ -346,16 +334,16 @@ func invitationAvailable(invitation model.ProjectInvitation, now time.Time) bool
 }
 
 func (s *Memberships) inspect(ctx context.Context, principal model.Principal, secret string, operation func(store.ProjectReader, model.ProjectInvitation) error) error {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return err
 	}
-	if !validSecret(secret, invitationPrefix) {
+	if !secretutil.Valid(secret, invitationPrefix) {
 		return invitationUnavailable(nil)
 	}
 	var refusal *model.Fault
 	err := s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		return completeMembershipOperation(func() error {
-			invitation, err := snapshot.ProjectDAO().Invitation(ctx, secretHash(secret))
+			invitation, err := snapshot.ProjectDAO().Invitation(ctx, secretutil.Hash(secret))
 			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(err)
 			}
@@ -402,7 +390,7 @@ func (s *Memberships) InspectInvitation(ctx context.Context, principal model.Pri
 }
 
 func (s *Memberships) AcceptInvitation(ctx context.Context, principal model.Principal, secret, expectedUserID string) (InvitationAcceptance, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return InvitationAcceptance{}, err
 	}
 	if err := requireMembershipActor(principal, expectedUserID); err != nil {
@@ -419,7 +407,7 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal model.Prin
 	var refusal *model.Fault
 	err := s.store.WriteProject(ctx, projectID, func(tx *store.ProjectTx) error {
 		return completeMembershipOperation(func() error {
-			invitation, err := tx.LockInvitation(ctx, secretHash(secret))
+			invitation, err := tx.LockInvitation(ctx, secretutil.Hash(secret))
 			if errors.Is(err, model.ErrNotFound) {
 				return invitationUnavailable(err)
 			}

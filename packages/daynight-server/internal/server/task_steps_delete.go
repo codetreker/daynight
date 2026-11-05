@@ -6,6 +6,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
@@ -22,15 +24,15 @@ func (h *taskStepsHandler) delete(w http.ResponseWriter, request *http.Request, 
 	}
 	stepID, err := taskcodec.CanonicalID(request.PathValue("stepId"))
 	if err != nil {
-		refuse(invalidInput(err.Error()))
+		refuse(httpx.InvalidInput(err.Error()))
 		return
 	}
 	logger = logger.With("step_id", stepID)
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		refuse(invalidInput("Steps do not accept query parameters."))
+		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := decodeObject(w, request, "version")
+	fields, err := httpx.DecodeObject(w, request, "version")
 	if request.Context().Err() != nil {
 		refuse(request.Context().Err())
 		return
@@ -52,6 +54,6 @@ func deleteStepInput(fields map[string]json.RawMessage) (service.DeleteTaskStep,
 	if err := validateStepUnicode(fields); err != nil {
 		return service.DeleteTaskStep{}, err
 	}
-	version, err := versionInput(fields)
+	version, err := httpx.VersionInput(fields)
 	return service.DeleteTaskStep{Version: version}, err
 }

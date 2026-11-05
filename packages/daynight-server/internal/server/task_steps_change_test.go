@@ -14,6 +14,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -151,7 +152,7 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			assertProjectError(t, response, 400, "invalid_input")
-			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", maxJSONBody)+`"}`), 400, "invalid_input")
+			assertProjectError(t, projectRequest(handler, tc.method, path+tc.suffix, strings.TrimSuffix(tc.good, "}")+`,"description":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 400, "invalid_input")
 		})
 	}
 	for _, tc := range []struct {
@@ -175,10 +176,10 @@ func TestStepsHTTPChangeStrictInputAndMethods(t *testing.T) {
 		t.Fatal("valid Unicode changed")
 	}
 	prefix := `{"version":2,"description":"`
-	exact := prefix + strings.Repeat("X", maxJSONBody-len(prefix)-len(`"}`)) + `"}`
+	exact := prefix + strings.Repeat("X", httpx.MaxJSONBody-len(prefix)-len(`"}`)) + `"}`
 	response = projectRequest(handler, "PATCH", path+"/abcdef01", exact)
 	boundary := decodeResponse[api.StepsResource](t, response, 200)
-	if len(exact) != maxJSONBody || len(boundary.Steps[0].Description) != maxJSONBody-len(prefix)-len(`"}`) || boundary.Version != 3 {
+	if len(exact) != httpx.MaxJSONBody || len(boundary.Steps[0].Description) != httpx.MaxJSONBody-len(prefix)-len(`"}`) || boundary.Version != 3 {
 		t.Fatal("exact request boundary changed or truncated content")
 	}
 

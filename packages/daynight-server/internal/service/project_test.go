@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -57,13 +58,13 @@ func TestCreateAndGetProject(t *testing.T) {
 func TestCanonicalID(t *testing.T) {
 	_, _, _, principal := projectService(t)
 	for _, value := range []string{"00000000-0000-0000-0000-000000000000", "F47AC10B-58CC-11CF-A447-001122334455", "f47ac10b-58cc-71cf-a447-001122334455"} {
-		got, err := CanonicalID(value)
+		got, err := model.CanonicalID(value)
 		if err != nil || got != strings.ToLower(value) {
 			t.Fatalf("canonical %q: %q, %v", value, got, err)
 		}
 	}
 	for _, value := range []string{"", "f47ac10b58cc11cfa447001122334455", "{f47ac10b-58cc-11cf-a447-001122334455}", "urn:uuid:f47ac10b-58cc-11cf-a447-001122334455", "f47ac10b_58cc-11cf-a447-001122334455", "f47ac10b-58cc_11cf-a447-001122334455", "f47ac10b-58cc-11cf_a447-001122334455", "f47ac10b-58cc-11cf-a447_001122334455", "z47ac10b-58cc-11cf-a447-001122334455"} {
-		_, err := CanonicalID(value)
+		_, err := model.CanonicalID(value)
 		requireFault(t, err, "invalid_input")
 		_, err = NewProjects(nil).Get(context.Background(), principal, value)
 		requireFault(t, err, "invalid_input")
@@ -159,7 +160,7 @@ func TestProjectPagination(t *testing.T) {
 			if page.NextCursor == nil {
 				t.Fatal("missing next cursor")
 			}
-			position, err := projectListPage(model.PageRequest{Limit: 2, Cursor: page.NextCursor}, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
+			position, err := query.ProjectListPage(model.PageRequest{Limit: 2, Cursor: page.NextCursor}, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
 			if err != nil || !position.After.CreatedAt.Equal(timestamp) || position.After.ID != page.Items[1].ID {
 				t.Fatalf("cursor must encode exact last position: %#v, %v", position, err)
 			}
@@ -272,6 +273,23 @@ func TestProjectCursorEncodingFailureIsOperational(t *testing.T) {
 	}
 }
 
+type listCursor struct {
+	Version   int       `json:"version"`
+	Kind      string    `json:"kind"`
+	CreatedAt time.Time `json:"createdAt"`
+	ID        string    `json:"id"`
+}
+
+type projectCursor struct {
+	Version   int                    `json:"version"`
+	Kind      string                 `json:"kind"`
+	UserID    string                 `json:"userId"`
+	Scope     store.ProjectScopeKind `json:"scope"`
+	TeamID    string                 `json:"teamId"`
+	CreatedAt time.Time              `json:"createdAt"`
+	ID        string                 `json:"id"`
+}
+
 func cursorJSON(t *testing.T, cursor listCursor) string {
 	t.Helper()
 	data, err := json.Marshal(cursor)
@@ -297,7 +315,7 @@ func TestProjectListRejectsInvalidRequests(t *testing.T) {
 		return base64.RawURLEncoding.EncodeToString(data)
 	}
 	validEncoded := encode(valid)
-	if _, err := projectListPage(model.PageRequest{Limit: 50, Cursor: &validEncoded}, principal.UserID, scope); err != nil {
+	if _, err := query.ProjectListPage(model.PageRequest{Limit: 50, Cursor: &validEncoded}, principal.UserID, scope); err != nil {
 		t.Fatal(err)
 	}
 	var invalid []string

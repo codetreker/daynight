@@ -4,26 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
-
-func initializePersonalTeam(ctx context.Context, tx pgx.Tx, userID string, now time.Time) (string, error) {
-	var teamID string
-	err := tx.QueryRow(ctx, `INSERT INTO teams (id,personal_user_id,created_at,updated_at)
-		VALUES ($1,$2,$3,$3) ON CONFLICT (personal_user_id) DO NOTHING RETURNING id::text`, uuid.NewString(), userID, now).Scan(&teamID)
-	if err == nil {
-		_, err = tx.Exec(ctx, `INSERT INTO team_members (team_id,user_id,role,created_at,updated_at)
-			VALUES ($1,$2,'admin',$3,$3)`, teamID, userID, now)
-		return teamID, err
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return "", err
-	}
-	return personalTeam(ctx, tx, userID, "")
-}
 
 func personalTeam(ctx context.Context, tx pgx.Tx, userID, lock string) (string, error) {
 	var teamID string

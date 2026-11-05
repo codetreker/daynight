@@ -1,11 +1,12 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"errors"
 	"log/slog"
 	"net/http"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/webui"
 )
 
@@ -19,10 +20,10 @@ func uiRoutes(mux *http.ServeMux, logger *slog.Logger) {
 		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/team-invitations", "/device", "/setup",
 	} {
 		mux.HandleFunc("GET "+pattern, page)
-		mux.HandleFunc(pattern, methodNotAllowed(logger, "GET, HEAD"))
+		mux.HandleFunc(pattern, httpx.MethodNotAllowed(logger, "GET, HEAD"))
 	}
 	mux.HandleFunc("GET /assets/", asset)
-	mux.HandleFunc("/assets/", methodNotAllowed(logger, "GET, HEAD"))
+	mux.HandleFunc("/assets/", httpx.MethodNotAllowed(logger, "GET, HEAD"))
 }
 
 func uiHandler(logger *slog.Logger, serve func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {
@@ -30,13 +31,13 @@ func uiHandler(logger *slog.Logger, serve func(http.ResponseWriter, *http.Reques
 		if err := serve(w, request); err != nil {
 			var responseError *webui.ResponseError
 			if errors.As(err, &responseError) {
-				LogFailure(logger, request.Context(), "webui", "response", err)
+				httpx.LogFailure(logger, request.Context(), "webui", "response", err)
 				return
 			}
 			if errors.Is(err, webui.ErrNotFound) {
 				err = &model.Fault{Code: "not_found", Message: "resource not found", Cause: err}
 			}
-			writeError(w, request, logger, "webui", "read", err)
+			httpx.WriteError(w, request, logger, "webui", "read", err)
 		}
 	}
 }

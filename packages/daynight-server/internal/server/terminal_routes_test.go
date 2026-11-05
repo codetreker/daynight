@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/coder/websocket"
-	"github.com/google/uuid"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/google/uuid"
+
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
@@ -47,7 +50,7 @@ func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
 		}
 	})
 	other := *f.h
-	other.Handler = RequestLogging(testLogger(), otherApp)
+	other.Handler = httpx.RequestLogging(testLogger(), otherApp)
 	for _, path := range []string{f.base + "/current", f.base + "/" + f.message.SessionID + "/state"} {
 		response := terminalRequest(&other, http.MethodGet, path, "", v2.Protocol)
 		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"relay_instance_unavailable"`) {
@@ -163,7 +166,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 		t.Fatal(e)
 	}
 	app := a.(*sessionApplication)
-	h.Handler = RequestLogging(testLogger(), app)
+	h.Handler = httpx.RequestLogging(testLogger(), app)
 	server := httptest.NewServer(app)
 	t.Cleanup(server.Close)
 	t.Cleanup(func() {

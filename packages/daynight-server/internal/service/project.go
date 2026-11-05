@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -73,10 +74,10 @@ func (s *Projects) Get(ctx context.Context, principal model.Principal, id string
 }
 
 func (s *Projects) GetWithAccess(ctx context.Context, principal model.Principal, id string) (model.Project, model.ProjectAccess, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Project{}, model.ProjectAccess{}, err
 	}
-	id, err := CanonicalID(id)
+	id, err := model.CanonicalID(id)
 	if err != nil {
 		return model.Project{}, model.ProjectAccess{}, err
 	}
@@ -113,17 +114,17 @@ func (s *Projects) List(ctx context.Context, principal model.Principal, request 
 }
 
 func (s *Projects) ListScoped(ctx context.Context, principal model.Principal, request ProjectListRequest) (ProjectPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return ProjectPage{}, err
 	}
-	userID, _ := CanonicalID(principal.UserID)
+	userID, _ := model.CanonicalID(principal.UserID)
 	principal.UserID = userID
 	scope := store.ProjectScope{Kind: store.ProjectScopeAll}
 	if request.TeamID != nil {
 		if request.Shared {
 			return ProjectPage{}, invalidInput("teamId and shared are mutually exclusive.")
 		}
-		teamID, err := CanonicalID(*request.TeamID)
+		teamID, err := model.CanonicalID(*request.TeamID)
 		if err != nil {
 			return ProjectPage{}, err
 		}
@@ -131,7 +132,7 @@ func (s *Projects) ListScoped(ctx context.Context, principal model.Principal, re
 	} else if request.Shared {
 		scope.Kind = store.ProjectScopeShared
 	}
-	page, err := projectListPage(request.Page, userID, scope)
+	page, err := query.ProjectListPage(request.Page, userID, scope)
 	if err != nil {
 		return ProjectPage{}, err
 	}
@@ -155,22 +156,11 @@ func (s *Projects) ListScoped(ctx context.Context, principal model.Principal, re
 	response := ProjectPage{Items: result.Items}
 	if result.HasMore {
 		last := result.Items[len(result.Items)-1]
-		cursor, err := encodeProjectCursor(last, userID, scope)
+		cursor, err := query.EncodeProjectCursor(last, userID, scope)
 		if err != nil {
 			return ProjectPage{}, fmt.Errorf("encode project cursor: %w", err)
 		}
 		response.NextCursor = &cursor
 	}
 	return response, nil
-}
-
-func CanonicalID(value string) (string, error) {
-	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
-		return "", invalidInput("ID must be a hyphenated UUID.")
-	}
-	id, err := uuid.Parse(value)
-	if err != nil {
-		return "", invalidInput("ID must be a hyphenated UUID.")
-	}
-	return id.String(), nil
 }

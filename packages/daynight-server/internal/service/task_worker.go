@@ -92,7 +92,7 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal model.Principal, pro
 	if err := requireCompatibleWorker(ctx, &model.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
 		return model.Task{}, err
 	}
-	previousID, err := CanonicalID(input.PreviousClaimID)
+	previousID, err := model.CanonicalID(input.PreviousClaimID)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -118,7 +118,7 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal model.Principal, pro
 }
 
 func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, projectID, id string, input UpdateWorker) (model.Task, error) {
-	claimID, err := CanonicalID(input.ClaimID)
+	claimID, err := model.CanonicalID(input.ClaimID)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -192,7 +192,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, pro
 		if input.NativeSessionID != nil {
 			next.NativeSessionID = *input.NativeSessionID
 		}
-		if !reportChanged && next.Phase == worker.Phase && equalOptional(next.Herdr, worker.Herdr) && equalOptional(next.NativeSessionID, worker.NativeSessionID) {
+		if !reportChanged && next.Phase == worker.Phase && model.EqualOptional(next.Herdr, worker.Herdr) && model.EqualOptional(next.NativeSessionID, worker.NativeSessionID) {
 			return taskMutation{current: current}, nil
 		}
 		values := currentTaskWrite(current)
@@ -211,7 +211,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal model.Principal, pro
 }
 
 func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, projectID, id string, input ReleaseWorker) (model.Task, error) {
-	claimID, err := CanonicalID(input.ClaimID)
+	claimID, err := model.CanonicalID(input.ClaimID)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -239,7 +239,7 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal model.Principal, pr
 }
 
 func (s *Tasks) WithdrawWorker(ctx context.Context, principal model.Principal, projectID, id string, input WithdrawWorker) (model.Task, error) {
-	claimID, err := CanonicalID(input.ClaimID)
+	claimID, err := model.CanonicalID(input.ClaimID)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -269,7 +269,7 @@ func canonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error)
 		input.AgentControlMode = model.AgentControlModeHerdr
 	}
 	for _, field := range []*string{&input.ClaimID, &input.WorkerID, &input.Machine.ID, &input.WorktreeID} {
-		value, err := CanonicalID(*field)
+		value, err := model.CanonicalID(*field)
 		if err != nil {
 			return WorkerDescriptor{}, err
 		}

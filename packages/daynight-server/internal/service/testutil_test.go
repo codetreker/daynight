@@ -3,14 +3,20 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
+
+	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -66,14 +72,43 @@ func projectService(t *testing.T) (*Projects, *store.Store, string, model.Princi
 
 func servicePrincipal(t *testing.T, database *store.Store) model.Principal {
 	t.Helper()
-	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	secret := randomSecret("dnst_")
-	credential := model.Session{ID: uuid.NewString(), TokenHash: secretHash(secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
-	if _, err := database.CreateIdentitySession(ctx, model.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential); err != nil {
-		t.Fatal(err)
+	secret := secretutil.Random("dnst_")
+	credential := model.Session{ID: uuid.NewString(), TokenHash: secretutil.Hash(secret), CreatedAt: now, ExpiresAt: now.Add(identitycore.SessionLifetime)}
+	principal := fixtureIdentitySession(t, database, model.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential)
+
+	return principal
+}
+
+func requireIdentityOperationalError(t *testing.T, err error) {
+	t.Helper()
+	var fault *model.Fault
+	var databaseError *store.Error
+	if err == nil || errors.As(err, &fault) || !errors.As(err, &databaseError) || databaseError.Unwrap() == nil {
+		t.Fatalf("expected retained database failure, got %#v", err)
 	}
-	principal, err := database.Authenticate(ctx, model.SessionCredential, secretHash(secret), now)
+}
+
+func fixtureIdentitySession(t *testing.T, database *store.Store, user model.User, session model.Session) model.Principal {
+	t.Helper()
+	ctx := context.Background()
+	var principal model.Principal
+	_, err := database.WriteIdentity(ctx, func(scope store.IdentityScope) error {
+		var err error
+		user, err = scope.IdentityDAO().UpsertUser(ctx, user, session.CreatedAt)
+		if err != nil {
+			return err
+		}
+		if _, err = team.BootstrapPersonalTeam(ctx, scope.PersonalTeamDAO(), user.ID, session.CreatedAt); err != nil {
+			return err
+		}
+		session.UserID = user.ID
+		if err = scope.IdentityDAO().InsertSession(ctx, session); err != nil {
+			return err
+		}
+		principal, err = scope.IdentityDAO().Authenticate(ctx, model.SessionCredential, session.TokenHash, session.CreatedAt)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

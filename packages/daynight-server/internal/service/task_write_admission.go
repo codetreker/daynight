@@ -9,14 +9,14 @@ import (
 )
 
 func taskWriteIdentity(principal model.Principal, projectID, taskID string, version int64) (string, string, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return "", "", err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return "", "", err
 	}
-	taskID, err = CanonicalID(taskID)
+	taskID, err = model.CanonicalID(taskID)
 	if err != nil {
 		return "", "", err
 	}

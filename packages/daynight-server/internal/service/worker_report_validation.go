@@ -14,7 +14,7 @@ var workerProbeCodes = []string{"not_found", "permission_denied", "timeout", "co
 
 func validateWorkerReport(input model.WorkerReport) (model.WorkerReport, error) {
 	telemetry := &input.Telemetry
-	machineID, err := CanonicalID(telemetry.Machine.ID)
+	machineID, err := model.CanonicalID(telemetry.Machine.ID)
 	if err != nil {
 		return model.WorkerReport{}, err
 	}
@@ -59,7 +59,7 @@ func validateWorkerReport(input model.WorkerReport) (model.WorkerReport, error) 
 	seen := make(map[string]bool, len(inventory.Claims))
 	for index, reference := range inventory.Claims {
 		for _, destination := range []*string{&reference.ProjectID, &reference.TaskID, &reference.ClaimID} {
-			id, err := CanonicalID(*destination)
+			id, err := model.CanonicalID(*destination)
 			if err != nil {
 				return model.WorkerReport{}, err
 			}

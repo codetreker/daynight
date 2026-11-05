@@ -13,10 +13,10 @@ type UpdateProjectSettings struct {
 }
 
 func (s *Projects) UpdateSettings(ctx context.Context, principal model.Principal, projectID string, input UpdateProjectSettings) (model.Project, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Project{}, err
 	}
-	id, err := CanonicalID(projectID)
+	id, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.Project{}, err
 	}

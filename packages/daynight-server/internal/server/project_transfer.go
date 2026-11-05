@@ -11,24 +11,25 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
 func transferNested(fields map[string]json.RawMessage, key string, allowed ...string) (map[string]json.RawMessage, error) {
 	value, err := jsonobject.Decode(fields[key], key, allowed...)
 	if err != nil {
-		return nil, invalidInput(err.Error())
+		return nil, httpx.InvalidInput(err.Error())
 	}
 	return value, nil
 }
 
 func transferInput(w http.ResponseWriter, r *http.Request) (service.TransferInput, error) {
 	var input service.TransferInput
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		return input, err
 	}
-	fields, err := decodeObject(w, r, "ownership", "targetTeam", "expectedUserId")
+	fields, err := httpx.DecodeObject(w, r, "ownership", "targetTeam", "expectedUserId")
 	if err != nil {
 		return input, err
 	}
@@ -36,28 +37,28 @@ func transferInput(w http.ResponseWriter, r *http.Request) (service.TransferInpu
 	if err != nil {
 		return input, err
 	}
-	if input.Ownership.TeamID, err = requiredString(owner, "teamId"); err != nil {
+	if input.Ownership.TeamID, err = httpx.RequiredString(owner, "teamId"); err != nil {
 		return input, err
 	}
-	if input.Ownership.Version, err = versionInput(owner); err != nil {
+	if input.Ownership.Version, err = httpx.VersionInput(owner); err != nil {
 		return input, err
 	}
 	target, err := transferNested(fields, "targetTeam", "id", "version")
 	if err != nil {
 		return input, err
 	}
-	if input.TargetTeam.ID, err = requiredString(target, "id"); err != nil {
+	if input.TargetTeam.ID, err = httpx.RequiredString(target, "id"); err != nil {
 		return input, err
 	}
-	if input.TargetTeam.Version, err = versionInput(target); err != nil {
+	if input.TargetTeam.Version, err = httpx.VersionInput(target); err != nil {
 		return input, err
 	}
-	input.ExpectedUserID, err = requiredString(fields, "expectedUserId")
+	input.ExpectedUserID, err = httpx.RequiredString(fields, "expectedUserId")
 	return input, err
 }
 
 func transferLogID(logger *slog.Logger, field, value string) *slog.Logger {
-	id, err := service.CanonicalID(value)
+	id, err := model.CanonicalID(value)
 	if err == nil && id == value {
 		return logger.With(field, id)
 	}
@@ -68,16 +69,16 @@ func (h *projectHandler) transferPreview(w http.ResponseWriter, r *http.Request,
 	start := time.Now()
 	w.Header().Set("Cache-Control", "no-store")
 	logger := transferLogID(h.logger.With("user_id", p.UserID), "project_id", r.PathValue("projectId"))
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		writeTransferError(w, r, logger, start, "preview", err)
 		return
 	}
-	fields, err := decodeObject(w, r, "targetTeamId")
+	fields, err := httpx.DecodeObject(w, r, "targetTeamId")
 	if err != nil {
 		writeTransferError(w, r, logger, start, "preview", err)
 		return
 	}
-	target, err := requiredString(fields, "targetTeamId")
+	target, err := httpx.RequiredString(fields, "targetTeamId")
 	if err != nil {
 		writeTransferError(w, r, logger, start, "preview", err)
 		return
@@ -93,12 +94,12 @@ func (h *projectHandler) transferPreview(w http.ResponseWriter, r *http.Request,
 		role := string(*result.ActorRole)
 		actorRole = &role
 	}
-	response := api.TransferPreview{SourceTeam: teamRefResponse(result.SourceTeam),
-		TargetTeam: api.TransferTeam{TeamRef: teamRefResponse(result.TargetTeam), Version: result.TargetTeamVersion},
+	response := api.TransferPreview{SourceTeam: httpx.TeamRefResponse(result.SourceTeam),
+		TargetTeam: api.TransferTeam{TeamRef: httpx.TeamRefResponse(result.TargetTeam), Version: result.TargetTeamVersion},
 		Ownership:  ownershipResponse(result.Ownership), ActorRole: actorRole}
 	logger = logger.With("source_team_id", result.SourceTeam.ID, "duration_ms", time.Since(start).Milliseconds())
-	logger.InfoContext(r.Context(), "project transfer preview", "component", "project_transfer", "phase", "preview", "outcome", "success", "request_id", RequestID(r.Context()))
-	writeJSON(w, r, logger, http.StatusOK, response)
+	logger.InfoContext(r.Context(), "project transfer preview", "component", "project_transfer", "phase", "preview", "outcome", "success", "request_id", httpx.RequestID(r.Context()))
+	httpx.WriteJSON(w, r, logger, http.StatusOK, response)
 }
 
 func (h *projectHandler) transfer(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -123,7 +124,7 @@ func (h *projectHandler) transfer(w http.ResponseWriter, r *http.Request, p mode
 		access = &value
 	}
 	response := api.TransferReceipt{ProjectID: result.ProjectID, Changed: result.Changed,
-		SourceTeam: teamRefResponse(result.SourceTeam), OwnerTeam: teamRefResponse(result.OwnerTeam),
+		SourceTeam: httpx.TeamRefResponse(result.SourceTeam), OwnerTeam: httpx.TeamRefResponse(result.OwnerTeam),
 		Ownership: ownershipResponse(result.Ownership), ActorAccess: access}
 	writeTransferJSON(w, r, logger, start, response)
 }
@@ -141,12 +142,12 @@ func writeTransferError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 			err = &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}
 		} else if transaction.Phase != "operation" || transaction.Outcome != store.TransactionNotCommitted {
 			err = &model.Fault{Code: "internal_error", Message: "The request could not be completed.", Cause: err}
-		} else if _, ok := knownFault(err); !ok && errors.Is(err, model.ErrNotFound) {
+		} else if _, ok := httpx.KnownFault(err); !ok && errors.Is(err, model.ErrNotFound) {
 			err = &model.Fault{Code: "not_found", Message: "Project or target Team was not found.", Cause: err}
 		}
 	}
 	if outcome == "failed" {
-		if fault, ok := knownFault(err); ok && ErrorKind(err) == fault.Code {
+		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code {
 			outcome = "refused"
 		}
 	}
@@ -154,16 +155,16 @@ func writeTransferError(w http.ResponseWriter, r *http.Request, logger *slog.Log
 	if outcome == "unknown" {
 		logTransferUnknown(logger, r, phase, err)
 		if r.Context().Err() == nil {
-			writeJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: "The write outcome is unknown. Read the current resource before deciding on another operation.", RequestID: RequestID(r.Context())}})
+			httpx.WriteJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: "The write outcome is unknown. Read the current resource before deciding on another operation.", RequestID: httpx.RequestID(r.Context())}})
 		}
 		return
 	}
-	writeError(w, r, logger, "project_transfer", phase, err)
+	httpx.WriteError(w, r, logger, "project_transfer", phase, err)
 }
 
 func logTransferUnknown(logger *slog.Logger, r *http.Request, phase string, err error) {
 	logger.ErrorContext(r.Context(), "project transfer outcome unknown", "type", "operation_error", "component", "project_transfer", "phase", phase,
-		"error_code", "write_outcome_unknown", "cause", ErrorKind(err), "request_id", RequestID(r.Context()))
+		"error_code", "write_outcome_unknown", "cause", httpx.ErrorKind(err), "request_id", httpx.RequestID(r.Context()))
 }
 
 func writeTransferJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logger, start time.Time, value any) {
@@ -172,7 +173,7 @@ func writeTransferJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 	if err != nil {
 		fault := &model.Fault{Code: "write_outcome_unknown", Message: "The committed write response was not delivered.", Cause: err}
 		logTransferUnknown(logger.With("outcome", "unknown"), r, "response", fault)
-		writeJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: RequestID(r.Context())}})
+		httpx.WriteJSON(w, r, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: fault.Code, Message: fault.Message, RequestID: httpx.RequestID(r.Context())}})
 		return
 	}
 	if err := r.Context().Err(); err != nil {
@@ -190,5 +191,5 @@ func writeTransferJSON(w http.ResponseWriter, r *http.Request, logger *slog.Logg
 		logTransferUnknown(logger.With("outcome", "unknown"), r, "response", err)
 		return
 	}
-	logger.InfoContext(r.Context(), "project transfer response", "type", "resource", "component", "project_transfer", "phase", "response", "outcome", "success", "request_id", RequestID(r.Context()))
+	logger.InfoContext(r.Context(), "project transfer response", "type", "resource", "component", "project_transfer", "phase", "response", "outcome", "success", "request_id", httpx.RequestID(r.Context()))
 }

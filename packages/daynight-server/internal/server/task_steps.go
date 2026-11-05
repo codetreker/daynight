@@ -9,9 +9,13 @@ import (
 	"strconv"
 	"strings"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
@@ -23,20 +27,20 @@ type taskStepsHandler struct {
 	logger *slog.Logger
 }
 
-func taskStepsRoutes(mux *http.ServeMux, steps *service.TaskSteps, auth *Authentication, logger *slog.Logger) {
+func taskStepsRoutes(mux *http.ServeMux, steps *service.TaskSteps, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &taskStepsHandler{steps: steps, logger: logger}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/steps"
 	mux.HandleFunc("POST "+path, auth.Require(handler.add))
 	mux.HandleFunc("GET "+path, auth.Require(handler.get))
-	mux.HandleFunc(path, auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("GET "+path+"/{stepId}", auth.Require(handler.get))
 	mux.HandleFunc("PATCH "+path+"/{stepId}", auth.Require(handler.change))
 	mux.HandleFunc("DELETE "+path+"/{stepId}", auth.Require(handler.delete))
-	mux.HandleFunc(path+"/{stepId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
+	mux.HandleFunc(path+"/{stepId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 	mux.HandleFunc("PUT "+path+"/{stepId}/status", auth.Require(handler.change))
-	mux.HandleFunc(path+"/{stepId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
+	mux.HandleFunc(path+"/{stepId}/status", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
 	mux.HandleFunc("PUT "+path+"/{stepId}/position", auth.Require(handler.move))
-	mux.HandleFunc(path+"/{stepId}/position", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
+	mux.HandleFunc(path+"/{stepId}/position", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
 }
 
 func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -46,7 +50,7 @@ func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, pri
 		operation = "get"
 	}
 	projectID, taskID, logger, err := taskResource(request, principal, h.logger.With("operation", operation))
-	logger = logger.With("read_kind", stepsReadKind(RequestID(request.Context())))
+	logger = logger.With("read_kind", stepsReadKind(httpx.RequestID(request.Context())))
 	if err != nil {
 		writeStepsError(w, request, logger, "read", err)
 		return
@@ -55,13 +59,13 @@ func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, pri
 	if operation == "get" {
 		stepID, err = taskcodec.CanonicalID(stepID)
 		if err != nil {
-			writeStepsError(w, request, logger, "read", invalidInput(err.Error()))
+			writeStepsError(w, request, logger, "read", httpx.InvalidInput(err.Error()))
 			return
 		}
 		logger = logger.With("step_id", stepID)
 	}
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		writeStepsError(w, request, logger, "read", invalidInput("Steps do not accept query parameters."))
+		writeStepsError(w, request, logger, "read", httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
 	var data []byte
@@ -78,7 +82,7 @@ func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, pri
 	if err != nil {
 		var absence *service.StepAbsence
 		if errors.As(err, &absence) {
-			logger.InfoContext(request.Context(), "task step current state", "type", "resource", "component", "task_step", "phase", "read", "outcome", "absent", "version", absence.Version, "request_id", RequestID(request.Context()))
+			logger.InfoContext(request.Context(), "task step current state", "type", "resource", "component", "task_step", "phase", "read", "outcome", "absent", "version", absence.Version, "request_id", httpx.RequestID(request.Context()))
 		}
 		writeStepsError(w, request, logger, "read", err)
 		return
@@ -87,7 +91,7 @@ func (h *taskStepsHandler) get(w http.ResponseWriter, request *http.Request, pri
 	if operation == "get" {
 		outcome = "found"
 	}
-	logger.InfoContext(request.Context(), "task steps current state", "type", "resource", "component", "task_step", "phase", "read", "outcome", outcome, "version", version, "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "task steps current state", "type", "resource", "component", "task_step", "phase", "read", "outcome", outcome, "version", version, "request_id", httpx.RequestID(request.Context()))
 	writeStepsJSON(w, request, logger, http.StatusOK, data)
 }
 
@@ -113,10 +117,10 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 		return
 	}
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		refuse(invalidInput("Steps do not accept query parameters."))
+		refuse(httpx.InvalidInput("Steps do not accept query parameters."))
 		return
 	}
-	fields, err := decodeObject(w, request, "version", "id", "title", "description", "status", "before", "after")
+	fields, err := httpx.DecodeObject(w, request, "version", "id", "title", "description", "status", "before", "after")
 	if request.Context().Err() != nil {
 		refuse(request.Context().Err())
 		return
@@ -132,7 +136,7 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 	}
 	id, err := taskcodec.CanonicalID(input.ID)
 	if err != nil {
-		refuse(invalidInput(err.Error()))
+		refuse(httpx.InvalidInput(err.Error()))
 		return
 	}
 	logger = logger.With("step_id", id)
@@ -143,7 +147,7 @@ func (h *taskStepsHandler) add(w http.ResponseWriter, request *http.Request, pri
 		return
 	}
 	for _, phase := range []string{"prepare", "persist", "commit"} {
-		logger.InfoContext(request.Context(), "task step added", "type", "resource", "component", "task_step", "phase", phase, "outcome", "changed", "version", result.Resource.Version, "request_id", RequestID(request.Context()))
+		logger.InfoContext(request.Context(), "task step added", "type", "resource", "component", "task_step", "phase", phase, "outcome", "changed", "version", result.Resource.Version, "request_id", httpx.RequestID(request.Context()))
 	}
 	w.Header().Set("Location", "/api/v1/projects/"+projectID+"/tasks/"+taskID+"/steps/"+id)
 	writeStepsJSON(w, request, logger, http.StatusCreated, result.JSON)
@@ -155,26 +159,26 @@ func addStepInput(fields map[string]json.RawMessage) (service.AddTaskStep, error
 		return input, err
 	}
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return input, err
 	}
-	input.ID, err = requiredString(fields, "id")
+	input.ID, err = httpx.RequiredString(fields, "id")
 	if err != nil {
 		return input, err
 	}
-	input.Title, err = requiredString(fields, "title")
+	input.Title, err = httpx.RequiredString(fields, "title")
 	if err != nil {
 		return input, err
 	}
-	description, err := optionalString(fields, "description")
+	description, err := httpx.OptionalString(fields, "description")
 	if err != nil {
 		return input, err
 	}
 	if description != nil {
 		input.Description = *description
 	}
-	status, err := optionalString(fields, "status")
+	status, err := httpx.OptionalString(fields, "status")
 	if err != nil {
 		return input, err
 	}
@@ -182,11 +186,11 @@ func addStepInput(fields map[string]json.RawMessage) (service.AddTaskStep, error
 		value := model.TaskStepStatus(*status)
 		input.Status = &value
 	}
-	input.Before, err = optionalString(fields, "before")
+	input.Before, err = httpx.OptionalString(fields, "before")
 	if err != nil {
 		return input, err
 	}
-	input.After, err = optionalString(fields, "after")
+	input.After, err = httpx.OptionalString(fields, "after")
 	return input, err
 }
 
@@ -195,7 +199,7 @@ func addStepInput(fields map[string]json.RawMessage) (service.AddTaskStep, error
 func validateStepUnicode(fields map[string]json.RawMessage) error {
 	for _, raw := range fields {
 		if !jsonunicode.Valid(raw) {
-			return invalidInput("Step fields must contain valid Unicode.")
+			return httpx.InvalidInput("Step fields must contain valid Unicode.")
 		}
 	}
 	return nil
@@ -216,7 +220,7 @@ func writeStepsJSON(w http.ResponseWriter, request *http.Request, logger *slog.L
 			outcome = "failed"
 		}
 	}
-	logger.InfoContext(request.Context(), "task steps response", "type", "resource", "component", "task_step", "phase", "response", "status", status, "response_outcome", outcome, "written_bytes", written, "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "task steps response", "type", "resource", "component", "task_step", "phase", "response", "status", status, "response_outcome", outcome, "written_bytes", written, "request_id", httpx.RequestID(request.Context()))
 }
 
 func stepsErrorResponse(err error) (int, api.Error) {
@@ -247,9 +251,9 @@ func stepsErrorResponse(err error) (int, api.Error) {
 
 func writeStepsError(w http.ResponseWriter, request *http.Request, logger *slog.Logger, phase string, err error) {
 	status, response := stepsErrorResponse(err)
-	cause := ErrorKind(err)
+	cause := httpx.ErrorKind(err)
 	if response.Code == "internal_error" {
-		if _, business := knownFault(err); business {
+		if _, business := httpx.KnownFault(err); business {
 			cause = "internal"
 		}
 	}
@@ -258,8 +262,8 @@ func writeStepsError(w http.ResponseWriter, request *http.Request, logger *slog.
 	if errors.As(err, &databaseError) && validSQLState(databaseError.Code) {
 		sqlstate = databaseError.Code
 	}
-	logger.ErrorContext(request.Context(), "task steps operation failed", "type", "operation_error", "component", "task_step", "phase", phase, "cause", cause, "error_code", response.Code, "diagnostic", stepsDiagnostic(response.Code), "sqlstate", sqlstate, "request_id", RequestID(request.Context()))
-	response.RequestID = RequestID(request.Context())
+	logger.ErrorContext(request.Context(), "task steps operation failed", "type", "operation_error", "component", "task_step", "phase", phase, "cause", cause, "error_code", response.Code, "diagnostic", stepsDiagnostic(response.Code), "sqlstate", sqlstate, "request_id", httpx.RequestID(request.Context()))
+	response.RequestID = httpx.RequestID(request.Context())
 	data, encodeErr := json.Marshal(api.ErrorResponse{Error: response})
 	if encodeErr != nil {
 		panic(encodeErr)

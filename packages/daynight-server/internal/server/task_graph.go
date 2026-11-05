@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func taskGraphResponse(graph model.TaskGraph) api.TaskGraph {
@@ -34,25 +35,25 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 	start := time.Now()
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "task_graph", "get", err)
+		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}
-	values, err := queryValues(request, "taskId")
+	values, err := httpx.QueryValues(request, "taskId")
 	if err != nil {
-		writeError(w, request, logger, "task_graph", "get", err)
+		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}
 	taskID := values.Get("taskId")
 	if taskID == "" {
-		writeError(w, request, logger, "task_graph", "get", invalidInput("task graph requires taskId"))
+		httpx.WriteError(w, request, logger, "task_graph", "get", httpx.InvalidInput("task graph requires taskId"))
 		return
 	}
 	graph, err := h.tasks.Graph(request.Context(), principal, projectID, taskID)
 	if err != nil {
-		if fault, ok := knownFault(err); ok && ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
+		if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
 			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)
 		}
-		writeError(w, request, logger, "task_graph", "get", err)
+		httpx.WriteError(w, request, logger, "task_graph", "get", err)
 		return
 	}
 	edgeCount := 0
@@ -60,6 +61,6 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 		edgeCount += len(task.DependsOn)
 	}
 	logger.InfoContext(request.Context(), "task graph read", "type", "resource", "component", "task_graph", "phase", "get",
-		"request_id", RequestID(request.Context()), "duration", time.Since(start), "node_count", len(graph.Tasks), "edge_count", edgeCount)
-	writeJSON(w, request, logger, http.StatusOK, taskGraphResponse(graph))
+		"request_id", httpx.RequestID(request.Context()), "duration", time.Since(start), "node_count", len(graph.Tasks), "edge_count", edgeCount)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, taskGraphResponse(graph))
 }

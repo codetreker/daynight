@@ -6,18 +6,19 @@ import (
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func (s *Tasks) Get(ctx context.Context, principal model.Principal, projectID, id string) (model.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Task{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.Task{}, err
 	}
-	id, err = CanonicalID(id)
+	id, err = model.CanonicalID(id)
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -52,10 +53,10 @@ func (s *Tasks) Get(ctx context.Context, principal model.Principal, projectID, i
 }
 
 func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID string, request TaskListRequest) (TaskPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return TaskPage{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return TaskPage{}, err
 	}
@@ -69,10 +70,10 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	if err != nil {
 		return TaskPage{}, err
 	}
-	scope := listScope{Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, AssignedTo: assignedTo}
+	scope := query.ListScope{Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, AssignedTo: assignedTo}
 	var worker *store.WorkerQuery
 	if request.WorkerID != nil {
-		workerID, err := CanonicalID(*request.WorkerID)
+		workerID, err := model.CanonicalID(*request.WorkerID)
 		if err != nil {
 			return TaskPage{}, err
 		}
@@ -83,7 +84,7 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 		status := string(*request.Status)
 		scope.Status = &status
 	}
-	page, err := listPage(request.PageRequest, scope)
+	page, err := query.ListPage(request.PageRequest, scope)
 	if err != nil {
 		return TaskPage{}, err
 	}
@@ -113,7 +114,7 @@ func (s *Tasks) List(ctx context.Context, principal model.Principal, projectID s
 	response := TaskPage{Items: result.Items}
 	if result.HasMore {
 		last := result.Items[len(result.Items)-1]
-		cursor, err := encodeListCursor(scope, last.CreatedAt, last.ID)
+		cursor, err := query.EncodeListCursor(scope, last.CreatedAt, last.ID)
 		if err != nil {
 			return TaskPage{}, fmt.Errorf("encode task cursor: %w", err)
 		}

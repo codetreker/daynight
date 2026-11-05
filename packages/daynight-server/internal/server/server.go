@@ -1,7 +1,13 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"context"
 	"log/slog"
 	"net/http"
@@ -10,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
@@ -21,8 +28,8 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	if err != nil {
 		return nil, err
 	}
-	identity := service.NewIdentity(dependencies.Store, client, config.UniAuthCallbackURL)
-	auth, err := NewAuthentication(identity, AuthConfig{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, logger)
+	identity := identityservice.New(dependencies.Store, client, config.UniAuthCallbackURL)
+	auth, err := authhttp.NewAuthentication(identity, configpkg.AuthSettings{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +51,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	uiRoutes(mux, logger)
 	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		writeError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
+		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
 	return &sessionApplication{Handler: attachmentPathGuard(mux, logger), relay: relay}, nil
 }
@@ -52,7 +59,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, request, logger, http.StatusOK, struct {
+		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {
 			Status string `json:"status"`
 		}{Status: "ok"})
 	})
@@ -61,18 +68,18 @@ func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger
 		ready, cancel := context.WithTimeout(request.Context(), 2*time.Second)
 		defer cancel()
 		if err := database.Pool.Ping(ready); err != nil {
-			LogFailure(logger, request.Context(), "health", "ready", err)
-			writeJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "service_unavailable", Message: "Service is not ready.", RequestID: RequestID(request.Context())}})
+			httpx.LogFailure(logger, request.Context(), "health", "ready", err)
+			httpx.WriteJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "service_unavailable", Message: "Service is not ready.", RequestID: httpx.RequestID(request.Context())}})
 			return
 		}
-		writeJSON(w, request, logger, http.StatusOK, struct {
+		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {
 			Status string `json:"status"`
 		}{Status: "ready"})
 	})
 	for _, path := range []string{"/healthz", "/readyz"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, request *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
-			methodNotAllowed(logger, "GET, HEAD")(w, request)
+			httpx.MethodNotAllowed(logger, "GET, HEAD")(w, request)
 		})
 	}
 }

@@ -78,7 +78,7 @@ Content-Type: application/json
 {"version":123,"status":"in_progress"}
 ```
 
-普通调用接受 version/status；done 目标另可提供 claimId，用于 owner 完成当前 active 执行。其他目标拒绝 claimId，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/server/http.go#L27-L68)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
+普通调用接受 version/status；done 目标另可提供 claimId，用于 owner 完成当前 active 执行。其他目标拒绝 claimId，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](../../packages/daynight-server/internal/server/httpx/http.go)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
 
 成功为 200、no-store 和现有完整 Task。保留 session/PAT、Cookie Origin、成员权限、非成员资源隐藏，以及受认证的 405 路径。普通成员与管理员的状态写入权限相同。删除四个旧动作路由，不重定向或保留别名。
 

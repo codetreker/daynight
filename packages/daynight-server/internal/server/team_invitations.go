@@ -5,6 +5,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func teamInvitationResponse(i model.TeamInvitation) api.TeamInvitation {
@@ -16,8 +17,8 @@ func teamMemberResponse(m model.TeamMember) api.TeamMember {
 func (h *teamHandler) listInvitations(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
-	if _, err := queryValues(r); err != nil {
-		writeError(w, r, logger, "team", "list_invitations", err)
+	if _, err := httpx.QueryValues(r); err != nil {
+		httpx.WriteError(w, r, logger, "team", "list_invitations", err)
 		return
 	}
 	items, err := h.teams.ListInvitations(r.Context(), p, r.PathValue("teamId"))
@@ -29,12 +30,12 @@ func (h *teamHandler) listInvitations(w http.ResponseWriter, r *http.Request, p 
 	for _, i := range items {
 		response.Items = append(response.Items, teamInvitationResponse(i))
 	}
-	writeJSON(w, r, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, r, logger, http.StatusOK, response)
 }
 func (h *teamHandler) createInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
-	_, err := queryValues(r)
+	_, err := httpx.QueryValues(r)
 	var expected string
 	if err == nil {
 		expected, err = invitationActor(w, r)
@@ -54,7 +55,7 @@ func (h *teamHandler) createInvitation(w http.ResponseWriter, r *http.Request, p
 func (h *teamHandler) revokeInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
-	_, err := queryValues(r)
+	_, err := httpx.QueryValues(r)
 	var expected string
 	if err == nil {
 		expected, err = invitationActor(w, r)
@@ -80,41 +81,41 @@ func (h *teamHandler) revokeInvitation(w http.ResponseWriter, r *http.Request, p
 func (h *teamHandler) inspectInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
-	_, err := queryValues(r)
+	_, err := httpx.QueryValues(r)
 	var token string
 	if err == nil {
 		token, err = invitationToken(w, r)
 	}
 	if err != nil {
-		writeError(w, r, logger, "team", "inspect_invitation", err)
+		httpx.WriteError(w, r, logger, "team", "inspect_invitation", err)
 		return
 	}
 	result, err := h.teams.InspectInvitation(r.Context(), p, token)
 	if err != nil {
-		writeError(w, r, logger, "team", "inspect_invitation", err)
+		httpx.WriteError(w, r, logger, "team", "inspect_invitation", err)
 		return
 	}
-	response := api.TeamInvitationInspection{Team: teamRefResponse(result.Team)}
+	response := api.TeamInvitationInspection{Team: httpx.TeamRefResponse(result.Team)}
 	if result.Membership != nil {
 		m := teamMemberResponse(*result.Membership)
 		response.Membership = &m
 	}
-	writeJSON(w, r, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, r, logger, http.StatusOK, response)
 }
 func (h *teamHandler) acceptInvitation(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
-	_, err := queryValues(r)
+	_, err := httpx.QueryValues(r)
 	var token, expected string
 	if err == nil {
 		var fieldsErr error
-		fields, fieldsErr := decodeObject(w, r, "token", "expectedUserId")
+		fields, fieldsErr := httpx.DecodeObject(w, r, "token", "expectedUserId")
 		err = fieldsErr
 		if err == nil {
-			token, err = requiredString(fields, "token")
+			token, err = httpx.RequiredString(fields, "token")
 		}
 		if err == nil {
-			expected, err = requiredString(fields, "expectedUserId")
+			expected, err = httpx.RequiredString(fields, "expectedUserId")
 		}
 	}
 	if err != nil {
@@ -126,5 +127,5 @@ func (h *teamHandler) acceptInvitation(w http.ResponseWriter, r *http.Request, p
 		writeTeamError(w, r, logger, "accept_invitation", err)
 		return
 	}
-	writeTeamJSON(w, r, logger, http.StatusOK, api.TeamInvitationAcceptance{Team: teamRefResponse(result.Team), Membership: teamMemberResponse(result.Membership), Joined: result.Joined, Consumed: result.Consumed})
+	writeTeamJSON(w, r, logger, http.StatusOK, api.TeamInvitationAcceptance{Team: httpx.TeamRefResponse(result.Team), Membership: teamMemberResponse(result.Membership), Joined: result.Joined, Consumed: result.Consumed})
 }

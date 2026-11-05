@@ -1,6 +1,5 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -18,6 +17,9 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -30,14 +32,7 @@ func taskCollection(projectID string) string { return "/api/v1/projects/" + proj
 
 func taskPath(task api.Task) string { return taskCollection(task.ProjectID) + "/" + task.ID }
 
-func jsonBody(t *testing.T, input any) string {
-	t.Helper()
-	data, err := json.Marshal(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
-}
+func jsonBody(t *testing.T, input any) string { return testsupport.JSONBody(t, input) }
 
 func createHTTPTask(t *testing.T, handler http.Handler, projectID, title string, dependencies ...string) api.Task {
 	t.Helper()
@@ -156,7 +151,7 @@ func TestTaskHTTPStrictInputsDoNotMutate(t *testing.T) {
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
 		`{"title":"x","dependsOn":["invalid"]}`, `{"title":"x","status":"todo"}`, `{"title":"x","version":1}`,
 		`{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
-		"{\"title\":\"" + string([]byte{0xff}) + "\"}", `{"title":"` + strings.Repeat("x", maxJSONBody) + `"}`,
+		"{\"title\":\"" + string([]byte{0xff}) + "\"}", `{"title":"` + strings.Repeat("x", httpx.MaxJSONBody) + `"}`,
 	} {
 		t.Run("create-"+body[:min(len(body), 70)], func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, taskCollection(project.ID), body), http.StatusBadRequest, "invalid_input")
@@ -446,8 +441,8 @@ func TestTaskHTTPKnownFaultsPreserveOperationalPrecedence(t *testing.T) {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		request.Header.Set("X-Request-ID", "project-test")
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-			writeError(w, request, logger, "task", "get", err)
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			httpx.WriteError(w, request, logger, "task", "get", err)
 		})).ServeHTTP(response, request)
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
 	}
@@ -456,9 +451,9 @@ func TestTaskHTTPKnownFaultsPreserveOperationalPrecedence(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx)
 	for _, handler := range []http.HandlerFunc{
 		func(w http.ResponseWriter, request *http.Request) {
-			writeCreated(w, request, logger, "/unwritten", api.Task{})
+			httpx.WriteCreated(w, request, logger, "/unwritten", api.Task{})
 		},
-		methodNotAllowed(logger, "GET, HEAD"),
+		httpx.MethodNotAllowed(logger, "GET, HEAD"),
 	} {
 		response := httptest.NewRecorder()
 		handler(response, request)

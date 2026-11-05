@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
@@ -172,15 +173,15 @@ func TestBotDefaultsHTTPCreateLostResponseReconcilesOriginalID(t *testing.T) {
 
 func TestBotDefaultsHTTPBrowserCreationRequiresOrigin(t *testing.T) {
 	h := authTestHarness(t)
-	cookie := h.login(t, "bot-owner")
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	cookie := h.Login(t, "bot-owner")
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
-	botsRoutes(mux, service.NewBots(h.database), sessionrelay.New(h.database), h.auth, logger)
-	h.handler = RequestLogging(logger, mux)
+	botsRoutes(mux, service.NewBots(h.Database), sessionrelay.New(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	body := `{"id":"` + uuid.NewString() + `","name":"browser"}`
 	for _, origin := range []string{"", "https://another.example"} {
-		assertProjectError(t, h.request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, origin), 403, "forbidden")
+		assertProjectError(t, h.Request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, origin), 403, "forbidden")
 	}
-	assertProjectError(t, h.request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, h.auth.origin), 409, "resource_conflict")
-	decodeResponse[api.BotDefaults](t, h.request("GET", "/api/v1/me/bots/defaults", "", []*http.Cookie{cookie}, nil, ""), 200)
+	assertProjectError(t, h.Request("POST", "/api/v1/me/bots", body, []*http.Cookie{cookie}, nil, h.Origin), 409, "resource_conflict")
+	decodeResponse[api.BotDefaults](t, h.Request("GET", "/api/v1/me/bots/defaults", "", []*http.Cookie{cookie}, nil, ""), 200)
 }

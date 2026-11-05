@@ -6,9 +6,14 @@ import (
 	"net/http"
 	"time"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+
 	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
@@ -20,7 +25,7 @@ type taskHandler struct {
 	logger *slog.Logger
 }
 
-func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, logger *slog.Logger) {
+func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &taskHandler{tasks: tasks, logger: logger}
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tasks", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", auth.Require(handler.list))
@@ -28,15 +33,15 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.update))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.delete))
 	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(handler.setStatus))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT")))
 	workerRoutes(mux, handler, auth, logger)
 	propertyRoutes(mux, handler, auth, logger)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-assignees", auth.Require(handler.assignees))
-	mux.HandleFunc("/api/v1/projects/{projectId}/task-assignees", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/task-assignees", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-graph", auth.Require(handler.graph))
-	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }
 
 func taskResponse(task model.Task, request *http.Request) (api.Task, error) {
@@ -95,14 +100,14 @@ func (h *taskHandler) resource(request *http.Request, principal model.Principal)
 
 func taskResource(request *http.Request, principal model.Principal, base *slog.Logger) (string, string, *slog.Logger, error) {
 	logger := base.With("user_id", principal.UserID)
-	projectID, err := service.CanonicalID(request.PathValue("projectId"))
+	projectID, err := model.CanonicalID(request.PathValue("projectId"))
 	if err != nil {
 		return "", "", logger, err
 	}
 	logger = logger.With("project_id", projectID)
 	id := request.PathValue("taskId")
 	if id != "" {
-		id, err = service.CanonicalID(id)
+		id, err = model.CanonicalID(id)
 		if err != nil {
 			return "", "", logger, err
 		}
@@ -114,25 +119,25 @@ func taskResource(request *http.Request, principal model.Principal, base *slog.L
 func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, error) {
 	input := api.CreateTaskRequest{DependsOn: []string{}, Properties: api.TaskWritableProperties{}}
 	var err error
-	input.Title, err = requiredString(fields, "title")
+	input.Title, err = httpx.RequiredString(fields, "title")
 	if err != nil {
 		return api.CreateTaskRequest{}, err
 	}
-	description, err := optionalString(fields, "description")
+	description, err := httpx.OptionalString(fields, "description")
 	if err != nil {
 		return api.CreateTaskRequest{}, err
 	}
 	if description != nil {
 		input.Description = *description
 	}
-	dependencies, err := optionalStrings(fields, "dependsOn")
+	dependencies, err := httpx.OptionalStrings(fields, "dependsOn")
 	if err != nil {
 		return api.CreateTaskRequest{}, err
 	}
 	if dependencies != nil {
 		input.DependsOn = *dependencies
 	}
-	externalDependencies, err := optionalStrings(fields, "externalDependsOn")
+	externalDependencies, err := httpx.OptionalStrings(fields, "externalDependsOn")
 	if err != nil {
 		return api.CreateTaskRequest{}, err
 	}
@@ -166,23 +171,23 @@ func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, 
 func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, error) {
 	var input api.UpdateTaskRequest
 	var err error
-	input.Version, err = versionInput(fields)
+	input.Version, err = httpx.VersionInput(fields)
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
-	input.Title, err = optionalString(fields, "title")
+	input.Title, err = httpx.OptionalString(fields, "title")
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
-	input.Description, err = optionalString(fields, "description")
+	input.Description, err = httpx.OptionalString(fields, "description")
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
-	input.DependsOn, err = optionalStrings(fields, "dependsOn")
+	input.DependsOn, err = httpx.OptionalStrings(fields, "dependsOn")
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
-	input.ExternalDependsOn, err = optionalStrings(fields, "externalDependsOn")
+	input.ExternalDependsOn, err = httpx.OptionalStrings(fields, "externalDependsOn")
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
@@ -190,7 +195,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
-	input.AllowAgents, err = optionalBool(fields, "allowAgents")
+	input.AllowAgents, err = httpx.OptionalBool(fields, "allowAgents")
 	if err != nil {
 		return api.UpdateTaskRequest{}, err
 	}
@@ -204,17 +209,17 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 	}
 	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil &&
 		(input.Properties == nil || len(*input.Properties) == 0) {
-		return api.UpdateTaskRequest{}, invalidInput("at least one task field must be provided")
+		return api.UpdateTaskRequest{}, httpx.InvalidInput("at least one task field must be provided")
 	}
 	return input, nil
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := queryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId", "assignedTo")
+	values, err := httpx.QueryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId", "assignedTo")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
-	page, err := pageValues(values)
+	page, err := httpx.PageValues(values)
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -228,14 +233,14 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 	}
 	if value, exists := values["ready"]; exists {
 		if value[0] != "true" && value[0] != "false" {
-			return service.TaskListRequest{}, invalidInput("ready must be true or false")
+			return service.TaskListRequest{}, httpx.InvalidInput("ready must be true or false")
 		}
 		ready := value[0] == "true"
 		result.Ready = &ready
 	}
 	if value, exists := values["allowAgents"]; exists {
 		if value[0] != "true" && value[0] != "false" {
-			return service.TaskListRequest{}, invalidInput("allowAgents must be true or false")
+			return service.TaskListRequest{}, httpx.InvalidInput("allowAgents must be true or false")
 		}
 		allowAgents := value[0] == "true"
 		result.AllowAgents = &allowAgents
@@ -254,110 +259,110 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "task", "create", err)
+		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
-	fields, err := decodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo")
+	fields, err := httpx.DecodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo")
 	if err != nil {
-		writeError(w, request, logger, "task", "create", err)
+		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
 	input, err := createTaskInput(fields)
 	if err != nil {
-		writeError(w, request, logger, "task", "create", err)
+		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
 	task, err := h.tasks.Create(request.Context(), principal, projectID, service.CreateTask{
 		AssignedTo: input.AssignedTo, RequiredPlatform: platformValue(input.RequiredPlatform), Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, Properties: propertyValues(input.Properties),
 	})
 	if err != nil {
-		writeError(w, request, logger, "task", "create", err)
+		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
 	logger = logger.With("task_id", task.ID)
-	logger.InfoContext(request.Context(), "task created", "type", "resource", "component", "task", "phase", "create", "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "task created", "type", "resource", "component", "task", "phase", "create", "request_id", httpx.RequestID(request.Context()))
 	response, err := taskResponse(task, request)
 	if err != nil {
-		writeError(w, request, logger, "task", "create", err)
+		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
-	writeCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, response)
+	httpx.WriteCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, response)
 }
 
 func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, _, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "task", "list", err)
+		httpx.WriteError(w, request, logger, "task", "list", err)
 		return
 	}
 	input, err := taskListRequest(request)
 	if err != nil {
-		writeError(w, request, logger, "task", "list", err)
+		httpx.WriteError(w, request, logger, "task", "list", err)
 		return
 	}
 	page, err := h.listWorkerCompatibleTasks(request, principal, projectID, input)
 	if err != nil {
-		writeError(w, request, logger, "task", "list", err)
+		httpx.WriteError(w, request, logger, "task", "list", err)
 		return
 	}
 	response := api.TaskPage{Items: make([]api.Task, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, task := range page.Items {
 		worker, err := taskproperties.Worker(task.Properties)
 		if err != nil {
-			writeError(w, request, logger, "task", "list", err)
+			httpx.WriteError(w, request, logger, "task", "list", err)
 			return
 		}
 		if input.WorkerID != nil && !extendedWorkerProtocol(request) && !legacyWorkerCompatible(worker) {
-			writeError(w, request, logger, "task", "list", workerProtocolRequired())
+			httpx.WriteError(w, request, logger, "task", "list", workerProtocolRequired())
 			return
 		}
 		item, err := taskResponse(task, request)
 		if err != nil {
-			writeError(w, request, logger, "task", "list", err)
+			httpx.WriteError(w, request, logger, "task", "list", err)
 			return
 		}
 		response.Items = append(response.Items, item)
 	}
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "task", "get", err)
+		httpx.WriteError(w, request, logger, "task", "get", err)
 		return
 	}
 	task, err := h.tasks.Get(request.Context(), principal, projectID, id)
 	if err != nil {
-		writeError(w, request, logger, "task", "get", err)
+		httpx.WriteError(w, request, logger, "task", "get", err)
 		return
 	}
-	logger.InfoContext(request.Context(), "task read", "type", "resource", "component", "task", "phase", "get", "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "task read", "type", "resource", "component", "task", "phase", "get", "request_id", httpx.RequestID(request.Context()))
 	response, err := taskResponse(task, request)
 	if err != nil {
-		writeError(w, request, logger, "task", "response", err)
+		httpx.WriteError(w, request, logger, "task", "response", err)
 		return
 	}
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "task", "update", err)
+		httpx.WriteError(w, request, logger, "task", "update", err)
 		return
 	}
-	fields, err := decodeObject(w, request, "version", "title", "description", "dependsOn", "externalDependsOn", "properties", "allowAgents", "requiredPlatform", "assignedTo")
+	fields, err := httpx.DecodeObject(w, request, "version", "title", "description", "dependsOn", "externalDependsOn", "properties", "allowAgents", "requiredPlatform", "assignedTo")
 	if err != nil {
-		writeError(w, request, logger, "task", "update", err)
+		httpx.WriteError(w, request, logger, "task", "update", err)
 		return
 	}
 	input, err := updateTaskInput(fields)
 	if err != nil {
-		writeError(w, request, logger, "task", "update", err)
+		httpx.WriteError(w, request, logger, "task", "update", err)
 		return
 	}
 	values := service.UpdateTask{AssignedTo: input.AssignedTo, RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
@@ -367,16 +372,16 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 
 	task, err := h.tasks.Update(workerProtocolContext(request), principal, projectID, id, values)
 	if err != nil {
-		writeError(w, request, logger, "task", "update", err)
+		httpx.WriteError(w, request, logger, "task", "update", err)
 		return
 	}
-	logger.InfoContext(request.Context(), "task updated", "type", "resource", "component", "task", "phase", "update", "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "task updated", "type", "resource", "component", "task", "phase", "update", "request_id", httpx.RequestID(request.Context()))
 	response, err := taskResponse(task, request)
 	if err != nil {
-		writeError(w, request, logger, "task", "response", err)
+		httpx.WriteError(w, request, logger, "task", "response", err)
 		return
 	}
-	writeJSON(w, request, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func timestampResponse(value *time.Time) *time.Time {

@@ -18,6 +18,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -34,20 +35,20 @@ type membershipHarness struct {
 func membershipTestHarness(t *testing.T) *membershipHarness {
 	t.Helper()
 	h := &membershipHarness{authHarness: authTestHarness(t)}
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	NewMembershipRoutes(service.NewMemberships(h.database), h.auth, logger).RegisterRoutes(mux)
-	h.handler = RequestLogging(logger, mux)
-	h.admin = h.login(t, "membership-admin")
-	h.member = h.login(t, "membership-member")
-	h.outsider = h.login(t, "membership-outsider")
-	principal, err := h.auth.identity.Authenticate(context.Background(), model.SessionCredential, h.admin.Value)
+	h.Auth.RegisterRoutes(mux)
+	NewMembershipRoutes(service.NewMemberships(h.Database), h.Auth, logger).RegisterRoutes(mux)
+	h.Handler = httpx.RequestLogging(logger, mux)
+	h.admin = h.Login(t, "membership-admin")
+	h.member = h.Login(t, "membership-member")
+	h.outsider = h.Login(t, "membership-outsider")
+	principal, err := h.Identity.Authenticate(context.Background(), model.SessionCredential, h.admin.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.adminID = principal.UserID
-	h.project, err = service.NewProjects(h.database).Create(context.Background(), principal, service.CreateProject{ExpectedUserID: principal.UserID, Name: "Shared project", RepoURL: "https://example.com/shared.git"})
+	h.project, err = service.NewProjects(h.Database).Create(context.Background(), principal, service.CreateProject{ExpectedUserID: principal.UserID, Name: "Shared project", RepoURL: "https://example.com/shared.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func (h *membershipHarness) call(method, path, body string, cookie *http.Cookie)
 	if cookie != nil {
 		cookies = []*http.Cookie{cookie}
 	}
-	return h.request(method, path, body, cookies, nil, h.auth.origin)
+	return h.Request(method, path, body, cookies, nil, h.Origin)
 }
 
 func (h *membershipHarness) invitation(t *testing.T) (api.CreatedProjectInvitation, string) {
@@ -71,14 +72,14 @@ func (h *membershipHarness) invitation(t *testing.T) (api.CreatedProjectInvitati
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Header().Get("Cache-Control") != "no-store" || link.Scheme+"://"+link.Host != h.auth.origin || link.Path != "/invitations" || link.RawQuery != "" || link.Fragment == "" || response.Header().Get("Location") != "/api/v1/projects/"+h.project.ID+"/invitations/"+invitation.ID {
+	if response.Header().Get("Cache-Control") != "no-store" || link.Scheme+"://"+link.Host != h.Origin || link.Path != "/invitations" || link.RawQuery != "" || link.Fragment == "" || response.Header().Get("Location") != "/api/v1/projects/"+h.project.ID+"/invitations/"+invitation.ID {
 		t.Fatalf("invitation disclosure: %d %+v", response.Code, invitation)
 	}
 	if invitation.CreatedBy != h.adminID || invitation.ExpiresAt.Sub(invitation.CreatedAt) != 7*24*time.Hour || invitation.ConsumedAt != nil || invitation.RevokedAt != nil {
 		t.Fatalf("invitation metadata: %+v", invitation)
 	}
 	var stored []byte
-	if err := h.database.Pool.QueryRow(context.Background(), `SELECT token_hash FROM project_invitations WHERE id=$1`, invitation.ID).Scan(&stored); err != nil {
+	if err := h.Database.Pool.QueryRow(context.Background(), `SELECT token_hash FROM project_invitations WHERE id=$1`, invitation.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	want := sha256.Sum256([]byte(link.Fragment))
@@ -169,10 +170,10 @@ func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 	assertProjectError(t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 409, "version_conflict")
 	assertProjectError(t, h.call("DELETE", memberPath, memberRemovalBody(t, member.Version, h.adminID), h.admin), 409, "version_conflict")
 	pat := decodeResponse[api.CreatedPersonalAccessToken](t, h.call("POST", "/api/v1/me/tokens", `{"name":"project administrator","expiresAt":null}`, h.member), 201)
-	if response := h.request("GET", base+"/members", "", nil, []string{"Bearer " + pat.Token}, ""); response.Code != 200 {
+	if response := h.Request("GET", base+"/members", "", nil, []string{"Bearer " + pat.Token}, ""); response.Code != 200 {
 		t.Fatalf("PAT membership access: %d %s", response.Code, response.Body)
 	}
-	demotion := h.request("PATCH", base+"/members/"+h.adminID, adminBody("member", h.memberID), nil, []string{"Bearer " + pat.Token}, "https://foreign.test")
+	demotion := h.Request("PATCH", base+"/members/"+h.adminID, adminBody("member", h.memberID), nil, []string{"Bearer " + pat.Token}, "https://foreign.test")
 	if demotion.Code != 200 {
 		t.Fatalf("PAT project administration: %d %s", demotion.Code, demotion.Body)
 	}
@@ -189,16 +190,16 @@ func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 			t.Fatalf("owner access does not reflect independent sources: %#v", participant)
 		}
 	}
-	assertProjectError(t, h.request("GET", base+"/members", "", []*http.Cookie{h.member}, []string{"Bearer invalid"}, ""), 401, "unauthenticated")
+	assertProjectError(t, h.Request("GET", base+"/members", "", []*http.Cookie{h.member}, []string{"Bearer invalid"}, ""), 401, "unauthenticated")
 	for _, origin := range []string{"", "null", "https://foreign.test"} {
-		assertProjectError(t, h.request("POST", base+"/invitations", `{}`, []*http.Cookie{h.member}, nil, origin), 403, "forbidden")
+		assertProjectError(t, h.Request("POST", base+"/invitations", `{}`, []*http.Cookie{h.member}, nil, origin), 403, "forbidden")
 	}
 	for _, secret := range []string{token, pat.Token, h.admin.Value, h.member.Value} {
-		if strings.Contains(h.logs.String(), secret) {
+		if strings.Contains(h.Logs.String(), secret) {
 			t.Fatal("membership request logged a credential")
 		}
 	}
-	if !strings.Contains(h.logs.String(), `"component":"membership"`) || !strings.Contains(h.logs.String(), `"project_id":"`+h.project.ID+`"`) || !strings.Contains(h.logs.String(), `"user_id":"`+h.memberID+`"`) {
+	if !strings.Contains(h.Logs.String(), `"component":"membership"`) || !strings.Contains(h.Logs.String(), `"project_id":"`+h.project.ID+`"`) || !strings.Contains(h.Logs.String(), `"user_id":"`+h.memberID+`"`) {
 		t.Fatal("membership logs lost user or project correlation")
 	}
 }
@@ -253,13 +254,13 @@ func TestMembershipHTTPInvitationLifecycle(t *testing.T) {
 	}
 	assertProjectError(t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(revoked, outsiderID), h.outsider), 404, "invitation_unavailable")
 	invitation, expired := h.invitation(t)
-	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE project_invitations SET created_at=now()-interval '8 days',expires_at=now()-interval '1 second' WHERE id=$1`, invitation.ID); err != nil {
+	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE project_invitations SET created_at=now()-interval '8 days',expires_at=now()-interval '1 second' WHERE id=$1`, invitation.ID); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectError(t, h.call("POST", "/api/v1/invitations/inspect", invitationBody(expired), h.outsider), 404, "invitation_unavailable")
 	assertProjectError(t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(expired, outsiderID), h.outsider), 404, "invitation_unavailable")
 	for _, secret := range []string{token, revoked, expired} {
-		if strings.Contains(h.logs.String(), secret) {
+		if strings.Contains(h.Logs.String(), secret) {
 			t.Fatal("invitation secret entered logs")
 		}
 	}
@@ -269,7 +270,7 @@ func TestMembershipHTTPDatabaseFailuresAreVisible(t *testing.T) {
 	h := membershipTestHarness(t)
 	invitation, token := h.invitation(t)
 	base := "/api/v1/projects/" + h.project.ID
-	if _, err := h.database.Pool.Exec(context.Background(), `DROP TABLE project_invitations`); err != nil {
+	if _, err := h.Database.Pool.Exec(context.Background(), `DROP TABLE project_invitations`); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range []struct{ method, path, body string }{
@@ -285,7 +286,7 @@ func TestMembershipHTTPDatabaseFailuresAreVisible(t *testing.T) {
 			t.Fatal("database failure disclosed internal details")
 		}
 	}
-	if _, err := h.database.Pool.Exec(context.Background(), `DROP TABLE project_grants`); err != nil {
+	if _, err := h.Database.Pool.Exec(context.Background(), `DROP TABLE project_grants`); err != nil {
 		t.Fatal(err)
 	}
 	for _, call := range []struct{ method, path, body string }{
@@ -295,7 +296,7 @@ func TestMembershipHTTPDatabaseFailuresAreVisible(t *testing.T) {
 	} {
 		assertProjectError(t, h.call(call.method, call.path, call.body, h.admin), 500, "internal_error")
 	}
-	if strings.Contains(h.logs.String(), token) || !strings.Contains(h.logs.String(), `"cause":"database"`) {
+	if strings.Contains(h.Logs.String(), token) || !strings.Contains(h.Logs.String(), `"cause":"database"`) {
 		t.Fatal("database failure lost safe diagnostics")
 	}
 }
@@ -317,10 +318,10 @@ func TestInvitationWritesRejectChangedIdentityWithoutDomainChanges(t *testing.T)
 	}
 	var count int
 	var consumed, revoked *time.Time
-	if err := h.database.Pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM project_invitations WHERE project_id=$1),consumed_at,revoked_at FROM project_invitations WHERE id=$2`, h.project.ID, invitation.ID).Scan(&count, &consumed, &revoked); err != nil || count != 1 || consumed != nil || revoked != nil {
+	if err := h.Database.Pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM project_invitations WHERE project_id=$1),consumed_at,revoked_at FROM project_invitations WHERE id=$2`, h.project.ID, invitation.ID).Scan(&count, &consumed, &revoked); err != nil || count != 1 || consumed != nil || revoked != nil {
 		t.Fatalf("identity mismatch changed invitations: %d %v %v %v", count, consumed, revoked, err)
 	}
-	if err := h.database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID).Scan(&count); err != nil || count != 0 {
+	if err := h.Database.Pool.QueryRow(context.Background(), `SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("identity mismatch changed grants: %d %v", count, err)
 	}
 }
@@ -333,7 +334,7 @@ func TestInvitationUnknownTransactionOutcomeIsExplicitAndSafe(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest("POST", "/", nil)
 	request.Header.Set("X-Request-ID", "project-test")
-	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		invitationWriteError(w, r, logger, "accept_invitation", err)
 	})).ServeHTTP(response, request)
 	assertProjectError(t, response, 503, "write_outcome_unknown")
@@ -354,7 +355,7 @@ func TestInvitationInspectRejectsMalformedJSONWithoutDisclosingToken(t *testing.
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Request-ID", "project-test")
 		response := httptest.NewRecorder()
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			routes.inspectInvitation(w, r, model.Principal{})
 		})).ServeHTTP(response, request)
 		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
@@ -394,19 +395,19 @@ func TestMembershipHTTPStrictInputAndErrorMapping(t *testing.T) {
 	}
 	request := httptest.NewRequest("POST", base+"/invitations", strings.NewReader(`{}`))
 	request.Header.Set("X-Request-ID", "project-test")
-	request.Header.Set("Origin", h.auth.origin)
+	request.Header.Set("Origin", h.Origin)
 	request.Header.Set("Content-Type", "text/plain")
 	request.AddCookie(h.admin)
 	response := httptest.NewRecorder()
-	h.handler.ServeHTTP(response, request)
+	h.Handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
 	request = httptest.NewRequest("POST", base+"/invitations", strings.NewReader(`{}`))
 	request.Header.Set("X-Request-ID", "project-test")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header["Origin"] = []string{h.auth.origin, h.auth.origin}
+	request.Header["Origin"] = []string{h.Origin, h.Origin}
 	request.AddCookie(h.admin)
 	response = httptest.NewRecorder()
-	h.handler.ServeHTTP(response, request)
+	h.Handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 403, "forbidden")
 	assertProjectError(t, h.call("DELETE", base+"/members/00000000-0000-0000-0000-000000000000", memberRemovalBody(t, 1, h.adminID), h.admin), 404, "not_found")
 	assertProjectError(t, h.call("PATCH", base+"/members/00000000-0000-0000-0000-000000000000", memberRoleBody(t, 1, "member", h.adminID), h.admin), 404, "not_found")

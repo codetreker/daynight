@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -569,7 +570,7 @@ func TestTaskListKeysetsFiltersAndCursorScopes(t *testing.T) {
 	requireFault(t, err, "invalid_input")
 	_, err = NewProjects(database).List(ctx, principal, model.PageRequest{Limit: 10, Cursor: firstCursor})
 	requireFault(t, err, "invalid_input")
-	projectCursor, err := encodeProjectCursor(project, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
+	projectCursor, err := query.EncodeProjectCursor(project, principal.UserID, store.ProjectScope{Kind: store.ProjectScopeAll})
 	if err != nil {
 		t.Fatal(err)
 	}

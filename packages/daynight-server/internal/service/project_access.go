@@ -10,10 +10,10 @@ import (
 )
 
 func (s *Projects) Access(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.ProjectAccess{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.ProjectAccess{}, err
 	}

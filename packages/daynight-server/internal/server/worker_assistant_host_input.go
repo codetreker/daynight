@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func workerAssistantHostInput(raw json.RawMessage) (*model.WorkerAssistantHost, error) {
@@ -21,18 +22,18 @@ func workerAssistantHostInput(raw json.RawMessage) (*model.WorkerAssistantHost, 
 	if err != nil {
 		return nil, err
 	}
-	host.DefaultCwd, err = requiredString(fields, "defaultCwd")
+	host.DefaultCwd, err = httpx.RequiredString(fields, "defaultCwd")
 	if err != nil {
 		return nil, err
 	}
-	provider, err := requiredString(fields, "defaultProvider")
+	provider, err := httpx.RequiredString(fields, "defaultProvider")
 	if err != nil {
 		return nil, err
 	}
 	host.DefaultProvider = model.WorkerAgent(provider)
 	var providers []json.RawMessage
 	if json.Unmarshal(fields["providers"], &providers) != nil || providers == nil {
-		return nil, invalidInput("assistantHost.providers must be an array")
+		return nil, httpx.InvalidInput("assistantHost.providers must be an array")
 	}
 	host.Providers = make([]model.WorkerAssistantProvider, 0, len(providers))
 	for _, raw := range providers {
@@ -51,19 +52,19 @@ func workerAssistantProviderInput(raw json.RawMessage) (model.WorkerAssistantPro
 	if err != nil {
 		return provider, err
 	}
-	name, err := requiredString(fields, "provider")
+	name, err := httpx.RequiredString(fields, "provider")
 	if err != nil {
 		return provider, err
 	}
 	provider.Provider = model.WorkerAgent(name)
 	if bytes.Equal(bytes.TrimSpace(fields["available"]), []byte("null")) || json.Unmarshal(fields["available"], &provider.Available) != nil {
-		return provider, invalidInput("assistantHost provider available must be a boolean")
+		return provider, httpx.InvalidInput("assistantHost provider available must be a boolean")
 	}
 	for name, destination := range map[string]**string{"reason": &provider.Reason, "model": &provider.Model} {
 		if bytes.Equal(bytes.TrimSpace(fields[name]), []byte("null")) {
 			continue
 		}
-		value, err := requiredString(fields, name)
+		value, err := httpx.RequiredString(fields, name)
 		if err != nil {
 			return provider, err
 		}
@@ -71,11 +72,11 @@ func workerAssistantProviderInput(raw json.RawMessage) (model.WorkerAssistantPro
 	}
 	var args []json.RawMessage
 	if json.Unmarshal(fields["args"], &args) != nil || args == nil {
-		return provider, invalidInput("assistantHost provider args must be an array")
+		return provider, httpx.InvalidInput("assistantHost provider args must be an array")
 	}
 	provider.Args = make([]string, 0, len(args))
 	for _, raw := range args {
-		value, err := requiredString(map[string]json.RawMessage{"argument": raw}, "argument")
+		value, err := httpx.RequiredString(map[string]json.RawMessage{"argument": raw}, "argument")
 		if err != nil {
 			return provider, err
 		}

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -70,11 +71,11 @@ func (c *lostGrantCommitConn) Read(out []byte) (int, error) {
 func TestGrantHTTPCommitLossReportsUnknownAfterRealCommit(t *testing.T) {
 	h := membershipTestHarness(t)
 	ctx := context.Background()
-	if _, err := h.database.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, h.project.Ownership.TeamID, h.memberID); err != nil {
+	if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'member')`, h.project.Ownership.TeamID, h.memberID); err != nil {
 		t.Fatal(err)
 	}
 	var armed, lost atomic.Bool
-	config := h.database.Pool.Config().Copy()
+	config := h.Database.Pool.Config().Copy()
 	config.ConnConfig.TLSConfig = nil
 	config.ConnConfig.Fallbacks = nil
 	config.ConnConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -89,10 +90,10 @@ func TestGrantHTTPCommitLossReportsUnknownAfterRealCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
-	NewMembershipRoutes(service.NewMemberships(&store.Store{Pool: pool}), h.auth, logger).RegisterRoutes(mux)
-	h.handler = RequestLogging(logger, mux)
+	NewMembershipRoutes(service.NewMemberships(&store.Store{Pool: pool}), h.Auth, logger).RegisterRoutes(mux)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	armed.Store(true)
 	body := `{"version":null,"role":"admin","expectedUserId":"` + h.adminID + `"}`
 	response := h.call("PUT", "/api/v1/projects/"+h.project.ID+"/grants/"+h.memberID, body, h.admin)
@@ -101,7 +102,7 @@ func TestGrantHTTPCommitLossReportsUnknownAfterRealCommit(t *testing.T) {
 	}
 	var role string
 	var version int64
-	if err := h.database.Pool.QueryRow(ctx, `SELECT role,version FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID).Scan(&role, &version); err != nil || role != "admin" || version <= 0 {
+	if err := h.Database.Pool.QueryRow(ctx, `SELECT role,version FROM project_grants WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID).Scan(&role, &version); err != nil || role != "admin" || version <= 0 {
 		t.Fatalf("current committed grant: role=%s version=%d err=%v", role, version, err)
 	}
 }

@@ -1,6 +1,5 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"bytes"
 	"context"
@@ -15,7 +14,9 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func TestProjectGrantHTTPReceiptsAndIdentity(t *testing.T) {
@@ -35,7 +36,7 @@ func TestProjectGrantHTTPReceiptsAndIdentity(t *testing.T) {
 	snapshot := func() string {
 		t.Helper()
 		var state string
-		err := h.database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object(
+		err := h.Database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object(
 			'project', (SELECT to_jsonb(p) FROM projects p WHERE p.id=$1),
 			'ownership', (SELECT to_jsonb(o) FROM project_ownership o WHERE o.project_id=$1),
 			'grants', (SELECT jsonb_agg(to_jsonb(g) ORDER BY g.user_id) FROM project_grants g WHERE g.project_id=$1),
@@ -47,7 +48,7 @@ func TestProjectGrantHTTPReceiptsAndIdentity(t *testing.T) {
 		return state
 	}
 	before := snapshot()
-	lock, err := h.database.Pool.Begin(context.Background())
+	lock, err := h.Database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +129,7 @@ func TestProjectGrantErrorTransactionOutcomes(t *testing.T) {
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest("PUT", "/", nil)
 			r.Header.Set("X-Request-ID", "project-test")
-			RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				writeGrantError(w, r, logger, "set", time.Now(), tc.err)
 			})).ServeHTTP(w, r)
 			assertProjectError(t, w, tc.status, tc.code)
@@ -188,7 +189,7 @@ func TestProjectGrantResponseEncodingFailure(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPut, "/", nil)
 	r.Header.Set("X-Request-ID", "project-test")
-	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		result := api.ProjectGrantResult{Grant: api.ProjectGrant{CreatedAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}}
 		writeGrantJSON(w, r, logger, time.Now(), result)
 	})).ServeHTTP(w, r)

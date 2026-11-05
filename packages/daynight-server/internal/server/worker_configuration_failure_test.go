@@ -1,6 +1,5 @@
 package server
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"errors"
 	"io"
@@ -10,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func TestWorkerConfigurationFaultClassificationPreservesTransactionFailures(t *testing.T) {
@@ -22,19 +23,19 @@ func TestWorkerConfigurationFaultClassificationPreservesTransactionFailures(t *t
 			{Phase: "commit", Cause: refusal, Outcome: store.TransactionUnknown, CommitAttempted: true},
 			{Phase: "operation", Cause: refusal, Outcome: store.TransactionUnknown},
 		} {
-			if _, ok := knownFault(failure); ok {
+			if _, ok := httpx.KnownFault(failure); ok {
 				t.Fatalf("operational failure classified as business refusal: %+v", failure)
 			}
 			response := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPut, "/api/v1/me/workers/11111111-1111-4111-8111-111111111111/configuration", nil)
-			writeError(response, request, logger, "worker_configuration", "exchange", failure)
+			httpx.WriteError(response, request, logger, "worker_configuration", "exchange", failure)
 			responseBody := decodeResponse[api.ErrorResponse](t, response, http.StatusInternalServerError)
 			if responseBody.Error.Code != "internal_error" {
 				t.Fatalf("operational failure exposed business code: %+v", responseBody)
 			}
 		}
 		failure := &store.TransactionError{Phase: "operation", Cause: refusal, Outcome: store.TransactionNotCommitted}
-		if fault, ok := knownFault(failure); !ok || fault != refusal {
+		if fault, ok := httpx.KnownFault(failure); !ok || fault != refusal {
 			t.Fatalf("rolled back refusal hidden: %+v %v", fault, ok)
 		}
 	}

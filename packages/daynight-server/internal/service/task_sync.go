@@ -25,15 +25,15 @@ func NewTaskSync(database *store.Store, overlap time.Duration) *TaskSync {
 }
 
 func (s *TaskSync) Get(ctx context.Context, principal model.Principal, projectID string, input TaskSyncRequest) (model.TaskSync, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.TaskSync{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.TaskSync{}, err
 	}
 	if input.Epoch != "" {
-		canonical, err := CanonicalID(input.Epoch)
+		canonical, err := model.CanonicalID(input.Epoch)
 		if err != nil || canonical != input.Epoch {
 			return model.TaskSync{}, invalidInput("Epoch must be a canonical UUID.")
 		}

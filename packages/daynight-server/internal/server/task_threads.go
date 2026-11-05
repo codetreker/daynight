@@ -8,9 +8,12 @@ import (
 	"net/http"
 	"strconv"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -19,38 +22,38 @@ type taskThreadHandler struct {
 	logger  *slog.Logger
 }
 
-func taskThreadRoutes(mux *http.ServeMux, threads *service.TaskThreads, auth *Authentication, logger *slog.Logger) {
+func taskThreadRoutes(mux *http.ServeMux, threads *service.TaskThreads, auth *authhttp.Authentication, logger *slog.Logger) {
 	handler := &taskThreadHandler{threads: threads, logger: logger}
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/thread/messages"
 	mux.HandleFunc("GET "+path, auth.Require(handler.list))
 	mux.HandleFunc("POST "+path, auth.Require(handler.post))
-	mux.HandleFunc(path, auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 }
 
 func threadPostInput(fields map[string]json.RawMessage) (service.CreateThreadMessage, error) {
 	var result service.CreateThreadMessage
 	var err error
-	result.Body, err = requiredString(fields, "body")
+	result.Body, err = httpx.RequiredString(fields, "body")
 	if err != nil {
 		return result, err
 	}
-	result.ReplyTo, err = optionalString(fields, "replyTo")
+	result.ReplyTo, err = httpx.OptionalString(fields, "replyTo")
 	if err != nil {
 		return result, err
 	}
-	result.ClaimID, err = optionalString(fields, "claimId")
+	result.ClaimID, err = httpx.OptionalString(fields, "claimId")
 	return result, err
 }
 
 func threadListInput(request *http.Request) (service.ThreadListRequest, error) {
-	values, err := queryValues(request, "beforeId", "afterId", "count", "details", "fromBeginning")
+	values, err := httpx.QueryValues(request, "beforeId", "afterId", "count", "details", "fromBeginning")
 	if err != nil {
 		return service.ThreadListRequest{}, err
 	}
 	result := service.ThreadListRequest{Count: 50}
 	for key, target := range map[string]**string{"beforeId": &result.BeforeID, "afterId": &result.AfterID} {
 		if values.Has(key) {
-			value, err := service.CanonicalID(values.Get(key))
+			value, err := model.CanonicalID(values.Get(key))
 			if err != nil {
 				return result, err
 			}
@@ -58,25 +61,25 @@ func threadListInput(request *http.Request) (service.ThreadListRequest, error) {
 		}
 	}
 	if result.BeforeID != nil && result.AfterID != nil {
-		return result, invalidInput("beforeId and afterId are mutually exclusive")
+		return result, httpx.InvalidInput("beforeId and afterId are mutually exclusive")
 	}
 	if values.Has("count") {
 		result.Count, err = strconv.Atoi(values.Get("count"))
 		if err != nil || result.Count < 1 || result.Count > 100 {
-			return result, invalidInput("count must be an integer from 1 to 100")
+			return result, httpx.InvalidInput("count must be an integer from 1 to 100")
 		}
 	}
 	for key, target := range map[string]*bool{"details": &result.Details, "fromBeginning": &result.FromBeginning} {
 		if values.Has(key) {
 			value := values.Get(key)
 			if value != "true" && value != "false" {
-				return result, invalidInput(key + " must be true or false")
+				return result, httpx.InvalidInput(key + " must be true or false")
 			}
 			*target = value == "true"
 		}
 	}
 	if values.Has("fromBeginning") && (result.BeforeID != nil || result.AfterID != nil) {
-		return result, invalidInput("fromBeginning cannot be combined with a boundary Id")
+		return result, httpx.InvalidInput("fromBeginning cannot be combined with a boundary Id")
 	}
 	return result, nil
 }
@@ -89,10 +92,10 @@ func (h *taskThreadHandler) post(w http.ResponseWriter, request *http.Request, p
 		return
 	}
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		writeThreadError(w, request, logger, "admission", invalidInput("posting a thread message does not accept query parameters"))
+		writeThreadError(w, request, logger, "admission", httpx.InvalidInput("posting a thread message does not accept query parameters"))
 		return
 	}
-	fields, err := decodeObject(w, request, "body", "replyTo", "claimId")
+	fields, err := httpx.DecodeObject(w, request, "body", "replyTo", "claimId")
 	if err != nil {
 		writeThreadError(w, request, logger, "admission", err)
 		return
@@ -109,7 +112,7 @@ func (h *taskThreadHandler) post(w http.ResponseWriter, request *http.Request, p
 	}
 	logger = logger.With("message_id", document.Message.ID)
 	logger = threadExecutionLogger(logger, document.Message.Author.Execution)
-	logger.InfoContext(request.Context(), "thread message committed", "type", "resource", "component", "task_thread", "phase", "commit", "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "thread message committed", "type", "resource", "component", "task_thread", "phase", "commit", "request_id", httpx.RequestID(request.Context()))
 	writeThreadJSON(w, request, logger, http.StatusCreated, document.JSON)
 }
 
@@ -145,7 +148,7 @@ func writeThreadJSON(w http.ResponseWriter, request *http.Request, logger *slog.
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		LogFailure(logger, request.Context(), "task_thread", "response", err)
+		httpx.LogFailure(logger, request.Context(), "task_thread", "response", err)
 	}
 }
 
@@ -167,12 +170,12 @@ func writeThreadError(w http.ResponseWriter, request *http.Request, logger *slog
 	}
 	if fault, ok := service.ThreadResponseFault(err); ok {
 		status := http.StatusServiceUnavailable
-		cause := ErrorKind(err)
+		cause := httpx.ErrorKind(err)
 		if fault.Code == "internal_error" {
 			status = http.StatusInternalServerError
 			phase = "rollback"
 			// A nested business refusal cannot classify a failed cleanup.
-			if nested, ok := knownFault(err); ok && cause == nested.Code {
+			if nested, ok := httpx.KnownFault(err); ok && cause == nested.Code {
 				cause = "internal"
 			}
 		}
@@ -182,13 +185,13 @@ func writeThreadError(w http.ResponseWriter, request *http.Request, logger *slog
 			phase = "commit"
 		}
 		logger.ErrorContext(request.Context(), "operation failed", "type", "operation_error", "component", "task_thread",
-			"phase", phase, "cause", cause, "error_code", fault.Code, "diagnostic", fault.Message, "request_id", RequestID(request.Context()))
-		writeJSON(w, request, logger, status, api.ErrorResponse{Error: api.Error{
-			Code: fault.Code, Message: fault.Message, RequestID: RequestID(request.Context()),
+			"phase", phase, "cause", cause, "error_code", fault.Code, "diagnostic", fault.Message, "request_id", httpx.RequestID(request.Context()))
+		httpx.WriteJSON(w, request, logger, status, api.ErrorResponse{Error: api.Error{
+			Code: fault.Code, Message: fault.Message, RequestID: httpx.RequestID(request.Context()),
 		}})
 		return
 	}
-	writeError(w, request, logger, "task_thread", phase, err)
+	httpx.WriteError(w, request, logger, "task_thread", phase, err)
 }
 
 func threadExecutionLogger(logger *slog.Logger, execution *model.ThreadExecution) *slog.Logger {

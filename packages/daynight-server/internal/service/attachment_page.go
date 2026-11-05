@@ -50,14 +50,14 @@ func attachmentListPage(request model.PageRequest, projectID, taskID string) (st
 }
 
 func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (AttachmentPage, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return AttachmentPage{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return AttachmentPage{}, err
 	}
-	taskID, err = CanonicalID(taskID)
+	taskID, err = model.CanonicalID(taskID)
 	if err != nil {
 		return AttachmentPage{}, err
 	}

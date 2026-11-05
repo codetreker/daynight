@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -145,7 +146,7 @@ func TestStepsHTTPMoveStrictInputAndMethods(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertProjectError(t, response, 400, "invalid_input")
-	assertProjectError(t, projectRequest(handler, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", maxJSONBody)+`"}`), 400, "invalid_input")
+	assertProjectError(t, projectRequest(handler, "PUT", endpoint, `{"version":1,"position":"`+strings.Repeat("x", httpx.MaxJSONBody)+`"}`), 400, "invalid_input")
 	for _, method := range []string{"GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"} {
 		response := projectRequest(handler, method, endpoint, `{}`)
 		if response.Code != 405 || response.Header().Get("Allow") != "PUT" || response.Header().Get("Cache-Control") != "no-store" {
@@ -153,9 +154,9 @@ func TestStepsHTTPMoveStrictInputAndMethods(t *testing.T) {
 		}
 	}
 	// Request whitespace is part of the 1 MiB budget and cannot change placement.
-	exact := good + strings.Repeat(" ", maxJSONBody-len(good))
+	exact := good + strings.Repeat(" ", httpx.MaxJSONBody-len(good))
 	resource := decodeResponse[api.StepsResource](t, projectRequest(handler, "PUT", endpoint, exact), 200)
-	if len(exact) != maxJSONBody || resource.Version != 2 || resource.Steps[0].ID != "abcdef01" {
+	if len(exact) != httpx.MaxJSONBody || resource.Version != 2 || resource.Steps[0].ID != "abcdef01" {
 		t.Fatal("exact request boundary failed")
 	}
 }

@@ -16,7 +16,7 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 	h := membershipTestHarness(t)
 	_, token := h.invitation(t)
 	decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), 200)
-	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE project_grants SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID); err != nil {
+	if _, err := h.Database.Pool.Exec(context.Background(), `UPDATE project_grants SET version=9007199254740993 WHERE project_id=$1 AND user_id=$2`, h.project.ID, h.memberID); err != nil {
 		t.Fatal(err)
 	}
 	base := "/api/v1/projects/" + h.project.ID + "/members"
@@ -78,7 +78,7 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 	for _, body := range []string{`{"version":1}`, `{"version":1,"expectedUserId":null}`, `{"version":1,"expectedUserId":42}`, `{"version":1,"expectedUserId":"invalid"}`} {
 		assertProjectError(t, h.call("DELETE", path, body, h.admin), 400, "invalid_input")
 	}
-	if _, err := h.database.Pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, h.memberID); err != nil {
+	if _, err := h.Database.Pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, h.memberID); err != nil {
 		t.Fatal(err)
 	}
 	broken := h.call("GET", base, "", h.admin)
@@ -86,7 +86,7 @@ func TestProjectParticipantHTTPContractGrantWritesAndIdentity(t *testing.T) {
 	if strings.Contains(broken.Body.String(), `"items"`) || strings.Contains(broken.Body.String(), h.memberID) {
 		t.Fatal("integrity failure returned a partial or synthetic roster")
 	}
-	if !strings.Contains(h.logs.String(), `"error_code":"identity_mismatch"`) {
+	if !strings.Contains(h.Logs.String(), `"error_code":"identity_mismatch"`) {
 		t.Fatal("identity mismatch was not classified as its domain failure")
 	}
 }

@@ -12,13 +12,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func grantVersion(fields map[string]json.RawMessage) (*int64, error) {
 	raw, present := fields["version"]
 	if !present {
-		return nil, invalidInput("version is required and must be null or a positive 64-bit integer")
+		return nil, httpx.InvalidInput("version is required and must be null or a positive 64-bit integer")
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, nil
@@ -43,11 +44,11 @@ func (h *MembershipRoutes) setGrant(w http.ResponseWriter, request *http.Request
 	w.Header().Set("Cache-Control", "no-store")
 	logger, projectID, err := h.scoped(request, principal)
 	if err == nil {
-		_, err = queryValues(request)
+		_, err = httpx.QueryValues(request)
 	}
 	var fields map[string]json.RawMessage
 	if err == nil {
-		fields, err = decodeObject(w, request, "version", "role", "expectedUserId")
+		fields, err = httpx.DecodeObject(w, request, "version", "role", "expectedUserId")
 	}
 	var version *int64
 	if err == nil {
@@ -55,10 +56,10 @@ func (h *MembershipRoutes) setGrant(w http.ResponseWriter, request *http.Request
 	}
 	var role, expected string
 	if err == nil {
-		role, err = requiredString(fields, "role")
+		role, err = httpx.RequiredString(fields, "role")
 	}
 	if err == nil {
-		expected, err = requiredString(fields, "expectedUserId")
+		expected, err = httpx.RequiredString(fields, "expectedUserId")
 	}
 	if err != nil {
 		writeGrantError(w, request, logger, "prepare", started, err)
@@ -77,11 +78,11 @@ func (h *MembershipRoutes) removeGrant(w http.ResponseWriter, request *http.Requ
 	w.Header().Set("Cache-Control", "no-store")
 	logger, projectID, err := h.scoped(request, principal)
 	if err == nil {
-		_, err = queryValues(request)
+		_, err = httpx.QueryValues(request)
 	}
 	var fields map[string]json.RawMessage
 	if err == nil {
-		fields, err = decodeObject(w, request, "version", "expectedUserId")
+		fields, err = httpx.DecodeObject(w, request, "version", "expectedUserId")
 	}
 	var version int64
 	if err == nil {
@@ -89,7 +90,7 @@ func (h *MembershipRoutes) removeGrant(w http.ResponseWriter, request *http.Requ
 	}
 	var expected string
 	if err == nil {
-		expected, err = requiredString(fields, "expectedUserId")
+		expected, err = httpx.RequiredString(fields, "expectedUserId")
 	}
 	if err != nil {
 		writeGrantError(w, request, logger, "prepare", started, err)
@@ -109,34 +110,34 @@ func writeGrantError(w http.ResponseWriter, request *http.Request, logger *slog.
 	if errors.As(err, &transaction) {
 		phase = transaction.Phase
 		if transaction.Outcome != store.TransactionNotCommitted {
-			logger.ErrorContext(request.Context(), "project grant outcome unknown", "type", "operation_error", "component", "project_grant", "phase", phase, "outcome", "unknown", "cause", ErrorKind(err), "error_code", "write_outcome_unknown", "request_id", RequestID(request.Context()))
-			writeJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: "Project grant outcome is unknown. Read current state before making another change.", RequestID: RequestID(request.Context())}})
+			logger.ErrorContext(request.Context(), "project grant outcome unknown", "type", "operation_error", "component", "project_grant", "phase", phase, "outcome", "unknown", "cause", httpx.ErrorKind(err), "error_code", "write_outcome_unknown", "request_id", httpx.RequestID(request.Context()))
+			httpx.WriteJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: "Project grant outcome is unknown. Read current state before making another change.", RequestID: httpx.RequestID(request.Context())}})
 			return
 		}
 		if transaction.CleanupFailed {
-			logger.ErrorContext(request.Context(), "project grant cleanup failed", "type", "operation_error", "component", "project_grant", "phase", phase, "outcome", "failed", "cause", "internal", "error_code", "internal_error", "request_id", RequestID(request.Context()))
-			writeJSON(w, request, logger, http.StatusInternalServerError, api.ErrorResponse{Error: api.Error{Code: "internal_error", Message: "internal server error", RequestID: RequestID(request.Context())}})
+			logger.ErrorContext(request.Context(), "project grant cleanup failed", "type", "operation_error", "component", "project_grant", "phase", phase, "outcome", "failed", "cause", "internal", "error_code", "internal_error", "request_id", httpx.RequestID(request.Context()))
+			httpx.WriteJSON(w, request, logger, http.StatusInternalServerError, api.ErrorResponse{Error: api.Error{Code: "internal_error", Message: "internal server error", RequestID: httpx.RequestID(request.Context())}})
 			return
 		}
 	}
 	outcome := "failed"
-	if fault, ok := knownFault(err); ok && ErrorKind(err) == fault.Code {
+	if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code {
 		outcome = "refused"
 	}
-	writeError(w, request, logger.With("outcome", outcome), "project_grant", phase, err)
+	httpx.WriteError(w, request, logger.With("outcome", outcome), "project_grant", phase, err)
 }
 
 func writeGrantJSON(w http.ResponseWriter, request *http.Request, logger *slog.Logger, started time.Time, result any) {
 	logger = logger.With("duration_ms", time.Since(started).Milliseconds())
 	data, err := json.Marshal(result)
 	if err != nil {
-		LogFailure(logger.With("outcome", "unknown"), request.Context(), "project_grant", "response", err)
-		writeJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: "Project grant outcome is unknown. Read current state before making another change.", RequestID: RequestID(request.Context())}})
+		httpx.LogFailure(logger.With("outcome", "unknown"), request.Context(), "project_grant", "response", err)
+		httpx.WriteJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "write_outcome_unknown", Message: "Project grant outcome is unknown. Read current state before making another change.", RequestID: httpx.RequestID(request.Context())}})
 		return
 	}
 	data = append(data, '\n')
 	if request.Context().Err() != nil {
-		LogFailure(logger.With("outcome", "unknown"), request.Context(), "project_grant", "response", request.Context().Err())
+		httpx.LogFailure(logger.With("outcome", "unknown"), request.Context(), "project_grant", "response", request.Context().Err())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -146,8 +147,8 @@ func writeGrantJSON(w http.ResponseWriter, request *http.Request, logger *slog.L
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		LogFailure(logger.With("outcome", "unknown"), request.Context(), "project_grant", "response", err)
+		httpx.LogFailure(logger.With("outcome", "unknown"), request.Context(), "project_grant", "response", err)
 		return
 	}
-	logger.InfoContext(request.Context(), "project grant operation completed", "type", "resource", "component", "project_grant", "phase", "response", "outcome", "success", "request_id", RequestID(request.Context()))
+	logger.InfoContext(request.Context(), "project grant operation completed", "type", "resource", "component", "project_grant", "phase", "response", "outcome", "success", "request_id", httpx.RequestID(request.Context()))
 }

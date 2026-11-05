@@ -4,21 +4,25 @@ import (
 	"log/slog"
 	"net/http"
 
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
-func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth *Authentication, logger *slog.Logger) {
+func propertyRoutes(mux *http.ServeMux, handler *taskHandler, auth *authhttp.Authentication, logger *slog.Logger) {
 	const schemaPath = "/api/v1/task-properties/schema"
 	mux.HandleFunc("GET "+schemaPath, auth.Require(handler.propertySchema))
-	mux.HandleFunc(schemaPath, auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc(schemaPath, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	const path = "/api/v1/projects/{projectId}/tasks/{taskId}/properties"
 	mux.HandleFunc("GET "+path, auth.Require(handler.getProperties))
-	mux.HandleFunc(path, auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc(path, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("PUT "+path+"/{name}", auth.Require(handler.setProperty))
 	mux.HandleFunc("DELETE "+path+"/{name}", auth.Require(handler.removeProperty))
-	mux.HandleFunc(path+"/{name}", auth.Require(resourceMethodNotAllowed(logger, "PUT, DELETE")))
+	mux.HandleFunc(path+"/{name}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PUT, DELETE")))
 }
 
 func propertyResponse(task model.Task) api.PropertyResource {
@@ -27,7 +31,7 @@ func propertyResponse(task model.Task) api.PropertyResource {
 
 func propertyQuery(request *http.Request) error {
 	if request.URL.RawQuery != "" || request.URL.ForceQuery {
-		return invalidInput("property operations do not accept query parameters")
+		return httpx.InvalidInput("property operations do not accept query parameters")
 	}
 	return nil
 }
@@ -35,7 +39,7 @@ func propertyQuery(request *http.Request) error {
 func (h *taskHandler) propertySchema(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
 	if err := propertyQuery(request); err != nil {
-		writeError(w, request, logger, "task_property", "schema", err)
+		httpx.WriteError(w, request, logger, "task_property", "schema", err)
 		return
 	}
 	definitions := taskproperties.Definitions()
@@ -43,27 +47,27 @@ func (h *taskHandler) propertySchema(w http.ResponseWriter, request *http.Reques
 	for name, definition := range definitions {
 		response.Properties[name] = api.TaskPropertyDefinition{Description: definition.Description, ReadOnly: definition.ReadOnly, Schema: definition.Schema}
 	}
-	logger.InfoContext(request.Context(), "task property schema read", "type", "resource", "component", "task_property", "phase", "schema", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, response)
+	logger.InfoContext(request.Context(), "task property schema read", "type", "resource", "component", "task_property", "phase", "schema", "request_id", httpx.RequestID(request.Context()))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *taskHandler) getProperties(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "task_property", "get", err)
+		httpx.WriteError(w, request, logger, "task_property", "get", err)
 		return
 	}
 	if err := propertyQuery(request); err != nil {
-		writeError(w, request, logger, "task_property", "get", err)
+		httpx.WriteError(w, request, logger, "task_property", "get", err)
 		return
 	}
 	task, err := h.tasks.Get(request.Context(), principal, projectID, id)
 	if err != nil {
-		writeError(w, request, logger, "task_property", "get", err)
+		httpx.WriteError(w, request, logger, "task_property", "get", err)
 		return
 	}
-	logger.InfoContext(request.Context(), "task properties read", "type", "resource", "component", "task_property", "phase", "get", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, propertyResponse(task))
+	logger.InfoContext(request.Context(), "task properties read", "type", "resource", "component", "task_property", "phase", "get", "request_id", httpx.RequestID(request.Context()))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, propertyResponse(task))
 }
 
 func (h *taskHandler) setProperty(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -83,7 +87,7 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 	}
 	projectID, id, logger, err := h.resource(request, principal)
 	if err != nil {
-		writeError(w, request, logger, "task_property", phase, err)
+		httpx.WriteError(w, request, logger, "task_property", phase, err)
 		return
 	}
 	name := request.PathValue("name")
@@ -91,17 +95,17 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 		logger = logger.With("property_name", name)
 	}
 	if err := propertyQuery(request); err != nil {
-		writeError(w, request, logger, "task_property", phase, err)
+		httpx.WriteError(w, request, logger, "task_property", phase, err)
 		return
 	}
-	fields, err := decodeObject(w, request, allowed...)
+	fields, err := httpx.DecodeObject(w, request, allowed...)
 	if err != nil {
-		writeError(w, request, logger, "task_property", phase, err)
+		httpx.WriteError(w, request, logger, "task_property", phase, err)
 		return
 	}
-	version, err := versionInput(fields)
+	version, err := httpx.VersionInput(fields)
 	if err != nil {
-		writeError(w, request, logger, "task_property", phase, err)
+		httpx.WriteError(w, request, logger, "task_property", phase, err)
 		return
 	}
 	var task model.Task
@@ -109,13 +113,13 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 		task, err = h.tasks.RemoveProperty(workerProtocolContext(request), principal, projectID, id, name, version)
 	} else {
 		var value string
-		value, err = requiredString(fields, "valueText")
+		value, err = httpx.RequiredString(fields, "valueText")
 		if err == nil {
 			task, err = h.tasks.SetProperty(workerProtocolContext(request), principal, projectID, id, name, value, version)
 		}
 	}
 	if err != nil {
-		writeError(w, request, logger, "task_property", phase, err)
+		httpx.WriteError(w, request, logger, "task_property", phase, err)
 		return
 	}
 	outcome := "unchanged"
@@ -123,6 +127,6 @@ func (h *taskHandler) propertyMutation(w http.ResponseWriter, request *http.Requ
 		outcome = "changed"
 	}
 	logger.InfoContext(request.Context(), "task property operation applied", "type", "resource", "component", "task_property", "phase", phase,
-		"outcome", outcome, "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, propertyResponse(task))
+		"outcome", outcome, "request_id", httpx.RequestID(request.Context()))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, propertyResponse(task))
 }

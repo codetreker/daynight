@@ -4,16 +4,17 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func (h *sessionRoutes) registerBotRuntimeRoutes(mux *http.ServeMux) {
 	const base = "/api/v1/me/workers/{workerId}/bots/{botId}/"
-	for action, handler := range map[string]AuthenticatedHandler{
+	for action, handler := range map[string]httpx.AuthenticatedHandler{
 		"register": h.registerBot, "grant": h.grantBot, "report": h.reportBot,
 		"deletion-complete": h.completeBotDeletion,
 	} {
 		mux.HandleFunc("POST "+base+action, h.auth.Require(h.parameters(handler)))
-		mux.HandleFunc(base+action, h.auth.Require(resourceMethodNotAllowed(h.logger, "POST")))
+		mux.HandleFunc(base+action, h.auth.Require(httpx.ResourceMethodNotAllowed(h.logger, "POST")))
 	}
 }
 

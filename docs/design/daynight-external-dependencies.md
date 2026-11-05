@@ -286,7 +286,7 @@ Go 服务与嵌入 Web 一起部署；
 外部节点指向投影外任务的引用。其一层 external 选择由
 [服务端图查询](../spec/daynight-server.md#任务链图查询)拥有，Web 的完整上游闭包不变。
 新校验失败使用现有 Fault 代码和安全消息，数据库与取消保留可解包原因。
-[错误管线](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/server/logging.go#L86-L116)
+[错误管线](../../packages/daynight-server/internal/server/httpx/logging.go)
 通过 `type=operation_error` 记录 `component`、`phase`、`cause`、`error_code`、安全 `diagnostic` 和 `request_id`；
 HTTP 错误响应携带同一 request ID。分类没有新的秘密输入，不记录 token、描述、附件内容、SQL 文本或整份请求。
 

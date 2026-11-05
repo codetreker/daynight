@@ -5,51 +5,52 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func (h *teamHandler) listMembers(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
-	if _, err := queryValues(r); err != nil {
-		writeError(w, r, logger, "team", "list_members", err)
+	if _, err := httpx.QueryValues(r); err != nil {
+		httpx.WriteError(w, r, logger, "team", "list_members", err)
 		return
 	}
 	items, err := h.teams.Members(r.Context(), p, r.PathValue("teamId"))
 	if err != nil {
-		writeError(w, r, logger, "team", "list_members", err)
+		httpx.WriteError(w, r, logger, "team", "list_members", err)
 		return
 	}
 	response := api.TeamMemberList{Items: make([]api.TeamMemberWithProfile, 0, len(items))}
 	for _, item := range items {
 		response.Items = append(response.Items, api.TeamMemberWithProfile{TeamMember: teamMemberResponse(item.Membership), Profile: api.ProjectParticipantProfile{Name: item.Profile.Name, Email: item.Profile.Email, AvatarURL: item.Profile.AvatarURL}})
 	}
-	writeJSON(w, r, logger, http.StatusOK, response)
+	httpx.WriteJSON(w, r, logger, http.StatusOK, response)
 }
 
 func teamMemberInput(w http.ResponseWriter, r *http.Request, roleRequired bool) (service.ChangeTeamMember, error) {
-	if _, err := queryValues(r); err != nil {
+	if _, err := httpx.QueryValues(r); err != nil {
 		return service.ChangeTeamMember{}, err
 	}
 	allowed := []string{"version", "expectedUserId"}
 	if roleRequired {
 		allowed = append(allowed, "role")
 	}
-	fields, err := decodeObject(w, r, allowed...)
+	fields, err := httpx.DecodeObject(w, r, allowed...)
 	if err != nil {
 		return service.ChangeTeamMember{}, err
 	}
-	version, err := versionInput(fields)
+	version, err := httpx.VersionInput(fields)
 	if err != nil {
 		return service.ChangeTeamMember{}, err
 	}
-	expected, err := requiredString(fields, "expectedUserId")
+	expected, err := httpx.RequiredString(fields, "expectedUserId")
 	if err != nil {
 		return service.ChangeTeamMember{}, err
 	}
 	var role string
 	if roleRequired {
-		role, err = requiredString(fields, "role")
+		role, err = httpx.RequiredString(fields, "role")
 		if err != nil {
 			return service.ChangeTeamMember{}, err
 		}

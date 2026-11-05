@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,52 +18,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func projectTestStore(t *testing.T) *store.Store {
-	t.Helper()
-	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Fatal("DAYNIGHT_TEST_DATABASE_URL is required for PostgreSQL tests")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	admin, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	schema := "http_" + strings.ToLower(rand.Text())
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
-		admin.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if _, err := admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
-			t.Error(err)
-		}
-		admin.Close()
-	})
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	query.Set("timezone", "UTC")
-	query.Set("application_name", schema)
-	parsed.RawQuery = query.Encode()
-	database, err := store.Open(ctx, parsed.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(database.Close)
-	return database
-}
+func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
 
 func projectTestHandler(t *testing.T, database *store.Store, output io.Writer) *resourceTestHandler {
 	t.Helper()
@@ -83,23 +41,10 @@ func projectRequest(handler http.Handler, method, path, body string) *httptest.R
 }
 
 func decodeResponse[T any](t *testing.T, response *httptest.ResponseRecorder, status int) T {
-	t.Helper()
-	if response.Code != status || response.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
-	}
-	var value T
-	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
-		t.Fatal(err)
-	}
-	return value
+	return testsupport.DecodeResponse[T](t, response, status)
 }
-
 func assertProjectError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
-	t.Helper()
-	value := decodeResponse[api.ErrorResponse](t, response, status)
-	if value.Error.Code != code || value.Error.Message == "" || value.Error.RequestID != response.Header().Get("X-Request-ID") || value.Error.RequestID != "project-test" {
-		t.Fatalf("unexpected error correlation: %+v", value)
-	}
+	testsupport.AssertProjectError(t, response, status, code)
 }
 
 func TestProjectHTTPCreateReadAndEmptyList(t *testing.T) {
@@ -165,7 +110,7 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 		`{"name":"ok","repoUrl":"https://user:password-secret@github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
 		`{"name":"ok","repoUrl":"not-a-repository","expectedUserId":"` + handler.principal.UserID + `"}`,
 		"{\"name\":\"" + string([]byte{0xff}) + "\",\"repoUrl\":\"https://github.com/example/repo\",\"expectedUserId\":\"" + handler.principal.UserID + "\"}",
-		`{"name":"` + strings.Repeat("x", maxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
+		`{"name":"` + strings.Repeat("x", httpx.MaxJSONBody) + `","repoUrl":"https://github.com/example/repo","expectedUserId":"` + handler.principal.UserID + `"}`,
 	} {
 		t.Run(string(body[:min(len(body), 80)]), func(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodPost, "/api/v1/projects", body), http.StatusBadRequest, "invalid_input")
@@ -291,28 +236,28 @@ func TestProjectHTTPScopedPagination(t *testing.T) {
 
 func TestProjectHTTPSharedPaginationRejectsOtherScopesAndPrincipals(t *testing.T) {
 	h := membershipTestHarness(t)
-	logger := slog.New(slog.NewJSONHandler(&h.logs, nil))
+	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	mux := http.NewServeMux()
-	h.auth.RegisterRoutes(mux)
-	projectRoutes(mux, service.NewProjects(h.database), h.auth, logger)
-	h.handler = RequestLogging(logger, mux)
+	h.Auth.RegisterRoutes(mux)
+	projectRoutes(mux, service.NewProjects(h.Database), h.Auth, logger)
+	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()
-	admin, err := h.auth.identity.Authenticate(ctx, model.SessionCredential, h.admin.Value)
+	admin, err := h.Identity.Authenticate(ctx, model.SessionCredential, h.admin.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := service.NewProjects(h.database).Create(ctx, admin, service.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
+	second, err := service.NewProjects(h.Database).Create(ctx, admin, service.CreateProject{ExpectedUserID: admin.UserID, Name: "Second shared", RepoURL: "https://example.com/second.git"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.outsider), http.StatusOK)
 	member := decodeResponse[api.User](t, h.call(http.MethodGet, "/api/v1/me", "", h.member), http.StatusOK)
 	for index, project := range []model.Project{h.project, second} {
-		if _, err := h.database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
+		if _, err := h.Database.Pool.Exec(ctx, `UPDATE projects SET created_at='2024-01-01 00:00:00+00'::timestamptz + $2::int * interval '1 second' WHERE id=$1`, project.ID, index); err != nil {
 			t.Fatal(err)
 		}
 		for _, userID := range []string{h.memberID, other.ID} {
-			if _, err := h.database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, userID); err != nil {
+			if _, err := h.Database.Pool.Exec(ctx, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, project.ID, userID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -456,26 +401,26 @@ func TestHTTPErrorMappingAndWriteFailure(t *testing.T) {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)
 		request.Header.Set("X-Request-ID", "project-test")
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-			writeError(w, request, logger, "project", "get", err)
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			httpx.WriteError(w, request, logger, "project", "get", err)
 		})).ServeHTTP(response, request)
 		assertProjectError(t, response, http.StatusInternalServerError, "internal_error")
 	}
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header.Set("X-Request-ID", "project-test")
 	response := httptest.NewRecorder()
-	RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		writeError(w, request, logger, "project", "get", &model.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
+	httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		httpx.WriteError(w, request, logger, "project", "get", &model.Fault{Code: "invalid_input", Message: "invalid references", TaskIDs: []string{"task-id"}})
 	})).ServeHTTP(response, request)
 	value := decodeResponse[api.ErrorResponse](t, response, http.StatusBadRequest)
 	if value.Error.Details == nil || len(value.Error.Details.TaskIDs) != 1 || value.Error.Details.TaskIDs[0] != "task-id" {
 		t.Fatalf("missing error details: %+v", value)
 	}
-	writeJSON(&failingResponseWriter{header: make(http.Header)}, request, logger, http.StatusOK, api.Project{})
+	httpx.WriteJSON(&failingResponseWriter{header: make(http.Header)}, request, logger, http.StatusOK, api.Project{})
 	ctx, cancel := context.WithCancel(request.Context())
 	cancel()
 	canceled := httptest.NewRecorder()
-	writeJSON(canceled, request.WithContext(ctx), logger, http.StatusOK, api.Project{})
+	httpx.WriteJSON(canceled, request.WithContext(ctx), logger, http.StatusOK, api.Project{})
 	if canceled.Body.Len() != 0 || len(canceled.Header()) != 0 {
 		t.Fatalf("already canceled request wrote a response: %s %+v", canceled.Body, canceled.Header())
 	}
@@ -580,12 +525,12 @@ func TestProjectCreateUnknownOutcomeClassification(t *testing.T) {
 		{&store.TransactionError{Phase: "commit", CommitAttempted: true, Outcome: store.TransactionNotCommitted, Cause: errors.New("private")}, 500, "internal_error"},
 	} {
 		response := httptest.NewRecorder()
-		RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeProjectCreateError(w, r, logger, test.err) })).ServeHTTP(response, request)
+		httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeProjectCreateError(w, r, logger, test.err) })).ServeHTTP(response, request)
 		assertProjectError(t, response, test.status, test.code)
 	}
 	for _, short := range []bool{false, true} {
 		writer := &threadFailingWriter{ResponseRecorder: httptest.NewRecorder(), short: short}
-		writeMutationJSON(writer, request, logger, "project", 201, api.ProjectDocument{})
+		httpx.WriteMutationJSON(writer, request, logger, "project", 201, api.ProjectDocument{})
 		if writer.calls != 1 {
 			t.Fatal("response replayed")
 		}

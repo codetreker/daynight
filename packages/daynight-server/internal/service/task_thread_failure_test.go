@@ -11,6 +11,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -89,8 +91,16 @@ func TestThreadCredentialExpiresWhileWaitingForHead(t *testing.T) {
 			defer cancel()
 			caller, table := principal, "sessions"
 			if kind == model.PATCredential {
-				credential := model.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, TokenHash: secretHash(randomSecret("dnpat_")), Name: "Never expires", CreatedAt: time.Now().UTC()}
-				if err := database.CreatePAT(ctx, principal, credential); err != nil {
+				credential := model.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, TokenHash: secretutil.Hash(secretutil.Random("dnpat_")), Name: "Never expires", CreatedAt: time.Now().UTC()}
+				if _, err := database.WriteIdentity(ctx, func(scope store.IdentityScope) error {
+					if err := scope.IdentityDAO().LockSession(ctx, principal, credential.CreatedAt); err != nil {
+						return err
+					}
+					if err := scope.IdentityDAO().CleanupCredentials(ctx, credential.CreatedAt); err != nil {
+						return err
+					}
+					return scope.IdentityDAO().InsertPAT(ctx, credential)
+				}); err != nil {
 					t.Fatal(err)
 				}
 				caller = model.Principal{Kind: model.PATCredential, CredentialID: credential.ID, UserID: principal.UserID}

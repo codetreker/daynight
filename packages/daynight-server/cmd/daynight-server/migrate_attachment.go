@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"syscall"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -43,7 +43,7 @@ func logAttachmentMigrationFailure(ctx context.Context, logger *slog.Logger, err
 	if !errors.As(err, &failure) {
 		failure = &service.AttachmentMigrationError{Phase: "operation", Category: "internal", Diagnostic: "Attachment migration failed.", Cause: err}
 	}
-	cause := server.ErrorKind(err)
+	cause := httpx.ErrorKind(err)
 	switch {
 	case errors.Is(err, fs.ErrPermission):
 		cause = "permission"

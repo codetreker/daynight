@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -121,7 +124,7 @@ func TestStartupFailures(t *testing.T) {
 	invalidStorage := config
 	invalidStorage.StorageRoot = unavailable
 	_, err := Start(context.Background(), invalidStorage, testLogger(), nil)
-	var configurationFailure *ConfigurationError
+	var configurationFailure *configpkg.ConfigurationError
 	if !errors.As(err, &configurationFailure) || configurationFailure.Field != "DAYNIGHT_STORAGE_ROOT" || errors.Unwrap(err) == nil {
 		t.Fatalf("storage initialization failure lost configuration context or cause: %v", err)
 	}
@@ -147,8 +150,8 @@ func TestStartupFailures(t *testing.T) {
 	defer listener.Close()
 	config.ListenAddress = listener.Addr().String()
 	_, err = Start(context.Background(), config, testLogger(), nil)
-	var failure *runtimeError
-	if !errors.As(err, &failure) || failure.phase != "listen" || errors.Unwrap(err) == nil {
+	var failure *httpx.RuntimeError
+	if !errors.As(err, &failure) || failure.Phase != "listen" || errors.Unwrap(err) == nil {
 		t.Fatalf("listener failure lost cause: %v", err)
 	}
 }
@@ -381,8 +384,8 @@ func TestCompositionFailureReleasesOpenedResources(t *testing.T) {
 			}
 			return nil, cause
 		})
-		var failure *runtimeError
-		if !errors.As(err, &failure) || failure.phase != "composition" || !missingHandler && !errors.Is(err, cause) {
+		var failure *httpx.RuntimeError
+		if !errors.As(err, &failure) || failure.Phase != "composition" || !missingHandler && !errors.Is(err, cause) {
 			t.Fatalf("composition failure lost phase/cause: %v", err)
 		}
 		if _, err := opened.Store.Pool.Acquire(context.Background()); err == nil {

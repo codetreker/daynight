@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func attachmentPathGuard(mux *http.ServeMux, logger *slog.Logger) http.Handler {
@@ -24,7 +25,7 @@ func attachmentPathGuard(mux *http.ServeMux, logger *slog.Logger) http.Handler {
 		if owned {
 			if err := validateAttachmentURL(decoded, start); err != nil {
 				w.Header().Set("Cache-Control", "no-store")
-				writeError(w, request, logger, "attachment", "path", err)
+				httpx.WriteError(w, request, logger, "attachment", "path", err)
 				return
 			}
 		}
@@ -34,18 +35,18 @@ func attachmentPathGuard(mux *http.ServeMux, logger *slog.Logger) http.Handler {
 
 func validateAttachmentURL(segments []string, start int) error {
 	if start < 0 {
-		return invalidInput("attachment URL must not require path normalization")
+		return httpx.InvalidInput("attachment URL must not require path normalization")
 	}
 	for _, segment := range segments[1:] {
 		if strings.Contains(segment, "/") {
-			return invalidInput("attachment URL must use individually encoded path segments")
+			return httpx.InvalidInput("attachment URL must use individually encoded path segments")
 		}
 	}
 	if err := filestorage.ValidateAddress("task-attachments", strings.Join(segments[1:], "/")); err != nil {
-		return invalidInput("attachment URL must not require path normalization")
+		return httpx.InvalidInput("attachment URL must not require path normalization")
 	}
 	if err := filestorage.ValidateAddress("task-attachments", strings.Join(segments[start:], "/")); err != nil {
-		return invalidInput("attachment path must be a valid relative path")
+		return httpx.InvalidInput("attachment path must be a valid relative path")
 	}
 	return nil
 }

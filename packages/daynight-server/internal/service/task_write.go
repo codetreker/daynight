@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func currentTaskWrite(current model.Task) store.TaskWrite {
@@ -21,7 +21,7 @@ func canonicalAssignedTo(value *string) (*string, error) {
 	if value == nil {
 		return nil, nil
 	}
-	canonical, err := CanonicalID(*value)
+	canonical, err := model.CanonicalID(*value)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +37,7 @@ func taskWriteFault(err error) *model.Fault {
 }
 
 func enforceAssignmentTransition(ctx context.Context, tx *store.ProjectTx, mutation taskMutation) (taskMutation, error) {
-	if equalOptional(mutation.current.AssignedTo, mutation.values.AssignedTo) {
+	if model.EqualOptional(mutation.current.AssignedTo, mutation.values.AssignedTo) {
 		return mutation, nil
 	}
 	if mutation.current.Status == model.TaskInProgress {

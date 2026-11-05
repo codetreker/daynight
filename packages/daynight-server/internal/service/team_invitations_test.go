@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -24,11 +25,11 @@ func TestTeamInvitationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !validSecret(minted.Secret, teamInvitationPrefix) || minted.Invitation.TokenHash != nil || minted.Invitation.ExpiresAt.Sub(minted.Invitation.CreatedAt) != 7*24*time.Hour {
+	if !secretutil.Valid(minted.Secret, teamInvitationPrefix) || minted.Invitation.TokenHash != nil || minted.Invitation.ExpiresAt.Sub(minted.Invitation.CreatedAt) != 7*24*time.Hour {
 		t.Fatalf("mint: %#v", minted.Invitation)
 	}
 	var hash []byte
-	if err = db.Pool.QueryRow(ctx, `SELECT token_hash FROM team_invitations WHERE id=$1`, minted.Invitation.ID).Scan(&hash); err != nil || !bytes.Equal(hash, secretHash(minted.Secret)) {
+	if err = db.Pool.QueryRow(ctx, `SELECT token_hash FROM team_invitations WHERE id=$1`, minted.Invitation.ID).Scan(&hash); err != nil || !bytes.Equal(hash, secretutil.Hash(minted.Secret)) {
 		t.Fatal("hash not persisted", err)
 	}
 	preview, err := teams.InspectInvitation(ctx, other, minted.Secret)

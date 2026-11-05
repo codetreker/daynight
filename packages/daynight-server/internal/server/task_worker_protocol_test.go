@@ -1,12 +1,13 @@
 package server
 
 import (
-	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
 )
 
 // New worker-mode fixtures opt in without changing legacy request helpers.

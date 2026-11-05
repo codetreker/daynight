@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -135,7 +136,7 @@ func MigrateAttachmentLayout(ctx context.Context, databaseURL, storageRoot, acti
 			return AttachmentMigrationSummary{}, m.failure("invalid_input", "A new migration plan cannot specify an operation ID.", nil)
 		}
 	} else {
-		id, err := CanonicalID(operationID)
+		id, err := model.CanonicalID(operationID)
 		if err != nil {
 			return AttachmentMigrationSummary{}, m.failure("invalid_input", "A valid migration operation ID is required.", err)
 		}
@@ -193,7 +194,7 @@ func (m *attachmentMigration) inspectOperations(ctx context.Context, planning bo
 			continue
 		}
 		id := strings.TrimPrefix(entry.Name(), attachmentMigrationPrefix)
-		canonical, err := CanonicalID(id)
+		canonical, err := model.CanonicalID(id)
 		if err != nil || canonical != id || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			return m.failure("operation_conflict", "An unrecognized migration operation entry requires inspection.", err)
 		}
@@ -353,7 +354,7 @@ func (m *attachmentMigration) plan(ctx context.Context) (AttachmentMigrationSumm
 			return AttachmentMigrationSummary{}, err
 		}
 		for _, entry := range entries {
-			id, err := CanonicalID(entry.Name())
+			id, err := model.CanonicalID(entry.Name())
 			if err != nil || id != entry.Name() || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 				return AttachmentMigrationSummary{}, m.failure("unsafe_entry", "The legacy attachment bucket contains an invalid task directory.", err)
 			}
@@ -412,8 +413,8 @@ func (m *attachmentMigration) validateManifest(manifest attachmentMigrationManif
 	tasks := map[string]attachmentMigrationTask{}
 	indexed := map[string]map[string]attachmentMigrationEntry{}
 	for _, task := range manifest.Tasks {
-		project, projectErr := CanonicalID(task.ProjectID)
-		id, taskErr := CanonicalID(task.TaskID)
+		project, projectErr := model.CanonicalID(task.ProjectID)
+		id, taskErr := model.CanonicalID(task.TaskID)
 		if projectErr != nil || taskErr != nil || project != task.ProjectID || id != task.TaskID {
 			return m.failure("invalid_manifest", "The migration manifest contains an invalid task identity.", errors.Join(projectErr, taskErr))
 		}

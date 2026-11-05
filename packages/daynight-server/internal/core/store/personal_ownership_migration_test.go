@@ -115,7 +115,7 @@ func TestPersonalOwnershipMigrationPreservesFactsAndSequence(t *testing.T) {
 				t.Fatalf("all-user Personal backfill: %d %d %d %v", users, teams, owners, err)
 			}
 			patHash := sha256.Sum256([]byte("old-pat"))
-			if principal, err := s.Authenticate(ctx, model.PATCredential, patHash[:], time.Now()); err != nil || principal.UserID == "" {
+			if principal, err := testAuthenticate(s, ctx, model.PATCredential, patHash[:], time.Now()); err != nil || principal.UserID == "" {
 				t.Fatalf("old PAT-only user's credential was not preserved: %#v %v", principal, err)
 			}
 			var next int64

@@ -16,14 +16,14 @@ const (
 )
 
 func (s *Tasks) Graph(ctx context.Context, principal model.Principal, projectID, taskID string) (model.TaskGraph, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return model.TaskGraph{}, err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return model.TaskGraph{}, err
 	}
-	taskID, err = CanonicalID(taskID)
+	taskID, err = model.CanonicalID(taskID)
 	if err != nil {
 		return model.TaskGraph{}, err
 	}

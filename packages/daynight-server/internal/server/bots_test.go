@@ -3,11 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	"github.com/google/uuid"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +11,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/google/uuid"
 )
 
 func TestBotsHTTPEmptyList(t *testing.T) {
@@ -156,7 +158,7 @@ func TestBotsHTTPUnconfirmedTransactionRemainsInternalFailure(t *testing.T) {
 	failure := &model.BotOperationError{Operation: "delete", Cause: &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true, Cause: refusal}}
 	request := httptest.NewRequest(http.MethodDelete, "/api/v1/me/bots/"+uuid.NewString(), nil)
 	response := httptest.NewRecorder()
-	writeError(response, request, slog.New(slog.NewTextHandler(io.Discard, nil)), "bot", "delete", failure)
+	httpx.WriteError(response, request, slog.New(slog.NewTextHandler(io.Discard, nil)), "bot", "delete", failure)
 	decoded := decodeResponse[api.ErrorResponse](t, response, http.StatusInternalServerError)
 	if decoded.Error.Code != "internal_error" {
 		t.Fatalf("uncertain rollback became a definite refusal: %+v", decoded)

@@ -60,14 +60,14 @@ func (err *ThreadMessageError) Error() string { return "post thread message fail
 func (err *ThreadMessageError) Unwrap() error { return err.Cause }
 
 func threadScope(principal model.Principal, projectID, taskID string) (string, string, error) {
-	if err := requirePrincipal(principal); err != nil {
+	if err := model.RequirePrincipal(principal); err != nil {
 		return "", "", err
 	}
-	projectID, err := CanonicalID(projectID)
+	projectID, err := model.CanonicalID(projectID)
 	if err != nil {
 		return "", "", err
 	}
-	taskID, err = CanonicalID(taskID)
+	taskID, err = model.CanonicalID(taskID)
 	return projectID, taskID, err
 }
 
@@ -75,7 +75,7 @@ func canonicalThreadID(id *string) (*string, error) {
 	if id == nil {
 		return nil, nil
 	}
-	value, err := CanonicalID(*id)
+	value, err := model.CanonicalID(*id)
 	return &value, err
 }
 
@@ -88,7 +88,7 @@ func threadAccessError(err error) error {
 
 func threadCredentialError(err error) error {
 	if errors.Is(err, model.ErrNotFound) {
-		return unauthenticated(err)
+		return model.Unauthenticated(err)
 	}
 	return err
 }
@@ -195,7 +195,7 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 			return err
 		}
 		if !valid {
-			return unauthenticated(nil)
+			return model.Unauthenticated(nil)
 		}
 		if err := tx.AdvanceHead(ctx, taskID, message.Position()); err != nil {
 			return err
