@@ -47,14 +47,19 @@ export function SessionView({ client, userId, active, current, reading, fullscre
   const report = presentation?.report;
   const showReason = report && !readOnly && (report.startup.state === 'failed' || report.startup.state === 'unknown' || report.recovery.state === 'blocked');
   const fullscreenLabel = fullscreen.fullscreen ? m.exitFullscreen : m.enterFullscreen;
-  const provider = <strong>{available ? s.identity.provider === 'claude' ? 'Claude Code' : s.identity.provider === 'copilot' ? 'GitHub Copilot' : 'Codex' : m.title}</strong>;
+  const defaultHeader = !slots?.renderHeader;
+  const provider = <strong className={defaultHeader ? 'session-provider' : undefined}>{available ? s.identity.provider === 'claude' ? 'Claude Code' : s.identity.provider === 'copilot' ? 'GitHub Copilot' : 'Codex' : m.title}</strong>;
   const activity = available && <span className={`session-status ${runtimeReady ? 'online' : 'offline'}`} role="status" id={statusId} lang={presentation?.native ? "en" : undefined}>{activityLabel}</span>;
   const displayControl = available && <SessionDisplayMenu mode={display.mode} issue={display.issue} onModeChange={display.setMode} onRetrySave={display.retrySave} open={active && displayOpen} onOpenChange={setDisplayOpen} />;
   const focusControl = <button className="button session-fullscreen-toggle" type="button" ref={fullscreen.buttonRef} aria-label={fullscreenLabel} title={fullscreenLabel} aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.fullscreen ? 'M6 9l6 6 6-6' : 'M6 15l6-6 6 6'} /></svg>
         <span className="session-fullscreen-tooltip" aria-hidden="true">{fullscreenLabel}</span>
       </button>;
-  const refreshControl = <button className="button" disabled={view.authPaused} onClick={client.refresh}>{m.refresh}</button>;
+  const refreshControl = defaultHeader ? <button className="button session-refresh-toggle" type="button" aria-label={m.refresh} disabled={view.authPaused} onClick={client.refresh}>
+    <span className="session-refresh-label">{m.refresh}</span>
+    <svg className="session-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg>
+    <span className="session-refresh-tooltip" aria-hidden="true">{m.refresh}</span>
+  </button> : <button className="button" disabled={view.authPaused} onClick={client.refresh}>{m.refresh}</button>;
   const emptyReady = available && view.status === 'ready' && active && current && runtimeReady && !readOnly && view.historyReady && !view.hasOlder && !view.loadingOlder && !view.historyError && !view.error && !view.state.recoveryRequired && view.state.entries.length === 0 && s.activity === 'idle';
   const empty = emptyReady && slots?.renderEmpty ? slots.renderEmpty({ draft: view.draft, setDraftAndFocus: text => {
     const latest = client.snapshot();
@@ -62,8 +67,8 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     client.setDraft(text); inputRef.current?.focus({ preventScroll: true });
   } }) : null;
   const timeline = available && (!readOnly || view.archiveState === 'ready') ? <SessionTimeline key={`${userId}/${s.sessionId}`} {...(reading ? { reading } : {})} displayMode={display.mode} suppressEmpty={!readOnly && !runtimeReady || empty != null && empty !== false} state={view.state} active={active} canRespond={sessionRespondGate(view.state, active && runtimeReady && !view.authPaused)} onRespond={client.respond} hasOlder={view.hasOlder} historyReady={!!runtimeReady && !readOnly && !view.authPaused && view.historyReady} historyComplete={readOnly && view.archiveState === 'ready'} historyRevision={view.historyRevision} connectionGeneration={view.connectionGeneration} loadingOlder={view.loadingOlder} onLoadOlder={() => client.loadOlder()} historyError={view.historyError} onLoadResource={client.resource} /> : null;
-  return <section className={`task-agent-session${slots?.variant === 'assistant' ? ' session-presentation-assistant' : ''}${fullscreen.fullscreen && !fullscreenBoundary ? ' session-fullscreen' : ''}`} aria-label={m.title} ref={fullscreen.sectionRef} tabIndex={-1} onKeyDown={fullscreen.onKeyDown}>
-    <header className="session-header">{slots?.renderHeader ? slots.renderHeader({ snapshot: available ? s : null, startupReport: available ? presentation?.report ?? null : null, active, current, available, readOnly, runtimeReady: available && runtimeReady, authPaused: view.authPaused, status: view.status, fullscreen: fullscreen.fullscreen, displayMode: display.mode, statusDescriptionId: statusId, provider, activity, display: displayControl, focus: focusControl, refresh: refreshControl }) : <><div>{provider}{activity}</div><div className="session-header-actions">{displayControl}{focusControl}{refreshControl}</div></>}</header>
+  return <section className={`task-agent-session${defaultHeader ? ' session-default-header-layout' : ''}${slots?.variant === 'assistant' ? ' session-presentation-assistant' : ''}${fullscreen.fullscreen && !fullscreenBoundary ? ' session-fullscreen' : ''}`} aria-label={m.title} ref={fullscreen.sectionRef} tabIndex={-1} onKeyDown={fullscreen.onKeyDown}>
+    <header className={`session-header${defaultHeader ? ' session-header-default' : ''}`}>{slots?.renderHeader ? slots.renderHeader({ snapshot: available ? s : null, startupReport: available ? presentation?.report ?? null : null, active, current, available, readOnly, runtimeReady: available && runtimeReady, authPaused: view.authPaused, status: view.status, fullscreen: fullscreen.fullscreen, displayMode: display.mode, statusDescriptionId: statusId, provider, activity, display: displayControl, focus: focusControl, refresh: refreshControl }) : <><div className="session-header-identity">{provider}{activity}</div><div className="session-header-actions">{displayControl}{focusControl}{refreshControl}</div></>}</header>
     {!available ? <div className="session-empty" role="status"><p>{view.status === 'loading' ? m.loading : view.status === 'not_registered' ? m.notRegistered : view.status === 'unavailable' ? view.error ?? m.unavailable : view.error}</p></div> : <>
     {showReason ? <details className="session-startup-details"><summary>{m.startupDetails}</summary>
       <p>{m[`startup_${report.startup.reasonCode}`]}</p>
