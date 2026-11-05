@@ -1,7 +1,6 @@
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
-import { LanguageSelector } from '../../i18n/LanguageSelector';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { dialogFocusables } from '../task-detail/focus';
 
@@ -54,7 +53,7 @@ export const ManagementDialog = ({ title, children, footer, onClose, busy = fals
   }, [suspended]);
   return createPortal(<div className="auth-modal-backdrop" hidden={suspended} inert={suspended}>
     <section className="auth-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={busy} tabIndex={-1} ref={dialog}>
-      <header className="dialog-header"><h2 id={titleId}>{title}</h2><LanguageSelector /><button className="close-button" type="button" ref={close} aria-label={common.closeDialog} disabled={busy} onClick={onClose}>×</button></header>
+      <header className="dialog-header"><h2 id={titleId}>{title}</h2><button className="close-button" type="button" ref={close} aria-label={common.closeDialog} disabled={busy} onClick={onClose}>×</button></header>
       <div className="dialog-body">{children}</div>
       <footer className="dialog-footer">{footer}</footer>
     </section>

@@ -232,7 +232,8 @@ dialog.auth-dialog { max-width: calc(100vw - 32px); }
 dialog.auth-dialog:not([open]) { display: none; }
 dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px); }
 .auth-dialog > form { display: flex; flex-direction: column; min-height: 0; max-height: inherit; }
-.auth-dialog .dialog-header { padding: 22px 25px 17px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 15px; align-items: center; border-bottom: 1px solid var(--line); flex: none; }
+.auth-dialog .dialog-header { padding: 22px 25px 17px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 15px; align-items: center; border-bottom: 1px solid var(--line); flex: none; }
+.auth-dialog .dialog-header:has(> :nth-child(3)) { grid-template-columns: minmax(0, 1fr) auto auto; }
 .auth-dialog .dialog-header h2 { font-size: 18px; margin: 0; overflow-wrap: anywhere; min-width: 0; }
 .auth-dialog .dialog-header > .locale-preference { max-width: 190px; }
 .auth-dialog .close-button { border: 0; background: none; color: #7a8598; width: 28px; height: 28px; border-radius: 5px; display: flex; align-items: center; justify-content: center; flex: none; }
@@ -361,6 +362,7 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
   .invite-account .person { gap: 8px; }
   .invite-account .person-name { font-size: 11px; }
   .auth-dialog .dialog-header { padding: 18px 20px 15px; grid-template-columns: minmax(0, 1fr) auto; }
+  .auth-dialog .dialog-header:has(> :nth-child(3)) { grid-template-columns: minmax(0, 1fr) auto; }
   .auth-dialog .dialog-header h2 { font-size: 17px; }
   .auth-dialog .dialog-header > .locale-preference { grid-column: 1 / -1; grid-row: 2; max-width: 100%; }
   .auth-dialog .dialog-header > .close-button { grid-column: 2; grid-row: 1; }

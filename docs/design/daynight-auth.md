@@ -455,7 +455,8 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 现有图、项目浏览偏好和居中 TaskDetailDialog 继续复用，不增加任务字段编辑。
 `messages.auth` 的英语与简体中文契约覆盖所有新界面、标题、校验、无障碍名称、
 错误和异步通知；通知存语义，渲染时取当前语言，日期/计数使用原生格式化器。
-登录、工作空间、邀请及管理模态均提供共用 LanguageSelector。切换不以 locale
+登录、工作空间和邀请等页面提供共用 LanguageSelector；共享 ManagementDialog
+不提供自己的语言入口或偏好提示，内容继承应用当前语言。切换不以 locale
 重建组件或进入请求依赖，保持输入、一次性秘密、成员版本、当前身份和 pending
 操作。[语言设计](daynight-web-i18n.md)拥有公共机制，鉴权组件遵守相同状态规则。
 
