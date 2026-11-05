@@ -403,6 +403,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     let restarted: ReturnType<typeof start> | undefined;
     let restartRequestOffset = requests.length;
     let restartLogOffset = logs.length;
+    let restartInventoryOffset = inventoryResponses.length;
     if (scenario === "inventory-failure") {
       failInventory = true;
       second.properties = Object.fromEntries(Object.entries(second.properties).filter(([name]) => name !== "worker"));
@@ -455,7 +456,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         try { expect(database.prepare("UPDATE tasks SET session_id=NULL WHERE task_id=? AND claim_id=?").run(second.id, originalClaim).changes).toBe(1); }
         finally { database.close(); }
       }
-      restartRequestOffset = requests.length; restartLogOffset = logs.length;
+      restartRequestOffset = requests.length; restartLogOffset = logs.length; restartInventoryOffset = inventoryResponses.length;
       restarted = start();
       await waitFor("second managed assignment after restart", async () => {
         const observed = await events();
@@ -486,7 +487,8 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(readWorkerClaim(second.properties)!.claimId).toBe(originalClaim);
       expect(second.assignedTo).toBe(scenario === "null-session" ? null : uuid(101));
       expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST" && request.path.endsWith("/worker-claim"))).toBe(false);
-      const observedInventories = inventoryResponses.filter((response) => response.status === 200);
+      await waitFor("inventory coverage after restart", () => new Set(inventoryResponses.slice(restartInventoryOffset).filter((response) => response.status === 200).map((response) => response.projectId)).size === projects.length);
+      const observedInventories = inventoryResponses.slice(restartInventoryOffset).filter((response) => response.status === 200);
       expect(observedInventories.every((response) => response.mappedProject)).toBe(true);
       expect(new Set(observedInventories.map((response) => response.projectId))).toEqual(new Set(projects.map((project) => project.id)));
       expect(restarted.child.kill("SIGINT")).toBe(true);
