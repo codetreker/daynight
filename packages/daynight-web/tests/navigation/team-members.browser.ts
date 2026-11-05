@@ -13,10 +13,10 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
@@ -52,6 +52,7 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     }
     if (path === `/api/v1/teams/${teamId}/members` && method === 'GET') {
       const gate = state.holdRosterRead; state.holdRosterRead = null; if (gate) { gate.started(); await gate.wait; }
+      if (state.rosterReadNetworkFailure) return route.abort('failed');
       return state.members.has(alice) ? send({ items: roster(teamId) }) : send(error('not_found'), 404);
     }
     if (path.startsWith(`/api/v1/teams/${teamId}/members/`) && (method === 'PATCH' || method === 'DELETE')) {
@@ -135,6 +136,23 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
     await expect(page.getByRole('dialog')).toHaveCount(0); expect(api.writes).toHaveLength(0);
   });
 }
+
+test('member loading and read failure retain a working retry', async ({ page }) => {
+  const api = await install(page);
+  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  api.holdRosterRead = { started: started.resolve, wait: finish.promise };
+  try {
+    await page.goto(`/teams/${teamId}/members`); await started.promise;
+    await expect(page.getByRole('status').filter({ hasText: 'Loading' })).toBeVisible();
+  } finally { finish.resolve(); }
+  await expect(page.getByLabel('Team role: Bob')).toBeVisible();
+  api.rosterReadNetworkFailure = true; await page.reload();
+  await expect(page.getByRole('alert').filter({ hasText: 'Unable to read members.' })).toBeVisible();
+  api.rosterReadNetworkFailure = false;
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByLabel('Team role: Bob')).toBeVisible();
+  expect(api.writes).toHaveLength(0);
+});
 
 test('admin promotes and removes members and can demote self while another admin remains', async ({ page }) => {
   const api = await install(page); await start(page);
