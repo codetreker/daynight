@@ -176,3 +176,40 @@ func TestContextCancellationAndWindowBoundary(t *testing.T) {
 		t.Fatalf("snippet cancellation: %v", err)
 	}
 }
+
+type cancelAfterChecks struct {
+	context.Context
+	cancel context.CancelFunc
+	checks int
+	after  int
+}
+
+func (c *cancelAfterChecks) Err() error {
+	c.checks++
+	if c.checks == c.after {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
+func TestCancellationDuringSubstringScan(t *testing.T) {
+	root, err := query.Parse("title:needle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The first window is scanned before cancellation at the next window.
+	ctx := &cancelAfterChecks{Context: base, cancel: cancel, after: 8}
+	_, err = query.EvaluateContext(ctx, root, strings.Repeat("a", 150000), "")
+	if !errors.Is(err, context.Canceled) || ctx.checks != 8 {
+		t.Fatalf("expected scan cancellation, got %v after %d checks", err, ctx.checks)
+	}
+}
+
+func TestSyntaxErrorStringDoesNotExposeInput(t *testing.T) {
+	_, err := query.Parse("private-search-text AND (")
+	if err == nil || err.Error() != "invalid search expression: unclosed_group" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

@@ -269,3 +269,39 @@ func TestSearchHTTPDeadlineDoesNotHideCompletionFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchInputRejectsInvalidJSONFields(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"missing query", `{}`}, {"query type", `{"query":null}`}, {"assignedTo", `{"query":"x","assignedTo":null}`},
+		{"status", `{"query":"x","status":true}`}, {"ready", `{"query":"x","ready":"true"}`},
+		{"allowAgents", `{"query":"x","allowAgents":0}`}, {"platform", `{"query":"x","compatiblePlatform":[]}`},
+		{"cursor", `{"query":"x","cursor":false}`}, {"limit null", `{"query":"x","limit":null}`},
+		{"limit decimal", `{"query":"x","limit":1.0}`}, {"limit range", `{"query":"x","limit":101}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tc.body), &fields); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := searchInput(fields); err == nil {
+				t.Fatalf("accepted %s", tc.body)
+			}
+		})
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(`{"query":"cache","assignedTo":"me","status":"done","ready":true,"allowAgents":false,"compatiblePlatform":"linux","cursor":"token","limit":100}`), &fields); err != nil {
+		t.Fatal(err)
+	}
+	input, err := searchInput(fields)
+	if err != nil || input.AssignedTo == nil || *input.AssignedTo != "me" || input.Status == nil || *input.Status != model.TaskDone || input.Ready == nil || !*input.Ready || input.AllowAgents == nil || *input.AllowAgents || input.CompatiblePlatform == nil || *input.CompatiblePlatform != model.TaskPlatform("linux") || input.Cursor == nil || *input.Cursor != "token" || input.Limit != 100 {
+		t.Fatalf("input=%+v err=%v", input, err)
+	}
+	fields = nil
+	if err := json.Unmarshal([]byte(`{"query":"cache","cursor":null}`), &fields); err != nil {
+		t.Fatal(err)
+	}
+	input, err = searchInput(fields)
+	if err != nil || input.Cursor != nil || input.Limit != 50 {
+		t.Fatalf("input=%+v err=%v", input, err)
+	}
+}
