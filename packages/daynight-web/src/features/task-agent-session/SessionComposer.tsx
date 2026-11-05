@@ -1,4 +1,5 @@
 import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import type { SessionDraft, SessionSettingIntent } from './client';
 import type { SessionNativeCommand } from '../../../../daynight/src/session/controls';
 import { SessionControlsPanel, type ControlsView } from './SessionControlsPanel';
@@ -331,6 +332,11 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     <div className="session-composer-surface">
     <textarea aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
       if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
+      if (event.key === 'Tab' && event.shiftKey) {
+        // Remove candidates before the browser and outer focus boundaries compute Tab order.
+        if (showCommands) flushSync(() => { setControlView(null); dismissCommands(true); });
+        return;
+      }
       if (showCommands && matchingCommands.length && !authPaused) {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setCandidateExplicit(true); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
         if ((event.key === 'Enter' && !event.shiftKey && candidateExplicit) || event.key === 'Tab') { event.preventDefault(); chooseCommand(matchingCommands[selectedIndex]!); return; }
