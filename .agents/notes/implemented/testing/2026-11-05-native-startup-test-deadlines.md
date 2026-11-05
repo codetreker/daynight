@@ -18,8 +18,12 @@ A shared test-only deadline controller captures the requested 30-second timer an
 its real handle while forwarding timers to the native implementation. It waits
 for the fixture's initialization request log before expiring the remaining
 captured callback asynchronously. Cleared timers are removed from consideration;
-ambiguous active deadlines fail the test. The timer functions are restored after
-the operation and its cleanup settle.
+ambiguous active deadlines fail the test. The socket-close fixture additionally
+observes the actual SDK client socket and joins its close event before expiry.
+A request log or one event-loop yield cannot establish that the peer FIN reached
+the client; otherwise forced cleanup could close the socket before the tested
+failure condition occurred. The timer functions and scoped socket observer are
+restored after the operation and its cleanup settle.
 
 The SDKs, transport, fixture child, rejection classification, durable journal and
 Worker report remain real. The compiled Copilot fixture still executes with

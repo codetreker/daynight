@@ -80,8 +80,9 @@ virtual time separately exercises the authenticated response wait. The
 explains the distinction between Node socket timers and global fake timers.
 Controller startup timeout tests keep real SDKs, native fixture processes and
 request logs. A test-only deadline controller waits for the stalled initialization
-request before expiring its captured 30-second callback. Other timers and real
-I/O continue normally; separate virtual-time assertions check the default deadline
+request before expiring its captured 30-second callback. The socket-close case
+also awaits the real SDK client socket close event before expiry. Other timers
+and real I/O continue normally; separate virtual-time assertions check the default deadline
 boundary. The strict compiled fixture retains unhandled-rejection, teardown-RPC
 and owned-process-exit checks. The
 [startup deadline decision](../.agents/notes/implemented/testing/2026-11-05-native-startup-test-deadlines.md)
