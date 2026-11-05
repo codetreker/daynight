@@ -367,7 +367,7 @@ describe("authentication language changes", () => {
       return defaults(url);
     });
     const interaction = userEvent.setup();
-    renderWithLocale(<AuthenticatedApp />, { locale: "en" });
+    const { setLocale } = renderWithLocale(<AuthenticatedApp />, { locale: "en", getStorage: () => { throw new Error("storage unavailable"); } });
     await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
     await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.createToken }));
     const creating = screen.getByRole("dialog");
@@ -385,8 +385,16 @@ describe("authentication language changes", () => {
     await act(async () => pending.resolve(failure(503, "internal")));
     const overlay = await screen.findByRole("dialog", { name: en.auth.shell.revalidationLabel });
     const requests = fetcher.mock.calls.length;
-    await interaction.selectOptions(language(within(overlay)), "zh-CN");
+    expect(within(overlay).getByRole("alert")).toHaveTextContent(en.auth.shell.revalidationError);
+    expect(within(overlay).queryByRole("combobox")).toBeNull();
+    setLocale("zh-CN");
     expect(screen.getByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBe(overlay);
+    expect(within(overlay).getByRole("alert")).toHaveTextContent(zhCN.auth.shell.revalidationError);
+    expect(within(overlay).getByRole("alert")).toHaveTextContent(zhCN.auth.shell.revalidationRetained);
+    expect(within(overlay).queryByRole("combobox")).toBeNull();
+    expect(within(overlay).queryByText(zhCN.language.preferenceNotice.write)).toBeNull();
+    expect(within(overlay).queryByRole("button", { name: zhCN.common.retrySave })).toBeNull();
+    expect(document.querySelector(".auth-shell")).toHaveTextContent(zhCN.language.preferenceNotice.write);
     expect(secret).toHaveValue("kept-raw-secret");
     expect(secret.closest("[role=dialog]")).toBe(reveal);
     expect(fetcher).toHaveBeenCalledTimes(requests);
@@ -395,6 +403,9 @@ describe("authentication language changes", () => {
     expect(screen.getByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBe(overlay);
     expect(document.body).toHaveClass("auth-session-checking");
     expect(document.querySelector(".auth-shell")).toHaveAttribute("inert");
+    expect(within(overlay).getByRole("status")).toHaveTextContent(zhCN.auth.shell.revalidationLoading);
+    expect(within(overlay).queryByRole("combobox")).toBeNull();
+    expect(checks).toBe(3);
     await act(async () => retry.resolve(json(user)));
     expect(screen.queryByRole("dialog", { name: zhCN.auth.shell.revalidationLabel })).toBeNull();
     expect(screen.getByRole("dialog", { name: zhCN.auth.management.secret.tokenTitle })).toBe(reveal);

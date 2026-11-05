@@ -299,9 +299,7 @@ dialog.auth-revalidation-overlay:not([open]) { display: none; }
 dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
 .auth-revalidation-overlay > :is([role="status"], [role="alert"]) { display: flex; flex-direction: column; align-items: center; gap: 16px; max-width: 640px; }
 .auth-revalidation-overlay h1 { margin: 0; }
-.auth-revalidation-overlay > .locale-preference { width: max-content; max-width: 100%; margin-bottom: 8px; }
-.auth-revalidation-overlay .locale-control { justify-content: center; }
-:where(.auth-main, .invite-page, .auth-dialog, .auth-revalidation-overlay) .locale-control { flex-wrap: wrap; white-space: normal; }
+:where(.auth-main, .invite-page, .auth-dialog) .locale-control { flex-wrap: wrap; white-space: normal; }
 
 :where(.auth-shell, .auth-page, .invite-page, .auth-dialog) :is(input, select, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
 :where(.auth-shell, .auth-page, .invite-page) h1:focus { outline: none; }
