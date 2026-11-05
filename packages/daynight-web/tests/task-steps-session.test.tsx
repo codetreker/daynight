@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
@@ -10,6 +10,9 @@ import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-
 import { canSetStatus, TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
 import { useTaskSteps } from "../src/features/task-detail/useTaskSteps";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
+import { TaskDraftBoundary } from "../src/features/task-detail/TaskDraftNavigation";
+import { TaskStepsPanel } from "../src/features/task-detail/steps/TaskStepsPanel";
+import { renderWithLocale } from "./helpers/renderWithLocale";
 import { detailFixture, graphFixture, resourceResponse } from "./helpers/taskDetail";
 import { taskSyncFromGraph, TEST_VIEWER_ID, viewerHeaders } from "./helpers/taskSync";
 
@@ -39,6 +42,122 @@ const open = async (scope: TaskCacheScope) => { const session = new TaskDetailSe
 const start = (session: TaskDetailSessions, listener = vi.fn()) => { const release = session.subscribeSteps(projectId, taskId, listener); session.loadSteps(projectId, taskId); return release; };
 const failure = (status: number, code: string) => new Response(JSON.stringify({ error: { code, message: "Failure", requestId: "steps-failure" } }), { status, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) });
 afterEach(() => { sessions.splice(0).forEach((session) => session.dispose()); scopes.splice(0).forEach((scope) => scope.dispose()); });
+
+it.each(["before", "after"] as const)("retains a dirty delete draft when old admission releases %s replacement readback", async (releaseOrder) => {
+  const scope = await seed(); const write = deferred<Response>(); let restoredHistory = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "DELETE" ? write.promise
+    : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(restoredHistory ? 7n : 5n) : body(restoredHistory ? 7n : 5n), TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetcher);
+  let session!: TaskDetailSessions;
+  const Capture = () => { session = useTaskDetailSessions(); return null; };
+  const Workspace = () => {
+    const current = useTaskDetail(projectId, taskId, 1, node(scope));
+    return <TaskStepsPanel projectId={projectId} taskId={taskId} active={current.detail !== null} available={current.detail !== null} renderMarkdown={(text) => <div>{text}</div>} />;
+  };
+  const tree = () => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Capture />
+    <TaskDraftBoundary projectId={projectId} taskId={taskId} page>
+      <Workspace />
+    </TaskDraftBoundary>
+  </TaskDetailSessionProvider></TaskCacheProvider>;
+  const view = renderWithLocale(tree(), { locale: "en" });
+  act(() => { session.observe(projectId, taskId, node(scope)); session.load(projectId, taskId, 1, "open"); session.loadSteps(projectId, taskId); });
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "Read" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit step" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsaved revision" } });
+  fireEvent.click(screen.getByRole("button", { name: "More actions for Read" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete step" }));
+  fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete step" }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1));
+  const entered = deferred<void>(); const release = deferred<void>(); const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementationOnce(async (...args) => { entered.resolve(); await release.promise; return transaction(...args); });
+  const phases: string[] = [];
+  const unsubscribe = session.subscribe(projectId, taskId, () => phases.push(session.snapshot(projectId, taskId).mutation.phase));
+  try {
+    await act(async () => { write.resolve(resourceResponse(resource(6n, []), TEST_VIEWER_ID)); await entered.promise; });
+    expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "confirmed", reconciling: true });
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    // Retire the real receipt ticket before its cache admission transaction runs.
+    await act(async () => { restoredHistory = true; await apply(scope, body(7n), true); view.rerender(tree()); });
+    if (releaseOrder === "before") await act(async () => { release.resolve(); });
+    await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ stale: false, resource: { version: 7n } }));
+    await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 7n }, requiresFreshRead: false }));
+    expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([item]);
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    if (releaseOrder === "after") await act(async () => { release.resolve(); });
+    await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "reconciled", reconciledFrom: "unknown", reconciling: false }));
+    expect(phases).toContain("confirmed"); expect(phases).toContain("unknown");
+    expect(session.stepsSnapshot(projectId, taskId).resource?.steps).toEqual([item]);
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Unsaved revision");
+    expect(screen.getByRole("textbox", { name: "Title" })).toBeEnabled();
+    expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1);
+  } finally { release.resolve(); unsubscribe(); }
+});
+
+it.each([true, false])("cleans a confirmed delete draft after admission with the Steps tab visible %s", async (visibleDuringAdmission) => {
+  const scope = await seed(); const write = deferred<Response>(); let deleted = false; let visible = true;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => options.method === "DELETE" ? write.promise
+    : Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(deleted ? 6n : 5n, deleted ? [] : [item]) : body(deleted ? 6n : 5n), TEST_VIEWER_ID)));
+  vi.stubGlobal("fetch", fetcher);
+  let session!: TaskDetailSessions;
+  const Workspace = () => {
+    session = useTaskDetailSessions();
+    const current = useTaskDetail(projectId, taskId, 1, node(scope));
+    return <TaskStepsPanel projectId={projectId} taskId={taskId} active={visible && current.detail !== null} available={current.detail !== null} renderMarkdown={(text) => <div>{text}</div>} />;
+  };
+  const tree = () => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider>
+    <TaskDraftBoundary projectId={projectId} taskId={taskId} page><Workspace /></TaskDraftBoundary>
+  </TaskDetailSessionProvider></TaskCacheProvider>;
+  const view = renderWithLocale(tree(), { locale: "en" });
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  fireEvent.click(screen.getByRole("button", { name: "Read" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit step" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Unsaved revision" } });
+  fireEvent.click(screen.getByRole("button", { name: "More actions for Read" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete step" }));
+  fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete step" }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1));
+  visible = visibleDuringAdmission; view.rerender(tree());
+  await act(async () => { deleted = true; write.resolve(resourceResponse(resource(6n, []), TEST_VIEWER_ID)); });
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "confirmed", reconciling: true }));
+  await act(async () => { await apply(scope, body(6n)); view.rerender(tree()); });
+  await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ requiresFreshRead: false, mutation: { phase: "confirmed", reconciling: false } }));
+  expect(session.snapshot(projectId, taskId).mutation.phase).toBe("confirmed");
+  if (!visibleDuringAdmission) {
+    expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull();
+    visible = true; view.rerender(tree());
+  }
+  await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ stale: false, resource: { version: 6n, steps: [] } }));
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus());
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1);
+});
+
+it("recovers a completed deletion after project access is revoked and restored without replay", async () => {
+  const scope = await seed(); const session = await open(scope); let deleted = false; let restored = false;
+  const fetcher = vi.fn().mockImplementation((url: string, options: RequestInit) => {
+    if (options.method === "DELETE") { deleted = true; return Promise.resolve(resourceResponse(resource(6n, []), TEST_VIEWER_ID)); }
+    const version = restored ? 7n : deleted ? 6n : 5n;
+    return Promise.resolve(resourceResponse(url.endsWith("/steps") ? resource(version, deleted ? [] : [item]) : body(version), TEST_VIEWER_ID));
+  });
+  vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session);
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  session.deleteStep(projectId, taskId, item.id, 5n);
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("confirmed"));
+  await apply(scope, body(6n)); session.observe(projectId, taskId, node(scope));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation).toMatchObject({ phase: "confirmed", reconciling: false }));
+  await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
+  const ticket = await scope.beginSync(projectId, signal()); await scope.revokeProject(ticket, scope.signal);
+  session.observe(projectId, taskId, undefined, false);
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, mutation: { phase: "unknown", reconciling: false } });
+  expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull();
+  restored = true; await apply(scope, body(7n), true); session.observe(projectId, taskId, node(scope));
+  session.load(projectId, taskId, 2, "open");
+  await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 7n }, requiresFreshRead: false, mutation: { phase: "reconciled", reconciledFrom: "unknown", reconciling: false } }));
+  expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ stale: false, resource: { version: 7n, steps: [] } });
+  expect(session.canSetStepStatus(projectId, taskId)).toBe(true);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "DELETE")).toHaveLength(1);
+});
 
 it("keeps the original status until a confirmed result and three-resource convergence, including equal clock timestamps", async () => {
   const scope = await seed(); const session = await open(scope); const write = deferred<Response>(); let updated = false;
