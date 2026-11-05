@@ -84,6 +84,17 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 375, height: 667 }
     await args.focus(); await args.fill('invalid'); await clearField(page);
     await expect(bar.getByRole('button', { name: '保存配置', exact: true })).toBeDisabled();
     await args.fill('[]');
+    // These controls are not .field descendants. Native Tab scrolling considers
+    // them visible even when the fixed footer covers the bottom viewport strip.
+    const choose = page.getByRole('button', { name: '＋ 选择项目' });
+    const remove = page.getByRole('button', { name: '移除项目 Project 3' });
+    const summary = page.locator('.project-native').first().locator('summary');
+    for (const [previous, next] of [[args, choose], [choose, remove], [remove, summary]]) {
+      await previous!.focus();
+      await next!.evaluate(element => window.scrollBy(0, element.getBoundingClientRect().bottom - innerHeight + 4));
+      await page.keyboard.press('Tab');
+      await expect(next!).toBeFocused(); await clearField(page);
+    }
     const details = page.locator('.project-native').last();
     await details.locator('summary').click();
     const mode = page.locator(`#config-project-${workerId(4)}-args-mode`);

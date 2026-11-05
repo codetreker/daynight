@@ -24,7 +24,9 @@ text wrapping retain alignment. Scroll and resize handlers update its position.
 The document owns scrolling. The editor checks the focused field against the
 measured footer on focus, draft edits and viewport/footer size changes, scrolling
 only when the field would be obscured. It includes field errors when the whole
-field fits; a taller field prioritizes the active control. Focus and selection
+field fits; a taller field prioritizes the active control. Project selection,
+removal and disclosure controls outside a field use their own rectangles. The
+footer's own buttons are excluded from this avoidance. Focus and selection
 stay on their existing nodes. Background configuration observations do not
 trigger this scrolling, and inactive configuration tabs detach the listeners.
 
