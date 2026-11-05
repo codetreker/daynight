@@ -362,6 +362,12 @@ viewport 高度不超过 500px 时，composer、菜单与 Session header 减少�
 
 read、invalid、write issue 只在打开的菜单内按当前语言映射说明和重试。选择失败后 mode 保留，菜单仍能展示未保存状态；重试调用同一偏好的 `retrySave`，成功去掉错误而不改写模式。正常状态不增加说明行。菜单文案使用 `useSessionMessages` 的本地化目录，不读取原生操作的固定英语标签子集；语言切换保持 client、输入、操作和偏好身份。入口、菜单与提示层的选择理由见[显示菜单集成决策](../../.agents/notes/implemented/architecture/2026-11-04-session-display-integration.md)。
 
+### 默认头部布局
+
+没有 `renderHeader` 时，`SessionView` 在原 section 上标记 `session-default-header-layout`，以其内容宽度建立命名容器 `session-header`。不足 480px 时，默认 header 使用 Grid，将名称与操作置于首行，状态铺满次行；原名称与状态分组使用 `display: contents`，节点顺序和身份不变。不足 260px 时采用名称、状态、操作三行，避免将按钮挤出容器。名称仅在分配空间不足时省略，完整文本仍在 DOM 与可访问树中。达到 480px 时沿用桌面 flex 布局。
+
+默认刷新按钮同时保留文字和装饰性 SVG，由容器查询决定可见内容；窄容器的刷新和全屏按钮固定为 36×36px。刷新沿用 `client.refresh`、`authPaused` 和本地化消息，提示随悬停及键盘聚焦显示。自定义头部不建立此命名容器、不附加默认布局类，仍接收原来的文字刷新控件。布局原因与代价见[窄容器头部决策](../../.agents/notes/implemented/bug-fix/2026-11-06-responsive-session-header.md)。
+
 ### Session 全屏与任务容器协作
 
 `SessionView` 保持同一个 section 和 header，加载、未注册、不可用及错误状态只改变正文，不以另一棵空态子树替换会话外壳。全屏图标与刷新入口因此不依赖可读取的快照；可读取时同一工具栏保留 Display。全屏文案使用本地化消息目录，按钮的图标、可访问名称、提示和 pressed 状态表达当前动作。
