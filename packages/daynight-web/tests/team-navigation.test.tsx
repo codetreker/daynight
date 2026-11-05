@@ -467,22 +467,41 @@ describe("Team workspace navigation", () => {
   it("keeps the management dialog and focused draft visible while identity is pending", async () => {
     window.history.replaceState(null, "", `/teams/${a}/settings`);
     const identity = Promise.withResolvers<Response>(); let meReads = 0;
-    const fetcher = install((url) => url === "/api/v1/me" && ++meReads === 2 ? identity.promise : undefined);
+    const readyGate = Promise.withResolvers<void>(); let holdReady = false, heldReads = 0;
+    const teamReads: { signal: AbortSignal; result: PromiseWithResolvers<Response> }[] = [];
+    const ready = TaskCacheScope.prototype.ready;
+    vi.spyOn(TaskCacheScope.prototype, "ready").mockImplementation(async function (this: TaskCacheScope, signal) {
+      await ready.call(this, signal);
+      if (holdReady && teamReads.some((read) => read.signal === signal)) { heldReads++; await readyGate.promise; signal.throwIfAborted(); }
+    });
+    let deferTeam = false;
+    const fetcher = install((url, init) => {
+      if (url === "/api/v1/me" && ++meReads === 2) return identity.promise;
+      if (deferTeam && url === `/api/v1/teams/${a}` && !init?.method) {
+        const result = Promise.withResolvers<Response>(); teamReads.push({ signal: init!.signal as AbortSignal, result }); return result.promise;
+      }
+      return undefined;
+    });
     render(<AuthenticatedApp />); const heading = await screen.findByRole("heading", { name: "Team settings" });
     fireEvent.click(await screen.findByRole("button", { name: "Delete Team" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Team" });
     const confirmation = within(dialog).getByLabelText("Enter the Team name to confirm") as HTMLTextAreaElement;
     fireEvent.change(confirmation, { target: { value: "  Alpha  " } }); confirmation.focus(); confirmation.setSelectionRange(2, 5);
-    focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(meReads).toBe(2));
-    expect(screen.getByRole("heading", { name: "Team settings", hidden: true })).toBe(heading);
-    expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog); expect(dialog).toBeVisible();
-    expect(document.activeElement).toBe(confirmation); expect(confirmation.selectionStart).toBe(2); expect(confirmation.selectionEnd).toBe(5);
-    expect(confirmation).toHaveValue("  Alpha  "); expect(confirmation).not.toBeDisabled();
+    const check = () => {
+      expect(screen.getByRole("heading", { name: "Team settings", hidden: true })).toBe(heading);
+      expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog); expect(dialog).toBeVisible();
+      expect(document.activeElement).toBe(confirmation); expect(confirmation.selectionStart).toBe(2); expect(confirmation.selectionEnd).toBe(5);
+      expect(confirmation).toHaveValue("  Alpha  "); expect(confirmation).not.toBeDisabled();
+      expect(document.querySelectorAll(".empty-inline")).toHaveLength(0);
+      expect(fetcher.mock.calls.some(([, init]) => init?.method && init.method !== "GET")).toBe(false);
+    };
+    check(); deferTeam = true; focused = false; fireEvent(window, new Event("blur")); focused = true; fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(meReads).toBe(2)); check();
     await act(async () => identity.resolve(json({ ...person, personalTeam: { ...person.personalTeam } })));
-    expect(screen.getByRole("dialog", { name: "Delete Team" })).toBe(dialog);
-    expect(document.activeElement).toBe(confirmation); expect(confirmation.selectionStart).toBe(2); expect(confirmation.selectionEnd).toBe(5);
-    expect(fetcher.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    await waitFor(() => expect(teamReads.length).toBeGreaterThanOrEqual(2)); check();
+    holdReady = true; await act(async () => { for (const read of teamReads) read.result.resolve(json(team(a, "  Alpha  "))); });
+    await waitFor(() => expect(heldReads).toBeGreaterThanOrEqual(2)); check();
+    holdReady = false; await act(async () => readyGate.resolve()); check();
   });
   it.each(["success", "lost"] as const)("keeps a pending delete through 404 on revalidation: %s", async (outcome) => {
     window.history.replaceState(null, "", `/teams/${a}/settings`); const reply = Promise.withResolvers<Response>(); let reads = 0, deletes = 0;

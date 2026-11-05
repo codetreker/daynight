@@ -13,10 +13,10 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, holdInvitationRead: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
@@ -42,7 +42,10 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
       if (state.invitationSuccess) return send({ id: '00000000-0000-4000-8000-000000000051', teamId, createdBy: alice, createdAt: time, expiresAt: '2099-10-27T09:00:00Z', consumedBy: null, consumedAt: null, revokedAt: null, link: `${new URL(request.url()).origin}/team-invitations#dnteam_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` }, 201);
       return route.abort('failed');
     }
-    if (method === 'GET' && path === `/api/v1/teams/${teamId}/invitations`) return state.members.get(alice)?.role === 'admin' ? send({ items: [] }) : send(error('forbidden'), 403);
+    if (method === 'GET' && path === `/api/v1/teams/${teamId}/invitations`) {
+      const gate = state.holdInvitationRead; state.holdInvitationRead = null; if (gate) { gate.started(); await gate.wait; }
+      return state.members.get(alice)?.role === 'admin' ? send({ items: [] }) : send(error('forbidden'), 403);
+    }
     if (method === 'GET' && path === `/api/v1/teams/${betaId}/invitations`) return send({ items: [] });
     if (path === `/api/v1/teams/${personalId}/members`) return send({ items: roster(personalId) });
     if (path === `/api/v1/teams/${teamId}` && (state.teamReadNetworkFailure || state.failReadsAfterWrite && state.writes.length > 0)) return route.abort('failed');
@@ -490,6 +493,34 @@ test('same-account checking retains a pending exit until a confirmed Team 404', 
     await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
     expect(api.writes).toHaveLength(1);
   } finally { revalidation.finish(); teamFinish.resolve(); rosterFinish.resolve(); finish.resolve(); }
+});
+
+for (const [width, locale] of [[1280, 'en'], [390, 'zh-CN']] as const) test(`retains members and invitation confirmation through background reads at ${width}px`, async ({ page }, testInfo) => {
+  const api = await install(page); await page.setViewportSize({ width, height: 844 });
+  await start(page); await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+  const invite = page.getByRole('button', { name: locale === 'en' ? 'Invite member' : '邀请成员' });
+  await expect(invite).toBeVisible(); await expect(invite).toBeEnabled();
+  const panel = invite.locator('xpath=ancestor::section');
+  const originalPanel = await panel.elementHandle(), panelBox = await panel.boundingBox();
+  await invite.click();
+  const dialog = page.getByRole('dialog'), originalDialog = await dialog.elementHandle(), dialogBox = await dialog.boundingBox();
+  const rosterStarted = Promise.withResolvers<void>(), rosterFinish = Promise.withResolvers<void>();
+  const inviteStarted = Promise.withResolvers<void>(), inviteFinish = Promise.withResolvers<void>();
+  api.holdRosterRead = { started: rosterStarted.resolve, wait: rosterFinish.promise };
+  api.holdInvitationRead = { started: inviteStarted.resolve, wait: inviteFinish.promise };
+  const check = await foreground(page, api);
+  const verify = async () => {
+    expect(await panel.evaluate((element, original) => element === original, originalPanel)).toBe(true);
+    expect(await dialog.evaluate((element, original) => element === original, originalDialog)).toBe(true);
+    expect(await panel.boundingBox()).toEqual(panelBox); expect(await dialog.boundingBox()).toEqual(dialogBox);
+    await expect(dialog).toBeVisible();
+    expect(api.writes).toHaveLength(0); expect(api.invitationWrites).toBe(0);
+  };
+  try {
+    await verify(); check.finish(); await Promise.all([rosterStarted.promise, inviteStarted.promise]); await verify();
+    rosterFinish.resolve(); await verify(); inviteFinish.resolve(); await expect(invite).toBeEnabled(); await verify();
+    await page.screenshot({ path: testInfo.outputPath(`background-${width}-${locale}.png`) });
+  } finally { check.finish(); rosterFinish.resolve(); inviteFinish.resolve(); }
 });
 
 test('narrow viewport and Chinese dialog retain usable controls', async ({ page }) => {
