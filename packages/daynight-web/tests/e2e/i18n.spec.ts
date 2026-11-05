@@ -188,15 +188,6 @@ test.describe('Web language journeys', () => {
     await pagination.selectOption('1');
     await expect(dialog.locator('.task-detail-pr-title')).toHaveText(['原始 PR 101']);
     const attachments = dialog.locator('.task-attachments');
-    const changeDetailLanguage = async (locale: 'en' | 'zh-CN'): Promise<void> => {
-      await (await attachmentFileActions(attachments, htmlPath)).click();
-      await page.getByRole('menuitem', { name: /^(Delete|删除)$/, exact: true }).click();
-      const confirmation = dialog.locator('.attachment-delete-dialog');
-      await expect(confirmation).toContainText(htmlPath);
-      await language(confirmation).selectOption(locale);
-      await confirmation.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true }).click();
-      await expect(confirmation).toBeHidden();
-    };
     await expect(dialog.locator('.task-detail-header').getByRole('combobox')).toHaveCount(0);
     await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
     await (await attachmentFileButton(attachments, htmlPath)).click();
@@ -213,7 +204,7 @@ test.describe('Web language journeys', () => {
     const inputElement = await fileInput.elementHandle();
     if (frameElement === null || inputElement === null) throw new Error('Attachment elements are absent.');
     // A permission read after preview focus can await cache admission after HTTP completion.
-    // Settle readiness around the controlled focus observation before measuring locale-only requests.
+    // Settle readiness around the controlled focus observation before measuring tab-switch requests.
     const projectSettingsLink = page.locator(`.project-title-actions a[href="/projects/${project.id}/settings"]`);
     await expect(projectSettingsLink).toHaveCount(1);
     const accessUrl = new URL(`/api/v1/projects/${project.id}/access`, baseURL).href;
@@ -224,32 +215,22 @@ test.describe('Web language journeys', () => {
     expect(await accessResponse.finished()).toBeNull();
     await expect(projectSettingsLink).toHaveCount(1);
     await expect(attachments.locator('.managed-session-records')).toHaveCount(0);
-    const beforeModalSwitch = [...reads];
-    await changeDetailLanguage('zh-CN');
-    await expect(inspectTask(page, task.id).locator('.graph-status')).toHaveText('待处理');
-    await expect(expansion).toHaveAttribute('aria-label', '展开后续 11 个任务、11 条依赖');
-    await expect(page.locator('.graph-reset-overview')).toHaveText('收起到概览');
-    expect(await visibleState()).toEqual(expandedState);
-    await expect(viewport).toHaveAttribute('style', transform!);
-    expect(await taskElement.evaluate((element, id) => element === document.querySelector(`.react-flow__node[data-id="${id}"] button.task-node-body`), task.id)).toBe(true);
-    expect(await viewportElement.evaluate((element) => element === document.querySelector('.react-flow__viewport'))).toBe(true);
-    expect(await page.locator('.task-dependency-edge path.react-flow__edge-path').evaluateAll((elements) => elements.map((element) => element.getAttribute('d')))).toEqual(paths);
-    expect(reads).toEqual(beforeModalSwitch);
-    await dialog.getByRole('tab', { name: '概览', exact: true }).click();
-    await expect(dialog.getByRole('combobox', { name: '关联 PR 页码', exact: true })).toHaveValue('1');
+    const beforeTabSwitch = [...reads];
+    await dialog.getByRole('tab', { name: 'Overview', exact: true }).click();
+    await expect(dialog.getByRole('combobox', { name: 'Linked PR page', exact: true })).toHaveValue('1');
     await expect(dialog.locator('.task-detail-pr-title')).toHaveText(['原始 PR 101']);
     const historyUrl = new URL(`/api/v1/projects/${project.id}/tasks/${task.id}/sessions?limit=50`, baseURL).href;
     const historyResponse = page.waitForResponse(response => response.url() === historyUrl && response.request().method() === 'GET');
-    await dialog.getByRole('tab', { name: '附件', exact: true }).click();
+    await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
     expect((await historyResponse).status()).toBe(200);
-    await expect(frame).toHaveAttribute('title', `HTML 预览：${htmlPath}`);
+    await expect(frame).toHaveAttribute('title', `HTML preview: ${htmlPath}`);
     await expect(frame).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, htmlPath));
     expect(await frameElement.evaluate((element) => element === document.querySelector('.task-attachments iframe'))).toBe(true);
     await expect(frame.contentFrame().locator('#counter')).toHaveText('1');
     expect(await inputElement.evaluate((element) => element === document.querySelector('.task-attachments input[type=file]'))).toBe(true);
     expect(await fileInput.evaluate((element) => (element as HTMLInputElement).files?.[0]?.name)).toBe('original.txt');
     await expect(pathInput).toHaveValue(uploadPath);
-    expect(reads).toEqual([...beforeModalSwitch, `GET ${historyUrl}`]);
+    expect(reads).toEqual([...beforeTabSwitch, `GET ${historyUrl}`]);
 
     let hold: { readonly method: 'PUT' | 'DELETE'; readonly started: ReturnType<typeof deferred>; readonly release: ReturnType<typeof deferred> } | null = null;
     await page.route(uploadUrl, async (route) => {
@@ -260,29 +241,28 @@ test.describe('Web language journeys', () => {
       }
       await route.continue();
     });
-    const write = async (method: 'PUT' | 'DELETE', locale: 'en' | 'zh-CN', expectedStatus: number): Promise<void> => {
-      if (method === 'PUT') await changeDetailLanguage(locale);
+    const write = async (method: 'PUT' | 'DELETE', expectedStatus: number): Promise<void> => {
       const current = { method, started: deferred(), release: deferred() };
       hold = current;
       const response = page.waitForResponse((response) => response.url() === uploadUrl && response.request().method() === method);
       const confirmation = dialog.locator('.attachment-delete-dialog');
       if (method === 'PUT') await attachments.locator('button[type=submit]').click();
       else {
-        const english = await page.locator('html').getAttribute('lang') === 'en';
         await (await attachmentFileActions(attachments, uploadPath)).click();
-        await page.getByRole('menuitem', { name: english ? 'Delete' : '删除', exact: true }).click();
+        await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
         await expect(confirmation).toContainText(uploadPath);
-        await confirmation.getByRole('button', { name: english ? 'Delete attachment' : '删除附件', exact: true }).click();
+        await confirmation.getByRole('button', { name: 'Delete attachment', exact: true }).click();
       }
       try {
         await within(current.started.promise, `pending ${method}`);
         const pendingReads = [...reads];
         const selectedPath = await attachments.locator('.attachment-preview h5').textContent();
         if (method === 'DELETE') {
-          await language(confirmation).selectOption(locale);
-          await expect(confirmation).toHaveAccessibleName(locale === 'en' ? 'Delete attachment?' : '删除附件？');
+          await expect(language(confirmation)).toHaveCount(0);
+          await expect(confirmation.locator('.locale-notice')).toHaveCount(0);
+          await expect(confirmation).toHaveAccessibleName('Delete attachment?');
           await expect(confirmation).toContainText(uploadPath);
-          await expect(confirmation.getByRole('button', { name: locale === 'en' ? 'Deleting…' : '正在删除…', exact: true })).toBeDisabled();
+          await expect(confirmation.getByRole('button', { name: 'Deleting…', exact: true })).toBeDisabled();
         }
         await expect(attachments.locator('button[type=submit]')).toBeDisabled();
         await expect(pathInput).toBeDisabled();
@@ -295,20 +275,20 @@ test.describe('Web language journeys', () => {
       } finally { current.release.resolve(); }
       expect((await response).status()).toBe(expectedStatus);
       hold = null;
-      await expect(attachments.locator('button[type=submit]')).toHaveText(locale === 'en' ? 'Upload file' : '上传文件');
+      await expect(attachments.locator('button[type=submit]')).toHaveText('Upload file');
       if (method === 'PUT') {
         await expect(pathInput).toHaveValue('');
         expect(await fileInput.evaluate((element) => (element as HTMLInputElement).files?.length)).toBe(0);
       }
     };
-    await write('PUT', 'en', 201);
+    await write('PUT', 201);
     await expect(attachments.getByRole('heading', { name: uploadPath, exact: true })).toBeVisible();
     await expect(attachments.locator('pre')).toHaveText('First 原始 bytes\n');
     await fileInput.setInputFiles({ name: 'replacement.txt', mimeType: 'text/plain', buffer: Buffer.from('Replacement 原始 bytes\n') });
     await pathInput.fill(uploadPath);
-    await write('PUT', 'zh-CN', 200);
+    await write('PUT', 200);
     await expect(attachments.locator('pre')).toHaveText('Replacement 原始 bytes\n');
-    await write('DELETE', 'en', 204);
+    await write('DELETE', 204);
     await expect(attachments.locator('.attachment-preview')).toHaveCount(0);
     const listed = await request.get(`/api/v1/projects/${project.id}/tasks/${task.id}/attachments`);
     expect(listed.status()).toBe(200);
