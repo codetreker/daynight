@@ -828,12 +828,63 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     const bobRole = page.getByRole('combobox', { name: `${bobUser.name} 的单独授权`, exact: true });
     await expect(bobRole).toHaveValue('member');
     await expect(page.getByRole('combobox', { name: `${alice.name} 的单独授权`, exact: true })).toBeEnabled();
+    const browserWrites: string[] = [];
+    page.on('request', (browserRequest) => { if (browserRequest.method() === 'PUT' && browserRequest.url() === `${baseURL}${target}`) browserWrites.push(browserRequest.postData() ?? ''); });
     const observed = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
     expect((await request.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: observed.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
-    await bobRole.selectOption('admin');
-    const conflict = page.waitForResponse((response) => response.url() === `${baseURL}${target}` && response.request().method() === 'PUT');
-    await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
-    expect((await conflict).status()).toBe(409);
+    const external = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
+    const heldRoster = Promise.withResolvers<ReturnType<typeof parseMembers>>();
+    const releaseRoster = Promise.withResolvers<void>();
+    let captured = false;
+    const holdRoster = async (route: Route) => {
+      if (captured || route.request().method() !== 'GET') return route.fallback();
+      captured = true;
+      const response = await route.fetch();
+      const body = await response.text();
+      heldRoster.resolve(parseMembers(await decodeMembersJson(new Response(body)), project.id));
+      await releaseRoster.promise;
+      await route.fulfill({ response, body });
+    };
+    await page.route(`${baseURL}/api/v1/projects/${project.id}/members`, holdRoster);
+    try {
+      await bobRole.selectOption('admin');
+      const rosterRead = await heldRoster.promise;
+      expect(rosterRead.items.find((member) => member.userId === bobUser.id)?.directGrant).toMatchObject({ role: 'admin', version: external.directGrant!.version });
+      const dialog = page.getByRole('dialog');
+      await dialog.getByRole('button', { name: '保存角色', exact: true }).click();
+      expect(browserWrites).toHaveLength(0);
+      releaseRoster.resolve();
+      await expect(dialog.getByRole('alert')).toBeVisible();
+      await expect(bobRole).toHaveValue('admin');
+      expect(browserWrites).toHaveLength(0);
+      await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    } finally { releaseRoster.resolve(); await page.unroute(`${baseURL}/api/v1/projects/${project.id}/members`, holdRoster); }
+
+    expect((await request.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: external.directGrant!.version, role: 'member', expectedUserId: alice.id }) })).status()).toBe(200);
+    const rosterRefresh = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects/${project.id}/members` && response.request().method() === 'GET');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect((await rosterRefresh).status()).toBe(200);
+    await expect(bobRole).toHaveValue('member');
+
+    const raced = Promise.withResolvers<void>();
+    const raceGrant = async (route: Route) => {
+      try {
+        const latest = (await memberList(request, project.id)).items.find((member) => member.userId === bobUser.id)!;
+        expect(latest.directGrant?.role).toBe('member');
+        expect(route.request().postData()).toBe(stringifyApiJson({ version: latest.directGrant!.version, role: 'admin', expectedUserId: alice.id }));
+        expect((await request.put(target, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: latest.directGrant!.version, role: 'admin', expectedUserId: alice.id }) })).status()).toBe(200);
+        raced.resolve();
+        await route.continue();
+      } catch (error) { raced.reject(error); await route.abort(); }
+    };
+    await page.route(`${baseURL}${target}`, raceGrant);
+    try {
+      await bobRole.selectOption('admin');
+      const conflict = page.waitForResponse((response) => response.url() === `${baseURL}${target}` && response.request().method() === 'PUT');
+      await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
+      await raced.promise;
+      expect((await conflict).status()).toBe(409);
+    } finally { await page.unroute(`${baseURL}${target}`, raceGrant); }
     await expect(page.getByRole('status').filter({ hasText: '成员状态已变化' })).toBeVisible();
     await expect(bobRole).toHaveValue('admin');
     await bobRole.selectOption('member');
@@ -841,6 +892,7 @@ test('auth-project-members', scenario('auth-project-members'), async ({ page, co
     await page.getByRole('dialog').getByRole('button', { name: '保存角色', exact: true }).click();
     const replaceReceipt = await replaced;
     expect(replaceReceipt.status()).toBe(200);
+    expect(browserWrites).toHaveLength(2);
     expect(await replaceReceipt.json()).toMatchObject({ grant: { projectId: project.id, userId: bobUser.id, role: 'member' }, actorAccess: { effectiveRole: 'admin' } });
     await expect(page.getByRole('status').filter({ hasText: `已将 ${bobUser.name} 的单独授权保存为` })).toBeVisible();
     await expect(bobRole).toHaveValue('member');
