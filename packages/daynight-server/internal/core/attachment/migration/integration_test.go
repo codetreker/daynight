@@ -1,4 +1,4 @@
-package service
+package migration_test
 
 import (
 	"bytes"
@@ -21,8 +21,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -44,7 +46,7 @@ type attachmentMigrationIntegrationFixture struct {
 
 func attachmentMigrationIntegrationSetup(t *testing.T) *attachmentMigrationIntegrationFixture {
 	t.Helper()
-	_, database, project, databaseURL, principal := taskService(t)
+	_, database, project, databaseURL, principal := testsupport.TaskService(t)
 	other, err := projectservice.NewProjects(database).Create(t.Context(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Migration secondary", RepoURL: "host:migration-secondary"})
 	if err != nil {
 		t.Fatal(err)
@@ -1165,5 +1167,5 @@ func TestAttachmentMigrationHardStopDuringPlanInitialization(t *testing.T) {
 }
 
 func runAttachmentMigration(ctx context.Context, databaseURL, root, action, operationID string, logger *slog.Logger) (migration.AttachmentMigrationSummary, error) {
-	return attachmentservice.MigrateAttachmentLayout(ctx, databaseURL, root, action, operationID, logger, OpenAttachmentMaintenance)
+	return attachmentservice.MigrateAttachmentLayout(ctx, databaseURL, root, action, operationID, logger, service.OpenAttachmentMaintenance)
 }

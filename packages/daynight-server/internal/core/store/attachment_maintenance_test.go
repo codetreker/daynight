@@ -11,20 +11,20 @@ import (
 )
 
 type maintenanceVisitor struct {
-	identity   AttachmentMaintenanceIdentity
-	projects   []AttachmentMaintenanceProject
-	owners     []AttachmentMaintenanceOwner
-	metadata   []AttachmentMaintenanceMetadata
-	ownerError error
+	identity                                               AttachmentMaintenanceIdentity
+	projects                                               []AttachmentMaintenanceProject
+	owners                                                 []AttachmentMaintenanceOwner
+	metadata                                               []AttachmentMaintenanceMetadata
+	identityError, projectError, ownerError, metadataError error
 }
 
 func (v *maintenanceVisitor) Identity(value AttachmentMaintenanceIdentity) error {
 	v.identity = value
-	return nil
+	return v.identityError
 }
 func (v *maintenanceVisitor) Project(value AttachmentMaintenanceProject) error {
 	v.projects = append(v.projects, value)
-	return nil
+	return v.projectError
 }
 func (v *maintenanceVisitor) Owner(value AttachmentMaintenanceOwner) error {
 	v.owners = append(v.owners, value)
@@ -32,7 +32,7 @@ func (v *maintenanceVisitor) Owner(value AttachmentMaintenanceOwner) error {
 }
 func (v *maintenanceVisitor) Metadata(value AttachmentMaintenanceMetadata) error {
 	v.metadata = append(v.metadata, value)
-	return nil
+	return v.metadataError
 }
 
 func TestAttachmentMaintenanceKeepsLockAcrossSnapshots(t *testing.T) {
@@ -86,9 +86,20 @@ func TestAttachmentMaintenanceKeepsLockAcrossSnapshots(t *testing.T) {
 		t.Fatalf("fresh snapshot: %#v, error: %v", second, err)
 	}
 	stop := errors.New("stop inventory")
-	stopped := &maintenanceVisitor{ownerError: stop}
-	if err := maintenance.Snapshot(ctx, stopped); err != stop || len(stopped.owners) != 1 || len(stopped.metadata) != 0 {
-		t.Fatalf("callback did not stop inventory: %#v, error: %v", stopped, err)
+	for _, tc := range []struct {
+		name                       string
+		visitor                    *maintenanceVisitor
+		projects, owners, metadata int
+	}{
+		{"identity", &maintenanceVisitor{identityError: stop}, 0, 0, 0},
+		{"project", &maintenanceVisitor{projectError: stop}, 1, 0, 0},
+		{"owner", &maintenanceVisitor{ownerError: stop}, 1, 1, 0},
+		{"metadata", &maintenanceVisitor{metadataError: stop}, 1, 1, 1},
+	} {
+		err := maintenance.Snapshot(ctx, tc.visitor)
+		if err != stop || len(tc.visitor.projects) != tc.projects || len(tc.visitor.owners) != tc.owners || len(tc.visitor.metadata) != tc.metadata {
+			t.Fatalf("%s callback did not stop inventory: %#v, error: %v", tc.name, tc.visitor, err)
+		}
 	}
 	if err := maintenance.Snapshot(ctx, &maintenanceVisitor{}); err != nil {
 		t.Fatalf("snapshot after callback rollback: %v", err)
@@ -104,6 +115,10 @@ func TestAttachmentMaintenanceKeepsLockAcrossSnapshots(t *testing.T) {
 	if err := maintenance.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	err = maintenance.Snapshot(ctx, &maintenanceVisitor{})
+	if !errors.As(err, &failure) || failure.Stage != AttachmentMaintenanceSnapshotOpen {
+		t.Fatalf("snapshot on closed session: %v", err)
+	}
 	releaseCtx, releaseCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer releaseCancel()
 	if _, err := setup.Exec(releaseCtx, "SELECT pg_advisory_lock($1)", attachmentMaintenanceLock); err != nil {
@@ -111,5 +126,69 @@ func TestAttachmentMaintenanceKeepsLockAcrossSnapshots(t *testing.T) {
 	}
 	if _, err := setup.Exec(ctx, "SELECT pg_advisory_unlock($1)", attachmentMaintenanceLock); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAttachmentMaintenanceSnapshotDatabaseFailures(t *testing.T) {
+	const projects = `CREATE TABLE projects (id uuid)`
+	const tasks = `CREATE TABLE tasks (id uuid, project_id uuid)`
+	const metadata = `CREATE TABLE task_attachments (project_id uuid, task_id uuid, path text, size_bytes bigint)`
+	cases := []struct {
+		name       string
+		statements []string
+		stage      AttachmentMaintenanceStage
+	}{
+		{"missing relation", []string{projects, tasks}, AttachmentMaintenanceRelationsRead},
+		{"project query", []string{`CREATE TABLE projects (other uuid)`, tasks, metadata}, AttachmentMaintenanceProjectsQuery},
+		{"project decode", []string{projects, tasks, metadata, `INSERT INTO projects VALUES (NULL)`}, AttachmentMaintenanceProjectsDecode},
+		{"task query", []string{projects, `CREATE TABLE tasks (id uuid)`, metadata}, AttachmentMaintenanceTasksQuery},
+		{"task decode", []string{projects, tasks, metadata, `INSERT INTO tasks VALUES (NULL,NULL)`}, AttachmentMaintenanceTasksDecode},
+		{"metadata query", []string{projects, tasks, `CREATE TABLE task_attachments (task_id uuid, project_id uuid, path text)`}, AttachmentMaintenanceMetadataQuery},
+		{"metadata decode", []string{projects, tasks, metadata, `INSERT INTO task_attachments VALUES (NULL,NULL,'x',1)`}, AttachmentMaintenanceMetadataDecode},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			url := scopedDatabaseURL(t)
+			setup, err := pgx.Connect(ctx, url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer setup.Close(context.Background())
+			for _, statement := range tc.statements {
+				if _, err := setup.Exec(ctx, statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			maintenance, err := OpenAttachmentMaintenance(ctx, url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer maintenance.Close(context.Background())
+			err = maintenance.Snapshot(ctx, &maintenanceVisitor{})
+			var failure *AttachmentMaintenanceError
+			if !errors.As(err, &failure) || failure.Stage != tc.stage || failure.Cause == nil || errors.Unwrap(failure) != failure.Cause || !strings.Contains(failure.Error(), string(tc.stage)) {
+				t.Fatalf("expected stage %s with cause; got %#v", tc.stage, err)
+			}
+		})
+	}
+}
+
+func TestAttachmentMaintenanceOpenFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		url   string
+		stage AttachmentMaintenanceStage
+	}{
+		{"invalid configuration", "postgres://user:secret@bad%host/db", AttachmentMaintenanceConfig},
+		{"connection failure", "postgres://user:secret@127.0.0.1:1/db?connect_timeout=1", AttachmentMaintenanceConnect},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			maintenance, err := OpenAttachmentMaintenance(t.Context(), tc.url)
+			var failure *AttachmentMaintenanceError
+			if maintenance != nil || !errors.As(err, &failure) || failure.Stage != tc.stage || failure.Cause == nil || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("open returned %v, %v", maintenance, err)
+			}
+		})
 	}
 }

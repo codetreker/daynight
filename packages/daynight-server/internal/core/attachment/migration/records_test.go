@@ -1,4 +1,4 @@
-package service
+package migration_test
 
 import (
 	"bytes"
@@ -16,12 +16,13 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 )
 
 func migrationRecordFixture(t *testing.T) (string, string, model.Task, migration.AttachmentMigrationSummary) {
 	t.Helper()
-	tasks, database, project, databaseURL, principal := taskService(t)
-	task := createTask(t, tasks, principal, project.ID, "Operation records")
+	tasks, database, project, databaseURL, principal := testsupport.TaskService(t)
+	task := testsupport.CreateTask(t, tasks, principal, project.ID, "Operation records")
 	root := t.TempDir()
 	name := filepath.Join(root, attachmentcore.Bucket, task.ID, "file.bin")
 	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
@@ -198,7 +199,7 @@ func TestAttachmentMigrationCommandAndRootFailures(t *testing.T) {
 			t.Fatalf("invalid action or ID was not rejected before connecting: %v", err)
 		}
 	}
-	_, _, databaseURL, _ := projectService(t)
+	_, _, databaseURL, _ := testsupport.ProjectService(t)
 	root := filepath.Join(t.TempDir(), "missing")
 	_, err := runAttachmentMigration(context.Background(), databaseURL, root, "plan", "", logger)
 	if !errors.Is(err, fs.ErrNotExist) || strings.Contains(err.Error(), root) {
@@ -270,7 +271,7 @@ func TestAttachmentMigrationRejectsUnsupportedDatabaseShapeWithoutMovingFiles(t 
 		`ALTER TABLE task_attachments RENAME COLUMN path TO missing_path`,
 	} {
 		t.Run(sql, func(t *testing.T) {
-			_, database, databaseURL, _ := projectService(t)
+			_, database, databaseURL, _ := testsupport.ProjectService(t)
 			if _, err := database.Pool.Exec(context.Background(), sql); err != nil {
 				t.Fatal(err)
 			}
