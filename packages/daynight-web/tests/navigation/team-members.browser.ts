@@ -504,7 +504,9 @@ test('same-account checking retains a pending exit until a confirmed Team 404', 
   api.holdWrite = { started: started.resolve, wait: finish.promise }; api.lost = true;
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Leave Team' }).click(); await started.promise;
-  api.holdTeamRead = { started: teamStarted.resolve, wait: teamFinish.promise };
+  await page.route(`**/api/v1/teams/${teamId}`, async (route) => {
+    teamStarted.resolve(); await teamFinish.promise; await route.fallback();
+  });
   api.holdRosterRead = { started: rosterStarted.resolve, wait: rosterFinish.promise };
   const revalidation = await foreground(page, api);
   try {
