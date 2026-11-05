@@ -106,7 +106,7 @@ test('does not navigate on a 404 while the committed delete receipt is delayed',
 
 test('retains the create dialog input while identity verification is pending', async ({ page }) => {
   const state = await install(page); await page.goto('/projects');
-  await page.locator('details.team-selector summary').click(); await page.getByRole('button', { name: 'Create Team', exact: true }).click();
+  await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: 'Create Team', exact: true }).click();
   const backdrop = page.locator('.auth-modal-backdrop'), dialog = page.getByRole('dialog'), name = dialog.getByLabel('Team name');
   await name.fill('Unsubmitted Team');
   await name.evaluate((element: HTMLTextAreaElement) => { element.focus(); element.setSelectionRange(2, 8); });
@@ -145,8 +145,8 @@ test('keeps the Chinese narrow create dialog and selection during a same-user ch
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
   const state = await install(page); await page.goto('/projects');
   await page.getByRole('button', { name: '展开侧栏' }).click();
-  await page.locator('details.team-selector summary').click();
-  await page.getByRole('button', { name: '创建 Team', exact: true }).click();
+  await page.locator('.team-selector .team-switch').click();
+  await page.getByRole('menuitem', { name: '创建 Team', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '创建 Team' });
   const name = dialog.getByLabel('Team 名称');
   await name.fill('未提交草稿');

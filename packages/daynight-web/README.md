@@ -140,7 +140,10 @@ list/detail with private project creation, account/token pages, member/invitatio
 project execution-warning settings and explicit invitation acceptance.
 
 `WorkspaceSidebar` provides a Team selector, the selected Team's project links,
-Shared with me and My Workers in its scrollable upper region. On a fresh
+Shared with me and My Workers in its scrollable upper region. The Team trigger
+opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
+without shifting navigation or changing the sidebar state. It preserves native
+Team links, keyboard access, pagination and recoverable errors. On a fresh
 workspace entry, the account-scoped Team preference restores independently of
 the current project or global page. Explicit Team routes use their URL's Team;
 ordinary in-page navigation keeps the current choice, including a failed save.

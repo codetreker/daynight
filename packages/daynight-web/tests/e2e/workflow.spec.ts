@@ -200,18 +200,19 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
   await expect(stat(page, '任务总数')).toHaveText('0');
 
   await test.step('browses a Team and creates a project in its captured context', async () => {
-    const selector = page.locator('details.team-selector');
-    await selector.locator('summary').click();
+    const selector = page.locator('.team-selector');
+    await selector.locator('.team-switch').click();
     await expect(selector.getByRole('status')).toHaveCount(0);
     const teamLink = selector.locator(`a[href="/teams/${team.id}"]`);
     for (let count = 0; count < 200 && !await teamLink.isVisible(); count++) {
-      const more = selector.getByRole('button', { name: '加载更多 Team', exact: true });
+      const more = selector.getByRole('menuitem', { name: '加载更多 Team', exact: true });
       await expect(more).toBeVisible();
       await more.click();
-      await expect(selector.getByRole('status')).toHaveCount(0);
+      const continuation = selector.locator('.menu-more button');
+      await expect.poll(async () => await teamLink.isVisible() || await continuation.count() === 0 || await continuation.isEnabled()).toBe(true);
     }
     await expect(teamLink).toBeVisible();
-    expect(await teamLink.textContent()).toBe(teamName);
+    expect(await teamLink.locator('.menu-name').textContent()).toBe(teamName);
     await teamLink.click();
     await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
     const teamHeading = page.getByRole('main').locator('h1');
@@ -255,8 +256,16 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
       await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
     } finally { await tab.close(); }
     await page.setViewportSize({ width: 320, height: 700 });
-    await page.getByRole('button', { name: /切换 Team/ }).click();
+    const teamTrigger = page.getByRole('button', { name: /切换 Team/ });
+    await teamTrigger.click();
     const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer).toHaveCount(0);
+    await expect(teamTrigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.team-options').getByRole('menuitemradio', { name: '个人', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(teamTrigger).toBeFocused();
+    await expect(teamTrigger).toHaveAttribute('aria-expanded', 'false');
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
     await expect(drawer.getByRole('link', { name: '与我共享', exact: true })).toBeVisible();
     await drawer.getByRole('link', { name: '与我共享', exact: true }).click();
     await expect(page).toHaveURL(`${baseURL}/shared-projects`);
