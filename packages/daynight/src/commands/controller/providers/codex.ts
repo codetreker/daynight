@@ -1,6 +1,7 @@
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CodexInterruptions } from "./codex-interruptions.js";
 import { CodexControls } from "./controls-codex.js";
 import { CodexErrors } from "./codex-errors.js";
 import { codexApprovalDetail } from "./codex-approval-detail.js";
@@ -22,6 +23,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
   let projection: CodexProjection;
+  const interruptions = new CodexInterruptions(() => nativeId, options.onTimeline, options.hasTimelineEntry);
+  const completing = new Set<string>();
   let turnStartedAt: string | null = null;
   let controls: CodexControls;
   const pending = new Map<string, Pending>(); const turns = new NativeTurns();
@@ -52,18 +55,59 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     } else { rpc.reject(message.id, `Unsupported native interaction: ${method}`); options.onTimeline({ entryId: randomUUID(), revision: "1", kind: "error", code: "unsupported_interaction", message: `Unsupported native interaction: ${method}` }); return; }
     const p = { nativeId: message.id, interaction, result }; pending.set(interaction.interactionId, p); showInteraction(p); state();
   };
-  const projectItem = (raw: unknown, completed: boolean) => {
-    const item = record(raw);
+  const projectItem = (raw: unknown, completed: boolean, turnId = "") => {
+    const item = interruptions.item(turnId, record(raw));
     if (item.type === "userMessage" && typeof item.clientId === "string") options.onInputObserved?.(item.clientId);
     projection?.item(item, completed);
+  };
+  const readItems = async (turnId?: string, usersOnly = false): Promise<boolean> => {
+    let cursor: string | null = null;
+    do {
+      const page = record(await rpc.request("thread/items/list", { threadId: nativeId, ...(turnId ? { turnId } : {}), cursor, limit: 100, sortDirection: "asc" }));
+      if (closed || closing) return false;
+      for (const raw of Array.isArray(page.data) ? page.data : []) {
+        const entry = record(raw), item = record(entry.item ?? raw);
+        if (turnId && entry.turnId && entry.turnId !== turnId) continue;
+        if (!usersOnly || item.type === "userMessage") projectItem(item, true, string(entry.turnId) || turnId || "");
+      }
+      cursor = string(page.nextCursor) || null;
+    } while (cursor);
+    return true;
+  };
+  const projectInterrupted = async (turn: NativeObject) => {
+    const id = string(turn.id);
+    for (const item of Array.isArray(turn.items) ? turn.items : []) if (record(item).type === "userMessage") projectItem(item, true, id);
+    let completeHistory = turn.itemsView === "full";
+    interruptions.completed(turn, completeHistory ? true : null);
+    if (!completeHistory && interruptions.missing(id)) {
+      try { completeHistory = await readItems(id, true); }
+      catch (error) { options.onDiagnostic?.(`Native interrupted-turn input could not be read: ${String(error)}`); }
+    }
+    if (!closed && !closing) interruptions.completed(turn, completeHistory);
+    interruptions.finished(id);
+  };
+  const finishTurn = (turn: NativeObject) => {
+    if (turn.status !== "interrupted") interruptions.finished(string(turn.id));
+    turns.complete(string(turn.id), turn.status === "completed" ? null : new Error(`Native turn ended with ${string(turn.status)}: ${readable(turn.error)}`));
+    if (!currentTurnId || turn.id === currentTurnId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; expire(); state(); }
   };
   const rpc = new NativeRpc(child, message => {
     if (message.id !== undefined) { request(message); return; }
     const method = string(message.method), p = record(message.params);
     if (p.threadId && nativeId && p.threadId !== nativeId && (method !== "error" || typeof p.threadId === "string")) return;
     if (method === "thread/settings/updated") controls?.observe(p.threadSettings);
-    if (method === "turn/started") { approvalItems.clear(); errors.started(); currentTurnId = string(record(p.turn).id); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
-    if (method === "turn/completed") { const turn = record(p.turn); errors.completed(p, nativeId); turns.complete(string(turn.id), turn.status === "completed" ? null : new Error(`Native turn ended with ${string(turn.status)}: ${readable(turn.error)}`)); if (!currentTurnId || record(p.turn).id === currentTurnId) { currentTurnId = null; turnStartedAt = null; activity = "idle"; expire(); state(); } }
+    if (method === "turn/started") { approvalItems.clear(); errors.started(); currentTurnId = string(record(p.turn).id); interruptions.started(currentTurnId); activity = "working"; turnStartedAt = new Date().toISOString(); state(); }
+    if (method === "turn/completed") {
+      const turn = record(p.turn), id = string(turn.id);
+      errors.completed(p, nativeId);
+      if (turn.status === "interrupted" && p.threadId === nativeId && id) {
+        if (!completing.has(id)) {
+          completing.add(id);
+          void projectInterrupted(turn).catch(error => { options.onFatalError?.(error instanceof Error ? error : new Error(String(error))); });
+        }
+      }
+      finishTurn(turn);
+    }
     if (method === "item/started" || method === "item/completed") {
       const item = record(p.item), id = string(item.id);
       // Approval requests omit file changes; only their matching live item supplies them.
@@ -71,7 +115,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         if (method === "item/completed") approvalItems.delete(id);
         else if (item.type === "commandExecution" || item.type === "fileChange") approvalItems.set(id, item);
       }
-      projectItem(p.item, method === "item/completed");
+      projectItem(p.item, method === "item/completed", string(p.turnId));
     }
     if (method === "item/agentMessage/delta") projection?.delta(string(p.itemId), string(p.delta), "assistant_message");
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") projection?.delta(string(p.itemId), string(p.delta), "reasoning");
@@ -107,8 +151,24 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     await controls.refresh();
     projection = new CodexProjection(nativeId, options.onTimeline);
     if (options.resumeNativeSessionId) {
-      let cursor: string | null = null;
-      do { const page = record(await rpc.request("thread/items/list", { threadId: nativeId, cursor, limit: 100, sortDirection: "asc" })); for (const raw of Array.isArray(page.data) ? page.data : []) projectItem(record(raw).item ?? raw, true); cursor = string(page.nextCursor) || null; } while (cursor);
+      let cursor: string | null = null, readTurns = false;
+      try {
+        do {
+          const page = record(await rpc.request("thread/turns/list", { threadId: nativeId, cursor, limit: 100, sortDirection: "asc", itemsView: "notLoaded" }));
+          readTurns = true;
+          for (const raw of Array.isArray(page.data) ? page.data : []) {
+            const turn = record(raw), id = string(turn.id);
+            if (!id) throw new Error("Native history turn identity is unavailable.");
+            const completeHistory = await readItems(id);
+            interruptions.completed(turn, completeHistory);
+          }
+          cursor = string(page.nextCursor) || null;
+        } while (cursor);
+      } catch (error) {
+        if (!(error instanceof NativeRpcError) || error.code !== -32601 || readTurns) throw error;
+        // Older app servers expose items without terminal turn status.
+        await readItems();
+      }
     } else {
       // Persist an empty thread where supported; an absent native file is never guessed on recovery.
       await rpc.request("thread/read", { threadId: nativeId, includeTurns: true }).catch(error => { if (!(error instanceof NativeRpcError)) throw error; });
@@ -118,13 +178,18 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const send = async (text: string, operationId: string, expectedTurnId: string | null, skill?: { name: string; path: string }): Promise<ProviderReceipt> => {
       if (closed || sending || pending.size || expectedTurnId !== currentTurnId) throw new NativeRpcError(-32602, "Native turn changed or interaction is pending.");
       sending = true;
+      interruptions.submitting(operationId, text, expectedTurnId);
       try {
       const result = record(await rpc.request(currentTurnId ? "turn/steer" : "turn/start", { threadId: nativeId, ...(currentTurnId ? { expectedTurnId: currentTurnId } : {}), clientUserMessageId: operationId, input: [{ type: "text", text, text_elements: [] }, ...(skill ? [{ type: "skill", ...skill }] : [])], ...(!currentTurnId && (controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort)) ? { effort: controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort) } : {}) }));
       if (expectedTurnId) { if (result.turnId !== expectedTurnId) throw new Error("Native steer receipt is unknown."); return { disposition: "queued", turnId: expectedTurnId }; }
       const turn = record(result.turn); if (!string(turn.id)) throw new Error("Native turn receipt is unknown.");
+      interruptions.accepted(operationId, string(turn.id));
       if (turn.status === "inProgress" && !turns.isComplete(string(turn.id))) { currentTurnId = string(turn.id); activity = "working"; state(); }
       return { disposition: "started", turnId: string(turn.id) };
-      } finally { sending = false; }
+      } catch (error) {
+        if (error instanceof NativeRpcError) interruptions.rejected(operationId);
+        throw error;
+      } finally { sending = false; interruptions.dispatched(); }
   };
   return {
     nativeSessionId: nativeId, send,

@@ -1,7 +1,9 @@
 import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
-let waiting = null, holdResponse = false;
+let waiting = null, holdResponse = false, interruptUser = null;
+const interruptCase = process.env.CODEX_TEST_INTERRUPT;
+const interruptedHistory = id => ({ id, status: 'interrupted', error: null, items: [], itemsView: 'full', rootTurnId: id, startedAt: 1, completedAt: 2, durationMs: 1000 });
 const sleep = { type: 'sleep', id: 'sleep-call', durationMs: 50000, startedAtMs: 1793708507841 };
 const completedSleep = { ...sleep, completedAtMs: 1793708557843 };
 for await (const line of createInterface({input:process.stdin})) {
@@ -27,15 +29,42 @@ for await (const line of createInterface({input:process.stdin})) {
   }
   out({id:m.id,result:{...JSON.parse(process.env.CODEX_TEST_THREAD_SETTINGS ?? '{}'),thread:{id:'native-thread',cwd:process.cwd()}}});
  }
- if(m.method==='thread/items/list')out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]},...(process.env.CODEX_TEST_SLEEP ? [completedSleep] : [])],nextCursor:null}});
+ if(m.method==='thread/items/list') {
+  if(interruptCase) {
+   if(interruptCase==='history-read-failure'){out({id:m.id,error:{code:-32603,message:'History unavailable'}});continue;}
+   const user={type:'userMessage',id:'user',clientId:interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111',content:[{type:'text',text:'cancel'}]};
+   let data=['missing-user','history-delayed'].includes(interruptCase)||interruptCase==='paged-history'&&m.params.turnId==='first-turn'?[]:[user];
+   let nextCursor=null;
+   if(interruptCase==='large-history') {
+    if(!m.params.turnId || m.params.limit!==100){out({id:m.id,error:{code:-32602,message:'Expected bounded turn item query'}});continue;}
+    data=m.params.cursor?[{type:'agentMessage',id:'answer',text:'last page'}]:[user];nextCursor=m.params.cursor?null:'item-page-two';
+   }
+   const result={data:data.map(item=>({turnId:m.params.turnId,item,startedAtMs:null,completedAtMs:null})),nextCursor,backwardsCursor:null};
+   if(interruptCase==='history-delayed')setTimeout(()=>out({id:m.id,result}),200);else out({id:m.id,result});
+  } else out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]},...(process.env.CODEX_TEST_SLEEP ? [completedSleep] : [])],nextCursor:null}});
+ }
+ if(m.method==='thread/turns/list') {
+  if(interruptCase==='large-history' && m.params.itemsView==='full'){out({id:m.id,error:{code:-32603,message:'Whole-turn history exceeds a bounded item page'}});continue;}
+  if(interruptCase==='history-read-failure'){out({id:m.id,error:{code:-32603,message:'History unavailable'}});continue;}
+  if(interruptCase==='history-delayed'){setTimeout(()=>out({id:m.id,result:{data:[{...interruptedHistory('native-turn'),items:[]}],nextCursor:null}}),200);continue;}
+  if(!interruptCase){out({id:m.id,error:{code:-32601,message:'Method unavailable'}});continue;}
+  const turn = interruptedHistory('native-turn');
+  const user = { type: 'userMessage', id: 'user', clientId: interruptUser?.clientId ?? '11111111-1111-4111-8111-111111111111', content: [{type: 'text', text: 'cancel'}] };
+  if(interruptCase==='paged-history') {
+   const next = m.params.cursor !== null;
+   out({id:m.id,result:{data:[{...interruptedHistory(next ? 'second-turn' : 'first-turn'),items:next?[user]:[]}],nextCursor:next?null:'second',backwardsCursor:null}});
+  } else out({id:m.id,result:{data:interruptCase?[{...turn,items:interruptCase==='missing-user'?[]:[user]}]:[],nextCursor:null,backwardsCursor:null}});
+ }
  if(m.method==='thread/read')out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});
  if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
  if(m.method==='skills/list')out({id:m.id,result:{data:[]}});
+ if(m.method==='turn/steer') {if(interruptCase==='steer-rejected'){out({id:m.id,error:{code:-32602,message:'Steer rejected'}});continue;}out({id:m.id,result:{turnId:m.params.expectedTurnId}});continue;}
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
-  out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:{id:'user',type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input}}});
+  interruptUser={id:'user',type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input};
+  if(!['missing-user','completion-items','history-user','history-read-failure','history-delayed'].includes(interruptCase)) out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:interruptUser}});
   const approvalCase=JSON.parse(process.env.CODEX_TEST_APPROVAL_CASES ?? '{}')[text];
   if(approvalCase){
    waiting=42;out({id:m.id,result:{turn}});
@@ -46,6 +75,8 @@ for await (const line of createInterface({input:process.stdin})) {
    waiting=42;holdResponse=text==='approval_hold';out({id:m.id,result:{turn}});
    out({id:42,method:'item/commandExecution/requestApproval',params:{threadId:'native-thread',turnId:turn.id,itemId:'tool',command:'echo safe',availableDecisions:['accept',text==='approval_cancel'?'cancel':'decline']}});continue;
   }
+  if(interruptCase==='foreign-thread')out({method:'turn/completed',params:{threadId:'other-thread',turn:{...turn,status:'interrupted'}}});
+  if(interruptCase==='late-receipt' && text==='cancel') {out({method:'turn/completed',params:{threadId:'native-thread',turn:{...turn,status:'interrupted'}}});out({id:m.id,result:{turn}});continue;}
   if(text==='cancel') {out({id:m.id,result:{turn}});continue;}
   if(text==='sleep' && process.env.CODEX_TEST_SLEEP) {
    out({method:'item/started',params:{threadId:'native-thread',turnId:turn.id,item:sleep}});
@@ -60,8 +91,8 @@ for await (const line of createInterface({input:process.stdin})) {
   out({id:m.id,result:{turn}});
  }
  if(m.method==='turn/interrupt'){
-  out({id:m.id,result:{}});
-  setTimeout(()=>out({method:'turn/completed',params:{threadId:'native-thread',turn:{id:'native-turn',status:'interrupted'}}}),20);
+  const complete=()=>out({method:'turn/completed',params:{threadId:'native-thread',turn:{...interruptedHistory('native-turn'),status:['completed','failed'].includes(interruptCase)?interruptCase:'interrupted',error:interruptCase==='failed'?{message:'Unrelated native failure'}:null,itemsView:interruptCase==='completion-items'?'full':'notLoaded',items:interruptCase==='completion-items'?[interruptUser]:[]}}});
+  if(interruptCase==='completion-first') {complete();complete();out({id:m.id,result:{}});} else {out({id:m.id,result:{}});setTimeout(complete,20);}
  }
  if(waiting!==null && m.id===waiting && !m.method){
   if(holdResponse)continue;

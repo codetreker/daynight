@@ -168,7 +168,8 @@ test("interruption never reclassifies an earlier retry as recovery", async () =>
     const completion = provider.waitForTurn("native-turn", Date.now() + 3000).catch(error => error as Error);
     await provider.send(JSON.stringify({ status: "interrupted", error: null }), randomUUID(), "native-turn");
     expect(await completion).toBeInstanceOf(Error);
-    expect(errors(entries)).toEqual(before);
+    expect(errors(entries).filter(entry => entry.code !== "turn_interrupted" && entry.code !== "native_input_missing")).toEqual(before);
+    expect(errors(entries).some(entry => entry.code === "turn_interrupted")).toBe(true);
   } finally { await provider.close(); }
 });
 
