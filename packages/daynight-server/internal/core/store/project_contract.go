@@ -37,6 +37,7 @@ type ProjectWriteScope interface {
 }
 
 type ProjectWriteDAO interface {
+	InvalidateTaskCache(context.Context) error
 	Project(context.Context) (model.Project, error)
 	ProjectAccess(context.Context, model.Principal) (model.ProjectAccess, error)
 	UpdateProjectSettings(context.Context, int32) (model.Project, error)
@@ -74,7 +75,32 @@ type TaskWriteDAO interface {
 	DeleteTaskStep(context.Context, string, string, int64, int64) error
 }
 
+type TaskSessionDrain struct {
+	ActiveClaim     *string
+	SourceLifecycle string
+	GraceSeconds    int64
+	TimelineField   string
+	LifecycleField  string
+	RemoveFields    []string
+	SnapshotValues  map[string]any
+}
+
+type TaskSessionReceiptTransition struct {
+	LifecycleField string
+	Lifecycle      string
+	StateField     string
+	PreviousState  string
+	NextState      string
+	RemoveFields   []string
+}
+
+type TaskSessionFreezeDAO interface {
+	DrainTaskSessions(context.Context, string, TaskSessionDrain) error
+	TransitionTaskSessionReceipts(context.Context, string, TaskSessionReceiptTransition) error
+}
+
 type ProjectSessionDAO interface {
+	TaskSessionFreezeDAO
 	MatchSessionStartup(context.Context, string, *model.WorkerClaim, sp.StartupReport) (bool, error)
 }
 

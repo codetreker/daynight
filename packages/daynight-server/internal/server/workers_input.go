@@ -28,7 +28,7 @@ func workerReportInput(fields map[string]json.RawMessage) (model.WorkerReport, e
 		}
 	}
 	var err error
-	input.Telemetry.Machine, err = workerMachineInput(fields["machine"])
+	input.Telemetry.Machine, err = httpx.WorkerMachineInput(fields["machine"])
 	if err != nil {
 		return input, err
 	}

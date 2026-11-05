@@ -4,8 +4,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -45,10 +47,10 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(dependencies.Store), auth, logger)
 	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(dependencies.Store), auth, logger)
 	workersRoutes(mux, service.NewWorkers(dependencies.Store), auth, logger)
-	taskRoutes(mux, service.NewTasks(dependencies.Store), auth, logger)
-	taskStepsRoutes(mux, service.NewTaskSteps(dependencies.Store), auth, logger)
-	taskThreadRoutes(mux, service.NewTaskThreads(dependencies.Store), auth, logger)
-	taskSyncRoutes(mux, service.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
+	taskhttp.TaskRoutes(mux, taskservice.NewTasks(dependencies.Store), auth, logger)
+	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(dependencies.Store), auth, logger)
+	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(dependencies.Store), auth, logger)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
 	attachmentRoutes(mux, service.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
 	relay := newSessionRoutes(sessionrelay.New(dependencies.Store, dependencies.Files), auth, logger)
 	botsRoutes(mux, service.NewBots(dependencies.Store), relay.service, auth, logger)

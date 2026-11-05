@@ -1,6 +1,8 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+
 	"context"
 	"errors"
 	"reflect"
@@ -80,7 +82,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 	descriptor := workerDescriptor()
 	descriptor.Agent, descriptor.AgentControlMode = model.AgentClaude, model.AgentControlModeWeb
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	task = updateTask(t, tasks, admin, task, UpdateTask{Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00", Title: "Unrelated PR"})})
+	task = updateTask(t, tasks, admin, task, taskcore.UpdateTask{Properties: propertyPatch(model.PullRequestProperty{URL: "opaque\x00", Title: "Unrelated PR"})})
 	before := task
 	workers := NewWorkers(database)
 	report := serviceWorkerReport()
@@ -100,7 +102,7 @@ func TestWorkerSnapshotsNormalizeClaimsAndFilterCurrentPermissions(t *testing.T)
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatalf("report mutated task ownership/version: %+v, %v", after, err)
 	}
-	if _, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: after.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID}); err != nil {
+	if _, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, taskcore.SetTaskStatus{Version: after.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID}); err != nil {
 		t.Fatal(err)
 	}
 	detail, err = workers.Get(ctx, owner, descriptor.WorkerID)

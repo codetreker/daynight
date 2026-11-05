@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/task/projection"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,11 +30,18 @@ func storeAssigneeRead(t *testing.T, database *Store, projectID string, ids []st
 	t.Helper()
 	var result model.TaskAssignees
 	err := database.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
+		var facts []model.TaskAssigneeFact
 		var err error
 		if ids == nil {
-			result, err = snapshot.TaskDAO().TaskAssignees(context.Background(), projectID)
+			facts, err = snapshot.TaskDAO().TaskAssignees(context.Background(), projectID)
+			if err == nil {
+				result, err = projection.Catalogue(facts)
+			}
 		} else {
-			result, err = snapshot.TaskDAO().ResolveTaskAssignees(context.Background(), projectID, ids)
+			facts, err = snapshot.TaskDAO().ResolveTaskAssignees(context.Background(), projectID, ids)
+			if err == nil {
+				result, err = projection.ResolveAssignees(ids, facts)
+			}
 		}
 		return err
 	})
@@ -124,12 +132,12 @@ func TestTaskAssigneeStoreCatalogueAndBoundedResolution(t *testing.T) {
 
 func TestTaskAssigneeProfileRequiresMatchingIdentity(t *testing.T) {
 	id, other := queryID(100), queryID(200)
-	person, err := taskAssigneeProfile(id, &id, nil, nil, false)
+	person, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: id, ProfileID: &id})
 	if err != nil || person.UserID != id || person.Name != nil || person.AvatarURL != nil || person.HasProjectAccess {
 		t.Fatalf("valid nullable profile rejected: %#v %v", person, err)
 	}
 	for _, profileID := range []*string{nil, &other} {
-		person, err := taskAssigneeProfile(id, profileID, nil, nil, true)
+		person, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: id, ProfileID: profileID, HasProjectAccess: true})
 		if err == nil || !reflect.DeepEqual(person, model.TaskAssignee{}) {
 			t.Fatal("missing or different person's profile became a qualified identity")
 		}
@@ -149,17 +157,17 @@ func TestTaskAssigneeContentVersionDistinguishesPublicProfileFacts(t *testing.T)
 	}
 	versions := make(map[string]bool, len(profiles))
 	for _, profile := range profiles {
-		version := taskAssigneeContentVersion(profile.userID, profile.name, profile.avatar)
+		version := projection.AssigneeContentVersion(profile.userID, profile.name, profile.avatar)
 		decoded, err := hex.DecodeString(version)
 		if err != nil || len(decoded) != 32 || version != strings.ToLower(version) || versions[version] {
 			t.Fatalf("distinct public profile facts produced an invalid or repeated version: %q %v", version, err)
 		}
 		versions[version] = true
-		member, err := taskAssigneeProfile(profile.userID, &profile.userID, profile.name, profile.avatar, true)
+		member, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: profile.userID, ProfileID: &profile.userID, Name: profile.name, AvatarURL: profile.avatar, HasProjectAccess: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		former, err := taskAssigneeProfile(profile.userID, &profile.userID, profile.name, profile.avatar, false)
+		former, err := projection.AssigneeProfile(model.TaskAssigneeFact{UserID: profile.userID, ProfileID: &profile.userID, Name: profile.name, AvatarURL: profile.avatar})
 		if err != nil || member.Version != version || former.Version != version {
 			t.Fatalf("project access changed the content version: %#v %#v %v", member, former, err)
 		}
@@ -181,7 +189,7 @@ func BenchmarkTaskAssigneeContentVersion(b *testing.B) {
 				b.SetBytes(int64(len(*test.avatar)))
 			}
 			for b.Loop() {
-				taskAssigneeContentVersion("00000000-0000-4000-8000-000000000100", nil, test.avatar)
+				projection.AssigneeContentVersion("00000000-0000-4000-8000-000000000100", nil, test.avatar)
 			}
 		})
 	}
@@ -206,8 +214,7 @@ func TestTaskAssigneeStoreRejectsMissingQualifiedProfiles(t *testing.T) {
 		assertStoreAssignees(t, resolved, map[string]bool{queryID(101): true}, nil)
 		for _, ids := range [][]string{nil, {queryID(101), missing}} {
 			result, err := storeAssigneeRead(t, database, project.ID, ids)
-			var failure *Error
-			if !errors.As(err, &failure) || errors.Is(err, model.ErrNotFound) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
+			if err == nil || errors.Is(err, model.ErrNotFound) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
 				t.Fatalf("qualified missing profile became partial/unresolved: %#v %v", result, err)
 			}
 		}
@@ -280,7 +287,7 @@ func TestTaskAssigneeStoreQueryCancellation(t *testing.T) {
 			t.Fatal(err)
 		}
 		traced := &Store{Pool: pool}
-		var result model.TaskAssignees
+		var result []model.TaskAssigneeFact
 		err = traced.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
 			if resolve {
@@ -292,7 +299,7 @@ func TestTaskAssigneeStoreQueryCancellation(t *testing.T) {
 		})
 		cancel()
 		pool.Close()
-		if !errors.Is(err, context.Canceled) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
+		if !errors.Is(err, context.Canceled) || len(result) != 0 {
 			t.Fatalf("directory cancellation lost cause or returned data: %#v %v", result, err)
 		}
 	}

@@ -612,8 +612,9 @@ packages/daynight-server/
   api/task_graph.go                 HTTP 图 DTO
   internal/core/model/task_graph.go 无传输依赖的读取模型
   internal/core/store/task_graph.go PostgreSQL 快照查询
-  internal/service/task_graph.go    图读取编排、上限与统计
-  internal/server/task_graph.go     图 HTTP handler 与 DTO 转换
+  internal/service/task/task_graph.go 图读取编排
+  internal/core/task/projection/   图限制与统计规则
+  internal/server/task/task_graph.go  图 HTTP handler 与 DTO 转换
   internal/service/webui/           内嵌 FS 和资源读取
   internal/server/webui/            页面与资源 HTTP 路由和响应
 ```

@@ -116,3 +116,26 @@ func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
 		t.Fatalf("target outgoing history removed: %d %v", outgoing, err)
 	}
 }
+
+func TestInvalidateTaskCacheUsesProjectTransaction(t *testing.T) {
+	ctx := context.Background()
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	var before, after string
+	if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	var expired ProjectWriteScope
+	if err := writeProjectForTest(database, ctx, project.ID, func(scope ProjectWriteScope) error {
+		expired = scope
+		return scope.ProjectDAO().InvalidateTaskCache(ctx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&after); err != nil || before == after {
+		t.Fatalf("cache epoch did not change: %q %q %v", before, after, err)
+	}
+	if err := expired.ProjectDAO().InvalidateTaskCache(ctx); err == nil {
+		t.Fatal("expired transaction accepted cache invalidation")
+	}
+}

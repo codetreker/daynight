@@ -96,31 +96,31 @@ func TestThreadTimestampWaitRetainsSingleDatabaseGeneratedUUID(t *testing.T) {
  CREATE FUNCTION thread_test_uuid() RETURNS uuid LANGUAGE SQL VOLATILE AS $$ SELECT '00000000-0000-4000-8000-000000000001'::uuid FROM nextval('thread_uuid_calls') $$;
  ALTER TABLE task_thread_messages ALTER COLUMN message_id SET DEFAULT thread_test_uuid()`)
 	var message model.ThreadMessage
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		if _, err := tx.LockHead(ctx, queryID(1)); err != nil {
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		if _, err := tx.ThreadDAO().LockHead(ctx, queryID(1)); err != nil {
 			return err
 		}
 		var stamp time.Time
-		if err := tx.tx.QueryRow(ctx, `SELECT date_trunc('milliseconds',clock_timestamp())+interval '30 milliseconds'`).Scan(&stamp); err != nil {
+		if err := tx.(*ThreadTx).tx.QueryRow(ctx, `SELECT date_trunc('milliseconds',clock_timestamp())+interval '30 milliseconds'`).Scan(&stamp); err != nil {
 			return err
 		}
 		head := &model.ThreadPosition{CreatedAt: stamp.UTC(), ID: "ffffffff-ffff-4fff-8fff-ffffffffffff"}
-		if err := tx.AdvanceHead(ctx, queryID(1), *head); err != nil {
+		if err := tx.ThreadDAO().AdvanceHead(ctx, queryID(1), *head); err != nil {
 			return err
 		}
 		var err error
-		message, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "one UUID"})
+		message, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "one UUID"})
 		if err != nil {
 			return err
 		}
 		id := message.ID
-		if err := tx.PrepareTimestamp(ctx, &message, head); err != nil {
+		if err := tx.ThreadDAO().PrepareTimestamp(ctx, &message, head); err != nil {
 			return err
 		}
 		if message.ID != id || !message.CreatedAt.After(head.CreatedAt) {
 			t.Fatalf("UUID regenerated or timestamp fabricated: %#v head=%#v", message, head)
 		}
-		return tx.AdvanceHead(ctx, queryID(1), message.Position())
+		return tx.ThreadDAO().AdvanceHead(ctx, queryID(1), message.Position())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -128,8 +128,8 @@ func TestThreadTimestampWaitRetainsSingleDatabaseGeneratedUUID(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `SELECT last_value FROM thread_uuid_calls`).Scan(&calls); err != nil || calls != 1 || message.ID != queryID(1) {
 		t.Fatalf("UUID generation count=%d id=%s %v", calls, message.ID, err)
 	}
-	if err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		return tx.AdvanceHead(ctx, queryID(1), message.Position())
+	if err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		return tx.ThreadDAO().AdvanceHead(ctx, queryID(1), message.Position())
 	}); err == nil {
 		t.Fatal("head accepted non-forward update")
 	}
@@ -139,17 +139,17 @@ func TestThreadClockExhaustionDoesNotPublishInsertedCandidate(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	var candidate model.ThreadMessage
-	err := database.WriteThread(ctx, func(tx *ThreadTx) error {
-		if _, err := tx.LockHead(ctx, queryID(1)); err != nil {
+	err := threadTestWrite(database, ctx, func(tx ThreadScope) error {
+		if _, err := tx.ThreadDAO().LockHead(ctx, queryID(1)); err != nil {
 			return err
 		}
 		var err error
-		candidate, err = tx.InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "must roll back"})
+		candidate, err = tx.ThreadDAO().InsertMessage(ctx, model.ThreadMessage{TaskID: queryID(1), Author: model.ThreadAuthor{UserID: queryID(9)}, Body: "must roll back"})
 		if err != nil {
 			return err
 		}
 		head := &model.ThreadPosition{CreatedAt: candidate.CreatedAt.Add(time.Hour), ID: queryID(1)}
-		return tx.PrepareTimestamp(ctx, &candidate, head)
+		return tx.ThreadDAO().PrepareTimestamp(ctx, &candidate, head)
 	})
 	var clock *ThreadClockError
 	var transaction *ThreadTransactionError

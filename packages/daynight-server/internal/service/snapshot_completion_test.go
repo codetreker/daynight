@@ -1,6 +1,9 @@
 package service
 
 import (
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+
 	"context"
 	"errors"
 	"reflect"
@@ -62,19 +65,19 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return projectservice.NewMemberships(db).InspectInvitation(ctx, principal, projectSecret)
 		}},
 		{"task missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTasks(db).Get(ctx, principal, project.ID, missing)
+			return taskservice.NewTasks(db).Get(ctx, principal, project.ID, missing)
 		}},
 		{"task list project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTasks(db).List(ctx, principal, missing, TaskListRequest{PageRequest: page})
+			return taskservice.NewTasks(db).List(ctx, principal, missing, taskservice.TaskListRequest{PageRequest: page})
 		}},
 		{"graph project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTasks(db).Graph(ctx, principal, missing, task.ID)
+			return taskservice.NewTasks(db).Graph(ctx, principal, missing, task.ID)
 		}},
 		{"sync project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTaskSync(db, 10*time.Second).Get(ctx, principal, missing, TaskSyncRequest{})
+			return taskservice.NewTaskSync(db, 10*time.Second).Get(ctx, principal, missing, taskservice.TaskSyncRequest{})
 		}},
 		{"assignees project missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTasks(db).Assignees(ctx, principal, missing, TaskAssigneesRequest{})
+			return taskservice.NewTasks(db).Assignees(ctx, principal, missing, taskservice.TaskAssigneesRequest{})
 		}},
 		{"attachment task missing", true, func(ctx context.Context, db *store.Store) (any, error) {
 			return NewAttachments(db, nil).List(ctx, principal, project.ID, missing, page)
@@ -89,7 +92,7 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return NewBots(db).List(ctx, principal, page)
 		}},
 		{"thread success", false, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewTaskThreads(db).List(ctx, principal, project.ID, task.ID, ThreadListRequest{})
+			return taskservice.NewTaskThreads(db).List(ctx, principal, project.ID, task.ID, taskservice.ThreadListRequest{})
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -191,12 +194,12 @@ func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 	}{
 		{name: "project query", fragment: "SELECT p.id::text, p.name, p.repo_url"},
 		{name: "count query", fragment: "SELECT count(*) FROM selected"},
-		{name: "projection query", fragment: "left(t.title, $3)"},
+		{name: "projection query", fragment: "left(t.title, $7)"},
 		{name: "clock query", fragment: "SELECT statement_timestamp()"},
 		{name: "clock completion", fragment: "SELECT statement_timestamp()", cancelAfter: true},
 		{name: "missing project completion", fragment: "FROM project_grants", missing: true, cancelAfter: true},
 		{name: "limit refusal completion", fragment: "SELECT count(*) FROM selected", overLimit: true, cancelAfter: true},
-		{name: "success completion", fragment: "left(t.title, $3)", cancelAfter: true},
+		{name: "success completion", fragment: "left(t.title, $7)", cancelAfter: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, database, project, databaseURL, principal := taskService(t)
@@ -204,7 +207,7 @@ func TestTaskGraphOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 			if test.overLimit {
 				rootID = seedConnectedGraph(t, database, project.ID, 1001, 1000)
 			} else {
-				rootID = createTask(t, NewTasks(database), principal, project.ID, "Snapshot root").ID
+				rootID = createTask(t, taskservice.NewTasks(database), principal, project.ID, "Snapshot root").ID
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -274,7 +277,7 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 			if test.missing {
 				id = "00000000-0000-4000-8000-000000000099"
 			}
-			result, err := NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, id, TaskSyncRequest{})
+			result, err := taskservice.NewTaskSync(traced.store, 10*time.Second).Get(ctx, principal, id, taskservice.TaskSyncRequest{})
 			assertOperational(t, err)
 			if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(result, model.TaskSync{}) {
 				t.Fatalf("completion precedence: %#v %v", result, err)
@@ -283,7 +286,7 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 	}
 	_, database, project, _, principal := taskService(t)
 	database.Close()
-	_, err := NewTaskSync(database, 10*time.Second).Get(context.Background(), principal, project.ID, TaskSyncRequest{})
+	_, err := taskservice.NewTaskSync(database, 10*time.Second).Get(context.Background(), principal, project.ID, taskservice.TaskSyncRequest{})
 	assertOperational(t, err)
 }
 
@@ -308,7 +311,7 @@ func TestTaskSyncIllegalPropertiesPreserveTransactionCompletionPriority(t *testi
 				}, end: cancel})
 				source = traced.store
 			}
-			result, err := NewTaskSync(source, 10*time.Second).Get(ctx, principal, project.ID, TaskSyncRequest{})
+			result, err := taskservice.NewTaskSync(source, 10*time.Second).Get(ctx, principal, project.ID, taskservice.TaskSyncRequest{})
 			if !reflect.DeepEqual(result, model.TaskSync{}) {
 				t.Fatalf("failed sync returned partial state: %#v", result)
 			}
@@ -335,42 +338,42 @@ func TestTaskTransactionCompletionFailureDominatesDomainFault(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		fragment  string
-		operation func(context.Context, *Tasks) error
+		operation func(context.Context, *taskservice.Tasks) error
 	}{
-		{"missing task read", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
+		{"missing task read", "FROM tasks t", func(ctx context.Context, s *taskservice.Tasks) error {
 			_, err := s.Get(ctx, principal, project.ID, missing)
 			return err
 		}},
-		{"missing task update", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Update(ctx, principal, project.ID, missing, UpdateTask{Version: 1, Title: pointer("Rejected")})
+		{"missing task update", "FROM tasks t", func(ctx context.Context, s *taskservice.Tasks) error {
+			_, err := s.Update(ctx, principal, project.ID, missing, taskcore.UpdateTask{Version: 1, Title: pointer("Rejected")})
 			return err
 		}},
-		{"stale version update", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: 2, Title: pointer("Rejected")})
+		{"stale version update", "FROM tasks t", func(ctx context.Context, s *taskservice.Tasks) error {
+			_, err := s.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: 2, Title: pointer("Rejected")})
 			return err
 		}},
-		{"missing task status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, missing, SetTaskStatus{Version: 1, Status: model.TaskInProgress})
+		{"missing task status", "FROM tasks t", func(ctx context.Context, s *taskservice.Tasks) error {
+			_, err := s.SetStatus(ctx, principal, project.ID, missing, taskcore.SetTaskStatus{Version: 1, Status: model.TaskInProgress})
 			return err
 		}},
-		{"stale version status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version + 1, Status: model.TaskTodo})
+		{"stale version status", "FROM tasks t", func(ctx context.Context, s *taskservice.Tasks) error {
+			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version + 1, Status: model.TaskTodo})
 			return err
 		}},
-		{"same-state status", "FROM tasks t", func(ctx context.Context, s *Tasks) error {
-			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
+		{"same-state status", "FROM tasks t", func(ctx context.Context, s *taskservice.Tasks) error {
+			_, err := s.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
 			return err
 		}},
-		{"invalid dependency create", "t.id = ANY($2::uuid[])", func(ctx context.Context, s *Tasks) error {
-			_, err := s.Create(ctx, principal, project.ID, CreateTask{Title: "Rejected", DependsOn: []string{missing}})
+		{"invalid dependency create", "t.id = ANY($2::uuid[])", func(ctx context.Context, s *taskservice.Tasks) error {
+			_, err := s.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Rejected", DependsOn: []string{missing}})
 			return err
 		}},
-		{"missing project read", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
+		{"missing project read", "FROM project_grants", func(ctx context.Context, s *taskservice.Tasks) error {
 			_, err := s.Get(ctx, principal, missing, target.ID)
 			return err
 		}},
-		{"missing project list", "FROM project_grants", func(ctx context.Context, s *Tasks) error {
-			_, err := s.List(ctx, principal, missing, TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
+		{"missing project list", "FROM project_grants", func(ctx context.Context, s *taskservice.Tasks) error {
+			_, err := s.List(ctx, principal, missing, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 10}})
 			return err
 		}},
 	} {
@@ -378,7 +381,7 @@ func TestTaskTransactionCompletionFailureDominatesDomainFault(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, test.fragment) }, end: cancel})
-			err := test.operation(ctx, traced)
+			err := test.operation(ctx, traced.Tasks)
 			assertOperational(t, err)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("completion failure lost cause: %v", err)
@@ -394,11 +397,11 @@ func TestTaskAssigneesSnapshotCompletionFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	traced := tracedTasks(t, databaseURL, taskQueryAction{match: func(sql string) bool { return strings.Contains(sql, "FROM project_grants") }, end: cancel})
-	result, err := traced.Assignees(ctx, outsider, project.ID, TaskAssigneesRequest{})
+	result, err := traced.Assignees(ctx, outsider, project.ID, taskservice.TaskAssigneesRequest{})
 	assertOperational(t, err)
 	if !errors.Is(err, context.Canceled) || len(result.Items) != 0 || len(result.UnresolvedUserIDs) != 0 {
 		t.Fatal("transaction completion failure was hidden by project refusal", err)
 	}
-	_, err = tasks.Assignees(context.Background(), outsider, project.ID, TaskAssigneesRequest{})
+	_, err = tasks.Assignees(context.Background(), outsider, project.ID, taskservice.TaskAssigneesRequest{})
 	requireFault(t, err, "not_found")
 }

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
 )
 
@@ -17,9 +17,9 @@ func TestTaskStepDeletePreservesActiveSessionPublicationAndControl(t *testing.T)
 	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT version FROM tasks WHERE id=$1`, f.task).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	steps := service.NewTaskSteps(f.s.DB)
+	steps := taskservice.NewTaskSteps(f.s.DB)
 	for _, id := range []string{"00000000", "abcdef01"} {
-		result, err := steps.Add(ctx, f.p, f.project, f.task, service.AddTaskStep{Version: version, ID: id, Title: "Session work"})
+		result, err := steps.Add(ctx, f.p, f.project, f.task, taskservice.AddTaskStep{Version: version, ID: id, Title: "Session work"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -30,7 +30,7 @@ func TestTaskStepDeletePreservesActiveSessionPublicationAndControl(t *testing.T)
 	if err := f.s.DB.Pool.QueryRow(ctx, query, snapshot.SessionID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	result, err := steps.Delete(ctx, f.p, f.project, f.task, "00000000", service.DeleteTaskStep{Version: version})
+	result, err := steps.Delete(ctx, f.p, f.project, f.task, "00000000", taskservice.DeleteTaskStep{Version: version})
 	if err != nil || !result.Changed || result.Resource.Version != version+1 || len(result.Resource.Steps) != 1 || result.Resource.Steps[0].ID != "abcdef01" {
 		t.Fatal("active Session deletion failed", err)
 	}

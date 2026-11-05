@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,7 +20,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
@@ -32,7 +33,7 @@ func TestProjectAccessHTTPProjectionAuthorizationAndMethods(t *testing.T) {
 	h.Auth.RegisterRoutes(mux)
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
-	taskSyncRoutes(mux, service.NewTaskSync(h.Database, 10*time.Second), h.Auth, logger, 10*time.Second)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, 10*time.Second), h.Auth, logger, 10*time.Second)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	path := "/api/v1/projects/" + strings.ToUpper(h.project.ID) + "/access"
 	for _, test := range []struct {
@@ -122,8 +123,8 @@ func TestOwnershipProjectionExactVersionsAcrossCurrentReaders(t *testing.T) {
 	h.Auth.RegisterRoutes(mux)
 	logger := slog.New(slog.NewJSONHandler(&h.Logs, nil))
 	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(h.Database), h.Auth, logger)
-	taskRoutes(mux, service.NewTasks(h.Database), h.Auth, logger)
-	taskSyncRoutes(mux, service.NewTaskSync(h.Database, time.Second), h.Auth, logger, time.Second)
+	taskhttp.TaskRoutes(mux, taskservice.NewTasks(h.Database), h.Auth, logger)
+	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(h.Database, time.Second), h.Auth, logger, time.Second)
 	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(h.Database), h.Auth, logger).RegisterRoutes(mux)
 	h.Handler = httpx.RequestLogging(logger, mux)
 	ctx := context.Background()

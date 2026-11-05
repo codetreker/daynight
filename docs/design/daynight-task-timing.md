@@ -7,11 +7,11 @@
 
 ## 现有结构与职责
 
-[状态服务](../../packages/daynight-server/internal/service/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
+[状态服务](../../packages/daynight-server/internal/service/task/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
 [项目写事务](../../packages/daynight-server/internal/core/store/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
 `updated_at` 随普通编辑变化，不能作为执行起点。
-[任务链图读取服务](../../packages/daynight-server/internal/service/task_graph.go)在只读快照中
-读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task_sync.go)
+[任务链图读取服务](../../packages/daynight-server/internal/service/task/task_graph.go)在只读快照中
+读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task/task_sync.go)
 读取项目摘要。两者都在数据读取后采样数据库 `observedAt`。
 
 Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每 15 秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
