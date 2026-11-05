@@ -13,10 +13,10 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; betaMember: Member; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
@@ -57,16 +57,17 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     if (path.startsWith(`/api/v1/teams/${teamId}/members/`) && (method === 'PATCH' || method === 'DELETE')) {
       const target = path.split('/').at(-1)!, body = request.postDataJSON() as Record<string, unknown>;
       state.writes.push({ method, path, body });
-      if (state.refusal) return send(error(state.refusal), 409);
+      const reject = (code: string) => { state.writeEvents.push(`rejected: ${code}`); return send(error(code), 409); };
+      if (state.refusal) return reject(state.refusal);
       const member = state.members.get(target)!, actor = state.members.get(alice)!;
-      if (body.expectedUserId !== alice) return send(error('identity_mismatch'), 409);
-      if (body.version !== member.version) return send(error('version_conflict'), 409);
-      if (actor.role !== 'admin' && (method === 'PATCH' || target !== alice)) return send(error('forbidden'), 403);
-      if (member.role === 'admin' && (method === 'DELETE' || body.role === 'member') && [...state.members.values()].filter((m) => m.role === 'admin').length === 1) return send(error('last_admin'), 409);
+      if (body.expectedUserId !== alice) return reject('identity_mismatch');
+      if (body.version !== member.version) return reject('version_conflict');
+      if (actor.role !== 'admin' && (method === 'PATCH' || target !== alice)) { state.writeEvents.push('rejected: forbidden'); return send(error('forbidden'), 403); }
+      if (member.role === 'admin' && (method === 'DELETE' || body.role === 'member') && [...state.members.values()].filter((m) => m.role === 'admin').length === 1) return reject('last_admin');
       if (method === 'PATCH') { member.role = body.role as Role; member.version += 10; }
       else state.members.delete(target);
-      const gate = state.holdWrite; state.holdWrite = null; if (gate) { gate.started(); await gate.wait; }
-      if (state.lost) return route.abort('failed');
+      const gate = state.holdWrite; state.holdWrite = null; if (gate) { state.writeEvents.push('held'); gate.started(); await gate.wait; }
+      if (state.lost) { state.writeEvents.push('response: network failure'); return route.abort('failed'); }
       const actorRole = state.members.get(alice)?.role ?? null;
       return method === 'PATCH' ? send({ membership: membership(target), actorRole }) : send({ teamId, userId: target, removed: true, actorRole });
     }
@@ -109,21 +110,45 @@ test('admin promotes and removes members and can demote self while another admin
 });
 
 test('a retained invitation result survives returning while the Team read is in flight', async ({ page }) => {
+  await page.addInitScript((target) => {
+    const tracked = window as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] };
+    tracked.teamReadSignals = [];
+    const fetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+      if (url.pathname !== `/api/v1/teams/${target}` || (init?.method ?? 'GET') !== 'GET') return fetch(input, init);
+      const entry = { signal: init?.signal ?? undefined, settled: false };
+      tracked.teamReadSignals.push(entry);
+      return fetch(input, init).then((response) => { entry.settled = true; return response; }, (error: unknown) => { entry.settled = true; throw error; });
+    };
+  }, teamId);
   const api = await install(page); await start(page); api.invitationSuccess = true;
-  const invitationStarted = Promise.withResolvers<void>(), finishInvitation = Promise.withResolvers<void>();
-  const teamReadStarted = Promise.withResolvers<void>(), finishTeamRead = Promise.withResolvers<void>();
-  api.holdInvitation = { started: invitationStarted.resolve, wait: finishInvitation.promise };
+  const finishInvitation = Promise.withResolvers<void>(), finishTeamRead = Promise.withResolvers<void>();
+  let invitationStarted = false, teamReadStarted = false;
+  api.holdInvitation = { started: () => { invitationStarted = true; }, wait: finishInvitation.promise };
   await page.getByRole('button', { name: 'Invite member' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click(); await invitationStarted.promise;
-  api.holdTeamRead = { started: teamReadStarted.resolve, wait: finishTeamRead.promise };
+  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click();
+  await expect.poll(() => invitationStarted, { message: 'Invitation request must reach its response gate' }).toBe(true);
   try {
-    const identity = await foreground(page, api); identity.finish();
-    await teamReadStarted.promise;
     await traverse(page, `/teams/${teamId}`);
+    await expect(page.getByRole('main').getByRole('heading', { name: 'Alpha', exact: true })).toBeVisible();
+    const before = await page.evaluate(() => (window as Window & { teamReadSignals: unknown[] }).teamReadSignals.length);
+    api.holdTeamRead = { started: () => { teamReadStarted = true; }, wait: finishTeamRead.promise };
+    const identity = await foreground(page, api); identity.finish();
+    await expect.poll(() => teamReadStarted, { message: 'Preference GET must reach its response gate' }).toBe(true);
+    await expect.poll(() => page.evaluate(() => (window as Window & { teamReadSignals: unknown[] }).teamReadSignals.length)).toBe(before + 1);
+    const readState = () => page.evaluate((index) => {
+      const entry = (window as Window & { teamReadSignals: { signal: AbortSignal | undefined; settled: boolean }[] }).teamReadSignals[index]!;
+      return { aborted: entry.signal?.aborted, settled: entry.settled };
+    }, before);
+    expect(await readState()).toEqual({ aborted: false, settled: false });
     finishInvitation.resolve();
     await traverse(page, `/teams/${teamId}/members`);
     await expect(page.getByRole('dialog', { name: 'Invitation link created' }).getByLabel('One-time invitation link')).toBeVisible({ timeout: 5000 });
+    expect(await readState()).toEqual({ aborted: false, settled: false });
     expect(api.invitationWrites).toBe(1);
+    finishTeamRead.resolve();
+    await expect.poll(readState).toEqual({ aborted: false, settled: true });
   } finally { finishInvitation.resolve(); finishTeamRead.resolve(); }
 });
 
@@ -293,25 +318,39 @@ test('unknown removal reports the observed absence while retaining unknown', asy
 
 test('a pending self exit survives navigation to another Team and a Task, then exposes unknown after 404', async ({ page }) => {
   const api = await install(page, 'member'); await start(page);
-  const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
-  api.holdWrite = { started: started.resolve, wait: finish.promise }; api.lost = true;
-  await page.getByRole('button', { name: 'Leave Team' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click(); await started.promise;
-  await traverse(page, `/teams/${betaId}/members`);
-  await expect(page.getByRole('heading', { name: 'Team members' })).toBeVisible();
-  await expect.poll(() => selected(page)).toBe(betaId);
-  await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
-  await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${projectId}/tasks/${taskId}`);
-  finish.resolve();
-  await traverse(page, `/teams/${teamId}/members`);
-  await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
-  await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/members`);
-  await page.getByRole('button', { name: 'Check current state' }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
-  expect(api.writes).toHaveLength(1);
+  const finish = Promise.withResolvers<void>();
+  api.holdWrite = { started: () => {}, wait: finish.promise }; api.lost = true;
+  try {
+    await test.step('dispatch the self exit and hold its response', async () => {
+      await page.getByRole('button', { name: 'Leave Team' }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Leave Team' }).click();
+      await expect.poll(() => ({ writes: api.writes, events: api.writeEvents }), { timeout: 10000, message: 'Self exit must reach the mock and enter its response gate' }).toEqual({
+        writes: [{ method: 'DELETE', path: `/api/v1/teams/${teamId}/members/${alice}`, body: { expectedUserId: alice, version: 1 } }], events: ['held'],
+      });
+    });
+    await test.step('visit the other Team and mount the Task page', async () => {
+      await traverse(page, `/teams/${betaId}/members`);
+      const betaRole = page.locator(`#team-role-${betaId}-${bob}`);
+      await expect(betaRole).toBeVisible(); await expect(betaRole).toHaveValue('member');
+      await expect.poll(() => selected(page)).toBe(betaId);
+      await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
+      await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${projectId}/tasks/${taskId}`);
+      await expect(page.locator('main.task-detail-page')).toBeVisible();
+    });
+    await test.step('lose the response and inspect the retained result after 404', async () => {
+      finish.resolve();
+      await expect.poll(() => api.writeEvents, { timeout: 10000, message: 'The held self-exit response must fail' }).toEqual(['held', 'response: network failure']);
+      await traverse(page, `/teams/${teamId}/members`);
+      await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+      await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
+      await expect.poll(() => new URL(page.url()).pathname).toBe(`/teams/${teamId}/members`);
+      await page.getByRole('button', { name: 'Check current state' }).click();
+      await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+      await page.getByRole('button', { name: 'Close', exact: true }).click();
+      await expect(page.getByRole('alert').filter({ hasText: 'result is unknown' })).toBeVisible();
+      expect(api.writes).toHaveLength(1);
+    });
+  } finally { finish.resolve(); }
 });
 
 test('a late successful self exit updates preference without navigating away from a Task', async ({ page }) => {
