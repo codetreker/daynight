@@ -102,18 +102,19 @@ test('assistant navigation composes creation, shared conversations and authorita
     await page.getByRole('menuitem', { name: 'Delete assistant', exact: true }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Delete assistant', exact: true }).click();
     await expect(page.getByText('Waiting for cleanup', { exact: true })).toBeVisible();
+    const barrier = await api.get(`/api/v1/test-sessions/${controllers[0]!.sessionId}`); expect(barrier.status()).toBe(409);
     await controllers[0]!.remove();
     await expect(page.getByText('Deletion completed', { exact: true })).toBeVisible({ timeout: 15_000 });
     expect((await page.goto(`/bots/${a.id}`))?.status(), 'Deleted assistant URL still serves the application').toBe(200);
     await expect(page.locator('.bots-page')).toBeVisible(); await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveCount(0);
-    const denied = await api.get(`/api/v1/test-sessions/${controllers[0]!.sessionId}`); expect(denied.status()).toBe(409);
+    const denied = await api.get(`/api/v1/test-sessions/${controllers[0]!.sessionId}`); expect(denied.status()).toBe(404);
     expect((await page.goto(`/test-sessions/${controllers[0]!.sessionId}`))?.status()).toBe(200);
     await expect(page.locator('.session-entry')).toHaveCount(0); await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toHaveCount(0);
     const preserved = await api.get(`/api/v1/projects/${project.id}/tasks/${task.id}`); expect(preserved.status()).toBe(200); expect(await preserved.json()).toEqual(task);
     expect((await page.goto(`/bots/${b.id}`))?.status(), 'Assistant detail URL serves the production application').toBe(200);
     await expect(message()).toBeEnabled(); await expect(pane().locator('.session-entry')).toHaveCount(30);
     const evidence = info.outputPath('assistant-composition.json');
-    await writeFile(evidence, JSON.stringify({ boundary: 'Production App, HTTP management, PostgreSQL and WebSocket relay with a controlled writer; no native Provider or Worker process.', workerId, legacyWorkerId, bots: controllers.map(controller => ({ botId: controller.botId, sessionId: controller.sessionId, commands: controller.commands.length })), independentTask: task.id, originalNodesRetained: true, deletedHistoryDenied: denied.status() }, null, 2));
+    await writeFile(evidence, JSON.stringify({ boundary: 'Production App, HTTP management, PostgreSQL and WebSocket relay with a controlled writer; no native Provider or Worker process.', workerId, legacyWorkerId, bots: controllers.map(controller => ({ botId: controller.botId, sessionId: controller.sessionId, commands: controller.commands.length })), independentTask: task.id, originalNodesRetained: true, deletionBarrier: barrier.status(), deletedHistoryDenied: denied.status() }, null, 2));
     await info.attach('assistant-composition', { path: evidence, contentType: 'application/json' });
   } finally {
     const cleanup = await Promise.allSettled(controllers.map(controller => controller.remove()));
