@@ -255,8 +255,16 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
       await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
     } finally { await tab.close(); }
     await page.setViewportSize({ width: 320, height: 700 });
-    await page.getByRole('button', { name: /切换 Team/ }).click();
+    const teamTrigger = page.getByRole('button', { name: /切换 Team/ });
+    await teamTrigger.click();
     const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer).toHaveCount(0);
+    await expect(teamTrigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.team-options').getByRole('menuitemradio', { name: '个人', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(teamTrigger).toBeFocused();
+    await expect(teamTrigger).toHaveAttribute('aria-expanded', 'false');
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
     await expect(drawer.getByRole('link', { name: '与我共享', exact: true })).toBeVisible();
     await drawer.getByRole('link', { name: '与我共享', exact: true }).click();
     await expect(page).toHaveURL(`${baseURL}/shared-projects`);
