@@ -11,11 +11,15 @@ way to commit or discard the draft.
 
 ## Decision
 
-The existing form footer becomes bottom-sticky only while the draft is dirty.
+The existing form footer is anchored to the viewport bottom only while the draft
+is dirty.
 It remains in document order after the fields, with the same status, submit and
 discard controls and availability rules. An opaque background separates it from
 scrolling fields; a low stacking level leaves dialogs above it. Clean forms use
-the original footer position without a persistent overlay.
+the original footer position without a persistent overlay. A slot retains the
+footer's measured height and supplies its horizontal position and width. A
+ResizeObserver follows the slot, footer and workspace so sidebar changes and
+text wrapping retain alignment. Scroll and resize handlers update its position.
 
 The document owns scrolling. The editor checks the focused field against the
 measured footer on focus, draft edits and viewport/footer size changes, scrolling
@@ -33,9 +37,14 @@ background application observations retain their existing owners.
 **Keep the actions at the end of the document.** Long project lists separate the
 first edit from the only save operation by several screens.
 
-**Duplicate the actions in a fixed page overlay.** This would add a second focus
-and submit surface and require synchronization with the form width and sidebar.
-The sticky footer preserves one action set and stays within the form.
+**Use a bottom-sticky form footer.** The form follows save notifications. On a
+short viewport, conflict and error notices can push the entire form below the
+viewport, constraining its sticky footer below the visible area as well. A fixed
+footer with a measured slot preserves notification and summary layout.
+
+**Duplicate the actions in a page overlay.** This would add a second focus and
+submit surface. Positioning the existing footer preserves one action set and
+the original keyboard order.
 
 **Only add scroll padding to the form.** The form is not the scroll container,
 so that padding would not keep focused fields above the footer. CSS margins
@@ -49,5 +58,8 @@ fields. Geometry checks add layout reads on editor interactions and size
 changes, but do not change resource requests or draft persistence. Browser
 regression tests exercise actual application routes at phone and desktop sizes,
 including keyboard focus and save outcomes, with controlled API responses.
+The dirty footer remains visible when scrolling past the form to its summary.
+The Worker page ancestors must not introduce a transformed containing block for
+the fixed footer without revisiting its positioning.
 Those checks do not establish physical-device soft-keyboard behavior or actual
 Worker application of saved settings.

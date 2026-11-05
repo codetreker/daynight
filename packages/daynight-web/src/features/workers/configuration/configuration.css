@@ -46,7 +46,7 @@
 .local-settings p { margin: 8px 0 0; line-height: 1.9; }
 .local-settings ul { margin: 8px 0 0; padding-left: 18px; line-height: 2; }
 .config-save-bar { display: flex; justify-content: flex-end; gap: 9px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
-.configuration-form.is-dirty > .config-save-bar { position: sticky; bottom: 0; z-index: 2; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 -6px 18px #1c28580f; }
+.configuration-form.is-dirty .config-save-bar { position: fixed; bottom: 0; left: var(--config-save-left); width: var(--config-save-width); margin-top: 0; z-index: 2; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 -6px 18px #1c28580f; }
 .config-save-bar .draft-summary { margin-right: auto; font-size: 11px; color: #7d889b; }
 .project-config-list { padding: 0 22px; }
 .project-config-item { padding: 18px 0; border-bottom: 1px solid #edf0f4; min-width: 0; }

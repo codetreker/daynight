@@ -19,7 +19,7 @@ const install = async (page: Page) => {
         state.writes++;
         if (state.mode === 'pending') await new Promise<void>(resolve => { state.release = resolve; });
         if (state.mode === 'failure') return send({ error: { code: 'invalid_request', message: 'Rejected', requestId: 'save-bar' } }, 400);
-        if (state.mode === 'conflict') { state.resource = configurationResource('2', { ...state.resource.desired!.value, recoveryLimit: 5 }); return send({ error: { code: 'conflict', message: 'Changed', requestId: 'save-bar' } }, 409); }
+        if (state.mode === 'conflict') { state.resource = configurationResource('2', { ...state.resource.desired!.value, recoveryLimit: 5 }); return send({ error: { code: 'version_conflict', message: 'Changed', requestId: 'save-bar' } }, 409); }
         if (state.mode === 'unknown') return route.abort('failed');
         state.resource = configurationResource('2', route.request().postDataJSON().value);
       } else if (state.mode === 'unknown') return route.abort('failed');
@@ -38,6 +38,9 @@ const visibleBar = async (page: Page) => {
   await expect(bar.getByRole('status')).toHaveText('未保存的修改');
   await expect(bar).toBeInViewport({ ratio: 1 });
   const box = await bar.boundingBox();
+  const slot = await page.locator('.config-save-slot').boundingBox();
+  expect(Math.abs(box!.x - slot!.x)).toBeLessThan(1);
+  expect(Math.abs(box!.width - slot!.width)).toBeLessThan(1);
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
 };
@@ -61,6 +64,14 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 375, height: 667 }
     await visibleBar(page); await clearField(page);
     await page.screenshot({ path: info.outputPath('dirty.png') });
     await info.attach('dirty', { path: info.outputPath('dirty.png'), contentType: 'image/png' });
+    if (viewport.width === 1360) {
+      await page.setViewportSize({ width: 1920, height: 900 });
+      await page.locator('.sidebar-toggle').click(); await visibleBar(page);
+      await page.locator('.sidebar-toggle').click(); await visibleBar(page);
+      await page.locator('#worker-tab-overview').click(); await expect(bar).toBeHidden();
+      await page.setViewportSize(viewport);
+      await page.locator('#worker-tab-configuration').click(); await visibleBar(page);
+    }
     for (const fraction of [0, 0.3, 0.6, 1]) {
       await page.evaluate(fraction => { const form = document.querySelector('.configuration-main form')!; window.scrollTo(0, window.scrollY + form.getBoundingClientRect().top + (form.clientHeight - innerHeight) * fraction); }, fraction);
       await visibleBar(page);
@@ -97,6 +108,14 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 375, height: 667 }
     await first.evaluate(element => window.scrollBy(0, element.getBoundingClientRect().bottom - innerHeight + 8));
     await page.keyboard.press('ControlOrMeta+A'); await page.keyboard.insertText('7');
     await visibleBar(page); await clearField(page); await expect(first).toBeFocused();
+    if (viewport.width === 1360) {
+      await page.evaluate(() => window.scrollBy(0, 900));
+      await expect(first).not.toBeInViewport();
+      state.resource = configurationResource('3', { ...state.resource.desired!.value, recoveryLimit: 8 });
+      await expect(page.getByText('云端配置已被其他页面修改。', { exact: true })).toBeVisible({ timeout: 10_000 });
+      await expect(first).toBeFocused(); await expect(first).not.toBeInViewport();
+      await visibleBar(page);
+    }
     await bar.getByRole('button', { name: '取消修改' }).click();
     expect(state.writes).toBe(1);
   });
@@ -109,7 +128,7 @@ for (const mode of ['failure', 'conflict', 'unknown']) {
     await page.locator('#config-maxConcurrent').fill('4');
     const bar = page.locator('.config-save-bar'), save = bar.getByRole('button', { name: '保存配置', exact: true });
     await save.click(); await expect.poll(() => state.writes).toBe(1);
-    await expect(page.locator('.configuration-notice[role="alert"]')).toBeVisible();
+    await expect(page.locator('.configuration-notice[role="alert"]').filter({ hasText: mode === 'conflict' ? '云端配置已被其他页面修改。' : mode === 'unknown' ? '保存结果尚未确认' : '保存配置失败。' })).toBeVisible();
     await visibleBar(page);
     if (mode === 'failure') await expect(save).toBeEnabled(); else await expect(save).toBeDisabled();
     if (mode === 'unknown') await expect(bar.getByRole('button', { name: '取消修改' })).toBeDisabled();
