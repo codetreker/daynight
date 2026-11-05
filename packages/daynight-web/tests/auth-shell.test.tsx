@@ -72,6 +72,33 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
+  it("discards a retained project invitation secret when revalidation changes the account", async () => {
+    window.history.replaceState(null, "", `/projects/${projectId}/members`);
+    const secret = "dninvite_identity_secret";
+    const fetcher = vi.fn((url: string, options?: RequestInit) => {
+      if (url === `/api/v1/projects/${projectId}/invitations`) {
+        if (options?.method === "POST") return Promise.resolve(json({ id: otherId, projectId, createdBy: userId, createdAt: now, expiresAt: "2099-10-29T10:00:00Z", consumedAt: null, consumedBy: null, revokedAt: null, link: `${window.location.origin}/invitations#${secret}` }, 201));
+        return Promise.resolve(json({ items: [] }));
+      }
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    const invite = await screen.findByRole("button", { name: "邀请成员" });
+    await waitFor(() => expect(invite).toBeEnabled()); fireEvent.click(invite);
+    const submit = within(screen.getByRole("dialog")).getByRole("button", { name: "创建邀请链接" });
+    await waitFor(() => expect(submit).toBeEnabled()); fireEvent.click(submit);
+    await screen.findByDisplayValue(`${window.location.origin}/invitations#${secret}`);
+    act(() => navigate("/account"));
+    expect(screen.getByDisplayValue(`${window.location.origin}/invitations#${secret}`)).not.toBeVisible();
+    serverUserId = otherId; returnFromAnotherWindow();
+    await screen.findByRole("button", { name: "账户菜单：Bob" });
+    expect(screen.queryByDisplayValue(`${window.location.origin}/invitations#${secret}`)).toBeNull();
+    act(() => navigate(`/projects/${projectId}/members`));
+    await waitFor(() => expect(screen.queryByDisplayValue(`${window.location.origin}/invitations#${secret}`)).toBeNull());
+    expect(fetcher.mock.calls.filter(([url, options]) => url.endsWith("/invitations") && options?.method === "POST")).toHaveLength(1);
+  });
+
   it("loads project navigation once with the project page and keeps the selected project across management routes", async () => {
     const fetcher = install((url) => url === `/api/v1/projects/${projectId}` ? json(project()) : url.endsWith("/invitations") ? json({ items: [] }) : defaults(url));
     render(<AuthenticatedApp />);
@@ -1445,6 +1472,7 @@ describe("Team invitation handoff", () => {
       expect(window.location.hash).toBe("");
       if (url === "/api/v1/team-invitations/inspect") return Promise.resolve(json({ team, membership: null }));
       if (url === "/api/v1/team-invitations/accept") return Promise.resolve(json({ team, membership, joined: true, consumed: true }));
+      if (url === `/api/v1/teams/${teamId}`) return Promise.resolve(json({ ...team, version: 1n, createdAt: now, updatedAt: now, membership }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
@@ -1460,7 +1488,12 @@ describe("Team invitation handoff", () => {
     expect(window.location.pathname).toBe("/team-invitations");
     expect(window.sessionStorage.getItem(teamInvitationStorageKey)).toBeNull();
     expect(document.body.textContent).not.toContain("dnteam_secret");
-    expect(document.querySelector(`a[href^="/teams/"]`)).toBeNull();
+    const open = screen.getByRole("link", { name: "打开 Team" });
+    expect(open).toHaveAttribute("href", `/teams/${teamId}`);
+    fireEvent.click(open);
+    await screen.findByRole("heading", { name: "协作团队" });
+    expect(window.location.pathname).toBe(`/teams/${teamId}`);
+    await waitFor(() => expect(window.localStorage.getItem(`daynight.selectedTeam:${userId}`)).toBe(teamId));
   });
 
   it("preserves an existing admin role in the confirmed no-consume receipt", async () => {

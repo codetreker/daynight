@@ -33,3 +33,6 @@ The preference is local to one origin and account, and does not grant access or
 follow the user across devices. Recovery needs an additional Team read when a
 selection exists. Storage and network failures remain visible and retryable;
 identity and request lifetime checks keep late results from crossing accounts.
+A preserved member or settings view skips revalidation only while its verified
+Team is still ready; a cancelled intervening read must restart instead of
+leaving the view loading indefinitely.

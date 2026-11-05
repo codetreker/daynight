@@ -135,7 +135,7 @@ export type AuthMessages = {
     readonly loading: string; readonly unavailableDetail: string; readonly invited: string; readonly alreadyMember: string;
     readonly invitedDetail: string; readonly alreadyMemberDetail: string; readonly memberRole: string;
     readonly currentRole: string; readonly joined: string; readonly alreadyJoined: string; readonly teamId: string;
-    readonly acceptUnknown: string; readonly checkInvitation: string;
+    readonly acceptUnknown: string; readonly checkInvitation: string; readonly open: string;
   };
   readonly createProject: {
     readonly open: string;
@@ -237,6 +237,7 @@ export type AuthMessages = {
       readonly loading: string;
       readonly memberNotice: string;
       readonly invitationUnknown: string;
+      readonly invitationUnreadable: string;
     readonly invitationObserved: string;
     readonly readCurrentInvitations: string;
     readonly grantUnknown: string;

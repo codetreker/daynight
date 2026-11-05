@@ -151,3 +151,45 @@ it("refreshes the current Team directory when a transfer receipt arrives after c
   expect(window.location.pathname).toBe(`/teams/${target}`);
   await act(async () => pendingList.resolve(json({ items: [], nextCursor: null })));
 });
+
+it("retains independent unknown transfer and invitation results across their routes", async () => {
+  const transferResult = Promise.withResolvers<Response>();
+  const invitationResult = Promise.withResolvers<Response>();
+  const fetcher = vi.fn((url: string, init?: RequestInit) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: [project], nextCursor: null }));
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url === `/api/v1/projects/${projectId}/members`) return Promise.resolve(json({ items: [], actorAccess: access }));
+    if (url === `/api/v1/projects/${projectId}/invitations`) return init?.method === 'POST' ? invitationResult.promise : Promise.resolve(json({ items: [] }));
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null }));
+    if (url === `/api/v1/projects/${projectId}/transfer`) return transferResult.promise;
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }));
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.endsWith('/transfer'))).toBe(true));
+  act(() => navigate(`/projects/${projectId}/members`));
+  const invite = await screen.findByRole("button", { name: "Invite member" }); await waitFor(() => expect(invite).toBeEnabled()); fireEvent.click(invite);
+  const inviteDialog = screen.getByRole("dialog", { name: "Invite project member" });
+  await waitFor(() => expect(within(inviteDialog).getByRole("button", { name: "Create invitation link" })).toBeEnabled());
+  fireEvent.click(within(inviteDialog).getByRole("button", { name: "Create invitation link" }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith('/invitations') && init?.method === 'POST')).toHaveLength(1));
+  await act(async () => { transferResult.reject(new Error('lost transfer')); invitationResult.reject(new Error('lost invitation')); });
+  await screen.findByText(/invitation change was not confirmed/i);
+  act(() => navigate(`/projects/${projectId}/settings`));
+  const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
+  expect(within(reopened).getByRole("alert")).toHaveTextContent("transfer result is unknown");
+  fireEvent.click(within(reopened).getByRole("button", { name: "Close" }));
+  act(() => navigate(`/projects/${projectId}/members`));
+  expect(await screen.findByText(/invitation change was not confirmed/i)).toBeInTheDocument();
+  expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/transfer'))).toHaveLength(1);
+  expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith('/invitations') && init?.method === 'POST')).toHaveLength(1);
+});

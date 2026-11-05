@@ -1,7 +1,7 @@
 import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
-import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitationAcceptance, decodeInvitationJson, parseTeamInvitationInspection, parseTeamInvitationAcceptance, decodeTeamInvitationJson, parseInvitations, parseMember, parseMembers, decodeMembersJson, parseProjectGrant, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, decodeGrantResultJson, parseGrantResult, parseRemoveGrantResult, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
+import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedTeamInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitationAcceptance, decodeInvitationJson, parseTeamInvitationInspection, parseTeamInvitationAcceptance, decodeTeamInvitationJson, parseTeamInvitations, parseRevokeTeamInvitationResult, parseInvitations, parseMember, parseMembers, decodeMembersJson, parseProjectGrant, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, decodeGrantResultJson, parseGrantResult, parseRemoveGrantResult, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
 import { array, boolean, id, malformed, project, record, string, timestamp } from "./parse";
-import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipants, ProjectGrant, ProjectGrantResult, RemoveProjectGrantResult, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
+import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, CreatedTeamInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectInvitationAcceptance, ProjectMember, ProjectParticipants, ProjectGrant, ProjectGrantResult, RemoveProjectGrantResult, RevokeTeamInvitationResult, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User, TeamInvitation, TeamInvitationInspection, TeamInvitationAcceptance } from "./auth-types";
 import type { Project } from "./types";
 import { parseProfileVersion } from "./profile-version";
 import { decodeProjectJson } from "./project-json";
@@ -222,32 +222,66 @@ export const listInvitations = (projectId: string, signal: AbortSignal, admissio
   return authOperation(signal, async () => {
     const response = await request(`${projectUrl(project)}/invitations`, signal, { headers: { Accept: "application/json" } });
     assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
-    return json(response, signal, (data) => parseInvitations(data, project));
+    return json(response, signal, (data) => {
+      if (response.status !== 200) throw new ApiError("protocol", response.status);
+      return parseInvitations(data, project);
+    });
   });
 };
-const invitationRequest = (url: string, method: "POST" | "DELETE", body: string, expected: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<Response> =>
+const invitationRequest = (url: string, method: "POST" | "DELETE", body: string, expected: string, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<Response> =>
   grantWrite(signal, onIdentityMismatch, async () => {
-    const response = await request(url, signal, { method, body, headers: { Accept: "application/json", "Content-Type": "application/json" } });
+    const response = await request(url, signal, { method, body, headers: { Accept: "application/json", "Content-Type": "application/json" } }, onDispatch);
     assertResponsePrincipal(response, expected, onIdentityMismatch);
     return response;
   });
-export const createInvitation = (projectId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<CreatedProjectInvitation> => {
+export const createInvitation = (projectId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<CreatedProjectInvitation> => {
   const project = requestId(projectId), expected = requestId(expectedUserId);
   return grantWrite(signal, onIdentityMismatch, async () => {
-    const response = await invitationRequest(`${projectUrl(project)}/invitations`, "POST", JSON.stringify({ expectedUserId: expected }), expected, signal, onIdentityMismatch);
+    const response = await invitationRequest(`${projectUrl(project)}/invitations`, "POST", JSON.stringify({ expectedUserId: expected }), expected, signal, onIdentityMismatch, onDispatch);
     return json(response, signal, (data) => {
       if (response.status !== 201) throw new ApiError("protocol", response.status);
       return parseCreatedInvitation(data, project, expected);
     });
   });
 };
-export const revokeInvitation = (projectId: string, invitationId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<void> => {
+export const revokeInvitation = (projectId: string, invitationId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<void> => {
   const project = requestId(projectId), invite = requestId(invitationId), expected = requestId(expectedUserId);
   return grantWrite(signal, onIdentityMismatch, async () => {
-    const response = await invitationRequest(`${projectUrl(project)}/invitations/${invite}`, "DELETE", JSON.stringify({ expectedUserId: expected }), expected, signal, onIdentityMismatch);
+    const response = await invitationRequest(`${projectUrl(project)}/invitations/${invite}`, "DELETE", JSON.stringify({ expectedUserId: expected }), expected, signal, onIdentityMismatch, onDispatch);
     if (response.status === 204) return;
     if (response.ok) throw new ApiError("protocol", response.status);
     await json(response, signal, () => { throw new ApiError("protocol", response.status); });
+  });
+};
+export const listTeamInvitations = (teamId: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<readonly TeamInvitation[]> => {
+  const team = requestId(teamId), expected = requestId(admission.userId);
+  return authOperation(signal, async () => {
+    const response = await request(`/api/v1/teams/${team}/invitations`, signal, { headers: { Accept: "application/json" } });
+    assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
+    return json(response, signal, (data) => {
+      if (response.status !== 200) throw new ApiError("protocol", response.status);
+      return parseTeamInvitations(data, team);
+    });
+  });
+};
+export const createTeamInvitation = (teamId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<CreatedTeamInvitation> => {
+  const team = requestId(teamId), expected = requestId(expectedUserId);
+  return grantWrite(signal, onIdentityMismatch, async () => {
+    const response = await invitationRequest(`/api/v1/teams/${team}/invitations`, "POST", JSON.stringify({ expectedUserId: expected }), expected, signal, onIdentityMismatch, onDispatch);
+    return json(response, signal, (data) => {
+      if (response.status !== 201) throw new ApiError("protocol", response.status);
+      return parseCreatedTeamInvitation(data, team, expected);
+    });
+  });
+};
+export const revokeTeamInvitation = (teamId: string, invitationId: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void, onDispatch?: () => void): Promise<RevokeTeamInvitationResult> => {
+  const team = requestId(teamId), invite = requestId(invitationId), expected = requestId(expectedUserId);
+  return grantWrite(signal, onIdentityMismatch, async () => {
+    const response = await invitationRequest(`/api/v1/teams/${team}/invitations/${invite}`, "DELETE", JSON.stringify({ expectedUserId: expected }), expected, signal, onIdentityMismatch, onDispatch);
+    return json(response, signal, (data) => {
+      if (response.status !== 200) throw new ApiError("protocol", response.status);
+      return parseRevokeTeamInvitationResult(data, team, invite);
+    });
   });
 };
 export const inspectInvitation = (token: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<ProjectInvitationInspection> => {

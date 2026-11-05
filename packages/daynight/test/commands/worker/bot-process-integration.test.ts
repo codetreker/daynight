@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -7,15 +8,19 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, expect, test, vi } from "vitest";
+import { createBotDeletion } from "../../../src/commands/worker/bots/delete.js";
+import type { BotDeletionReceipt } from "../../../src/commands/worker/bots/session-api.js";
+import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
-import type { BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
+import type { BotDefinition, BotRecord, BotDeleted } from "../../../src/commands/worker/bots/types.js";
 import { controllerExecutionDirectory } from "../../../src/commands/controller/launch-ticket.js";
 import { readControllerSnapshot, readControllerOperation } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
+import { inspectControllerJob } from "../../../src/commands/controller/windows-job.js";
 import { parseControllerMessage, RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { SESSION_PROTOCOL, type SessionSnapshot } from "../../../src/session/protocol.js";
 import snapshotFixture from "../../session/fixtures/snapshot.json" with { type: "json" };
@@ -41,7 +46,7 @@ afterEach(async () => {
   if (errors.length) throw new AggregateError(errors, "Bot integration resources did not close safely.");
 });
 
-const fixture = async (options: { rejectRole?: boolean; args?: string[] } = {}) => {
+const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
@@ -90,16 +95,39 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
     return { bot, snapshot: snapshot(record) };
   });
   const grant = vi.fn(async (record: BotRecord) => ({ token: "controlled-relay-grant", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: bot.sessionId!, testExecutionId: record.intent!.executionId, executionGeneration: record.intent!.executionGeneration, controllerId: record.intent!.registration.controllerId, controllerInstanceId: record.intent!.controllerInstanceId }));
-  const api = { register, grant, readSession: async (record: BotRecord) => snapshot(record), report: async () => bot };
-  const prepareEnvironment = async () => ({ environment: { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "native"), CODEX_TEST_REQUEST_LOG: requestLog, EXPECT_WORKER_PERMISSIONS: "no", ...(options.rejectRole ? { CODEX_TEST_REJECT_ROLE: "Fixture role configuration refused" } : {}) }, aliasDirectory: null, bindings: [], release: async () => {} });
-  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment } });
+  const api = { completeDeletion: async (): Promise<never> => { throw new Error("Unexpected deletion receipt"); }, register, grant, readSession: async (record: BotRecord) => snapshot(record), report: async () => bot };
+  const prepareEnvironment = async () => {
+    let aliasDirectory: string | null = null;
+    if (options.aliases) {
+      const aliases = path.join(state, "agent-cli-aliases"); await mkdir(aliases, { recursive: true });
+      aliasDirectory = await mkdtemp(path.join(aliases, "execution-"));
+      await writeFile(path.join(aliasDirectory, "fixture-shim"), "retained fixture shim");
+    }
+    const retained = aliasDirectory;
+    return { environment: { ...process.env, DN_CONFIG_DIR: state, CODEX_HOME: path.join(home, "native"), CODEX_TEST_REQUEST_LOG: requestLog, EXPECT_WORKER_PERMISSIONS: "no", ...(options.rejectRole ? { CODEX_TEST_REJECT_ROLE: "Fixture role configuration refused" } : {}) }, aliasDirectory, bindings: [], release: async () => { if (retained !== null) await rm(retained, { recursive: true, force: true }); } };
+  };
+  const stopProcesses: typeof stopControllerProcesses = async (controller, native, deadline) => {
+    const started = Date.now();
+    try { await stopControllerProcesses(controller, native, deadline); }
+    catch (error) {
+      diagnostic("stop-original-processes", Date.now() - started, error);
+      // Only inspect identities created by this fixture; retain the original
+      // failure even if a diagnostic probe also fails.
+      const identities = await Promise.all([controller, ...native].map(async proof => ({ pid: proof.pid, state: await inspectProcessProof(proof).catch(() => "unconfirmed") })));
+      const jobMembers = controller.jobObjectName === undefined ? null : await inspectControllerJob(controller.jobObjectName).catch(() => "unconfirmed");
+      console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "stop-original-process-evidence", elapsedMs: Date.now() - started, deadlineExpired: Date.now() >= deadline, identities, jobMembers }));
+      throw error;
+    }
+  };
+  const create = () => createBotProcess({ homeDirectory: home, packageDirectory, store, executions, sessionApi: api, recoveryLimit: 3, dependencies: { prepareEnvironment, stopProcesses } });
   const botProcess = create();
   const frames: ReturnType<typeof parseControllerMessage>[] = [], relayErrors: unknown[] = [];
-  let browserConnections = 0;
+  let browserConnections = 0, deleted = false;
   relay.on("connection", (socket, request) => {
     if (request.url === "/browser-fixture") { browserConnections++; return; }
     if (request.url !== "/api/v1/controller-channel" || request.headers.authorization !== "Bearer controlled-relay-grant") { socket.close(1008); return; }
     socket.on("message", raw => {
+      if (deleted) { socket.close(1008); return; }
       try {
         const message = parseControllerMessage(JSON.parse(raw.toString())); frames.push(message);
         const fence = { protocol: SESSION_PROTOCOL, sessionId: bot.sessionId!, testExecutionId: current().intent!.executionId, executionGeneration: current().intent!.executionGeneration, connectionEpoch: "1" };
@@ -152,12 +180,15 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       for (const socket of relay.clients) socket.terminate();
       await new Promise<void>((resolve, reject) => relay.close(error => error ? reject(error) : resolve()));
       executions.close(); store.close();
-      if (stopped) await rm(home, { recursive: true, force: true });
+      if (stopped) {
+        if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(home, bot.id)), { recursive: true, force: true });
+        await rm(home, { recursive: true, force: true });
+      }
     }
   });
   const requests = async () => (await readFile(requestLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
   const launches = async () => existsSync(launchLog) ? (await readFile(launchLog, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { pid: number }) : [];
-  return { home, cwd, current, store, executions, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
+  return { home, cwd, current, store, executions, api, revoke: () => { deleted = true; for (const client of relay.clients) client.close(1008); }, process: botProcess, create, register, grant, requests, launches, frames, relayErrors, owner, journal, nativeId, browserConnections: () => browserConnections };
 };
 
 const launchAndObserveReady = async (f: Awaited<ReturnType<typeof fixture>>, signal: AbortSignal) => {
@@ -255,5 +286,82 @@ test("four orderly Worker restarts preserve the real journal, native session, ro
   expect(requests.filter(request => request.method === "thread/resume")).toHaveLength(4);
   for (const request of requests.filter(request => request.method === "thread/resume")) expect(request.params).toMatchObject({ threadId: f.nativeId, developerInstructions: original.roleConfiguration!.instructions });
   expect(requests.some(request => request.method === "turn/start")).toBe(false);
+  expect(f.relayErrors).toEqual([]);
+}, 120_000);
+
+
+test("deletes every private generation after real Controller stop while preserving cwd, native history and an independent Task worktree", async () => {
+  const f = await fixture({ aliases: true }), signal = AbortSignal.timeout(100_000);
+  const nativeHome = path.join(f.home, "native"), repository = path.join(f.home, "task-repository"), worktree = path.join(repository, ".worktrees", "independent");
+  const hooks = path.join(f.home, "empty-hooks"); await mkdir(hooks); await mkdir(nativeHome, { recursive: true });
+  const sentinels = [path.join(f.cwd, "user-file.txt"), path.join(nativeHome, "native-history.txt")];
+  for (const file of sentinels) await writeFile(file, "independent user content");
+  const git = (args: string[]) => execFileSync("git", ["--no-pager", "-c", "core.fsmonitor=false", "-c", `core.hooksPath=${hooks}`, "-c", "commit.gpgsign=false", ...args], { encoding: "utf8", timeout: 10_000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  git(["init", "--initial-branch=main", repository]);
+  git(["-C", repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "Fixture"]);
+  git(["-C", repository, "worktree", "add", "--detach", worktree, "HEAD"]);
+  const worktreeFile = path.join(worktree, "unfinished-task.txt"); await writeFile(worktreeFile, "independent task content");
+  const worktrees = git(["-C", repository, "worktree", "list", "--porcelain"]);
+  const workerFile = path.join(f.home, "worker.sqlite"), projectId = randomUUID(), taskId = randomUUID(), claimId = randomUUID(), worktreeId = randomUUID();
+  const independentRows = () => {
+    const db = new Database(workerFile);
+    try { return [db.prepare("SELECT * FROM projects").all(), db.prepare("SELECT * FROM tasks").all(), db.prepare("SELECT * FROM cleanup_schedules").all()]; }
+    finally { db.close(); }
+  };
+  const db = new Database(workerFile);
+  try {
+    db.prepare("INSERT INTO projects VALUES (?,?,?)").run(projectId, "https://example.test/independent", repository);
+    db.prepare("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)").run(projectId, taskId, claimId, "active", "codex", randomUUID(), "web");
+    db.prepare("INSERT INTO cleanup_schedules VALUES (?,?,?,?,?,?,?,?,?)").run(projectId, taskId, claimId, worktreeId, 1234, 1, 5678, "backend-close", "unrelated retained responsibility");
+  } finally { db.close(); }
+  const rows = independentRows();
+  await launchAndObserveReady(f, signal);
+  const first = f.current().intent!;
+  const tickets = [await f.process.readTicket(f.current())];
+  for (let generation = 1; generation <= 2; generation++) {
+    await f.process.shutdown(f.current(), signal);
+    await f.process.advance(f.current(), signal);
+    await vi.waitFor(async () => expect(await f.process.observe(f.current(), signal)).toMatchObject({ lifecycle: "ready", nativeSessionId: f.nativeId, executionGeneration: String(generation + 1) }), { timeout: 20_000, interval: 100 });
+    tickets.push(await f.process.readTicket(f.current()));
+  }
+  const original = f.current(), execution = f.executions.get(original)!, finalWriter = await f.process.observe(original, signal);
+  expect(await inspectProcessProof(finalWriter.controllerProcess!)).toBe("running");
+  const aliases = [...execution.retainedAliasDirectories, execution.aliasDirectory!];
+  expect(aliases).toHaveLength(3);
+  expect(existsSync(first.journalPath)).toBe(true);
+  expect(existsSync(`${first.journalPath}.pending-content/manifest.json`)).toBe(true);
+  const deletionId = randomUUID();
+  let remote: BotDeleted = { id: original.botId, workerId: f.owner.workerId, version: String(BigInt(original.observed.version) + 1n), deletion: { deletionId, requestedVersion: original.observed.version, workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null } } };
+  f.store.observe(f.owner, remote, Date.now()); f.revoke();
+  const receipts: BotDeletionReceipt[] = [];
+  const api = { ...f.api, completeDeletion: async (_record: BotRecord, receipt: BotDeletionReceipt): Promise<BotDeleted> => {
+    if (receipt.result.state === "completed") {
+      expect(await confirmControllerProcessesStopped(finalWriter.controllerProcess!, finalWriter.nativeProcesses)).toBe(true);
+      expect(existsSync(controllerExecutionDirectory(f.home, first.executionId))).toBe(false);
+    }
+    receipts.push(structuredClone(receipt));
+    remote = { ...remote, version: String(BigInt(remote.version) + 1n), deletion: { ...remote.deletion, workerCleanup: receipt.result, serverCleanup: { state: "completed", code: null } } };
+    return remote;
+  } };
+  const deletion = createBotDeletion({ homeDirectory: f.home, store: f.store, executions: f.executions, process: f.process, sessionApi: api, remote: { owner: f.owner, read: async () => remote, list: async () => [remote] } });
+  await deletion.advance(f.current(), signal);
+  expect(receipts).toHaveLength(1);
+  expect(receipts[0]).toMatchObject({ deletionId, result: { state: "completed", code: null }, stop: { sessionId: first.sessionId, testExecutionId: first.executionId, executionGeneration: "3", controllerInstanceId: original.intent!.controllerInstanceId, stopProof: { recordId: original.intent!.launchId, previousControllerInstanceId: original.intent!.controllerInstanceId } } });
+  expect(receipts[0]!.stop!.stopProof).not.toHaveProperty("kind");
+  for (const ticket of tickets) {
+    expect(existsSync(path.join(path.dirname(original.intent!.ticketPath), `${ticket.launchId}.json`))).toBe(false);
+    if (process.platform !== "win32") expect(existsSync(ticket.ipcEndpoint)).toBe(false);
+  }
+  for (const alias of aliases) expect(existsSync(alias)).toBe(false);
+  expect(f.current()).toMatchObject({ intent: null, definition: null, cleanup: { localCompleted: true, targets: [] } });
+  for (const file of sentinels) expect(await readFile(file, "utf8")).toBe("independent user content");
+  expect(await readFile(worktreeFile, "utf8")).toBe("independent task content");
+  expect(git(["-C", repository, "worktree", "list", "--porcelain"])).toBe(worktrees);
+  expect(independentRows()).toEqual(rows);
+  await expect(f.process.advance(original, signal)).rejects.toThrow(/active definition/);
+  await deletion.advance(f.current(), signal);
+  expect(receipts).toHaveLength(1);
+  expect(await f.launches()).toHaveLength(3);
+  expect((await f.requests()).some(request => request.method === "turn/start")).toBe(false);
   expect(f.relayErrors).toEqual([]);
 }, 120_000);

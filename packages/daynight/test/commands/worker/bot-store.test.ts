@@ -104,10 +104,10 @@ describe("durable Bot inventory", () => {
       expect(() => f.store.observe(owner, { ...bot(), ...changed } as Bot, 2)).toThrow();
       expect(f.store.get(owner, id(3))).toEqual(before);
     }
-    const db = new Database(f.file); handles.push(db); db.pragma("user_version = 11");
+    const db = new Database(f.file); handles.push(db); db.pragma("user_version = 12");
     expect(() => f.store.observe(owner, { ...bot(), version: "2" }, 2)).toThrow(/unsupported-version/);
     expect(() => f.store.list(owner)).toThrow(/unsupported-version/);
-    db.pragma("user_version = 10"); expect(f.store.get(owner, id(3))).toEqual(before);
+    db.pragma("user_version = 11"); expect(f.store.get(owner, id(3))).toEqual(before);
   });
 
   it("rolls back the Bot migration atomically without changing old task records", () => {
@@ -125,5 +125,37 @@ describe("durable Bot inventory", () => {
     expect(db.pragma("user_version", { simple: true })).toBe(7);
     expect(db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
     expect(["projects", "tasks", "cleanup_schedules"].map(table => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(rows);
+  });
+});
+
+describe("Bot deletion responsibility", () => {
+  it("retains stop and per-path progress across observation and reopen, then atomically strips private execution", () => {
+    const f=fixture();f.store.observe(owner,bot(),1);
+    const deleted:Bot={id:id(3),workerId:owner.workerId,version:"2",deletion:{deletionId:id(8),requestedVersion:"1",workerCleanup:{state:"pending",code:null},serverCleanup:{state:"pending",code:null}}};
+    const record=f.store.observe(owner,deleted,2);
+    const target={path:path.join(f.home,"private"),root:f.home,kind:"file" as const,identity:"1:2",rootIdentity:"1:1",completed:false};
+    const prepared=f.store.prepareDeletion(record,null,[target]);
+    expect(prepared.cleanup).toMatchObject({deletionId:id(8),localCompleted:false,targets:[target]});
+    expect(()=>f.store.finishDeletion(prepared)).toThrow(/remaining|incomplete/);
+    f.store.completeDeletionTarget(prepared,target.path);
+    const reopened=f.open();const observed=reopened.observe(owner,{...deleted,version:"3"},3);
+    expect(observed.cleanup?.targets[0]?.completed).toBe(true);
+    const finished=reopened.finishDeletion(observed);
+    expect(finished).toMatchObject({intent:null,definition:null,cleanup:{localCompleted:true,targets:[],stop:null}});
+    expect(reopened.observe(owner,{...deleted,version:"4"},4).cleanup).toEqual(finished.cleanup);
+    expect(()=>reopened.prepare(owner,id(3),{homeDirectory:f.home,recoveryLimit:3})).toThrow(/delet/);
+  });
+  it("rejects stale intent and replacement deletion identity without modifying progress",()=>{
+    const f=fixture();const initial=f.store.observe(owner,bot(),1);
+    f.store.prepare(owner,id(3),{homeDirectory:f.home,recoveryLimit:3});
+    const deleted:Bot={id:id(3),workerId:owner.workerId,version:"2",deletion:{deletionId:id(8),requestedVersion:"1",workerCleanup:{state:"pending",code:null},serverCleanup:{state:"pending",code:null}}};
+    const record=f.store.observe(owner,deleted,2);
+    expect(()=>f.store.prepareDeletion({...record,intent:initial.intent},null,[])).toThrow(/intent|identity/);
+    expect(()=>f.store.prepareDeletion(record,null,[])).toThrow(/stop proof/);
+    // Retain the uncertain registration identity rather than erase it.
+    expect(f.store.get(owner,id(3))?.intent).toEqual(record.intent);
+    const prepared=record;
+    expect(()=>f.store.finishDeletion({...prepared,observed:{...deleted,deletion:{...deleted.deletion!,deletionId:id(9)}}})).toThrow(/identity/);
+    expect(f.store.get(owner,id(3))?.cleanup).toEqual(prepared.cleanup);
   });
 });
