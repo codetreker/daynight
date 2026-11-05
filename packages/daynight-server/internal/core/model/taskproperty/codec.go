@@ -71,13 +71,9 @@ func Worker(properties model.TaskProperties) (*model.WorkerClaim, error) {
 	return decodeWorker(value)
 }
 
-// EncodeWorker encodes and validates a worker claim for storage.
+// EncodeWorker encodes a worker claim for normalization and storage.
 func EncodeWorker(worker *model.WorkerClaim) (json.RawMessage, error) {
-	raw, err := json.Marshal(encodeWorker(worker))
-	if err != nil {
-		return nil, err
-	}
-	return NormalizeValue("worker", raw)
+	return json.Marshal(encodeWorker(worker))
 }
 
 func PullRequests(properties model.TaskProperties) ([]model.PullRequestProperty, error) {

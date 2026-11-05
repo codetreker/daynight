@@ -1,4 +1,4 @@
-package properties
+package taskproperty_test
 
 import (
 	"encoding/json"

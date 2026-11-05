@@ -59,7 +59,11 @@ func WithWorker(values model.TaskProperties, worker *model.WorkerClaim) (model.T
 		delete(result, "sessionStartup")
 		return result, nil
 	}
-	value, err := taskproperty.EncodeWorker(worker)
+	raw, err := taskproperty.EncodeWorker(worker)
+	if err != nil {
+		return nil, err
+	}
+	value, err := taskproperty.NormalizeValue("worker", raw)
 	if err != nil {
 		return nil, err
 	}

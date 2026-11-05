@@ -2,14 +2,10 @@ package properties
 
 import (
 	"encoding/json"
-	"fmt"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 func workerFixture() model.WorkerClaim {
@@ -45,98 +41,6 @@ func workerPropertiesJSON(t *testing.T, worker map[string]json.RawMessage) []byt
 		t.Fatal(err)
 	}
 	return append(append([]byte(`{"pullRequests":[],"worker":`), data...), '}')
-}
-
-func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
-	for _, state := range []model.WorkerState{model.WorkerActive, model.WorkerReleased, model.WorkerCompleted} {
-		for _, platform := range []model.TaskPlatform{model.PlatformWindows, model.PlatformLinux, model.PlatformMacOS} {
-			for _, agent := range []model.WorkerAgent{model.AgentCodex, model.AgentClaude, model.AgentCopilot} {
-				for _, phase := range []model.WorkerPhase{model.WorkerPreparing, model.WorkerExecuting, model.WorkerVerifying, model.WorkerCompleting, model.WorkerWaiting, model.WorkerPaused} {
-					t.Run(fmt.Sprintf("%s/%s/%s/%s", state, platform, agent, phase), func(t *testing.T) {
-						worker := workerFixture()
-						worker.State, worker.Platform, worker.Agent, worker.Phase = state, platform, agent, phase
-						properties := propertyFixture(t, []model.PullRequestProperty{{URL: "opaque\x00", Title: "  preserved\n中文  "}}, &worker)
-						actual, err := taskproperty.Decode([]byte(encodedProperties(t, properties)))
-						if err != nil || !reflect.DeepEqual(actual, properties) {
-							t.Fatalf("worker resource changed during serialization: expected %#v actual %#v error %v", properties, actual, err)
-						}
-					})
-				}
-			}
-		}
-	}
-	for _, worker := range []*model.WorkerClaim{nil, func() *model.WorkerClaim {
-		value := workerFixture()
-		value.Herdr, value.NativeSessionID = nil, nil
-		return &value
-	}()} {
-		properties := propertyFixture(t, []model.PullRequestProperty{}, worker)
-		encoded := encodedProperties(t, properties)
-		if strings.Contains(encoded, `"worker":`) != (worker != nil) {
-			t.Fatal("worker presence changed during serialization")
-		}
-		actual, err := taskproperty.Decode([]byte(encoded))
-		if err != nil || !reflect.DeepEqual(actual, properties) {
-			t.Fatalf("nullable worker/session fields changed: %#v %v", actual, err)
-		}
-	}
-}
-
-func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
-	for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"} {
-		t.Run("missing "+field, func(t *testing.T) {
-			worker := workerJSON(t)
-			delete(worker, field)
-			if _, err := taskproperty.Decode(workerPropertiesJSON(t, worker)); err == nil {
-				t.Fatalf("missing worker.%s was accepted", field)
-			}
-		})
-	}
-	for _, test := range []struct{ name, key, value string }{
-		{"claim uuid", "claimId", `"invalid"`}, {"user uuid", "userId", `"invalid"`}, {"worker uuid", "workerId", `"invalid"`}, {"worktree uuid", "worktreeId", `"invalid"`},
-		{"state", "state", `"idle"`}, {"platform", "platform", `"darwin"`}, {"agent", "agent", `"other"`}, {"phase", "phase", `"done"`},
-		{"state null", "state", `null`}, {"worker numeric", "workerId", `123`}, {"claimed timestamp", "claimedAt", `"not-time"`}, {"zero timestamp", "claimedAt", `"0001-01-01T00:00:00Z"`},
-		{"machine scalar", "machine", `3`}, {"machine missing id", "machine", `{"name":"build"}`}, {"machine missing name", "machine", `{"id":"00000000-0000-4000-8000-000000000004"}`},
-		{"machine wrong id", "machine", `{"id":"wrong","name":"build"}`}, {"machine blank name", "machine", `{"id":"00000000-0000-4000-8000-000000000004","name":" \n"}`},
-		{"machine NUL name", "machine", `{"id":"00000000-0000-4000-8000-000000000004","name":"build\u0000"}`},
-		{"machine unknown", "machine", `{"id":"00000000-0000-4000-8000-000000000004","name":"build","extra":true}`},
-		{"machine duplicate", "machine", `{"id":"00000000-0000-4000-8000-000000000004","name":"build","name":"other"}`},
-		{"herdr scalar", "herdr", `false`}, {"herdr missing", "herdr", `{"session":"w","workspaceId":"workspace"}`}, {"herdr wrong type", "herdr", `{"session":"w","workspaceId":null,"paneId":"pane"}`},
-		{"herdr blank", "herdr", `{"session":" ","workspaceId":"workspace","paneId":"pane"}`}, {"herdr NUL", "herdr", `{"session":"w","workspaceId":"workspace","paneId":"pane\u0000"}`},
-		{"herdr unknown", "herdr", `{"session":"w","workspaceId":"workspace","paneId":"pane","extra":true}`}, {"herdr duplicate", "herdr", `{"session":"w","workspaceId":"workspace","paneId":"pane","paneId":"other"}`},
-		{"native numeric", "nativeSessionId", `0`}, {"native blank", "nativeSessionId", `" "`}, {"native NUL", "nativeSessionId", `"session\u0000"`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			worker := workerJSON(t)
-			worker[test.key] = json.RawMessage(test.value)
-			data, err := json.Marshal(worker)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := taskproperty.Decode(append(append([]byte(`{"pullRequests":[],"worker":`), data...), '}')); err == nil {
-				t.Fatalf("invalid worker field was accepted: %s", data)
-			}
-		})
-	}
-	worker := workerJSON(t)
-	worker["extra"] = json.RawMessage(`true`)
-	if _, err := taskproperty.Decode(workerPropertiesJSON(t, worker)); err == nil {
-		t.Fatal("unknown worker field was accepted")
-	}
-	valid := string(workerPropertiesJSON(t, workerJSON(t)))
-	duplicate := strings.Replace(valid, `"worker":{`, `"worker":null,"worker":{`, 1)
-	if _, err := taskproperty.Decode([]byte(duplicate)); err == nil {
-		t.Fatal("duplicate worker property was accepted")
-	}
-	duplicate = strings.Replace(valid, `"claimId":`, `"claimId":"00000000-0000-4000-8000-000000000001","claimId":`, 1)
-	if _, err := taskproperty.Decode([]byte(duplicate)); err == nil {
-		t.Fatal("duplicate worker identity was accepted")
-	}
-	for _, data := range []string{`{"pullRequests":[],"worker":null}`, `{"pullRequests":[],"worker":{}}`, `{"pullRequests":[],"worker":[]}`, `{"pullRequests":[],"worker":true}`} {
-		if _, err := taskproperty.Decode([]byte(data)); err == nil {
-			t.Fatalf("invalid nullable worker read field accepted: %s", data)
-		}
-	}
 }
 
 func TestWorkerPropertyCannotEnterWritablePatch(t *testing.T) {

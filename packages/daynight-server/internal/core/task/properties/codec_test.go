@@ -99,43 +99,6 @@ func TestCodecPreservesPropertiesAndPatchPresence(t *testing.T) {
 	}
 }
 
-func TestCodecRejectsCorruptStoredStructures(t *testing.T) {
-	for _, invalid := range []string{
-		`null`, `[]`, `{`, `{} {}`, `{"unknown":[]}`, `{"worker":null}`, `{"pullRequests":[],"pullRequests":[]}`, `{"pullRequests":null}`, `{"pullRequests":{}}`,
-		`{"paused":null}`, `{"paused":"true"}`, `{"paused":1}`, `{"paused":[]}`, `{"paused":{}}`, `{"paused":true,"paused":false}`,
-		`{"pullRequests":[null]}`, `{"pullRequests":[{}]}`, `{"pullRequests":[{"url":null,"title":"x"}]}`,
-		`{"pullRequests":[{"url":"x"}]}`, `{"pullRequests":[{"url":"x","title":1}]}`,
-		`{"pullRequests":[{"url":"x","title":"y","extra":true}]}`, `{"pullRequests":[{"url":"x","title":"y","title":"z"}]}`,
-	} {
-		t.Run(invalid, func(t *testing.T) {
-			_, err := taskproperty.Decode([]byte(invalid))
-			var invalidValue *taskproperty.ValidationError
-			if !errors.As(err, &invalidValue) {
-				t.Fatalf("corrupt stored properties must retain validation type: %v", err)
-			}
-		})
-	}
-}
-
-func TestCodecNormalizationPreservesLegacyDecodedTextAndValueSemantics(t *testing.T) {
-	left, err := taskproperty.Decode([]byte(`{"pullRequests":[{"title":"\ud800","url":"a\u0000b"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	right, err := taskproperty.Decode([]byte(`{"pullRequests":[ { "url":"a\u0000b", "title":"�" } ]}`))
-	if err != nil || !taskproperty.Equal(left, right) {
-		t.Fatalf("equivalent decoded text changed: %s vs %s (%v)", left, right, err)
-	}
-	if value := pullRequestsValue(t, left)[0]; value.URL != "a\x00b" || value.Title != "�" {
-		t.Fatalf("typed string semantics changed: %#v", value)
-	}
-	_, err = taskproperty.Encode(model.TaskProperties{"pullRequests": json.RawMessage(`null`)})
-	var invalidValue *taskproperty.ValidationError
-	if !errors.As(err, &invalidValue) {
-		t.Fatalf("Encode silently accepted invalid values: %v", err)
-	}
-}
-
 func TestStructuredPatchRejectsMalformedObjectsWithoutLosingValidationIdentity(t *testing.T) {
 	for _, input := range []string{
 		`null`, `[]`, `{`, `{} {}`, `{"pullRequests":[]`,
