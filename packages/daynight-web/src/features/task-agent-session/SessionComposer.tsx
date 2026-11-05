@@ -1,5 +1,6 @@
-import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback } from 'react';
+import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
+import type { SessionComposerPresentation } from './session-presentation-slots';
 import type { SessionDraft, SessionSettingIntent } from './client';
 import type { SessionNativeCommand } from '../../../../daynight/src/session/controls';
 import { SessionControlsPanel, type ControlsView } from './SessionControlsPanel';
@@ -19,7 +20,8 @@ function classifySubmission(text: string, commands: readonly SessionNativeComman
   return { kind: 'command', command, args: parsed?.[2] ?? '' } as const;
 }
 
-export function SessionComposer({ state, connected, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls }: {
+export function SessionComposer({ state, connected, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
+  readonly presentation?: SessionComposerPresentation; readonly inputRef?: RefObject<HTMLTextAreaElement | null>;
   readonly sessionNoticeOwned?: boolean; readonly statusDescriptionId?: string;
   readonly state: SessionState; readonly connected: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
   readonly draft?: SessionDraft; readonly onDraftChange?: (text: string) => void;
@@ -53,7 +55,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const [localText, setLocalText] = useState('');
   const localRevision = useRef(0);
   const text = draft?.text ?? localText;
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const localInputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = suppliedInputRef ?? localInputRef;
   const formRef = useRef<HTMLFormElement>(null);
   const commandBodyRef = useRef<HTMLDivElement>(null);
   const focusCleanups = useRef(new Set<() => void>());
@@ -313,6 +316,27 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     finally { setCancelling(false); latest.current.cancelling = false; }
   }
   const commandSendAllowed = !authPaused && connected && !pending && !commandPending && (commands.some(command => command.id.startsWith('$') && `/${command.name}` === text.trim()) || controlsAllowed);
+  const input = <textarea aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
+      if (event.key === 'Tab' && event.shiftKey) {
+        // Remove candidates before the browser and outer focus boundaries compute Tab order.
+        if (showCommands) flushSync(() => { setControlView(null); dismissCommands(true); });
+        return;
+      }
+      if (showCommands && matchingCommands.length && !authPaused) {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setCandidateExplicit(true); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
+        if ((event.key === 'Enter' && !event.shiftKey && candidateExplicit) || event.key === 'Tab') { event.preventDefault(); chooseCommand(matchingCommands[selectedIndex]!); return; }
+      }
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      event.preventDefault(); void send();
+    }} />;
+  const settings = <div className="session-controls-toolbar" aria-label={m.title}>
+        <button type="button" className="session-control-trigger" aria-label={m.model} data-pending={modelPending || undefined} aria-expanded={controlView === 'model'} onClick={() => { setControlView(controlView === 'model' ? null : 'model'); dismissCommands(true); }}>{modelLabel}<span aria-hidden="true"> ▾</span></button>
+        <button type="button" className="session-control-trigger" aria-label={sessionNativeLabels.permissions} lang="en" data-pending={permissionPending || undefined} aria-expanded={controlView === 'permissions'} onClick={() => { setControlView(controlView === 'permissions' ? null : 'permissions'); dismissCommands(true); }}>{sessionNativeLabels.permissions}<span aria-hidden="true"> ▾</span></button>
+        <button type="button" className="session-control-trigger" aria-label={m.commands} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
+      </div>;
+  const activity = <SessionActivity suppressStatus={sessionNoticeOwned} snapshot={snapshot} connected={connected} active={active} commandPending={commandPending || hasPendingOperation(state, 'execute_command')} interruptRequested={interruptRequested} interruptPending={cancelling || hasPendingOperation(state, 'cancel')} interruptAllowed={cancelAllowed} onInterrupt={() => void cancel()} />;
+  const submit = <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(submission.kind !== 'message' ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>;
   return <form ref={formRef} className="session-composer session-composer-adaptive" onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
     if (event.key !== 'Escape' || !(controlView || showCommands)) return;
     event.stopPropagation();
@@ -330,28 +354,10 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     </div> : null}
     {notice ? <p className="session-notice" role="status">{notice}</p> : null}
     <div className="session-composer-surface">
-    <textarea aria-describedby={statusDescriptionId} ref={inputRef} aria-controls={showCommands ? `${menuId}-commands` : undefined} aria-activedescendant={showCommands && matchingCommands.length ? `${menuId}-command-${selectedIndex}` : undefined} aria-label={m.message} placeholder={m.placeholder} rows={1} value={text} onChange={(event) => { currentText.current = event.target.value; setText(event.target.value); }} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => {
-      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
-      if (event.key === 'Tab' && event.shiftKey) {
-        // Remove candidates before the browser and outer focus boundaries compute Tab order.
-        if (showCommands) flushSync(() => { setControlView(null); dismissCommands(true); });
-        return;
-      }
-      if (showCommands && matchingCommands.length && !authPaused) {
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setCandidateExplicit(true); setCommandIndex((selectedIndex + (event.key === 'ArrowDown' ? 1 : -1) + matchingCommands.length) % matchingCommands.length); return; }
-        if ((event.key === 'Enter' && !event.shiftKey && candidateExplicit) || event.key === 'Tab') { event.preventDefault(); chooseCommand(matchingCommands[selectedIndex]!); return; }
-      }
-      if (event.key !== 'Enter' || event.shiftKey) return;
-      event.preventDefault(); void send();
-    }} />
+    {input}
+    {presentation?.renderAttachments ? <div className="session-composer-attachments">{presentation.renderAttachments({ text, inputRef, setText, snapshot, active, connected, authPaused })}</div> : null}
     <div className="session-composer-footer">
-      <div className="session-controls-toolbar" aria-label={m.title}>
-        <button type="button" className="session-control-trigger" aria-label={m.model} data-pending={modelPending || undefined} aria-expanded={controlView === 'model'} onClick={() => { setControlView(controlView === 'model' ? null : 'model'); dismissCommands(true); }}>{modelLabel}<span aria-hidden="true"> ▾</span></button>
-        <button type="button" className="session-control-trigger" aria-label={sessionNativeLabels.permissions} lang="en" data-pending={permissionPending || undefined} aria-expanded={controlView === 'permissions'} onClick={() => { setControlView(controlView === 'permissions' ? null : 'permissions'); dismissCommands(true); }}>{sessionNativeLabels.permissions}<span aria-hidden="true"> ▾</span></button>
-        <button type="button" className="session-control-trigger" aria-label={m.commands} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
-      </div>
-      <SessionActivity suppressStatus={sessionNoticeOwned} snapshot={snapshot} connected={connected} active={active} commandPending={commandPending || hasPendingOperation(state, 'execute_command')} interruptRequested={interruptRequested} interruptPending={cancelling || hasPendingOperation(state, 'cancel')} interruptAllowed={cancelAllowed} onInterrupt={() => void cancel()} />
-      <div className="session-actions" data-hint-open={keyboardHintVisible || undefined} onMouseEnter={() => setKeyboardHint(current => ({ ...current, hovered: true, dismissed: false }))} onMouseLeave={() => setKeyboardHint(current => ({ ...current, hovered: false }))} onFocus={() => setKeyboardHint(current => ({ ...current, focused: true, dismissed: false }))} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setKeyboardHint(current => ({ ...current, focused: false })); }}><button className="button button-primary" type="submit" aria-describedby={`${menuId}-keyboard`} title={authPaused ? m.checkingIdentity : undefined} disabled={!(submission.kind !== 'message' ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button><span id={`${menuId}-keyboard`} className="session-composer-keyboard" role="tooltip">{m.keyboard} · /</span></div>
+      {presentation?.renderFooter ? presentation.renderFooter({ settings, activity, submit }) : <>{settings}{activity}{submit}</>}
     </div>
     {error ? <p className="session-error" role="alert">{error}</p> : null}
     </div>
