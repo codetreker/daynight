@@ -19,7 +19,9 @@ The coverage child in `scripts/ci.mts quality` receives
 the [stage budget decision](2026-11-04-web-coverage-finalization-budget.md) gives
 the final inventory and coverage checker its own 60-second deadline. The `forks`
 pool, per-file isolation, complete product-source inventory and strict unrounded
-statement-coverage gate remain. The [local stress decision](2026-11-03-local-stress-suites.md)
+statement-coverage gate remain. The [test environment decision](2026-11-06-web-test-environments.md)
+assigns browser-independent files to Node and the remaining files to jsdom; both
+projects share this total worker budget. The [local stress decision](2026-11-03-local-stress-suites.md)
 subsequently separates scale workloads from ordinary discovery while retaining
 compact correctness cases and the same product coverage manifest.
 
@@ -50,12 +52,15 @@ seconds, but the original budget reserved capacity for a concurrent build that
 no longer shares this runner. Four workers use its additional capacity and
 provide more command-deadline headroom in the matched comparison.
 
-**Batch routing assertions or run routing under the Node environment.** All 15
-routing cases and exact raw counters for all 142 covered product files were
-retained in controlled Vitest/V8 probes. Batched execution measured 34.0 seconds
-against a 34.73-second baseline; the Node environment with no setup files
-measured 34.40 seconds. These results do not demonstrate a useful saving that
-justifies changing the existing assertion or coverage environment.
+**Batch routing assertions or change only routing's environment.** At calibration,
+all 15 routing cases and exact raw counters for all 142 covered product files
+were retained in controlled Vitest/V8 probes. Batched execution measured 34.0
+seconds against a 34.73-second baseline; the Node environment with no setup files
+measured 34.40 seconds. Those single-file results did not justify changing the
+assertion or coverage environment at that time. The later
+[test environment decision](2026-11-06-web-test-environments.md) assesses the
+combined preparation cost across browser-independent files while preserving the
+routing assertions.
 
 **Switch coverage to the threads pool.** A complete two-thread probe measured
 169.22 seconds and did not pass one status test. It did not
