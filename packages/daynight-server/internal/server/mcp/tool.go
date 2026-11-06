@@ -298,7 +298,14 @@ func requiredExactly(value any, keys ...string) bool {
 // RegisterTool validates the exact schemas advertised to clients before a tool
 // becomes discoverable. Class must describe the largest internal materialization.
 func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHandler) error {
-	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || (class != BudgetControl && class != BudgetLarge) {
+	if class != BudgetControl && class != BudgetLarge {
+		return errors.New("invalid MCP tool registration")
+	}
+	return e.registerTool(tool, func(json.RawMessage) BudgetClass { return class }, handler)
+}
+
+func (e *Entry) registerTool(tool *sdk.Tool, selectClass func(json.RawMessage) BudgetClass, handler ToolHandler) error {
+	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || selectClass == nil {
 		return errors.New("invalid MCP tool registration")
 	}
 	input, err := resolveSchema(tool.InputSchema)
@@ -342,6 +349,10 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 		}
 		if err := validateJSON(input, raw); err != nil {
 			return e.errorResult(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
+		}
+		class := selectClass(raw)
+		if class != BudgetControl && class != BudgetLarge {
+			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
 		}
 		release, err := actor.Budget.Acquire(ctx, class)
 		if err != nil {

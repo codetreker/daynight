@@ -14,9 +14,13 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -99,8 +103,58 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil || !taskToolsOnly(list) {
 		t.Fatalf("production tools: %#v, %v", list, err)
+	}
+	project, err := projectservice.NewProjects(database).Create(t.Context(), principals[0], projectcore.CreateProject{ExpectedUserID: principals[0].UserID, Name: "MCP queries", RepoURL: "host:mcp-queries"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := taskservice.NewTasks(database).Create(t.Context(), principals[0], project.ID, taskcore.CreateTask{Title: "Ready task", Description: "Complete description"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(session *sdk.ClientSession, name string, args map[string]any, wantError bool) map[string]any {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
+		if err != nil || result.IsError != wantError {
+			t.Fatalf("%s: %#v, %v", name, result, err)
+		}
+		encoded, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value map[string]any
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	for _, name := range []string{"task_list", "task_ready"} {
+		for _, view := range []string{"summary", "full"} {
+			value := call(productionClient, name, map[string]any{"projectId": project.ID, "view": view}, false)
+			data := value["data"].(map[string]any)
+			items := data["items"].([]any)
+			if data["projection"] != view || len(items) != 1 || items[0].(map[string]any)["id"] != created.ID || items[0].(map[string]any)["version"] != "1" {
+				t.Fatalf("%s %s: %#v", name, view, value)
+			}
+			if name == "task_ready" && view == "full" && items[0].(map[string]any)["description"] != "Complete description" {
+				t.Fatalf("ready full: %#v", value)
+			}
+		}
+	}
+	for _, view := range []string{"summary", "full"} {
+		value := call(productionClient, "task_graph", map[string]any{"projectId": project.ID, "taskId": created.ID, "view": view}, false)
+		data := value["data"].(map[string]any)
+		if data["projection"] != view || len(data["tasks"].([]any)) != 1 {
+			t.Fatalf("graph %s: %#v", view, value)
+		}
+	}
+	bobQueries := mcpPATClient(t, production.URL, tokens[1])
+	if value := call(bobQueries, "task_list", map[string]any{"projectId": project.ID}, true); value["error"] == nil {
+		t.Fatalf("unauthorized project: %#v", value)
 	}
 
 	// A separate production router with an explicitly test-only tool exposes the
@@ -190,7 +244,21 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	list, err = bobProduction.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil || !taskToolsOnly(list) {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
 	}
+}
+
+func taskToolsOnly(result *sdk.ListToolsResult) bool {
+	if result == nil || len(result.Tools) != 3 {
+		return false
+	}
+	want := map[string]bool{"task_list": true, "task_ready": true, "task_graph": true}
+	for _, tool := range result.Tools {
+		if !want[tool.Name] {
+			return false
+		}
+		delete(want, tool.Name)
+	}
+	return len(want) == 0
 }

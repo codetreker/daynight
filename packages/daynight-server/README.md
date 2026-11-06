@@ -325,8 +325,20 @@ The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The endpoint currently advertises no business tools. A tool is discoverable only
-after its complete business adapter is registered.
+The endpoint advertises `task_list`, `task_ready` and `task_graph`. Task list
+defaults to a marked summary and excludes done tasks. It orders in-progress,
+ready, blocked and done tasks before paging. Its cursor binds the caller,
+project, filters and view to a snapshot fence; `list_changed` requires restarting
+the traversal when project task versions change. `view: full` requests the
+complete list projection. Ready tasks and graph reads also default to marked
+summaries; `view: full` requests their complete resources. Graphs retain their
+node and edge limits. Other tools are discoverable only when their complete
+business adapters are registered.
+
+When a full ready result exceeds the response budget, its continuation uses
+`task_list`, whose full projection omits descriptions. Reading those descriptions
+requires `task_show`, which may not yet be available. The continuation identifies
+this limitation; clients can inspect tool discovery before using `task_show`.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
