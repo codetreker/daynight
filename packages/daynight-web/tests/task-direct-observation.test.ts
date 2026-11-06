@@ -554,6 +554,80 @@ it("does not treat a retired Step 404 as project access loss", async () => {
   expect(sessions.snapshot(project, task).detail?.title).toBe("Original"); expect(accessReads).toBe(0); expect(scope.isInvalidated).toBe(false);
 });
 
+it("verifies a retired Step 404 against the parent and withdraws a denied parent", async () => {
+  const { sessions, scope } = world(); const write = deferred<Response>(); const parent = deferred<Response>(); const access = deferred<Response>(); let writes = 0; let checking = false; let checks = 0; let revoked = false;
+  scope.subscribe(event => { if (event.accessRevoked) revoked = true; });
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "DELETE") { writes++; return write.promise; }
+    if (url.endsWith("/access")) return access.promise;
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: 1n, steps: [step] }));
+    if (checking) { checks++; return parent.promise; } return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
+  sessions.releaseRead(project, task); sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready")); checking = true;
+  write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "step" } }, null, 404));
+  await waitFor(() => expect(checks).toBe(1));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  const resume = pauseAuthRequests();
+  parent.resolve(response({ error: { code: "not_found", message: "Missing task", requestId: "parent" } }, null, 404));
+  try { await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "error", detail: null, error: { status: 404 } })); }
+  finally { resume(); }
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  access.resolve(response({ error: { code: "not_found", message: "Missing project", requestId: "access" } }, null, 404));
+  await waitFor(() => expect(revoked).toBe(true));
+  expect(writes).toBe(1);
+});
+
+it("keeps a retired Step refusal locked after a failed parent check and retries without another write", async () => {
+  const { sessions } = world(); const write = deferred<Response>(); let checking = false; let checks = 0; let writes = 0;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "DELETE") { writes++; return write.promise; }
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: 1n, steps: [step] }));
+    if (checking) { checks++; if (checks === 1) return Promise.reject(new Error("offline")); } return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
+  sessions.releaseRead(project, task); sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready")); checking = true;
+  write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "step" } }, null, 404));
+  await waitFor(() => expect(checks).toBe(1));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, { reconciling: boolean }> }).retiredMutations;
+  await waitFor(() => expect([...retired.values()]).toMatchObject([{ reconciling: false }]));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  sessions.load(project, task, 1, "refresh");
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(writes).toBe(1); expect(checks).toBeGreaterThanOrEqual(2);
+});
+
+it("does not let a late retired Step parent denial withdraw a replacement history", async () => {
+  const { sessions, scope } = world(); const write = deferred<Response>(); const parent = deferred<Response>(); let checking = false; let checks = 0; let replaced = false; let writes = 0;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "DELETE") { writes++; return write.promise; }
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: 1n, steps: [step] }));
+    if (checking && !replaced) { checks++; return parent.promise; }
+    return Promise.resolve(response(body(1n, replaced ? "Replacement" : "Original"), replaced ? replacement : epoch));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
+  sessions.releaseRead(project, task); sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready")); checking = true;
+  write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "step" } }, null, 404));
+  await waitFor(() => expect(checks).toBe(1)); replaced = true;
+  const fence = await scope.beginTaskRead(project, task, 0, 0, signal());
+  expect(await scope.observeHistory(fence, replacement, signal())).toBe("retired");
+  await waitFor(() => expect(sessions.snapshot(project, task).detail?.title).toBe("Replacement"));
+  parent.resolve(response({ error: { code: "not_found", message: "Missing task", requestId: "parent" } }, null, 404));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
+  expect(sessions.snapshot(project, task).detail?.title).toBe("Replacement"); expect(writes).toBe(1);
+});
+
 it("keeps the existing direct receipt fresh during a pending Step write while blocking writes", async () => {
   const { sessions } = world(); const write = deferred<Response>(); let writes = 0;
   const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };

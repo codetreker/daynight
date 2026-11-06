@@ -505,3 +505,33 @@ it('ignores a delayed rotation marker after a newer Session success', async () =
     expect(within(screen.getByTestId('second')).getByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
   } finally { transaction.mockRestore(); }
 });
+
+it('keeps session history readable during Step reconciliation and stops new reads after a parent failure', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  let sessions!: TaskDetailSessions; let parentReads = 0;
+  let resolveParent!: (response: Response) => void;
+  const parent = new Promise<Response>(resolve => { resolveParent = resolve; });
+  const step = { id: '00000001', title: 'Step', description: '', status: 'todo', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T10:00:00Z' };
+  const response = (value: unknown) => wireResponse(value, { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (init?.method === 'PUT') return Promise.resolve(response({ projectId, taskId, version: 2n, steps: [{ ...step, status: 'done' }] }));
+    if (url.endsWith('/steps')) return Promise.resolve(response({ projectId, taskId, version: 1n, steps: [step] }));
+    return ++parentReads === 1 ? Promise.resolve(response(detailFixture(projectId, taskId))) : parent;
+  }));
+  const api = { history: vi.fn(async () => ({ items: [item], nextCursor: null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
+  vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><DirectRecords onSessions={value => { sessions = value; }} /></TaskDetailSessionProvider></TaskCacheProvider>);
+  await screen.findByRole('button', { name: /Herdr/ });
+  const unsubscribe = sessions.subscribeSteps(projectId, taskId, () => {}); sessions.loadSteps(projectId, taskId);
+  await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
+  act(() => sessions.setStepStatus(projectId, taskId, '00000001', 'done', 1n));
+  await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation).toMatchObject({ phase: 'confirmed', reconciling: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  await act(async () => resolveParent(wireResponse({ error: { code: 'internal_error', message: 'unavailable', requestId: 'failed' } }, { status: 503, headers: viewerHeaders(TEST_VIEWER_ID) })));
+  await waitFor(() => expect(sessions.captureDirectSessionQualification(projectId, taskId)).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(api.history).toHaveBeenCalledTimes(2);
+  unsubscribe();
+});

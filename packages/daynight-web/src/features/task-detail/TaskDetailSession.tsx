@@ -15,7 +15,7 @@ type DirectTaskReceipt = { readonly fence: TaskReadFence; readonly epoch: string
 const directQualification = Symbol("directQualification");
 export type DirectQualification = { readonly [directQualification]: DirectTaskReceipt };
 type ReadTicket = SyncTicket | TaskReadFence;
-const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepEdit" | "stepDelete" | "stepPosition" }> =>
+export const isStepOperation = (operation: TaskMutationOperation | null): operation is Extract<TaskMutationOperation, { action: "stepStatus" | "stepAdd" | "stepEdit" | "stepDelete" | "stepPosition" }> =>
   operation?.action === "stepStatus" || operation?.action === "stepAdd" || operation?.action === "stepEdit" || operation?.action === "stepDelete" || operation?.action === "stepPosition";
 const movedSteps = (resource: StepsResource, stepId: string, placement: StepPlacement): StepsResource["steps"] | null => {
   const from = resource.steps.findIndex((step) => step.id === stepId);
@@ -96,6 +96,7 @@ type Entry = {
   source: "project-summary" | "direct";
   receipt: DirectTaskReceipt | null;
   historyRetry: boolean;
+  directParentReadFailed: boolean;
   withdrawn: boolean;
   operationFence: TaskReadFence | null;
   liveOpeningGeneration: number;
@@ -218,7 +219,7 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, source: "project-summary", receipt: null, historyRetry: false, withdrawn: false, operationFence: null, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, source: "project-summary", receipt: null, historyRetry: false, directParentReadFailed: false, withdrawn: false, operationFence: null, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -249,11 +250,36 @@ export class TaskDetailSessions {
   }
   captureDirectQualification(projectId: string, taskId: string): DirectQualification | null {
     const entry = this.entry(projectId, taskId);
-    return this.directRequiresFreshRead(projectId, taskId) || entry.state.mutation.phase === "pending" || entry.receipt === null ? null : { [directQualification]: entry.receipt };
+    return this.directRequiresFreshRead(projectId, taskId) || entry.state.mutation.phase === "pending" && !isStepOperation(entry.state.mutation.operation) || entry.receipt === null ? null : { [directQualification]: entry.receipt };
   }
   isDirectQualificationCurrent(projectId: string, taskId: string, qualification: DirectQualification): boolean {
     const entry = this.entry(projectId, taskId);
-    return entry.receipt === qualification[directQualification] && entry.state.mutation.phase !== "pending" && !this.directRequiresFreshRead(projectId, taskId);
+    return entry.receipt === qualification[directQualification] && (entry.state.mutation.phase !== "pending" || isStepOperation(entry.state.mutation.operation)) && !this.directRequiresFreshRead(projectId, taskId);
+  }
+  directSessionCurrent(projectId: string, taskId: string): boolean {
+    const entry = this.entry(projectId, taskId);
+    const receipt = entry.receipt;
+    if (entry.source !== "direct" || receipt === null || !this.ticketCurrent(entry, receipt.fence) || entry.directParentReadFailed || entry.withdrawn ||
+      entry.state.status !== "ready" || entry.state.error !== null || entry.state.detail?.version !== receipt.detail.version) return false;
+    const retired = [...this.retiredMutations.entries()].filter(([, owner]) => owner.projectId === projectId && owner.taskId === taskId && owner.fence !== null && this.scope.isTaskReadCurrent(owner.fence, true));
+    if (retired.some(([operation]) => !isStepOperation(operation))) return false;
+    const mutation = entry.state.mutation;
+    if (mutation.operation !== null && !isStepOperation(mutation.operation) && mutation.phase !== "idle") return !this.directRequiresFreshRead(projectId, taskId) && mutation.phase !== "pending";
+    const stepUnsettled = isStepOperation(mutation.operation) && (mutation.phase === "pending" || mutation.phase === "unknown" || mutation.phase === "conflict" ||
+      mutation.reconciling || mutation.reconciliationError !== null || mutation.phase === "confirmed" && entry.committedVersion !== null && receipt.detail.version < entry.committedVersion);
+    if (stepUnsettled || retired.some(([operation]) => isStepOperation(operation))) return true;
+    return !this.directRequiresFreshRead(projectId, taskId) && mutation.phase !== "pending";
+  }
+  captureDirectSessionQualification(projectId: string, taskId: string): DirectQualification | null {
+    const entry = this.entry(projectId, taskId);
+    return this.directSessionCurrent(projectId, taskId) && entry.receipt !== null ? { [directQualification]: entry.receipt } : null;
+  }
+  async captureDirectSessionHistoryTicket(projectId: string, taskId: string, qualification: DirectQualification, signal: AbortSignal): Promise<SyncTicket | null> {
+    const current = () => this.directSessionCurrent(projectId, taskId) && this.entry(projectId, taskId).receipt === qualification[directQualification];
+    if (!current()) return null;
+    const receipt = qualification[directQualification];
+    const ticket = await this.scope.getDirectHistoryTicket(receipt.fence, receipt.epoch, signal);
+    return current() ? ticket : null;
   }
   async verifyDirectQualification(projectId: string, taskId: string, qualification: DirectQualification, signal: AbortSignal): Promise<boolean> {
     if (!this.isDirectQualificationCurrent(projectId, taskId, qualification)) return false;
@@ -892,7 +918,7 @@ export class TaskDetailSessions {
         throw new ApiError("protocol");
       }
       entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
-      entry.historyRetry = false; entry.withdrawn = false;
+      entry.historyRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
       const mutation = reconciliation
         ? { ...entry.state.mutation, phase: entry.state.mutation.phase === "unknown" ? "reconciled" as const : entry.state.mutation.phase,
           ...(entry.state.mutation.phase === "unknown" ? { reconciledFrom: "unknown" as const } : {}), reconciling: false, reconciliationError: null }
@@ -905,7 +931,7 @@ export class TaskDetailSessions {
         if (!entry.historyRetry) {
           entry.historyRetry = true;
           queueMicrotask(() => { if (!this.disposed && entry.listeners.size > 0) void this.read(projectId, taskId, revision, reconciliation, retainLoaded); });
-        } else this.failRead(entry, new ApiError("protocol"), reconciliation);
+        } else { entry.directParentReadFailed = true; this.failRead(entry, new ApiError("protocol"), reconciliation); }
         return;
       }
       if (isAbortError(error)) return;
@@ -921,6 +947,7 @@ export class TaskDetailSessions {
         this.clearSteps(entry.steps, emptyTaskStepsState);
         this.scope.reportTaskNotFound(projectId);
       }
+      entry.directParentReadFailed = true;
       this.failRead(entry, error, reconciliation);
     } finally {
       if (generation === entry.generation) { entry.read = null; this.drainReads(projectId, taskId); }
@@ -1033,6 +1060,11 @@ export class TaskDetailSessions {
       ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
     retired.error = error;
     if (confirmed && committedVersion !== null) retired.committedVersion = committedVersion;
+    if (isStepOperation(operation) && error instanceof ApiError && error.kind === "server" && error.status === 404) {
+      retired.reconciling = true;
+      void this.verifyRetiredStepParent(operation, retired);
+      return;
+    }
     if (!isStepOperation(operation) && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
       if (retired.fence === null || !this.scope.isTaskReadCurrent(retired.fence, true)) { this.retiredMutations.delete(operation); return; }
       const current = this.entries.get(`${retired.projectId}/${retired.taskId}`);
@@ -1076,6 +1108,61 @@ export class TaskDetailSessions {
         } else { retired.error = failure; retired.reconciling = false; }
       }
     })();
+  }
+  private async verifyRetiredStepParent(operation: TaskMutationOperation, retired: NonNullable<ReturnType<typeof this.retiredMutations.get>>): Promise<void> {
+    const { projectId, taskId } = retired;
+    const oldCurrent = (): boolean => retired.fence !== null && this.scope.isTaskReadCurrent(retired.fence, true);
+    const releaseOld = (): void => { this.retiredMutations.delete(operation); };
+    try {
+      if (!oldCurrent()) { releaseOld(); return; }
+      const signal = this.scope.signal;
+      const fence = await this.scope.beginTaskRead(projectId, taskId, -1, -1, signal);
+      if (!oldCurrent()) { releaseOld(); return; }
+      if (!await this.scope.verifyTaskRead(fence, signal)) { if (!oldCurrent()) releaseOld(); else retired.reconciling = false; return; }
+      const owner = this.entries.get(`${projectId}/${taskId}`);
+      const opening = owner?.openingGeneration;
+      const generation = owner?.generation;
+      let observation: Awaited<ReturnType<typeof getTaskObservation>>;
+      try {
+        observation = await getTaskObservation(projectId, taskId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
+      } catch (failure) {
+        const negative = failure instanceof ApiError && failure.kind === "server" &&
+          (failure.status === 404 && failure.code === "not_found" || failure.status === 410 && failure.code === "task_deleted");
+        if (!negative) {
+          if (oldCurrent() && this.scope.isTaskReadCurrent(fence, true) && owner !== undefined && owner === this.entries.get(`${projectId}/${taskId}`) &&
+            owner.openingGeneration === opening && owner.generation === generation && !this.disposed) {
+            owner.directParentReadFailed = true;
+            this.publish(owner, { ...owner.state });
+          }
+          throw failure;
+        }
+        if (!oldCurrent()) { releaseOld(); return; }
+        if (!this.scope.isTaskReadCurrent(fence, true)) { if (!oldCurrent()) releaseOld(); else retired.reconciling = false; return; }
+        // A later opening or read owns its own result, so retry rather than apply this receipt to it.
+        if (owner !== this.entries.get(`${projectId}/${taskId}`) || owner?.openingGeneration !== opening || owner?.generation !== generation) {
+          retired.reconciling = false; return;
+        }
+        if (owner !== undefined && !this.disposed) {
+          if (failure.status === 410) this.markDeleted(projectId, taskId, this.entryGeneration(owner)!, failure);
+          else {
+            this.cancelRead(projectId, taskId);
+            owner.receipt = null; owner.liveVersion = null; owner.withdrawn = true;
+            this.clearSteps(owner.steps, emptyTaskStepsState);
+            this.publish(owner, { ...owner.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, error: failure });
+          }
+        }
+        if (failure.status === 404) await this.scope.revalidateProjectAccess(projectId);
+        releaseOld();
+        if (failure.status === 404) this.notifyRetiredSettlement(retired, true);
+        return;
+      }
+      if (await this.scope.observeHistory(fence, observation.epoch, signal) === "retired") { if (!oldCurrent()) releaseOld(); else retired.reconciling = false; return; }
+      if (!oldCurrent()) { releaseOld(); return; }
+      releaseOld(); this.notifyRetiredSettlement(retired, true);
+    } catch {
+      // Keep the original refusal and its lock so an explicit refresh can retry verification.
+      retired.reconciling = false;
+    }
   }
   private notifyRetiredSettlement(retired: { readonly projectId: string; readonly taskId: string; readonly fence: TaskReadFence | null }, refresh: boolean): void {
     if (this.disposed || this.scope.isInvalidated || retired.fence === null || !this.scope.isTaskReadCurrent(retired.fence, true)) return;

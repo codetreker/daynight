@@ -23,10 +23,10 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
   const [request, setRequest] = useState<{ cursor: string | null; sequence: number }>({ cursor: null, sequence: 0 });
   const qualificationRef = useRef<DirectQualification | null>(null);
   if (qualificationRef.current === null || !sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualificationRef.current)) {
-    qualificationRef.current = sessions.captureDirectQualification(projectId, taskId);
+    qualificationRef.current = sessions.captureDirectSessionQualification(projectId, taskId);
   }
   const qualification = qualificationRef.current;
-  const readReady = sessions.captureDirectQualification(projectId, taskId) !== null;
+  const readReady = sessions.captureDirectSessionQualification(projectId, taskId) !== null;
   const blocked = useRef(false);
   const denialOrigin = useRef(Symbol('direct-session-records'));
   const activeRead = useRef<AbortController | null>(null);
@@ -60,12 +60,12 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
       try {
         await scope.ready(signal);
         if (!current()) return;
-        const fresh = sessions.captureDirectQualification(projectId, taskId);
+        const fresh = sessions.captureDirectSessionQualification(projectId, taskId);
         if (fresh === null) return;
         // A captured matching manifest fences the negative hint; it never grants
         // direct reads and its absence or failure does not block the network.
         try {
-          historyTicket = await sessions.captureDirectHistoryTicket(projectId, taskId, fresh, signal);
+          historyTicket = await sessions.captureDirectSessionHistoryTicket(projectId, taskId, fresh, signal);
           manifestAbsent = historyTicket === null;
           if (historyTicket !== null) historyOwner = await readSessionHistoryOwnership(scope, historyTicket, taskId, signal);
         } catch {
