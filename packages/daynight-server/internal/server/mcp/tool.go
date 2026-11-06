@@ -87,7 +87,7 @@ func acceptsErrorEnvelope(value any) bool {
 	if json.Unmarshal(raw, &root) != nil || root == nil || !onlySchemaKeys(root, "type", "properties", "required", "additionalProperties", "oneOf") {
 		return false
 	}
-	if root["type"] != "object" {
+	if root["type"] != "object" || !objectPropertySchemas(root) {
 		return false
 	}
 	if !requiredSubset(root["required"], "error") {
@@ -132,6 +132,21 @@ func schemaProperties(value any) (map[string]any, bool) {
 	}
 	properties, ok := value.(map[string]any)
 	return properties, ok
+}
+
+// objectPropertySchemas checks the tool discovery contract without restricting
+// schemas nested beneath a direct property.
+func objectPropertySchemas(root map[string]any) bool {
+	properties, ok := schemaProperties(root["properties"])
+	if !ok {
+		return false
+	}
+	for _, property := range properties {
+		if _, ok := property.(map[string]any); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func requiredSubset(value any, guaranteed ...string) bool {
@@ -293,8 +308,8 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 	var inputRoot map[string]any
 	inputBytes, _ := json.Marshal(tool.InputSchema)
 	_ = json.Unmarshal(inputBytes, &inputRoot)
-	if inputRoot["type"] != "object" {
-		return errors.New("input schema must have object root")
+	if inputRoot["type"] != "object" || !objectPropertySchemas(inputRoot) {
+		return errors.New("input schema must have object root and object property schemas")
 	}
 	output, err := resolveSchema(tool.OutputSchema)
 	if err != nil {
