@@ -1,0 +1,7 @@
+{
+  "Replace": {
+    "internal/service/webui/dist/index.html": "internal/service/webui/testdata/index.html",
+    "internal/service/webui/dist/assets/app-12345678.js": "internal/service/webui/testdata/app-12345678.js",
+    "internal/service/webui/dist/assets/style-12345678.css": "internal/service/webui/testdata/style-12345678.css"
+  }
+}

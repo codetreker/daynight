@@ -5,6 +5,7 @@ import (
 	"errors"
 	"mime"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -12,6 +13,18 @@ import (
 )
 
 const Bucket = "task-attachments"
+
+// MaxPathCharacters counts Unicode code points, including path separators.
+const MaxPathCharacters = 1024
+
+// ValidateWritePath rejects new writes beyond the path length limit. Existing
+// metadata may still refer to longer paths, which remain readable and removable.
+func ValidateWritePath(path string) error {
+	if utf8.RuneCountInString(path) > MaxPathCharacters {
+		return &model.Fault{Code: "invalid_input", Message: "Attachment path must not exceed 1024 characters."}
+	}
+	return nil
+}
 
 type Address struct {
 	ProjectID    string

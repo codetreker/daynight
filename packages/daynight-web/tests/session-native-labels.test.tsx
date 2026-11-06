@@ -59,10 +59,10 @@ it('keeps unknown operation receipts localized independently of the activity lab
   const s = snapshot({ activity: 'unknown' }), op = operation(s);
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(s, true, new Map([[op.operationId, op]]))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Outcome unknown');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('结果未知')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('无法确认此操作是否完成，请核对原操作。')).toBeVisible();
   expect(screen.getByRole('button', { name: '核对原操作' })).toBeVisible();
   view.setLocale('en');
-  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Outcome unknown')).toBeVisible();
+  expect(within(view.container.querySelector('.session-receipts') as HTMLElement).getByText('Unable to confirm whether this operation completed. Check the original operation.')).toBeVisible();
 });
 it('keeps Permissions trigger English while the panel, errors, and draft remain localized', async () => {
   const props = composer(); props.onUpdateSetting.mockRejectedValue(null);
@@ -120,7 +120,7 @@ it('keeps command execution and all interrupt stages English through locale chan
   for (const locale of ['zh-CN', 'en'] as const) { view.setLocale(locale); expect(screen.getByRole('button', { name: 'Interrupt requested' })).toBeDisabled(); }
   expect(props.onCancel).toHaveBeenCalledOnce();
 });
-it('keeps tool types English but localizes result statuses and pending interactions', async () => {
+it('keeps tool types English and result statuses localized while answering silently', async () => {
   const entries: TimelineEntry[] = [
     ...(['commandExecution', 'fileChange', '原生工具名'] as const).map((name, index): TimelineEntry => ({ kind: 'tool_call', entryId: String(index), entrySeq: String(index), revision: '1', callId: String(index), name, input: '原始用户内容', output: [], status: (['completed', 'failed', 'running'] as const)[index]!, truncated: false })),
     { kind: 'interaction', entryId: '3', entrySeq: '3', revision: '1', interaction: { kind: 'approval', interactionId: 'approval', revision: '1', state: 'pending', title: '原始审批标题', detail: '原始审批内容', actions: ['allow_once'] } },
@@ -133,7 +133,10 @@ it('keeps tool types English but localizes result statuses and pending interacti
     for (const label of ['Command', 'File changes']) expect(screen.getByText(label)).toHaveAttribute('lang', 'en');
     for (const status of locale === 'en' ? ['Completed', 'Failed', 'Running'] : ['已完成', '失败', '运行中']) expect(screen.getByText(status)).toBeVisible();
     expect(screen.getByText('原生工具名')).not.toHaveAttribute('lang');
-    expect(screen.getByText(locale === 'en' ? 'Awaiting provider confirmation' : '等待 Provider 确认')).toBeVisible();
+    expect(screen.queryByText(locale === 'en' ? 'Awaiting provider confirmation' : '等待 Provider 确认')).toBeNull();
+    expect(screen.getByText('原始审批标题')).toBeVisible();
+    expect(screen.getByText('原始审批内容')).toBeVisible();
+    expect(screen.getByRole('button', { name: locale === 'en' ? 'Allow once' : '允许一次' })).toBeDisabled();
     for (const input of screen.getAllByText('原始用户内容')) expect(input).not.toHaveAttribute('lang');
   }
   expect(respond).toHaveBeenCalledOnce();

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/admission"
 	"math/big"
 	"strings"
 	"time"
@@ -58,19 +59,7 @@ func (s *Identity) DeviceRate(ctx context.Context, dao store.IdentityDAO, operat
 	return nil
 }
 func (s *Identity) TakeDeviceRate(ctx context.Context, dao store.IdentityDAO, buckets []model.DeviceRateBucket, now time.Time) (bool, error) {
-	if err := dao.PruneDeviceRates(ctx, now); err != nil {
-		return false, err
-	}
-	for _, bucket := range buckets {
-		attempts, err := dao.IncrementDeviceRate(ctx, bucket, now)
-		if err != nil {
-			return false, err
-		}
-		if attempts > bucket.Limit {
-			return false, nil
-		}
-	}
-	return true, nil
+	return admission.Take(ctx, dao, buckets, now)
 }
 func (s *Identity) StartDevice(ctx context.Context, dao store.IdentityDAO, clientID string, now time.Time) (DeviceStart, error) {
 	if err := ValidateDeviceClient(clientID); err != nil {

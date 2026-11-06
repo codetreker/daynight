@@ -7,6 +7,7 @@ import (
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	granthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/grants"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
@@ -52,6 +53,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", endpoint)
 	auth.RegisterRoutes(mux)
+	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
@@ -149,6 +151,7 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks) },
 		func() error { return mcphttp.RegisterStepReadTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },
+		func() error { return mcphttp.RegisterAttachmentTools(entry, app.Attachments) },
 	)
 }
 

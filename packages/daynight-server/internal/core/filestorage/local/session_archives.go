@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
 )
 
 // DeleteSessionArchives never accepts a caller-selected bucket or path prefix.
@@ -20,6 +20,11 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionar
 	if err := namespace.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", filestorage.ErrInvalidAddress, err)
 	}
+	components := append([]string{sessionarchive.Bucket}, strings.Split(namespace.Directory(), "/")...)
+	return s.deleteNamespace(ctx, components)
+}
+
+func (s *Storage) deleteNamespace(ctx context.Context, components []string) (result error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -27,7 +32,6 @@ func (s *Storage) DeleteSessionArchives(ctx context.Context, namespace sessionar
 	defer s.namespace.Unlock()
 	directories := []*os.Root{s.root}
 	var sessionInfo fs.FileInfo
-	components := append([]string{sessionarchive.Bucket}, strings.Split(namespace.Directory(), "/")...)
 	defer func() {
 		for i := len(directories) - 1; i > 0; i-- {
 			result = errors.Join(result, directories[i].Close())
