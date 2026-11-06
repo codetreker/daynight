@@ -130,7 +130,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   };
   const remote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => uuid(2)),
-    ownInventory: vi.fn(async () => [...grants.values()]),
+    ownInventory: vi.fn(async (projects: readonly { projectId: string }[]) => ({ tasks: [...grants.values()], coveredProjectIds: [...new Set(projects.map(project => project.projectId))], unavailableProjectIds: [] })),
     candidates: vi.fn(async function* (projectId: string) { for (const candidate of candidates) if (candidate.projectId === projectId && ![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
     claim: vi.fn(async (candidate: Task, descriptor: WorkerClaimDescriptor) => grant(candidate, descriptor)),
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
@@ -259,7 +259,7 @@ describe("minimal worker resource reconciliation", () => {
   });
 
   it.each(["waiting cleanup", "direct shutdown"])("persists a rowless orphan through %s and a SQLite restart before starting its successor", async (mode) => {
-    const f = await fixture(); f.candidates.splice(1);
+    const f = await fixture(2); f.candidates.splice(1);
     const { owner, pane } = addOrphan(f, f.candidates[0]!.id);
     const unproven = { ...owner, taskId: uuid(950), claimId: uuid(951), worktreeId: uuid(952) };
     f.worktrees.set(unproven.claimId, { owner: unproven, binding: f.bind(unproven) });
