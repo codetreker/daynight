@@ -8,6 +8,7 @@ import { useProjectAccess } from "../projects/ProjectAccess";
 import { useTeams } from "../teams/TeamsProvider";
 import { useOperation } from "../teams/TeamManagement";
 import { ManagementDialog } from "./ManagementDialog";
+import type { ProjectManagementGuard } from "./ProjectManagementGuard";
 
 export const parseTransferTarget = (value: string, origin: string): string | null => {
   const trimmed = value.trim(), direct = canonicalId(trimmed);
@@ -37,7 +38,7 @@ const TeamChoices = ({ value, onChange, disabled }: { readonly value: string; re
   </div>;
 };
 
-export const ProjectOwnership = ({ projectId, projectName, onTransferred, active, onRoute = true, unavailable = false, onRetentionChange }: { readonly projectId: string; readonly projectName: string | null; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRoute?: boolean; readonly unavailable?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined }) => {
+export const ProjectOwnership = ({ projectId, projectName, onTransferred, active, onRoute = true, unavailable = false, onRetentionChange, guard }: { readonly projectId: string; readonly projectName: string | null; readonly onTransferred?: ((receipt: ProjectTransferReceipt) => void) | undefined; readonly active: boolean; readonly onRoute?: boolean; readonly unavailable?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly guard?: ProjectManagementGuard | undefined }) => {
   const access = useProjectAccess(projectId), scope = access.session.scope;
   const { locale, messages: { auth: { roles } } } = useI18n(), m = messages(locale === "zh-CN");
   const op = useOperation(scope);
@@ -98,6 +99,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   const submit = () => {
     const snapshot = access.session.snapshot();
     if (!active || gate.current !== null || op.guarded() || preview === null || reading || snapshot.status !== "ready" || !snapshot.access?.canTransfer || snapshot.access.ownership.teamId !== preview.ownership.teamId || snapshot.access.ownership.version !== preview.ownership.version) return;
+    if (guard !== undefined && !guard.tryAcquire("transfer")) return;
     const selected = preview, originalTarget = target;
     const controller = new AbortController(); gate.current = controller; setWaiting(true);
     const signal = AbortSignal.any([controller.signal, scope.signal]);
@@ -132,7 +134,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
               await access.session.revalidateAfterMutation();
               const latest = await access.session.waitForFreshAccess(scope.signal);
               if (latest === null && access.session.snapshot().status !== "unavailable") throw new Error("Unable to verify current project access");
-              if (latest !== null) { await scope.ready(scope.signal); if (scope.isInvalidated) return; cleanup.current = null; setDialog(false); onTransferred?.(receipt); onRetentionChange?.(false); return; }
+              if (latest !== null) { await scope.ready(scope.signal); if (scope.isInvalidated) return; cleanup.current = null; setDialog(false); onTransferred?.(receipt); guard?.release("transfer"); onRetentionChange?.(false); return; }
             }
           }
           await scope.ready(scope.signal);
@@ -144,7 +146,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
           }
           await scope.ready(scope.signal);
           if (scope.isInvalidated) return;
-          cleanup.current = null; setDialog(false); onTransferred?.(receipt); onRetentionChange?.(false);
+          cleanup.current = null; setDialog(false); onTransferred?.(receipt); guard?.release("transfer"); onRetentionChange?.(false);
         } catch (error) {
           if (scope.signal.aborted) return;
           try { await scope.ready(scope.signal); } catch { return; }
@@ -153,9 +155,10 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
       };
       cleanup.current = finish; void finish();
     }, (error) => {
+      guard?.release("transfer");
       if (error instanceof ApiError && (error.code === "version_conflict" || error.status === 403 || error.status === 404)) { setPreview(null); setConflict(error.code === "version_conflict"); void access.session.revalidate(); }
       });
-    } catch (error) { if (!signal.aborted && !scope.isInvalidated && !isAbortError(error)) setReadError(error); } finally { if (!started) onRetentionChange?.(false); if (gate.current === controller) { gate.current = null; setWaiting(false); } } })();
+    } catch (error) { if (!signal.aborted && !scope.isInvalidated && !isAbortError(error)) setReadError(error); } finally { if (!started || !op.guarded() && cleanup.current === null) { guard?.release("transfer"); if (!started) onRetentionChange?.(false); } if (gate.current === controller) { gate.current = null; setWaiting(false); } } })();
   };
   const check = () => { setObserved(false); setReading(true); void access.session.revalidateAfterMutation().then(() => setObserved(true)).finally(() => setReading(false)); };
   const describeError = (error: unknown) => access.status === "unavailable" ? m.sourceMissing : access.status === "error" && access.error instanceof ApiError && access.error.kind === "network" ? m.network : access.ready && !access.access?.canTransfer ? m.sourceDenied : error instanceof ApiError && error.kind === "network" ? m.network : error instanceof ApiError && error.status === 404 ? m.targetMissing : m.failed;
@@ -168,7 +171,7 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   return <>
     {owner && <section className="panel project-ownership-panel" aria-labelledby="project-ownership-title"><div className="panel-heading"><div><h2 id="project-ownership-title">{m.title}</h2><p>{m.description}</p></div></div><div className="panel-body"><p><strong>{teamName(owner, m.personal)}</strong> <code>{owner.id}</code></p>{access.access?.canTransfer ? <button className="button" type="button" disabled={access.status !== "ready" || unknown || (op.pending || waiting)} onClick={open}>{m.transfer}</button> : <p className="hint">{m.restricted}</p>}</div></section>}
     {!scope.isInvalidated && unknown && !dialog && <div className="notice warning" role="alert"><p>{m.unknown}</p><button className="button" type="button" onClick={() => setDialog(true)}>{m.check}</button></div>}
-    {dialog && <ManagementDialog title={m.transfer} suspended={!active || scope.isInvalidated || !privateAvailable && !safeResult} busy={(op.pending || waiting) || cleanup.current !== null && cleanupError === null} onClose={close} footer={<><button className="button" type="button" disabled={(op.pending || waiting) || cleanup.current !== null && cleanupError === null} onClick={close}>{unknown ? m.close : m.cancel}</button>{cleanupError !== null ? <button className="button primary" type="button" onClick={() => { void cleanup.current?.(); }}>{m.retry}</button> : unknown ? <button className="button" type="button" disabled={reading} onClick={check}>{m.check}</button> : <button className="button danger" type="button" disabled={(op.pending || waiting) || reading || preview === null || access.status !== "ready" || !access.access?.canTransfer || access.access.ownership.teamId !== preview.ownership.teamId || access.access.ownership.version !== preview.ownership.version} onClick={submit}>{(op.pending || waiting) ? m.busy : m.confirm}</button>}</>}>
+    {dialog && <ManagementDialog title={m.transfer} suspended={!active || scope.isInvalidated || !privateAvailable && !safeResult} busy={(op.pending || waiting) || cleanup.current !== null && cleanupError === null} onClose={close} footer={<><button className="button" type="button" disabled={(op.pending || waiting) || cleanup.current !== null && cleanupError === null} onClick={close}>{unknown ? m.close : m.cancel}</button>{cleanupError !== null ? <button className="button primary" type="button" onClick={() => { void cleanup.current?.(); }}>{m.retry}</button> : unknown ? <button className="button" type="button" disabled={reading} onClick={check}>{m.check}</button> : <button className="button danger" type="button" disabled={(op.pending || waiting) || reading || preview === null || guard?.isBlocked("transfer") || access.status !== "ready" || !access.access?.canTransfer || access.access.ownership.teamId !== preview.ownership.teamId || access.access.ownership.version !== preview.ownership.version} onClick={submit}>{(op.pending || waiting) ? m.busy : m.confirm}</button>}</>}>
       {privateAvailable && !unknown && cleanupError === null && <>{subject !== null && <p><strong style={{ overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{subject}</strong></p>}<div className="field"><label htmlFor="transfer-target">{m.target}</label><input id="transfer-target" value={target} disabled={(op.pending || waiting)} onChange={(event) => change(event.target.value)} autoComplete="off" /><p className="hint">{m.hint}</p>{invalid && <p className="hint error" role="alert">{parseTransferTarget(target, window.location.origin) === access.access?.ownership.teamId ? m.same : m.invalid}</p>}</div><TeamChoices value={target} onChange={change} disabled={(op.pending || waiting)} /><button className="button" type="button" disabled={(op.pending || waiting) || reading || access.status !== "ready" || !access.access?.canTransfer} onClick={() => { void inspect(); }}>{reading ? m.loading : m.preview}</button>{preview && <div><h3>{m.changes}</h3><p><strong>{teamName(preview.sourceTeam, m.personal)}</strong> <code>{preview.sourceTeam.id}</code> → <strong>{teamName(preview.targetTeam, m.personal)}</strong> <code>{preview.targetTeam.id}</code></p><p>{m.grants}</p><p>{preview.actorRole === null ? m.noAccess : `${m.role}: ${roles[preview.actorRole]}`}</p></div>}{(conflict || changedOwner) && <p className="notice warning" role="alert">{m.conflict}</p>}{readError !== null && <p className="notice error" role="alert">{describeError(readError)} {readError instanceof ApiError && readError.requestId && <>{m.requestId}<code>{readError.requestId}</code></>}</p>}</>}
       {op.result !== null && <div className="notice error" role="alert"><p>{unknown ? m.unknown : conflict ? m.conflict : describeError(op.result.error)}</p>{op.result.error instanceof ApiError && op.result.error.requestId && <p>{m.requestId}<code>{op.result.error.requestId}</code></p>}</div>}
       {unknown && observed && <p>{privateAvailable && access.access ? <>{m.current}: {teamName(access.access.ownerTeam, m.personal)} <code>{access.access.ownerTeam.id}</code></> : !privateAvailable ? m.unavailable : m.failed}</p>}

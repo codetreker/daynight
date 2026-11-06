@@ -3,10 +3,13 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
 
@@ -58,73 +61,205 @@ func TestInteractionAnswersRespectNativeCallbackChoices(t *testing.T) {
 		}
 	}
 }
-func TestCommandChecksLiveTurnsInitializationAndInteractionRevision(t *testing.T) {
-	f, v := connectFixture(t)
-	ctx := context.Background()
-	c := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "test", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"hi"}],"expectedTurnId":null}`)}
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("initial input gate bypassed")
+
+type commandAdmissionDAO struct {
+	store.SessionDAO
+	interactionResponse func(context.Context, string, string, string) (bool, error)
+	otherFirstInput     func(context.Context, string, string) (bool, error)
+}
+
+func (dao commandAdmissionDAO) HasInteractionResponse(ctx context.Context, sessionID, operationID, interactionID string) (bool, error) {
+	if dao.interactionResponse == nil {
+		panic("unexpected HasInteractionResponse call")
 	}
+	return dao.interactionResponse(ctx, sessionID, operationID, interactionID)
+}
+
+func (dao commandAdmissionDAO) HasOtherFirstInput(ctx context.Context, sessionID, operationID string) (bool, error) {
+	if dao.otherFirstInput == nil {
+		panic("unexpected HasOtherFirstInput call")
+	}
+	return dao.otherFirstInput(ctx, sessionID, operationID)
+}
+
+func commandWorkingState() sp.State {
 	state := idleState()
-	state.InitialInputState = "dispatching"
-	publishState(t, f, v, state)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("dispatching startup treated as accepted")
-	}
-	state = idleState()
 	turn := "turn-1"
-	state.Activity = "working"
-	state.CurrentTurnID = &turn
-	publishState(t, f, v, state)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("working input without expected turn")
+	state.Activity, state.CurrentTurnID = "working", &turn
+	return state
+}
+
+func approvalInteractionEntry(entryID, interactionID string) sp.TimelineEntry {
+	return sp.TimelineEntry{EntryID: entryID, Revision: "1", Kind: "interaction", Data: map[string]json.RawMessage{
+		"interaction": encode(map[string]any{"interactionId": interactionID, "revision": "1", "state": "pending", "title": "Approve", "kind": "approval", "detail": "tool permission", "actions": []string{"allow_once", "reject"}}),
+	}}
+}
+
+func assertCommandAuthorization(t *testing.T, err error, code string, cause error) {
+	t.Helper()
+	if cause != nil {
+		var refusal *model.Fault
+		if !errors.Is(err, cause) || errors.As(err, &refusal) {
+			t.Fatalf("command lookup did not retain its operational cause: %v", err)
+		}
+		return
 	}
-	c.Payload = json.RawMessage(`{"content":[{"type":"text","text":"steer"}],"expectedTurnId":"turn-1"}`)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
-		t.Fatal("native steer rejected", err)
+	if code == "" {
+		if err != nil {
+			t.Fatalf("valid command rejected: %v", err)
+		}
+		return
 	}
-	c.OperationID = uuid.NewString()
-	c.Kind = "cancel"
-	c.Payload = json.RawMessage(`{"expectedTurnId":"stale"}`)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("stale cancel")
-	}
-	c.Payload = json.RawMessage(`{"expectedTurnId":"turn-1"}`)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
-		t.Fatal("cancel rejected", err)
-	}
-	interaction := uuid.NewString()
-	entry := map[string]any{"entryId": uuid.NewString(), "revision": "1", "kind": "interaction", "interaction": map[string]any{"interactionId": interaction, "revision": "1", "state": "pending", "title": "Approve", "kind": "approval", "detail": "tool permission", "actions": []string{"allow_once", "reject"}}}
-	apply(t, f, source(t, f, v, sp.SourceEvent{Kind: "timeline_upsert", Payload: encode(entry)}))
-	c.OperationID = uuid.NewString()
-	c.Kind = "interaction_response"
-	payload := sp.InteractionResponse{InteractionID: interaction, InteractionRevision: "2", SubmissionID: uuid.NewString(), Response: json.RawMessage(`{"kind":"approval","action":"allow_once"}`)}
-	c.Payload = encode(payload)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("stale interaction revision")
-	}
-	payload.InteractionRevision = "1"
-	payload.Response = json.RawMessage(`{"kind":"approval","action":"allow_session"}`)
-	c.Payload = encode(payload)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("unoffered response")
-	}
-	payload.Response = json.RawMessage(`{"kind":"approval","action":"allow_once"}`)
-	c.Payload = encode(payload)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err != nil {
-		t.Fatal(err)
-	}
-	c.OperationID = uuid.NewString()
-	payload.SubmissionID = uuid.NewString()
-	c.Payload = encode(payload)
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("duplicate native callback answer")
-	}
-	c.Kind = "unknown"
-	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-		t.Fatal("unknown native command")
+	var refusal *model.Fault
+	if !errors.As(err, &refusal) || refusal.Code != code {
+		t.Fatalf("expected %s, got %v", code, err)
 	}
 }
+
+func TestCommandChecksLiveTurnsInitializationAndInteractionRevision(t *testing.T) {
+	const interactionID = "00000000-0000-4000-8000-000000000003"
+	const operationID = "00000000-0000-4000-8000-000000000004"
+	const submissionID = "00000000-0000-4000-8000-000000000005"
+	const entryID = "00000000-0000-4000-8000-000000000006"
+	response := func(revision, action string) sp.InteractionResponse {
+		return sp.InteractionResponse{InteractionID: interactionID, InteractionRevision: revision, SubmissionID: submissionID, Response: encode(map[string]any{"kind": "approval", "action": action})}
+	}
+	send := func(text string, turn *string) sp.SendMessage {
+		return sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: text}}, ExpectedTurnID: turn}
+	}
+	turn := "turn-1"
+	dispatching := idleState()
+	dispatching.InitialInputState = "dispatching"
+	lookupFailure := errors.New("interaction lookup unavailable")
+	type lookupResult struct {
+		duplicate bool
+		cause     error
+	}
+	for _, test := range []struct {
+		name, kind  string
+		state       sp.State
+		payload     any
+		pending     bool
+		lookup      *lookupResult
+		lookupCalls int
+		code        string
+		cause       error
+	}{
+		{name: "initial input gate", kind: "send_message", state: sp.State{InitialInputState: "not_submitted", Synchronized: true, Activity: "initializing"}, payload: send("hi", nil), code: "session_conflict"},
+		{name: "dispatching initialization", kind: "send_message", state: dispatching, payload: send("hi", nil), code: "session_conflict"},
+		{name: "idle input", kind: "send_message", state: idleState(), payload: send("hi", nil)},
+		{name: "working input without expected turn", kind: "send_message", state: commandWorkingState(), payload: send("hi", nil), code: "session_conflict"},
+		{name: "native steer", kind: "send_message", state: commandWorkingState(), payload: send("steer", &turn)},
+		{name: "stale cancel", kind: "cancel", state: commandWorkingState(), payload: sp.Cancel{ExpectedTurnID: "stale"}, code: "session_conflict"},
+		{name: "current cancel", kind: "cancel", state: commandWorkingState(), payload: sp.Cancel{ExpectedTurnID: "turn-1"}},
+		{name: "stale interaction revision", kind: "interaction_response", state: commandWorkingState(), payload: response("2", "allow_once"), pending: true, code: "session_conflict"},
+		{name: "unoffered response", kind: "interaction_response", state: commandWorkingState(), payload: response("1", "allow_session"), pending: true, code: "session_conflict"},
+		{name: "offered response", kind: "interaction_response", state: commandWorkingState(), payload: response("1", "allow_once"), pending: true, lookup: &lookupResult{}, lookupCalls: 1},
+		{name: "duplicate native callback", kind: "interaction_response", state: commandWorkingState(), payload: response("1", "allow_once"), pending: true, lookup: &lookupResult{duplicate: true}, lookupCalls: 1, code: "session_conflict"},
+		{name: "interaction lookup failure", kind: "interaction_response", state: commandWorkingState(), payload: response("1", "allow_once"), pending: true, lookup: &lookupResult{cause: lookupFailure}, lookupCalls: 1, cause: lookupFailure},
+		{name: "unknown native command", kind: "unknown", state: commandWorkingState(), payload: response("1", "allow_once"), pending: true, code: "invalid_input"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			execution, current, currentTask := taskControlAuthorizationFixture(test.state)
+			current.Live = newLive(current.Snapshot)
+			current.Live.Synced = true
+			if test.pending {
+				entry := approvalInteractionEntry(entryID, interactionID)
+				entry.EntrySeq = "1"
+				current.Live.PendingInteractions[entryID] = entry
+			}
+			command := sp.Command{Fence: current.Snapshot.Fence, Protocol: sp.Protocol, RequestID: "test", OperationID: operationID, Kind: test.kind, Payload: encode(test.payload)}
+			calls := 0
+			dao := commandAdmissionDAO{}
+			if test.lookup != nil {
+				dao.interactionResponse = func(actual context.Context, session, operation, interaction string) (bool, error) {
+					calls++
+					if actual != ctx || session != current.Snapshot.SessionID || operation != operationID || interaction != interactionID {
+						t.Fatalf("interaction lookup changed context or identifiers: %q %q %q", session, operation, interaction)
+					}
+					return test.lookup.duplicate, test.lookup.cause
+				}
+			}
+			err := execution.authorizeCommand(ctx, &operationTx{dao: dao}, current, currentTask, command)
+			assertCommandAuthorization(t, err, test.code, test.cause)
+			if calls != test.lookupCalls {
+				t.Fatalf("interaction lookup calls=%d, expected %d", calls, test.lookupCalls)
+			}
+		})
+	}
+}
+
+func TestCommandRechecksIndependentFirstInput(t *testing.T) {
+	lookupFailure := errors.New("first input lookup unavailable")
+	for _, test := range []struct {
+		name  string
+		other bool
+		cause error
+		code  string
+	}{
+		{name: "no other first input"},
+		{name: "another first input", other: true, code: "session_conflict"},
+		{name: "lookup failure", cause: lookupFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			state := idleState()
+			state.NativeSessionID, state.InitialInputState = nil, "not_required"
+			execution, current, _ := taskControlAuthorizationFixture(state)
+			current.Snapshot.TestExecutionID = "00000000-0000-4000-8000-000000000007"
+			current.Snapshot.ClaimID = ""
+			current.FirstInputBlocked = true
+			command := sp.Command{Fence: current.Snapshot.Fence, Protocol: sp.Protocol, RequestID: "first", OperationID: "00000000-0000-4000-8000-000000000004", Kind: "send_message", Payload: encode(sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: "hi"}}})}
+			calls := 0
+			dao := commandAdmissionDAO{otherFirstInput: func(actual context.Context, session, operation string) (bool, error) {
+				calls++
+				if actual != ctx || session != current.Snapshot.SessionID || operation != command.OperationID {
+					t.Fatalf("first input lookup changed context or identifiers: %q %q", session, operation)
+				}
+				return test.other, test.cause
+			}}
+			err := execution.authorizeCommand(ctx, &operationTx{dao: dao}, current, task{}, command)
+			assertCommandAuthorization(t, err, test.code, test.cause)
+			if calls != 1 {
+				t.Fatalf("first input lookup calls=%d, expected 1", calls)
+			}
+		})
+	}
+}
+
+func TestInteractionResponsePersistsAndRejectsDuplicateCallback(t *testing.T) {
+	f, v := connectFixture(t)
+	ctx := context.Background()
+	publishState(t, f, v, commandWorkingState())
+	interaction := uuid.NewString()
+	entry := approvalInteractionEntry(uuid.NewString(), interaction)
+	apply(t, f, source(t, f, v, sp.SourceEvent{Kind: "timeline_upsert", Payload: encode(entry)}))
+	command := sp.Command{Fence: v.Fence, Protocol: sp.Protocol, RequestID: "test", OperationID: uuid.NewString(), Kind: "interaction_response"}
+	payload := sp.InteractionResponse{InteractionID: interaction, InteractionRevision: "1", SubmissionID: uuid.NewString(), Response: json.RawMessage(`{"kind":"approval","action":"allow_once"}`)}
+	command.Payload = encode(payload)
+	accepted, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command)
+	if err != nil || accepted.State != "accepted" {
+		t.Fatal("offered interaction response rejected", accepted, err)
+	}
+	stored, err := f.s.Operation(ctx, f.p, f.project, f.task, v.SessionID, command.OperationID)
+	if err != nil || stored.State != "accepted" || stored.Kind != "interaction_response" {
+		t.Fatal("interaction response was not persisted", stored, err)
+	}
+	command.OperationID = uuid.NewString()
+	payload.SubmissionID = uuid.NewString()
+	command.Payload = encode(payload)
+	if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command); err == nil {
+		t.Fatal("duplicate native callback answer")
+	} else {
+		requireControlConflict(t, err)
+	}
+	var operations int
+	if err := f.db.Pool.QueryRow(ctx, "SELECT count(*) FROM session_operations WHERE session_id=$1", v.SessionID).Scan(&operations); err != nil || operations != 1 {
+		t.Fatalf("duplicate response changed the durable ledger: operations=%d error=%v", operations, err)
+	}
+}
+
 func TestDispatchReceiptAndExpiryPreserveActualExecutionBoundary(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()

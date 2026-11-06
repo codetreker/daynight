@@ -298,9 +298,24 @@ opening one local file root and one PostgreSQL resource. `service.App` assembles
 and owns the shared modules and resources; `server.New` registers their HTTP
 routes. The runtime stops admission and drains HTTP and WebSocket work before
 the application closes the Session engine, files and pool. A cleanup timeout
-retains resources for another close attempt. Startup applies the embedded migrations before accepting requests.
-One pinned connection holds a session advisory lock across version checks and all
-migration transactions; unknown versions, gaps and checksum mismatches stop startup.
+retains resources for another close attempt. Startup validates the embedded
+format snapshot and prepares the target PostgreSQL schema before accepting
+requests. One pinned connection holds the migration advisory lock while
+inspecting the target namespace and initializing or upgrading its format.
+
+An empty namespace receives the current snapshot, required initial rows and the
+complete original migration-checksum ledger in one transaction. Historical SQL
+and Go transforms do not execute on that path. SQL, initial-data, ledger and
+deferred-constraint commit failures roll back the complete initialization. A
+lost commit acknowledgment preserves an unknown outcome and the original error;
+initialization remains all-or-nothing, and the next startup inspects the actual
+namespace and ledger. A namespace containing user objects follows the existing
+ordered migration path, even when it has no
+migration ledger; objects in another schema do not affect that choice. Unknown
+versions, gaps and checksum mismatches stop startup. Reopening an initialized
+schema preserves its existing data and ledger timestamps. The
+[initialization decision](../../.agents/notes/implemented/architecture/2026-11-06-postgres-schema-bootstrap.md)
+owns the namespace, transaction and concurrency guarantees.
 
 Migration `032_personal_project_ownership.sql` creates the Personal Team/member
 and Project ownership records and renames the existing member table, sequence,
@@ -427,7 +442,8 @@ on the host; valid authentication settings remain mandatory. The [deployment gui
 prerequisites, API examples, port selection and persistence/teardown commands.
 The gateway publishes host `127.0.0.1:8787` and forwards TCP to the server's
 loopback listener in their shared network namespace; the database has no
-published host port. Startup uses this module's embedded migrations. Open
+published host port. Startup initializes or upgrades the database with this
+module's embedded format snapshot and migrations. Open
 `http://127.0.0.1:8787/` for projects and task graphs. The
 [dev-ci deployment](../../deployment/dev-ci/README.md) reuses the production
 Dockerfile and gateway in a unique disposable project for tests.
@@ -589,6 +605,52 @@ prepares the pinned UniAuth fixture, and runs module tests and coverage. The
 optional `--coverage` argument selects the same check. A production build uses
 the real Web assets described under [Build and run](#build-and-run).
 
+### Business rules and DAO mocks
+
+Business-rule unit tests construct domain facts directly and use narrow mocks
+of the `core/store` DAO interfaces when a rule needs query results or storage
+errors. Check arguments, expected calls, results and error chains; unconfigured
+access must fail immediately. Pure functions need no storage mock. Keep these
+rule selections runnable without `DAYNIGHT_TEST_DATABASE_URL`, rather than
+preparing PostgreSQL merely to obtain fixed model data.
+
+PostgreSQL integration tests own real SQL, constraints, locking, commit and
+rollback, persisted readback and authority or version changes across operations.
+HTTP and process tests retain their composition and protocol boundaries. Moving
+a rule matrix does not remove these proofs or replace them with a single mock
+call. Do not mock SQL strings or implement a second in-memory database to test
+business rules.
+
+The Session control catalog, activity and argument rules call the authorization
+function with ordinary Task facts, a matching active Worker and fence, and a
+controlled clock. Positive commands establish that the fixture admits valid
+inputs. Real Submit/outsider, durable operation and offer/dispatch recheck tests
+retain the storage boundary. The
+[control-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-control-rule-isolation.md)
+records the proof split. The [server organization rules](../../docs/daynight-server.md#测试职责)
+own the stable test-layer policy.
+
+Session command and interaction admission tests use `SessionDAO` query mocks
+that check context, identity arguments, call counts and error propagation.
+Ordinary Task rules and independent Test Session first-input rules keep separate
+fixtures. A real timeline-upsert, Submit, operation-readback and duplicate-callback
+witness retains the persisted interaction-ID mapping. The
+[command-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-command-rule-isolation.md)
+records that split.
+
+Project request validation uses a valid synthetic principal and a fail-on-access
+store for UUID, creation input, pagination and entropy refusals that precede
+storage. Real creation, readback, keyset paging and operational-error tests keep
+PostgreSQL. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
+records the input and error-chain guarantees.
+
+Attachment migration manifest, stage, receipt, path and inventory tests use a
+fixed `AttachmentMaintenance` snapshot with real temporary files and the real
+migration runner. Database-shape validation, command/root failures, maintenance
+queries and process crash recovery retain their PostgreSQL boundaries. The
+[record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
+records which storage facts are mocked and which durable operations remain real.
+
 ### HTTP scenario ownership
 
 Domain packages own their HTTP integration scenarios, including those that
@@ -607,7 +669,9 @@ records the distinction and preservation requirements.
 format produced by the complete embedded migration history. It includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
-Runtime startup continues to apply the historical migrations.
+Runtime startup uses the snapshot for an empty target namespace and retains
+historical migrations for existing namespaces. A stale snapshot version stops
+startup before initialization or upgrade, exposing an incomplete format update.
 
 The ordinary module check compares a fresh historical database with a fresh
 snapshot database through PostgreSQL catalogs and initial table data. It checks

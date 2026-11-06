@@ -3,6 +3,7 @@ import { useProjectAccess } from "../projects/ProjectAccess";
 import { ApiError, isAbortError } from "../../api/client";
 import { getProject, isExecutionWarningMinutes, saveProjectSettings } from "../../api/project-settings";
 import type { Project } from "../../api/types";
+import type { ProjectManagementGuard } from "./ProjectManagementGuard";
 
 export type SettingsNotice = "saved" | "cancelled" | "conflict" | "permission" | "reconciled" | null;
 export const parseWarningDraft = (draft: string): number | null => {
@@ -19,7 +20,7 @@ const abortable = <T,>(promise: Promise<T>, signal: AbortSignal): Promise<T> => 
   void promise.then((value) => { cleanup(); resolve(value); }, (error: unknown) => { cleanup(); reject(error); });
 });
 
-export const useProjectSettings = (projectId: string, userId: string, onRoute: boolean, active: boolean, onRetentionChange?: (retain: boolean) => void) => {
+export const useProjectSettings = (projectId: string, userId: string, onRoute: boolean, active: boolean, onRetentionChange?: (retain: boolean) => void, guard?: ProjectManagementGuard) => {
   const [project, setProject] = useState<Project | null>(null);
   const access = useProjectAccess(projectId);
   const role = access.status === "ready" ? access.access!.effectiveRole : null;
@@ -131,7 +132,10 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
 
   const setUncertainState = (value: boolean) => { uncertainRef.current = value; setUncertain(value); };
   const releaseResolvedRetention = () => {
-    if (!submitting.current && !returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && !uncertainRef.current) retention.current?.(false);
+    if (!submitting.current && !returnRead.current && !confirmedNeedsRead.current && reconciliationNotice.current === null && !uncertainRef.current) {
+      guard?.release("settings");
+      retention.current?.(false);
+    }
   };
   const clearPrivateDraft = () => {
     ++draftGeneration.current; discardedDraftGeneration.current = draftGeneration.current;
@@ -277,6 +281,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     if (!routeRef.current || submitting.current || confirmedNeedsRead.current || reconciliationNotice.current !== null || returnRead.current || draftConflictRef.current || loading || uncertain || admitted.status !== "ready" || admitted.access!.effectiveRole !== "admin" || project === null) return;
     const minutes = parseWarningDraft(draft);
     if (minutes === null) { setInvalid(true); return; }
+    if (guard !== undefined && !guard.tryAcquire("settings")) return;
     submitting.current = true; setPending(true); setError(null); setWriteError(null); setNotice(null); setInvalid(false);
     retention.current?.(true);
     const lifetime = controller.current!;

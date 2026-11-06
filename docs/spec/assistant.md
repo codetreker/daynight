@@ -10,7 +10,7 @@ Bot 是当前用户拥有、绑定已有 Worker 的独立定义，不属于项�
 
 ## 产品入口与托管
 
-登录后的全局侧栏提供助手入口，列表和对话使用 `/bots` 与 `/bots/{id}`。名字创建使用可用默认 Worker、普通目录和 Agent；高级设置默认折叠。旧 Worker 缺少 `assistantHost` 时不可作为可用默认候选，不能因在线标签而推导托管支持。现有 Task、Herdr 和独立 Test 入口保持各自身份；不自动迁移 Test，也不恢复已撤销的 Conversations。
+登录后的全局侧栏提供助手入口，列表和对话使用 `/bots` 与 `/bots/{id}`。名字创建通过轻量弹窗使用可用默认 Worker、普通目录和 Agent；Worker、目录、Agent、Model 与 Reasoning effort 设置默认折叠。默认摘要显示实际目标与配置来源，阅读默认值不产生显式覆盖。目录浏览使用目标 Worker 的只读通道，只有确认目录或明确选择机器相关选项才绑定 Worker；取消浏览不改变创建请求。弹窗开关不改变当前助手 Session、草稿、阅读位置或生命周期。旧 Worker 缺少 `assistantHost` 时不可作为可用默认候选，不能因在线标签而推导托管支持。现有 Task、Herdr 和独立 Test 入口保持各自身份；不自动迁移 Test，也不恢复已撤销的 Conversations。
 
 `worker run` 在同一前台进程中托管 Bot，与任务执行槽和项目准备独立，允许零仓库运行。能力广告来自实际组合的托管模块和当前有效配置；配置变化影响新建默认与首次意图，不修改已冻结 Bot。关闭聊天或浏览器不停止执行，Worker 离线时如实显示不可联系。正常退出等待 Task 和 Bot 的停止结果，重启沿原 Session/native identity 恢复，不重放业务请求；缺失身份、停证或授权时保留错误和恢复资料，不启动空白替代。
 

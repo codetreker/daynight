@@ -21,6 +21,7 @@ export const browserConfigs = [
   'project-grants-playwright.config.ts',
   'project-transfer-playwright.config.ts',
   'project-withdrawal-playwright.config.ts',
+  'project-deletion-layout-playwright.config.ts',
   'attachment-browser-playwright.config.ts',
   'task-controls-playwright.config.ts',
   'graph-browser-playwright.config.ts',

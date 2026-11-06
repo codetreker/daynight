@@ -54,16 +54,38 @@ warnings. Use its refresh button to reload; a failed read retains the previous
 list and displays the error. Select an offline or failed assistant to inspect its
 actual reason.
 
-Choose Create assistant beside the list title to open the inline name form.
-Advanced settings optionally select a Worker, ordinary absolute working directory
-and Agent. Name-only creation uses server-resolved defaults; changing Worker
-reloads its defaults and clears incompatible directory and Agent overrides.
-Unavailable, unsupported, offline or stale choices retain their actual reasons.
-Before submission, Cancel or Escape closes the form and returns focus to its
-opener without creating an assistant; submission disables cancellation and
-duplicate requests. A confirmed rejection keeps the input for correction. If creation
-has an unknown result, use Check creation to read the original Bot ID; do not
-create a replacement to find out whether the first request succeeded.
+Choose Create assistant beside the list title to open a compact, name-first
+dialog. Its summary identifies the actual Worker and Agent; expand it to read
+full paths, effective model and reasoning effort, and their configuration sources.
+Adjust settings optionally selects a Worker, ordinary absolute working directory,
+Agent, Model and Reasoning effort. Defaults stay implicit in the request; local,
+cloud and successful-preference values are not described as native defaults.
+
+Browse opens the selected Worker's directory view in the same dialog. Navigate
+using the reported paths, filter loaded entries, show hidden directories or load
+another page. Select directory applies the path and binds that Worker; Cancel,
+Escape or the browse close button returns to the retained form without applying a
+selection. Manual absolute paths remain available when browsing is unsupported.
+Model choices and supported reasoning efforts come from the target Worker's
+native capabilities. Unknown capabilities and actual failures do not produce
+invented options.
+
+Explicit directory, Agent, Model or effort choices bind the resolved Worker.
+Changing Worker clears all machine-specific choices; changing Agent clears Model
+and effort; changing Model clears the form's effort override and resolves its
+default again. Individual default choices remove their overrides, and Reset all
+defaults also releases the Worker binding. Unavailable, unsupported, offline or
+stale choices retain their actual reasons. Initial loading keeps the name editable;
+background checks and retries retain the draft.
+
+Before submission, Cancel or Escape closes the dialog and restores its opener's
+focus without creating an assistant. Submission blocks cancellation and duplicate
+requests; IME composition cannot submit. A confirmed rejection keeps input for
+correction. For an unknown result, Check creation reads the original Bot ID,
+including after closing and reopening; it never creates a replacement to discover
+the outcome. The dialog follows the visible viewport, keeps its actions reachable
+with an independently scrolling body, and leaves the existing Session, draft and
+reading position intact.
 
 The conversation has one header for its name, Agent, Session state and controls.
 Display selects Conversation (the default) or Standard; approvals, errors and
@@ -609,6 +631,19 @@ snapshot fully replaces Project, including legitimately lower restored versions,
 while old-history ownership cannot carry forward. Clock-only responses retain the graph and index while refreshing the separate
 latest `GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings
 edit changes task time or graph geometry.
+
+## Project deletion
+
+Project Settings offers owner Team administrators a deletion preview and exact
+name confirmation. The preview identifies the Project, its observed counts and
+active Worker claims; those observations are not DELETE conditions. Names with
+control characters use reversible JSON escaping. A confirmed receipt withdraws
+the original cache generation and preserves a success notice across navigation.
+Cache cleanup and navigation can be retried independently. A dispatched request
+with an unknown outcome is never replayed, and a later 404 does not prove that
+the deletion succeeded. Settings saves, ownership transfers and deletion share
+a synchronous management guard. The [Web design](../../docs/design/daynight-web.md#项目删除)
+owns the operation and identity boundaries.
 
 ## Persistent task summaries
 
@@ -2022,7 +2057,7 @@ records the division.
 The [Bot viewport suite](tests/navigation/bots-viewport.browser.ts) and
 [assistant presentation suite](tests/navigation/assistant-modern.browser.ts) run
 the production application, Session host and timeline against controlled HTTP and
-Session API responses. Together they cover responsive navigation, inline creation,
+Session API responses. Together they cover responsive navigation, assistant creation,
 search, unified controls, details, Focus mode, retained DOM/drafts/reading anchors,
 long history and pagination, empty suggestions, errors, archives and identity
 pause. Cases include English and Simplified Chinese, desktop and phone widths,
