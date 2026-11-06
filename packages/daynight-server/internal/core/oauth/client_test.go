@@ -23,12 +23,22 @@ func TestClientMetadata(t *testing.T) {
 		`{"redirect_uris":["https://client.example/cb"],"client_id":"own"}`,
 		`{"redirect_uris":["https://client.example/cb"],"client_name":"\ud800"}`,
 		`{"redirect_uris":["https://client.example/cb#fragment"]}`,
-		`{"redirect_uris":["https://client.example/cb"],"x":true}`,
+		`{"redirect_uris":["https://client.example/cb"],"client_secret":"secret"}`,
+		`{"redirect_uris":["https://client.example/cb"],"client_id_issued_at":0}`,
+		`{"redirect_uris":["https://client.example/cb"],"client_secret_expires_at":0}`,
+		`{"redirect_uris":["https://client.example/cb"],"registration_access_token":"x"}`,
+		`{"redirect_uris":["https://client.example/cb"],"registration_client_uri":"https://client.example/manage"}`,
+		`{"redirect_uris":["https://client.example/cb"],"extension":true,"extension":false}`,
 		strings.Repeat(" ", MetadataLimit+1),
 	} {
 		if _, err := ParseClientMetadata([]byte(raw), ""); err == nil {
 			t.Errorf("accepted %s", raw[:min(len(raw), 100)])
 		}
+	}
+	extension := `{"redirect_uris":["https://client.example/cb"],"logo_uri":"https://client.example/logo","software_id":"sample","extension":{"value":true}}`
+	extended, err := ParseClientMetadata([]byte(extension), "")
+	if err != nil || extended.TokenEndpointAuthMethod != "none" || len(extended.RedirectURIs) != 1 {
+		t.Fatalf("extension metadata: %+v %v", extended, err)
 	}
 	cimd := `{"client_id":"https://client.example/meta","redirect_uris":["http://127.0.0.1:123/cb"],"logo_uri":"https://ignored.example"}`
 	if _, err := ParseClientMetadata([]byte(cimd), "https://other.example/meta"); err == nil {

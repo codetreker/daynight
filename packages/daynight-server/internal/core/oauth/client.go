@@ -107,10 +107,10 @@ func parseClientMetadata(data []byte, expectedID string, limit int) (ClientMetad
 		}
 	}
 	if expectedID == "" {
-		for key := range fields {
-			switch key {
-			case "client_name", "redirect_uris", "token_endpoint_auth_method", "grant_types", "response_types", "scope":
-			default:
+		// These values are issued by the server, not client registration metadata.
+		// Unrecognized extensions are ignored rather than reflected or stored.
+		for _, key := range []string{"client_id", "client_secret", "client_id_issued_at", "client_secret_expires_at", "registration_access_token", "registration_client_uri"} {
+			if _, exists := fields[key]; exists {
 				return ClientMetadata{}, ErrInvalidClientMetadata
 			}
 		}

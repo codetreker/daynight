@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,20 +47,55 @@ func TestClientsRegistrationAndResolution(t *testing.T) {
 	if _, err := NewClients(db, admission, map[string][]byte{"wrong": prereg}); err == nil {
 		t.Fatal("invalid configured client accepted")
 	}
-	doc := []byte(`{"client_name":"client","redirect_uris":["http://127.0.0.1:123/cb"]}`)
+	doc := []byte(`{"client_name":"client","redirect_uris":["http://127.0.0.1:123/cb"],"logo_uri":"https://client.example/logo","software_id":"sample","extension":{"value":true}}`)
 	server := httptest.NewServer(serveroauth.Handler(clients))
 	t.Cleanup(server.Close)
 	resp, err := http.Post(server.URL, "application/json", bytes.NewReader(doc))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var registered core.ClientMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&registered); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	var registered core.ClientMetadata
+	var returned map[string]json.RawMessage
+	if err := json.Unmarshal(body, &registered); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &returned); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"logo_uri", "software_id", "extension", "client_secret"} {
+		if _, exists := returned[key]; exists {
+			t.Fatalf("unexpected registration response field %s", key)
+		}
+	}
 	if resp.StatusCode != http.StatusCreated || registered.TokenEndpointAuthMethod != "none" {
 		t.Fatalf("HTTP register: %d %+v", resp.StatusCode, registered)
+	}
+	for _, raw := range []string{
+		`{"redirect_uris":["https://client.example/cb"],"extension":true,"extension":false}`,
+		`{"redirect_uris":["https://client.example/cb"],"client_id":"supplied"}`,
+		`{"redirect_uris":["https://client.example/cb"],"client_secret":"supplied"}`,
+		`{"redirect_uris":["https://client.example/cb"],"token_endpoint_auth_method":"client_secret_basic"}`,
+		`{"redirect_uris":["https://client.example/cb"],"grant_types":["client_credentials"]}`,
+		`{"redirect_uris":["https://client.example/cb"],"scope":"other"}`,
+		`{"redirect_uris":["https://client.example/cb"],"response_types":["token"]}`,
+	} {
+		response, err := http.Post(server.URL, "application/json", strings.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var failure struct {
+			Error string `json:"error"`
+		}
+		err = json.NewDecoder(response.Body).Decode(&failure)
+		response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusBadRequest || failure.Error != "invalid_client_metadata" {
+			t.Fatalf("invalid registration %s: %d %+v %v", raw, response.StatusCode, failure, err)
+		}
 	}
 	if _, err := clients.Resolve(ctx, registered.ClientID, "http://127.0.0.1:456/cb"); err != nil {
 		t.Fatalf("HTTP client resolve: %v", err)
