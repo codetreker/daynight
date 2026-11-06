@@ -632,6 +632,19 @@ while old-history ownership cannot carry forward. Clock-only responses retain th
 latest `GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings
 edit changes task time or graph geometry.
 
+## Project deletion
+
+Project Settings offers owner Team administrators a deletion preview and exact
+name confirmation. The preview identifies the Project, its observed counts and
+active Worker claims; those observations are not DELETE conditions. Names with
+control characters use reversible JSON escaping. A confirmed receipt withdraws
+the original cache generation and preserves a success notice across navigation.
+Cache cleanup and navigation can be retried independently. A dispatched request
+with an unknown outcome is never replayed, and a later 404 does not prove that
+the deletion succeeded. Settings saves, ownership transfers and deletion share
+a synchronous management guard. The [Web design](../../docs/design/daynight-web.md#项目删除)
+owns the operation and identity boundaries.
+
 ## Persistent task summaries
 
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
