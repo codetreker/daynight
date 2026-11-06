@@ -1,210 +1,261 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 //go:embed task_tools.json
 var taskToolDefinitions []byte
 
-type taskQueryService interface {
-	graphReader
-	MCPList(context.Context, model.Principal, string, taskcore.MCPListRequest, func(store.TaskPriorityItem, string, bool) bool) error
+type taskArguments struct {
+	ProjectID         string              `json:"projectId"`
+	TaskID            string              `json:"taskId"`
+	Title             *string             `json:"title"`
+	Description       *string             `json:"description"`
+	AssignedTo        *string             `json:"assignedTo"`
+	RequiredPlatform  *model.TaskPlatform `json:"requiredPlatform"`
+	AllowAgents       *bool               `json:"allowAgents"`
+	DependsOn         *[]string           `json:"dependsOn"`
+	ExternalDependsOn *[]string           `json:"externalDependsOn"`
+	IfVersion         *string             `json:"ifVersion"`
+	View              string              `json:"view"`
+	ReturnView        string              `json:"returnView"`
+	Status            model.TaskStatus    `json:"status"`
+	ClaimID           *string             `json:"claimId"`
+	RemoveDepends     bool                `json:"removeDepends"`
+	Mode              string              `json:"mode"`
+	Name              string              `json:"name"`
+	ValueText         string              `json:"valueText"`
 }
 
-type listInput struct {
-	ProjectID          string              `json:"projectId"`
-	Limit              int                 `json:"limit"`
-	Cursor             *string             `json:"cursor"`
-	All                bool                `json:"all"`
-	Status             *model.TaskStatus   `json:"status"`
-	AssignedTo         *string             `json:"assignedTo"`
-	Ready              *bool               `json:"ready"`
-	AllowAgents        *bool               `json:"allowAgents"`
-	CompatiblePlatform *model.TaskPlatform `json:"compatiblePlatform"`
-	View               string              `json:"view"`
-}
-
-type readyInput struct {
-	ProjectID          string              `json:"projectId"`
-	Limit              int                 `json:"limit"`
-	AllowAgents        *bool               `json:"allowAgents"`
-	CompatiblePlatform *model.TaskPlatform `json:"compatiblePlatform"`
-	View               string              `json:"view"`
-}
-
-type listData struct {
-	Items      []json.RawMessage `json:"items"`
-	NextCursor *string           `json:"nextCursor"`
-	Projection string            `json:"projection"`
-	Next       *listContinuation `json:"next,omitempty"`
-}
-
-type listContinuation struct {
-	Tool            string         `json:"tool"`
-	Arguments       map[string]any `json:"arguments"`
-	FullItemsNotice string         `json:"fullItemsNotice,omitempty"`
-}
-
-type taskListFull struct {
-	TaskFull
-	Description *string `json:"description,omitempty"`
-}
-
-// RegisterTaskTools publishes only fully implemented task query tools.
-func RegisterTaskTools(entry *Entry, tasks *taskservice.Tasks) error {
-	return registerTaskQueryTools(entry, tasks)
-}
-
-func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
-	var definitions []sdk.Tool
+// RegisterTaskTools exposes complete Task operations through the shared service.
+// Operations that read or write Tasks reserve for their full materialization.
+// The static property schema uses the independent control budget.
+func RegisterTaskTools(e *Entry, tasks *taskservice.Tasks) error {
+	if e == nil || tasks == nil {
+		return fmt.Errorf("MCP task tools require an entry and Tasks service")
+	}
+	var definitions []*sdk.Tool
 	if err := json.Unmarshal(taskToolDefinitions, &definitions); err != nil {
 		return err
 	}
-	if len(definitions) != 3 {
-		return fmt.Errorf("invalid task tool definitions")
-	}
-	for i := range definitions {
-		tool := &definitions[i]
-		var err error
-		switch tool.Name {
-		case "task_list":
-			err = registerTaskListTool(entry, tool, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
-				var in listInput
-				if err := json.Unmarshal(raw, &in); err != nil {
-					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
+	for _, tool := range definitions {
+		name := tool.Name
+		budget := func(raw json.RawMessage) BudgetClass {
+			if name == "task_properties" {
+				var input struct {
+					Mode string `json:"mode"`
 				}
-				return listTool(ctx, actor, in, tasks, false)
-			})
-		case "task_ready":
-			err = registerTaskListTool(entry, tool, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
-				var in readyInput
-				if err := json.Unmarshal(raw, &in); err != nil {
-					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
+				if json.Unmarshal(raw, &input) == nil && input.Mode == "schema" {
+					return BudgetControl
 				}
-				status, ready := model.TaskTodo, true
-				return listTool(ctx, actor, listInput{ProjectID: in.ProjectID, Limit: in.Limit, Status: &status, Ready: &ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View}, tasks, true)
-			})
-		case "task_graph":
-			err = RegisterTypedTool(entry, tool, BudgetControl, func(ctx context.Context, actor RequestActor, in graphInput) (ToolResult, error) {
-				return graphTool(ctx, actor, in, tasks)
-			})
-		default:
-			return fmt.Errorf("unexpected task tool %q", tool.Name)
+			}
+			return BudgetLarge
 		}
-		if err != nil {
-			return fmt.Errorf("register %s: %w", tool.Name, err)
+		if err := e.registerTool(tool, budget, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+			if err := ValidateUnicodeFields(raw, "title", "description", "name", "valueText"); err != nil {
+				return ToolResult{}, err
+			}
+			var input taskArguments
+			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "ifVersion", "view", "returnView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
+			if err != nil {
+				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: err.Error()}
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
+			}
+			return handleTaskTool(ctx, actor, tasks, name, input, fields)
+		}); err != nil {
+			return fmt.Errorf("register %s: %w", name, err)
 		}
 	}
 	return nil
 }
 
-// Summary queries use bounded DAO projections; full queries materialize one
-// complete task at a time under the large-object permit.
-func registerTaskListTool(entry *Entry, tool *sdk.Tool, handler ToolHandler) error {
-	return entry.registerTool(tool, func(raw json.RawMessage) BudgetClass {
-		var input struct {
-			View string `json:"view"`
+// The business payload limit matches the REST JSON limit independently of
+// routing identifiers and MCP presentation options.
+func taskBusinessLimit(name string, fields map[string]json.RawMessage, version int64, all, external *[]string) error {
+	if name == "task_show" || name == "task_properties" {
+		return nil
+	}
+	body := map[string]json.RawMessage{}
+	for _, key := range []string{"title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "status", "claimId", "removeDepends"} {
+		if value, ok := fields[key]; ok {
+			body[key] = value
 		}
-		_ = json.Unmarshal(raw, &input)
-		if input.View == "full" {
-			return BudgetLarge
-		}
-		return BudgetControl
-	}, handler)
+	}
+	if all != nil {
+		body["dependsOn"], _ = json.Marshal(all)
+		body["externalDependsOn"], _ = json.Marshal(external)
+	}
+	if name != "task_create" {
+		body["version"] = json.RawMessage(Decimal(version))
+	}
+	if name == "task_set_property" {
+		body["valueText"] = fields["valueText"]
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(body); err != nil || encoded.Len()-1 > httpx.MaxJSONBody {
+		return httpx.InvalidInput("request body must be valid JSON within the 1 MiB limit")
+	}
+	return nil
 }
 
-func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService, readyTool bool) (ToolResult, error) {
-	budget := 128 << 20
-	if in.View == "" || in.View == "summary" {
-		budget = 16 << 10
+// The domain uses the union and an external subset; either input replaces both.
+func compileTaskDependencies(ordinary, external *[]string) (*[]string, *[]string, error) {
+	if ordinary == nil && external == nil {
+		return nil, nil, nil
 	}
-	return listToolWithBudget(ctx, actor, in, tasks, readyTool, budget)
+	all, ext := []string{}, []string{}
+	seen := map[string]bool{}
+	for index, group := range []*[]string{ordinary, external} {
+		if group == nil {
+			continue
+		}
+		for _, value := range *group {
+			id, err := model.CanonicalID(value)
+			if err != nil {
+				return nil, nil, err
+			}
+			if seen[id] {
+				return nil, nil, &model.Fault{Code: "invalid_input", Message: "Dependency inputs must be disjoint and contain no duplicates."}
+			}
+			seen[id] = true
+			all = append(all, id)
+			if index == 1 {
+				ext = append(ext, id)
+			}
+		}
+	}
+	return &all, &ext, nil
 }
 
-func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService, readyTool bool, budget int) (ToolResult, error) {
-	if in.View == "" {
-		in.View = "summary"
+func taskView(task model.Task, view string) any {
+	if view == "full" {
+		return MapTaskFull(task)
 	}
-	if in.Limit == 0 {
-		if readyTool {
-			in.Limit = 10
-		} else {
-			in.Limit = 50
+	return MapTaskSummary(task)
+}
+func taskResult(task model.Task, view string, previous int64) ToolResult {
+	outcome := "changed"
+	if task.Version == previous {
+		outcome = "unchanged"
+	}
+	return ToolResult{Data: taskView(task, view), Outcome: outcome, WriteOutcome: "confirmed", Refs: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version)}}
+}
+func taskVersion(ctx context.Context, actor RequestActor, tasks *taskservice.Tasks, input taskArguments) (int64, error) {
+	if input.IfVersion != nil {
+		return ParseVersion(*input.IfVersion)
+	}
+	task, err := tasks.Get(ctx, actor.Principal, input.ProjectID, input.TaskID)
+	if err != nil {
+		return 0, err
+	}
+	return task.Version, nil
+}
+func handleTaskTool(ctx context.Context, actor RequestActor, tasks *taskservice.Tasks, name string, in taskArguments, fields map[string]json.RawMessage) (ToolResult, error) {
+	switch name {
+	case "task_create":
+		all, external, err := compileTaskDependencies(in.DependsOn, in.ExternalDependsOn)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		if err := taskBusinessLimit(name, fields, 0, all, external); err != nil {
+			return ToolResult{}, err
+		}
+		assigned := in.AssignedTo
+		if assigned == nil {
+			assigned = &actor.Principal.UserID
+		}
+		input := taskcore.CreateTask{Title: *in.Title, AssignedTo: assigned, RequiredPlatform: in.RequiredPlatform}
+		if in.Description != nil {
+			input.Description = *in.Description
+		}
+		if all != nil {
+			input.DependsOn, input.ExternalDependsOn = *all, *external
+		}
+		task, err := tasks.Create(ctx, actor.Principal, in.ProjectID, input)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return taskResult(task, in.ReturnView, 0), nil
+	case "task_show":
+		task, err := tasks.Get(ctx, actor.Principal, in.ProjectID, in.TaskID)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return ToolResult{Data: taskView(task, in.View)}, nil
+	case "task_properties":
+		if in.Mode == "schema" {
+			return ToolResult{Data: map[string]any{"properties": taskproperty.Definitions()}}, nil
+		}
+		task, err := tasks.Get(ctx, actor.Principal, in.ProjectID, in.TaskID)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return ToolResult{Data: map[string]any{"projectId": task.ProjectID, "taskId": task.ID, "version": Decimal(task.Version), "properties": task.Properties}}, nil
+	}
+	var all, external *[]string
+	if name == "task_update" {
+		var err error
+		all, external, err = compileTaskDependencies(in.DependsOn, in.ExternalDependsOn)
+		if err != nil {
+			return ToolResult{}, err
 		}
 	}
-	data := listData{Items: make([]json.RawMessage, 0, in.Limit), Projection: in.View}
-	totalItemBytes := 0
-	var itemErr error
-	var failure ToolResult
-	err := tasks.MCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View}, func(value store.TaskPriorityItem, cursor string, more bool) bool {
-		task := value.Task
-		var item any
-		if in.View == "summary" {
-			summary := MapTaskSummary(task)
-			summary.BlockedByCount = value.BlockedByCount
-			summary.TitleTruncated = summary.TitleTruncated || value.TitleTruncated
-			item = summary
-		} else if readyTool {
-			item = MapTaskFull(task)
-		} else {
-			item = taskListFull{TaskFull: MapTaskFull(task)}
-		}
-		encodedItem, err := json.Marshal(item)
-		if err != nil {
-			itemErr = err
-			return false
-		}
-		candidate := listData{Items: []json.RawMessage{}, Projection: in.View}
-		if more {
-			candidate.NextCursor = &cursor
-			if readyTool {
-				args := map[string]any{"projectId": in.ProjectID, "status": "todo", "ready": true, "view": in.View, "cursor": cursor}
-				if in.AllowAgents != nil {
-					args["allowAgents"] = *in.AllowAgents
-				}
-				if in.CompatiblePlatform != nil {
-					args["compatiblePlatform"] = *in.CompatiblePlatform
-				}
-				candidate.Next = &listContinuation{Tool: "task_list", Arguments: args}
-				if in.View == "full" {
-					candidate.Next.FullItemsNotice = "task_list full omits descriptions; task_show may not yet be available."
-				}
-			}
-		}
-		base, err := json.Marshal(envelope{Data: candidate, Meta: &envelopeMeta{RequestID: actor.RequestID}})
-		if err != nil {
-			itemErr = err
-			return false
-		}
-		n := len(data.Items) + 1
-		size := len(base) + totalItemBytes + len(encodedItem) + n - 1
-		if size > budget {
-			if len(data.Items) == 0 {
-				failure.Refs = map[string]any{"projectId": in.ProjectID, "taskId": task.ID, "readWith": "task_show", "readWithAvailability": "may not yet be available"}
-				itemErr = &model.Fault{Code: "payload_too_large", Message: "The first task exceeds the output budget; task_show may not yet be available."}
-			}
-			return false
-		}
-		totalItemBytes += len(encodedItem)
-		data.Items = append(data.Items, encodedItem)
-		data.NextCursor, data.Next = candidate.NextCursor, candidate.Next
-		return true
-	})
+	// Omitted versions are read once and never refreshed after a write.
+	version, err := taskVersion(ctx, actor, tasks, in)
 	if err != nil {
 		return ToolResult{}, err
 	}
-	if itemErr != nil {
-		return failure, itemErr
+	if err := taskBusinessLimit(name, fields, version, all, external); err != nil {
+		return ToolResult{}, err
 	}
-	return ToolResult{Data: data}, nil
+	var task model.Task
+	switch name {
+	case "task_update":
+		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents, DependsOn: all, ExternalDependsOn: external}
+		if _, ok := fields["assignedTo"]; ok {
+			input.AssignedTo = &in.AssignedTo
+		}
+		if _, ok := fields["requiredPlatform"]; ok {
+			input.RequiredPlatform = &in.RequiredPlatform
+		}
+		task, err = tasks.Update(ctx, actor.Principal, in.ProjectID, in.TaskID, input)
+	case "task_set_status":
+		task, err = tasks.SetStatus(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.SetTaskStatus{Version: version, Status: in.Status, ClaimID: in.ClaimID})
+	case "task_delete":
+		err = tasks.Delete(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.DeleteTask{Version: version, RemoveDepends: in.RemoveDepends})
+		if err != nil {
+			return ToolResult{}, err
+		}
+		projectID, _ := model.CanonicalID(in.ProjectID)
+		taskID, _ := model.CanonicalID(in.TaskID)
+		refs := map[string]any{"projectId": projectID, "taskId": taskID}
+		return ToolResult{Data: map[string]any{"projectId": projectID, "taskId": taskID, "deleted": true}, Outcome: "changed", WriteOutcome: "confirmed", Refs: refs}, nil
+	case "task_set_property":
+		task, err = tasks.SetProperty(ctx, actor.Principal, in.ProjectID, in.TaskID, in.Name, in.ValueText, version)
+	case "task_remove_property":
+		task, err = tasks.RemoveProperty(ctx, actor.Principal, in.ProjectID, in.TaskID, in.Name, version)
+	default:
+		return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Unknown task operation."}
+	}
+	if err != nil {
+		return ToolResult{}, err
+	}
+	return taskResult(task, in.ReturnView, version), nil
 }

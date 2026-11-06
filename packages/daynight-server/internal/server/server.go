@@ -47,7 +47,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	if err != nil {
 		return nil, err
 	}
-	if err := registerMCPTools(app, endpoint); err != nil {
+	if err := registerMCPTools(app, endpoint, config.PublicOrigin); err != nil {
 		endpoint.BeginShutdown()
 		return nil, err
 	}
@@ -138,6 +138,22 @@ func healthRoutes(mux *http.ServeMux, readiness func(context.Context) error, log
 }
 
 // registerMCPTools is the composition point for complete domain adapters.
-func registerMCPTools(app *application.Application, endpoint *mcphttp.Entry) error {
-	return mcphttp.RegisterTaskTools(endpoint, app.Tasks)
+func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin string) error {
+	return registerMCPAdapters(
+		func() error { return mcphttp.RegisterProjectTools(entry, app.Projects, app.Identity, origin) },
+		func() error {
+			return mcphttp.RegisterInvitationTools(entry, app.Identity, app.Teams, app.Memberships, origin)
+		},
+		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks) },
+		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks) },
+	)
+}
+
+func registerMCPAdapters(adapters ...func() error) error {
+	for _, register := range adapters {
+		if err := register(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

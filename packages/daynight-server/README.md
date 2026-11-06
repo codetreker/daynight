@@ -325,20 +325,23 @@ The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The endpoint advertises `task_list`, `task_ready` and `task_graph`. Task list
-defaults to a marked summary and excludes done tasks. It orders in-progress,
-ready, blocked and done tasks before paging. Its cursor binds the caller,
-project, filters and view to a snapshot fence; `list_changed` requires restarting
-the traversal when project task versions change. `view: full` requests the
-complete list projection. Ready tasks and graph reads also default to marked
-summaries; `view: full` requests their complete resources. Graphs retain their
-node and edge limits. Other tools are discoverable only when their complete
-business adapters are registered.
+The endpoint advertises Project creation, transfer, listing and inspection,
+Team invitation creation, listing and revocation, inspection and acceptance of
+Team or Project invitations, and Task creation, reading, updating, status,
+deletion, property, list, ready and graph tools. A tool is discoverable only
+after its complete business adapter is registered. Invitation links are returned
+only by creation; listing returns metadata without secrets. Task mutation inputs
+use the existing 1 MiB business JSON limit; versions are decimal strings and
+property values use `valueText`. Task results default to a marked summary;
+request `full` for the complete resource.
 
-When a full ready result exceeds the response budget, its continuation uses
-`task_list`, whose full projection omits descriptions. Reading those descriptions
-requires `task_show`, which may not yet be available. The continuation identifies
-this limitation; clients can inspect tool discovery before using `task_show`.
+Task list excludes done tasks by default and orders in-progress, ready, blocked
+and done tasks before paging. Its cursor binds the caller, project, filters and
+view to a snapshot fence; `list_changed` requires restarting traversal when
+project task versions change. Graphs retain their node and edge limits. When a
+full ready result exceeds the response budget, continuation uses `task_list`,
+whose full projection omits descriptions; use `task_show` with `view: full` to
+read those complete Tasks. The continuation identifies this difference.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
@@ -519,6 +522,18 @@ sequence. Use `bash scripts/check.sh --coverage` or `bash scripts/check.sh --e2e
 to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
+
+### HTTP scenario ownership
+
+Domain packages own their HTTP integration scenarios, including those that
+construct the production application and use real PostgreSQL and UniAuth
+fixtures. The root `internal/server` package retains tests that need internal
+composition access, shared startup/channel fixtures and runtime shutdown
+ordering. A second package calling the same production application does not
+provide another HTTP boundary: shared scenarios run once in their domain owner,
+while internal-only assertions remain in the root package. The
+[HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+records the distinction and preservation requirements.
 
 ### Task Graph boundary fixtures
 

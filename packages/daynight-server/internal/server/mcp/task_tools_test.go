@@ -185,7 +185,7 @@ func TestReadyFullBudgetContinuationDisclosesDescriptionLimit(t *testing.T) {
 	if len(data.Items) == 0 || len(data.Items) >= len(stub.items) || data.Next == nil || data.NextCursor == nil {
 		t.Fatalf("expected bounded continuation: %#v", data)
 	}
-	if data.Next.FullItemsNotice != "task_list full omits descriptions; task_show may not yet be available." || data.Next.Arguments["cursor"] != *data.NextCursor || *data.NextCursor != fmt.Sprintf("cursor-%d", len(data.Items)-1) {
+	if data.Next.FullItemsNotice != "task_list full omits descriptions; use task_show with view full for each complete Task." || data.Next.Arguments["cursor"] != *data.NextCursor || *data.NextCursor != fmt.Sprintf("cursor-%d", len(data.Items)-1) {
 		t.Fatalf("continuation does not explain the limitation: %#v", data.Next)
 	}
 	encoded, err := json.Marshal(envelope{Data: data, Meta: &envelopeMeta{RequestID: actor.RequestID}})
@@ -198,7 +198,7 @@ func TestReadyFullBudgetContinuationDisclosesDescriptionLimit(t *testing.T) {
 	}
 	failure, err := listToolWithBudget(context.Background(), actor, listInput{ProjectID: "project", View: "full", Limit: 3}, stub, true, 200)
 	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != "payload_too_large" || failure.Refs["taskId"] != "0" || failure.Refs["readWithAvailability"] != "may not yet be available" {
+	if !errors.As(err, &fault) || fault.Code != "payload_too_large" || failure.Refs["taskId"] != "0" || failure.Refs["readWith"] != "task_show" {
 		t.Fatalf("first item failure: %#v, %v", failure, err)
 	}
 }

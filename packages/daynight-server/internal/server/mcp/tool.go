@@ -304,6 +304,7 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 	return e.registerTool(tool, func(json.RawMessage) BudgetClass { return class }, handler)
 }
 
+// registerTool selects a budget after input validation and before business work.
 func (e *Entry) registerTool(tool *sdk.Tool, selectClass func(json.RawMessage) BudgetClass, handler ToolHandler) error {
 	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || selectClass == nil {
 		return errors.New("invalid MCP tool registration")

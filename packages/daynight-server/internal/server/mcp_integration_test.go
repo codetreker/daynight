@@ -103,9 +103,10 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
-	if err != nil || !taskToolsOnly(list) {
+	if err != nil {
 		t.Fatalf("production tools: %#v, %v", list, err)
 	}
+	assertMCPProductionTools(t, list.Tools)
 	project, err := projectservice.NewProjects(database).Create(t.Context(), principals[0], projectcore.CreateProject{ExpectedUserID: principals[0].UserID, Name: "MCP queries", RepoURL: "host:mcp-queries"})
 	if err != nil {
 		t.Fatal(err)
@@ -244,21 +245,30 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	list, err = bobProduction.ListTools(ctx, nil)
 	cancel()
-	if err != nil || !taskToolsOnly(list) {
+	if err != nil {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
 	}
+	assertMCPProductionTools(t, list.Tools)
 }
 
-func taskToolsOnly(result *sdk.ListToolsResult) bool {
-	if result == nil || len(result.Tools) != 3 {
-		return false
+func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
+	t.Helper()
+	want := map[string]bool{
+		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
+		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
+		"invitation_inspect": true, "invitation_accept": true,
+		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
+		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
+		"task_list": true, "task_ready": true, "task_graph": true,
 	}
-	want := map[string]bool{"task_list": true, "task_ready": true, "task_graph": true}
-	for _, tool := range result.Tools {
+	for _, tool := range tools {
 		if !want[tool.Name] {
-			return false
+			t.Errorf("unexpected or duplicate production tool %s", tool.Name)
+			continue
 		}
 		delete(want, tool.Name)
 	}
-	return len(want) == 0
+	for name := range want {
+		t.Errorf("missing production tool %s", name)
+	}
 }
