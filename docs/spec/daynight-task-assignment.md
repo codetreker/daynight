@@ -37,7 +37,7 @@ PATCH 仍要求精确正 int64 version 和至少一个可修改字段，单独�
 
 负责人写入、状态、许可、worker claim 和成员修改共享项目锁及任务版本。实际竞争只有一个同版本变更提交；等值请求先完成时可与后续 claim 均成功，但只有 claim 增加版本。目标先被移除则新分配拒绝；有效分配后再移除目标则保留该 UUID。
 
-自动领取要求 assignedTo 等于当前认证账号的本地 userId。Worker 使用 assignedTo=me 发现候选，服务端 claim 在项目写事务中重新校验当前负责人；未分配和分配给他人的任务即使 allowAgents=true 也拒绝自动领取。已有 claim 的完整库存、恢复、完成、释放、撤回、显式人工 resume 和 Session/archive 权限仍按原执行身份与[认领设计](../design/daynight-worker-claims.md)处理；新规则不自动撤回既有执行。[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)保存资格规则与执行授权分离的原因。
+自动领取要求 assignedTo 等于当前认证账号的本地 userId。Worker 使用 assignedTo=me 发现候选，服务端 claim 在项目写事务中重新校验当前负责人；未分配和分配给他人的任务即使 allowAgents=true 也拒绝自动领取。已有 claim 的完整库存、恢复、完成、释放、撤回、显式人工 resume 和 Session/archive 权限仍按原执行身份与[认领设计](../design/daynight-worker-claims.md)处理；新规则不自动撤回既有执行。[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)保存资格规则与执行授权分离的原因。
 
 ## 任务筛选与游标
 
@@ -111,6 +111,6 @@ Web Task、summary 和 GraphTask 严格要求 assignedTo:null 或规范 UUID，�
 
 ## 当前交付边界与验证
 
-本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 6 持久资料缓存已实现。CLI 已消费必填 nullable assignedTo，创建时省略负责人默认使用当前认证账号，显式 UUID 可指定其他人；服务端不强制这个默认值。CLI 还支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有。
+本契约的服务端字段、POST/PATCH、任务筛选、人员资源，以及 Web 负责人交互和 schema 6 持久资料缓存已实现。CLI 已消费必填 nullable assignedTo，创建时省略负责人默认使用当前认证账号，显式 UUID 可指定其他人；服务端不强制这个默认值。CLI 还支持设置/清空、当前 ID 展示及 UUID/me/unassigned 的 list 筛选，命令和响应验证由[客户端需求](daynight-project-task.md)拥有。本人自动领取规则已实现，其资格与既有执行授权分离的历史取舍见[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)。
 
 验证覆盖原始 JSON 字段与白名单、三套任务投影、nullable 及规范化、实际/等值/陈旧版本、执行中拒绝、全部保留写入、真实项目锁竞态及回滚。查询验证多页过滤、完整游标 scope、版本隔离和权限；目录验证两种模式的资格、覆盖、隐私、资料缺失、快照一致性及失败优先级。完整规模的查询计划和响应样本由显式本地压力入口运行，绑定被测修订；常规 CI 保留查询正确性验证，不把样本量当作生产容量上限。Web 还验证 schema 6 的持久资料复用、缺失/变化项读取、访问状态单独变化、schema 5 无损升级与 schema 1/2/3/4 重建、跨标签页 generation 更替且新在线清单尚未取得时撤回旧人员/访问标记/ready 目录并在新清单验证后复用内容、迟到与失权 fence、未知结果只读核对、完整图筛选及双语桌面/390px/320px交互。CLI 验证严格 nullable 字段、设置/清空参数、list 筛选与逐页 principal 绑定、精确版本和 JSON/可读输出。适用 Go、CLI 与 Web 门禁，以及 Go 严格大于 90% 的总语句覆盖率由仓库验证命令拥有。

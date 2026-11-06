@@ -19,10 +19,10 @@ binding, startup, preferences and deletion state operations to the caller's
 transaction, preserving Bot-before-Session locking. Worker freshness and path
 rules remain in `core/worker`.
 
-The [definition](2026-11-04-bot-definition-storage.md),
-[defaults](2026-11-04-bot-default-resolution.md) and
-[Session admission](2026-11-04-bot-session-admission.md) decisions own the
-behavior and its rationale.
+The [definition](../../archived/architecture/2026-11-04-bot-definition-storage.md),
+[defaults](../../archived/architecture/2026-11-04-bot-default-resolution.md) and
+[Session admission](../../archived/architecture/2026-11-04-bot-session-admission.md) decisions record the
+original behavior and its rationale.
 
 ## Alternatives
 

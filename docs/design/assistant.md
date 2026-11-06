@@ -92,7 +92,7 @@ Bot 命令拥有参数、业务请求身份、资源解析和显示；共享服�
 
 Worker 列表保留服务端 observedAt 与完整 items，详情保留 observedAt 与 worker。人类显示从服务端时间计算 120 秒在线阈值，库存 observed/stale/unavailable 独立显示；null 库存不转为零，资源探测错误不转为可用。assistantHost 缺失表示没有托管观测。此读取与 Worker 运行、调度及能力广告无副作用联系，普通远端查询沿用服务端 72 小时窗口。
 
-CLI 消费 [删除与清理事务](#删除与清理事务) 的真实阶段与最终 completed 结果；停证由绑定 Worker 提供，服务端拥有删除屏障与历史清理，命令自身不生成停证或清理历史。命令与错误用法见 [CLI 手册](../../packages/daynight/README.md#bot-management)，选择理由见 [CLI 观测决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-cli-observation.md)。
+CLI 消费 [删除与清理事务](#删除与清理事务) 的真实阶段与最终 completed 结果；停证由绑定 Worker 提供，服务端拥有删除屏障与历史清理，命令自身不生成停证或清理历史。命令与错误用法见 [CLI 手册](../../packages/daynight/README.md#bot-management)，选择理由见 [CLI 观测决策](../../.agents/notes/archived/architecture/2026-11-04-bot-cli-observation.md)。
 
 ## 删除与清理事务
 
@@ -108,12 +108,12 @@ SQL 删除清单明确包含 `session_events`、`session_timeline`、`session_op
 
 文件删除无法随 SQL 回滚。文件或 SQL 失败时数据库事务回滚，独立事务记录 `server_cleanup_failed`，保留已经提交的屏障与 Worker 回执。再次清理可接受文件已不存在；不得把失败状态覆盖到并发重试已提交的 completed。提交结果未知仍按原身份查询，不把网络失败当作失败确认或新请求授权。
 
-该流程不读写 Task、用户普通目录或 native home。服务端 completed 仅与绑定 Worker 的 completed 回执共同证明可管理范围完成，不证明远端进程的独立观测或 Provider 全局历史擦除。实现取舍见[删除清理决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-history-deletion.md)。
+该流程不读写 Task、用户普通目录或 native home。服务端 completed 仅与绑定 Worker 的 completed 回执共同证明可管理范围完成，不证明远端进程的独立观测或 Provider 全局历史擦除。实现取舍见[删除清理决策](../../.agents/notes/archived/architecture/2026-11-04-bot-history-deletion.md)。
 
 ## 扩展约束
 
 公开创建消费默认解析机制，Worker 生命周期消费稳定的 Session 绑定、grant 和报告接口。助手导航与正式 Worker 托管在同一产品组合中启用。Worker 的[角色与 CLI 环境准备](bot-role-environment.md)提供单一版本化模板、持久角色选择和当前认证检查。Provider 实际启动与恢复、首次角色持久化与冻结接入、Worker 退出和私有资料清理仍由各自执行组件负责；服务端接受注册或报告不证明这些组件已完成端到端验收。删除消费者必须保留原停证、重复请求对账和两方阶段判定，公开创建返回 pending 不表示完整托管功能可用。
 
-默认与偏好取舍见[默认解析决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-default-resolution.md)。管理定义取舍见[管理定义决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-definition-storage.md)。
+默认与偏好取舍见[默认解析决策](../../.agents/notes/archived/architecture/2026-11-04-bot-default-resolution.md)。管理定义取舍见[管理定义决策](../../.agents/notes/archived/architecture/2026-11-04-bot-definition-storage.md)。
 
-Session 绑定、同步事实和准入取舍见[Session 准入决策](../../.agents/notes/implemented/architecture/2026-11-04-bot-session-admission.md)。
+Session 绑定、同步事实和准入取舍见[Session 准入决策](../../.agents/notes/archived/architecture/2026-11-04-bot-session-admission.md)。

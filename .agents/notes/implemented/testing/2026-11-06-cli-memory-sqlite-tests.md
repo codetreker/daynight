@@ -48,8 +48,8 @@ existing native-platform CI checks. The
 [development guide](../../../../docs/development.md#cli-development) owns commands;
 the [SQLite design](../../../../docs/design/cli-sqlite-migrations.md) owns the
 connection mechanisms. The
-[format-migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
-continues owning conversion and file maintenance. The
+[format-migration decision](../../archived/architecture/2026-10-30-cli-sqlite-migrations.md)
+records the rationale for conversion and file maintenance. The
 [archived Git validation decision](../../archived/testing/2026-10-18-parallel-git-validation.md)
 records the original private-fixture structure; its per-case database ownership
 continues with memory connections.

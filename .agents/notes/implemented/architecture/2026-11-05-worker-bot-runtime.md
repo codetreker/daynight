@@ -19,8 +19,10 @@ execution, lose responsibility or authorize removal of a replacement file.
 ## Decision
 
 Bot launch uses the existing independent Session and Controller contracts with
-no initial user input. The [inventory decision](2026-11-04-worker-bot-inventory.md)
-retains ownership of frozen registration and role intent. A separate execution
+no initial user input. Frozen registration and role intent retain their
+existing inventory ownership; the
+[inventory decision](../../archived/architecture/2026-11-04-worker-bot-inventory.md)
+records the original separation. A separate execution
 table introduced in Worker format 9 stores monotonic submission evidence, process
 identity, observations and alias ownership. Format 10 retains recovery provenance,
 predecessor stop proof and private paths across generations, and separates the
@@ -70,7 +72,7 @@ belong to another instance. Local cleanup removes the Bot's execution sources,
 retained tickets and their exact launch-scoped temporary files, IPC endpoints and
 registered aliases, then reduces local records to
 deletion responsibility without conversation content. The
-[server deletion decision](2026-11-04-bot-history-deletion.md) owns admission and
+[server deletion decision](../../archived/architecture/2026-11-04-bot-history-deletion.md) records the rationale for admission and
 receipt identity; the Worker submits its exact persisted receipt only after
 observing the original remote deletion state.
 

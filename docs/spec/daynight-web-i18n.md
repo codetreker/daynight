@@ -74,4 +74,4 @@ API 层继续保留结构化错误类型、错误码、图规模详情与请求 
 
 ## 交付与证据
 
-节点上限、严格覆盖率和清理要求继续有效；现有完整容量矩阵及性能预算由显式本地压力验收保留，常规 CI 不执行这些压力 case。语言增加定向检查，不复制整套无关容量数据。原型检查只证明原型；生产结论必须来自真实 React 组件、嵌入式服务和对应源码。相关 README、看板需求与设计保持当前状态一致，基础选型由[运行时决策](../../.agents/notes/implemented/architecture/2026-10-22-web-locale-runtime.md)拥有，生产接入与状态保持由[双语界面决策](../../.agents/notes/implemented/feature/2026-10-22-web-bilingual-interface.md)拥有。
+节点上限、严格覆盖率和清理要求继续有效；现有完整容量矩阵及性能预算由显式本地压力验收保留，常规 CI 不执行这些压力 case。语言增加定向检查，不复制整套无关容量数据。原型检查只证明原型；生产结论必须来自真实 React 组件、嵌入式服务和对应源码。相关 README、看板需求与设计保持当前状态一致，基础选型的历史取舍见[运行时决策](../../.agents/notes/archived/architecture/2026-10-22-web-locale-runtime.md)，生产接入与状态保持的历史取舍见[双语界面决策](../../.agents/notes/archived/feature/2026-10-22-web-bilingual-interface.md)。

@@ -1,7 +1,7 @@
 # 任务外部依赖与任务链边界架构
 
 本设计落实[外部依赖需求 ED-R1–ED-R8](../spec/daynight-external-dependencies.md)。
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-23-external-dependency-design.md)保存方案取舍。
+[决策记录](../../.agents/notes/archived/architecture/2026-10-23-external-dependency-design.md)保存方案取舍。
 依赖性质存储、完整读取和 Web 普通分量消费已实现。图的虚线箭头来自显式外部性质，
 链外卡片由上下文角色决定；详情按关系方向显示性质。公开 API 接受显式分类创建及部分 PATCH，CLI 声明普通/外部完整集合；
 Web 读取和呈现这些性质，不提供依赖编辑器。

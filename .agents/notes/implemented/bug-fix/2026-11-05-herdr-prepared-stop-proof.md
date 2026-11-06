@@ -44,8 +44,8 @@ accepted preparation proof into a contradictory frozen ledger. Capture failures
 remain failures. Error-free empty preparations use the existing unavailable
 receipt; a final empty generation does not discard earlier recorded frames.
 
-This extends the [v2 contract decision](../architecture/2026-11-03-session-v2-terminal-contract.md)
-and partially replaces the [lifecycle decision](../architecture/2026-11-04-herdr-worker-lifecycle.md)
+This extends the [v2 contract decision](../../archived/architecture/2026-11-03-session-v2-terminal-contract.md)
+and partially replaces the [lifecycle decision](../../archived/architecture/2026-11-04-herdr-worker-lifecycle.md)
 only for provably unlaunched preparations. The [contract design](../../../../docs/design/session-v2-contract.md)
 owns the wire fields; the [lifecycle design](../../../../docs/design/herdr-worker-lifecycle.md)
 owns process evidence, migration and stop ordering.
