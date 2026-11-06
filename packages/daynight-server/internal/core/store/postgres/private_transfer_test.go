@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	transfercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -28,7 +29,7 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 		c, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 			var created bool
 			var err error
-			input, created, err = d.Create(ctx, input)
+			input, created, err = transfercore.Create(ctx, d, input)
 			if err != nil {
 				return err
 			}
@@ -43,7 +44,7 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 		}
 	}
 	c, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		r, created, err := d.Create(ctx, records[0])
+		r, created, err := transfercore.Create(ctx, d, records[0])
 		if err != nil {
 			return err
 		}
@@ -56,7 +57,7 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 		t.Fatal(c, e)
 	}
 	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, _, err := d.Create(ctx, transferRecord(user, now))
+		_, _, err := transfercore.Create(ctx, d, transferRecord(user, now))
 		return err
 	})
 	var fault *model.Fault
@@ -66,20 +67,23 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 	var first model.PrivateTransfer
 	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var err error
-		first, err = d.Reserve(ctx, records[0].ID, 60, 100)
+		first, err = transfercore.Reserve(ctx, d, records[0].ID, 60, 100)
 		return err
 	})
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, err := d.Reserve(ctx, records[1].ID, 41, 100); return err })
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, err := transfercore.Reserve(ctx, d, records[1].ID, 41, 100)
+		return err
+	})
 	if !errors.As(e, &fault) || fault.Code != "capacity_unavailable" {
 		t.Fatalf("budget %v", e)
 	}
 	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var err error
 		first.State = "cleanup_pending"
-		first, err = d.Update(ctx, first, first.Version)
+		first, err = transfercore.Update(ctx, d, first, first.Version)
 		return err
 	})
 	if e != nil {
@@ -93,7 +97,7 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 		if total != 60 {
 			t.Fatalf("pending bytes %d", total)
 		}
-		_, _, err = d.Create(ctx, transferRecord(user, now))
+		_, _, err = transfercore.Create(ctx, d, transferRecord(user, now))
 		return err
 	})
 	if !errors.As(e, &fault) || fault.Code != "capacity_unavailable" {
@@ -101,7 +105,7 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 	}
 	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var err error
-		first, err = d.Close(ctx, first.ID, first.Version, now.Add(24*time.Hour))
+		first, err = transfercore.Close(ctx, d, first.ID, first.Version, now.Add(24*time.Hour))
 		return err
 	})
 	if e != nil || first.ReservedBytes != 0 || first.State != "closed" {
@@ -115,28 +119,28 @@ func TestPrivateTransferLedgerLifecycle(t *testing.T) {
 		if total != 0 {
 			t.Fatalf("released bytes %d", total)
 		}
-		_, _, err = d.Create(ctx, transferRecord(user, now))
+		_, _, err = transfercore.Create(ctx, d, transferRecord(user, now))
 		return err
 	})
 	if e != nil {
 		t.Fatal(e)
 	}
 	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, err := d.Update(ctx, records[0], records[0].Version)
+		_, err := transfercore.Update(ctx, d, records[0], records[0].Version)
 		return err
 	})
 	if !errors.Is(e, model.ErrNotFound) {
 		t.Fatalf("stale update %v", e)
 	}
 	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		n, err := d.Prune(ctx, now.Add(23*time.Hour), 100)
+		n, err := transfercore.Prune(ctx, d, now.Add(23*time.Hour), 100)
 		if err != nil {
 			return err
 		}
 		if n != 0 {
 			t.Fatal("pruned early")
 		}
-		n, err = d.Prune(ctx, now.Add(25*time.Hour), 100)
+		n, err = transfercore.Prune(ctx, d, now.Add(25*time.Hour), 100)
 		if n != 1 {
 			t.Fatalf("prune %d", n)
 		}
@@ -155,7 +159,7 @@ func TestPrivateTransferConcurrentCapacity(t *testing.T) {
 	var records []model.PrivateTransfer
 	for i := 0; i < 2; i++ {
 		r := transferRecord(uuid.NewString(), now)
-		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, _, err := d.Create(ctx, r); return err })
+		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, _, err := transfercore.Create(ctx, d, r); return err })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +171,7 @@ func TestPrivateTransferConcurrentCapacity(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, id, 70, 100); return e })
+			_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, e := transfercore.Reserve(ctx, d, id, 70, 100); return e })
 			results <- err
 		}(r.ID)
 	}
@@ -290,7 +294,7 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 	transfer.AuthorityID = grant
 	if _, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		transfer, _, e = d.Create(ctx, transfer)
+		transfer, _, e = transfercore.Create(ctx, d, transfer)
 		return e
 	}); err != nil {
 		t.Fatal(err)
@@ -316,7 +320,7 @@ func TestPrivateTransferAuthorityAdmission(t *testing.T) {
 			if e := d.Authorize(ctx, ledgerPrincipal, "oauth", grant, projectID, taskID); e != nil {
 				return e
 			}
-			_, e := d.Reserve(ctx, transfer.ID, 10, 100)
+			_, e := transfercore.Reserve(ctx, d, transfer.ID, 10, 100)
 			return e
 		})
 		result <- e
@@ -390,11 +394,11 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 	r := transferRecord(uuid.NewString(), now)
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, _, e = d.Create(ctx, r)
+		r, _, e = transfercore.Create(ctx, d, r)
 		if e != nil {
 			return e
 		}
-		r, e = d.Reserve(ctx, r.ID, 100, 100)
+		r, e = transfercore.Reserve(ctx, d, r.ID, 100, 100)
 		return e
 	})
 	if err != nil {
@@ -402,7 +406,7 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 	}
 	abort := errors.New("receipt did not commit")
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, e := d.ConsumeReservation(ctx, r.ID, 60, r.Version)
+		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
 		if e != nil {
 			return e
 		}
@@ -423,7 +427,7 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		if total != 100 || current.OutstandingBytes != 100 {
 			t.Fatal("rollback lost unmaterialized reservation", total, current)
 		}
-		r, e = d.ConsumeReservation(ctx, r.ID, 60, r.Version)
+		r, e = transfercore.ConsumeReservation(ctx, d, r.ID, 60, r.Version)
 		return e
 	})
 	if err != nil {
@@ -433,14 +437,14 @@ func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
 		t.Fatalf("materialization %+v", r)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, e := d.ConsumeReservation(ctx, r.ID, 41, r.Version)
+		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 41, r.Version)
 		return e
 	})
 	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("overconsume %v", err)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		_, e := d.ConsumeReservation(ctx, r.ID, 40, r.Version-1)
+		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 40, r.Version-1)
 		return e
 	})
 	if !errors.Is(err, model.ErrNotFound) {
@@ -477,7 +481,7 @@ func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
 			r.ExpiresAt = now.Add(-time.Hour)
 			r.HardExpiresAt = now.Add(time.Hour)
 			var e error
-			r, _, e = d.Create(ctx, r)
+			r, _, e = transfercore.Create(ctx, d, r)
 			if e != nil {
 				return e
 			}
@@ -490,7 +494,7 @@ func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
 	}
 	seen := make(map[string]bool)
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		due, e := d.Due(ctx, now, 100)
+		due, e := transfercore.Due(ctx, d, now, 100)
 		if e != nil {
 			return e
 		}
@@ -509,7 +513,7 @@ func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		due, e := d.Due(ctx, now.Add(time.Second), 1)
+		due, e := transfercore.Due(ctx, d, now.Add(time.Second), 1)
 		if e != nil {
 			return e
 		}
@@ -534,7 +538,7 @@ func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
 			}
 			r.LeaseUntil = &lease
 			var e error
-			r, _, e = d.Create(ctx, r)
+			r, _, e = transfercore.Create(ctx, d, r)
 			if e != nil {
 				return e
 			}
@@ -548,7 +552,7 @@ func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
 	found := false
 	for round := 2; round <= 3; round++ {
 		_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-			due, e := d.Due(ctx, now.Add(time.Duration(round)*time.Second), 100)
+			due, e := transfercore.Due(ctx, d, now.Add(time.Duration(round)*time.Second), 100)
 			if e != nil {
 				return e
 			}
@@ -578,17 +582,20 @@ func TestPrivateTransferReservationOverflow(t *testing.T) {
 	r := transferRecord(uuid.NewString(), time.Now().UTC())
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, _, e = d.Create(ctx, r)
+		r, _, e = transfercore.Create(ctx, d, r)
 		if e != nil {
 			return e
 		}
-		r, e = d.Reserve(ctx, r.ID, math.MaxInt64, math.MaxInt64)
+		r, e = transfercore.Reserve(ctx, d, r.ID, math.MaxInt64, math.MaxInt64)
 		return e
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, r.ID, 1, math.MaxInt64); return e })
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, e := transfercore.Reserve(ctx, d, r.ID, 1, math.MaxInt64)
+		return e
+	})
 	var f *model.Fault
 	if !errors.As(err, &f) || f.Code != "capacity_unavailable" {
 		t.Fatalf("overflow %v", err)
@@ -634,16 +641,16 @@ func TestPrivateTransferStats(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			r := transferRecord(uuid.NewString(), now.Add(time.Duration(i)*time.Minute))
 			var e error
-			r, _, e = d.Create(ctx, r)
+			r, _, e = transfercore.Create(ctx, d, r)
 			if e != nil {
 				return e
 			}
-			r, e = d.Reserve(ctx, r.ID, int64((i+1)*5), 100)
+			r, e = transfercore.Reserve(ctx, d, r.ID, int64((i+1)*5), 100)
 			if e != nil {
 				return e
 			}
 			r.State = "cleanup_pending"
-			if _, e = d.Update(ctx, r, r.Version); e != nil {
+			if _, e = transfercore.Update(ctx, d, r, r.Version); e != nil {
 				return e
 			}
 		}
@@ -692,7 +699,11 @@ func TestPrivateTransferAuthorizationWaitDoesNotBlockOtherUsers(t *testing.T) {
 		r.ProjectID = project
 		r.TaskID = task
 		r.AuthorityID = pat
-		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { var e error; r, _, e = d.Create(ctx, r); return e })
+		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			var e error
+			r, _, e = transfercore.Create(ctx, d, r)
+			return e
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -748,7 +759,7 @@ func TestPrivateTransferAuthorizationWaitDoesNotBlockOtherUsers(t *testing.T) {
 			return e
 		}
 		r.State = "cleanup_pending"
-		_, e = d.Update(quick, r, r.Version)
+		_, e = transfercore.Update(quick, d, r, r.Version)
 		return e
 	})
 	if err != nil {
@@ -775,7 +786,7 @@ func TestPrivateTransferConcurrentCreateSlots(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, _, e := d.Create(ctx, r); return e })
+			_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, _, e := transfercore.Create(ctx, d, r); return e })
 			results <- err
 		}()
 	}
@@ -808,19 +819,23 @@ func TestPrivateTransferConcurrentCreateReserveClose(t *testing.T) {
 	pending := transferRecord(user, now)
 	reserved := transferRecord(user, now)
 	for _, r := range []*model.PrivateTransfer{&pending, &reserved} {
-		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { var e error; *r, _, e = d.Create(ctx, *r); return e })
+		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			var e error
+			*r, _, e = transfercore.Create(ctx, d, *r)
+			return e
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		pending, e = d.Reserve(ctx, pending.ID, 20, 100)
+		pending, e = transfercore.Reserve(ctx, d, pending.ID, 20, 100)
 		if e != nil {
 			return e
 		}
 		pending.State = "cleanup_pending"
-		pending, e = d.Update(ctx, pending, pending.Version)
+		pending, e = transfercore.Update(ctx, d, pending, pending.Version)
 		return e
 	})
 	if err != nil {
@@ -835,13 +850,13 @@ func TestPrivateTransferConcurrentCreateReserveClose(t *testing.T) {
 			_, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 				switch i {
 				case 0:
-					_, _, e := d.Create(ctx, transferRecord(user, now))
+					_, _, e := transfercore.Create(ctx, d, transferRecord(user, now))
 					return e
 				case 1:
-					_, e := d.Reserve(ctx, reserved.ID, 30, 100)
+					_, e := transfercore.Reserve(ctx, d, reserved.ID, 30, 100)
 					return e
 				default:
-					_, e := d.Close(ctx, pending.ID, pending.Version, now.Add(24*time.Hour))
+					_, e := transfercore.Close(ctx, d, pending.ID, pending.Version, now.Add(24*time.Hour))
 					return e
 				}
 			})
@@ -872,18 +887,25 @@ func TestPrivateTransferRejectsInvalidOperations(t *testing.T) {
 	}
 	bad := r
 	bad.ReservedBytes = 1
-	reject(func(d store.PrivateTransferDAO) error { _, _, e := d.Create(ctx, bad); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, _, e := transfercore.Create(ctx, d, bad); return e })
 	bad = r
 	bad.Direction = "invalid"
-	reject(func(d store.PrivateTransferDAO) error { _, _, e := d.Create(ctx, bad); return e })
-	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { var e error; r, _, e = d.Create(ctx, r); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, _, e := transfercore.Create(ctx, d, bad); return e })
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, _, e = transfercore.Create(ctx, d, r)
+		return e
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, r.ID, -1, 100); return e })
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, uuid.NewString(), 1, 100); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Reserve(ctx, d, r.ID, -1, 100); return e })
+	reject(func(d store.PrivateTransferDAO) error {
+		_, e := transfercore.Reserve(ctx, d, uuid.NewString(), 1, 100)
+		return e
+	})
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		got, e := d.Reserve(ctx, r.ID, 0, 100)
+		got, e := transfercore.Reserve(ctx, d, r.ID, 0, 100)
 		if e == nil && (got.Version != r.Version || got.ReservedBytes != 0) {
 			t.Fatal("zero reservation changed record")
 		}
@@ -893,15 +915,15 @@ func TestPrivateTransferRejectsInvalidOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	reject(func(d store.PrivateTransferDAO) error {
-		_, e := d.ConsumeReservation(ctx, r.ID, -1, r.Version)
+		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, -1, r.Version)
 		return e
 	})
 	reject(func(d store.PrivateTransferDAO) error {
-		_, e := d.ConsumeReservation(ctx, uuid.NewString(), 1, 1)
+		_, e := transfercore.ConsumeReservation(ctx, d, uuid.NewString(), 1, 1)
 		return e
 	})
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		got, e := d.ConsumeReservation(ctx, r.ID, 0, r.Version)
+		got, e := transfercore.ConsumeReservation(ctx, d, r.ID, 0, r.Version)
 		if e == nil && got.Version != r.Version {
 			t.Fatal("zero materialization changed record")
 		}
@@ -912,32 +934,41 @@ func TestPrivateTransferRejectsInvalidOperations(t *testing.T) {
 	}
 	bad = r
 	bad.State = "closed"
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Update(ctx, bad, r.Version); return e })
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.UpdatePending(ctx, r, r.Version); return e })
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Close(ctx, uuid.NewString(), 1, now); return e })
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Close(ctx, r.ID, r.Version, now); return e })
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Due(ctx, now, 0); return e })
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Prune(ctx, now, 101); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Update(ctx, d, bad, r.Version); return e })
+	reject(func(d store.PrivateTransferDAO) error {
+		_, e := transfercore.UpdatePending(ctx, d, r, r.Version)
+		return e
+	})
+	reject(func(d store.PrivateTransferDAO) error {
+		_, e := transfercore.Close(ctx, d, uuid.NewString(), 1, now)
+		return e
+	})
+	reject(func(d store.PrivateTransferDAO) error {
+		_, e := transfercore.Close(ctx, d, r.ID, r.Version, now)
+		return e
+	})
+	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Due(ctx, d, now, 0); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Prune(ctx, d, now, 101); return e })
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, e = d.Reserve(ctx, r.ID, 10, 100)
+		r, e = transfercore.Reserve(ctx, d, r.ID, 10, 100)
 		if e != nil {
 			return e
 		}
 		r.State = "cleanup_pending"
-		r, e = d.Update(ctx, r, r.Version)
+		r, e = transfercore.Update(ctx, d, r, r.Version)
 		return e
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, r.ID, 1, 100); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := transfercore.Reserve(ctx, d, r.ID, 1, 100); return e })
 	state := "committed"
 	r.CleanupFromState = &state
 	r.Data = []byte(`{"operationId":"result"}`)
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, e = d.UpdatePending(ctx, r, r.Version)
+		r, e = transfercore.UpdatePending(ctx, d, r, r.Version)
 		return e
 	})
 	if err != nil {
@@ -946,10 +977,13 @@ func TestPrivateTransferRejectsInvalidOperations(t *testing.T) {
 	if r.State != "cleanup_pending" || r.CleanupFromState == nil || *r.CleanupFromState != "committed" || r.ReservedBytes != 10 {
 		t.Fatalf("late result lost cleanup obligation: %+v", r)
 	}
-	reject(func(d store.PrivateTransferDAO) error { _, e := d.UpdatePending(ctx, r, r.Version-1); return e })
+	reject(func(d store.PrivateTransferDAO) error {
+		_, e := transfercore.UpdatePending(ctx, d, r, r.Version-1)
+		return e
+	})
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, e = d.Close(ctx, r.ID, r.Version, now.Add(time.Hour))
+		r, e = transfercore.Close(ctx, d, r.ID, r.Version, now.Add(time.Hour))
 		return e
 	})
 	if err != nil {
@@ -968,11 +1002,11 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 	r := transferRecord(uuid.NewString(), now)
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, _, e = d.Create(ctx, r)
+		r, _, e = transfercore.Create(ctx, d, r)
 		if e != nil {
 			return e
 		}
-		r, e = d.Reserve(ctx, r.ID, 10, 100)
+		r, e = transfercore.Reserve(ctx, d, r.ID, 10, 100)
 		return e
 	})
 	if err != nil {
@@ -989,6 +1023,32 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		_, e := d.tx.Exec(ctx, `DELETE FROM private_transfer_ledger`)
 		return e
 	}
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `UPDATE private_transfers SET path='uncommitted' WHERE id=$1`, r.ID); e != nil {
+			return e
+		}
+		if _, e := d.tx.Exec(ctx, `ALTER TABLE private_transfers RENAME TO unavailable_private_transfers`); e != nil {
+			return e
+		}
+		_, e := d.CountActive(ctx, r.UserID)
+		if failed, state := store.DatabaseErrorFacts(e); !failed || state != "42P01" {
+			t.Fatalf("count failure lost database cause: %v", e)
+		}
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `UPDATE private_transfers SET path='uncommitted' WHERE id=$1`, r.ID); e != nil {
+			return e
+		}
+		if _, e := d.tx.Exec(ctx, `CREATE FUNCTION reject_transfer_reservation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected ledger failure'; END $$; CREATE TRIGGER reject_transfer_reservation BEFORE UPDATE ON private_transfer_ledger FOR EACH ROW EXECUTE FUNCTION reject_transfer_reservation()`); e != nil {
+			return e
+		}
+		_, e := transfercore.Reserve(ctx, d, r.ID, 1, 100)
+		if failed, state := store.DatabaseErrorFacts(e); !failed || state != "P0001" {
+			t.Fatalf("reservation failure lost database cause: %v", e)
+		}
+		return e
+	})
 	for _, total := range []func(*privateTransferDAO) (int64, error){func(d *privateTransferDAO) (int64, error) { return d.ReservedTotal(ctx) }, func(d *privateTransferDAO) (int64, error) { return d.OutstandingTotal(ctx) }} {
 		fail(func(d *privateTransferDAO) error {
 			if e := deleteLedger(d); e != nil {
@@ -1012,14 +1072,14 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if e := deleteLedger(d); e != nil {
 			return e
 		}
-		_, _, e := d.Create(ctx, transferRecord(uuid.NewString(), now))
+		_, _, e := transfercore.Create(ctx, d, transferRecord(uuid.NewString(), now))
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
 		if e := deleteLedger(d); e != nil {
 			return e
 		}
-		_, e := d.Reserve(ctx, r.ID, 1, 100)
+		_, e := transfercore.Reserve(ctx, d, r.ID, 1, 100)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
@@ -1029,21 +1089,21 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if e := deleteLedger(d); e != nil {
 			return e
 		}
-		_, e := d.Reserve(ctx, r.ID, 1, 100)
+		_, e := transfercore.Reserve(ctx, d, r.ID, 1, 100)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
 		if e := deleteLedger(d); e != nil {
 			return e
 		}
-		_, e := d.ConsumeReservation(ctx, r.ID, 1, r.Version)
+		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 1, r.Version)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
 		if _, e := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET outstanding_bytes=0`); e != nil {
 			return e
 		}
-		_, e := d.ConsumeReservation(ctx, r.ID, 1, r.Version)
+		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 1, r.Version)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
@@ -1053,7 +1113,7 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfer_ledger`); e != nil {
 			return e
 		}
-		_, e := d.ConsumeReservation(ctx, r.ID, 1, r.Version)
+		_, e := transfercore.ConsumeReservation(ctx, d, r.ID, 1, r.Version)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
@@ -1067,20 +1127,20 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfers`); e != nil {
 			return e
 		}
-		_, e := d.Due(ctx, now, 10)
+		_, e := transfercore.Due(ctx, d, now, 10)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
 		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfers`); e != nil {
 			return e
 		}
-		_, e := d.Prune(ctx, now, 10)
+		_, e := transfercore.Prune(ctx, d, now, 10)
 		return e
 	})
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
 		r.State = "cleanup_pending"
-		r, e = d.Update(ctx, r, r.Version)
+		r, e = transfercore.Update(ctx, d, r, r.Version)
 		return e
 	})
 	if err != nil {
@@ -1090,14 +1150,14 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if e := deleteLedger(d); e != nil {
 			return e
 		}
-		_, e := d.Close(ctx, r.ID, r.Version, now)
+		_, e := transfercore.Close(ctx, d, r.ID, r.Version, now)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
 		if _, e := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET reserved_bytes=0,outstanding_bytes=0`); e != nil {
 			return e
 		}
-		_, e := d.Close(ctx, r.ID, r.Version, now)
+		_, e := transfercore.Close(ctx, d, r.ID, r.Version, now)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {
@@ -1107,7 +1167,7 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfer_ledger`); e != nil {
 			return e
 		}
-		_, e := d.Close(ctx, r.ID, r.Version, now)
+		_, e := transfercore.Close(ctx, d, r.ID, r.Version, now)
 		return e
 	})
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
@@ -1119,7 +1179,7 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if e != nil {
 			return e
 		}
-		if got.State != "cleanup_pending" || got.ReservedBytes != 10 || total != 10 {
+		if got.State != "cleanup_pending" || got.Path != r.Path || got.ReservedBytes != 10 || got.OutstandingBytes != 10 || total != 10 {
 			t.Fatalf("failed operations altered record or ledger: %+v total=%d", got, total)
 		}
 		return nil

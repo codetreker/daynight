@@ -20,6 +20,10 @@ Client behavior and local process, Git and SQLite rules belong to CLI module
 verification rather than the artifact matrix. Ordinary CLI tests remain in their
 existing entrypoint. Static response fixtures used by CLI tests are local to the
 CLI, and the CI selector retains shared Web consumers of CLI source and fixtures.
+This replaces the installed business-matrix ownership in the [Steps launcher
+decision](2026-11-06-steps-installed-acceptance-ownership.md), while retaining a
+representative check that both native launchers forward separate complex
+arguments to the same entrypoint and return the same result.
 
 ## Alternatives
 
