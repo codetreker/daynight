@@ -17,9 +17,7 @@
 
 ## 现状与可复用机制
 
-`server.New(Dependencies, Config, logger)` 先校验必需配置并构造真实 UniAuth SDK，
-再注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI；失败返回
-error，运行时关闭已获得的 listener、数据库和文件根句柄。业务服务显式接受
+`internal/config` 先校验必需配置，`service.App` 在打开文件和数据库之前构造真实 UniAuth SDK；`server.New` 使用组装好的应用注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI。启动失败返回 error 并按依赖顺序释放已获得的资源。业务服务显式接受
 model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
 直接实现私有创建和按成员过滤。正式 Application 在常驻 LocaleProvider 下选择公开首页、
 公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
@@ -35,7 +33,7 @@ model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普�
 | HTTP composition 与 loopback | [server.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/server/server.go#L10-L19)、[config.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/server/config.go#L71-L77) | 一个入口认证，继续原有监听/部署边界。 |
 | 项目写锁 | [project_tx.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/core/store/project_tx.go#L29-L39) | 在项目锁内检查权限并执行写入。 |
 | 读取快照/列表 | [snapshot.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/core/store/snapshot.go#L14-L38) | 快照内验证成员；列表 SQL 先筛选再分页。 |
-| 文件 IO 准入 | [attachment.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/service/attachment.go#L83-L114) | IO 前授权，慢传输不持有事务，保留 K1。 |
+| 文件 IO 准入 | [attachment.go](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-server/internal/service/attachment.go#L83-L114) | IO 前授权；读取使用短快照，变更持 Task SHARE 锁至事务完成，保留 K1。 |
 | 直接浏览器资源/键盘 | [AttachmentPreview.tsx](https://github.com/codetreker/daynight/blob/38b827fe644139f4e20989cd8e7740350566fb56/packages/daynight-web/src/features/task-detail/attachments/AttachmentPreview.tsx#L35-L72) | iframe/img/下载自然使用主站 Cookie，保留同源键盘桥。 |
 
 当前 Go SDK 固定为
@@ -344,8 +342,14 @@ invitation_unavailable；[Team 邀请决策](../../.agents/notes/archived/archit
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
-提交串行化。附件读取在短快照完成项目与 task 成员检查后准入文件 IO；变更在 Task 锁后检查并锁定授权来源，直至文件和事务绑定元数据操作完成。已准入操作允许完成；不能在文件写入后仅因成员刚移除而拒绝元数据写入。真实存储/
-数据库错误按原链传播，保留 K1。撤销后新准入请求拒绝，已发字节不承诺撤回。
+提交串行化。附件读取在短快照完成项目与 task 成员检查后准入文件 IO；变更取得 Task SHARE 锁后，
+通过 `pg.ReadProjectAccess` 在单条语句中重新读取当前 ownership、owner Team member 和 direct grant
+形成准入结果，不锁定授权来源行。Task 锁继续覆盖删除状态检查、文件 IO、事务绑定元数据写入及事务完成，
+与 Task 删除排序。准入后的 grant 或 Team 成员撤权无需等待文件 IO；已准入操作允许完成，
+不能在文件写入后仅因成员刚移除而拒绝元数据写入。撤权后没有其他有效来源的新准入请求拒绝；
+HTTP 凭据仍只在入口验证，Thread 的强准入与凭据重验规则由其专用事务拥有。
+真实存储/数据库错误按原链传播，保留 K1，已发字节不承诺撤回。
+[附件准入锁决策](../../.agents/notes/implemented/bug-fix/2026-11-06-attachment-admission-locks.md)记录锁范围与撤权完成的取舍。
 
 ## HTTP、Web 与 CLI
 

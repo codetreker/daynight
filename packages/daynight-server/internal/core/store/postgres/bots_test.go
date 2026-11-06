@@ -137,7 +137,6 @@ func TestBotStorageFailuresRemainErrors(t *testing.T) {
 		func() error { return closed.Worker(ctx, candidate.OwnerUserID, candidate.WorkerID) },
 		func() error { _, err := closed.Bot(ctx, candidate.ID); return err },
 		func() error { return closed.InsertBot(ctx, candidate) },
-		func() error { _, err := closed.DeleteBot(ctx, candidate.ID, 1, model.BotDeletion{}); return err },
 		func() error { _, err := closed.SaveBotDeletion(ctx, candidate.ID, &model.BotDeletion{}); return err },
 		func() error { _, err := snapshot.BotDAO().Bot(ctx, candidate.ID); return err },
 		func() error { return snapshot.BotDAO().BotWorker(ctx, candidate.OwnerUserID, candidate.WorkerID) },
@@ -232,7 +231,7 @@ func TestBotStorageDeletionAndScopedPagination(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		deleted, err = tx.DeleteBot(ctx, current.ID, current.Version, deletion)
+		deleted, err = tx.SaveBotDeletion(ctx, current.ID, &deletion)
 		return err
 	}); err != nil {
 		t.Fatal(err)

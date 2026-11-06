@@ -15,18 +15,13 @@
     "daynight": "pnpm --filter @codetreker/daynight exec node dist/main.js",
     "web:dev": "pnpm --filter @codetreker/daynight-web dev",
     "web:typecheck": "pnpm --filter @codetreker/daynight-web typecheck",
-    "web:test:storage-native": "pnpm --filter @codetreker/daynight-web test:storage-native",
     "web:test": "pnpm --filter @codetreker/daynight-web test",
     "web:build": "pnpm --filter @codetreker/daynight-web build && pnpm --filter @codetreker/daynight-web exec node scripts/publish-assets.mts",
     "completion:acceptance": "pnpm --filter @codetreker/daynight completion:acceptance",
-    "web:acceptance:apfs": "pnpm --filter @codetreker/daynight-web test:acceptance:apfs",
-    "web:acceptance": "pnpm --filter @codetreker/daynight-web test:acceptance",
     "dev:install": "node scripts/dev-install.mjs",
     "dev:test": "node --test packages/daynight/scripts/test-isolation.regression.mjs && node --require ./packages/daynight/scripts/test-isolation.cts --test scripts/dev-install.test.mjs",
     "test:stress": "pnpm --filter @codetreker/daynight test:stress",
-    "test:stress:budgets": "pnpm --filter @codetreker/daynight test:stress:budgets",
     "server:test:stress": "bash packages/daynight-server/scripts/stress.sh",
-    "web:test:stress": "pnpm --filter @codetreker/daynight-web test:stress",
-    "web:acceptance:stress": "pnpm --filter @codetreker/daynight-web test:stress:browser"
+    "web:test:stress": "pnpm --filter @codetreker/daynight-web test:stress"
   }
 }

@@ -43,7 +43,9 @@ func (s *scope) LockTaskPresence(ctx context.Context, projectID, taskID string) 
 }
 
 func (s *scope) ProjectAuthorization(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
-	return pg.LockProjectAuthorization(ctx, s.tx, principal.UserID, projectID)
+	// Admission follows the Task lock, but membership changes must not wait for
+	// an admitted file stream. Read both authorization sources in one statement.
+	return pg.ReadProjectAccess(ctx, s.tx, principal.UserID, projectID)
 }
 
 func (s *scope) AttachmentDAO() store.AttachmentMutationDAO { return s }

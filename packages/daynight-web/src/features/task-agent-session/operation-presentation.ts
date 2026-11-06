@@ -12,3 +12,8 @@ export function operationPresentation(operation: SessionOperation, progress: Ses
   if (current === 'waiting') return 'waiting';
   return operation.state === 'unknown' ? 'sending' : operation.state;
 }
+
+/** Normal delivery and background reconciliation do not add receipt rows. */
+export function operationNeedsAttention(operation: SessionOperation, progress: SessionOperationProgress): boolean {
+  return operation.error !== null || ['unknown', 'failed', 'rejected', 'expired'].includes(operationPresentation(operation, progress));
+}

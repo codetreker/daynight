@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
+	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 )
 
 type sessionApplication interface {
@@ -15,8 +15,8 @@ type sessionApplication interface {
 	Shutdown(context.Context) error
 }
 
-func configuredTestConfig() server.Config {
-	return server.Config{
+func configuredTestConfig() configpkg.Config {
+	return configpkg.Config{
 		DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0",
 		StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second,
 		PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example",

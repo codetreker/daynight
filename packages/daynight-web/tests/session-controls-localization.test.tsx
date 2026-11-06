@@ -87,14 +87,15 @@ describe('localized provider settings', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'Permissions' }));
     const select = screen.getByRole('combobox', { name: 'Approval policy' });
-    expect(select).toHaveValue('never');
+    expect(select).toHaveValue('untrusted');
     expect(screen.getByText(/Current: Untrusted/)).toBeVisible();
     view.setLocale('zh-CN');
     expect(screen.getByRole('combobox', { name: '审批策略' })).toBe(select);
-    expect(select).toHaveValue('never');
+    expect(select).toHaveValue('untrusted');
     expect(screen.getByText(/更改结果未知.*当前: 仅信任的命令免审批/)).toBeVisible();
     expect(screen.getByRole('textbox')).toHaveValue('draft');
     expect(props.onUpdateSetting).not.toHaveBeenCalled();
+    expect(intents.get('approval')).toMatchObject({ value: 'never', confirmedValue: 'untrusted' });
   });
 
   it('preserves unknown settings, foreign-provider IDs, missing descriptions and unlisted current values', () => {

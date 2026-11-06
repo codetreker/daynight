@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
 import type {} from './bots-viewport-session';
 import type { BotDefinition, BotDefaults } from '../../src/api/bots';
-import { botConversationBack, botDetails, botDetailsOpener, closeBotConversation, expectBotDetailsMode, expectBotDetailText, expectBotHeading, focusBotControl } from '../e2e/bot-heading';
+import { botConversationBack, botDetails, botDetailsOpener, closeBotConversation, expectBotDetailsMode, expectBotDetailText, expectBotHeading, focusBotControl } from '../helpers/bot-heading';
 
 const personalId = botId(100), personal = { id: personalId, kind: 'personal', name: null };
 const profile = { id: BOT_USER, personalTeam: personal, name: 'Viewport fixture', email: null, emailVerified: null, avatarUrl: null };

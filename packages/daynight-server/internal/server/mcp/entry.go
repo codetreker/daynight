@@ -11,13 +11,19 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Authenticator interface {
 	Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error)
+}
+
+type OAuthAuthenticator interface {
+	AuthenticateAccess(context.Context, string, string) (store.OAuthAccessIdentity, error)
 }
 
 type AuthorityRef struct {
@@ -62,6 +68,8 @@ type Entry struct {
 	server     *sdk.Server
 	http       http.Handler
 	auth       Authenticator
+	oauth      OAuthAuthenticator
+	resource   string
 	logger     *slog.Logger
 	origins    map[string]bool
 	publicHost string
@@ -70,26 +78,16 @@ type Entry struct {
 	cancel     context.CancelFunc
 	mu         sync.Mutex
 	stopped    bool
+	drained    chan struct{}
 	active     sync.WaitGroup
 }
 
-// ValidateOrigins accepts exact browser origins without paths or credentials.
-func ValidateOrigins(origins []string) error {
-	for _, origin := range origins {
-		u, err := url.Parse(origin)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.String() != origin || u.Hostname() == "" || u.Hostname() != strings.ToLower(u.Hostname()) {
-			return errors.New("invalid MCP allowed origin")
-		}
-	}
-	return nil
-}
-
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
-func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger) (*Entry, error) {
+func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator) (*Entry, error) {
 	if auth == nil || logger == nil {
 		return nil, errors.New("MCP authentication and logger are required")
 	}
-	if err := ValidateOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
+	if err := config.ValidateMCPOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
 		return nil, err
 	}
 	origins := make(map[string]bool)
@@ -99,7 +97,7 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: logger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
-	e := &Entry{server: server, auth: auth, logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), ctx: ctx, cancel: cancel}
+	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), ctx: ctx, cancel: cancel}
 	e.http = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 4 << 20, Logger: logger, DisableLocalhostProtection: true})
 	return e, nil
 }
@@ -147,14 +145,10 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	w.Header().Set("Cache-Control", "no-store")
-	e.mu.Lock()
-	if e.stopped {
-		e.mu.Unlock()
+	if !e.beginWork() {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	e.active.Add(1)
-	e.mu.Unlock()
 	defer e.active.Done()
 	if _, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && !e.allowedHost(r.Host) {
 		http.Error(w, "forbidden host", http.StatusForbidden)
@@ -192,30 +186,63 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	stop := context.AfterFunc(e.ctx, cancel)
 	defer stop()
-	p, err := e.auth.Authenticate(ctx, model.PATCredential, parts[1])
+	var p model.Principal
+	var authority AuthorityRef
+	var err error
+	if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
+		if e.oauth == nil {
+			err = model.Unauthenticated(nil)
+		} else {
+			var identity store.OAuthAccessIdentity
+			identity, err = e.oauth.AuthenticateAccess(ctx, parts[1], e.resource)
+			p, authority = identity.Principal, AuthorityRef{Kind: "oauth", ID: identity.GrantID}
+		}
+	} else {
+		p, err = e.auth.Authenticate(ctx, model.PATCredential, parts[1])
+		authority = AuthorityRef{Kind: "pat", ID: p.CredentialID}
+	}
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		httpx.WriteError(w, r, e.logger, "mcp", "authenticate", err)
 		return
 	}
-	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: AuthorityRef{Kind: "pat", ID: p.CredentialID}, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
+	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
 	defer s.delivered()
 	e.http.ServeHTTP(w, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
 }
 
-// Shutdown rejects new requests, cancels and waits for active requests.
-func (e *Entry) BeginShutdown() {
+// beginWork synchronizes HTTP and tool admission with shutdown's wait start.
+func (e *Entry) beginWork() bool {
 	e.mu.Lock()
-	e.stopped = true
-	e.cancel()
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	if e.stopped {
+		return false
+	}
+	e.active.Add(1)
+	return true
 }
 
-// Shutdown waits until active requests have finished.
+// BeginShutdown rejects new work and cancels admitted requests.
+func (e *Entry) BeginShutdown() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stopped {
+		return
+	}
+	e.stopped = true
+	e.cancel()
+	e.drained = make(chan struct{})
+	// No Add can follow the admission closure, including tool callbacks that
+	// were dispatched by an HTTP request just as shutdown began.
+	go func() { e.active.Wait(); close(e.drained) }()
+}
+
+// Shutdown waits for the same drain across timeouts and retries.
 func (e *Entry) Shutdown(ctx context.Context) error {
 	e.BeginShutdown()
-	done := make(chan struct{})
-	go func() { e.active.Wait(); close(done) }()
+	e.mu.Lock()
+	done := e.drained
+	e.mu.Unlock()
 	select {
 	case <-done:
 		return nil

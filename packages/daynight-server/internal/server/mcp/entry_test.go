@@ -53,7 +53,7 @@ type entryFixture struct {
 func newEntryFixture(t *testing.T) *entryFixture {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	e, err := New(testAuthenticator{}, "https://daynight.test", []string{"https://client.test"}, logger)
+	e, err := New(testAuthenticator{}, "https://daynight.test", []string{"https://client.test"}, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestMCPHTTPRejectsDuplicateAuthorization(t *testing.T) {
 
 func TestMCPHTTPUnregisteredEntryHasNoTools(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	e, err := New(testAuthenticator{}, "https://daynight.test", nil, logger)
+	e, err := New(testAuthenticator{}, "https://daynight.test", nil, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,5 +385,47 @@ func TestMCPHTTPCancellationAndShutdown(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestMCPShutdownReusesDrainAndClosesAllAdmission(t *testing.T) {
+	e, err := New(testAuthenticator{}, "https://daynight.test", nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !e.beginWork() {
+		t.Fatal("initial work rejected")
+	}
+	// Race additional HTTP/tool admissions with the shared stop boundary.
+	var admitted sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		admitted.Add(1)
+		go func() {
+			defer admitted.Done()
+			if e.beginWork() {
+				e.active.Done()
+			}
+		}()
+	}
+	e.BeginShutdown()
+	admitted.Wait()
+	if e.beginWork() {
+		e.active.Done()
+		t.Fatal("tool or HTTP work admitted after shutdown")
+	}
+	drain := e.drained
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		err := e.Shutdown(ctx)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) || e.drained != drain {
+			t.Fatalf("shutdown %d did not retain the same pending drain: %v", i, err)
+		}
+	}
+	e.active.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := e.Shutdown(ctx); err != nil || e.drained != drain {
+		t.Fatalf("shutdown after work finished: %v", err)
 	}
 }

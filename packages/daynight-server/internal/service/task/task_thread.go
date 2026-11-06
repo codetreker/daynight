@@ -58,11 +58,16 @@ type ThreadPageDocument struct {
 type ThreadMessageError struct {
 	MessageID string
 	Execution *model.ThreadExecution
+	Outcome   store.TransactionOutcome
 	Cause     error
 }
 
 func (err *ThreadMessageError) Error() string { return "post thread message failed" }
 func (err *ThreadMessageError) Unwrap() error { return err.Cause }
+
+// TransactionOutcome reports the store's actual completion fact, including a
+// successful rollback. It is independent of any cleanup error in the cause.
+func (err *ThreadMessageError) TransactionOutcome() store.TransactionOutcome { return err.Outcome }
 
 func threadScope(principal model.Principal, projectID, taskID string) (string, string, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
@@ -144,6 +149,7 @@ func (s *TaskThreads) Post(ctx context.Context, principal model.Principal, proje
 		}
 	}
 	if err != nil {
+		failure.Outcome = completion.Outcome
 		failure.Cause = err
 		return ThreadMessageDocument{}, failure
 	}

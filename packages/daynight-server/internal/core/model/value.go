@@ -14,13 +14,13 @@ func CanonicalID(value string) (string, error) {
 }
 
 func RequirePrincipal(principal Principal) error {
-	if principal.Kind != SessionCredential && principal.Kind != PATCredential {
+	if principal.Kind != SessionCredential && principal.Kind != PATCredential && principal.Kind != OAuthCredential {
 		return &Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again."}
 	}
-	if _, err := CanonicalID(principal.CredentialID); err != nil {
+	if id, err := CanonicalID(principal.CredentialID); err != nil || id == uuid.Nil.String() {
 		return &Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again."}
 	}
-	if _, err := CanonicalID(principal.UserID); err != nil {
+	if id, err := CanonicalID(principal.UserID); err != nil || id == uuid.Nil.String() {
 		return &Fault{Code: "unauthenticated", Message: "Authentication is required. Please log in again."}
 	}
 	return nil

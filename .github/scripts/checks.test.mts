@@ -13,12 +13,11 @@ const command = gate.match(/^        run: (.+)$/m)![1]!;
 test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
-  for (const [name, mode] of [["verify-server", "coverage"], ["verify-server-e2e", "e2e"]]) {
+  for (const [name, mode] of [["verify-server", "coverage"]]) {
     const job = jobs.get(name!)!;
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
     assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
-    assert.ok(job.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
   }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
@@ -36,11 +35,11 @@ const runGate = (results: Record<string, string>): number | null => {
 
 const success = Object.fromEntries(required.map((name) => [name, "success"]));
 
-test("both successful server jobs pass the actual workflow gate", () => {
+test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-macos", "verify-server", "verify-server-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-macos", "verify-server"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -279,27 +278,22 @@ test("the macOS evidence handoff removes only the two recorder paths", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - )/)![1]!;
-const selectedWebCommand = selectedWebStep.match(/        run: \|\n((?:          .+\n)+)/)![1]!
-  .split("\n").filter(Boolean).map((line) => line.slice(10)).join("\n");
+const selectedWebStep = gate.match(/      - name: Require selected Web quality to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedWebCommand = selectedWebStep.match(/^        run: (.+)$/m)![1]!;
 
-test("selected Web evidence requires actual quality and shard success before downloads", () => {
+test("selected Web validation requires actual quality success", () => {
   assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
   assert.match(selectedWebStep, /WEB_QUALITY_RESULT: \$\{\{ needs.verify-web-quality.result \}\}/);
-  assert.match(selectedWebStep, /WEB_SHARD_RESULT: \$\{\{ needs.verify-web.result \}\}/);
-  assert.ok(gate.indexOf("Require selected Web jobs to succeed") < gate.indexOf("Download first Web shard summary"));
 });
 
 for (const quality of ["success", "skipped", "failure", "cancelled"]) {
-  for (const shards of ["success", "skipped", "failure", "cancelled"]) {
-    test(`selected Web quality=${quality} shards=${shards} executes the workflow guard`, () => {
-      const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
-        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_SHARD_RESULT: shards },
-        encoding: "utf8", timeout: 5_000,
-      });
-      if (result.error) throw result.error;
-      assert.equal(result.signal, null);
-      assert.equal(result.status === 0, quality === "success" && shards === "success");
+  test(`selected Web quality=${quality} executes the workflow guard`, () => {
+    const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
+      env: { ...process.env, WEB_QUALITY_RESULT: quality },
+      encoding: "utf8", timeout: 5_000,
     });
-  }
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, quality === "success");
+  });
 }

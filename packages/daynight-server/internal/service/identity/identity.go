@@ -162,6 +162,23 @@ func (s *Identity) User(ctx context.Context, p model.Principal) (model.User, err
 	}
 	return result, nil
 }
+
+// PersonalTeamID reads only the validated ownership facts, not user profile text.
+func (s *Identity) PersonalTeamID(ctx context.Context, p model.Principal) (string, error) {
+	var id string
+	err := s.run(ctx, func(scope store.IdentityScope) error {
+		facts, err := s.module.PersonalTeam(ctx, scope.IdentityDAO(), p)
+		if err != nil {
+			return err
+		}
+		if err := team.ValidatePersonalTeam(facts); err != nil {
+			return errors.New("user Personal Team is missing or invalid")
+		}
+		id = facts.ID
+		return nil
+	})
+	return id, err
+}
 func (s *Identity) Logout(ctx context.Context, p model.Principal) error {
 	if err := core.ValidateSession(p); err != nil {
 		return err

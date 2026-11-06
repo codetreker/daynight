@@ -39,6 +39,7 @@ type Engine struct {
 	activeOperations    int
 	idle                chan struct{}
 	stopping            chan struct{}
+	workCanceled        bool
 }
 
 func NewEngine(files filestorage.Storage) *Engine {

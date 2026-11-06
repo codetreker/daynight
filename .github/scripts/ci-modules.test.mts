@@ -41,7 +41,7 @@ for (const [path, expected] of [
   ["packages/daynight-web/scripts/publish-assets.mts", { ...none, server: true, web: true }],
   ["packages/daynight-web/package.json", { ...none, server: true, web: true }],
   ["packages/daynight/test/tooling/copy-resources.test.ts", { ...none, cli: true }],
-  ["packages/daynight/test/fixtures/installed-cli.ts", all],
+  ["packages/daynight/test/fixtures/installed-cli.ts", { ...none, cli: true, server: true }],
   ["packages/daynight/test/fixtures/installed-operation-limits.ts", { ...none, cli: true, server: true }],
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true }],
   ["packages/daynight-server/.gitignore", { ...none, server: true }],
@@ -96,12 +96,12 @@ test("combines module ownership without making documentation select a module", (
   assert.deepEqual(selectModules([]), none);
 });
 
-test("the shared installed CLI fixture validates all of its consumers", () => {
+test("the installed CLI fixture validates its remaining CLI and Go consumers", () => {
   for (const paths of [
     ["packages/daynight/test/fixtures/installed-cli.ts"],
     ["docs/spec/daynight-task-attachments.md", "packages/daynight/test/fixtures/installed-cli.ts"],
-    ["packages/daynight-web/tests/e2e/attachments.spec.ts", "packages/daynight/test/fixtures/installed-cli.ts"],
-  ]) assert.deepEqual(selectModules(paths), all);
+  ]) assert.deepEqual(selectModules(paths), { ...none, cli: true, server: true });
+  assert.deepEqual(selectModules(["packages/daynight-web/tests/task-steps-recovery.test.tsx", "packages/daynight/test/fixtures/installed-cli.ts"]), all);
 });
 
 test("root ignore rules do not change other paths' module selection", () => {

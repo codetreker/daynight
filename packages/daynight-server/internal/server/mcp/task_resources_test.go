@@ -40,7 +40,7 @@ func taskResourceClient(t *testing.T) (*sdk.ClientSession, string, model.Princip
 	principal.Kind = model.PATCredential
 	principal.CredentialID = uuid.NewString()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	entry, err := New(taskResourceAuthenticator{principal}, "https://daynight.test", nil, logger)
+	entry, err := New(taskResourceAuthenticator{principal}, "https://daynight.test", nil, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestMCPTaskUnknownCommitIsNotReplayed(t *testing.T) {
 	id := task["id"].(string)
 	wrapped := &taskUnknownStore{Store: database}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	entry, err := New(taskResourceAuthenticator{principal}, "https://daynight.test", nil, logger)
+	entry, err := New(taskResourceAuthenticator{principal}, "https://daynight.test", nil, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestMCPTaskUnchangedMutationReceipt(t *testing.T) {
 
 func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	entry, err := New(testAuthenticator{}, "https://daynight.test", nil, logger)
+	entry, err := New(testAuthenticator{}, "https://daynight.test", nil, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

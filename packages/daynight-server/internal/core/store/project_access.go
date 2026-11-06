@@ -11,4 +11,6 @@ const (
 type ProjectScope struct {
 	Kind   ProjectScopeKind
 	TeamID string
+	// MaxItemBytes bounds materialized text per item; zero leaves it unrestricted.
+	MaxItemBytes int
 }

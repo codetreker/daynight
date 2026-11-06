@@ -6,7 +6,7 @@ import type { Operation } from "../../api/operation.js";
 import { ProtocolError } from "../../api/parse.js";
 import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import type { WorkerDiagnostic } from "./diagnostics.js";
-import { hasHerdrCommandCleanupFailure } from "./herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "./herdr/command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
 
 type SafeFailure = { category: string; cause?: SafeFailure; errors?: readonly SafeFailure[] };
@@ -102,6 +102,20 @@ export const createWorkerReporter = (options: {
   const retainCleanupFailure = (error: unknown): void => {
     cleanupFailures.add(error);
   };
+  const isCancellation = (error: unknown): boolean => error === cancellation.signal.reason ||
+    (error instanceof OperationError && error.kind === "cancelled" && isCancellation(error.cause));
+  const requiresCleanupFailure = (error: unknown, seen = new Set<unknown>()): boolean => {
+    if (seen.has(error)) return true;
+    if (error instanceof HerdrCommandCleanupError) return hasUnconfirmedHerdrCommandCleanup(error);
+    if (isCancellation(error)) return false;
+    // Keep mixed aggregates intact when any independent failure remains. A cause
+    // wrapper alone does not turn an acknowledged cleanup timeout into a new failure.
+    const ancestors = new Set(seen).add(error);
+    if (error instanceof AggregateError) return error.errors.some((item: unknown) => requiresCleanupFailure(item, ancestors)) ||
+      (error.cause !== undefined && requiresCleanupFailure(error.cause, ancestors));
+    if (error instanceof Error && error.cause !== undefined) return requiresCleanupFailure(error.cause, ancestors);
+    return true;
+  };
   const attempt = async (): Promise<void> => {
     const operation = createOperation({ signal: cancellation.signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
     let phase = "collect";
@@ -175,7 +189,7 @@ export const createWorkerReporter = (options: {
     stop: async () => {
       halt();
       await running;
-      const errors = [...cleanupFailures, diagnosticFailure].filter(error => error !== undefined);
+      const errors = [...[...cleanupFailures].filter(error => requiresCleanupFailure(error)), diagnosticFailure].filter(error => error !== undefined);
       if (errors.length === 1) throw errors[0];
       if (errors.length !== 0) throw new AggregateError(errors, "Worker reporter could not finish safely.");
     },

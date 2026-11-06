@@ -1,4 +1,4 @@
-import type { DependencySnapshot, GeometryExpectation } from './e2e/dependency-geometry';
+import type { DependencySnapshot, GeometryExpectation } from './helpers/dependency-geometry';
 
 export const d = 'M100,50 L188,50 Q200,50 200,62 L200,88 Q200,100 212,100 L238,100 Q250,100 250,88 L250,62 Q250,50 262,50 L300,50';
 export const color = 'rgb(171, 178, 199)';
