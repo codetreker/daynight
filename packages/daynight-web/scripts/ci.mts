@@ -39,7 +39,7 @@ export const runCi = async (mode: string, cancellation: AbortController,
   };
   await run(['--filter', '@codetreker/daynight-web', 'test:harness'], { timeoutMs: 180_000 });
   await run(['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage'], {
-    env: { ...process.env, VITEST_MAX_WORKERS: '4' }, timeoutMs: 300_000,
+    env: { ...process.env, VITEST_MAX_WORKERS: '4' }, timeoutMs: 900_000,
   });
   await run(['--filter', '@codetreker/daynight-web', 'exec', 'node', 'scripts/coverage.mts'], { timeoutMs: 60_000 });
 };

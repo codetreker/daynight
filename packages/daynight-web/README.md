@@ -1892,6 +1892,11 @@ The existing root `build`, `test` and `acceptance` commands retain their CLI sco
 
 `web:test` serially composes two required package commands. `test:harness` runs
 its Node tooling tests, including the coverage checker and asset publication.
+`scripts/ci.mts quality` runs the tooling suite, Vitest coverage with four workers,
+and the statement checker with respective process limits of 3, 15 and 1 minutes.
+Each limit includes process startup, reporting and exit.
+Vitest suppresses console output from passing tests, including diagnostics from
+expected failure scenarios, and retains console output from failing tests.
 `test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
 model and geometry workloads live in `.stress.ts` files and run only through
 `pnpm test:stress` from this package (`pnpm web:test:stress` from the repository
@@ -1980,11 +1985,14 @@ package's `.tmp/` and are removed after classification. Typechecking remains a
 separate mandatory check.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
-The Web selector runs `verify-web-quality`; the final gate requires it to succeed
-when selected. The quality command runs the harness, Vitest/V8 collection and
-coverage checker serially with bounded stages. The module browser entry runs the navigation, Team, assistant and other
-fixture configurations independently; the assistant browser suite below also runs
-in the selected Web CI job.
+The Web selector starts `verify-web-quality` and `verify-web-browser` independently
+after module detection. Each job prepares its own runner and has a 20-minute
+limit; the final gate requires both to succeed when selected. The quality job
+runs the harness, Vitest/V8 collection and coverage checker serially with bounded
+stages and uploads coverage evidence. The browser job runs the assistant suite
+below without depending on the quality job or its artifacts. The module browser
+entry separately runs the navigation, Team, assistant and other fixture
+configurations.
 
 ## Independent browser checks
 
@@ -2037,10 +2045,11 @@ can be selected with `DAYNIGHT_BROWSER_CHANNEL=chrome` on the test command; reco
 that browser choice with the result. Captures are saved under
 `packages/daynight-web/.tmp/acceptance/bots-viewport/`.
 The [checks workflow](../../.github/workflows/checks.yml) runs the same suite in
-`verify-web-quality` when Web checks are selected, after the full harness and
-coverage gate, and uploads `daynight-web-assistant-browser` with JUnit results and
-browser captures. Documentation-only PRs follow the repository's separate CI
-selection rules.
+`verify-web-browser` when Web checks are selected. Its fresh runner installs the
+locked dependencies and Chromium, then the Playwright configuration starts its
+own Vite host. It uploads `daynight-web-assistant-browser` with JUnit results and
+browser captures, including available evidence after a failed browser run.
+Documentation-only PRs follow the repository's separate CI selection rules.
 
 These tests prove browser consumption and presentation with controlled services;
 the creation responses, Session operations and archived history are fixtures.

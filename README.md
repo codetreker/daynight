@@ -373,33 +373,38 @@ release validation, existing-version skips and artifact verification.
 
 ## CI selection
 
-The [`checks` workflow](.github/workflows/checks.yml) selects PR jobs from all
-changed paths, including deletions and both sides of renames. Shared inputs select
-the union of their consumers. The [selector](.github/scripts/ci-modules.mts) owns
-the precise path rules; [the development guide](docs/development.md#ci-selection)
-explains the jobs and version-only exception. Main pushes select every module.
+The [`checks` workflow](.github/workflows/checks.yml) selects PR jobs by module
+directory from all changed paths, including deletions and both sides of renames.
+Mixed changes select the union of their modules. The
+[selector](.github/scripts/ci-modules.mts) owns the precise path rules;
+[the development guide](docs/development.md#ci-selection) explains the jobs and
+version-only exception. Main pushes select every module.
 
 | Changed paths | PR application jobs |
 |---|---|
-| CLI `src/api/`, `src/session/`, `src/platform/text.ts` | CLI, Web and Go |
-| CLI Controller `providers/projection.ts`, `providers/codex-errors.ts`, `providers/native-rpc.ts`, `providers/types.ts`, `provider-display.ts`, and `test/session/fixtures/` | CLI and Web |
-| Other CLI files and development installer | CLI |
-| Go server files | Go |
-| Web files and its selected patches | Web and Go |
-| Deployment files | Web |
-| Root package, lockfile, workspace and npm configuration | All modules |
+| `packages/daynight/` and installer tooling in `scripts/` | CLI |
+| `packages/daynight-server/` | Go |
+| `packages/daynight-web/` and `deployment/` | Web |
+| Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, and `patches/` | CLI and Web |
 | Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
 | CI workflow, routing and unclassified paths | All modules |
 
-CLI source paths take precedence over documentation exclusions. A PR containing
-only a CLI manifest version change may skip application jobs as described in
-the [development guide](docs/development.md#ci-selection).
+Module ownership applies equally to implementations, fixtures and test tooling.
+CLI source paths take precedence over documentation exclusions because bundled
+Markdown is a release input; other documentation exclusions still apply within
+module directories. A PR containing only a CLI manifest version change may skip
+application jobs as described in the
+[development guide](docs/development.md#ci-selection). The
+[module routing decision](.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
+records the directory policy and its validation boundary.
 
 CLI validation includes ordinary and installed phases on Linux, Windows and
-macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go and Web
-have separate module jobs. The final gate rejects failed or cancelled jobs and
-requires a selected Web quality job to succeed. A newer PR run cancels its older
-run; main runs queue without cancelling an active run.
+macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go has its
+own module job. Web selection starts independent quality and browser jobs; the
+quality job runs the harness and coverage gate, while the browser job runs its
+Playwright regressions. The final gate rejects failed or cancelled jobs and
+requires both selected Web jobs to succeed. A newer PR run cancels its older run;
+main runs queue without cancelling an active run.
 
 ## Validation
 

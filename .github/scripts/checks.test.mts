@@ -39,7 +39,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-macos", "verify-completion", "verify-server"]) {
+for (const name of ["verify", "verify-installed", "verify-macos", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -278,23 +278,54 @@ test("the macOS evidence handoff removes only the two recorder paths", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-const selectedWebStep = gate.match(/      - name: Require selected Web quality to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
 const selectedWebCommand = selectedWebStep.match(/^        run: (.+)$/m)![1]!;
+const webQuality = jobs.get("verify-web-quality")!;
+const webBrowser = jobs.get("verify-web-browser")!;
 
-test("Web quality requires frontend Playwright regressions and retains their evidence", () => {
-  const web = jobs.get("verify-web-quality")!;
-  const steps = [...web.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
+test("Web quality and browser jobs prepare independent runners after module selection", () => {
+  for (const stage of [webQuality, webBrowser]) {
+    assert.match(stage, /^    needs: detect-changes$/m);
+    assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
+    assert.match(stage, /^    runs-on: ubuntu-latest$/m);
+    assert.match(stage, /^    timeout-minutes: 20$/m);
+    assert.match(stage, /uses: actions\/checkout@/);
+    assert.match(stage, /^          persist-credentials: false$/m);
+    assert.match(stage, /^          node-version: 24$/m);
+    assert.match(stage, /uses: pnpm\/action-setup@/);
+    assert.match(stage, /^          version: 11\.28\.6$/m);
+    assert.ok(stage.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
+    assert.match(stage, /COREPACK_HOME: \$\{\{ github.workspace \}\}\/\.tmp\/corepack/);
+    assert.match(stage, /XDG_CACHE_HOME: \$\{\{ github.workspace \}\}\/\.tmp\/cache/);
+    assert.doesNotMatch(stage, /download-artifact|continue-on-error/);
+  }
+});
+
+test("Web quality owns the complete harness, coverage command and evidence", () => {
+  assert.match(webQuality, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
+  assert.doesNotMatch(webQuality, /playwright|web-browser|bots-viewport/);
+  const uploads = uploadSteps(webQuality);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-coverage"]);
+  assert.match(uploads[0]!, /^        if: \$\{\{ always\(\) && steps.web-quality.outcome != 'skipped' \}\}$/m);
+  assert.deepEqual(artifactPaths(uploads[0]!), ["packages/daynight-web/.tmp/coverage/coverage-final.json", "packages/daynight-web/.tmp/coverage/summary.json"]);
+  assert.match(uploads[0]!, /^          if-no-files-found: error$/m);
+});
+
+test("Web browser owns the unchanged frontend Playwright regressions and evidence", () => {
+  const steps = [...webBrowser.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
   const install = steps.find((step) => step.includes("playwright install"))!;
   const browser = steps.find((step) => step.includes("id: web-browser"))!;
-  const upload = uploadSteps(web).find((step) => artifactName(step) === "daynight-web-assistant-browser")!;
+  const uploads = uploadSteps(webBrowser);
+  const upload = uploads[0]!;
   assert.ok(install); assert.ok(browser); assert.ok(upload);
-  assert.match(web, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
-  assert.match(web, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser"]);
+  assert.doesNotMatch(webBrowser, /ci\.mts quality|id: web-quality|\.tmp\/coverage/);
+  assert.match(webBrowser, /PLAYWRIGHT_BROWSERS_PATH: \$\{\{ github.workspace \}\}\/\.tmp\/playwright-browsers/);
   assert.match(install, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright install --with-deps chromium$/m);
   assert.match(browser, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright test --config tests\/navigation\/bots-viewport-playwright.config.ts --reporter=line,junit$/m);
   assert.match(browser, /PLAYWRIGHT_JUNIT_OUTPUT_FILE: \$\{\{ github.workspace \}\}\/packages\/daynight-web\/\.tmp\/acceptance\/bots-viewport-results.xml/);
-  assert.ok(web.indexOf(install) < web.indexOf(browser));
-  assert.ok(web.indexOf(browser) < web.indexOf(upload));
+  assert.ok(webBrowser.indexOf(install) < webBrowser.indexOf(browser));
+  assert.ok(webBrowser.indexOf(browser) < webBrowser.indexOf(upload));
   assert.doesNotMatch(browser, /continue-on-error|passWithNoTests|--grep|--shard|--update-snapshots|if:/);
   assert.match(upload, /^        if: \$\{\{ always\(\) && steps.web-browser.outcome != 'skipped' \}\}$/m);
   assert.deepEqual(artifactPaths(upload), ["packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml", "packages/daynight-web/.tmp/acceptance/bots-viewport/"]);
@@ -302,19 +333,22 @@ test("Web quality requires frontend Playwright regressions and retains their evi
   assert.match(upload, /^          if-no-files-found: error$/m);
 });
 
-test("selected Web validation requires actual quality success", () => {
+test("selected Web validation requires actual quality and browser success", () => {
   assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
   assert.match(selectedWebStep, /WEB_QUALITY_RESULT: \$\{\{ needs.verify-web-quality.result \}\}/);
+  assert.match(selectedWebStep, /WEB_BROWSER_RESULT: \$\{\{ needs.verify-web-browser.result \}\}/);
 });
 
 for (const quality of ["success", "skipped", "failure", "cancelled"]) {
-  test(`selected Web quality=${quality} executes the workflow guard`, () => {
-    const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
-      env: { ...process.env, WEB_QUALITY_RESULT: quality },
-      encoding: "utf8", timeout: 5_000,
+  for (const browser of ["success", "skipped", "failure", "cancelled"]) {
+    test(`selected Web quality=${quality}, browser=${browser} executes the workflow guard`, () => {
+      const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
+        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_BROWSER_RESULT: browser },
+        encoding: "utf8", timeout: 5_000,
+      });
+      if (result.error) throw result.error;
+      assert.equal(result.signal, null);
+      assert.equal(result.status === 0, quality === "success" && browser === "success");
     });
-    if (result.error) throw result.error;
-    assert.equal(result.signal, null);
-    assert.equal(result.status === 0, quality === "success");
-  });
+  }
 }
