@@ -334,7 +334,8 @@ Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, and Task discussion reads and posts. Invitation links are returned
+and writes, Task discussion reads and posts, and attachment listing and removal.
+Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
 property values use `valueText`. Task and Step reads default to marked, bounded
@@ -721,8 +722,9 @@ owns the address rule.
 Writes stream through an owned temporary file and publish complete contents.
 An empty internal directory can be reused as a file path; existing child files
 remain conflicts. Internal namespace synchronization belongs to this storage
-instance and does not coordinate filesystem operations with PostgreSQL or with
-other processes sharing a root. The accepted non-atomicity issue is owned by the
+instance. Attachment operations additionally use a persistent, cross-process
+target gate through file and metadata completion; an opened handle remains stable
+after releasing it. The accepted non-atomicity issue is owned by the
 [attachment requirements](../../docs/spec/daynight-task-attachments.md).
 
 Both Compose deployments mount a project-scoped `attachment-data` volume at
@@ -837,6 +839,8 @@ The path is relative to the task, preserves case, and each URL segment is encode
 individually. No request uploads or replaces a directory. A missing content type
 means `application/octet-stream`; invalid types are rejected. Binary uploads do
 not use the existing 1 MiB JSON decoder.
+
+New or replaced attachment paths are limited to 1024 Unicode code points, including separators. Existing longer paths remain readable and removable under the original transport rules.
 
 Metadata is stored in `task_attachments`, keyed by task and path with C collation;
 the service derives the storage address as
