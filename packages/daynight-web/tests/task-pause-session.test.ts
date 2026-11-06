@@ -7,7 +7,7 @@ import { detailFixture } from './helpers/taskDetail';
 import { createTaskSessionWorld } from './helpers/taskSessions';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), unpauseTask: vi.fn(), setTaskStatus: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), unpauseTask: vi.fn(), setTaskStatus: vi.fn() }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
@@ -59,12 +59,12 @@ describe('unpause mutation ownership', () => {
     writes.mockRejectedValueOnce(failure).mockResolvedValueOnce(changed); sessions.unpause(project, taskId, initial.version);
     await waitFor(() => expect(sessions.snapshot(project, taskId).mutation.phase).toBe('refused'));
     expect(sessions.snapshot(project, taskId).mutation.error).toBe(failure); expect(canUnpause(sessions.snapshot(project, taskId))).toBe(true);
-    sessions.unpause(project, taskId, initial.version); await synchronize(sessions, changed);
+    sessions.unpause(project, taskId, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledTimes(2)); await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, taskId).mutation.phase).toBe('confirmed')); expect(writes).toHaveBeenCalledTimes(2);
   });
   it.each([new ApiError('network'), new ApiError('server', 409, 'version_conflict')])('reconciles an unknown or conflicting outcome without replaying the write %#', async (failure) => {
     const sessions = createSessions(); await open(sessions); reads.mockResolvedValueOnce(changed); writes.mockRejectedValueOnce(failure);
-    sessions.unpause(project, taskId, initial.version); await synchronize(sessions, changed);
+    sessions.unpause(project, taskId, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, taskId).detail).toEqual(changed));
     await waitFor(() => expect(sessions.snapshot(project, taskId).mutation.reconciling).toBe(false));
     expect(sessions.snapshot(project, taskId).mutation.phase).toBe(failure.code === 'version_conflict' ? 'conflict' : 'reconciled');
@@ -83,7 +83,7 @@ describe('unpause mutation ownership', () => {
     { properties: { ...changed.properties, future: {} } }, { properties: { ...changed.properties, worker: { ...worker, phase: 'waiting' } } }, { version: initial.version },
   ])('reconciles responses that change unrelated state or cannot prove the property mutation %#', async (fields) => {
     const sessions = createSessions(); await open(sessions); reads.mockResolvedValueOnce(changed); writes.mockResolvedValueOnce({ ...changed, ...fields });
-    sessions.unpause(project, taskId, initial.version); await synchronize(sessions, changed);
+    sessions.unpause(project, taskId, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, taskId).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(project, taskId).mutation.error).toMatchObject({ kind: 'protocol' }); expect(sessions.snapshot(project, taskId).detail).toEqual(changed); expect(writes).toHaveBeenCalledOnce();
   });

@@ -12,7 +12,8 @@ import { LanguageSelector } from '../../src/i18n/LanguageSelector';
 import { renderWithLocale } from '../helpers/renderWithLocale';
 import { createTaskSessionWorld } from '../helpers/taskSessions';
 import { detailFixture } from '../helpers/taskDetail';
-import { viewerHeaders } from '../helpers/taskSync';
+import { directAccessFixture, viewerHeaders } from '../helpers/taskSync';
+import { wireResponse } from '../helpers/wireJson';
 
 const timestamp = '2026-10-21T00:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000100';
@@ -206,15 +207,23 @@ describe('inspection language changes', () => {
     const world = createTaskSessionWorld();
     await world.sync([detailFixture(projectId, taskId)]);
     const graph = world.scope.getAuthorizedProject(projectId)!.graph;
-    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
-      code: 'not_found', message: 'private raw server error', requestId: 'detail-request-raw',
-    } }), { status: 404, headers: viewerHeaders(world.scope.userId, { 'Content-Type': 'application/json' }) }));
+    const taskUrl = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+    const accessUrl = `/api/v1/projects/${projectId}/access`;
+    const access = deferred<Response>();
+    const fetch = vi.fn((url: string) => {
+      if (url === accessUrl) return access.promise;
+      if (url !== taskUrl) throw new Error(`Unexpected request: ${url}`);
+      return Promise.resolve(new Response(JSON.stringify({ error: {
+        code: 'not_found', message: 'private raw server error', requestId: 'detail-request-raw',
+      } }), { status: 404, headers: viewerHeaders(world.scope.userId, { 'Content-Type': 'application/json' }) }));
+    });
     vi.stubGlobal('fetch', fetch);
     const view = renderWithLocale(<TaskDetailDialog projectId={projectId} taskId={taskId}
       snapshot={{ observedAt: graph.observedAt, graph, index: world.scope.getAuthorizedProject(projectId)!.index, workerMachines: new Map(), pausedTaskIds: world.scope.getAuthorizedProject(projectId)!.pausedTaskIds, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 }}
       onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { locale: 'zh-CN', taskCache: { scope: world.scope } });
     try {
       expect(await screen.findByRole('alert')).toHaveTextContent('这个任务已无法读取，请刷新任务图。');
+      await waitFor(() => expect(fetch.mock.calls.map(([url]) => url)).toEqual([taskUrl, accessUrl]));
       const close = screen.getByRole('button', { name: '关闭任务详情' });
       expect(close).toHaveFocus();
       const dialog = screen.getByRole('dialog');
@@ -227,9 +236,14 @@ describe('inspection language changes', () => {
       expect(screen.getByRole('alert')).not.toHaveTextContent('private raw server error');
       expect(root).toHaveAttribute('inert');
       expect(document.body.style.overflow).toBe('hidden');
-      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls.map(([url]) => url)).toEqual([taskUrl, accessUrl]);
+      await act(async () => access.resolve(wireResponse(directAccessFixture(projectId, world.scope.userId), { headers: viewerHeaders(world.scope.userId) })));
+      expect(screen.getByRole('alert')).toHaveTextContent('This task can no longer be read. Refresh the task graph.');
+      expect(close).toHaveFocus();
+      expect(fetch.mock.calls.map(([url]) => url)).toEqual([taskUrl, accessUrl]);
     } finally {
       view.unmount();
+      access.resolve(new Response(null, { status: 204 }));
       world.dispose();
       expect(root).not.toHaveAttribute('inert');
       root.remove();

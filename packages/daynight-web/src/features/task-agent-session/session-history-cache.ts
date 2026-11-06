@@ -190,7 +190,7 @@ export const beginSessionHistoryRefresh = async (scope: TaskCacheScope, ticket: 
 };
 
 // The marker proves a denial to other tabs and invalidates earlier request tokens.
-export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<boolean> => {
+export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null, origin?: symbol): Promise<boolean> => {
   taskId = requestId(taskId);
   if (expectedToken !== null) expectedToken = requestId(expectedToken);
   if (expectedPaginationToken !== undefined && expectedPaginationToken !== null) expectedPaginationToken = requestId(expectedPaginationToken);
@@ -219,23 +219,30 @@ export const clearSessionHistory = async (scope: TaskCacheScope, ticket: SyncTic
   })); }
   catch (error) {
     if (!isAbortError(error)) {
-      try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal, false, expectedPaginationToken, expectedLeaseExpiresAt)) return false; }
+      try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal, false, expectedPaginationToken, expectedLeaseExpiresAt, origin)) return false; }
       catch { /* The original storage error remains the actionable failure. */ }
     }
     throw error;
   }
   if (clearedToken.kind === 'stale') return false;
   if (clearedToken.kind === 'overflow') {
-    try { return await scope.rotateSessionHistoryGeneration(ticket, SESSION_HISTORY_CACHE_LIMITS.records, signal); }
+    try {
+      return await scope.rotateSessionHistoryGeneration(ticket, SESSION_HISTORY_CACHE_LIMITS.records, signal, {
+        taskId, expectedToken, marker: crypto.randomUUID(), requestToken: crypto.randomUUID(),
+        ...(expectedPaginationToken === undefined ? {} : { expectedPaginationToken }),
+        ...(expectedLeaseExpiresAt === undefined ? {} : { expectedLeaseExpiresAt }),
+        ...(origin === undefined ? {} : { origin }),
+      });
+    }
     catch (error) {
       if (!isAbortError(error)) {
-        try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal, false, expectedPaginationToken, expectedLeaseExpiresAt)) return false; }
+        try { if (!await scope.reportHistoryUncertain(ticket, taskId, expectedToken, signal, false, expectedPaginationToken, expectedLeaseExpiresAt, origin)) return false; }
         catch { /* The original storage error remains the actionable failure. */ }
       }
       throw error;
     }
   }
-  scope.sessionHistoryCleared(ticket, taskId, clearedToken.marker, signal);
+  scope.sessionHistoryCleared(ticket, taskId, clearedToken.marker, signal, origin);
   return true;
 };
 

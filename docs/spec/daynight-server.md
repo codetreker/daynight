@@ -101,6 +101,8 @@ Task 包含以下持久化字段：
 | `startedAt`、`completedAt` | 只读 UTC 执行起止时间，字段必填但允许 `null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
 
+单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。
+
 Task 响应还包含 `dependsOn`、`externalDependsOn`、`blockedBy` 和 `ready`：
 
 - `dependsOn` 是全部直接前置 task ID，按 ID 升序返回。
