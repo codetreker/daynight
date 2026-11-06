@@ -1,11 +1,12 @@
 import { selectTaskList } from './helpers/projectViews';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
-import { TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
+import { TEST_VIEWER_ID, taskSyncFromGraph, directAccessFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor as waitForWithRealTimers, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { ApiError, setTaskStatus, checkAttachmentPreview, getTask, getTaskSync, listAttachments, putAttachment, readAttachmentText } from '../src/api/client';
+import * as projectAuth from '../src/api/auth';
 import type { TaskDetail, TaskGraph } from '../src/api/types';
 import { App } from '../src/app/App';
 import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
@@ -13,10 +14,9 @@ import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { installGraphMeasurements } from './graph-measurements';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(),
-  getTask: vi.fn(), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(), putAttachment: vi.fn(),
-  readAttachmentText: vi.fn(), checkAttachmentPreview: vi.fn(),
-}));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual,
+  getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(), putAttachment: vi.fn(),
+  readAttachmentText: vi.fn(), checkAttachmentPreview: vi.fn(), }; });
 // Durable cache checks finish on event-loop tasks while polling time stays under test control.
 const waitFor: typeof waitForWithRealTimers = async (assertion, options) => {
   if (!vi.isFakeTimers()) return waitForWithRealTimers(assertion, options);
@@ -179,10 +179,11 @@ describe('status in shared production task details', () => {
     expect(putAttachment).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves uncertain status through project access withdrawal and resumes GET-only checking after fresh admission', async () => {
+  it('preserves uncertain status after task 404 and checks it without replay when project access remains', async () => {
     const original = new ApiError('network');
     const missing = new ApiError('server', 404, 'not_found', 'lost-detail-reconciliation');
-    const freshGraph = deferred<TaskGraph>(); const freshDetail = deferred<TaskDetail>();
+    const freshDetail = deferred<TaskDetail>();
+    const access = vi.spyOn(projectAuth, 'getProjectAccess');
     let reads = 0; let owner!: TaskDetailSessions;
     const Subject = () => { owner = useTaskDetailSessions(); return <ProjectPage projectId={project} />; };
     vi.mocked(getTask).mockImplementation(async (_project, taskId) => {
@@ -196,22 +197,16 @@ describe('status in shared production task details', () => {
     vi.mocked(setTaskStatus).mockRejectedValueOnce(original);
     renderWithLocale(<TaskDetailSessionProvider><Subject /></TaskDetailSessionProvider>, { taskCache: true, locale: 'en', container: root });
     await selectTaskList();
-    const dialog = await openChild(); graphRequest.mockImplementation(() => freshGraph.promise);
+    const dialog = await openChild();
+    access.mockClear().mockResolvedValue(directAccessFixture(project));
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
-    await waitFor(() => expect(dialog).not.toBeInTheDocument());
-    const heading = await screen.findByRole('heading', { name: 'Project not found' }); const denied = heading.closest('[role="alert"]')!;
-    expect(denied).toHaveTextContent('This project does not exist. Return to the project list.');
-    expect(denied).toHaveTextContent('lost-detail-reconciliation');
-    expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.queryByRole('heading', { name: 'Task 2' })).toBeNull();
+    await waitFor(() => expect(access).toHaveBeenCalled());
+    expect(dialog).toBeInTheDocument(); expect(within(dialog).queryByRole('heading', { name: 'Task 2' })).toBeNull();
     expect(screen.queryByText('Complete description 2')).toBeNull(); expect(document.querySelector('.task-detail-panels')).toBeNull();
     const state = owner.snapshot(project, child);
     expect(state).toMatchObject({ detail: null, loadedRevision: null, requiresFreshRead: true, mutation: { phase: 'unknown', reconciling: false } });
     expect(state.mutation.operation).toEqual({ action: 'status', status: 'in_progress', version: records.get(child)!.version });
     expect(state.mutation.error).toBe(original); expect(state.mutation.reconciliationError).toBe(missing);
-    const retry = within(denied as HTMLElement).getByRole('button', { name: 'Retry' }); expect(retry).toBeEnabled(); fireEvent.click(retry);
-    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2)); expect(reads).toBe(2); expect(screen.queryByText('Complete description 2')).toBeNull();
-    await act(async () => { freshGraph.resolve(graph()); });
-    await waitFor(() => expect(detailDialog()).toBeInTheDocument());
     const resumed = detailDialog(); const operation = within(resumed).getByRole('region', { name: 'Task status' });
     expect(operation).toHaveTextContent('The status request outcome is unknown. Check the current task state before another operation.');
     expect(operation).toHaveTextContent('The status request did not receive a confirmed response from the service.');
@@ -225,6 +220,7 @@ describe('status in shared production task details', () => {
     expect(within(resumed).getByText('Complete description 2')).toBeVisible();
     expect(within(resumed).getByText('The status request did not receive a confirmed response from the service.')).toBeVisible();
     expect(setTaskStatus).toHaveBeenCalledTimes(1);
+    access.mockRestore();
   });
 
   it('owns pending status across real App project routes and isolates its late result from the current project', async () => {

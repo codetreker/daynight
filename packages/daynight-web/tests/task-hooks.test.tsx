@@ -30,7 +30,7 @@ let detailWorld: ReturnType<typeof createTaskSessionWorld> | null = null;
 const renderHook = <Result, Props,>(render: (props: Props) => Result, options?: RenderHookOptions<Props>) =>
   renderHookWithoutSession(render, { ...options, wrapper: ({ children }) => <TestTaskCacheBoundary {...(detailWorld === null ? {} : { scope: detailWorld.scope })}><TaskDetailSessionBoundary>{children}</TaskDetailSessionBoundary></TestTaskCacheBoundary> });
 
-vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), setTaskStatus: vi.fn(), getTask: vi.fn(), getTaskSync: vi.fn() }));
+vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, setTaskStatus: vi.fn(), getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const detailRequest = vi.mocked(getTask);
 const projectId = "10000000-0000-0000-0000-000000000001";
@@ -307,8 +307,9 @@ describe("task graph snapshots", () => {
 
   it("retains a same-project snapshot through refresh and failure, then replaces it whole on success", async () => {
     const update = deferred<TaskGraph>();
-    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(update.promise).mockResolvedValueOnce(resetSnapshot({ ...graph(), tasks: [],
-      summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }));
+    const replacement = resetSnapshot({ ...graph(), tasks: [],
+      summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } });
+    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(update.promise).mockResolvedValue(replacement);
     const { result } = renderHook(() => useTaskGraph(projectId));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.snapshot;

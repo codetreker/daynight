@@ -1,8 +1,9 @@
 # Project 与 Task 客户端需求
 
 状态：共享配置、HTTP、仓库关联基础及 `project create/list/show` 已实现；
-Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已完成，并通过三原生
-平台及 Go 托管验证；集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。本文保留完整交付要求，当前可用命令见
+Task 命令与安装产物已实现。[PR #55](https://github.com/codetreker/daynight/pull/55)
+记录其历史真实服务和平台验证；当前验证入口与该历史结果的范围不同。本文保留
+完整交付要求，当前可用命令见
 [仓库 README](../../README.md)。
 
 `daynight project` 和 `daynight task` 是 `daynight-server` 的客户端入口，供开发者
@@ -530,38 +531,40 @@ JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用�
 | V5 | 首次唯一发现创建正确元数据和有效 ignore；并发写入不损坏记录，本地失败发生于 task mutation 之前 |
 | V6 | 缓存每次通过远端详情验证，后增重复 project 不改变有效绑定；server 或 origin 任一变化均重新发现；404 或 repo 不符仅重新发现一次，网络及结构错误保持原因 |
 | V7 | 显式 `--project` 在 Git 外可执行且不改自动绑定；显式 ID 缺失、无权限或读取失败不进入自动发现 |
-| V8 | project 创建、列表、详情与 task 创建、筛选、详情、更新、图查询通过真实 Go server 联调；创建覆盖省略 repo 的 Git 发现，以及省略与显式 repo 再次创建均复用原资源且不改名称、不写本地绑定；所有写入遵循现有服务规则 |
+| V8 | CLI 模块验证 project 创建、列表、详情与 task 创建、筛选、详情、更新和图查询的请求与输出；创建覆盖省略 repo 的 Git 发现，以及省略与显式 repo 再次创建均复用原资源且不改名称、不写本地绑定；Go 模块验证写入服务规则；独立产品 E2E 验证正常项目和任务创建、两端读取与状态修改 |
 | V9 | 更新覆盖读取版本、显式期望版本、并发冲突、空描述、依赖替换及清空；服务拒绝保留 task ID 且没有隐式重试 |
 | V10 | 多页查询与 `--json` 仅完整成功后输出；task list 默认排除 done，支持 `--all` 和显式状态、互斥参数在 I/O 前拒绝、ready 交集及跨页稳定分组；文本列表省略描述、版本和时间，所有筛选形式的 JSON 列表仅省略 description 且保留其余全部字段、原始 PR 字符串、精确版本和时间戳，其他 task 资源输出保持完整；图保持完整响应字段并正确报告超限，stdout 可直接由 JSON parser 读取 |
 | V11 | 单次期限、持续推进 cursor 耗尽总期限、单响应和累计字节超限、锁竞争、用户取消、错误响应、无效 JSON、损坏缓存及磁盘失败分别给出正确 stderr 和退出码；超限无部分输出或后续副作用，写响应未确认不产生虚假失败确定性 |
 | V12 | CLI 既有 `pnpm typecheck`、`pnpm test`、`pnpm build` 及相关安装验收通过；Linux、macOS ARM64、Windows 的 Git、锁及文件替换有原生证据 |
-| V13 | `task ready` 的默认和显式 limit、参数在 I/O 前拒绝、单次 `ready=true` 查询、合法 cursor 不续页、稳定服务顺序、完整 int64 JSON、空结果及超量/非 ready/重复 ID 响应拒绝均可观察；`task list --ready` 仍完整翻页，真实服务证明选择前 N 项及依赖完成后的 ready 变化 |
-| V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出通过适用安装入口验证 |
-| V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出通过适用安装入口和真实服务验证 |
-| V16 | CLI 创建省略负责人先查询当前身份并分配本人、身份失败或取消不创建、显式 UUID 不查身份；负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段通过安装CLI和真实服务验证 |
-| V17 | 安装后 Step list/show 与真实持久服务完整互读；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册宣告实际 list/show/add 能力 |
-| V18 | 安装 Add 的选项、ID/请求 UUID、显式一次 POST/默认 GET+POST、严格完整确认、容量 details 与安全未知结果成立；真实提交后丢响应仅核对当前事实，无自动重放/换 ID/脱离读取，确认后本地失败保持已确认，帮助/补全/手册与实际能力一致 |
+| V13 | `task ready` 的默认和显式 limit、参数在 I/O 前拒绝、单次 `ready=true` 查询、合法 cursor 不续页、稳定服务顺序、完整 int64 JSON、空结果及超量/非 ready/重复 ID 响应拒绝均可观察；`task list --ready` 仍完整翻页，Go 模块以真实数据库证明选择前 N 项及依赖完成后的 ready 变化 |
+| V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出由 CLI 模块验证，服务规则由 Go 模块验证 |
+| V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出由 CLI 模块验证，服务规则由 Go 模块验证 |
+| V16 | CLI 创建省略负责人先查询当前身份并分配本人、身份失败或取消不创建、显式 UUID 不查身份；负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段由 CLI 模块验证，服务规则由 Go 模块验证 |
+| V17 | CLI 模块验证 Step list/show 的请求与完整输出，Go 模块验证持久读取；独立产品 E2E 验证一条普通 Step 双端读写；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册宣告实际 list/show/add 能力 |
+| V18 | CLI 模块验证 Add 的选项、ID/请求 UUID、显式一次 POST/默认 GET+POST、严格完整确认、容量 details 与安全未知结果；受控丢响应后仅核对当前事实，无自动重放/换 ID/脱离读取，确认后本地失败保持已确认；Go 模块验证真实提交与响应丢失的持久结果；帮助/补全/手册与实际能力一致 |
 
-配置、HTTP、仓库关联基础及 Project 命令已提供对应模块验证；Project 的实际编译
-入口已在受控 HTTP 条件下验证创建、完整分页、详情、参数错误、服务拒绝、
-取消、原始 JSON 与依赖隔离。Task 已通过参数、操作、渲染、仓库选择及实际编译
-入口的受控 HTTP 验证；共享补全保留既有场景，并在真实 Bash/zsh 验证 Task 语法。
-V1–V16 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安装 CLI 受控 HTTP/Git
-验收，以及实际安装 CLI 与真实 Go 1.27.2/PostgreSQL 18.6 的完整流程、重启和版本
-竞争。生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和
-累计响应 256 MiB，并由测试单独断言。期限行为通过公开安装命令与流式 HTTP
-验证；测试应仅对期限注入合理的较小值，覆盖响应开始后停顿，以及每页均在单次
-期限内且 cursor 持续推进仍耗尽总期限。回执必须标明实际期限与 mock 状态。
-响应和累计解码字节的完整规模验证使用显式本地 `pnpm test:stress:budgets`，保留真实
-生产上限、精确边界成功及增加 1 字节拒绝的配对证据，使用合法 gzip JSON 和空白
-补齐以保留小型结果输出。常规 CI 排除这些压力探针，继续验证两个有界期限场景、
-正常错误处理与生产默认值。既有 review/update 安装验收和 Go 覆盖率门槛全部保留；
-Go 工作负载与所选预算套件分别运行，后者不占用 Go 默认 10 分钟计时器。
+配置、HTTP、仓库关联与 Project/Task 行为由 CLI 模块测试承担；现有测试
+尚未逐项证明所有要求。安装入口验证
+打包、资源和 launcher；真实 shell 入口验证实际补全接入。当前入口不执行完整
+安装版行为矩阵或真实 Go 服务联调，历史结果不能代替当前源码的验收。
+V1–V18 继续约束完整 CLI 交付。CLI 模块测试使用受控 HTTP、真实 Git、文件锁和
+必要本地进程；Git、锁与文件替换须有 Linux、macOS ARM64、Windows 原生证据。
+Go 模块以隔离 PostgreSQL 验证持久化、重启、版本竞争和服务规则。产品 E2E
+使用同一源码版本的安装 CLI、生产 Web、真实 Go 服务及隔离 PostgreSQL，仅验证
+正常登录、顺序创建与双端读写，并各选择一条 Step、讨论和附件普通成功链路。
 
-原生安装结果写入仓库根 `.tmp/project-task-evidence.json`，服务及常规期限结果写入
-`.tmp/project-task-service-evidence.json`，本地完整字节预算结果写入
-`.tmp/project-task-stress-evidence.json`；每份证据标识源码、pack/安装身份、所选套件、
-精确场景和清理。本地压力入口必须在 CI 环境中拒绝。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
-空间。[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
+生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和累计响应
+256 MiB，并由 CLI 模块测试单独断言。期限行为使用受控流式 HTTP，测试仅对期限
+注入合理的较小值，覆盖响应开始后停顿，以及每页均在单次期限内且 cursor 持续推进
+仍耗尽总期限；证据标明实际期限与 mock 状态。响应和累计解码字节的完整规模验证
+须保留真实生产上限、精确边界成功及增加 1 字节拒绝的配对证据，使用合法 gzip
+JSON 和空白补齐以保留小型结果输出。常规 CI 排除压力探针，须验证两个有界期限
+场景、正常错误处理与生产默认值；本地压力入口必须在 CI 环境中拒绝。发行物入口
+保留安装、资源、双 launcher、运行时和 shell completion 接入检查，Go 覆盖率门槛
+保持；真实进程、子进程和数据库机制各由所属模块独立验证。
+
+各验证结果必须标识源码、环境、所选场景和清理。当前没有完整字节压力入口、
+完整模块行为补齐或独立产品 E2E，历史回执不证明当前源码满足这些条件。
+[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
 [CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)，
 逐次结果随对应 PR 与 CI 保存。受控 HTTP、真实服务与原生平台证据分别证明其对应要求，不能互相替代。
