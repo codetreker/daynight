@@ -236,3 +236,85 @@ func TestRequestDrainRejectsAdmissionAfterShutdown(t *testing.T) {
 	}
 	<-drain.stop()
 }
+
+func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
+	fixture := sessionHTTPSetup(t)
+	controller, _ := fixture.controller(t, uuid.NewString())
+	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseWork)
+	schema := map[string]any{"type": "object"}
+	err := fixture.application.mcp.RegisterTool(&sdk.Tool{Name: "test_shutdown", InputSchema: schema, OutputSchema: schema}, mcphttp.BudgetControl,
+		func(ctx context.Context, _ mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
+			close(entered)
+			<-ctx.Done()
+			close(canceled)
+			<-release
+			return mcphttp.ToolResult{}, ctx.Err()
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		request, err := http.NewRequest(http.MethodPost, fixture.server.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"test_shutdown","arguments":{}}}`))
+		if err != nil {
+			return
+		}
+		request.Header.Set("Authorization", "Bearer "+fixture.handler.token)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2025-11-25")
+		response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		releaseWork()
+		select {
+		case <-clientDone:
+		case <-time.After(5 * time.Second):
+			t.Error("MCP client did not stop")
+		}
+	})
+	await(t, entered)
+	shutdown, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	err = fixture.application.Shutdown(shutdown)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected MCP drain timeout, got %v", err)
+	}
+	await(t, canceled)
+	if fixture.application.relay.ActiveConnections() != 1 {
+		t.Fatal("MCP drain timeout stopped the controller relay")
+	}
+	operation, err := fixture.application.engine.BeginOperation()
+	if err != nil {
+		t.Fatalf("MCP drain timeout stopped the session engine: %v", err)
+	}
+	operation.Close()
+
+	releaseWork()
+	await(t, clientDone)
+	shutdown, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := fixture.application.Shutdown(shutdown); err != nil {
+		t.Fatalf("shutdown after MCP handler exit: %v", err)
+	}
+	if fixture.application.relay.ActiveConnections() != 0 {
+		t.Fatal("controller relay retained its connection after shutdown")
+	}
+	if operation, err := fixture.application.engine.BeginOperation(); err == nil {
+		operation.Close()
+		t.Fatal("session engine admitted work after shutdown")
+	}
+	read, stopRead := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopRead()
+	if _, _, err := controller.Read(read); err == nil {
+		t.Fatal("controller connection remained open after shutdown")
+	}
+}
