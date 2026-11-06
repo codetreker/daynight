@@ -1,3 +1,4 @@
+import { OperationRequestError } from './operation-error';
 import { sameStartupReport, type SessionStartupReport } from '../../../../daynight/src/session/startup';
 import { liveHistoryAllowed } from './presentation';
 import type { SessionArchive, SessionArchiveStatus } from '../../../../daynight/src/session/archive';
@@ -653,21 +654,21 @@ export class TaskSessionClient {
     } catch (error) {
       this.endOperationProgress(command.operationId);
       if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
-      if (!(this.paused() ? await this.admit() : this.admitted())) throw error;
+      if (!(this.paused() ? await this.admit() : this.admitted())) throw new OperationRequestError(command.operationId, error);
       if (this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
-      throw error;
+      throw new OperationRequestError(command.operationId, error);
     }
     const deadline = Date.now() + 30_000;
     while ((this.paused() ? await this.admit() : this.admitted()) && this.sameSession(s)) {
       const operation = this.view.state.operations.get(command.operationId)!;
       if (accepted(operation)) return;
-      if (terminalFailure(operation)) throw new Error(operation.error?.message ?? 'The provider rejected the operation.');
-      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new Error('Delivery outcome is unknown. Check the original operation.'); }
+      if (terminalFailure(operation)) throw new OperationRequestError(command.operationId, new Error(operation.error?.message ?? 'The provider rejected the operation.'));
+      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new OperationRequestError(command.operationId, new Error('Delivery outcome is unknown. Check the original operation.')); }
       await this.delay(750);
       if (!(this.paused() ? await this.admit() : this.admitted())) break;
       try { await this.checkOperation(command.operationId); } catch { /* Only queries are retried; native inputs are never replayed. */ }
     }
-    throw new Error('The active session changed.');
+    throw new OperationRequestError(command.operationId, new Error('The active session changed.'));
   }
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => {

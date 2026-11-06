@@ -1,3 +1,4 @@
+import { operationErrorMessage } from './operation-error';
 import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import type { SessionComposerPresentation } from './session-presentation-slots';
@@ -73,7 +74,8 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const [pending, setPending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [interruptedTurn, setInterruptedTurn] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errorCause, setError] = useState<string | Error | null>(null);
+  const error = operationErrorMessage(errorCause, state.operations, m.operationFailed);
   const errorKind = useRef<'send' | 'cancel'>('send');
   const previousSubmission = useRef<SessionDraft['submission']>(null);
   useEffect(() => {
@@ -237,7 +239,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   async function refreshCommands() {
     if (!controlsAllowed || refreshing || !onRefreshControls) return;
     setRefreshing(true); setError(null);
-    try { await onRefreshControls(); } catch (cause) { setError(cause instanceof Error ? cause.message : m.commandFailed); }
+    try { await onRefreshControls(); } catch (cause) { setError(cause instanceof Error ? cause : m.commandFailed); }
     finally { setRefreshing(false); }
   }
   async function executeCommand(command: SessionNativeCommand, args: string) {
@@ -252,7 +254,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     const commandDraft = submitted.trimStart().startsWith(`/${command.name}`);
     commandInFlight.current = true; setCommandPending(true); dismissCommands(true); setControlView(null); setError(null);
     try { await onExecuteCommand(command.id, args, controls.revision, commandDraft ? submitted : undefined); if (commandDraft && !draft && revision === localRevision.current) setText(''); }
-    catch (cause) { errorKind.current = 'send'; setError(cause instanceof Error ? cause.message : m.commandFailed); }
+    catch (cause) { errorKind.current = 'send'; setError(cause instanceof Error ? cause : m.commandFailed); }
     finally { commandInFlight.current = false; setCommandPending(false); }
   }
   function chooseCommand(command: SessionNativeCommand) {
@@ -346,7 +348,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     let accepted = false;
     setPending(true); latest.current.pending = true; setError(null);
     try { await onSend(submitted.trim()); accepted = true; if (!draft && localRevision.current === revision) setText(''); }
-    catch (cause) { errorKind.current = 'send'; setError(cause instanceof Error ? cause.message : m.failure); }
+    catch (cause) { errorKind.current = 'send'; setError(cause instanceof Error ? cause : m.failure); }
     finally {
       stopTracking(); focusCleanups.current.delete(stopTracking);
       setPending(false); latest.current.pending = false;
@@ -357,7 +359,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     if (!latest.current.cancelAllowed || latest.current.cancelling) return;
     setCancelling(true); latest.current.cancelling = true; setError(null);
     const turnId = snapshot?.currentTurnId ?? null;
-    try { await onCancel(); setInterruptedTurn(turnId); } catch (cause) { errorKind.current = 'cancel'; setError(cause instanceof Error ? cause.message : m.failure); }
+    try { await onCancel(); setInterruptedTurn(turnId); } catch (cause) { errorKind.current = 'cancel'; setError(cause instanceof Error ? cause : m.failure); }
     finally { setCancelling(false); latest.current.cancelling = false; }
   }
   const commandSendAllowed = !authPaused && connected && !pending && !commandPending && (commands.some(command => command.id.startsWith('$') && `/${command.name}` === text.trim()) || controlsAllowed);
