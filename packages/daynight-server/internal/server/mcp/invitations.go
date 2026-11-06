@@ -98,14 +98,14 @@ func optionalAccess(a *model.ProjectAccess) *projectAccess {
 }
 
 // InvitationInspection is a typed union of Team and Project inspection results.
-type InvitationInspection interface{ invitationInspection() }
+type InvitationInspection interface{ invitationScope() string }
 type TeamInvitationInspection struct {
 	Scope      string      `json:"scope"`
 	Team       TeamRef     `json:"team"`
 	Membership *TeamMember `json:"membership"`
 }
 
-func (TeamInvitationInspection) invitationInspection() {}
+func (TeamInvitationInspection) invitationScope() string { return "team" }
 
 type ProjectInvitationInspection struct {
 	Scope       string         `json:"scope"`
@@ -115,7 +115,7 @@ type ProjectInvitationInspection struct {
 	Access      *projectAccess `json:"access"`
 }
 
-func (ProjectInvitationInspection) invitationInspection() {}
+func (ProjectInvitationInspection) invitationScope() string { return "project" }
 
 type InvitationAcceptance struct {
 	Scope       string         `json:"scope"`
@@ -290,13 +290,19 @@ func (a *invitationAdapter) inspect(ctx context.Context, actor RequestActor, in 
 			v := mapMember(*i.Membership)
 			member = &v
 		}
-		return ToolResult{Data: TeamInvitationInspection{scope, team, member}}, nil
+		inspection := TeamInvitationInspection{Team: team, Membership: member}
+		inspection.Scope = inspection.invitationScope()
+		var result InvitationInspection = inspection
+		return ToolResult{Data: result}, nil
 	}
 	i, err := a.projects.InspectInvitation(ctx, actor.Principal, secret)
 	if err != nil {
 		return ToolResult{}, err
 	}
-	return ToolResult{Data: ProjectInvitationInspection{scope, i.ProjectID, i.ProjectName, optionalGrant(i.DirectGrant), optionalAccess(i.Access)}}, nil
+	inspection := ProjectInvitationInspection{ProjectID: i.ProjectID, ProjectName: i.ProjectName, DirectGrant: optionalGrant(i.DirectGrant), Access: optionalAccess(i.Access)}
+	inspection.Scope = inspection.invitationScope()
+	var result InvitationInspection = inspection
+	return ToolResult{Data: result}, nil
 }
 func (a *invitationAdapter) accept(ctx context.Context, actor RequestActor, in invitationInput) (ToolResult, error) {
 	scope, secret, err := a.parseLink(in.Link)
