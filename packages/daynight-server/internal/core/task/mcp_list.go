@@ -152,19 +152,6 @@ func ReadMCPList(ctx context.Context, reader MCPListReader, projectID string, se
 	return MCPListPage{Items: page.Items, HasMore: page.HasMore, fence: fence}, nil
 }
 
-// NextMCPList continues an already verified page within the same snapshot.
-func NextMCPList(ctx context.Context, reader MCPListReader, projectID string, selection MCPListSelection, page MCPListPage, last model.Task) (MCPListPage, error) {
-	if projectID != selection.scope.Project || last.ProjectID != projectID || last.CreatedAt.IsZero() {
-		return MCPListPage{}, invalidInput("Invalid task list continuation.")
-	}
-	selection.query.After = &store.TaskPriorityPosition{Group: priority(last), CreatedAt: last.CreatedAt, ID: last.ID}
-	next, err := reader.TaskPriorityList(ctx, projectID, selection.query)
-	if err != nil {
-		return MCPListPage{}, err
-	}
-	return MCPListPage{Items: next.Items, HasMore: next.HasMore, fence: page.fence}, nil
-}
-
 func priority(task model.Task) int {
 	if task.Status == model.TaskInProgress {
 		return 0

@@ -211,3 +211,60 @@ func readFence(t *testing.T, db *Store, project string) TaskListFence {
 	}
 	return fence
 }
+
+func TestTaskPriorityListRejectsInvalidDAOInputs(t *testing.T) {
+	db := isolatedStore(t)
+	ctx := context.Background()
+	project := queryProject(t, db, 1)
+	queries := []TaskPriorityQuery{
+		{Limit: 0}, {Limit: 101},
+		{Limit: 1, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll, UserID: queryID(9)}},
+		{Limit: 1, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUnassigned, UserID: queryID(9)}},
+		{Limit: 1, AssignedTo: model.TaskAssignmentFilter{Mode: "invalid"}},
+	}
+	err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		for _, q := range queries {
+			page, err := snapshot.TaskDAO().TaskPriorityList(ctx, project.ID, q)
+			if err == nil || len(page.Items) != 0 {
+				t.Fatalf("accepted invalid query %+v: %+v %v", q, page, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskPriorityListStorageFailures(t *testing.T) {
+	for _, test := range []struct {
+		name, ddl string
+		fence     bool
+	}{
+		{"fence query", `DROP TABLE tasks`, true},
+		{"list query", `DROP TABLE task_dependencies`, false},
+		{"invalid status", `ALTER TABLE tasks DROP CONSTRAINT tasks_status_check; UPDATE tasks SET status='invalid'`, false},
+		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,'bad version'::text AS version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
+		{"iteration", `CREATE FUNCTION fail_priority_title() RETURNS text LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private list failure'; END $$;
+			ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,fail_priority_title() AS title,status,version,created_at,allow_agents,required_platform,assigned_to,deleted_at FROM task_source`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := isolatedStore(t)
+			ctx := context.Background()
+			project := queryProject(t, db, 1)
+			queryTask(t, db, project.ID, 11, model.TaskTodo)
+			mustQueryExec(t, db, test.ddl)
+			err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+				if test.fence {
+					_, err := snapshot.TaskDAO().TaskListFence(ctx, project.ID)
+					return err
+				}
+				_, err := snapshot.TaskDAO().TaskPriorityList(ctx, project.ID, TaskPriorityQuery{Limit: 1})
+				return err
+			})
+			if err == nil || errors.Is(err, model.ErrNotFound) || strings.Contains(err.Error(), "private list failure") {
+				t.Fatalf("query failure was lost or leaked: %v", err)
+			}
+		})
+	}
+}

@@ -229,3 +229,50 @@ func TestTaskQueriesDoNotReportSnapshotFailureAsWrite(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskQueryRegistrationRejectsInvalidDefinitions(t *testing.T) {
+	original := taskQueryToolDefinitions
+	t.Cleanup(func() { taskQueryToolDefinitions = original })
+	var definitions []map[string]any
+	if err := json.Unmarshal(original, &definitions); err != nil {
+		t.Fatal(err)
+	}
+	invalidName := make([]map[string]any, len(definitions))
+	invalidSchema := make([]map[string]any, len(definitions))
+	for i, definition := range definitions {
+		invalidName[i] = make(map[string]any, len(definition))
+		invalidSchema[i] = make(map[string]any, len(definition))
+		for key, value := range definition {
+			invalidName[i][key] = value
+			invalidSchema[i][key] = value
+		}
+	}
+	invalidName[0]["name"] = "unexpected_tool"
+	invalidSchema[0]["inputSchema"] = map[string]any{"type": "string"}
+	encode := func(value any) []byte {
+		b, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for _, tc := range []struct {
+		name    string
+		bytes   []byte
+		message string
+	}{
+		{"malformed", []byte("{"), "unexpected end"},
+		{"missing tool", []byte("[]"), "invalid task tool definitions"},
+		{"unknown tool", encode(invalidName), "unexpected task tool"},
+		{"invalid schema", encode(invalidSchema), "register task_list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newEntryFixture(t)
+			taskQueryToolDefinitions = tc.bytes
+			err := registerTaskQueryTools(fixture.entry, &queryStub{})
+			if err == nil || !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("got %v; want error containing %q", err, tc.message)
+			}
+		})
+	}
+}

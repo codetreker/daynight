@@ -2,6 +2,8 @@ package task
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -11,19 +13,105 @@ import (
 )
 
 type mcpListFixture struct {
-	fence store.TaskListFence
-	query store.TaskPriorityQuery
-	page  store.TaskPriorityPage
-	reads int
+	fence             store.TaskListFence
+	query             store.TaskPriorityQuery
+	page              store.TaskPriorityPage
+	reads             int
+	fenceErr, pageErr error
 }
 
 func (f *mcpListFixture) TaskListFence(context.Context, string) (store.TaskListFence, error) {
-	return f.fence, nil
+	return f.fence, f.fenceErr
 }
 func (f *mcpListFixture) TaskPriorityList(_ context.Context, _ string, q store.TaskPriorityQuery) (store.TaskPriorityPage, error) {
 	f.reads++
 	f.query = q
-	return f.page, nil
+	return f.page, f.pageErr
+}
+
+func TestMCPListReadFailuresAreNotPartialResults(t *testing.T) {
+	project := "00000000-0000-4000-8000-000000000001"
+	actor := "00000000-0000-4000-8000-000000000002"
+	selection, err := SelectMCPList(project, actor, MCPListRequest{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("storage unavailable")
+	for _, test := range []struct {
+		name    string
+		fixture mcpListFixture
+		project string
+		want    error
+		reads   int
+	}{
+		{"wrong project", mcpListFixture{}, actor, nil, 0},
+		{"fence failure", mcpListFixture{fenceErr: failure}, project, failure, 0},
+		{"page failure", mcpListFixture{pageErr: failure}, project, failure, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page, err := ReadMCPList(context.Background(), &test.fixture, test.project, selection)
+			if err == nil || test.want != nil && !errors.Is(err, test.want) || len(page.Items) != 0 || test.fixture.reads != test.reads {
+				t.Fatalf("page=%+v error=%v reads=%d", page, err, test.fixture.reads)
+			}
+		})
+	}
+}
+
+func TestMCPListCursorGroupsAndMalformedFences(t *testing.T) {
+	project := "00000000-0000-4000-8000-000000000001"
+	actor := "00000000-0000-4000-8000-000000000002"
+	selection, err := SelectMCPList(project, actor, MCPListRequest{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := MCPListPage{fence: store.TaskListFence{Count: "3", VersionSum: "4"}}
+	task := model.Task{ID: "00000000-0000-4000-8000-000000000003", ProjectID: project, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	for _, test := range []struct {
+		status model.TaskStatus
+		ready  bool
+		group  int
+	}{
+		{model.TaskInProgress, false, 0}, {model.TaskTodo, true, 1}, {model.TaskTodo, false, 2}, {model.TaskDone, false, 3},
+	} {
+		task.Status, task.Ready = test.status, test.ready
+		encoded, err := page.CursorAfter(selection, task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := SelectMCPList(project, actor, MCPListRequest{Limit: 1, Cursor: &encoded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decoded.query.After.Group != test.group {
+			t.Fatalf("%s group=%d", test.status, decoded.query.After.Group)
+		}
+	}
+	for _, bad := range []string{"", "01", "-1", "12x"} {
+		c := mcpListCursor{Scope: selection.scope, Fence: store.TaskListFence{Count: bad, VersionSum: "1"}, Position: store.TaskPriorityPosition{Group: 1, CreatedAt: task.CreatedAt, ID: task.ID}}
+		raw, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded := base64.RawURLEncoding.EncodeToString(raw)
+		if _, err = SelectMCPList(project, actor, MCPListRequest{Limit: 1, Cursor: &encoded}); err == nil {
+			t.Fatalf("accepted malformed fence %q", bad)
+		}
+	}
+	badTask := task
+	badTask.ProjectID = actor
+	if _, err := page.CursorAfter(selection, badTask); err == nil {
+		t.Fatal("accepted foreign task")
+	}
+	badTask = task
+	badTask.CreatedAt = time.Time{}
+	if _, err := page.CursorAfter(selection, badTask); err == nil {
+		t.Fatal("accepted missing task creation time")
+	}
+	badTask = task
+	badTask.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := page.CursorAfter(selection, badTask); err == nil {
+		t.Fatal("accepted non-encodable time")
+	}
 }
 
 func TestMCPListCursorScopeFenceAndTruncatedPage(t *testing.T) {

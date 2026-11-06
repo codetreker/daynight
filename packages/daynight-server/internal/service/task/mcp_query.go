@@ -37,37 +37,24 @@ func (s *Tasks) MCPList(ctx context.Context, principal model.Principal, projectI
 		if err != nil {
 			return err
 		}
-		count := 0
-		for {
-			for i, item := range page.Items {
-				if request.View == "full" {
-					full, err := snapshot.TaskDAO().Task(ctx, projectID, item.Task.ID)
-					if err != nil {
-						return err
-					}
-					item.Task = full
-				}
-				more := i+1 < len(page.Items) || page.HasMore
-				cursor, err := page.CursorAfter(selection, item.Task)
+		for i, item := range page.Items {
+			if request.View == "full" {
+				full, err := snapshot.TaskDAO().Task(ctx, projectID, item.Task.ID)
 				if err != nil {
 					return err
 				}
-				if !visit(item, cursor, more) {
-					return nil
-				}
-				count++
-				if count >= request.Limit {
-					return nil
-				}
+				item.Task = full
 			}
-			if !page.HasMore || len(page.Items) == 0 {
-				return nil
-			}
-			page, err = taskcore.NextMCPList(ctx, snapshot.TaskDAO(), projectID, selection, page, page.Items[len(page.Items)-1].Task)
+			more := i+1 < len(page.Items) || page.HasMore
+			cursor, err := page.CursorAfter(selection, item.Task)
 			if err != nil {
 				return err
 			}
+			if !visit(item, cursor, more) {
+				return nil
+			}
 		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("list MCP tasks: %w", err)
