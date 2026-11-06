@@ -4,6 +4,7 @@ import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { createTerminalSessionApi, type SessionHistoryItem, type SessionRecordingReference, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
 import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryOwnership, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination } from './session-history-cache';
 import { useCompletedTaskSession } from './automatic-task-session';
 import { SessionDisplayMenu } from './SessionDisplayMenu';
@@ -17,12 +18,14 @@ import { emptySessionState } from './state';
 import { useTerminalHostMessages } from './terminal-host-messages';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import { useSessionFullscreen } from './useSessionFullscreen';
+import { useDirectSessionRecords } from './useDirectSessionRecords';
 import './terminal-session.css';
 import './terminal-host.css';
 
 import type { AttachmentRecordSlots } from '../task-detail/attachments/TaskAttachments';
 
-type ScopeProps = { readonly projectId: string; readonly taskId: string; readonly active: boolean };
+type ScopeProps = { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly direct?: boolean };
+type Records = ReturnType<typeof useRecords>;
 type RecordsPage = { items: SessionHistoryItem[]; cursor: string | null };
 type RecordsState = { owner: object; api: TerminalSessionApi; page: RecordsPage | null; first: RecordsPage | null; error: unknown; loading: boolean; checking: boolean; denied: boolean };
 const samePage = (a: RecordsPage | null, b: RecordsPage): boolean => a !== null && JSON.stringify(a) === JSON.stringify(b);
@@ -413,17 +416,30 @@ function recordLabel(item: SessionHistoryItem): string {
   return `${item.createdAt.replace('T', ' ').replace(/\.\d+Z$/, 'Z')} · ${item.agentControlMode === 'herdr' ? 'Herdr' : 'Web'}`;
 }
 /** Resolve presence without requiring the Session tab to be selected. */
-export function useTaskSessionRecords(projectId: string, taskId: string, active: boolean) {
-  return useRecords(projectId, taskId, active, true);
+export function useTaskSessionRecords(projectId: string, taskId: string, active: boolean, direct = false, automatic = true) {
+  const summary = useRecords(projectId, taskId, active && !direct, true);
+  const observed = useDirectSessionRecords(projectId, taskId, active && direct, automatic);
+  return direct ? observed : summary;
 }
-export function TaskSessionHost({ projectId, taskId, claimId, mode, active, current, completed = false, records }: ScopeProps & {
+type SessionHostProps = ScopeProps & {
   readonly claimId?: string; readonly mode?: 'web' | 'herdr'; readonly current: boolean; readonly completed?: boolean;
   readonly records?: ReturnType<typeof useTaskSessionRecords>;
-}) {
+};
+export function TaskSessionHost(props: SessionHostProps) {
+  return props.direct ? <DirectSessionHost {...props} /> : <SummarySessionHost {...props} />;
+}
+function DirectSessionHost(props: SessionHostProps) {
+  const localRecords = useDirectSessionRecords(props.projectId, props.taskId, props.records === undefined && props.claimId === undefined && props.active && props.current, true);
+  const sessions = useTaskDetailSessions();
+  const presentationCurrent = sessions.directSessionCurrent(props.projectId, props.taskId, true);
+  return <SessionHostContent {...props} history={props.records ?? localRecords} presentationCurrent={presentationCurrent} />;
+}
+function SummarySessionHost(props: SessionHostProps) {
+  const localRecords = useRecords(props.projectId, props.taskId, props.records === undefined && props.claimId === undefined && props.active && props.current, true);
+  return <SessionHostContent {...props} history={props.records ?? localRecords} presentationCurrent={props.current} />;
+}
+function SessionHostContent({ projectId, taskId, claimId, mode, active, current, completed = false, direct = false, history, presentationCurrent }: SessionHostProps & { readonly history: Records; readonly presentationCurrent: boolean }) {
   const m = useTerminalHostMessages();
-  const localRecords = useTaskSessionRecords(projectId, taskId, records === undefined && claimId === undefined && active && current);
-  const history = records ?? localRecords;
-  const resolved = useCompletedTaskSession({ projectId, taskId, claimId, mode, api: history.api, active: active && current && completed });
   useLayoutEffect(() => {
     try { sessionStorage.removeItem(`daynight:recording:${history.scope.userId}:${projectId}:${taskId}`); } catch { /* Storage is optional. */ }
   }, [history.scope, projectId, taskId]);
@@ -431,17 +447,39 @@ export function TaskSessionHost({ projectId, taskId, claimId, mode, active, curr
   if (claimId !== undefined && mode !== undefined && !completed) return <div className="task-session-host"><div className="task-session-current">
     {mode === 'web' ? <TaskAgentSession key={sessionKey} projectId={projectId} taskId={taskId} claimId={claimId} active={active} current={current} /> : <TerminalSessionView key={sessionKey} projectId={projectId} api={history.api} claimId={claimId} active={active} current={current} />}
   </div></div>;
-  const item = claimId === undefined ? history.denied ? null : history.items[0] ?? null : resolved.item;
-  const error = claimId === undefined ? history.error : resolved.error;
-  const loading = claimId === undefined ? history.loading || history.checking : resolved.loading;
-  const refresh = claimId === undefined ? history.refresh : resolved.refresh;
+  if (history.denied && (direct || claimId === undefined)) return <div className="task-session-host"><p className="session-error" role="alert">{recordingError(history.error ?? new ApiError('server', 403), m)} <button className="button" disabled={history.loading || !current} onClick={history.refresh}>{m.refresh}</button></p></div>;
+  if (claimId !== undefined) return <CompletedSessionContent projectId={projectId} taskId={taskId} claimId={claimId} mode={mode} active={active} current={current} presentationCurrent={presentationCurrent} history={history} />;
+  const item = history.items[0] ?? null;
+  const error = history.error;
+  const loading = history.loading || history.checking;
+  const refresh = history.refresh;
   return <div className="task-session-host">
     {error ? <p className="session-error" role="alert">{recordingError(error, m)} <button className="button" disabled={loading || !current} onClick={refresh}>{m.refresh}</button></p> : null}
-    {item ? <FixedSessionRecording key={`${item.sessionId}/${item.executionGeneration}`} projectId={projectId} api={history.api} item={item} active={active} current={current} preparing={claimId !== undefined && resolved.preparing} /> : !error ? <div className="session-empty" role="status"><p>{loading ? m.loading : claimId === undefined ? m.empty : resolved.availability === 'not_registered' ? m.notRegistered : m.unavailable}</p>{!loading && claimId !== undefined ? <button className="button" disabled={!current} onClick={refresh}>{m.refresh}</button> : null}</div> : null}
+    {item ? <FixedSessionRecording key={`${item.sessionId}/${item.executionGeneration}`} projectId={projectId} api={history.api} item={item} active={active && presentationCurrent} current={current} /> : !error ? <div className="session-empty" role="status"><p>{loading ? m.loading : m.empty}</p></div> : null}
   </div>;
 }
-export function ManagedSessionRecords({ projectId, taskId, active, resetSelection, children }: ScopeProps & { readonly resetSelection?: object; readonly children: (records: AttachmentRecordSlots) => ReactNode }) {
-  const m = useTerminalHostMessages(); const history = useRecords(projectId, taskId, active);
+function CompletedSessionContent({ projectId, taskId, claimId, mode, active, current, presentationCurrent, history }: { readonly projectId: string; readonly taskId: string; readonly claimId: string; readonly mode: 'web' | 'herdr' | undefined; readonly active: boolean; readonly current: boolean; readonly presentationCurrent: boolean; readonly history: Records }) {
+  const m = useTerminalHostMessages();
+  const resolved = useCompletedTaskSession({ projectId, taskId, claimId, mode, api: history.api, active: active && current });
+  return <div className="task-session-host">
+    {resolved.error ? <p className="session-error" role="alert">{recordingError(resolved.error, m)} <button className="button" disabled={resolved.loading || !current} onClick={resolved.refresh}>{m.refresh}</button></p> : null}
+    {resolved.item ? <FixedSessionRecording key={`${resolved.item.sessionId}/${resolved.item.executionGeneration}`} projectId={projectId} api={history.api} item={resolved.item} active={active && presentationCurrent} current={current} preparing={resolved.preparing} /> : !resolved.error ? <div className="session-empty" role="status"><p>{resolved.loading ? m.loading : resolved.availability === 'not_registered' ? m.notRegistered : m.unavailable}</p>{!resolved.loading ? <button className="button" disabled={!current} onClick={resolved.refresh}>{m.refresh}</button> : null}</div> : null}
+  </div>;
+}
+type ManagedRecordsProps = ScopeProps & { readonly resetSelection?: object; readonly records?: Records; readonly children: (records: AttachmentRecordSlots) => ReactNode };
+export function ManagedSessionRecords(props: ManagedRecordsProps) {
+  return props.direct ? <DirectManagedRecords {...props} /> : <SummaryManagedRecords {...props} />;
+}
+function DirectManagedRecords(props: ManagedRecordsProps) {
+  const history = useDirectSessionRecords(props.projectId, props.taskId, props.active && props.records === undefined);
+  return <ManagedRecordsContent {...props} history={props.records ?? history} />;
+}
+function SummaryManagedRecords(props: ManagedRecordsProps) {
+  const history = useRecords(props.projectId, props.taskId, props.active);
+  return <ManagedRecordsContent {...props} history={history} />;
+}
+function ManagedRecordsContent({ projectId, taskId, active, resetSelection, children, history }: ManagedRecordsProps & { readonly history: Records }) {
+  const m = useTerminalHostMessages();
   const [selection, setSelection] = useState<{ scope: typeof history.scope; projectId: string; taskId: string; item: SessionHistoryItem | null }>(() => ({ scope: history.scope, projectId, taskId, item: null }));
   const selected = selection.scope === history.scope && selection.projectId === projectId && selection.taskId === taskId && !history.denied ? selection.item : null;
   const setSelected = (item: SessionHistoryItem | null) => setSelection({ scope: history.scope, projectId, taskId, item });
@@ -470,6 +508,7 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
   const display = useSessionDisplayPreference({ userId: scope.userId, sessionId: item.sessionId });
   const [displayOpen, setDisplayOpen] = useState(false);
   useEffect(() => { setDisplayOpen(false); }, [owner, active]);
+  const readCurrent = current || active && authRequestsPaused();
   const referenceKey = JSON.stringify([item.sessionId, item.claimId, item.executionGeneration, item.agentControlMode, item.archive]);
   const reference = useMemo(() => item, [referenceKey]);
   useEffect(() => {
@@ -483,7 +522,7 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
     return () => { scope.signal.removeEventListener('abort', revoke); unsubscribe(); };
   }, [owner, projectId, scope]);
   useEffect(() => {
-    if (!active || !current || scope.isInvalidated || projectId !== undefined && scope.isProjectSuspended(projectId)) return;
+    if (!active || !readCurrent || scope.isInvalidated || projectId !== undefined && scope.isProjectSuspended(projectId)) return;
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
     const abort = () => controller.abort(); scope.signal.addEventListener('abort', abort);
     const unsubscribe = scope.subscribe(event => { if ((projectId === undefined || event.projectId === projectId) && (event.accessRevoked || event.scopeSuspended)) abort(); });
@@ -508,7 +547,7 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
       setState(old => ({ owner, loaded: !denied && old.owner === owner ? old.loaded : null, error, loading: false }));
     });
     return () => { controller.abort(); clearTimeout(timer); unsubscribe(); scope.signal.removeEventListener('abort', abort); };
-  }, [api, reference, referenceKey, active, current, revision, scope, owner, projectId, preparing]);
+  }, [api, reference, referenceKey, active, readCurrent, revision, scope, owner, projectId, preparing]);
   const loaded = view.loaded;
   const provider = loaded?.native?.provider;
   const native = item.agentControlMode === 'web';

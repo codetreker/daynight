@@ -15,6 +15,7 @@ export const TaskAgentPermissionConfirmation = ({ confirmation, ...props }: {
   readonly confirmation: AgentPermissionConfirmation;
   readonly owner: RefObject<HTMLElement | null>;
   readonly fallbackFocus: RefObject<HTMLElement | null>;
+  readonly confirmDisabled?: boolean;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
 }) => {

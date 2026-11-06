@@ -1221,6 +1221,10 @@ opaque PR strings are not converted through PostgreSQL JSON types. Account-Worke
 cursors stay at version 1; old version-1 task cursors are refused.
 The assignee filter is explicit and does not change automatic worker eligibility.
 
+## Task observation
+
+`GET /api/v1/projects/{projectId}/tasks/{taskId}` returns the complete Task body and a required `Daynight-Task-Epoch` UUID header on success. Project permission, the Task and epoch are read in one read-only repeatable-read snapshot; a failed epoch query or transaction does not publish a success. The endpoint retains its existing authentication, 404/410 and `no-store` semantics. Unauthorized responses do not disclose the epoch.
+
 ## Task-chain graph
 
 `GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}` requires one task UUID.

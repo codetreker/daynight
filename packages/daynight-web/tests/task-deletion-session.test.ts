@@ -6,7 +6,7 @@ import { canDeleteTask, canSetAgentPermission, canSetRequiredPlatform, canSetSta
 import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), deleteTask: vi.fn(), getTask: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, deleteTask: vi.fn(), getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const task = '20000000-0000-4000-8000-000000000001';
 const sibling = '20000000-0000-4000-8000-000000000002';
@@ -88,12 +88,14 @@ describe('task-local soft-delete ownership', () => {
     await waitFor(() => expect(writes).toHaveBeenCalledOnce()); const requestSignal = writes.mock.calls[0]![4]; release(); sessions.releaseRead(project, task); expect(requestSignal.aborted).toBe(false);
     pending.resolve(); await expectDeleted(sessions); expect(writes).toHaveBeenCalledOnce();
   });
-  it('keeps terminal deletion through an epoch replacement and never reloads retained data', async () => {
+  it('keeps deletion terminal for automatic refresh and retries a new opening', async () => {
     const sessions = createSessions(); await open(sessions); writes.mockResolvedValueOnce(); remove(sessions); await expectDeleted(sessions);
     const world = worlds.get(sessions)!; const surviving = detailFixture(project, sibling);
     await admitTaskGraph(world.scope, graphFixture([surviving]), { epoch: crypto.randomUUID(), versionForTask: () => 1n, propertiesForTask: () => surviving.properties });
-    sessions.observe(project, task, undefined); sessions.load(project, task, 2, 'automatic'); sessions.requireOpeningRead(project, task); sessions.load(project, task, 3, 'open');
-    expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(sessions.snapshot(project, task).detail).toBeNull(); expect(reads).toHaveBeenCalledOnce(); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true);
+    sessions.observe(project, task, undefined); sessions.load(project, task, 2, 'automatic');
+    expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(reads).toHaveBeenCalledOnce();
+    reads.mockRejectedValueOnce(deleted()); sessions.requireOpeningRead(project, task); sessions.load(project, task, 3, 'open'); await expectDeleted(sessions);
+    expect(sessions.snapshot(project, task).detail).toBeNull(); expect(reads).toHaveBeenCalledTimes(2); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true);
   });
   it('settles an unknown deletion from the replacement snapshot while its GET is in flight', async () => {
     const sessions = createSessions(); await open(sessions); const probe = deferred<TaskDetail>();

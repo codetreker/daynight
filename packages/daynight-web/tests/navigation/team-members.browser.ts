@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
 
 const alice = '00000000-0000-4000-8000-000000000001';
@@ -31,10 +31,10 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': alice } });
     if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send({ id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') { const gate = state.holdProjectsRead; state.holdProjectsRead = null; if (gate) { gate.started(); await gate.wait; } return send({ items: [], nextCursor: null }); }
-    const sendWire = (body: unknown) => route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': alice } });
+    const sendWire = (body: unknown, extra: Record<string, string> = {}) => route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': alice, ...extra } });
     if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
     if (path === `/api/v1/projects/${projectId}/task-sync`) return sendWire(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
-    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return sendWire(task);
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}`) return sendWire(task, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`) return sendWire({ projectId, taskId, version: task.version, steps: [] });
     if (path.startsWith(`/api/v1/projects/${projectId}/tasks/${taskId}/`) && (path.endsWith('/sessions') || path.endsWith('/attachments'))) return send({ items: [], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: state.members.has(alice) ? [team(teamId)] : [], nextCursor: null });
