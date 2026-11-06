@@ -1,0 +1,194 @@
+# Session 图片来源采集设计（待实现）
+
+本文定义真实 Markdown 图片节点的稳定绑定、本地授权句柄读取、外部 HTTP(S) 无凭据获取，以及首次成功后的不可变快照。设计已确定，来源采集、平台竞态防护和真实网络验收仍待实现；文档发布不表示生产功能可用。
+
+[历史规格](../spec/session-image-history.md)拥有所需显示、原内容和权限结果；[公共合同](session-image-contracts.md)拥有 ImageLocator、ImageOccurrence、capture/read/retry DTO、错误与存储，本文不另建协议或数据库。[Provider 设计](session-image-providers.md)提供可信原生来源，[浏览器设计](session-image-browser.md)负责渲染和预览，[归档设计](session-image-archives.md)负责封存、读取与清理。[来源决策记录](../../.agents/notes/implemented/architecture/2026-11-05-session-image-sources.md)保留替代方案及代价。
+
+## 来源与出现的职责
+
+图片采集不依赖滚动、工具展开或浏览器在线。Controller 从可信消息内容建立位置，保存成功后才公开 available；浏览器懒加载只影响已保存原件的读取。Thread、Herdr、通用文件浏览、第三方登录、任意 MCP resource/read、网络文件共享和主动刷新历史图片不在此设计内。
+
+共同流程为：可信投影器提交 entry、正文片段和来源上下文；纯 AST 模块只识别节点、不做 IO；Controller 持久原 imageId/sourceKey/locator 与位置，经 timeline/source outbox 得到覆盖该位置的服务 ACK；服务 register 原子核验位置和来源映射并预留；Controller 得到 reserved 后才读取来源；公共存储完整验证实际 bytes 并提交；服务耐久保存 blob、引用与来源索引后 committed。任何未知 register/commit 结果只查询原 captureId，不重抓来源、不更换身份。
+
+可信 `NativeImageSource` 与 locator 分工不同：前者证明原生位置，后者说明如何取 bytes。原生位置须先 ACK，自有上传图的回显也以 resource locator 执行 register；同 Session available 原件直接 committed，只增加出现引用和来源映射，不复制 blob、不增加资源槽。它不证明原生接受，也不能解除发送 unknown。
+
+## Markdown 语法与正文稳定性
+
+解析采用与 Session Markdown 相同的 CommonMark/GFM 语法和版本，只处理 AST `image` 和有有效 definition 的 `imageReference`，包括 full/collapsed/shortcut。definition 使用相同标识归一化及第一个生效定义规则；无 definition 保持文字。代码围栏、缩进/行内代码、转义标记、普通链接/路径、原始 HTML、工具参数和 raw JSON 都不登记图片。不用正则、扩展名或 DOM img 推导授权。
+
+用户、助手和 reasoning 的 Markdown 正文适用；工具只有明确交付为 Markdown 的片段才适用，并保留 callId。raw output 不因此改成 Markdown；原生二进制工具图片由 Provider 投影处理。
+
+每个真实正文片段具有稳定 partId，来自原生 block/item ID 或首次持久映射；不得使用数组位置、页面 epoch 或正文 hash 作身份。每次解析针对完整 revision：不做 NFC 归一化、CRLF 转换或 trim；偏移使用实际 text 的 UTF-16 code unit 半开区间 `[start,end)`，SHA-256 计算其 UTF-8 bytes。无源码位置的插件合成节点不得读源。alt 仅生成有界安全 label，不作路径、文件名或 sourceKey。
+
+流式正文看似闭合仍可能被后续围栏、反引号或 definition 改变。首次采集等待可信正文完成信号；没有该信号时等原生条目/回合完成或静态完整历史。流中可以显示尚未加载位置，但不据此不可逆读取来源。已有稳定图的读取无需等待后续文字。
+
+正文修订中，无歧义保留的同节点可继续原 imageId；locator、definition 目标或可信来源 context 改变就是新出现，旧图进入 retained。重复同路径的两个节点分别建 imageId，不按 URL/SHA 合并。无法可靠对齐时保留旧图关系，并给新位置新身份或明确缺失。正文截断必须先于绑定；不能把截断恰巧造成的闭合当完整节点，必须证明节点在原文中也成立，不能使用截断前 offset 匹配显示文本。
+
+## Markdown part 与保留图片交换
+
+下列字段仅属于 `daynight.session.images.v1` 的 Markdown 表示，不增加到旧 TextPart。UUID、Decimal、SHA256、ImagePart、ImageUnavailablePart 和严格对象/null 规则沿[公共合同](session-image-contracts.md)。新的 `MarkdownImagePart` 严格包含 `{type:"markdown",text,partId,revision,textSha256,complete,truncated,bindings,retainedImages}`，全部字段必填，不接受额外字段。`text:string` 保存完整正文；`type` 只接受字面值 `"markdown"`。图片表示的 `MessagePart` union 为 `TextPart | ResourcePart | ImagePart | ImageUnavailablePart | MarkdownImagePart`，其中旧 TextPart/ResourcePart 的字段保持不变；新分支只用于显示，不能作为发送输入。
+
+| 字段 | 类型与约束 |
+| --- | --- |
+| `partId` | UUID；绑定本 entry 的唯一正文片段，跨修订不变。 |
+| `revision` | Decimal；该片段正文的持久单调版本。 |
+| `textSha256` | SHA256；准确对应 text 的 UTF-8 bytes。 |
+| `complete` / `truncated` | boolean；分别表示可信完成信号和实际截断，不能彼此代替。 |
+| `bindings` | 完整的 MarkdownImageBinding 数组；按 start 升序、不重叠，与该 revision/hash 的真实 AST 图片节点一一对应。 |
+| `retainedImages` | RetainedMarkdownImage 数组；只保存已退出当前 bindings 的旧出现，imageId 唯一且不与当前 bindings 重叠。 |
+
+`MarkdownImageBinding` 严格包含 `{start,end,imageId,part}`。start/end 是 text 内安全整数、`0 <= start < end <= text.length`；imageId 为 UUID，part 为 ImagePart 或 ImageUnavailablePart，且 `part.imageId === imageId`。没有真实节点、重复或额外绑定、错误 revision/hash 都拒绝；未完成节点可明确未采集，已预留才可引用 pending resource。
+
+`RetainedMarkdownImage` 严格包含 `{imageId,sourceRevision,sourceTextSha256,start,end,part,linkHref}`。imageId、sourceRevision/sourceTextSha256 和 part 沿上述类型；start/end 为原 revision 的合法出处区间，不以当前 text 长度校验；`linkHref:string|null` 只保留原链接且经当前 href 白名单过滤，无链接为 null。保留原 entryId/partId/container/sourceKey，label 来自原 part，不复制所有旧正文。相同资源的多个真实出现各自保留 imageId。
+
+reasoning 使用独立位置判别，不能冒充助手 content。图片表示中，其正常分支严格包含 `{entryId,entrySeq,revision,kind:"reasoning",text,markdown,imageProjectionError}`。entryId/entrySeq/revision 沿原 TimelineEntry 的身份与修订，text 保留原唯一正文；必填 `markdown` 对象严格包含 `{partId,revision,textSha256,complete,truncated,bindings,retainedImages}`，各字段沿上表，既不再复制 text，也不添加 MessagePart 的 type。`markdown.revision` 是正文版本，外层 revision 是 entry 版本，两者不能混用；textSha256 和 offsets 针对外层 text。正常分支的 imageProjectionError 必须为 null；没有图片节点也输出完整合法绑定结构，bindings 可以为空。旧 v1/v2 reasoning 仍只包含原公共 entry 字段、`kind:"reasoning"` 与 text，不接收 markdown 或 imageProjectionError。
+
+tool_output 中的 MarkdownImagePart 保留所属工具原 callId。公共 ImageOccurrence 中的 partId/sourceRevision/sourceTextSha256 对 Markdown/reasoning 全部非 null；独立原生 image part 则全部 null。
+
+text 与 bindings 在同一 entry revision 原子发布；旧图移出 bindings 与进入 retainedImages 也是同一事务。resource revision 更新不改变 text revision，不卸载组件或重新取源。浏览器发现 text/hash/offset 失配时停止图片读取、重取条目并保留可读文字，不自行解释 src。
+
+整个 part 被删除时，原 entry 保留同 partId 的只读容器，text/bindings 为空而 retained 不变；整个 entry 撤回但记录尚存时保留同 entryId 的图片历史容器。原 reserved/copying/unknown 出现不能随 UI 删除，迟到 committed 原子进入原容器；确定从未采集的失败才保留 unavailable。不能产生无主 blob 或以删除节点为由释放 unknown pin。
+
+所有当前 bindings、reasoning、retained 和撤回容器均进入在线/历史/content/schema3、引用闭包、授权、删除及新旧 JSON 容量检查。关联前预留潜在 retained 元数据；修订容不下既有引用时保留上一可读快照并报容量失败，不删旧图腾出空间。旧表示将 Markdown part 降为完整 TextPart，不重复追加当前图片说明；retained 在原正文后追加有界“较早版本图片”说明，保留 event/entry 序列。
+
+### 解析失败的严格分支
+
+图片表示的 user_message、assistant_message、tool_call 和 reasoning entry 均增加必填 `imageProjectionError:ImageError|null`，其他 entry 分支不添加该字段。它只表达该条目 Markdown 图片投影失败，不能改变工具 status 或发送 operation。正常为 null；解析超时、结构或节点预算失败时为非 null 的安全 ImageError，code 为 source_unavailable，描述该条目的图片解析不可用。TS、Go、在线/history/content 与 schema3 使用同一分支，旧表示移除该字段及所有新增承载字段，保持旧严格对象。
+
+content/output 内的失败片段用原 `TextPart {type:"text",text}` 保留当前完整可读文字，不加任何字段；紧邻其后保留同原 partId 的只读 `MarkdownImagePart` 容器。该容器严格为 `type:"markdown"`、`text:""`、原 partId、新正文 revision、SHA-256(UTF-8 空字符串)，不是空字符串的摘要字段、`complete:true`、`truncated:false`、`bindings:[]` 和原 retainedImages；失败发生前仍有效的当前 bindings 图片须在同一 entry revision 移入 retainedImages，包括未决出现。该容器只表达较早图片的归属，不表示失败 text 已经成功解析；imageProjectionError 非 null 是这个组合的必需条件。没有旧图时仍保留空容器以保持原 partId。不能将失败 text 放进 `bindings:[]` 的正常 MarkdownImagePart，或发表部分 bindings。
+
+reasoning 的失败分支保留同一外层字段集合、完整 text 和非 null imageProjectionError；其 markdown 仍严格包含 `{partId,revision,textSha256,complete,truncated,bindings,retainedImages}`，但 `bindings` 必须为 null，明确表示未得到完整 AST 绑定结果。其他元数据对应当前外层 text，retainedImages 保留旧出现，旧 bindings 向 retained 的转换与上述内容片段相同。仅该失败分支允许 null bindings；正常分支必须是完整数组且 imageProjectionError=null。这样无需另存一份 reasoning 正文，也不把空数组误当失败正文没有图片的证明。
+
+所有失败分支关闭当前失败正文的图片读取，已有 retained 图片仍按原身份和权限读取；恢复解析成功时重建完整绑定并将 imageProjectionError 置 null，不能重新分配未改变的出现。空正文保留容器恢复成实际正文时须推进片段 revision，不能在同 revision 下换 textSha256；entry revision 同时推进。解析按同 revision 缓存，在独立有界任务中处理，单任务最多 2 秒，输入/节点数受既有正文及元数据容量约束；不得缩小原文本可读容量。重复失败只更新同条目错误，不无限追加 error 项。无法容纳失败分支和旧引用的完整新投影时保留上一可读快照并报告既有 timeline 容量失败，不删除旧图片引用。
+
+## 本地来源上下文与策略
+
+Controller 私有 contextId 绑定 origin、真实 owner、Session/execution/native 身份、来源平台、entryId/partId、可信文档目录或启动 cwd、允许根集合和 policy revision。浏览器、正文自称和工具参数不能登记 context。默认基点是已核 ticket/runtime 的 cwd；只有受信文档读取层证明正文来自某文档时才使用其目录。文档目录只改变解析基点，不扩大允许根。
+
+`LocalImageReadPolicy` 的默认导出范围是已授权 Session 工作目录树；额外根必须有既有原生/Session 明确授权且被导出策略接受。实际允许范围是导出 roots、当前原生读取限制和 OS 权限的交集。full access、同 OS 用户可读或工具曾成功读取不等于任意文件导出权，不能默认 home、磁盘根或全机器。
+
+cwd/policy/来源平台或恢复归属不可信时 fail closed，报 context_unavailable/policy_restricted。恢复 cwd 改变不重定向旧 context，相同无变化权限复核不重建 imageId。范围内合法绝对路径自动采集，不能要求用户手工上传；范围外明确 source_forbidden，不新增 root 选择或提权流程。
+
+读取前、每块源 bytes 交付前、validated 前都复核 policy；私有 prepared 副本的每个 read_capture 块也需要有效短期 policy lease。撤销与块 lease 发放串行：先撤销则不发新块；已合法交付 bytes 无法远程擦除。最后合法块交付是本地导出的线性化点，若它早于本地撤销，服务仍可在复核 Session 权限后提交；反之不能凑齐原件。copying 未知先 query，不擅删准备文件。
+
+已 committed 图的读权属于 Session/record，不因源根移除而销毁历史；账户、Session 访问撤销或删除则阻断服务读取和页面缓存/预览。只读权限不能创建 context 或重新读本地源。
+
+### 路径分类与一次解码
+
+在 AST destination 上按 Controller 来源平台分类一次，保存原串与解析结果；不使用浏览器 URL base，不失败降级或换平台重试。
+
+| 形式 | 规则 |
+| --- | --- |
+| 相对路径 | 可信文档目录，否则原 cwd；按组件处理 `.`/`..`，合法根内回退允许，链接目标仍须授权。POSIX 反斜线是文件名，Windows 是分隔符。 |
+| 绝对路径 | POSIX `/…` 或 Windows 完整盘符路径；Windows `C:foo`、根相对 `\foo` 拒绝。不拼网站根。 |
+| `file://` | 只接受空 authority 或 localhost，无 userinfo/query/fragment；验证原 URI 后按来源平台转换一次。远程 authority/UNC 拒绝。 |
+| `daynight-resource:<UUID>` | 必须命中同 Session 可信 destination→resource 映射；UUID 本身不授权，不能当本地路径。 |
+| HTTP(S) | 交外部 locator；失败不 fallback local。`//host/path` 有歧义，拒绝。 |
+| 其他 scheme、data/blob/javascript | 拒绝；native locator 只能由 Provider 可信映射产生。 |
+
+路径最多 8192 UTF-8 bytes，拒绝 NUL、控制字符、非法 Unicode。实体及反斜线转义只由 Markdown parser 处理一次；URI percent encoding 只解一次，非法 `%`、编码分隔符/NUL 拒绝，`%252e` 不再解为 `.`。原始 `?`/`#` 按 query/fragment 拒绝，真实同名字符须写 `%3F`/`%23`；空格用 CommonMark `<…>` 或 `%20`，literal `%` 用 `%25`。
+
+Windows 拒绝 UNC、`\\?\`/`\\.\`、NT namespace、ADS、设备名及其大小写/扩展别名、末尾点/空格，仅允许本地磁盘目录。POSIX 拒绝设备、magic link、`/proc`/`/dev` 等非普通来源；网络盘/FUSE 等不能证明稳定本地语义时拒绝。允许根按卷/句柄和实际文件系统比较，不能 lower-case 字符串前缀判断；`project-evil` 不是 `project` 子目录。
+
+file URI 的原始/编码点段要在 URL 折叠前保留，不能词法消去 symlink 后的 `..` 而改目标。path/file URI 对照必须解析同一对象；标准转换无法保留语义时明确拒绝，不猜另一条路径。
+
+### 授权句柄与竞态
+
+realpath 仅用于诊断或选择候选根，不能作随后字符串 open 的安全凭据。平台 opener 从已核允许根目录句柄逐组件打开，禁止自动跟随未检查链接，保留所有已检查祖先句柄。根绑定磁盘对象及 policy revision，同名根被替换须重核，不收养新对象。
+
+符号链接可指向允许范围，最多展开 40 次。相对目标从链接父目录解析，绝对目标从另一个已授权根重新开始；展开的 `..` 用已打开祖先栈，不跨授权父边界。断链、循环、不断替换和越界有界失败。链接内容和身份必须核验，最终文件换成链接也由 no-follow 检出。
+
+| 平台 | 必需实现条件 |
+| --- | --- |
+| Linux | 根内相对目标可用 openat2 的 RESOLVE_BENEATH/RESOLVE_NO_MAGICLINKS；绝对 symlink 显式重新授权，不用 IN_ROOT 改写目标。 |
+| macOS | openat/fstatat/readlinkat + 目录句柄遍历及 no-follow，不能仅 fs.open(O_NOFOLLOW) 检查末组件。 |
+| Windows | reparse-aware handle 检查每个组件，只接受可理解的本机 symlink/junction；其他 tag 拒绝。用根 handle 相对遍历，或以禁止共享写/删除锁住全部祖先，按卷 ID/file ID 核验；共享冲突为暂时 unavailable。逐段完整 pathname CreateFile 不足以防中间替换。 |
+
+三者均不 fallback realpath+open。最终对象必须为本机受支持文件系统的 regular file，no-follow/nonblocking 打开后 fstat，拒绝 FIFO/socket/设备/目录，不能在读取前被 FIFO 挂住。不创建、截断、chmod 或提权。EACCES 显示安全 permission_denied，不泄露私有路径。
+
+句柄授权的是当时从允许根取得的目录对象；同用户随后重命名不会改变该对象。重命名即撤权、恶意同用户恢复时间戳或硬链接原始来源隔离需要额外 OS 沙箱，本机制不声称提供进程隔离。允许目录里的普通硬链接沿该目录授权，不能凭 inode 推断全部出处。
+
+### 原件取得与本地资源界限
+
+register 和私有暂存预留成功后再 open。初始 fstat 记录对象身份、长度和纳秒 mtime/ctime；0 bytes 拒绝，大于 10485760 bytes 拒绝。最多 524288 bytes 一块复制，并对总上限+1 探测；结束复核同句柄身份/长度/时间/实读量，变化丢弃未提交快照，不能混拼两次文件。
+
+该检查检测常见并发改写，不承诺文件事务快照。保存的是一次授权读取实际得到且完整解码通过的 bytes；需要严格源快照的生产者先原子发布完成文件，采集器不无界重读。实际格式由嗅探确定，有声明必须一致；公共 decoder 完整验证 PNG/JPEG/GIF/WebP/AVIF，不执行 SVG/HTML，不转码、改 EXIF 或动画。
+
+resolve/open 每次最多 5 秒，源复制最多 30 秒（含打开），解码另最多 15 秒。可挂起调用放专用可取消 IO helper，最多两个打开/复制、一个 decoder，队列最多 32 个元数据项，后续来源从持久索引分批调度；共用公共媒体槽，不另加并发。失败关闭句柄，helper 未实际停止前不回收文件或计费。服务提交可能发生时先 query，计时器不证明未提交，正文与原生回执不等待媒体队列。
+
+## 外部 HTTP(S) 获取
+
+外部读取使用 Controller 专用 transport，与 Daynight 认证客户端、请求头和重定向实现分开。只处理已登记可信 occurrence，register 预留资源槽及未知长度的 10 MiB 后才向外站发请求。字节交公共 stageCapture，获取器不生成 uploadId 或 available。
+
+### URL、DNS 与实际对端
+
+只接受完整绝对 HTTP(S) URL，最多 8192 UTF-8 bytes；拒绝 userinfo（含编码变体）、控制字符/NUL/反斜线、空 host、zone ID、非法端口。显式端口 1..65535 仍受相同地址策略，不授权 CONNECT 或其他协议。标准 URL 解析一次，IDNA host 转 ASCII 小写、移除终止点用于比较；path/query 不排序或二次解码，不去签名参数。fragment 不发送但保留原 locator，不因去 fragment 合并出现。
+
+IP 转二进制分类，替代 IPv4 整数/八进制/十六进制写法按最终地址判断；IPv4-mapped IPv6 归约 IPv4。仅允许普通公网单播，拒绝所有 IANA 特殊用途，即使标注 globally reachable；包括私网、loopback、link-local、CGNAT、文档/基准/保留、组播、广播及 IPv6 unspecified/ULA。NAT64 well-known/local-use、6to4、Teredo 等转换/隧道前缀和 zone ID 拒绝。分类表按固定 IANA 修订随代码发布，运行时不下载可变表。
+
+DNS 前拒绝 localhost/子域、`.local`、单标签内部名称及元数据名称。全部 A/AAAA 和 CNAME 最终答案都检查：任一禁区地址拒绝整次；一族确定 NODATA 可用另一族已验证答案，任一族超时/错误或结果不完整则失败。CNAME 最多 8 层，最终最多 32 地址，不能 fallback 未检查 resolver。
+
+每跳只连接已批准 IP，关闭隐含 DNS/family fallback；可在同批准集合顺序试最多两个地址，共用总 deadline。socket 建立后、HTTP 请求前核 remoteAddress 精确等于选定 IP 且仍合策略，不符立即销毁。Host 使用原主机和必要端口，TLS SNI/证书验证使用原域名或 IP SAN，验证链和有效期，不关闭校验或加载客户端登录凭据。
+
+使用专用 HTTP/1.1，不用全局 fetch/Agent、环境/系统/浏览器代理、PAC、Cookie jar、自动认证、共享连接池、HTTP/2 coalescing 或 Alt-Svc；每跳新 socket。只 GET，不执行脚本、HTML/Refresh/meta refresh 或 401 challenge。HTTP 明文允许，保存后 hash 证明 byte 身份，不证明源站真实性。
+
+透明代理、NAT64 或内部路由可能把“公网 IP”改写成私网，应用地址检查无法证明这种部署的安全。必须有等价出口策略阻断本机、内网和元数据；不能证明时关闭新 external capture，报 policy_restricted。已有文本和已保存图片继续读，不 fallback 服务端代理。
+
+### 无凭据请求与完整响应
+
+每跳从空头部构造 `Accept: image/png,image/jpeg,image/webp,image/gif,image/avif`、`Accept-Encoding: identity`、无账户信息的固定 User-Agent 及 Host。禁止 Cookie、Authorization、Proxy-Authorization、Origin、Referer、Daynight-*、用户 headers 和 TLS 客户端证书。URL query 自带令牌不能擅改，只发往原已登记 URL；URL/Location/响应头不进公共错误、日志或指标，只记录安全阶段/status/耗时/bytes/规则版本/不透明身份。
+
+仅手动处理 301/302/303/307/308，保持 GET，Location 唯一且有效，相对 Location 只按当前外站解析。最多五次跳转、共六请求，循环/缺 Location 失败；每跳重新完整地址检查并重建空凭据头，不读跳转 body、不继承 Cookie。HTTP↔HTTPS 均可，但 HTTPS→HTTP 不延续 TLS 来源保证。浏览器始终读 Daynight 的授权原件，不依赖外站 CORS 或 mixed-content 例外。
+
+仅最终 200 进入内容验证；204/206/304、升级和所有其他状态都不是图成功。不发 Range/条件请求，不用 ETag/Last-Modified 作历史身份。404/410 为源不存在，401/403 为无凭据拒绝，不发起登录；429/503 显示暂时失败，Retry-After 整数秒或有效 HTTP-date 最多冷却 300 秒，非法值 30 秒，用单调时钟等待，不后台无限重试。
+
+响应头最多 32 KiB/100 字段，拒绝控制字符、重复关键头及 Content-Length/Transfer-Encoding 歧义。声明长度超 10 MiB 立即终止，缺长度/chunked 仍实读计数，第 10485761 byte 立即取消。Content-Encoding 只 absent/identity，不隐式解压 gzip/br。实体须完整终止，截断、长度不符、socket 中断不能提交；严格 HTTP parser，不用 insecure 模式。
+
+显式 Content-Type 只允许五种 DisplayMime（合法参数可保留）；缺失或 application/octet-stream 交真实嗅探。HTML/SVG/XML 等显式类型拒绝，声明图类型与实际不符为 invalid_image。stageCapture 得到嗅探后的真实 MIME，再独立完整解码；这不改变上传声明须精确匹配的规则。文件名用安全 label 或格式生成名，不将 Content-Disposition/URL path 当本地路径。
+
+### 网络与调度界限
+
+| 对象 | 上限 |
+| --- | --- |
+| DNS / TCP+TLS / header | 每跳 3 秒 / 每连接 5 秒 / 每跳 8 秒。 |
+| body / 总网络 | 无进展 5 秒；全部跳转、地址重试和 body 总计 30 秒，单调 deadline。 |
+| bytes / 缓冲 | 每图 10485760 bytes；读取块最多 64 KiB、累计缓冲最多 256 KiB，等下游接收再读。 |
+| 并发 / 排队 | 每 Controller 最多两个获取，计公共媒体槽；队列最多 32 项，仅 metadata，排队最多 30 秒。 |
+| 开始请求速率 | 每 Session 每分钟最多 30 次、每主机每分钟 10 次，首跳/重定向/地址连接重试都计费，journal 持久冷却不因重连归零。 |
+
+排队超时只可在确定未开始/未提交时结算 failed 并释放预留，否则 query。decoder 另有 15 秒和公共几何/帧数限制；所有超时和取消必须实际销毁 socket、停止 reader/helper 后返额度，不能只调用 setTimeout。未知 validated/copying 保留 immutable prepared 文件协调；页面卸载只取消页面读取，不取消共享采集。删除、撤权或 fence 失效中止来源，未证实提交结果前不能自行 unlink。
+
+## 快照、已登记资源与唯一重试
+
+同 URL/path 只是来源，不是资源身份。两个真实出现可保存不同 bytes；同 source event 重放只恢复原映射。成功后固定原 resourceId/hash，再次预览、下载或历史读取都不访问原 source。同源新内容只能通过明确新出现/记录取得，不能用“重试”改写已保存图。
+
+同 Session/record 的可信 resource locator 可复用 available 原件并增加出现引用，不增加 blob 槽；pending 只观察，failed/missing 不按 name 猜 path。legacy 和新 ImageResource 是独立 namespace：旧 bytes 经原授权 reader、旧 8 MiB 限制读取，再新 capture 转换；旧 UUID 不冒充新资源 UUID，不批量抓旧路径，只有 descriptor 无 bytes 明确 unavailable。
+
+浏览器来源重试唯一为 `POST {base}/image-occurrences/{imageId}/retry`，严格 `{}`，回 `{capture:ImageCaptureReceipt}`；Controller 控制为 `retry_capture {captureId}`。它只处理已登记原 occurrence、原可信 local/external locator，不接受 path、URL、headers、actor、roots 或其他 Session。当前真实 operator 须有操作权限，不要求等于原上传 actor；只读权限不够。具体返回类型和 `GET image-occurrences/{imageId}` 的 state/action/null 组合由[公共合同](session-image-contracts.md)唯一规定。
+
+服务 action 是按钮资格依据，不按错误文案猜：pending/unknown 只 observe 原身份；committed 只 read_saved；failed 只有从未 committed、服务已确认释放旧预留、来源可信且当前可操作才 retry_source。POST 响应未知先 GET 原状态，不能自动重发 POST；并发按 capture 键串行。
+
+| 状态/失败 | 允许的恢复 |
+| --- | --- |
+| register/validated/commit 未知 | query 原 capture；404、超时或本地计时器不证明未提交。 |
+| reserved 且原 attempt 活跃 | 返回进度，不并行第二次源请求。 |
+| 原 writer 停止，只剩 partial staging | 先查服务，确定未提交且无活跃 attempt 后 failed/释放；显式重试才新 attempt，不 Range 续抓或拼接新响应。 |
+| validated/copying/提交未知 | 用原 immutable prepared 文件协调，不换 hash/ID。准备丢失先查服务，确认未提交才可结算失败。 |
+| 源暂时不存在、超时、共享占用、源变化、容量或队列失败 | 确定 failed/释放后，可显式重新准备原 locator，全套权限/网络/格式检查重做。 |
+| 未提交 local/external 的 invalid_image、unsupported_media_type、decode_failed | 允许源修复后的显式 prepare；不自动循环。input 与 saved 错误仍保持 never。 |
+| forbidden、permission_denied | 不得靠 retry 绕过；真实权限/策略恢复后仍需服务重新判定 action。 |
+| committed 原件读失败/摘要错/丢失 | 保持原 descriptor，读失败可重读同原件；不能重新抓源修复或转成“从未采集”。 |
+
+重试可接受原未成功来源修复后的 bytes，但首次 committed 关闭该出现采集。未知保留原 pins，不能趁新 attempt 换资源。新 generation 不复用旧写凭据，只在可信同执行/native 链与当前授权下协调；无法证明则 context_unavailable。只读归档永远无 retry_source，只重读已保存图。最终同步可登记已经发生的本地来源和 validated 结果，但原生停止后不能启动新来源 IO。
+
+## 显示、归档和验证边界
+
+浏览器核正文 hash/revision/binding，再以受控节点替换原 img，移除 src/srcset；hydrate、错误 fallback 和解析失败都不能把原路径交浏览器。组件以稳定 imageId 为 key，不拼状态/hash/revision 导致卸载。linked image 的原链接与独立预览/下载入口并列，不嵌套交互元素；href 继续白名单和 noopener/noreferrer。reasoning/工具筛选不妨碍保存，图片完成不强迫滚底或展开工具。
+
+归档闭包包含 bindings、retained、reasoning、撤回容器及迟到关联。只有确定从未采集的缺图可 partial；unknown、正文 gap、known available 丢失或摘要损坏均不能凑 partial。已保存原件在 Controller、源文件和外站离线后仍可按 Session/record 权限读取；这不承诺浏览器断网图库。
+
+来源每图上限和 Session 预算沿公共合同，8 图/20 MiB 只限制用户输入，不限制一个工具或 Markdown 输出的图片总数。每个出现、失败和 retained 都计 metadata/JSON 预算；不能只采前几张而称完整。原件不转码，decoder、服务复制和摘要均须真实成功才 available。
+
+验证须覆盖 AST 正反例和 UTF-16/定义/截断/修订；三平台真实 symlink/junction、中间目录替换、FIFO、共享冲突与取消，记录实际打开对象及关闭句柄；HTTP(S) 成功、DNS 混合/重绑定、私网跳转和实际 peer 错配，证明禁区收到请求数为零；代理环境和 Cookie/Auth/Referer 不泄漏；慢源、坏编码、10 MiB/+1、损坏动画与实际资源终止；unknown 和源 A→B 后原图仍 A；正文撤回的迟到 committed 仍有归属；所有入口、旧表示、只读与权限撤销。
+
+URL/AST 单元测试不替代真实 socket/TLS 或 OS handle 证据，受控浏览器不替代真实 Provider，单次计时器回调不证明 writer 已停止。详细验收方法和证据层次见[验收规格](../spec/session-image-acceptance.md)。
