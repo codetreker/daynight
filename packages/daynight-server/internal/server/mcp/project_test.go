@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -89,6 +90,9 @@ func TestProjectIdentifierAcceptsOnlySameServiceExactLinks(t *testing.T) {
 		{"https://other.test/teams/" + testTargetID, false}, {"https://daynight.test/teams/" + testTargetID + "?", false},
 		{"https://daynight.test/teams/" + testTargetID + "/", false}, {"https://daynight.test/teams/%33" + testTargetID[1:], false},
 		{"https://user@daynight.test/teams/" + testTargetID, false}, {strings.ToUpper(testTargetID), false},
+		{"https://daynight.test/teams/" + strings.ToUpper(testTargetID), false},
+		{"https://daynight.test/Teams/" + testTargetID, false},
+		{"https://%zz/teams/" + testTargetID, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -223,5 +227,91 @@ func TestProjectToolHTTPDiscoveryAndInputs(t *testing.T) {
 	result = call("project_list", map[string]any{"limit": 101})
 	if !result.IsError {
 		t.Fatalf("bad limit accepted: %+v", result)
+	}
+}
+
+func TestProjectRegistrationRejectsMissingOrCorruptToolDefinitions(t *testing.T) {
+	original := projectToolsJSON
+	t.Cleanup(func() { projectToolsJSON = original })
+	f := newEntryFixture(t)
+	projectToolsJSON = []byte("[")
+	if err := RegisterProjectTools(f.entry, &fakeProjectOperations{}, nil, "https://daynight.test"); err == nil {
+		t.Fatal("corrupt tool definitions accepted")
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal(original, &tools); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"project_create", "project_transfer", "project_list", "project_show"} {
+		t.Run(name, func(t *testing.T) {
+			var filtered []map[string]any
+			for _, tool := range tools {
+				if tool["name"] != name {
+					filtered = append(filtered, tool)
+				}
+			}
+			encoded, err := json.Marshal(filtered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projectToolsJSON = encoded
+			fixture := newEntryFixture(t)
+			if err = RegisterProjectTools(fixture.entry, &fakeProjectOperations{}, nil, "https://daynight.test"); err == nil {
+				t.Fatal("missing tool definition accepted")
+			}
+		})
+	}
+}
+
+func TestProjectTransferMapsCompleteActorAccess(t *testing.T) {
+	now := time.Date(2026, 1, 1, 1, 2, 3, 0, time.FixedZone("other", 8*60*60))
+	role := model.ProjectAdmin
+	access := &model.ProjectAccess{ProjectID: testProjectID, Role: model.ProjectAdmin, CanTransfer: true, TeamRole: &role,
+		OwnerTeam: model.TeamRef{ID: testTeamID, Kind: "team"}, Ownership: model.ProjectOwnership{TeamID: testTeamID, Version: 9007199254740993, UpdatedAt: now},
+		DirectGrant: &model.ProjectGrant{ProjectID: testProjectID, UserID: testUserID, Role: model.ProjectMemberRole, Version: 9007199254740995, CreatedAt: now, UpdatedAt: now}}
+	out := mapProjectAccess(access)
+	if out == nil || out.ProjectID != testProjectID || out.OwnerTeam.ID != testTeamID || out.TeamRole == nil || *out.TeamRole != role || !out.CanTransfer || out.EffectiveRole != role || out.Ownership.Version != "9007199254740993" || !out.Ownership.UpdatedAt.Equal(now) || out.Ownership.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("access mapping: %+v", out)
+	}
+	grant := out.DirectGrant
+	if grant == nil || grant.ProjectID != testProjectID || grant.UserID != testUserID || grant.Role != model.ProjectMemberRole || grant.Version != "9007199254740995" || !grant.CreatedAt.Equal(now) || grant.CreatedAt.Location() != time.UTC {
+		t.Fatalf("grant mapping: %+v", grant)
+	}
+	access.DirectGrant = nil
+	if mapProjectAccess(access).DirectGrant != nil {
+		t.Fatal("absent direct grant was not preserved")
+	}
+}
+
+func TestProjectHandlersPreserveFailuresAndListBounds(t *testing.T) {
+	refusal := &model.Fault{Code: "not_found", Message: "Project not found."}
+	f := &fakeProjectOperations{err: refusal}
+	h := projectTools{projects: f, origin: "https://daynight.test"}
+	actor := projectActor()
+	if _, err := h.create(context.Background(), actor, projectCreateInput{Team: "invalid"}); err == nil {
+		t.Fatal("invalid team accepted")
+	}
+	if _, err := h.show(context.Background(), actor, projectShowInput{ProjectID: testProjectID}); !errors.Is(err, refusal) {
+		t.Fatalf("show error: %v", err)
+	}
+	if _, err := h.list(context.Background(), actor, projectListInput{}); !errors.Is(err, refusal) {
+		t.Fatalf("list error: %v", err)
+	}
+	if _, err := h.transfer(context.Background(), actor, projectTransferInput{ProjectID: testProjectID, ToTeam: "invalid"}); err == nil {
+		t.Fatal("invalid transfer target accepted")
+	}
+	if _, err := h.transfer(context.Background(), actor, projectTransferInput{ProjectID: testProjectID, ToTeam: testTargetID}); !errors.Is(err, refusal) {
+		t.Fatalf("preview error: %v", err)
+	}
+	f.err = nil
+	project := sampleProject(testProjectID)
+	project.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	f.page.Items = []model.Project{project}
+	if _, err := h.list(context.Background(), actor, projectListInput{}); err == nil {
+		t.Fatal("unencodable project accepted")
+	}
+	f.page.Items = append(f.page.Items, sampleProject(testProjectID))
+	if _, err := h.list(context.Background(), actor, projectListInput{}); err == nil {
+		t.Fatal("unencodable cursor accepted")
 	}
 }

@@ -185,7 +185,7 @@ func teamIdentifier(value, origin string) (string, error) {
 		return id, nil
 	}
 	parts := teamLink.FindStringSubmatch(value)
-	if parts == nil {
+	if parts == nil || !strings.HasPrefix(parts[2], "/teams/") {
 		return "", invalid
 	}
 	id, err := model.CanonicalID(parts[3])

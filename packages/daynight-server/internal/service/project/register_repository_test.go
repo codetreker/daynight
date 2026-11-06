@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -70,5 +71,70 @@ func TestRegisterRepository(t *testing.T) {
 	page, err := projects.List(ctx, principal, model.PageRequest{Limit: 100})
 	if err != nil || len(page.Items) != 3 {
 		t.Fatalf("unexpected Project count: %d %v", len(page.Items), err)
+	}
+}
+
+func TestRegisterRepositoryValidationAndFailure(t *testing.T) {
+	projects, database, _, principal := projectService(t)
+	ctx := context.Background()
+	input := core.CreateProject{Name: "", RepoURL: "https://example.com/repo", ExpectedUserID: principal.UserID}
+	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
+		t.Fatal("invalid name accepted")
+	} else {
+		requireFault(t, err, "invalid_input")
+	}
+	input.Name, input.RepoURL = "Name", "https://example.com/%2f"
+	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
+		t.Fatal("invalid repository accepted")
+	} else {
+		requireFault(t, err, "invalid_input")
+	}
+
+	// A legacy or corrupt Project address must not be silently skipped during discovery.
+	legacy := input
+	legacy.RepoURL = "https://example.com/legacy"
+	old, err := projects.Create(ctx, principal, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, "UPDATE projects SET repo_url=$1 WHERE id=$2", "https://example.com/%2f", old.ID); err != nil {
+		t.Fatal(err)
+	}
+	input.RepoURL = "https://example.com/other"
+	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
+		t.Fatal("unidentifiable existing repository silently ignored")
+	} else {
+		requireFault(t, err, "invalid_input")
+	}
+	database.Close()
+	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
+		t.Fatal("database failure ignored")
+	}
+}
+
+func TestRegisterRepositoryScansAllVisiblePages(t *testing.T) {
+	projects, _, _, principal := projectService(t)
+	ctx := context.Background()
+	input := core.CreateProject{Name: "Repository", RepoURL: "https://example.com/target", ExpectedUserID: principal.UserID}
+	first, err := projects.Create(ctx, principal, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		other := core.CreateProject{Name: "Other", RepoURL: fmt.Sprintf("https://example.com/other-%d", i), ExpectedUserID: principal.UserID}
+		if _, err := projects.Create(ctx, principal, other); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if project, created, err := projects.RegisterRepository(ctx, principal, input, false); err != nil || created || project.ID != first.ID {
+		t.Fatalf("match across pages: %#v %v %v", project, created, err)
+	}
+	if _, err := projects.Create(ctx, principal, input); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := projects.RegisterRepository(ctx, principal, input, true); err == nil {
+		t.Fatal("ambiguity across pages accepted")
+	} else {
+		requireFault(t, err, "resource_conflict")
 	}
 }

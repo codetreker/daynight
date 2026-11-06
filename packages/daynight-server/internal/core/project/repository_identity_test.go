@@ -42,3 +42,25 @@ func TestRepositoryIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestRepositoryIdentityRejectsMalformedTransportDetails(t *testing.T) {
+	for _, input := range []string{
+		"git@[bad:repo", "git@[bad]:repo", "git@:repo", "host", "host:",
+		"user:password@host:repo", "host:name@user:repo", "host:repo?query",
+		"https://host", "http://host/repo", "ssh://开发者@host/repo", "ssh://user@[::1]extra/repo",
+		"https://::1:443/repo", "ssh://git@[::1]:/repo", "ssh://[bad]/repo",
+	} {
+		if got, err := RepositoryIdentity(input); err == nil {
+			t.Errorf("accepted %q as %q", input, got)
+		}
+	}
+	for input, want := range map[string]string{
+		"host:repo":               "scp://host:repo",
+		"host:repo@next.git":      "scp://host:repo@next",
+		"https://[::1]:8443/repo": "https://[::1]:8443/repo",
+	} {
+		if got, err := RepositoryIdentity(input); err != nil || got != want {
+			t.Errorf("identity %q = %q, %v; want %q", input, got, err, want)
+		}
+	}
+}
