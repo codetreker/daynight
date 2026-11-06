@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { command } from '../scripts/acceptance/process.mts';
-import { findProcesses, isGroupStopped, processIdentity, sameProcess, type ProcessIdentity } from '../scripts/acceptance/identity.mts';
+import { command } from '../scripts/validation/process.mts';
+import { findProcesses, isGroupStopped, processIdentity, sameProcess, type ProcessIdentity } from '../scripts/validation/identity.mts';
 
 // A child deadline bounds synchronous SDK work without trapping the test runner.
 const probe = String.raw`
 import { createServer } from 'vite';
 import { chromium } from '@playwright/test';
-import { processIdentity } from './scripts/acceptance/identity.mts';
+import { processIdentity } from './scripts/validation/identity.mts';
 const vite = await createServer({ configFile: false, logLevel: 'silent', server: { host: '127.0.0.1', port: 0 } });
 let server;
 try {
