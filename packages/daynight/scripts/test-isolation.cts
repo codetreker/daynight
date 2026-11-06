@@ -79,7 +79,10 @@ const physicalPath = (target: string | Buffer, followLeaf = true, links = new Se
   }
   // Node prepares Windows filesystem arguments through this namespace conversion.
   // https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/src/path.cc#L282-L326
-  const prepared = path.toNamespacedPath(absoluteRaw(target.toString()));
+  const namespaced = path.toNamespacedPath(absoluteRaw(target.toString()));
+  const prepared = namespaced.toUpperCase().startsWith("\\\\?\\UNC\\")
+    ? `\\\\${namespaced.slice(8)}`
+    : namespaced.startsWith("\\\\?\\") && /^[a-z]:\\/i.test(namespaced.slice(4)) ? namespaced.slice(4) : namespaced;
   const root = path.parse(prepared).root;
   const components = prepared.slice(root.length).split(/[\\/]+/).filter(component => component !== "");
   let cursor = original.realpath(root);
