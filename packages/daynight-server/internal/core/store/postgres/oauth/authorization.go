@@ -54,45 +54,41 @@ func (d *DAO) UpdateAuthorization(ctx context.Context, a store.OAuthAuthorizatio
 	_, err := d.tx.Exec(ctx, `UPDATE oauth_authorizations SET state=$2,state_present=$9,status=$3,user_id=NULLIF($4,'')::uuid,grant_id=NULLIF($5,'')::uuid,code_hash=$6,code_expires_at=$7,retain_until=$8 WHERE id=$1`, a.ID, a.State, a.Status, a.UserID, a.GrantID, a.CodeHash, a.CodeExpiresAt, a.RetainUntil, a.StatePresent)
 	return pg.AuthQueryError("update OAuth authorization", err)
 }
-func (d *DAO) PruneAuthorizations(ctx context.Context, now time.Time, limit int) (int, error) {
-	if _, err := d.tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, authorizationCapacityLock); err != nil {
-		return 0, pg.AuthQueryError("lock OAuth authorization capacity", err)
+func (d *DAO) LockAuthorizationCapacity(ctx context.Context) error {
+	_, err := d.tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, authorizationCapacityLock)
+	return pg.AuthQueryError("lock OAuth authorization capacity", err)
+}
+
+func (d *DAO) ExpiredAuthorizations(ctx context.Context, now time.Time, limit int) ([]store.OAuthAuthorization, error) {
+	rows, err := d.tx.Query(ctx, `SELECT `+authorizationColumns+` FROM oauth_authorizations WHERE status='pending' AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED`, now, limit)
+	if err != nil {
+		return nil, pg.AuthQueryError("read expiring OAuth authorizations", err)
 	}
-	if limit <= 0 {
-		return 0, nil
+	defer rows.Close()
+	var result []store.OAuthAuthorization
+	for rows.Next() {
+		var a store.OAuthAuthorization
+		if err := rows.Scan(&a.ID, &a.BindingHash, &a.Client, &a.ClientID, &a.RedirectURI, &a.Resource, &a.Scope, &a.Challenge, &a.State, &a.StatePresent, &a.Status, &a.UserID, &a.GrantID, &a.CodeHash, &a.CreatedAt, &a.ExpiresAt, &a.CodeExpiresAt, &a.RetainUntil); err != nil {
+			return nil, pg.AuthQueryError("read expiring OAuth authorizations", err)
+		}
+		result = append(result, a)
 	}
+	return result, pg.AuthQueryError("read expiring OAuth authorizations", rows.Err())
+}
+
+func (d *DAO) DeleteRetainedAuthorizations(ctx context.Context, now time.Time, limit int) (int, error) {
+	tag, err := d.tx.Exec(ctx, `DELETE FROM oauth_authorizations WHERE id IN (SELECT id FROM oauth_authorizations WHERE retain_until<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY retain_until,id LIMIT $2 FOR UPDATE SKIP LOCKED)`, now, limit)
+	return int(tag.RowsAffected()), pg.AuthQueryError("prune OAuth authorizations", err)
+}
+
+// AuthorizationCleanupCursor locks the persistent position for this transaction.
+func (d *DAO) AuthorizationCleanupCursor(ctx context.Context) (int, error) {
 	var start int
-	if err := d.tx.QueryRow(ctx, `SELECT next_kind FROM oauth_authorization_cleanup_cursor WHERE singleton=true FOR UPDATE`).Scan(&start); err != nil {
-		return 0, pg.AuthQueryError("read OAuth authorization cleanup cursor", err)
-	}
-	if _, err := d.tx.Exec(ctx, `UPDATE oauth_authorization_cleanup_cursor SET next_kind=($1::int+$2::int)%2 WHERE singleton=true`, start, limit); err != nil {
-		return 0, pg.AuthQueryError("advance OAuth authorization cleanup cursor", err)
-	}
-	queries := []string{
-		`UPDATE oauth_authorizations SET status='expired',state='',state_present=false WHERE id IN (SELECT id FROM oauth_authorizations WHERE status='pending' AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED)`,
-		`DELETE FROM oauth_authorizations WHERE id IN (SELECT id FROM oauth_authorizations WHERE retain_until<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY retain_until,id LIMIT $2 FOR UPDATE SKIP LOCKED)`,
-	}
-	total := 0
-	for offset := 0; offset < 2; offset++ {
-		quota := limit / 2
-		if offset < limit%2 {
-			quota++
-		}
-		if quota == 0 {
-			continue
-		}
-		tag, err := d.tx.Exec(ctx, queries[(start+offset)%2], now, quota)
-		if err != nil {
-			return total, pg.AuthQueryError("prune OAuth authorizations", err)
-		}
-		total += int(tag.RowsAffected())
-	}
-	for offset := 0; offset < 2 && total < limit; offset++ {
-		tag, err := d.tx.Exec(ctx, queries[(start+offset)%2], now, limit-total)
-		if err != nil {
-			return total, pg.AuthQueryError("prune OAuth authorizations", err)
-		}
-		total += int(tag.RowsAffected())
-	}
-	return total, nil
+	err := d.tx.QueryRow(ctx, `SELECT next_kind FROM oauth_authorization_cleanup_cursor WHERE singleton=true FOR UPDATE`).Scan(&start)
+	return start, pg.AuthQueryError("read OAuth authorization cleanup cursor", err)
+}
+
+func (d *DAO) SetAuthorizationCleanupCursor(ctx context.Context, next int) error {
+	_, err := d.tx.Exec(ctx, `UPDATE oauth_authorization_cleanup_cursor SET next_kind=$1 WHERE singleton=true`, next)
+	return pg.AuthQueryError("advance OAuth authorization cleanup cursor", err)
 }

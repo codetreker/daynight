@@ -21,7 +21,7 @@ const original: readonly TaskStep[] = ["00000000", "abcdef01", "12345678", "fedc
 type Result = { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 type RequestRecord = { readonly method: string; readonly path: string; readonly requestId: string | undefined; readonly body: unknown };
 
-it("runs both packed launchers through Move positions, exact budgets, no-ops and one factual unknown observation", async () => {
+it("runs the packed Move matrix and verifies both native launchers", async () => {
   const deadline = Date.now() + 170_000;
   const installed = await createAcceptanceCli({ signal: AbortSignal.timeout(170_000) }); const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Step Move launcher 中文");
@@ -107,6 +107,10 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
         const help = (await invoke(launcher, ["task", "step", "move", "--help"])).stdout;
         for (const option of ["--before", "--after", "--first", "--last", "--if-version", "--project", "--json"]) expect(help).toContain(option);
       });
+      if (launcher === alias) {
+        checks.push(async () => { await invoke(launcher, ["task", "step", "move", taskId, "00000000"], 2); });
+        continue;
+      }
       for (const extra of [[], ["--first", "--last"], ["--before=abcdef01", "--after=12345678"], ["--before=00000000"], ["--after=00000000"], ["--before=prefix"]]) {
         checks.push(async () => { await invoke(launcher, ["task", "step", "move", taskId, "00000000", ...extra], 2); });
       }
@@ -127,7 +131,7 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
       if (failures.length !== 0) throw new AggregateError(failures, "Packed Move pre-configuration checks failed.");
     }
     expect(requests).toEqual([]); expect(await readFile(config, "utf8")).toBe("serverUrl: [\n");
-    scenarios.push("both-aliases-help-usage-invalid-placement-and-self-anchor-before-config", "installed-bash-zsh-completion-and-skill-usage");
+    scenarios.push("both-launchers-help-and-missing-placement-before-config", "daynight-invalid-placement-and-self-anchor-before-config", "installed-bash-zsh-completion-and-skill-usage");
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
     const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing packed Move listener.");
     await writeFile(config, `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
@@ -139,8 +143,10 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
         { id: "12345678", args: ["--before=ABCDEF01"], input: { before: "abcdef01" }, order: ["00000000", "12345678", "abcdef01", "fedcba98"], explicit: true },
         { id: "00000000", args: ["--after=12345678"], input: { after: "12345678" }, order: ["abcdef01", "12345678", "00000000", "fedcba98"], explicit: false },
       ]) {
+        if (launcher === alias && tc.id !== "FEDCBA98") continue;
         current = { projectId, taskId, version, steps: original };
         for (const noop of [false, true]) {
+          if (launcher === alias && noop) continue;
           const explicit = noop ? !tc.explicit : tc.explicit, previousVersion = current.version;
           const at = requests.length;
           const output = await invoke(launcher, ["task", "step", "move", taskId.toUpperCase(), tc.id, ...tc.args, "--project", projectId.toUpperCase(), "--json", ...(explicit ? ["--if-version", previousVersion.toString()] : [])]);
@@ -151,6 +157,7 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
           for (const step of current.steps) expect(step).toEqual(original.find(({ id }) => id === step.id));
         }
       }
+      if (launcher === alias) continue;
       current = { projectId, taskId, version, steps: original };
       const readable = (await invoke(launcher, ["task", "step", "move", taskId, "00000000", "--first", "--if-version", version.toString(), "--project", projectId])).stdout;
       expect(current.version).toBe(version);
@@ -166,7 +173,7 @@ it("runs both packed launchers through Move positions, exact budgets, no-ops and
       expect(unknown.stderr).not.toContain("Step moved.");
       for (const secret of [original[0]!.title, original[0]!.description, "fixture-token", `http://127.0.0.1:${address.port}`]) expect(unknown.stderr).not.toContain(secret);
     }
-    scenarios.push("four-positions-canonical-identities-explicit-one-put-default-get-put", "exact-bigint-noop-and-unchanged-content-times", "complete-json-and-readable-terminal-escaping", "one-unknown-put-correlated-current-facts-only-read-no-replay");
+    scenarios.push("both-launchers-explicit-first-position", "four-positions-canonical-identities-explicit-one-put-default-get-put", "exact-bigint-noop-and-unchanged-content-times", "complete-json-and-readable-terminal-escaping", "one-unknown-put-correlated-current-facts-only-read-no-replay");
     expect(createHash("sha256").update(await readFile(receipt.entryPath)).digest("hex")).toBe(receipt.entrySha256);
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];

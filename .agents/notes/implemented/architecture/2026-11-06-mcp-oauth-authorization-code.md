@@ -33,6 +33,11 @@ budget precedes client metadata resolution and storage allocation. The browser
 and token adapters are usable in a controlled host; production discovery and
 consent integration remain separate responsibilities.
 
+`core/oauth` owns authorization binding, decision, consumption, replay and
+expiry rules. The service coordinates identity, client and credential-family
+operations within the transaction; the DAO locks and persists the selected rows.
+Pruning applies the same domain expiry rule while holding the allocation lock.
+
 ## Alternatives
 
 **Persist recoverable codes or token responses.** Replaying plaintext after a
@@ -43,6 +48,10 @@ new authorization is required to recover from an unknown delivery.
 **Return replay refusal inside a rolled-back transaction.** Returning the error
 before committing would undo the family revocation and leave the winner's access
 credential usable after a detected replay.
+
+**Keep authorization transitions in the service and SQL.** This splits one
+state machine across orchestration and persistence, making expiry and decision
+rules harder to change consistently.
 
 ## Consequences
 
