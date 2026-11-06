@@ -1,5 +1,7 @@
 import { ApiError, assertResponsePrincipal, json, readAuthRequestGeneration, request, requestId as canonicalRequestId } from './client';
 import type { WorkerReadAdmission } from './workers';
+import { parseWorkerModelInput, parseWorkerModelResult, type WorkerModelInput, type WorkerModelResult } from './worker-models';
+export type { WorkerModelInput, WorkerModelResult, WorkerModelOption, WorkerModelDefault, WorkerModelProvider } from './worker-models';
 
 export const WORKER_READONLY_PROTOCOL = 'daynight.worker-readonly.v1';
 export type WorkerDirectoryInput = {
@@ -18,6 +20,7 @@ export type WorkerDirectoryResult = {
 /** Each operation owns its input and result parser; arbitrary commands are not accepted. */
 export type WorkerReadonlyOperations = {
   readonly 'directory.list': { readonly input: WorkerDirectoryInput; readonly result: WorkerDirectoryResult };
+  readonly 'model.list': { readonly input: WorkerModelInput; readonly result: WorkerModelResult };
 };
 export type WorkerReadonlyOperation = keyof WorkerReadonlyOperations;
 export type WorkerReadonlyBinding = { readonly connectionId: string; readonly capabilityGeneration: string };
@@ -29,7 +32,7 @@ export type WorkerReadonlyResponse<K extends WorkerReadonlyOperation> = WorkerRe
   readonly requestId: string;
   readonly result: WorkerReadonlyOperations[K]['result'];
 };
-const errorCodes = ['offline', 'unsupported', 'permission_denied', 'not_found', 'timeout', 'cancelled', 'invalid_path', 'invalid_cursor', 'io_error', 'busy', 'limit_exceeded'] as const;
+const errorCodes = ['offline', 'unsupported', 'permission_denied', 'not_found', 'timeout', 'cancelled', 'invalid_path', 'invalid_cursor', 'io_error', 'busy', 'limit_exceeded', 'invalid_input', 'capability_error', 'cleanup_unknown', 'stale_configuration'] as const;
 export type WorkerReadonlyErrorCode = typeof errorCodes[number];
 export class WorkerReadonlyError extends Error {
   constructor(readonly code: WorkerReadonlyErrorCode, message: string) { super(message); this.name = 'WorkerReadonlyError'; }
@@ -87,7 +90,7 @@ export const parseWorkerReadonlyResponse = <K extends WorkerReadonlyOperation>(v
   readonly ownerUserId: string; readonly workerId: string; readonly requestId: string; readonly binding?: WorkerReadonlyBinding;
 }): WorkerReadonlyResponse<K> => {
   const data = record(value), hasResult = Object.hasOwn(data, 'result'), hasError = Object.hasOwn(data, 'error');
-  if (hasResult === hasError || operation !== 'directory.list') return malformed();
+  if (hasResult === hasError || operation !== 'directory.list' && operation !== 'model.list') return malformed();
   fields(data, ['type', 'protocol', 'ownerUserId', 'workerId', 'connectionId', 'capabilityGeneration', 'requestId', hasResult ? 'result' : 'error']);
   const ownerUserId = uuid(data.ownerUserId), workerId = uuid(data.workerId), requestId = uuid(data.requestId);
   const connectionId = uuid(data.connectionId), capabilityGeneration = uuid(data.capabilityGeneration);
@@ -98,7 +101,8 @@ export const parseWorkerReadonlyResponse = <K extends WorkerReadonlyOperation>(v
     if (typeof error.code !== 'string' || !errorCodes.includes(error.code as WorkerReadonlyErrorCode)) return malformed();
     throw new WorkerReadonlyError(error.code as WorkerReadonlyErrorCode, text(error.message, 1024));
   }
-  return { type: 'result', protocol: WORKER_READONLY_PROTOCOL, ownerUserId, workerId, connectionId, capabilityGeneration, requestId, result: parseDirectory(data.result) };
+  const result = operation === 'directory.list' ? parseDirectory(data.result) : parseWorkerModelResult(data.result);
+  return { type: 'result', protocol: WORKER_READONLY_PROTOCOL, ownerUserId, workerId, connectionId, capabilityGeneration, requestId, result } as WorkerReadonlyResponse<K>;
 };
 
 const boundedJson = async (response: Response, signal: AbortSignal): Promise<unknown> => {
@@ -133,8 +137,8 @@ const boundedJson = async (response: Response, signal: AbortSignal): Promise<unk
 export const requestWorkerReadonly = async <K extends WorkerReadonlyOperation>(worker: string, operation: K, input: WorkerReadonlyOperations[K]['input'], signal: AbortSignal,
   admission: WorkerReadonlyAdmission, options: WorkerReadonlyRequestOptions = {}): Promise<WorkerReadonlyResponse<K>> => {
   const workerId = uuid(worker), ownerUserId = uuid(admission.userId), requestId = uuid(options.requestId ?? crypto.randomUUID());
-  if (operation !== 'directory.list') return malformed();
-  const validatedInput = parseInput(input);
+  if (operation !== 'directory.list' && operation !== 'model.list') return malformed();
+  const validatedInput = operation === 'directory.list' ? parseInput(input) : parseWorkerModelInput(input);
   if (options.binding !== undefined) { uuid(options.binding.connectionId); uuid(options.binding.capabilityGeneration); }
   const deadline = new AbortController(), combined = AbortSignal.any([signal, deadline.signal]);
   let timer: ReturnType<typeof setTimeout> | undefined, authGeneration = readAuthRequestGeneration();
@@ -150,7 +154,7 @@ export const requestWorkerReadonly = async <K extends WorkerReadonlyOperation>(w
     }, () => {
       authGeneration = readAuthRequestGeneration();
       check();
-      timer = setTimeout(() => deadline.abort(new WorkerReadonlyError('timeout', 'The Worker read-only request timed out.')), 12_000);
+      timer = setTimeout(() => deadline.abort(new WorkerReadonlyError('timeout', 'The Worker read-only request timed out.')), operation === 'model.list' ? 32_000 : 12_000);
     });
     check();
     assertResponsePrincipal(response, ownerUserId, admission.onPrincipalMismatch);
@@ -159,7 +163,9 @@ export const requestWorkerReadonly = async <K extends WorkerReadonlyOperation>(w
       return value;
     }, value => boundedJson(value, combined));
     check();
-    return parseWorkerReadonlyResponse(data, operation, { ownerUserId, workerId, requestId, ...(options.binding === undefined ? {} : { binding: options.binding }) });
+    const result = parseWorkerReadonlyResponse(data, operation, { ownerUserId, workerId, requestId, ...(options.binding === undefined ? {} : { binding: options.binding }) });
+    if (operation === 'model.list' && (result.result as WorkerModelResult).provider !== (validatedInput as WorkerModelInput).provider) return malformed();
+    return result;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     if (response?.body !== null && response?.body !== undefined && !response.body.locked) void response.body.cancel().catch(() => undefined);
@@ -168,3 +174,6 @@ export const requestWorkerReadonly = async <K extends WorkerReadonlyOperation>(w
 
 export const browseWorkerDirectory = (workerId: string, input: WorkerDirectoryInput, signal: AbortSignal, admission: WorkerReadonlyAdmission,
   options?: WorkerReadonlyRequestOptions): Promise<WorkerReadonlyResponse<'directory.list'>> => requestWorkerReadonly(workerId, 'directory.list', input, signal, admission, options);
+
+export const discoverWorkerModels = (workerId: string, input: WorkerModelInput, signal: AbortSignal, admission: WorkerReadonlyAdmission,
+  options?: WorkerReadonlyRequestOptions): Promise<WorkerReadonlyResponse<'model.list'>> => requestWorkerReadonly(workerId, 'model.list', input, signal, admission, options);
