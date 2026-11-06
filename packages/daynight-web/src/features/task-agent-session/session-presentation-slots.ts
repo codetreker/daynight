@@ -51,6 +51,8 @@ export type SessionComposerFooterSlot = {
 
 /** Keep the chosen DOM structure stable for a mounted Composer. Do not omit controls. */
 export type SessionComposerPresentation = {
+  /** Bound short-screen menus above the input; the shared Composer retains scrolling and focus ownership. */
+  readonly compactMenus?: boolean;
   /** Add normal-flow, height-bounded content without wrapping the shared textarea. */
   readonly renderAttachments?: (slot: SessionComposerAttachmentSlot) => ReactNode;
   readonly renderFooter?: (slot: SessionComposerFooterSlot) => ReactNode;
