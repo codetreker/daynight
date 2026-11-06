@@ -886,6 +886,13 @@ credentials in the other target. The
 [functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
 owns those isolation constraints.
 
+Chromium installation completes before the serial navigation branch overlaps
+the production acceptance runner. Their hosts, output directories, profiles and
+API fixtures are separate. A branch failure cancels the shared controller;
+both branches finish their owned cleanup before the wrapper settles. The
+[browser job scheduling decision](../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
+owns the concurrency and measurement limits.
+
 Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
 eleven-check combined-authentication journeys and the existing real attachment
 persistence/paired-backup-restoration check. That ownership derives from the

@@ -52,13 +52,38 @@ export const runCi = async (mode: string, cancellation: AbortController,
     return;
   }
   await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium'], { timeoutMs: 600_000 });
-  if (ownsSharedChecks(shard)) {
+  if (!ownsSharedChecks(shard)) {
+    cancellation.signal.throwIfAborted();
+    await operations.acceptance(cancellation, shard === undefined ? undefined : { shard });
+    return;
+  }
+  const navigation = async (): Promise<void> => {
     await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/playwright.config.ts'], { timeoutMs: 180_000 });
     await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-playwright.config.ts'], { timeoutMs: 540_000 });
     await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/bots-viewport-playwright.config.ts'], { timeoutMs: 180_000 });
+  };
+  const failures = new Set<unknown>();
+  const aborted = (): void => { failures.add(cancellation.signal.reason); };
+  const drain = async (operation: () => Promise<void>): Promise<void> => {
+    try {
+      cancellation.signal.throwIfAborted();
+      await operation();
+    } catch (error) {
+      failures.add(error);
+      if (!cancellation.signal.aborted) cancellation.abort(error);
+    }
+  };
+  cancellation.signal.addEventListener('abort', aborted, { once: true });
+  try {
+    await Promise.all([
+      drain(navigation),
+      drain(() => operations.acceptance(cancellation, shard === undefined ? undefined : { shard })),
+    ]);
+  } finally {
+    cancellation.signal.removeEventListener('abort', aborted);
   }
-  cancellation.signal.throwIfAborted();
-  await operations.acceptance(cancellation, shard === undefined ? undefined : { shard });
+  if (failures.size === 1) throw [...failures][0];
+  if (failures.size > 1) throw new AggregateError(failures, 'Web CI verification branches failed.');
 };
 
 const main = async (): Promise<void> => {

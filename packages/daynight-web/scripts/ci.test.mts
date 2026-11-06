@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as yieldImmediate, setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { parseCiArguments, runCi, runCiCommand } from './ci.mts';
@@ -93,7 +93,7 @@ test('invalid CI modes start no command or acceptance', async () => {
   }
 });
 
-test('command failures retain the original error and prevent later verification work', async () => {
+test('command failures retain the original error and prevent later serial commands', async () => {
   for (const { mode, failingCommand } of [{ mode: 'quality', failingCommand: 1 }, { mode: 'quality', failingCommand: 2 }, { mode: 'quality', failingCommand: 3 }, { mode: 'browser', failingCommand: 1 }, { mode: 'browser', failingCommand: 2 }, { mode: 'browser', failingCommand: 3 }, { mode: 'browser', failingCommand: 4 }]) {
     const observed = operations();
     const failure = new Error(`${mode} command failed`);
@@ -104,19 +104,11 @@ test('command failures retain the original error and prevent later verification 
     };
     await assert.rejects(runCi(mode, new AbortController(), observed), (error) => error === failure);
     assert.equal(observed.calls.length, failingCommand);
-    assert.deepEqual(observed.accepted, []);
+    assert.equal(observed.accepted.length, mode === 'browser' && failingCommand > 1 ? 1 : 0);
   }
 });
 
-test('browser acceptance failure remains a failed CI operation', async () => {
-  const observed = operations();
-  const failure = new Error('Browser acceptance failed');
-  observed.acceptance = async () => { throw failure; };
-  await assert.rejects(runCi('browser', new AbortController(), observed), (error) => error === failure);
-  assert.equal(observed.calls.length, 4);
-});
-
-test('cancellation prevents new commands and acceptance after a completed command', async () => {
+test('cancellation prevents new work after a completed serial command', async () => {
   for (const { mode, completedCommand } of [{ mode: 'quality', completedCommand: 1 }, { mode: 'quality', completedCommand: 2 }, { mode: 'browser', completedCommand: 1 }, { mode: 'browser', completedCommand: 2 }, { mode: 'browser', completedCommand: 3 }, { mode: 'browser', completedCommand: 4 }]) {
     const observed = operations();
     const controller = new AbortController();
@@ -128,11 +120,151 @@ test('cancellation prevents new commands and acceptance after a completed comman
     };
     await assert.rejects(runCi(mode, controller, observed), (error) => error === reason);
     assert.equal(observed.calls.length, completedCommand);
-    assert.deepEqual(observed.accepted, []);
+    assert.equal(observed.accepted.length, mode === 'browser' && completedCommand > 2 ? 1 : 0);
     observed.calls.length = 0;
     await assert.rejects(runCi(mode, controller, observed), (error) => error === reason);
     assert.deepEqual(observed.calls, []);
   }
+});
+
+const browserBranches = () => {
+  const controller = new AbortController();
+  const events: string[] = [];
+  const names = ['navigation', 'team', 'bots', 'acceptance'] as const;
+  const gates = Object.fromEntries(names.map(name => [name, Promise.withResolvers<void>()])) as Record<typeof names[number], ReturnType<typeof Promise.withResolvers<void>>>;
+  const began = Object.fromEntries(names.map(name => [name, Promise.withResolvers<void>()])) as Record<typeof names[number], ReturnType<typeof Promise.withResolvers<void>>>;
+  const ended = Object.fromEntries(names.map(name => [name, Promise.withResolvers<void>()])) as Record<typeof names[number], ReturnType<typeof Promise.withResolvers<void>>>;
+  const observed = operations();
+  const branch = async (name: typeof names[number]): Promise<void> => {
+    events.push(`${name}:start`); began[name].resolve();
+    try { await gates[name].promise; }
+    finally { events.push(`${name}:end`); ended[name].resolve(); }
+  };
+  observed.command = async (file, args, options) => {
+    observed.calls.push({ file, args, options });
+    if (args.includes('install')) return '';
+    const config = args.at(-1);
+    const name = config === 'tests/navigation/playwright.config.ts' ? 'navigation'
+      : config === 'tests/navigation/team-playwright.config.ts' ? 'team'
+      : config === 'tests/navigation/bots-viewport-playwright.config.ts' ? 'bots' : undefined;
+    assert.notEqual(name, undefined, `Unexpected browser command ${args.join(' ')}`);
+    await branch(name!); return '';
+  };
+  observed.acceptance = async (cancellation, options) => {
+    observed.accepted.push(cancellation); observed.acceptanceOptions.push(options);
+    await branch('acceptance');
+  };
+  const aborted = Promise.withResolvers<void>();
+  controller.signal.addEventListener('abort', () => aborted.resolve(), { once: true });
+  let settled = false;
+  const pending = runCi('browser', controller, observed, { current: 2, total: 2 });
+  const completion = pending.then(() => ({ error: undefined }), (error: unknown) => ({ error })).finally(() => { settled = true; });
+  return { controller, events, gates, began, ended, observed, aborted, completion, settled: () => settled };
+};
+const startedBrowserBranches = async (run: ReturnType<typeof browserBranches>): Promise<void> => {
+  await Promise.all([run.began.navigation.promise, run.began.acceptance.promise]);
+};
+
+test('browser acceptance overlaps navigation while its three commands remain serial', { timeout: 5_000 }, async () => {
+  const run = browserBranches();
+  await startedBrowserBranches(run);
+  assert.deepEqual(run.events, ['navigation:start', 'acceptance:start']);
+  assert.equal(run.settled(), false);
+  assert.deepEqual(run.observed.acceptanceOptions, [{ shard: { current: 2, total: 2 } }]);
+  assert.deepEqual(run.observed.accepted, [run.controller]);
+  run.gates.navigation.resolve(); await run.began.team.promise;
+  assert.deepEqual(run.events, ['navigation:start', 'acceptance:start', 'navigation:end', 'team:start']);
+  run.gates.team.resolve(); await run.began.bots.promise;
+  assert.ok(run.events.indexOf('team:end') < run.events.indexOf('bots:start'));
+  run.gates.bots.resolve(); await run.ended.bots.promise;
+  await yieldImmediate();
+  assert.equal(run.settled(), false, 'Acceptance still owns live verification work.');
+  run.gates.acceptance.resolve();
+  assert.equal((await run.completion).error, undefined);
+  assert.equal(run.controller.signal.aborted, false);
+  assert.deepEqual(run.observed.calls.slice(1).map(({ options }) => options.timeoutMs), [180_000, 540_000, 180_000]);
+  for (const call of run.observed.calls) assert.equal(call.options.signal, run.controller.signal);
+});
+
+for (const failed of ['navigation', 'team', 'bots'] as const) test(`${failed} failure cancels acceptance and joins its resource cleanup`, { timeout: 5_000 }, async () => {
+  const run = browserBranches();
+  await startedBrowserBranches(run);
+  if (failed !== 'navigation') { run.gates.navigation.resolve(); await run.began.team.promise; }
+  if (failed === 'bots') { run.gates.team.resolve(); await run.began.bots.promise; }
+  const failure = new Error(`${failed} failed`);
+  run.gates[failed].reject(failure);
+  await run.aborted.promise;
+  assert.equal(run.controller.signal.reason, failure);
+  await yieldImmediate();
+  assert.equal(run.settled(), false, 'CI must join acceptance cleanup after cancellation.');
+  run.gates.acceptance.resolve();
+  assert.equal((await run.completion).error, failure);
+  assert.equal(run.events.includes('acceptance:end'), true);
+  if (failed === 'navigation') assert.equal(run.events.includes('team:start'), false);
+  if (failed !== 'bots') assert.equal(run.events.includes('bots:start'), false);
+});
+
+test('acceptance failure cancels and joins the active navigation command', { timeout: 5_000 }, async () => {
+  const run = browserBranches();
+  await startedBrowserBranches(run);
+  const failure = new Error('Browser acceptance failed');
+  run.gates.acceptance.reject(failure);
+  await run.aborted.promise;
+  assert.equal(run.controller.signal.reason, failure);
+  await yieldImmediate();
+  assert.equal(run.settled(), false, 'CI must join navigation process-group cleanup.');
+  run.gates.navigation.resolve();
+  assert.equal((await run.completion).error, failure);
+  assert.equal(run.events.includes('navigation:end'), true);
+  assert.equal(run.events.includes('team:start'), false);
+});
+
+test('external cancellation drains both browser branches and retains the caller reason', { timeout: 5_000 }, async () => {
+  const run = browserBranches();
+  await startedBrowserBranches(run);
+  const reason = new Error('SIGTERM');
+  run.controller.abort(reason);
+  run.gates.navigation.resolve(); await run.ended.navigation.promise;
+  await yieldImmediate();
+  assert.equal(run.settled(), false);
+  run.gates.acceptance.resolve();
+  assert.equal((await run.completion).error, reason);
+  assert.equal(run.events.includes('acceptance:end'), true);
+  assert.equal(run.events.includes('team:start'), false);
+});
+
+test('concurrent branch failures retain original and cleanup errors after both drain', { timeout: 5_000 }, async () => {
+  const run = browserBranches();
+  await startedBrowserBranches(run);
+  const failure = new Error('Navigation failed');
+  const browserFailure = new Error('Browser assertion failed');
+  const cleanupFailure = new Error('Owned resource cleanup failed');
+  const acceptanceFailure = new AggregateError([browserFailure, cleanupFailure], 'Acceptance and cleanup failed.', { cause: browserFailure });
+  run.gates.navigation.reject(failure);
+  await run.aborted.promise;
+  await yieldImmediate();
+  assert.equal(run.settled(), false);
+  run.gates.acceptance.reject(acceptanceFailure);
+  const { error } = await run.completion;
+  assert.ok(error instanceof AggregateError);
+  assert.deepEqual(error.errors, [failure, acceptanceFailure]);
+  assert.equal(error.errors[1], acceptanceFailure);
+  assert.deepEqual(acceptanceFailure.errors, [browserFailure, cleanupFailure]);
+  assert.ok(run.events.includes('navigation:end') && run.events.includes('acceptance:end'));
+});
+
+test('external cancellation and a later cleanup failure both remain observable', { timeout: 5_000 }, async () => {
+  const run = browserBranches();
+  await startedBrowserBranches(run);
+  const reason = new Error('SIGINT'), cleanupFailure = new Error('Navigation cleanup failed');
+  run.controller.abort(reason);
+  run.gates.navigation.reject(cleanupFailure); await run.ended.navigation.promise;
+  await yieldImmediate();
+  assert.equal(run.settled(), false);
+  run.gates.acceptance.resolve();
+  const { error } = await run.completion;
+  assert.ok(error instanceof AggregateError);
+  assert.deepEqual(error.errors, [reason, cleanupFailure]);
 });
 
 const withDirectory = async (run: (directory: string) => Promise<void>): Promise<void> => {
