@@ -24,6 +24,22 @@ func New(tx pgx.Tx) store.SessionDAO { return &DAO{tx: tx} }
 var _ store.SessionDAO = (*DAO)(nil)
 
 func (tx *DAO) LockCredential(ctx context.Context, principal model.Principal, now time.Time) error {
+	if principal.Kind == model.OAuthCredential {
+		credential, err := pginternal.ThreadCredential(ctx, tx.tx, principal, " FOR SHARE")
+		if err != nil {
+			return err
+		}
+		// Check the database clock after acquiring the row lock: a natural expiry
+		// can occur while revocation or another writer holds the row.
+		var valid bool
+		if err := tx.tx.QueryRow(ctx, `SELECT $1::timestamptz > clock_timestamp()`, credential.ExpiresAt).Scan(&valid); err != nil {
+			return pginternal.QueryError("recheck session credential expiry", err)
+		}
+		if !valid {
+			return model.ErrNotFound
+		}
+		return nil
+	}
 	table := "sessions"
 	predicate := "expires_at>$3"
 	if principal.Kind == model.PATCredential {

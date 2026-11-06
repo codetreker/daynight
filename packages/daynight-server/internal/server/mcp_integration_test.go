@@ -14,10 +14,14 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -101,9 +105,59 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
 	if err != nil {
-		t.Fatalf("list production tools: %v", err)
+		t.Fatalf("production tools: %#v, %v", list, err)
 	}
 	assertMCPProductionTools(t, list.Tools)
+	project, err := projectservice.NewProjects(database).Create(t.Context(), principals[0], projectcore.CreateProject{ExpectedUserID: principals[0].UserID, Name: "MCP queries", RepoURL: "host:mcp-queries"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := taskservice.NewTasks(database).Create(t.Context(), principals[0], project.ID, taskcore.CreateTask{Title: "Ready task", Description: "Complete description"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(session *sdk.ClientSession, name string, args map[string]any, wantError bool) map[string]any {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
+		if err != nil || result.IsError != wantError {
+			t.Fatalf("%s: %#v, %v", name, result, err)
+		}
+		encoded, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value map[string]any
+		if err := json.Unmarshal(encoded, &value); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	for _, name := range []string{"task_list", "task_ready"} {
+		for _, view := range []string{"summary", "full"} {
+			value := call(productionClient, name, map[string]any{"projectId": project.ID, "view": view}, false)
+			data := value["data"].(map[string]any)
+			items := data["items"].([]any)
+			if data["projection"] != view || len(items) != 1 || items[0].(map[string]any)["id"] != created.ID || items[0].(map[string]any)["version"] != "1" {
+				t.Fatalf("%s %s: %#v", name, view, value)
+			}
+			if name == "task_ready" && view == "full" && items[0].(map[string]any)["description"] != "Complete description" {
+				t.Fatalf("ready full: %#v", value)
+			}
+		}
+	}
+	for _, view := range []string{"summary", "full"} {
+		value := call(productionClient, "task_graph", map[string]any{"projectId": project.ID, "taskId": created.ID, "view": view}, false)
+		data := value["data"].(map[string]any)
+		if data["projection"] != view || len(data["tasks"].([]any)) != 1 {
+			t.Fatalf("graph %s: %#v", view, value)
+		}
+	}
+	bobQueries := mcpPATClient(t, production.URL, tokens[1])
+	if value := call(bobQueries, "task_list", map[string]any{"projectId": project.ID}, true); value["error"] == nil {
+		t.Fatalf("unauthorized project: %#v", value)
+	}
 
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
@@ -204,11 +258,13 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
 		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
 		"invitation_inspect": true, "invitation_accept": true,
+		"bot_list": true, "bot_show": true, "bot_create": true, "bot_delete": true,
 		"task_thread_read": true, "task_thread_post": true,
 		"task_step_list": true, "task_step_show": true, "task_step_add": true, "task_step_update": true,
 		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,
 		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
+		"task_list": true, "task_ready": true, "task_graph": true,
 	}
 	for _, tool := range tools {
 		if !want[tool.Name] {

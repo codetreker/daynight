@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -22,6 +23,7 @@ import (
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
 	Identity     *identity.Identity
+	OAuth        *oauth.Authenticator
 	Memberships  *project.Memberships
 	Projects     *project.Projects
 	Teams        *team.Teams
@@ -42,6 +44,7 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 	engine := sessioncore.NewEngine(files)
 	return &Application{
 		Identity:     identity.New(database, client, callbackURL),
+		OAuth:        oauth.NewAuthenticator(database),
 		Memberships:  project.NewMemberships(database),
 		Projects:     project.NewProjects(database),
 		Teams:        team.NewTeams(database),

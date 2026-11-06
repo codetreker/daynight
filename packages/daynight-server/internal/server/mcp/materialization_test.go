@@ -68,7 +68,7 @@ func materializationCall(ctx context.Context, endpoint, requestID, tool string) 
 func materializationEntry(t *testing.T, large ToolHandler) *Entry {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	e, err := New(testAuthenticator{}, "https://daynight.test", nil, logger)
+	e, err := New(testAuthenticator{}, "https://daynight.test", nil, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

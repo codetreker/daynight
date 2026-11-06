@@ -6,11 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionarchive"
@@ -25,6 +25,13 @@ type BotDeletionReceipt struct {
 	Stop       *sp.TestStop           `json:"stop"`
 	Result     model.BotCleanupResult `json:"result"`
 }
+
+// DeletionCleanupError reports that the deletion barrier committed, but a
+// subsequent cleanup operation failed. The cause retains its own transaction facts.
+type DeletionCleanupError struct{ Cause error }
+
+func (e *DeletionCleanupError) Error() string { return "bot deletion cleanup: " + e.Cause.Error() }
+func (e *DeletionCleanupError) Unwrap() error { return e.Cause }
 
 type liveSessions interface{ DiscardBotSession(string) }
 
@@ -62,7 +69,7 @@ func deletionJSON(value any) []byte  { data, _ := json.Marshal(value); return da
 func sameDeletionJSON(a, b any) bool { return string(deletionJSON(a)) == string(deletionJSON(b)) }
 
 func (s *Deletions) credential(ctx context.Context, dao store.SessionDAO, p model.Principal) error {
-	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential {
+	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && p.Kind != model.OAuthCredential {
 		return deletionDenied()
 	}
 	if err := dao.LockCredential(ctx, p, s.now()); err != nil {
@@ -84,14 +91,14 @@ func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p mod
 	if err != nil {
 		return bot, err
 	}
-	if bot.OwnerUserID != p.UserID {
-		return bot, deletionDenied()
+	if err := botcore.RequireDeletionOwner(bot, p); err != nil {
+		return bot, err
 	}
 	return bot, nil
 }
 func saveDeletion(ctx context.Context, dao store.BotWriteDAO, bot model.Bot) (model.Bot, error) {
-	if bot.Version == math.MaxInt64 {
-		return model.Bot{}, deletionFault("version_exhausted", "Bot version cannot advance.")
+	if err := botcore.CheckDeletionVersion(bot); err != nil {
+		return model.Bot{}, err
 	}
 	return dao.SaveBotDeletion(ctx, bot.ID, bot.Deletion)
 }
@@ -108,15 +115,13 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		if err != nil {
 			return err
 		}
-		if bot.Deletion != nil {
-			if bot.Deletion.DeletionID != input.DeletionID || bot.Deletion.RequestedVersion != input.Version {
-				return deletionFault("resource_conflict", "Bot deletion belongs to a different request.")
-			}
+		replay, err := botcore.DeletionRequest(bot, input)
+		if err != nil {
+			return err
+		}
+		if replay {
 			out = bot
 			return s.credential(ctx, scope.SessionDAO(), p)
-		}
-		if bot.Version != input.Version {
-			return deletionFault("version_conflict", "Bot version has changed.")
 		}
 		sessions, err = scope.SessionDAO().LockBotSessions(ctx, id)
 		if err != nil {
@@ -125,7 +130,7 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		if err = scope.SessionDAO().RevokeBotSessions(ctx, id); err != nil {
 			return err
 		}
-		bot.Deletion = &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+		bot.Deletion = botcore.NewDeletion(input)
 		out, err = saveDeletion(ctx, scope.BotDAO(), bot)
 		if err != nil {
 			return err
@@ -144,7 +149,11 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		return model.Bot{}, errors.New("Bot deletion commit was not confirmed")
 	}
 	if out.Deletion.WorkerCleanup.State == "completed" && out.Deletion.ServerCleanup.State != "completed" {
-		return s.clean(ctx, p, id, input.DeletionID)
+		cleaned, err := s.clean(ctx, p, id, input.DeletionID)
+		if err != nil {
+			return model.Bot{}, &DeletionCleanupError{Cause: err}
+		}
+		return cleaned, nil
 	}
 	return out, nil
 }

@@ -115,32 +115,3 @@ func (s *Bots) Defaults(ctx context.Context, principal model.Principal, workerID
 	}
 	return result, nil
 }
-func (s *Bots) Delete(ctx context.Context, principal model.Principal, id string, input store.DeleteBot) (model.Bot, error) {
-	if err := model.RequirePrincipal(principal); err != nil {
-		return model.Bot{}, err
-	}
-	id, err := model.CanonicalID(id)
-	if err != nil {
-		return model.Bot{}, err
-	}
-	input.DeletionID, err = model.CanonicalID(input.DeletionID)
-	if err != nil {
-		return model.Bot{}, err
-	}
-	if input.Version < 1 {
-		return model.Bot{}, &model.Fault{Code: "invalid_input", Message: "Bot version must be positive."}
-	}
-	var result model.Bot
-	completion, err := s.store.WriteBot(ctx, func(scope store.BotScope) error {
-		var err error
-		result, err = botcore.Delete(ctx, scope.BotDAO(), principal, id, input)
-		return err
-	})
-	if err != nil {
-		return model.Bot{}, botcore.ResultError("delete", err)
-	}
-	if completion.Outcome != store.TransactionCommitted {
-		return model.Bot{}, botcore.ResultError("delete", fmt.Errorf("transaction did not confirm commit"))
-	}
-	return result, nil
-}

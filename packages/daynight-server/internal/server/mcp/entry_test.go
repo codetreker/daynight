@@ -53,7 +53,7 @@ type entryFixture struct {
 func newEntryFixture(t *testing.T) *entryFixture {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	e, err := New(testAuthenticator{}, "https://daynight.test", []string{"https://client.test"}, logger)
+	e, err := New(testAuthenticator{}, "https://daynight.test", []string{"https://client.test"}, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestMCPHTTPRejectsDuplicateAuthorization(t *testing.T) {
 
 func TestMCPHTTPUnregisteredEntryHasNoTools(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	e, err := New(testAuthenticator{}, "https://daynight.test", nil, logger)
+	e, err := New(testAuthenticator{}, "https://daynight.test", nil, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func TestMCPHTTPCancellationAndShutdown(t *testing.T) {
 }
 
 func TestMCPShutdownReusesDrainAndClosesAllAdmission(t *testing.T) {
-	e, err := New(testAuthenticator{}, "https://daynight.test", nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	e, err := New(testAuthenticator{}, "https://daynight.test", nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
