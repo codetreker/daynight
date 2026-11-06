@@ -279,3 +279,62 @@ it('stops pause observation before reporting a terminal durable-read failure', a
   expect(unsubscribe).toHaveBeenCalledOnce();
   await apply(peer); expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
 });
+
+it.each(['shared isolation', 'already paused', 'independent suspension'] as const)('preserves revision ownership for overlapping unknown hints with %s', async scenario => {
+  const owner = scope(), peer = scope(); await apply(owner); await apply(peer);
+  const db = await database(); await corruptGeneration(db);
+  const old = await owner.beginSync(projectId, signal()); expect(old.unknownAncestors).toBe(true);
+  await owner.revokeProject(old, signal()); const oldHint = negative();
+  await corruptGeneration(db);
+  const current = await owner.beginSync(projectId, signal()); expect(current.unknownAncestors).toBe(true);
+  expect(current.cacheGeneration).not.toBe(old.cacheGeneration);
+  await owner.revokeProject(current, signal()); const currentHint = negative();
+  const revision = peer.getProjectRevision(projectId);
+  const revoke = vi.spyOn(peer, 'revokeProject');
+  let resume: () => void;
+  if (scenario === 'already paused') { resume = pauseAuthRequests(); deliver(1, oldHint); deliver(1, currentHint); }
+  else { deliver(1, oldHint); deliver(1, currentHint); resume = pauseAuthRequests(); }
+  try {
+    expect(peer.isProjectSuspended(projectId)).toBe(true);
+    expect(peer.getProjectRevision(projectId)).toBe(revision + 1);
+    if (scenario === 'independent suspension') { peer.suspendProject(projectId); peer.resumeProject(projectId); }
+  } finally { resume(); }
+  await peer.prepareProjection(signal());
+  expect(peer.isProjectSuspended(projectId)).toBe(false);
+  if (scenario !== 'independent suspension') {
+    expect(peer.getAuthorizedProject(projectId)).toBeNull();
+    expect(peer.canPreviewProject(projectId)).toBe(false);
+  } else {
+    const results = await Promise.all(revoke.mock.results.map(result => result.value));
+    expect(results).toContain(false);
+    await apply(peer); expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
+  }
+});
+
+it('keeps a fresh authorized generation when two older hints join the same later pause', async () => {
+  const owner = scope(), peer = scope(); await apply(owner); await apply(peer);
+  const db = await database(); await corruptGeneration(db);
+  const old = await owner.beginSync(projectId, signal()); await owner.revokeProject(old, signal()); const oldHint = negative();
+  await corruptGeneration(db);
+  const current = await owner.beginSync(projectId, signal()); await owner.revokeProject(current, signal()); const currentHint = negative();
+  const ticket = await peer.beginSync(projectId, signal());
+  const before = peer.getAdmissionRevision(projectId), ready = peer.ready.bind(peer);
+  const pending = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(); let blocking = true, count = 0;
+  vi.spyOn(peer, 'ready').mockImplementation(async readSignal => {
+    if (blocking) { if (++count === 2) entered.resolve(); await pending.promise; }
+    await ready(readSignal);
+  });
+  try {
+    deliver(1, oldHint); deliver(1, currentHint); await entered.promise;
+    blocking = false;
+    const detail = detailFixture(projectId, taskId);
+    await peer.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { query: {}, versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), signal());
+    const fresh = peer.getAuthorizedProject(projectId); expect(fresh).not.toBeNull();
+    expect(peer.getAdmissionRevision(projectId)).toBeGreaterThan(before);
+    const resume = pauseAuthRequests();
+    try { expect(peer.isProjectSuspended(projectId)).toBe(true); } finally { resume(); }
+    pending.resolve(); await peer.prepareProjection(signal());
+    expect(peer.isProjectSuspended(projectId)).toBe(false);
+    expect(peer.getAuthorizedProject(projectId)).toBe(fresh); expect(peer.canPreviewProject(projectId)).toBe(true);
+  } finally { pending.resolve(); }
+});

@@ -77,7 +77,7 @@ export class TaskCacheScope {
   private readonly uncertainHistory = new Map<string, { readonly userFence: string; readonly cacheGeneration: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound: boolean; readonly revision: number; readonly allowedToken: string | null }>();
   private uncertaintyRevision = 0;
   private readonly suspendedProjects = new Set<string>();
-  private readonly pendingUnknownProjects = new Map<string, number>();
+  private readonly pendingUnknownProjects = new Map<string, { count: number; readonly baseRevision: number; readonly isolationRevision: number }>();
   private readonly projectRevisions = new Map<string, number>();
   private readonly pending = new Set<Transaction>();
   // Retired generations also fence results whose transactions committed before access withdrawal.
@@ -191,12 +191,18 @@ export class TaskCacheScope {
       unknownNotified = true;
       provisional = !matchesCurrent && (current === undefined || !(current.generationAncestors ?? []).includes(generation));
       if (provisional) {
-        const count = this.pendingUnknownProjects.get(projectId) ?? 0;
-        this.pendingUnknownProjects.set(projectId, count + 1);
-        if (count === 0) {
+        let pending = this.pendingUnknownProjects.get(projectId);
+        if (pending === undefined) {
           const revision = this.getProjectRevision(projectId);
-          this.projectRevisions.set(projectId, revision + 1);
-          if (ticket.scopeRevision === revision) ticket = { ...ticket, scopeRevision: revision + 1 };
+          pending = { count: 0, baseRevision: revision, isolationRevision: revision + 1 };
+          this.pendingUnknownProjects.set(projectId, pending);
+          this.projectRevisions.set(projectId, pending.isolationRevision);
+        }
+        pending.count++;
+        // Hints captured before this shared isolation may adopt only its own
+        // revision, never an intervening suspension or replacement history.
+        if (ticket.scopeRevision === pending.baseRevision && this.getProjectRevision(projectId) === pending.isolationRevision) {
+          ticket = { ...ticket, scopeRevision: pending.isolationRevision };
         }
       }
       const event = { projectId, accessRevoked: true as const, scopeSuspended: true as const, revokedGeneration: generation, unknownAncestors: true as const };
@@ -206,8 +212,8 @@ export class TaskCacheScope {
     const stopPause = (): void => { const stop = unsubscribePause; unsubscribePause = null; stop?.(); };
     const releaseProvisional = (): boolean => {
       if (!provisional) return true;
-      const count = this.pendingUnknownProjects.get(projectId) ?? 0;
-      if (count > 1) { this.pendingUnknownProjects.set(projectId, count - 1); return false; }
+      const pending = this.pendingUnknownProjects.get(projectId);
+      if (pending !== undefined && pending.count > 1) { pending.count--; return false; }
       this.pendingUnknownProjects.delete(projectId); return true;
     };
     // Exact generations can be withdrawn immediately. An unknown predecessor is
