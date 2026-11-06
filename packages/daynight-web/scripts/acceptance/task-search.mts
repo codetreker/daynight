@@ -19,9 +19,10 @@ if (process.argv.includes('--fingerprint')) { console.log(await fingerprint()); 
 
 const base = process.env.DAYNIGHT_BASE_URL;
 const sourceHash = process.env.DAYNIGHT_SEARCH_SOURCE_HASH;
-assert.ok(base && process.env.DAYNIGHT_SEARCH_RUN_ID && process.env.DAYNIGHT_SEARCH_BINARY_SHA && sourceHash, 'Run via pnpm web:acceptance and the isolated local runner.');
+assert.ok(base && process.env.DAYNIGHT_SEARCH_RUN_ID && process.env.DAYNIGHT_SEARCH_BINARY_SHA && process.env.DAYNIGHT_SEARCH_DB_CONTAINER && process.env.DAYNIGHT_SEARCH_DB_PORT && sourceHash, 'Run via pnpm web:acceptance and the isolated local runner.');
 assert.equal(await fingerprint(), sourceHash, 'Sources changed while the production server was being built.');
-const output = path.join(repository, '.tmp', 'task-search-acceptance');
+const runId = process.env.DAYNIGHT_SEARCH_RUN_ID;
+const output = path.join(repository, '.tmp', 'task-search-acceptance', runId);
 await mkdir(output, { recursive: true });
 const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim();
 const binarySha256 = process.env.DAYNIGHT_SEARCH_BINARY_SHA;
@@ -50,6 +51,19 @@ const description = await create('Description-only match', `${'long markdown tex
 const longTitle = await create(`${'long-title-'.repeat(20)}quartz-ending`);
 const historical = await create('Quartz historical completed', '', { assignedTo: user.id });
 await request(`${endpoint}/${historical.id}/status`, 'PUT', { version: historical.version, status: 'done' });
+// Backdate this disposable fixture before the first sync or search, then rotate
+// its history epoch just as a restored history requires.
+const changed = execFileSync('docker', ['exec', '-i', process.env.DAYNIGHT_SEARCH_DB_CONTAINER, 'psql', '-X', '-q', '-t', '-A', '-p', process.env.DAYNIGHT_SEARCH_DB_PORT, '-U', 'daynight', '-d', 'daynight', '-v', 'ON_ERROR_STOP=1', '-v', `task_id=${historical.id}`, '-v', `project_id=${project.id}`], {
+  input: `BEGIN;
+WITH changed AS (UPDATE tasks SET created_at=statement_timestamp()-interval '31 days', updated_at=statement_timestamp()-interval '30 days', completed_at=statement_timestamp()-interval '30 days' WHERE id=:'task_id'::uuid AND project_id=:'project_id'::uuid AND status='done' AND started_at IS NULL RETURNING id) SELECT count(*) FROM changed;
+UPDATE projects SET task_cache_epoch=gen_random_uuid() WHERE id=:'project_id'::uuid RETURNING id;
+COMMIT;`, encoding: 'utf8', timeout: 15_000,
+}).trim().split('\n');
+assert.deepEqual(changed, ['1', project.id], 'Backdate exactly the intended task and rotate the project epoch.');
+const aged = await request(`${endpoint}/${historical.id}`);
+assert.equal(aged.status, 'done');
+assert.ok(Date.parse(aged.completedAt) < Date.now() - 8 * 24 * 60 * 60 * 1000, 'Completed task must predate the normal recent window.');
+assert.ok(Date.parse(aged.createdAt) <= Date.parse(aged.completedAt) && Date.parse(aged.completedAt) <= Date.parse(aged.updatedAt));
 for (let index = 0; index < 17; index++) await create(`Quartz item ${String(index).padStart(2, '0')}`);
 const search = (query: string, cursor: string | null = null) => request(`${endpoint}/search`, 'POST', { query, limit: 15, cursor });
 const first = await search('quartz');
@@ -171,9 +185,9 @@ try {
   done('search and direct full detail while task sync continuously fails');
 
   assert.equal(await fingerprint(), sourceHash, 'Sources changed during acceptance.');
-  await writeFile(path.join(output, 'result.json'), JSON.stringify({ result: 'passed', sourceRevision, sourceHash, binarySha256, entryAsset: script, entryAssetSha256: assetHash, browser: browser.version(), checks }, null, 2) + '\n');
+  await writeFile(path.join(output, 'browser.json'), JSON.stringify({ result: 'passed', runId, sourceRevision, sourceHash, binarySha256, entryAsset: script, entryAssetSha256: assetHash, browser: browser.version(), checks }, null, 2) + '\n');
 } catch (error) {
   await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true }).catch(() => undefined);
-  await writeFile(path.join(output, 'result.json'), JSON.stringify({ result: 'failed', sourceRevision, sourceHash, binarySha256, entryAsset: script, entryAssetSha256: assetHash, browser: browser.version(), checks, error: String(error) }, null, 2) + '\n');
+  await writeFile(path.join(output, 'browser.json'), JSON.stringify({ result: 'failed', runId, sourceRevision, sourceHash, binarySha256, entryAsset: script, entryAssetSha256: assetHash, browser: browser.version(), checks, error: String(error) }, null, 2) + '\n');
   throw error;
 } finally { await context.close(); await browser.close(); }

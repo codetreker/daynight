@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reserveLoopbackPort, startAuthFixture, type AuthFixture } from '../../../daynight-server/scripts/auth-fixture.mts';
@@ -10,6 +10,8 @@ const serverRoot = path.join(repository, 'packages/daynight-server');
 const runId = randomUUID();
 const directory = path.join(repository, '.tmp', `task-search-runtime-${runId}`);
 const container = `daynight-search-${runId}`;
+const output = path.join(repository, '.tmp', 'task-search-acceptance', runId);
+const resultFile = path.join(output, 'result.json');
 const cancellation = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => cancellation.abort(new Error(`Interrupted by ${signal}`)));
 const command = (program: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number; quiet?: boolean; signal?: AbortSignal } = {}) => new Promise<void>((resolve, reject) => {
@@ -23,6 +25,10 @@ let server: ChildProcess | undefined;
 let serverClosed: Promise<void> | undefined;
 let databaseStarted = false;
 let originalFailure: unknown;
+let browserResult: Record<string, unknown> = {};
+await mkdir(output, { recursive: true });
+await writeFile(resultFile, JSON.stringify({ runId, result: 'running', sourceHash: process.env.DAYNIGHT_SEARCH_SOURCE_HASH }) + '\n');
+console.log(`Acceptance run ${runId}: ${resultFile}`);
 try {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await command('pnpm', ['web:build'], { signal: cancellation.signal });
@@ -60,7 +66,9 @@ try {
     await delay();
   }
   if (!ready) throw new Error('Server did not become ready.');
-  await command('node', ['packages/daynight-web/scripts/acceptance/task-search.mts'], { env: { ...process.env, DAYNIGHT_BASE_URL: origin, DAYNIGHT_SEARCH_BINARY_SHA: binaryHash, DAYNIGHT_SEARCH_RUN_ID: runId }, timeout: 300_000, signal: cancellation.signal });
+  await command('node', ['packages/daynight-web/scripts/acceptance/task-search.mts'], { env: { ...process.env, DAYNIGHT_BASE_URL: origin, DAYNIGHT_SEARCH_BINARY_SHA: binaryHash, DAYNIGHT_SEARCH_RUN_ID: runId, DAYNIGHT_SEARCH_DB_CONTAINER: container, DAYNIGHT_SEARCH_DB_PORT: String(databasePort) }, timeout: 300_000, signal: cancellation.signal });
+  browserResult = JSON.parse(await readFile(path.join(output, 'browser.json'), 'utf8')) as Record<string, unknown>;
+  if (browserResult.result !== 'passed' || browserResult.runId !== runId) throw new Error('Browser acceptance receipt is invalid.');
 } catch (error) { originalFailure = error; throw error; } finally {
   const failures: unknown[] = [];
   if (server !== undefined && server.exitCode === null && server.signalCode === null) {
@@ -77,5 +85,11 @@ try {
     } catch (error) { failures.push(error); }
   }
   try { await rm(directory, { recursive: true, force: true }); } catch (error) { failures.push(error); }
+  if (Object.keys(browserResult).length === 0) {
+    try { browserResult = JSON.parse(await readFile(path.join(output, 'browser.json'), 'utf8')) as Record<string, unknown>; } catch { /* Earlier failures have no browser receipt. */ }
+  }
+  const result = originalFailure === undefined && failures.length === 0 ? 'passed' : 'failed';
+  await writeFile(resultFile, JSON.stringify({ ...browserResult, runId, sourceHash: process.env.DAYNIGHT_SEARCH_SOURCE_HASH, result,
+    ...(originalFailure === undefined ? {} : { error: String(originalFailure) }), cleanupErrors: failures.map(String) }, null, 2) + '\n');
   if (failures.length > 0) throw new AggregateError(originalFailure === undefined ? failures : [originalFailure, ...failures], 'Acceptance execution or cleanup failed.');
 }
