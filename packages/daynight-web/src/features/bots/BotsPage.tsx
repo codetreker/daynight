@@ -11,7 +11,7 @@ import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotDeletionStatus } from './BotDeletionStatus';
 import { getBotDeletionCoordinator } from './deletion-coordinator';
 import { BotDetailsPanel } from './BotDetailsPanel';
-import { BotStatus } from './BotStatus';
+import { BotConversationHeader, type BotConversationTarget } from './BotConversationHeader';
 import { useBotMessages } from './messages';
 import { useBotRead } from './useBotRead';
 import { pendingBotCreation, rememberBotCreation } from './pending-creation';
@@ -73,6 +73,7 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
   const worker = (id: string) => defaults.value?.workers.find(item => item.workerId === id);
   const showDetails = detailsOpen && botId !== null && !blocked(botId) && !scope.isInvalidated && !denied && !deleted;
   useEffect(() => { if (botId === null || denied || deleted || scope.isInvalidated) setDetailsOpen(false); }, [botId, denied, deleted, scope]);
+  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detail.stale, name: bot?.name ?? (selectedDeletion?.name || m.loading), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => setDetailsOpen(value => !value), follow };
   const refreshed = () => { list.refresh(); defaults.refresh(); detail.refresh(); };
   return <section className={`bots-page${botId ? ' bot-selected' : ''}`} aria-label={m.title}>
     <aside className="bot-list-panel" aria-label={m.title}>
@@ -88,14 +89,14 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
       <div className="bot-deletions">{deletions.filter(record => record.id !== botId).map(record => <BotDeletionStatus key={record.id} record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} />)}</div>
     </aside>
     <div className="bot-conversation" ref={conversation} tabIndex={-1}>
-      <header className="bot-conversation-heading">{botId !== null ? <><a className="button quiet" href="/bots" onClick={follow}>{m.closeChat}</a><div className="bot-conversation-title"><h2><button ref={detailsOpener} type="button" className="bot-details-toggle" disabled={!bot} aria-controls={showDetails ? detailsId : undefined} aria-expanded={showDetails} onClick={() => setDetailsOpen(value => !value)}><span className="bot-details-name">{bot?.name ?? (selectedDeletion?.name || m.loading)}</span><span className="bot-details-marker" aria-hidden="true">⌄</span></button></h2>{bot ? <BotStatus bot={bot} worker={worker(bot.workerId)} stale={defaults.stale} /> : null}</div></> : <h2>{m.select}</h2>}</header>
+      {binding === null ? <header className="bot-conversation-heading">{botId !== null ? <BotConversationHeader target={headerTarget} /> : <h2>{m.select}</h2>}</header> : null}
       <div className="bot-conversation-body"><div className="bot-conversation-content">
       {botId !== null && detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
       {botId !== null && deletions.filter(record => record.id === botId).map(record => <div className="bot-selected-deletion" key={record.id}><BotDeletionStatus record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} /></div>)}
       {bot && bot.sessionId === null ? <p className="bot-empty" role="status">{bot.startupResult.code ? m.reason(bot.startupResult.code) : m[bot.startupResult.state]}</p> : null}
-      <div className="bot-conversation-session" hidden={binding === null}><BotSessionHost cache={cache} binding={binding} active={binding !== null} fullscreenBoundary={conversation} /></div>
+      <div className="bot-conversation-session" hidden={binding === null}><BotSessionHost cache={cache} binding={binding} active={binding !== null} fullscreenBoundary={conversation} presentation={{ variant: 'assistant', renderHeader: session => <BotConversationHeader target={headerTarget} session={session} /> }} /></div>
       </div>
-      {showDetails ? <BotDetailsPanel id={detailsId} bot={bot} worker={bot ? worker(bot.workerId) : undefined} stale={defaults.stale || detail.stale} opener={detailsOpener} onClose={() => setDetailsOpen(false)} /> : null}
+      {showDetails ? <BotDetailsPanel id={headerTarget.detailsId} bot={headerTarget.bot} worker={headerTarget.worker} stale={headerTarget.stale} opener={headerTarget.detailsOpener} onClose={() => setDetailsOpen(false)} /> : null}
       </div>
     </div>
     {deleteTarget && !scope.isInvalidated && !targetUnavailable ? <BotDeleteDialog bot={deleteTarget.bot} opener={deleteTarget.opener} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (!readEnabled || authRequestsPaused() || scope.isInvalidated) return; const target = deleteTarget.bot; setDeleteTarget(null); void coordinator.begin(target); }} /> : null}

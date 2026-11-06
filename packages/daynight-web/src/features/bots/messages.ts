@@ -1,6 +1,7 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 
 const en = {
+  conversationActions: 'More actions', backToList: 'Back to assistants', connected: 'Connected',
   yourAssistants: 'Your assistants', workerUnknown: 'Worker status unknown', workerStates: { offline: 'Worker offline', stale: 'Worker report stale', unsupported: 'Hosting unsupported', unavailable: 'Worker unavailable' },
   delete: 'Delete assistant', actionsFor: 'More actions for {name}', deleteTitle: 'Delete {name}?', deleteDescription: 'This removes the assistant and its Daynight conversation history. Tasks it created are kept.', deletionStatus: 'Assistant deletion', deleting: 'Requesting deletion…', deletionUnknown: 'Deletion result unknown', deletionPending: 'Waiting for cleanup', deletionFailed: 'Cleanup failed', deletionCompleted: 'Deletion completed', deletionRejected: 'Deletion was not accepted. Review the current assistant before deleting again.', deletionUnavailable: 'Assistant unavailable. Cleanup completion is unconfirmed.', checkDeletion: 'Check deletion', retryDeletion: 'Retry original deletion', workerCleanup: 'Worker cleanup', serverCleanup: 'Server cleanup', cleanupPending: 'Pending', cleanupFailed: 'Failed', cleanupCompleted: 'Completed',
 
@@ -9,6 +10,7 @@ const en = {
   refresh: 'Refresh', retry: 'Retry', loading: 'Loading…', more: 'Load more', search: 'Search assistants', empty: 'No assistants yet', noMatches: 'No matching assistants', select: 'Choose an assistant to open its conversation.', closeChat: 'Close conversation', listError: 'Could not load assistants.', detailError: 'Could not load this assistant.', pending: 'Starting', ready: 'Started', failed: 'Startup failed', offline: 'Worker offline', unsupported: 'This Worker does not support assistant hosting.', stale: 'The Worker capability report is out of date.', unavailable: 'Assistant hosting is unavailable.', noWorker: 'No available Worker. Connect a Worker that supports assistant hosting.', deleted: 'This assistant has been deleted.', end: 'All assistants are shown.', requestId: 'Request ID', automatic: 'Automatic', defaultAgent: 'Worker default', providerUnavailable: 'This Agent is unavailable on the selected Worker.', host: 'Hosted by', connectionUnknown: 'Connection unconfirmed',
 };
 const zh: typeof en = {
+  conversationActions: '更多操作', backToList: '返回助手列表', connected: '已连接',
   yourAssistants: '你的助手', workerUnknown: 'Worker 状态未知', workerStates: { offline: 'Worker 离线', stale: 'Worker 信息过期', unsupported: '不支持助手托管', unavailable: 'Worker 不可用' },
   delete: '删除助手', actionsFor: '{name}的更多操作', deleteTitle: '删除“{name}”？', deleteDescription: '将删除助手及其 Daynight 对话历史。它创建的任务会保留。', deletionStatus: '助手删除状态', deleting: '正在请求删除…', deletionUnknown: '删除结果未知', deletionPending: '等待清理', deletionFailed: '清理失败', deletionCompleted: '删除完成', deletionRejected: '删除未受理。请查看助手当前状态后重新确认删除。', deletionUnavailable: '助手不可访问，尚未确认清理完成。', checkDeletion: '核对删除结果', retryDeletion: '重试原删除请求', workerCleanup: 'Worker 清理', serverCleanup: '服务端清理', cleanupPending: '待处理', cleanupFailed: '失败', cleanupCompleted: '完成',
 
