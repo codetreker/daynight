@@ -81,6 +81,11 @@ Prerequisite and active/done dependent refusals include ordinary/external edges.
 Derived readiness can change without changing the dependent's own version.
 Graph/detail/list readback, complete descriptions versus list omission, PRs,
 timing, classifications and raw attachment bytes remain separate observations.
+The installed project/task acceptance also checks the complete actionable
+diagnostic for the rejected `proposed` status, along with exit code, empty
+stdout and no HTTP requests. It uses its own configuration and state root. The
+Web transition journey retains its real status operations without a separate
+invalid-argument CLI launch on each target.
 
 Only registered project/task status PUTs with exact request counts and declared
 fixture-file mutations are admitted. CLI metadata changes invalidate reviewed
@@ -136,6 +141,12 @@ retains original-byte, rendering, reader-input and K1 storage boundaries; shared
 artifacts do not collapse those separate proofs into this lifecycle journey.
 
 ## Alternatives
+
+**Keep the invalid-status probe in both Web targets.** It checks a CLI parser
+diagnostic without using the service or browser. The installed project/task
+fixture exercises the installed launcher and no-I/O refusal against the same
+CLI entry, so its complete diagnostic assertion retains that proof without two
+extra Web launches through the Node entry.
 
 **Create another combined acceptance runner.** It would duplicate service,
 database, installation and cleanup ownership. The existing Go and Web fixtures

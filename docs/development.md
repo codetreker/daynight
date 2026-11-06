@@ -1042,6 +1042,9 @@ competition and genuine historical-SQL startup/restart proof. These extend the
 existing service and browser fixtures, with their normal source, fault and cleanup
 ownership. Native project/task HTTP fixtures remain controlled client evidence;
 actual Go/PostgreSQL and native/container browser receipts remain separate.
+Installed project/task acceptance checks the complete invalid-status diagnostic,
+exit code, empty stdout and absence of HTTP requests using a private state root;
+the Web transition journey covers actual status operations on both targets.
 Installed skill checks validate the six shipped resources, metadata, contained
 references and bounded cross-resource instruction contracts on actual package and
 target copies. Simulated launchers and instruction artifacts do not establish

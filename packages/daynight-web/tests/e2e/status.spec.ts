@@ -332,8 +332,6 @@ test('task-status-transitions', { annotation: { type: 'scenario', description: '
     expect(Object.keys(graph.summary).sort()).toEqual(['blocked', 'done', 'inProgress', 'ready', 'todo', 'total']);
     expect(graph.summary.total).toBe(graph.summary.todo + graph.summary.inProgress + graph.summary.done);
     expect(graph.summary.todo).toBe(graph.summary.ready + graph.summary.blocked);
-    const rejected = await lifecycle.run(['task', 'set-status', cases[0]!.task.id, 'proposed', '--project', project.id]);
-    expect(rejected.exitCode).toBe(2); expect(rejected.stderr).toContain('Unknown status "proposed". Expected todo or in_progress or done.');
     await screenshot(page, info, 'status-nine-transitions');
   } finally { await lifecycle.attach(); }
 });

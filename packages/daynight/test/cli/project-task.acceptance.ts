@@ -86,7 +86,7 @@ const exercise = async (): Promise<void> => {
   const repository = path.join(receipt.root, "repository 中文");
   const environment: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(environment)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|NODE_OPTIONS$|DAYNIGHT_)/i.test(key)) delete environment[key];
-  Object.assign(environment, { HOME: home, USERPROFILE: home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(receipt.root, "git-global"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
+  Object.assign(environment, { HOME: home, USERPROFILE: home, DN_CONFIG_DIR: state, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(receipt.root, "git-global"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
   let projects = [project(unrelatedId, "https://other.example/Unrelated/Repo"), project()];
   let properties: Task["properties"] = {};
   const baseVersion = 9_007_199_254_740_993n;
@@ -374,7 +374,9 @@ const exercise = async (): Promise<void> => {
     scenarios.push("installed-automatic-permission-true-false-exact-version-filtered-list-and-bounded-ready");
     const beforeRemoved = requests.length;
     await invoke(["task", "list", "--status", "proposed", "--json", ...explicit], outside, 2, true);
-    await invoke(["task", "set-status", taskId, "proposed", ...explicit], outside, 2, true);
+    const rejectedStatus = await invoke(["task", "set-status", taskId, "proposed", ...explicit], outside, 2, true);
+    expect(requests).toHaveLength(beforeRemoved);
+    expect(rejectedStatus.stderr).toContain('Unknown status "proposed". Expected todo or in_progress or done.');
     for (const action of ["approve", "unapprove", "claim", "complete"]) await invoke(["task", action, taskId, ...explicit], outside, 2, true);
     expect(requests).toHaveLength(beforeRemoved);
     scenarios.push("installed-removed-status-and-actions-rejected-before-io");
