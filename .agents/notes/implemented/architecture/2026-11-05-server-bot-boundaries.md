@@ -20,13 +20,9 @@ transaction, preserving Bot-before-Session locking. Worker freshness and path
 rules remain in `core/worker`.
 
 The Session-integrated deletion path uses `core/bot` to check the original
-request, owner and version, construct the initial deletion state, validate
-cleanup results, and decide receipt replay and Worker and Server cleanup
-transitions. The service verifies Session stop proofs and coordinates the
-transaction, file deletion and post-commit live cleanup. It revokes Session
-admission in the same transaction before persisting the deletion state; there is
-no separate unbound-Bot deletion path. Completed receipt digests use the exact
-JSON bytes of the complete receipt, including its stop proof.
+request, owner and version and to construct the initial deletion state. It
+revokes Session admission in the same transaction before persisting that state;
+there is no separate unbound-Bot deletion path.
 
 The [definition](../../archived/architecture/2026-11-04-bot-definition-storage.md),
 [defaults](../../archived/architecture/2026-11-04-bot-default-resolution.md) and
@@ -44,15 +40,10 @@ live cache and archive cleanup span modules and must move together with the
 Session engine. Retaining the existing integration avoids a second partial
 implementation while exposing its Bot data operations in the shared transaction.
 
-**Keep cleanup state rules in the service.** This leaves the Bot state machine
-split across layers and makes replay and non-downgrade guarantees harder to
-maintain as a single domain rule.
-
 ## Consequences
 
 Identical creation retries return frozen definitions before Worker availability
 is evaluated. Preferences and binding updates remain atomic with their caller's
-transaction; completion and cleanup errors retain their existing priority.
-The deletion workflow is coordinated by `service/bot` with the shared Session
-engine and transaction-bound DAOs. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md)
-owns the Bot SQL implementation.
+transaction; completion and cleanup errors retain their existing priority. The bound deletion workflow is coordinated by `service/bot` with the shared
+Session engine and transaction-bound DAOs. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns the Bot
+SQL implementation.

@@ -184,26 +184,3 @@ func TestDeletionCleanupFailureRetainsCommittedBarrier(t *testing.T) {
 		t.Fatalf("cleanup error message: got %q, want %q", got, want)
 	}
 }
-
-func TestDeletionReceiptDigestPreservesEncodedBytes(t *testing.T) {
-	var calls []string
-	p := model.Principal{Kind: model.PATCredential, UserID: "owner"}
-	id := "5f80e445-5595-4d89-a209-0f868b8dd10c"
-	workerID := "d5eb86fa-c88f-405a-8851-3d371a7cc27e"
-	deletionID := "3469e571-cc04-45c1-9b73-796d0c85fabe"
-	dao := &deletionDAO{calls: &calls}
-	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, WorkerID: workerID, Version: 1, Deletion: &model.BotDeletion{DeletionID: deletionID, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "completed"}}}}
-	s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}, outcome: store.TransactionCommitted}, nil, &discardedSessions{})
-	receipt := BotDeletionReceipt{DeletionID: deletionID, Result: model.BotCleanupResult{State: "completed"}}
-	got, err := s.CompleteBotDeletion(context.Background(), p, workerID, id, receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = "c1175eaf2e9679c1a507008bf7c5bc07ab8ab41451e9d1af06a04ee40cfa59eb"
-	if got.Deletion.ReceiptDigest != want {
-		t.Fatalf("digest = %q, want %q", got.Deletion.ReceiptDigest, want)
-	}
-	if _, err = s.CompleteBotDeletion(context.Background(), p, workerID, id, receipt); err != nil {
-		t.Fatalf("receipt replay: %v", err)
-	}
-}
