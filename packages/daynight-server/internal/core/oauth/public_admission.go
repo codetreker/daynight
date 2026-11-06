@@ -20,23 +20,30 @@ type PublicAdmission struct {
 }
 
 // Take admits registration and authorization start before allocations or
-// metadata fetches. clientID must be empty: unvalidated client identifiers
-// must never allocate persistent buckets. Token endpoints use TakeToken.
-// False means rate limited; storage errors are separate from that decision.
+// metadata fetches. Token admission through Take is valid only when clientID
+// is empty or has been independently validated without metadata network access
+// or secret lookup; it
+// charges global, source and optional validated-client buckets in one
+// transaction. Token flows that need metadata access or a secret lookup to validate a client
+// must use TakeToken before either operation, then TokenPermit.TakeClient. Unverified
+// client identifiers must never be passed here. False means rate limited;
+// storage errors are separate from that decision.
 func (a PublicAdmission) Take(ctx context.Context, kind, source, clientID string) (bool, error) {
-	if clientID != "" {
-		return false, fmt.Errorf("OAuth admission requires an empty client identifier")
-	}
 	var global, perSource int
 	switch kind {
 	case "register":
 		global, perSource = 100, 10
 	case "start":
 		global, perSource = 300, 30
+	case "token":
+		global, perSource = 1200, 120
 	default:
 		return false, fmt.Errorf("invalid OAuth admission kind")
 	}
-	return a.takeSource(ctx, kind, source, global, perSource)
+	if kind != "token" && clientID != "" {
+		return false, fmt.Errorf("OAuth admission requires an empty client identifier")
+	}
+	return a.takeSource(ctx, kind, source, global, perSource, clientID)
 }
 
 // TokenPermit binds the validated-client budget to one request. Copies share
@@ -49,11 +56,12 @@ type tokenPermitState struct {
 	admission PublicAdmission
 }
 
-// TakeToken consumes the global and source token buckets before secret lookup.
+// TakeToken consumes the global and source token buckets before metadata
+// network access or secret lookup.
 // A permit is returned only after successful admission. If the caller cannot
 // validate a client, it discards the permit without persisting that client ID.
 func (a PublicAdmission) TakeToken(ctx context.Context, source string) (*TokenPermit, bool, error) {
-	allowed, err := a.takeSource(ctx, "token", source, 1200, 120)
+	allowed, err := a.takeSource(ctx, "token", source, 1200, 120, "")
 	if err != nil || !allowed {
 		return nil, allowed, err
 	}
@@ -82,12 +90,16 @@ func (p *TokenPermit) TakeClient(ctx context.Context, validatedClientID string) 
 	return s.admission.take(ctx, []model.DeviceRateBucket{{Hash: secret.Hash("oauth:token:client:" + validatedClientID), Limit: 240}})
 }
 
-func (a PublicAdmission) takeSource(ctx context.Context, kind, source string, global, perSource int) (bool, error) {
+func (a PublicAdmission) takeSource(ctx context.Context, kind, source string, global, perSource int, clientID string) (bool, error) {
 	if source == "" {
 		return false, fmt.Errorf("missing OAuth admission source")
 	}
 	prefix := "oauth:" + kind + ":"
-	return a.take(ctx, []model.DeviceRateBucket{{Hash: secret.Hash(prefix + "global"), Limit: global}, {Hash: secret.Hash(prefix + "source:" + source), Limit: perSource}})
+	buckets := []model.DeviceRateBucket{{Hash: secret.Hash(prefix + "global"), Limit: global}, {Hash: secret.Hash(prefix + "source:" + source), Limit: perSource}}
+	if clientID != "" {
+		buckets = append(buckets, model.DeviceRateBucket{Hash: secret.Hash(prefix + "client:" + clientID), Limit: 240})
+	}
+	return a.take(ctx, buckets)
 }
 func (a PublicAdmission) take(ctx context.Context, buckets []model.DeviceRateBucket) (bool, error) {
 	if a.Writer == nil {

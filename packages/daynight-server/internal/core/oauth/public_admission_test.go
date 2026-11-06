@@ -117,9 +117,6 @@ func TestTokenAdmissionTwoPhases(t *testing.T) {
 	if ok, err := permit.TakeClient(ctx, "verified"); ok || err == nil || d.counts[client] != 1 {
 		t.Fatalf("duplicate: %v %v", ok, err)
 	}
-	if _, err := a.Take(ctx, "token", "source", "verified"); err == nil {
-		t.Fatal("direct token admission accepted")
-	}
 	if _, err := a.Take(ctx, "start", "source", "unverified"); err == nil {
 		t.Fatal("unverified client allocated")
 	}
@@ -219,5 +216,33 @@ func TestTokenClientLimitAndUnverifiedRequests(t *testing.T) {
 	before := len(d.counts)
 	if ok, err := p.TakeClient(ctx, ""); ok || err == nil || len(d.counts) != before {
 		t.Fatal("unverified client persisted")
+	}
+}
+
+func TestTokenSingleTransactionAdmission(t *testing.T) {
+	ctx := context.Background()
+	d := &rateDAO{counts: map[string]int{}}
+	w := &rateWriter{dao: d}
+	a := PublicAdmission{Writer: w}
+	if ok, err := a.Take(ctx, "token", "source", "independently-validated"); !ok || err != nil {
+		t.Fatalf("validated: %v %v", ok, err)
+	}
+	global := string(secret.Hash("oauth:token:global"))
+	source := string(secret.Hash("oauth:token:source:source"))
+	client := string(secret.Hash("oauth:token:client:independently-validated"))
+	if w.commits != 1 || d.counts[global] != 1 || d.counts[source] != 1 || d.counts[client] != 1 {
+		t.Fatalf("buckets=%v commits=%d", d.counts, w.commits)
+	}
+	if ok, err := a.Take(ctx, "token", "source", ""); !ok || err != nil {
+		t.Fatalf("without client: %v %v", ok, err)
+	}
+	if w.commits != 2 || d.counts[global] != 2 || d.counts[source] != 2 || d.counts[client] != 1 {
+		t.Fatalf("buckets=%v commits=%d", d.counts, w.commits)
+	}
+	// An exhausted source must prevent creation of the validated client bucket.
+	d.counts[source] = 120
+	before := len(d.counts)
+	if ok, err := a.Take(ctx, "token", "source", "another-validated"); ok || err != nil || len(d.counts) != before {
+		t.Fatalf("source limit: %v %v buckets=%v", ok, err, d.counts)
 	}
 }
