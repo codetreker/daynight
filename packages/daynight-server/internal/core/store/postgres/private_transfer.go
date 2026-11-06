@@ -2,13 +2,16 @@ package postgres
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -245,6 +248,44 @@ func (d *privateTransferDAO) ConsumeReservation(ctx context.Context, id string, 
 		return model.PrivateTransfer{}, errors.New("private transfer outstanding ledger underflow")
 	}
 	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET outstanding_bytes=outstanding_bytes-$2,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 RETURNING `+transferColumns, id, amount))
+}
+
+func scanUploadChunk(row pgx.Row) (model.UploadChunk, error) {
+	var c model.UploadChunk
+	err := row.Scan(&c.TransferID, &c.ChunkID, &c.ObjectID, &c.Offset, &c.Size, &c.SHA256)
+	if err != nil {
+		return model.UploadChunk{}, pg.QueryError("read upload chunk receipt", err)
+	}
+	return c, nil
+}
+
+const uploadChunkColumns = `transfer_id::text,chunk_id::text,object_id::text,byte_offset,byte_size,sha256`
+
+func (d *privateTransferDAO) UploadChunk(ctx context.Context, transferID, chunkID string) (model.UploadChunk, error) {
+	return scanUploadChunk(d.tx.QueryRow(ctx, `SELECT `+uploadChunkColumns+` FROM private_upload_chunks WHERE transfer_id=$1 AND chunk_id=$2`, transferID, chunkID))
+}
+
+func (d *privateTransferDAO) UploadChunkAt(ctx context.Context, transferID string, offset int64) (model.UploadChunk, error) {
+	return scanUploadChunk(d.tx.QueryRow(ctx, `SELECT `+uploadChunkColumns+` FROM private_upload_chunks WHERE transfer_id=$1 AND byte_offset=$2`, transferID, offset))
+}
+
+func (d *privateTransferDAO) InsertUploadChunk(ctx context.Context, c model.UploadChunk) error {
+	canonical := func(value string) bool {
+		id, err := uuid.Parse(value)
+		return err == nil && id != uuid.Nil && id.String() == value
+	}
+	_, hashErr := hex.DecodeString(c.SHA256)
+	if !canonical(c.TransferID) || !canonical(c.ChunkID) || !canonical(c.ObjectID) || c.Offset < 0 || c.Size < 1 || c.Size > 524288 || c.Offset > math.MaxInt64-c.Size || len(c.SHA256) != 64 || strings.ToLower(c.SHA256) != c.SHA256 || hashErr != nil {
+		return &model.Fault{Code: "invalid_input", Message: "Invalid upload chunk receipt."}
+	}
+	result, err := d.tx.Exec(ctx, `INSERT INTO private_upload_chunks (transfer_id,chunk_id,object_id,byte_offset,byte_size,sha256) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, c.TransferID, c.ChunkID, c.ObjectID, c.Offset, c.Size, c.SHA256)
+	if err != nil {
+		return pg.QueryError("insert upload chunk receipt", err)
+	}
+	if result.RowsAffected() != 1 {
+		return &model.Fault{Code: "transfer_conflict", Message: "Upload chunk receipt conflicts with an existing receipt."}
+	}
+	return nil
 }
 
 func (d *privateTransferDAO) Update(ctx context.Context, t model.PrivateTransfer, expected int64) (model.PrivateTransfer, error) {

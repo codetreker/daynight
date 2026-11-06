@@ -14,7 +14,22 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 )
+
+func TestUploadUnavailableWithoutPrivateStorage(t *testing.T) {
+	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	if app.PrivateContent != nil || app.Uploads == nil {
+		t.Fatal("unexpected private content composition")
+	}
+	_, err := app.Uploads.Execute(context.Background(), mcptransfer.Actor{}, "", "", mcptransfer.UploadInput{Action: "inline"})
+	if err == nil || !strings.Contains(err.Error(), "upload service unavailable") {
+		t.Fatalf("upload without private storage: %v", err)
+	}
+	if err := app.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func appTestConfig(t *testing.T) config.Config {
 	t.Helper()

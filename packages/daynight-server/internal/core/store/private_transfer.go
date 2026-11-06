@@ -41,6 +41,12 @@ type PrivateTransferDAO interface {
 	// ConsumeReservation must share the receipt transaction after file publication.
 	// It reduces only unmaterialized bytes; all reserved bytes remain charged until cleanup.
 	ConsumeReservation(context.Context, string, int64, int64) (model.PrivateTransfer, error)
+	// Chunk receipts are accessed only after locking and authorizing the owning
+	// transfer. Insert, reservation consumption, and the transfer state update
+	// must share one transaction after the private object is published.
+	UploadChunk(context.Context, string, string) (model.UploadChunk, error)
+	UploadChunkAt(context.Context, string, int64) (model.UploadChunk, error)
+	InsertUploadChunk(context.Context, model.UploadChunk) error
 	Update(context.Context, model.PrivateTransfer, int64) (model.PrivateTransfer, error)
 	// UpdatePending only records late facts for the same operation while cleanup waits.
 	UpdatePending(context.Context, model.PrivateTransfer, int64) (model.PrivateTransfer, error)

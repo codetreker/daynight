@@ -62,3 +62,29 @@ type TransferStorage interface {
 	OpenTransferRange(context.Context, TransferNamespace, string, int64, int64) (Object, error)
 	DeleteTransferNamespace(context.Context, TransferNamespace) error
 }
+
+// TransferAttachmentTarget identifies an attachment address without allowing a
+// transfer publisher to select an arbitrary storage namespace.
+type TransferAttachmentTarget struct{ path string }
+
+func NewTransferAttachmentTarget(projectID, taskID, relativePath string) (TransferAttachmentTarget, error) {
+	if err := validateTransferUUID(projectID); err != nil {
+		return TransferAttachmentTarget{}, err
+	}
+	if err := validateTransferUUID(taskID); err != nil {
+		return TransferAttachmentTarget{}, err
+	}
+	if err := ValidateAddress("task-attachments", relativePath); err != nil {
+		return TransferAttachmentTarget{}, err
+	}
+	return TransferAttachmentTarget{path: projectID + "/" + taskID[:2] + "/" + taskID + "/" + relativePath}, nil
+}
+
+func (t TransferAttachmentTarget) Path() string { return t.path }
+
+// TransferAttachmentPublisher atomically moves a staged transfer object into
+// an attachment target. The caller holds the private and target gates for the
+// entire operation. Any error can follow publication and is not a rollback.
+type TransferAttachmentPublisher interface {
+	PublishTransferAttachment(context.Context, TransferNamespace, string, TransferAttachmentTarget) error
+}

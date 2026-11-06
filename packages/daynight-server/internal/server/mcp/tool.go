@@ -298,7 +298,7 @@ func requiredExactly(value any, keys ...string) bool {
 // RegisterTool validates the exact schemas advertised to clients before a tool
 // becomes discoverable. Class must describe the largest internal materialization.
 func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHandler) error {
-	if class != BudgetControl && class != BudgetLarge {
+	if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 		return errors.New("invalid MCP tool registration")
 	}
 	return e.registerTool(tool, func(json.RawMessage) BudgetClass { return class }, handler)
@@ -363,7 +363,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
 		}
 		class := budget(raw)
-		if class != BudgetControl && class != BudgetLarge {
+		if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
 		}
 		release, err := actor.Budget.Acquire(ctx, class)
@@ -451,7 +451,7 @@ func registerTypedReadTool[T any](e *Entry, tool *sdk.Tool, class BudgetClass, h
 	if handler == nil {
 		return errors.New("MCP tool handler is required")
 	}
-	if class != BudgetControl && class != BudgetLarge {
+	if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 		return errors.New("invalid MCP tool registration")
 	}
 	return e.registerReadTool(tool, func(json.RawMessage) BudgetClass { return class }, typedToolHandler(handler, unicodeFields...))
