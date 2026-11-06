@@ -53,6 +53,99 @@ it('loads native model choices only on expansion and retains implicit name-only 
   expect(screen.getByRole('option', { name: /Use default.*high/ })).toBeInTheDocument();
   await submit(); expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
 });
+function delegateNativeDefaults() {
+  vi.mocked(bots.getBotDefaults).mockImplementation(async (worker, _signal, _admission, choices) => {
+    const result = defaults(worker ?? workerId);
+    const native: bots.BotConfiguration = { ...result.configuration!, model: choices?.model ?? null, reasoningEffort: choices?.reasoningEffort ?? null,
+      selection: { schemaVersion: 1, modelSource: choices?.model ? 'explicit' : 'native', reasoningEffortSource: choices?.reasoningEffort ? 'explicit' : 'native' } };
+    return { ...result, configuration: native, workers: result.workers.map(item => item.workerId === native.workerId ? { ...item, configuration: native } : item) };
+  });
+}
+
+it('uses a discovered native default for effort-only creation without making the model explicit', async () => {
+  delegateNativeDefaults();
+  const original = catalog(); const native = { ...original, result: { ...original.result, defaults: { ...original.result.defaults, model: { value: 'model-a', source: 'native' as const } } } };
+  vi.mocked(readApi.discoverWorkerModels).mockResolvedValue(native);
+  mount(); await flush(); await expand();
+  expect(screen.getByRole('option', { name: /Use default.*model-a.*Agent configuration/ })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: /Use default.*low.*Agent configuration/ })).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toBeEnabled();
+  await choose('Reasoning effort', 'high'); await submit();
+  expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId, reasoningEffort: 'high' } });
+});
+
+it('keeps discovering and displaying native defaults separate from request overrides', async () => {
+  delegateNativeDefaults(); mount(); await flush(); await expand();
+  expect(screen.getByRole('option', { name: /Use default.*model-a/ })).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('');
+  await submit(); expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
+});
+
+it('uses hidden native default capabilities without adding the hidden model to the menu', async () => {
+  delegateNativeDefaults();
+  const native = catalog();
+  vi.mocked(readApi.discoverWorkerModels).mockResolvedValue({ ...native, result: { ...native.result,
+    models: [{ ...native.result.models[0]!, hidden: true, aliases: ['native-alias'] }, ...native.result.models.slice(1)],
+    defaults: { ...native.result.defaults, model: { value: 'native-alias', source: 'native' } } } });
+  mount(); await flush(); await expand();
+  expect(readApi.discoverWorkerModels).toHaveBeenLastCalledWith(workerId, { provider: 'codex', cwd: '/work', includeHidden: true, limit: 100 }, expect.any(AbortSignal), expect.any(Object), {});
+  expect(screen.queryByRole('option', { name: 'Model A' })).toBeNull();
+  expect(screen.getByRole('option', { name: /Use default.*native-alias/ })).toBeInTheDocument();
+  expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toBeEnabled();
+  await choose('Reasoning effort', 'high'); await submit();
+  expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId, reasoningEffort: 'high' } });
+});
+
+it('retains an explicit model that becomes hidden and can restore its implicit default', async () => {
+  const visible = catalog();
+  vi.mocked(readApi.discoverWorkerModels).mockResolvedValueOnce(visible).mockResolvedValue({ ...visible, result: { ...visible.result, models: visible.result.models.map(option => ({ ...option, hidden: true })) } });
+  mount(); await flush(); await expand(); await choose('Model', 'model-a');
+  expect(screen.getByRole('combobox', { name: 'Model' })).toHaveValue('model-a');
+  expect(screen.getByRole('option', { name: 'model-a' })).toBeInTheDocument();
+  expect(screen.queryByRole('option', { name: 'Model B' })).toBeNull();
+  expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toBeEnabled();
+  await choose('Model', ''); await submit();
+  expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper', overrides: { workerId } });
+});
+
+it('keeps service-resolved model and effort preferences ahead of catalog defaults', async () => {
+  const resolved = { ...configuration(), model: 'model-b', reasoningEffort: 'medium', selection: { schemaVersion: 1 as const, modelSource: 'preference' as const, reasoningEffortSource: 'preference' as const } };
+  vi.mocked(bots.getBotDefaults).mockResolvedValue({ ...defaults(), configuration: resolved });
+  mount(); await flush(); await expand();
+  expect(screen.getByRole('option', { name: /Use default.*model-b.*Successful preference/ })).toBeInTheDocument();
+  expect(screen.getByRole('option', { name: /Use default.*medium.*Successful preference/ })).toBeInTheDocument();
+  expect(within(screen.getByRole('combobox', { name: 'Reasoning effort' })).queryByRole('option', { name: 'high' })).toBeNull();
+  expect(within(screen.getByRole('combobox', { name: 'Reasoning effort' })).getByRole('option', { name: 'medium' })).toBeInTheDocument();
+});
+
+it('does not borrow a catalog default effort for a different service-resolved model', async () => {
+  const resolved: bots.BotConfiguration = { ...configuration(), model: 'model-b', reasoningEffort: null, selection: { schemaVersion: 1, modelSource: 'preference', reasoningEffortSource: 'native' } };
+  vi.mocked(bots.getBotDefaults).mockResolvedValue({ ...defaults(), configuration: resolved });
+  mount(); await flush(); await expand();
+  expect(screen.queryByRole('option', { name: /Use default.*low/ })).toBeNull();
+  expect(within(screen.getByRole('combobox', { name: 'Reasoning effort' })).getByRole('option', { name: 'medium' })).toBeInTheDocument();
+});
+
+it.each(['unknown_default', 'unsupported_selection'] as const)('does not treat a catalog %s as a resolved native default', async code => {
+  delegateNativeDefaults(); const native = catalog();
+  vi.mocked(readApi.discoverWorkerModels).mockResolvedValue({ ...native, result: { ...native.result, selectionError: { code, message: 'Native default cannot be selected.' } } });
+  mount(); await flush(); await expand();
+  expect(screen.getByRole('combobox', { name: 'Reasoning effort' })).toBeDisabled();
+  expect(screen.queryByRole('option', { name: /Use default.*model-a/ })).toBeNull();
+  expect(screen.getByText('Native default cannot be selected.')).toBeVisible();
+});
+
+it('does not publish an old Worker native default after switching targets', async () => {
+  delegateNativeDefaults(); const old = Promise.withResolvers<readApi.WorkerReadonlyResponse<'model.list'>>();
+  vi.mocked(readApi.discoverWorkerModels).mockReturnValueOnce(old.promise);
+  mount(); await flush(); await expand(); await choose('Worker', id(2));
+  expect(screen.getByRole('option', { name: /Use default.*model-a/ })).toBeInTheDocument();
+  const previous = catalog();
+  old.resolve({ ...previous, result: { ...previous.result, defaults: { ...previous.result.defaults, model: { value: 'old-default', source: 'native' } } } }); await flush();
+  expect(screen.queryByRole('option', { name: /old-default/ })).toBeNull();
+  expect(screen.getByRole('option', { name: /Use default.*model-a/ })).toBeInTheDocument();
+});
+
 it('pins machine-dependent choices and clears effort on a model change', async () => {
   mount(); await flush(); await expand();
   await choose('Reasoning effort', 'low');
@@ -132,7 +225,7 @@ it('pins catalog pagination to one connection and does not display partial model
   vi.mocked(readApi.discoverWorkerModels).mockResolvedValueOnce({ ...first, result: { ...first.result, models: [first.result.models[0]!], nextCursor: 'page-2' } }).mockReturnValueOnce(second.promise);
   mount(); await flush(); await expand();
   expect(screen.getByRole('combobox', { name: 'Model' })).toBeDisabled();
-  expect(readApi.discoverWorkerModels).toHaveBeenNthCalledWith(2, workerId, { provider: 'codex', cwd: '/work', limit: 100, cursor: 'page-2' }, expect.any(AbortSignal), expect.any(Object), { binding: { connectionId: id(5), capabilityGeneration: id(6) } });
+  expect(readApi.discoverWorkerModels).toHaveBeenNthCalledWith(2, workerId, { provider: 'codex', cwd: '/work', includeHidden: true, limit: 100, cursor: 'page-2' }, expect.any(AbortSignal), expect.any(Object), { binding: { connectionId: id(5), capabilityGeneration: id(6) } });
   second.resolve({ ...first, result: { ...first.result, models: first.result.models.slice(1) } }); await flush();
   expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled(); expect(screen.getByRole('option', { name: 'Model B' })).toBeInTheDocument();
 });
