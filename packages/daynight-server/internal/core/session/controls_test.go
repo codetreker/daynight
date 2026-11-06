@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -33,6 +34,40 @@ func controlState() sp.State {
 	started := "2026-10-28T05:00:00.000Z"
 	s.TurnStartedAt = &started
 	return s
+}
+
+func taskControlAuthorizationFixture(state sp.State) (*Execution, *record, task) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	fence := sp.Fence{SessionID: "00000000-0000-4000-8000-000000000001", ClaimID: "00000000-0000-4000-8000-000000000002", ExecutionGeneration: "1"}
+	snapshot := sp.Snapshot{
+		ControllerFence:       sp.ControllerFence{Fence: fence, ConnectionEpoch: "1"},
+		Protocol:              sp.Protocol,
+		SchemaVersion:         1,
+		ProjectionVersion:     1,
+		Identity:              sp.Identity{NativeSessionID: state.NativeSessionID},
+		Lifecycle:             "active",
+		ConnectionState:       "connected",
+		SessionRevision:       "1",
+		Controls:              state.Controls,
+		TurnStartedAt:         state.TurnStartedAt,
+		CleanupInteractionIDs: state.CleanupInteractionIDs,
+		InitialInputState:     state.InitialInputState,
+		Synchronized:          state.Synchronized,
+		Activity:              state.Activity,
+		CurrentTurnID:         state.CurrentTurnID,
+		Capabilities:          state.Capabilities,
+	}
+	worker := &model.WorkerClaim{ClaimID: fence.ClaimID, AgentControlMode: model.AgentControlModeWeb, State: model.WorkerActive}
+	execution := &Execution{Engine: &Engine{now: func() time.Time { return now }}}
+	return execution, &record{Snapshot: snapshot, LastSeen: &now}, task{Worker: worker, Status: "in_progress"}
+}
+
+func requireControlConflict(t *testing.T, err error) {
+	t.Helper()
+	var refusal *model.Fault
+	if !errors.As(err, &refusal) || refusal.Code != "session_conflict" {
+		t.Fatalf("expected session_conflict, got %v", err)
+	}
 }
 
 func TestControlsPermissionProjectionDoesNotMutateCatalog(t *testing.T) {
@@ -129,10 +164,7 @@ func TestDurableControlOperationKinds(t *testing.T) {
 }
 
 func TestControlAuthorizationRejectsCatalogAndRuntimeMismatch(t *testing.T) {
-	f, v := connectFixture(t)
 	ctx := context.Background()
-	base := controlState()
-	publishState(t, f, v, base)
 	cases := []struct {
 		name, kind string
 		payload    any
@@ -156,21 +188,34 @@ func TestControlAuthorizationRejectsCatalogAndRuntimeMismatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f, v := connectFixture(t)
 			state := controlState()
 			if tc.mutate != nil {
 				tc.mutate(&state)
 			}
-			publishState(t, f, v, state)
-			c := controlCommand(v, tc.kind)
+			execution, current, currentTask := taskControlAuthorizationFixture(state)
+			c := controlCommand(current.Snapshot, tc.kind)
 			if tc.payload != nil {
 				c.Payload = encode(tc.payload)
 			}
-			if _, err := f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, c); err == nil {
-				t.Fatal("unauthorized control accepted")
+			requireControlConflict(t, execution.authorizeCommand(ctx, nil, current, currentTask, c))
+		})
+	}
+}
+
+func TestControlAuthorizationAcceptsCurrentCatalog(t *testing.T) {
+	for _, kind := range []string{"update_setting", "execute_command", "refresh_controls"} {
+		t.Run(kind, func(t *testing.T) {
+			execution, current, currentTask := taskControlAuthorizationFixture(controlState())
+			if err := execution.authorizeCommand(context.Background(), nil, current, currentTask, controlCommand(current.Snapshot, kind)); err != nil {
+				t.Fatalf("valid control %s rejected: %v", kind, err)
 			}
 		})
 	}
+}
+
+func TestControlSubmitRejectsOutsider(t *testing.T) {
+	f, v := connectFixture(t)
+	ctx := context.Background()
 	publishState(t, f, v, controlState())
 	c := controlCommand(v, "update_setting")
 	outsider := model.Principal{Kind: model.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
@@ -322,14 +367,13 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 }
 
 func TestControlCommandAcceptsAdvertisedArguments(t *testing.T) {
-	f, v := connectFixture(t)
 	state := controlState()
 	hint := "instructions"
 	state.Controls.Commands[0].ArgumentHint = &hint
-	publishState(t, f, v, state)
-	c := controlCommand(v, "execute_command")
+	execution, current, currentTask := taskControlAuthorizationFixture(state)
+	c := controlCommand(current.Snapshot, "execute_command")
 	c.Payload = encode(sp.ExecuteCommand{CommandID: "compact", Arguments: "keep essential decisions", ExpectedControlsRevision: "1"})
-	if _, err := f.s.Submit(context.Background(), f.p, f.project, f.task, v.SessionID, c); err != nil {
+	if err := execution.authorizeCommand(context.Background(), nil, current, currentTask, c); err != nil {
 		t.Fatal("advertised command arguments rejected", err)
 	}
 }
@@ -337,14 +381,13 @@ func TestControlCommandAcceptsAdvertisedArguments(t *testing.T) {
 func TestControlsRejectUnavailableNativeActivities(t *testing.T) {
 	for _, activity := range []string{"initializing", "stopped", "unknown"} {
 		t.Run(activity, func(t *testing.T) {
-			f, v := connectFixture(t)
-			state := controlState()
-			state.Activity = activity
-			publishState(t, f, v, state)
 			for _, kind := range []string{"update_setting", "execute_command", "refresh_controls"} {
-				if _, err := f.s.Submit(context.Background(), f.p, f.project, f.task, v.SessionID, controlCommand(v, kind)); err == nil {
-					t.Fatal("unavailable activity accepted control", activity, kind)
-				}
+				t.Run(kind, func(t *testing.T) {
+					state := controlState()
+					state.Activity = activity
+					execution, current, currentTask := taskControlAuthorizationFixture(state)
+					requireControlConflict(t, execution.authorizeCommand(context.Background(), nil, current, currentTask, controlCommand(current.Snapshot, kind)))
+				})
 			}
 		})
 	}
