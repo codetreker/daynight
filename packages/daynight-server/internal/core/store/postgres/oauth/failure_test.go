@@ -119,3 +119,37 @@ func TestMissingGrantPreservesAbsence(t *testing.T) {
 		t.Fatalf("absence classified as database failure: %v", err)
 	}
 }
+
+func TestAuthorizationFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
+	ctx, now := t.Context(), time.Now().UTC()
+	cause := &pgconn.PgError{Code: "08006", Message: "authorization storage lost"}
+	fail, ok := databaseStep{err: cause}, databaseStep{}
+	fresh := databaseStep{values: []any{now}}
+	zero := databaseStep{values: []any{0}}
+	record := store.OAuthAuthorization{CreatedAt: now, ExpiresAt: now.Add(time.Minute), RetainUntil: now.Add(time.Hour)}
+	for _, tc := range []struct {
+		name  string
+		steps []databaseStep
+		call  func(*DAO) error
+	}{
+		{"insert capacity lock", []databaseStep{fail}, func(d *DAO) error { _, err := d.InsertAuthorization(ctx, record, 1, now); return err }},
+		{"insert fresh clock", []databaseStep{ok, fail}, func(d *DAO) error { _, err := d.InsertAuthorization(ctx, record, 1, now); return err }},
+		{"insert pending count", []databaseStep{ok, fresh, fail}, func(d *DAO) error { _, err := d.InsertAuthorization(ctx, record, 1, now); return err }},
+		{"insert row", []databaseStep{ok, fresh, zero, fail}, func(d *DAO) error { _, err := d.InsertAuthorization(ctx, record, 1, now); return err }},
+		{"authorization read", []databaseStep{fail}, func(d *DAO) error { _, err := d.Authorization(ctx, "id", true); return err }},
+		{"code read", []databaseStep{fail}, func(d *DAO) error { _, err := d.AuthorizationByCode(ctx, nil, true); return err }},
+		{"update", []databaseStep{fail}, func(d *DAO) error { return d.UpdateAuthorization(ctx, record) }},
+		{"prune lock", []databaseStep{fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
+		{"prune expire", []databaseStep{ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
+		{"prune delete", []databaseStep{ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := &failingTx{steps: append([]databaseStep(nil), tc.steps...)}
+			err := tc.call(NewDAO(tx))
+			failed, state := store.DatabaseErrorFacts(err)
+			if !errors.Is(err, cause) || !failed || state != cause.Code || len(tx.steps) != 0 {
+				t.Fatalf("failure=%v, facts=%v,%s, unused steps=%d", err, failed, state, len(tx.steps))
+			}
+		})
+	}
+}

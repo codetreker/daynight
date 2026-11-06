@@ -1,10 +1,13 @@
 import { ChildProcess, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getEventListeners } from "node:events";
+import { PassThrough } from "node:stream";
+import { performance } from "node:perf_hooks";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand, terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
+import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand, terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
 import type { HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 
 const operations: Operation[] = [];
@@ -24,6 +27,7 @@ const waitFor = async (file: string): Promise<string> => {
   }
 };
 afterEach(async () => {
+  vi.restoreAllMocks(); vi.useRealTimers();
   operations.splice(0).forEach((op) => op.dispose());
   for (const child of children.splice(0)) {
     if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) continue;
@@ -115,5 +119,96 @@ describe("bounded Herdr prerequisite commands", () => {
     expect(hasHerdrCommandCleanupFailure(new Error("Probe failed", { cause: failure }))).toBe(true);
     expect(hasHerdrCommandCleanupFailure(new AggregateError([new Error("ordinary field failure")]))).toBe(false);
     expect(performance.now() - began).toBeLessThan(400);
+  });
+});
+
+
+describe("late prerequisite cleanup acknowledgement", () => {
+  const timedOutCommand = async (child = new ChildProcess()) => {
+    const op = operation(100);
+    const start = vi.fn(() => child);
+    const pending = runHerdrCommand(command(""), op, start, { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(110);
+    const error = await pending;
+    expect(error).toBeInstanceOf(HerdrCommandCleanupError);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(getEventListeners(op.signal, "abort")).toHaveLength(0);
+    op.dispose();
+    return { child, error, start };
+  };
+
+  it("acknowledges only the original child close while preserving its historical failure", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const child = new ChildProcess();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    const { error, start } = await timedOutCommand(child);
+    const wrapper = new Error("Probe unavailable", { cause: new AggregateError([error]) });
+    const listeners = child.listenerCount("close");
+    expect(hasUnconfirmedHerdrCommandCleanup(wrapper)).toBe(true);
+    child.emit("exit", 0, null);
+    child.stdout.emit("close"); child.stderr.emit("close");
+    new ChildProcess().emit("close", 0, null);
+    expect(hasUnconfirmedHerdrCommandCleanup(wrapper)).toBe(true);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(hasUnconfirmedHerdrCommandCleanup(wrapper)).toBe(true);
+    }
+    expect(child.listenerCount("close")).toBe(listeners);
+    expect(child.stdout.listenerCount("data")).toBe(1);
+    expect(child.stderr.listenerCount("data")).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+    child.emit("close", 0, null);
+    expect(hasUnconfirmedHerdrCommandCleanup(wrapper)).toBe(false);
+    expect(hasHerdrCommandCleanupFailure(wrapper)).toBe(true);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(child.listenerCount("close")).toBe(0);
+    child.stdout.destroy(); child.stderr.destroy();
+  });
+
+  it("keeps a failed termination unconfirmed even after the original close", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const child = new ChildProcess();
+    const terminationError = new Error("Cannot inspect the owned process for termination");
+    // Fail before platform-specific process termination without targeting any real PID.
+    Object.defineProperty(child, "pid", { get: () => { throw terminationError; } });
+    const { error } = await timedOutCommand(child);
+    child.emit("close", 0, null);
+    expect(error).toMatchObject({ errors: expect.arrayContaining([terminationError]) });
+    expect(hasUnconfirmedHerdrCommandCleanup(error)).toBe(true);
+    expect(hasHerdrCommandCleanupFailure(error)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retains every unresolved cleanup in mixed cause and aggregate branches", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const first = await timedOutCommand();
+    const second = await timedOutCommand();
+    const mixed = new AggregateError([new Error("First probe", { cause: first.error })], "Both probes", { cause: second.error });
+    first.child.emit("close", 0, null);
+    expect(hasUnconfirmedHerdrCommandCleanup(mixed)).toBe(true);
+    second.child.emit("close", 0, null);
+    expect(hasUnconfirmedHerdrCommandCleanup(mixed)).toBe(false);
+    expect(hasHerdrCommandCleanupFailure(mixed)).toBe(true);
+    const legacy = new HerdrCommandCleanupError([new Error("Unowned cleanup")], undefined);
+    expect(hasUnconfirmedHerdrCommandCleanup(new AggregateError([mixed, legacy]))).toBe(true);
+  });
+
+  it("does not start another command after cancellation and late acknowledgement", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    const { child, error } = await timedOutCommand();
+    const controller = new AbortController();
+    const op = operation(100, controller.signal);
+    const reason = new Error("Collector stopped"); controller.abort(reason);
+    child.emit("close", 0, null);
+    expect(hasUnconfirmedHerdrCommandCleanup(error)).toBe(false);
+    const start = vi.fn(() => new ChildProcess());
+    await expect(runHerdrCommand(command(""), op, start)).rejects.toBe(op.signal.reason);
+    expect(start).not.toHaveBeenCalled();
+    op.dispose();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
