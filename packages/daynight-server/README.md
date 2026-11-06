@@ -305,9 +305,12 @@ inspecting the target namespace and initializing or upgrading its format.
 
 An empty namespace receives the current snapshot, required initial rows and the
 complete original migration-checksum ledger in one transaction. Historical SQL
-and Go transforms do not execute on that path. Any SQL, initial-data, ledger or
-commit failure rolls back the complete initialization. A namespace containing
-user objects follows the existing ordered migration path, even when it has no
+and Go transforms do not execute on that path. SQL, initial-data, ledger and
+deferred-constraint commit failures roll back the complete initialization. A
+lost commit acknowledgment preserves an unknown outcome and the original error;
+initialization remains all-or-nothing, and the next startup inspects the actual
+namespace and ledger. A namespace containing user objects follows the existing
+ordered migration path, even when it has no
 migration ledger; objects in another schema do not affect that choice. Unknown
 versions, gaps and checksum mismatches stop startup. Reopening an initialized
 schema preserves its existing data and ledger timestamps. The

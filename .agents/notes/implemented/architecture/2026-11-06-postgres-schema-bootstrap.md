@@ -40,9 +40,12 @@ Explicit historical replay remains available to upgrade and rollback tests.
 It shares connection acquisition, advisory locking and release with normal
 initialization, so lock ownership is not nested or split between helpers.
 Snapshot, initial-data, ledger and deferred commit failures roll back the whole
-bootstrap. Lock-wait cancellation and initialization failures retain their
-original errors and release owned resources; HTTP admission begins only after
-initialization succeeds.
+bootstrap. A lost commit acknowledgment retains an unknown outcome and its
+original cause; it does not prove that the database rolled back. The next
+startup inspects actual namespace and ledger state under the same lock.
+Lock-wait cancellation and initialization failures retain their original errors
+and release owned resources; HTTP admission begins only after initialization
+succeeds.
 
 The [format snapshot decision](../testing/2026-11-06-postgres-schema-snapshot.md)
 owns artifact generation and historical equivalence. The
