@@ -461,6 +461,8 @@ diagnostics and cause categories.
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
+| `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
+| `DAYNIGHT_MCP_RESERVED_FREE_BYTES` | Nonnegative decimal bytes kept available for ordinary storage when reserving transfer capacity | `1073741824` (1 GiB) |
 | `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin | Required |
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth backend App ID | Required |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Server-only UniAuth App secret | Required |

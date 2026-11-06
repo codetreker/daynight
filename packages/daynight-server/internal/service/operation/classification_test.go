@@ -54,6 +54,18 @@ func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
 	}
 }
 
+func TestKnownTransferRefusalsRequireConfirmedRollback(t *testing.T) {
+	for _, code := range []string{"transfer_conflict", "transfer_state_conflict", "capacity_unavailable"} {
+		fault := &model.Fault{Code: code, Message: "refused"}
+		if got, ok := KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got.Code != code {
+			t.Fatalf("confirmed refusal %s was suppressed", code)
+		}
+		if _, ok := KnownFault(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}); ok {
+			t.Fatalf("unknown result exposed as %s", code)
+		}
+	}
+}
+
 func TestKnownFaultRejectsUnsafeJoinedTransaction(t *testing.T) {
 	fault := &model.Fault{Code: "invalid_input", Message: "invalid"}
 	failure := errors.Join(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}, &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true})

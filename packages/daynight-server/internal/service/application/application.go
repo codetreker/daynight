@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -22,22 +23,23 @@ import (
 // Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
-	Identity     *identity.Identity
-	OAuth        *oauth.Authenticator
-	Memberships  *project.Memberships
-	Projects     *project.Projects
-	Teams        *team.Teams
-	Workers      *worker.Workers
-	Bots         *bot.Bots
-	BotDeletions *bot.Deletions
-	Tasks        *task.Tasks
-	TaskSearch   store.TaskSearchReader
-	TaskSteps    *task.TaskSteps
-	TaskThreads  *task.TaskThreads
-	TaskSync     *task.TaskSync
-	Attachments  *attachment.Attachments
-	Engine       *sessioncore.Engine
-	Sessions     *session.Service
+	Identity       *identity.Identity
+	OAuth          *oauth.Authenticator
+	Memberships    *project.Memberships
+	Projects       *project.Projects
+	Teams          *team.Teams
+	Workers        *worker.Workers
+	Bots           *bot.Bots
+	BotDeletions   *bot.Deletions
+	Tasks          *task.Tasks
+	TaskSearch     store.TaskSearchReader
+	TaskSteps      *task.TaskSteps
+	TaskThreads    *task.TaskThreads
+	TaskSync       *task.TaskSync
+	Attachments    *attachment.Attachments
+	PrivateContent *mcptransfer.Lifecycle
+	Engine         *sessioncore.Engine
+	Sessions       *session.Service
 }
 
 func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration) *Application {
