@@ -551,6 +551,6 @@ CI 回执必须来自干净测试源码且等于对应 `GITHUB_SHA`，保留生�
 全部生产目标通过固定真实 UniAuth gateway 夹具取得正常会话/PAT，验证看板、
 附件及鉴权；凭据不进入公开回执。Playwright action/network trace 因会话、令牌
 和邀请隐私而关闭。两种模式保留场景 PNG、完整图校验及清理；定制容量 CDP 诊断与性能门槛由显式本地压力验收拥有，
-理由由[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)拥有。
+理由由[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)拥有。
 
 现有生产浏览器 inventory 验证看板基线。附件生产浏览器场景、安装 CLI 与服务的组合验收纳入对应 CI inventory；保留严格覆盖率门槛。既有看板性能矩阵作为显式本地压力验收保留，附件不增加新的性能门槛。

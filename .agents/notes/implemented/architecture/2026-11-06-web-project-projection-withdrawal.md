@@ -39,8 +39,8 @@ The directory removes the matching card and sidebar entry. Configuration retains
 selected IDs as unavailable and removable. Worker details remove matching task
 rows and recompute their visible count; Worker summaries discard counts whose
 Project provenance is unavailable until an authoritative reread. Worker identity
-and telemetry remain independent. The [cache decision](2026-10-24-persistent-task-summary-cache.md)
-owns persistent admission and cleanup, and the [Worker observation decision](2026-10-29-web-worker-observations.md)
+and telemetry remain independent. The [cache decision](../../archived/architecture/2026-10-24-persistent-task-summary-cache.md)
+owns persistent admission and cleanup, and the [Worker observation decision](../../archived/architecture/2026-10-29-web-worker-observations.md)
 owns account-scoped reading and time semantics.
 
 ## Alternatives

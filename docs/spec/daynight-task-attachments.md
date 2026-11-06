@@ -10,7 +10,7 @@
 本文拥有附件的产品行为与 FA1–FA14 要求；
 [架构](../design/daynight-task-attachments.md)拥有模块、接口和运行机制。
 [附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
-[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
+[项目分片决策](../../.agents/notes/archived/architecture/2026-10-24-project-sharded-attachment-layout.md)
 记录范围和取舍。各组件的实际验证结果归属对应源码、PR 与 CI。
 
 [鉴权需求](daynight-auth.md)要求附件请求继承项目成员权限，已在全部附件和预览

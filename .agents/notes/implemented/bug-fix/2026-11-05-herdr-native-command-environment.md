@@ -41,7 +41,7 @@ a changed birth or boot identity is refused. Subsequent input and stop checks
 retain the original registered proof.
 
 This partially supersedes the shell-startup behavior of the
-[private adapter decision](../architecture/2026-10-26-worker-herdr-adapter.md).
+[private adapter decision](../../archived/architecture/2026-10-26-worker-herdr-adapter.md).
 Linux and Windows retain their existing shared-instance behavior. Existing
 macOS daemons reconnect with their original configuration, without rewriting
 files or starting another process. An old isolated configuration with no live

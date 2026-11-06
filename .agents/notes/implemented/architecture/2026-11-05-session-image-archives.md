@@ -31,9 +31,10 @@ partial success. Explicit Test resume imports only a verified same-owner source
 relation, reserves the complete target budget and creates independent target
 originals without sending native input.
 
-The existing [file archive decision](2026-10-30-session-file-archives.md) and
-[namespace decision](2026-11-05-session-archive-layout.md) remain the owners of
-shipped archive behavior. The image design preserves their identity, stopped
+The existing [file archive decision](../../archived/architecture/2026-10-30-session-file-archives.md)
+records the original archive trade-offs; the
+[namespace decision](2026-11-05-session-archive-layout.md) owns the shipped
+namespace behavior. The image design preserves the existing identity, stopped
 writer, paired-backup and read-only boundaries. It does not rewrite legacy
 records or repurpose the Herdr schema.
 

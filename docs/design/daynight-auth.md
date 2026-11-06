@@ -4,9 +4,8 @@
 服务配置校验失败会拒绝启动，所有业务请求强制认证。源码绑定的验证结果与真实上游
 人工登录以相应回执为准，本文不把接线完成等同于完整验收通过。
 [需求](../spec/daynight-auth.md)拥有行为；
-[原始鉴权决策](../../.agents/notes/implemented/architecture/2026-10-22-auth-architecture.md)
-保留架构取舍，[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
-拥有当前配置、组合与验收隐私规则。
+[原始鉴权决策](../../.agents/notes/archived/architecture/2026-10-22-auth-architecture.md)
+保留架构取舍，[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)记录了当前配置、组合与验收隐私规则的历史取舍。
 
 ## 已采纳的架构边界
 
@@ -26,9 +25,9 @@ model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普�
 公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
 [公开入口设计](daynight-landing.md)拥有路由组合与公开身份提示，后者不参与私有资源准入。
 
-[身份基础](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
-与[成员基础](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
-先独立交付的原因仍成立；当前统一组合由启用决策拥有。以下固定源码是最初设计
+[身份基础](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
+与[成员基础](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
+先独立交付的原因仍成立；当前统一组合由本文说明，启用决策保留采用该组合的历史理由。以下固定源码是最初设计
 采用机制时的基线 `38b827fe644139f4e20989cd8e7740350566fb56`，不表示当前入口仍未鉴权：
 
 | 机制 | 固定源码 | 使用方式 |
@@ -87,7 +86,7 @@ access relation 的有效角色，再 LEFT JOIN users；缺少或不匹配的规
 有效项目准入。PUT 成功返回指定 grant 与 actorAccess，DELETE 返回项目和目标 ID、deleted 与
 actorAccess；actorAccess 是事务中变更后的完整访问投影，可以为 null。邀请 no-op 读取实际直接关系，
 不以计算的准入结果代替。
-[participant 决策](../../.agents/notes/implemented/architecture/2026-11-04-project-participant-projection.md)
+[participant 决策](../../.agents/notes/archived/architecture/2026-11-04-project-participant-projection.md)
 拥有资料、有效角色与可写记录分离的原因及范围。
 
 `ProjectAccess` 的内部模型保存当前主体的 project/user ID、真实归属、owner Team、
@@ -124,7 +123,7 @@ TaskSync 顶层 actorAccess 使用同一 DTO 和读取快照，空 delta 也包�
 members 返回 `{items,actorAccess}`，成员资料与本人 access 属于同一读取快照；Web 经既有
 身份、project、generation 和请求观察次序屏障发布 actorAccess，不能用独立读取的旧角色
 授权新名册。CLI 的 roster facade 校验完整 envelope 后保留其 participant 数组返回值。
-[当前准入投影决策](../../.agents/notes/implemented/architecture/2026-11-03-project-access-projection.md)
+[当前准入投影决策](../../.agents/notes/archived/architecture/2026-11-03-project-access-projection.md)
 记录内存所有权、刷新与资料读取分离的原因。
 
 读取在原 repeatable-read 快照中计算准入再读取资源；写入取得现有项目行锁后重算
@@ -165,7 +164,7 @@ version 后才接受相同原文。真实改名只更新 Team 名称、元数据
 自行降级或退出后仍有 admin。角色变化从 `team_member_versions` sequence 取得新版本，删除
 重加同样产生新版本；删除和变更均不访问 Project grant。提交确认后回执携带操作者剩余角色，
 不确定提交遵守相同的 unknown 合同。详细取舍见
-[成员管理决策](../../.agents/notes/implemented/architecture/2026-11-04-team-membership-management.md)。
+[成员管理决策](../../.agents/notes/archived/architecture/2026-11-04-team-membership-management.md)。
 
 删除在取得 Team 锁后，另发一条不加行锁的 ownership `EXISTS` 查询。Read Committed 的新语句
 快照能看见取锁等待期间已提交的 ownership；把检查合并进最初的锁定查询会使用等待前的快照。
@@ -180,7 +179,7 @@ ownership 的写入必须先锁定并重读该 Team，和删除共享其存在�
 失败的 rollback/连接清理仍输出 500 internal_error，不伪装为已拒绝或成功。响应写失败保持传输错误，
 调用者不能把缺失回执当作回滚证据。此信息只属于本次调用，不增加持久提交账本。
 
-[Team 生命周期决策](../../.agents/notes/implemented/architecture/2026-11-04-team-lifecycle.md)
+[Team 生命周期决策](../../.agents/notes/archived/architecture/2026-11-04-team-lifecycle.md)
 记录存在性锁、独立版本和有限回执的取舍；公开字段、拒绝及验收由[鉴权需求](../spec/daynight-auth.md#team-生命周期)拥有。
 
 ## 认证响应归属
@@ -205,7 +204,7 @@ Origin 检查、角色和业务授权仍由原入口执行；该头只是响应�
 保留无重定向、无重放和有界响应。App 配置/凭据失效映射为
 503 identity_configuration，网络或协议失败为 502 identity_unavailable，超时为
 504 identity_timeout；它们不返回用户会话 401，避免错误清除当前账户。
-[Web 决策](../../.agents/notes/implemented/feature/2026-10-22-web-auth-workspace.md)
+[Web 决策](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md)
 保留初始旧 SDK 缺少 discovery 的证据，生产组合已使用新能力。
 
 ## 登录和凭据
@@ -325,7 +324,7 @@ Thread 强准入在 ownership share 锁返回后，以新语句读取稳定 team
 降级本人及他人的最后一条 direct admin grant；owner Team 的继承权限独立计算。变更后在同一
 事务重新计算 actor access，确认 COMMIT 后才发送有限回执；失权时返回 null，不依赖后续有权限
 的 GET。无法确认 COMMIT 则报告 write_outcome_unknown，不能重放。Team 成员变化不重写 Project
-grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/implemented/architecture/2026-11-04-project-grant-management.md)
+grant，grant 变更不改 task.version。[grant 管理决策](../../.agents/notes/archived/architecture/2026-11-04-project-grant-management.md)
 拥有存在性条件、有限回执与外部加入范围的取舍。
 
 邀请七天有效、只授予 member、可撤销。邀请属于项目，创建者离任不自动作废。
@@ -341,8 +340,7 @@ Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。
 新 member 与消费同事务提交。撤销与接受共享 Team 和邀请锁；删除 Team 同事务清除邀请。
 Personal 不可创建邀请。inspect 仅返回 Team 引用和当前主体关系，accept 返回真实成员及
 joined/consumed。两种邀请都通过 POST body 传秘密，响应 no-store，失效原因统一为
-invitation_unavailable；[Team 邀请决策](../../.agents/notes/implemented/architecture/2026-11-04-team-invitations.md)
-拥有接收入口及交付边界。
+invitation_unavailable；[Team 邀请决策](../../.agents/notes/archived/architecture/2026-11-04-team-invitations.md)记录了接收入口及交付边界的历史取舍。
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
@@ -453,7 +451,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 立即中止旧核验、推进核验请求 generation 并发起新核验，较早响应不能覆盖最新
 结果。核验失败保留组件状态并显示阻塞错误层；
 重试及失败后的前台返回保持遮蔽，成功后才恢复原页面或切换身份。阻塞层使用原生模态隔离，Escape 不能关闭；它继承当前应用语言，但不提供自己的语言选择器或偏好反馈。原焦点元素仍连接时，恢复后尝试将焦点返回原位置。
-[前台身份核验决策](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
+[前台身份核验决策](../../.agents/notes/archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
 
@@ -495,7 +493,7 @@ CLI server 投影在文件或 `serverUrl` 缺省时使用 `https://daynight.cc`�
 本地缺少凭据时业务请求层直接提示 `daynight login`；服务 401 同样提示，业务不自动开始登录。
 
 `login` 是独立的公开客户端 `daynight-cli`，不接触 UniAuth App Secret。
-[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
+[设备登录决策](../../.agents/notes/archived/architecture/2026-10-25-cli-device-login.md)
 记录采用现有 PAT 存储与显式登录的理由；协议采用
 [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)。设备授权与业务操作各自拥有取消和期限，
 登录至多十分钟，正常请求预算仍有界；CLI 不启动常驻监听器或本地 callback 服务。
@@ -639,7 +637,7 @@ trace 和 capacity override 均关闭；PNG 只在秘密关闭或遮蔽后捕获
 CDP detach。原始错误、清理错误与附件保存错误共同保留，唯一错误原样抛出，多项失败用
 `AggregateError` 保留原对象及首个错误原因链。[登录诊断决策](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
 拥有这些诊断和错误传播规则；历史产物或操作栈缺失时，后续成功不能证明原超时的触发原因。
-[启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
+[启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)
 保存包版本、源码位置、隐私证据与诊断能力取舍。各适用 gate 和真实上游人工登录
 仍须提供源码绑定结果；受控组件或协议成功不冒充第三方人工登录。
 
@@ -662,14 +660,16 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ```
 
 验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
-生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
-拥有实际领取结果后 TCP 断连，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
-重启、成员撤销后的可见权限及 PAT 独立性证明。两目标各有一份十项检查的额外必需回执。
+生产浏览器、原生/容器和现有资源/容量预算。[组合验收历史](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
+记录了实际领取结果后 TCP 断连的取舍。原生/容器各自验证浏览器与安装 CLI 同数据、
+原凭据重启、成员撤销后的可见权限及 PAT 独立性。两目标各有一份十项检查的额外必需回执。
 已准入上传的 grant 锁等待由 Go 服务的
 `TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock` 使用 `cmd/e2e_tests`
 built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL 验证；浏览器 combined 不运行
-暂停上传、专用 transport 或数据库锁观察。该迁移不声称另行覆盖原先的附件 socket 中断场景。常规验收保留
-原生和容器各 42 项功能场景，显式本地压力验收另有 5 项原生容量场景；项目设置旅程
+暂停上传、专用 transport 或数据库锁观察。该迁移不声称另行覆盖原先的附件 socket 中断场景；
+[附件锁验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-lock-acceptance-ownership.md)
+记录当前分工。常规验收保留原生和容器各 42 项功能场景，显式本地压力验收另有 5 项
+原生容量场景；项目设置旅程
 单独拥有阈值读写与未知结果核对。
 
 统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合

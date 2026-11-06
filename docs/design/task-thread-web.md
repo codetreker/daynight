@@ -105,4 +105,4 @@ Markdown 使用共享安全聊天 renderer，保留 GFM、软换行和隔离的 
 
 功能验证覆盖来源 decoder、A/B/C 连续性、初始空后积压、独立历史及引用、容量双边界、连续自己发言的回执替换、认证暂停及迟到响应、明确/未知/确认结果、确认后准入失败、正文与 revision、page/modal/fullscreen 焦点和窄屏滚动。真实服务与浏览器互操作证据与单元中的可控传输区分；常规 CI 不运行压力负载。完整命令由 [Web 指南](../../packages/daynight-web/README.md#validation-and-build)拥有。
 
-[决策记录](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-web.md)保存职责划分、复用和有界内存的取舍。
+[决策记录](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)保存职责划分、复用和有界内存的取舍。

@@ -42,7 +42,7 @@ ProjectPage保持详情资源和入口/关闭恢复所有权。当前画布拥�
 
 ## 平滑路线
 
-路由保留可见节点布局和顺序，规划器统一拥有边几何和节点避让。水平模式从源右中心到目标左中心，垂直模式从源下中心到目标上中心；均按 CanvasNode 的实际宽高规划。垂直模式将节点矩形和坐标转置到横向规划坐标，按层中心分组，并以层内节点最大边界确定空隙；规划后转回实际坐标，卡片文字和尺寸不旋转。规划器在中间层选择距卡片至少16单位的自由通道，不同位置的层间端点由完整三次贝塞尔曲线连接，控制点位于空隙中线与起止位置，曲线凸包限制在无卡片空隙中。水平曲线以水平向右切向出入，垂直曲线以垂直向下切向出入；相同位置的连续通道合并为直线。`compileDependencyRoute`编译统一的M/L/C路线，虚线使用真实弧长和精确三次子曲线，内部切口位于全局5/4周期的第7单位，直线和曲线绘制片段的弧长均不超过8192单位；累计相位误差在最大1.8倍缩放下不超过0.025 CSS px。[方向决策](../../.agents/notes/implemented/feature/2026-11-05-task-graph-direction.md)拥有双方向扩展，[贝塞尔路线决策](../../.agents/notes/implemented/architecture/2026-10-25-bezier-task-dependency-routing.md)与[统一路线决策](../../.agents/notes/implemented/architecture/2026-10-22-uniform-task-dependency-routing.md)保留原始曲线和通道选择理由。
+路由保留可见节点布局和顺序，规划器统一拥有边几何和节点避让。水平模式从源右中心到目标左中心，垂直模式从源下中心到目标上中心；均按 CanvasNode 的实际宽高规划。垂直模式将节点矩形和坐标转置到横向规划坐标，按层中心分组，并以层内节点最大边界确定空隙；规划后转回实际坐标，卡片文字和尺寸不旋转。规划器在中间层选择距卡片至少16单位的自由通道，不同位置的层间端点由完整三次贝塞尔曲线连接，控制点位于空隙中线与起止位置，曲线凸包限制在无卡片空隙中。水平曲线以水平向右切向出入，垂直曲线以垂直向下切向出入；相同位置的连续通道合并为直线。`compileDependencyRoute`编译统一的M/L/C路线，虚线使用真实弧长和精确三次子曲线，内部切口位于全局5/4周期的第7单位，直线和曲线绘制片段的弧长均不超过8192单位；累计相位误差在最大1.8倍缩放下不超过0.025 CSS px。[方向决策](../../.agents/notes/implemented/feature/2026-11-05-task-graph-direction.md)拥有双方向扩展，[贝塞尔路线决策](../../.agents/notes/archived/architecture/2026-10-25-bezier-task-dependency-routing.md)与[统一路线决策](../../.agents/notes/archived/architecture/2026-10-22-uniform-task-dependency-routing.md)保留原始曲线和通道选择理由。
 
 编译器消费规划路线，产生canonical平滑路径与外部paint pieces。所有可见依赖、方向、实际body和箭头完整；外部高亮仍为5/4虚线。曲线弧长/分片在几何变化时计算，最大支持缩放的累计相位误差满足既有≤0.1CSSpx要求。选中/前置/无关呈现引用同一份几何，不能以删边、降为实线或临时返回折角掩盖失败。
 
@@ -86,7 +86,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 弹窗始终提供，独立页仅全屏时提供。已加载 frame 的文档和 owner 变化会更新监听，
 不依赖 reload；具体 document 清理、边界 Tab 和原生 PDF 的限制由
 [附件设计](daynight-task-attachments.md#web-文件树与预览)拥有。此扩展与居中/独立页
-生命周期的取舍见[全屏阅读决策](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)。
+生命周期的取舍见[全屏阅读决策](../../.agents/notes/archived/feature/2026-10-25-task-detail-fullscreen.md)。
 
 ## 独立完整任务详情
 
@@ -129,7 +129,7 @@ Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 ro
 
 Go UI mux 精确登记基础任务页 GET/HEAD；附件入口继续使用既有登记和原始路径
 守卫。页面只交付相同 index，业务数据沿用原有鉴权接口。当前机制及先前附件独立
-组合的取舍见[独立详情决策](../../.agents/notes/implemented/architecture/2026-10-24-standalone-task-detail.md)。
+组合的取舍见[独立详情决策](../../.agents/notes/archived/architecture/2026-10-24-standalone-task-detail.md)。
 
 ## 状态与详情会话
 
@@ -187,7 +187,7 @@ session 方法与过程的内容归属由 [Agent skill 设计](daynight-agent-sk
 创建默认 todo，登记不执行，精确版本 set-status 不授予额外实现或交付权限。
 交付验证检查实际 npm bundle 及隔离安装夹具，
 安装目录通过正常重新安装更新。机制取舍见
-[Markdown 描述决策](../../.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)。
+[Markdown 描述决策](../../.agents/notes/archived/architecture/2026-10-22-task-description-markdown.md)。
 
 ## Mermaid 图表
 
@@ -237,7 +237,7 @@ DOM，也不调用 `bindFunctions`。Event Modeling 的合法 XHTML 标签保留
 模块级 renderer 身份稳定，父组件更新不会重建整个阅读树。可聚焦且具备可访问
 名称的局部滚动区域保留自然尺寸和键盘阅读；320px 下不撑宽整体页面，概览及附件
 正文保留纵向滚动所有权。标签、关系及数据的最终绘制须由真实浏览器验证。原有
-[流程图决策](../../.agents/notes/implemented/feature/2026-10-24-markdown-flowcharts.md)
+[流程图决策](../../.agents/notes/archived/feature/2026-10-24-markdown-flowcharts.md)
 及[稳定类型决策](../../.agents/notes/implemented/feature/2026-11-05-stable-mermaid-diagrams.md)
 记录取舍。
 
