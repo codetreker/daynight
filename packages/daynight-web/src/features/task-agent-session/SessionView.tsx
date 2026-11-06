@@ -9,6 +9,7 @@ import { SessionDisplayMenu } from './SessionDisplayMenu';
 import { SessionComposer } from './SessionComposer';
 import { SessionTimeline, type SessionTimelineReading } from './SessionTimeline';
 import { sessionRespondGate } from './state';
+import { operationPresentation } from './operation-presentation';
 import { sessionNativeLabels, useSessionMessages } from './messages';
 import '../../styles/task-session.css';
 
@@ -78,9 +79,17 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     {view.error && view.errorCode !== 'controller_offline' ? <p className="session-error" role="alert">{view.error}</p> : null}
     {readOnly && view.archiveState !== 'ready' ? <p className="session-empty" role="status">{archiveLabel}</p> : null}
     {!readOnly || view.archiveState === 'ready' ? (slots?.renderEmpty ? <div className="session-timeline-shell session-presentation-timeline">{timeline}{empty != null && empty !== false ? <div className="session-presentation-empty">{empty}</div> : null}</div> : timeline) : null}
-    {!readOnly && operations.length > 0 ? <div className="session-receipts" aria-live="polite">{operations.map((operation) => <div key={operation.operationId} className={`session-receipt ${operation.state}`}><span>{m[operation.state]}</span>{operation.error ? <span>{operation.error.message}</span> : null}{['unknown', 'accepted', 'offered', 'dispatching'].includes(operation.state) ? <button className="inline-link" disabled={view.authPaused || view.checking.has(operation.operationId)} onClick={() => { setCheckError(null); void client.checkOperation(operation.operationId).catch((error: unknown) => setCheckError(error instanceof Error ? error.message : m.failure)); }}>{view.checking.has(operation.operationId) ? m.checking : m.check}</button> : null}</div>)}</div> : null}
+    {!readOnly && operations.length > 0 ? <div className="session-receipts" aria-live="polite">{operations.map(operation => {
+      const receipt = operationPresentation(operation, view.operationProgress);
+      const progressing = receipt !== 'unknown' && view.operationProgress.has(operation.operationId);
+      return <div key={operation.operationId} className={`session-receipt ${receipt}`}>
+        {progressing ? <span className="session-receipt-progress" aria-hidden="true" /> : null}
+        <span>{m[receipt]}</span>{operation.error ? <span>{operation.error.message}</span> : null}
+        {receipt === 'unknown' || receipt === 'waiting' ? <button className="inline-link" disabled={view.authPaused || view.checking.has(operation.operationId)} onClick={() => { setCheckError(null); void client.checkOperation(operation.operationId).catch((error: unknown) => setCheckError(error instanceof Error ? error.message : m.failure)); }}>{view.checking.has(operation.operationId) ? m.checking : m.check}</button> : null}
+      </div>;
+    })}</div> : null}
     {checkError ? <p className="session-error" role="alert">{checkError}</p> : null}
-    {!readOnly ? <SessionComposer inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen} key={sessionFenceKey(s)} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : null}
+    {!readOnly ? <SessionComposer inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen} key={sessionFenceKey(s)} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} operationProgress={view.operationProgress} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : null}
     </>}
   </section>;
 }

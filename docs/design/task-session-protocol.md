@@ -324,6 +324,8 @@ client 将 `beforeCursor` 视为不透明值。尾页与更早页在 `hasMoreBef
 
 Session View 在选择最近 12 条可见回执前过滤无错误的成功操作：`confirmed`，以及 `send_message` / `execute_command` 的 `provider_accepted`。其他类型的 `provider_accepted` 仍等待最终确认，保留展示；任何携带 error 的回执均保留。没有可见回执时不挂载回执区域。过滤仅作用于渲染，client 的操作账本、原操作核对和草稿受理逻辑保持独立。展示取舍见[成功回执展示决策](../../.agents/notes/implemented/bug-fix/2026-11-03-quiet-session-receipts.md)。
 
+client 的 `operationProgress` 只保存当前页面发起且仍连续观测的操作 ID，不写入操作账本或 sessionStorage。提交时同步登记 `sending`，10 秒计时器更新为 `waiting`，30 秒计时器移除本页进行中资格；计时从提交开始，覆盖 HTTP 响应尚未返回的情况。协议现有的响应后 30 秒查询截止保持独立。正常回执沿用中转阶段文案，较慢操作开放核对；没有本页资格的未确认操作按结果未知展示。明确未知回执、请求失败、断连、刷新、执行代次变化及终态清理进行中标识和计时器，迟到响应不重新建立资格。设置与交互等操作的 `provider_accepted` 仍需最终确认，消息与命令受理后按既有规则静默。选择理由见[投递状态展示决策](../../.agents/notes/implemented/bug-fix/2026-11-06-session-delivery-progress.md)。
+
 client 持有 `{text, revision, submission}` 草稿，`submission` 关联 operationId 和提交 revision。sessionStorage 键由 principal、Task 的 project/task 或 Test ID，以及完整执行 fence 组成；相同文本不能替代操作身份。只有相同 operation 的明确受理且 revision 未改变时才清空文本。unknown 继续查询原 operation，不重放；存储失败时保持内存编辑。账号退出或变更清 principal 草稿，换代清旧 fence；访问403即使没有快照也清归属范围。离开页面后不维持全局撤权监听，下一次访问重新授权。
 
 composer 通过实际 scrollHeight 与宽度变化调整输入的期望高度并遵守最大高度；空间不足时 textarea 可收缩至可编辑的最小高度，额外草稿内容在输入内滚动。发送过程中记录焦点是否仍属于该输入操作，仅在页面可见、组件 active 且未转移到其他控件时恢复焦点。IME、Shift+Enter 和原生 capability gating 继续独立生效。

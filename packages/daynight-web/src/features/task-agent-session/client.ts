@@ -37,6 +37,7 @@ export type SessionViewState = {
   readonly environmentConnected: boolean;
   readonly errorCode: string | null;
   readonly archiveState: SessionArchiveStatus['state'] | 'loading' | null;
+  readonly operationProgress: ReadonlyMap<string, 'sending' | 'waiting'>;
   readonly settingIntents: ReadonlyMap<string, SessionSettingIntent>;
   readonly draft: SessionDraft;
   readonly state: SessionState; readonly status: 'loading' | 'ready' | 'not_registered' | 'unavailable' | 'error';
@@ -59,7 +60,7 @@ const uncertain = (operation: SessionOperation) => !terminalFailure(operation) &
 class HistoryCursorError extends Error {}
 
 export class TaskSessionClient {
-  private view: SessionViewState = { environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
+  private view: SessionViewState = { operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: emptyDraft(), state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyRevision: 0, connectionGeneration: 0 };
   private archive: SessionArchive | null = null;
   private listeners = new Set<() => void>();
   private lifetime = new AbortController();
@@ -94,6 +95,7 @@ export class TaskSessionClient {
   private retries = 0;
   private draftKey: string | null = null;
   private operationPolls = new Set<ReturnType<typeof setTimeout>>();
+  private progressTimers = new Map<string, readonly ReturnType<typeof setTimeout>[]>();
   constructor(private readonly options: Options) {}
   snapshot = (): SessionViewState => this.view;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
@@ -167,6 +169,17 @@ export class TaskSessionClient {
     if (change.error !== undefined) this.currentErrorVisible = change.error !== null && errorOwner === 'current';
     if (change.state && (!next || this.lastStartupReport && !reportMatches(this.lastStartupReport, next))) {
       this.lastStartupReport = null; change = { ...change, startupReport: null };
+    }
+    if (change.connected === false || previous && next && !sameExecution(previous, next) || next && (next.lifecycle !== 'active' || next.connectionState === 'disconnected')) {
+      for (const id of this.view.operationProgress.keys()) this.clearProgressTimers(id);
+      change = { ...change, operationProgress: new Map() };
+    } else if (change.state && this.view.operationProgress.size) {
+      const progress = new Map(this.view.operationProgress);
+      for (const id of progress.keys()) {
+        const operation = change.state.operations.get(id);
+        if (!operation || !uncertain(operation)) { progress.delete(id); this.clearProgressTimers(id); }
+      }
+      change = { ...change, operationProgress: progress };
     }
     this.view = { ...this.view, ...change };
     if (this.view.connected && (this.currentReadFailure || !this.view.state.snapshot || !this.historyAllowed(this.view.state.snapshot) || BigInt(this.view.state.lastEventSeq) < BigInt(this.replayThrough))) this.view = { ...this.view, connected: false };
@@ -440,6 +453,7 @@ export class TaskSessionClient {
   private apply(value: Extract<BrowserMessage, { type: 'event' }>) {
     const s = this.view.state.snapshot;
     if (!s || sessionFenceKey(value.event) !== sessionFenceKey(s)) return;
+    if (value.event.kind === 'operation' && value.event.payload.state === 'unknown') this.endOperationProgress(value.event.payload.operationId);
     const state = applySessionEvent(this.view.state, value.event);
     this.publish({ state });
     if (state.snapshot && state.snapshot.lifecycle !== 'active') { this.beginArchive(state.snapshot); return; }
@@ -594,6 +608,27 @@ export class TaskSessionClient {
     if (!current || current.kind !== 'interaction' || current.interaction.revision !== interaction.revision || current.interaction.state !== 'pending') return Promise.reject(new Error('This interaction changed. Refresh the session.'));
     return this.execute({ kind: 'interaction_response', payload: { interactionId: interaction.interactionId, interactionRevision: interaction.revision, submissionId: crypto.randomUUID(), response } });
   };
+  private clearProgressTimers(id: string) {
+    for (const timer of this.progressTimers.get(id) ?? []) clearTimeout(timer);
+    this.progressTimers.delete(id);
+  }
+  private endOperationProgress(id: string) {
+    this.clearProgressTimers(id);
+    if (!this.view.operationProgress.has(id)) return;
+    const progress = new Map(this.view.operationProgress); progress.delete(id);
+    this.publish({ operationProgress: progress });
+  }
+  private beginOperationProgress(id: string) {
+    // This evidence belongs to this page's live request, never to the saved ledger.
+    this.view = { ...this.view, operationProgress: new Map(this.view.operationProgress).set(id, 'sending') };
+    const slow = setTimeout(() => {
+      if (!this.owned() || !this.view.operationProgress.has(id)) return;
+      this.publish({ operationProgress: new Map(this.view.operationProgress).set(id, 'waiting') });
+    }, 10_000);
+    // Bound the display even if the command response itself never arrives.
+    const deadline = setTimeout(() => this.endOperationProgress(id), 30_000);
+    this.progressTimers.set(id, [slow, deadline]);
+  }
   private putOperation(operation: SessionOperation, target?: Pick<SessionInteraction, 'interactionId' | 'revision'>) { this.publish({ state: { ...this.view.state, operations: new Map(this.view.state.operations).set(operation.operationId, operation), responseTargets: target ? new Map(this.view.state.responseTargets).set(operation.operationId, target) : this.view.state.responseTargets } }); this.persist(); }
   private async execute(input: CommandInput, draftText?: string): Promise<void> {
     const s = this.view.state.snapshot;
@@ -607,12 +642,16 @@ export class TaskSessionClient {
       const setting = s.controls?.settings.find(setting => setting.id === command.payload.settingId);
       this.view = { ...this.view, settingIntents: new Map(this.view.settingIntents).set(command.payload.settingId, { operationId: command.operationId, settingId: command.payload.settingId, value: command.payload.value, confirmedValue: setting?.value ?? null }) };
     }
+    this.beginOperationProgress(command.operationId);
     this.putOperation(pending, command.kind === 'interaction_response' ? { interactionId: command.payload.interactionId, revision: command.payload.interactionRevision } : undefined);
     try {
       const receipt = await this.options.api.command(s.sessionId, command, this.lifetime.signal);
       if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(s)) throw new Error('The active session changed.');
-      assertSessionFence(receipt, sessionFence(s)); this.putOperation(receipt);
+      assertSessionFence(receipt, sessionFence(s));
+      if (receipt.state === 'unknown') this.endOperationProgress(command.operationId);
+      this.putOperation(receipt);
     } catch (error) {
+      this.endOperationProgress(command.operationId);
       if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
       if (!(this.paused() ? await this.admit() : this.admitted())) throw error;
       if (this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
@@ -623,7 +662,7 @@ export class TaskSessionClient {
       const operation = this.view.state.operations.get(command.operationId)!;
       if (accepted(operation)) return;
       if (terminalFailure(operation)) throw new Error(operation.error?.message ?? 'The provider rejected the operation.');
-      if (operation.state === 'unknown' || Date.now() >= deadline) { this.putOperation({ ...operation, state: 'unknown' }); throw new Error('Delivery outcome is unknown. Check the original operation.'); }
+      if (operation.state === 'unknown' || Date.now() >= deadline) { this.endOperationProgress(command.operationId); this.putOperation({ ...operation, state: 'unknown' }); throw new Error('Delivery outcome is unknown. Check the original operation.'); }
       await this.delay(750);
       if (!(this.paused() ? await this.admit() : this.admitted())) break;
       try { await this.checkOperation(command.operationId); } catch { /* Only queries are retried; native inputs are never replayed. */ }
@@ -643,7 +682,9 @@ export class TaskSessionClient {
     try {
       const operation = await this.options.api.operation(snapshot.sessionId, id, this.lifetime.signal);
       if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(snapshot)) return;
-      assertSessionFence(operation, sessionFence(snapshot)); this.putOperation(operation);
+      assertSessionFence(operation, sessionFence(snapshot));
+      if (operation.state === 'unknown') this.endOperationProgress(id);
+      this.putOperation(operation);
     } catch (error) {
       if (this.owned() && this.sameSession(snapshot) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
       await this.admit();
