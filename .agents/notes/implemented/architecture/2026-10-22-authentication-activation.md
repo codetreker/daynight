@@ -15,10 +15,12 @@ rather than assumptions embedded in a handler.
 
 ## Decision
 
-`server.New(Dependencies, Config, logger)` validates configuration, constructs the
-pinned UniAuth client, and mounts authentication, membership and all existing
-resource routes. It returns a handler or an error. Startup propagates composition
-failure and closes its acquired listener, file root and database. Resource use
+Neutral configuration validates inputs before `service.App` constructs the pinned
+UniAuth client and shared resources. `server.New` mounts authentication,
+membership and all existing resource routes. Startup propagates composition
+failure and closes its acquired listener, file root and database. The
+[application lifecycle decision](2026-11-06-server-application-lifecycle.md)
+owns resource and drain ordering. Resource use
 cases accept an explicit `model.Principal`; ordinary project creation atomically
 adds its first administrator and ordinary project lists filter membership before
 pagination. The staging aliases `CreatePrivate` and `ListAccessible` are removed.

@@ -19,8 +19,7 @@
 访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
-提供事务内授权、私有创建和邀请。`server.New(Dependencies, Config, logger)`
-返回 `(http.Handler, error)`，验证配置并统一注册身份、Team、成员和全部业务路由。
+提供事务内授权、私有创建和邀请。`internal/config` 负责读取和验证中立配置；`service.App` 创建并共享身份客户端、持久化、文件根、领域模块和集成服务。`server.New` 接收已组装的应用并注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表
@@ -115,7 +114,7 @@ packages/daynight-server/
                 └── migrations/
 ```
 
-`cmd/daynight-server` 解析启动配置并组装依赖，保留直接调用命令内部函数的测试。
+`cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求并等待已接纳的普通 HTTP 和 WebSocket handler；WebSocket 断连事务和已准入 HTTP 请求完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。优雅期限由 `DAYNIGHT_SHUTDOWN_TIMEOUT` 控制；超时后取消请求、通知 Operation 停止并强关 transport；断连收尾仍可启动所需事务，再用独立的五秒清理期限等待实际工作。只有全部使用者退出后应用才关闭文件和数据库；清理超时保留资源供关闭重试，已发生的优雅超时仍作为错误返回。
 `cmd/e2e_tests` 是独立的 Go 测试包，拥有真实服务进程、安装 CLI 和附件迁移的
 集成验收及其 `TestMain`；两个测试包分别拥有临时资源和辅助函数。`api` 拥有 HTTP 请求、响应和错误
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、

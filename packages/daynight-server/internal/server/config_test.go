@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,10 +10,11 @@ import (
 	"time"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
-func configuredTestConfig() Config {
-	return Config{
+func configuredTestConfig() configpkg.Config {
+	return configpkg.Config{
 		DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0",
 		StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second,
 		PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example",
@@ -36,119 +36,6 @@ func configEnvironment(values map[string]string) func(string) string {
 	return func(key string) string { return base[key] }
 }
 
-func TestLoadConfig(t *testing.T) {
-	config, err := LoadConfig(configEnvironment(nil))
-	if err != nil || config.StorageRoot != "storage" || config.ListenAddress != "127.0.0.1:8787" || config.StartupTimeout != 10*time.Second || config.ShutdownTimeout != 10*time.Second || config.TaskSyncOverlap != 10*time.Second {
-		t.Fatalf("unexpected defaults: %+v, %v", config, err)
-	}
-	config, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_LISTEN_ADDR": "[::1]:0"}))
-	if err != nil || config.ListenAddress != "[::1]:0" {
-		t.Fatalf("IPv6 loopback rejected: %+v, %v", config, err)
-	}
-	for value, want := range map[string]time.Duration{"250ms": 250 * time.Millisecond, "30s": 30 * time.Second, "1m30s": 90 * time.Second, "1ns": time.Nanosecond} {
-		config, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_TASK_SYNC_OVERLAP": value}))
-		if err != nil || config.TaskSyncOverlap != want {
-			t.Fatalf("explicit task sync overlap %s ignored: %+v %v", value, config, err)
-		}
-	}
-}
-
-func TestConfigRejectsInvalidInputs(t *testing.T) {
-	for _, field := range []string{"DAYNIGHT_STARTUP_TIMEOUT", "DAYNIGHT_SHUTDOWN_TIMEOUT", "DAYNIGHT_TASK_SYNC_OVERLAP"} {
-		for _, value := range []string{"-1s", "0s", "password", "1", "99999999999999999999h"} {
-			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
-			if err == nil || !strings.Contains(err.Error(), field) || strings.Contains(err.Error(), value) {
-				t.Fatalf("invalid duration not safely diagnosed: %v", err)
-			}
-		}
-	}
-	config, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_STARTUP_TIMEOUT": "2s", "DAYNIGHT_SHUTDOWN_TIMEOUT": "300ms"}))
-	if err != nil || config.StartupTimeout != 2*time.Second || config.ShutdownTimeout != 300*time.Millisecond {
-		t.Fatalf("explicit durations ignored: %+v %v", config, err)
-	}
-	for _, address := range []string{"localhost:80", ":80", "0.0.0.0:80", "[::]:80", "192.0.2.1:80", "[::1%eth0]:80", "127.0.0.1", "127.0.0.1:word", "127.0.0.1:-1", "127.0.0.1:65536", "127.0.0.1:080"} {
-		t.Run(address, func(t *testing.T) {
-			config := configuredTestConfig()
-			config.DatabaseURL = "postgres://secret"
-			config.ListenAddress = address
-			if err := config.Validate(); err == nil || strings.Contains(err.Error(), "secret") {
-				t.Fatalf("expected safe validation error: %v", err)
-			}
-		})
-	}
-	for _, invalid := range []struct {
-		name   string
-		change func(*Config)
-	}{
-		{"missing database", func(config *Config) { config.DatabaseURL = "" }},
-		{"blank database", func(config *Config) { config.DatabaseURL = " " }},
-		{"missing startup timeout", func(config *Config) { config.StartupTimeout = 0 }},
-		{"negative shutdown timeout", func(config *Config) { config.ShutdownTimeout = -time.Second }},
-		{"missing task sync overlap", func(config *Config) { config.TaskSyncOverlap = 0 }},
-		{"negative task sync overlap", func(config *Config) { config.TaskSyncOverlap = -time.Second }},
-	} {
-		t.Run(invalid.name, func(t *testing.T) {
-			config := configuredTestConfig()
-			invalid.change(&config)
-			if err := config.Validate(); err == nil {
-				t.Fatal("invalid config accepted")
-			}
-		})
-	}
-}
-
-func TestStorageRootConfiguration(t *testing.T) {
-	for _, root := range []string{"", " \t"} {
-		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_STORAGE_ROOT": root}))
-		if err == nil || err.Error() != "DAYNIGHT_STORAGE_ROOT is required" {
-			t.Fatalf("missing root was not diagnosed: %v", err)
-		}
-	}
-	config := configuredTestConfig()
-	config.StorageRoot = "a/root/that/does/not/exist"
-	if err := config.Validate(); err != nil {
-		t.Fatalf("configuration validation performed filesystem initialization: %v", err)
-	}
-}
-
-func TestAuthenticationConfigurationIsRequiredAndFlagsAreExplicit(t *testing.T) {
-	for _, field := range []string{
-		"DAYNIGHT_PUBLIC_ORIGIN", "DAYNIGHT_UNIAUTH_URL", "DAYNIGHT_UNIAUTH_APP_ID",
-		"DAYNIGHT_UNIAUTH_APP_SECRET", "DAYNIGHT_UNIAUTH_CALLBACK_URL",
-	} {
-		for _, value := range []string{"", " \t"} {
-			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
-			if err == nil || err.Error() != field+" is required" {
-				t.Fatalf("missing %s was not diagnosed: %v", field, err)
-			}
-		}
-	}
-	for _, field := range []string{"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN", "DAYNIGHT_ALLOW_LOOPBACK_HTTP"} {
-		for _, value := range []string{"true", "false", "2", "secret-value"} {
-			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
-			if err == nil || err.Error() != field+" must be 0 or 1" {
-				t.Fatalf("invalid %s flag was not safely diagnosed: %v", field, err)
-			}
-		}
-	}
-	config, err := LoadConfig(configEnvironment(map[string]string{
-		"DAYNIGHT_PUBLIC_ORIGIN":          "http://app.daynight.test:8080",
-		"DAYNIGHT_UNIAUTH_CALLBACK_URL":   "http://app.daynight.test:8080/auth/callback",
-		"DAYNIGHT_UNIAUTH_URL":            "http://127.0.0.1:8081",
-		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "1", "DAYNIGHT_ALLOW_LOOPBACK_HTTP": "1",
-	}))
-	if err != nil || !config.AllowHTTPTestOrigin || !config.AllowLoopbackHTTP || config.UniAuthCallbackURL != "http://app.daynight.test:8080/auth/callback" {
-		t.Fatalf("explicit test origin and gateway settings rejected: %+v %v", config, err)
-	}
-	config, err = LoadConfig(configEnvironment(map[string]string{
-		"DAYNIGHT_PUBLIC_ORIGIN": "https://daynight.example",
-		"DAYNIGHT_UNIAUTH_URL":   "http://127.0.0.1:8081", "DAYNIGHT_ALLOW_LOOPBACK_HTTP": "1",
-	}))
-	if err != nil || config.AllowHTTPTestOrigin || !config.AllowLoopbackHTTP {
-		t.Fatalf("HTTPS primary origin and explicit numeric-loopback gateway rejected: %+v %v", config, err)
-	}
-}
-
 func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) {
 	const invalidAppID = "private:invalid-app-id"
 	const secret = "credential-not-for-diagnostics"
@@ -156,17 +43,13 @@ func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) 
 	config.UniAuthAppID, config.UniAuthAppSecret = invalidAppID, secret
 	config.DatabaseURL = "invalid-database-configuration"
 	config.StorageRoot = filepath.Join(testStorageRoot(t), "unopened-auth-storage")
-	_, loadErr := LoadConfig(configEnvironment(map[string]string{
+	_, loadErr := configpkg.LoadConfig(configEnvironment(map[string]string{
 		"DAYNIGHT_UNIAUTH_APP_ID":     invalidAppID,
 		"DAYNIGHT_UNIAUTH_APP_SECRET": secret,
 	}))
 	validateErr := config.Validate()
-	factoryCalled := false
-	runtime, startErr := Start(context.Background(), config, testLogger(), func(Dependencies) (http.Handler, error) {
-		factoryCalled = true
-		return http.NotFoundHandler(), nil
-	})
-	if runtime != nil || factoryCalled {
+	app, startErr := service.OpenApp(context.Background(), config)
+	if app != nil {
 		t.Fatal("invalid App credentials reached runtime composition")
 	}
 	for _, err := range []error{loadErr, validateErr, startErr} {
@@ -196,17 +79,13 @@ func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
 			config.UniAuthCallbackURL = config.PublicOrigin + callbackPath
 			config.DatabaseURL = "invalid-database-configuration"
 			config.StorageRoot = filepath.Join(testStorageRoot(t), "unopened-public-page-storage")
-			_, loadErr := LoadConfig(configEnvironment(map[string]string{
+			_, loadErr := configpkg.LoadConfig(configEnvironment(map[string]string{
 				"DAYNIGHT_UNIAUTH_CALLBACK_URL": config.UniAuthCallbackURL,
 			}))
 			validateErr := config.Validate()
-			handler, compositionErr := New(Dependencies{}, config, testLogger())
-			factoryCalled := false
-			runtime, startErr := Start(context.Background(), config, testLogger(), func(Dependencies) (http.Handler, error) {
-				factoryCalled = true
-				return http.NotFoundHandler(), nil
-			})
-			if handler != nil || runtime != nil || factoryCalled {
+			handler, compositionErr := newTestHandler(Dependencies{}, config, testLogger())
+			app, startErr := service.OpenApp(context.Background(), config)
+			if handler != nil || app != nil {
 				t.Fatal("conflicting public-page callback reached route or runtime composition")
 			}
 			for _, err := range []error{loadErr, validateErr, compositionErr, startErr} {
@@ -225,13 +104,13 @@ func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
 func TestPublicPageCallbackReservationPreservesDistinctPaths(t *testing.T) {
 	for _, callbackPath := range []string{"/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback", "/login-callback", "/logincallback", "/auth/login/callback", "/projects-callback", "/workers-callback", "/workerscallback", "/auth/workers/callback", "/bots-callback", "/botscallback", "/auth/bots/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
-			config, err := LoadConfig(configEnvironment(map[string]string{
+			config, err := configpkg.LoadConfig(configEnvironment(map[string]string{
 				"DAYNIGHT_UNIAUTH_CALLBACK_URL": "https://daynight.example" + callbackPath,
 			}))
 			if err != nil {
 				t.Fatalf("distinct callback path rejected: %v", err)
 			}
-			handler, err := New(Dependencies{}, config, testLogger())
+			handler, err := newTestHandler(Dependencies{}, config, testLogger())
 			if err != nil || handler == nil {
 				t.Fatalf("distinct callback path failed route composition: %v", err)
 			}

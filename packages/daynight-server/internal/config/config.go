@@ -1,4 +1,4 @@
-package server
+package config
 
 import (
 	"net"
@@ -6,10 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
-
-	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
 type Config struct {
@@ -78,16 +74,8 @@ func loadFlag(getenv func(string) string, field string) (bool, error) {
 	case "1":
 		return true, nil
 	default:
-		return false, &configpkg.ConfigurationError{Field: field, Rule: "must be 0 or 1"}
+		return false, &ConfigurationError{Field: field, Rule: "must be 0 or 1"}
 	}
-}
-
-func (c Config) identityClient() (*uniauth.Client, error) {
-	client, err := uniauth.New(uniauth.Config{BaseURL: c.UniAuthURL, AppID: c.UniAuthAppID, AppSecret: c.UniAuthAppSecret, AllowLoopbackHTTP: c.AllowLoopbackHTTP})
-	if err != nil {
-		return nil, &configpkg.ConfigurationError{Field: "DAYNIGHT_UNIAUTH_URL / DAYNIGHT_UNIAUTH_APP_ID / DAYNIGHT_UNIAUTH_APP_SECRET", Rule: "must identify a valid UniAuth origin and backend App credentials", Cause: err}
-	}
-	return client, nil
 }
 
 func loadDuration(getenv func(string) string, field string) (time.Duration, error) {
@@ -97,48 +85,48 @@ func loadDuration(getenv func(string) string, field string) (time.Duration, erro
 	}
 	duration, err := time.ParseDuration(value)
 	if err != nil || duration <= 0 {
-		return 0, &configpkg.ConfigurationError{Field: field, Rule: "must be a positive Go duration"}
+		return 0, &ConfigurationError{Field: field, Rule: "must be a positive Go duration"}
 	}
 	return duration, nil
 }
 
 func (c Config) Validate() error {
 	if strings.TrimSpace(c.DatabaseURL) == "" {
-		return &configpkg.ConfigurationError{Field: "DAYNIGHT_DATABASE_URL", Rule: "is required"}
+		return &ConfigurationError{Field: "DAYNIGHT_DATABASE_URL", Rule: "is required"}
 	}
 	if strings.TrimSpace(c.StorageRoot) == "" {
-		return &configpkg.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "is required"}
+		return &ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "is required"}
 	}
 	for _, required := range []struct{ field, value string }{
 		{"DAYNIGHT_PUBLIC_ORIGIN", c.PublicOrigin}, {"DAYNIGHT_UNIAUTH_URL", c.UniAuthURL}, {"DAYNIGHT_UNIAUTH_APP_ID", c.UniAuthAppID}, {"DAYNIGHT_UNIAUTH_APP_SECRET", c.UniAuthAppSecret}, {"DAYNIGHT_UNIAUTH_CALLBACK_URL", c.UniAuthCallbackURL},
 	} {
 		if strings.TrimSpace(required.value) == "" {
-			return &configpkg.ConfigurationError{Field: required.field, Rule: "is required"}
+			return &ConfigurationError{Field: required.field, Rule: "is required"}
 		}
 	}
-	if _, _, err := configpkg.ValidateAuthSettings(configpkg.AuthSettings{PublicOrigin: c.PublicOrigin, AllowHTTPTestOrigin: c.AllowHTTPTestOrigin}, c.UniAuthCallbackURL); err != nil {
+	if _, _, err := ValidateAuthSettings(AuthSettings{PublicOrigin: c.PublicOrigin, AllowHTTPTestOrigin: c.AllowHTTPTestOrigin}, c.UniAuthCallbackURL); err != nil {
 		return err
 	}
-	if _, err := c.identityClient(); err != nil {
+	if err := validateUniAuth(c); err != nil {
 		return err
 	}
 	host, port, err := net.SplitHostPort(c.ListenAddress)
 	if err != nil {
-		return &configpkg.ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must contain a numeric loopback IP and port"}
+		return &ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must contain a numeric loopback IP and port"}
 	}
 	address, err := netip.ParseAddr(host)
 	if err != nil || !address.IsLoopback() || address.Zone() != "" {
-		return &configpkg.ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a numeric loopback IP"}
+		return &ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a numeric loopback IP"}
 	}
 	number, err := strconv.Atoi(port)
 	if err != nil || number < 0 || number > 65535 || strconv.Itoa(number) != port {
-		return &configpkg.ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a port from 0 to 65535"}
+		return &ConfigurationError{Field: "DAYNIGHT_LISTEN_ADDR", Rule: "must use a port from 0 to 65535"}
 	}
 	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 {
-		return &configpkg.ConfigurationError{Field: "timeouts", Rule: "startup and shutdown must be positive"}
+		return &ConfigurationError{Field: "timeouts", Rule: "startup and shutdown must be positive"}
 	}
 	if c.TaskSyncOverlap <= 0 {
-		return &configpkg.ConfigurationError{Field: "DAYNIGHT_TASK_SYNC_OVERLAP", Rule: "must be a positive Go duration"}
+		return &ConfigurationError{Field: "DAYNIGHT_TASK_SYNC_OVERLAP", Rule: "must be a positive Go duration"}
 	}
 	return nil
 }

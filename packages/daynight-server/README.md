@@ -291,13 +291,12 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
 | `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
 
-HTTP startup prepares one local file-storage root and creates and verifies one
-concrete PostgreSQL store. The handler factory `server.New(Dependencies, Config, logger)` returns
-`(http.Handler, error)`, validating mandatory authentication configuration before
-assembling the mux. `Dependencies` supplies `Store` and `Files` before the listener
-accepts requests. The composition
-root assembles services without opening another pool or file root. The runtime
-owns HTTP shutdown, storage closure and pool closure. Startup applies the embedded migrations before accepting requests.
+Startup validates neutral configuration and constructs the UniAuth client before
+opening one local file root and one PostgreSQL resource. `service.App` assembles
+and owns the shared modules and resources; `server.New` registers their HTTP
+routes. The runtime stops admission and drains HTTP and WebSocket work before
+the application closes the Session engine, files and pool. A cleanup timeout
+retains resources for another close attempt. Startup applies the embedded migrations before accepting requests.
 One pinned connection holds a session advisory lock across version checks and all
 migration transactions; unknown versions, gaps and checksum mismatches stop startup.
 

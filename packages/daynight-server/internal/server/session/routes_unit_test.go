@@ -148,6 +148,91 @@ func TestSessionChannelReservesPendingUpgradeCapacity(t *testing.T) {
 	}
 }
 
+func TestSessionShutdownRetriesPendingUpgradeDrain(t *testing.T) {
+	routes := NewRoutes(nil, nil, testLogger())
+	request := httptest.NewRequest(http.MethodGet, "http://daynight.example.com/channel", nil)
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Sec-WebSocket-Version", "13")
+	request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	writer := &blockedSessionUpgrade{httptest.NewRecorder(), make(chan struct{}), make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-writer.release:
+		default:
+			close(writer.release)
+		}
+	})
+	upgradeDone := make(chan error, 1)
+	go func() { _, _, _, err := routes.accept(writer, request); upgradeDone <- err }()
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("upgrade did not reach hijack")
+	}
+	deadline, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := routes.Shutdown(deadline); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown did not wait for pending upgrade: %v", err)
+	}
+	drained := routes.drained
+	if _, _, _, err := routes.accept(httptest.NewRecorder(), request); err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("shutdown admitted new channel: %v", err)
+	}
+	canceled, cancelRetry := context.WithCancel(context.Background())
+	cancelRetry()
+	if err := routes.Shutdown(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("retry did not wait for pending upgrade: %v", err)
+	}
+	if routes.drained != drained {
+		t.Fatal("shutdown retry replaced the drain state")
+	}
+	close(writer.release)
+	select {
+	case err := <-upgradeDone:
+		if err == nil {
+			t.Fatal("failed upgrade succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upgrade did not finish")
+	}
+	retry, cancelRetry := context.WithTimeout(context.Background(), time.Second)
+	defer cancelRetry()
+	if err := routes.Shutdown(retry); err != nil {
+		t.Fatalf("shutdown retry failed after upgrade finished: %v", err)
+	}
+}
+
+func TestSessionShutdownRetainsOnlyDrainErrors(t *testing.T) {
+	routes := NewRoutes(nil, nil, testLogger())
+	ordinary := errors.New("ordinary disconnect")
+	first := errors.New("controller disconnect")
+	second := errors.New("terminal disconnect")
+	routes.recordDrainError(ordinary)
+	routes.active.Add(1)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := routes.Shutdown(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown did not wait for active connection: %v", err)
+	} else if _, ok := err.(interface{ Drained() bool }); ok {
+		t.Fatalf("unfinished drain reported completion: %v", err)
+	}
+	routes.recordDrainError(first)
+	routes.recordDrainError(second)
+	routes.active.Done()
+	ctx, cancelRetry := context.WithTimeout(context.Background(), time.Second)
+	defer cancelRetry()
+	for i := 0; i < 2; i++ {
+		err := routes.Shutdown(ctx)
+		if !errors.Is(err, first) || !errors.Is(err, second) || errors.Is(err, ordinary) {
+			t.Fatalf("shutdown %d returned wrong disconnect failures: %v", i, err)
+		}
+		if completed, ok := err.(interface{ Drained() bool }); !ok || !completed.Drained() {
+			t.Fatalf("shutdown %d did not report completed drain: %v", i, err)
+		}
+	}
+}
+
 func TestSessionRoutesFrameBounds(t *testing.T) {
 	if err := relayWrite(context.Background(), nil, make(chan int)); err == nil {
 		t.Fatal("serialized unsupported response")

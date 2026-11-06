@@ -20,12 +20,13 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
 
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestSessionRoutesExposeOnlyCurrentClaim(t *testing.T) {
@@ -66,15 +67,16 @@ func TestSessionRoutesCapabilitiesRequireAuthentication(t *testing.T) {
 }
 
 type sessionHTTPFixture struct {
-	db           *postgres.Store
-	handler      *resourceTestHandler
-	server       *httptest.Server
-	application  sessionApplication
-	task         api.Task
-	base         string
-	registration sp.Registration
-	snapshot     sp.Snapshot
-	grant        sessioncore.GrantResult
+	db                  *postgres.Store
+	handler             *resourceTestHandler
+	server              *httptest.Server
+	application         sessionApplication
+	task                api.Task
+	base                string
+	registration        sp.Registration
+	snapshot            sp.Snapshot
+	grant               sessioncore.GrantResult
+	expectShutdownError bool
 }
 
 func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
@@ -95,7 +97,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	}](t, projectRequest(f.handler, http.MethodPost, f.base, jsonBody(t, f.registration)), http.StatusOK)
 	f.snapshot = result.Session
 	f.grant = f.mint(t, "bootstrap")
-	application, err := server.New(server.Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
+	application, err := appsupport.NewHandler(configuredTestConfig(), f.db, f.db.Ready, attachmentTestFiles(t), testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := f.application.Shutdown(ctx); err != nil {
+		if err := f.application.Shutdown(ctx); err != nil && !f.expectShutdownError {
 			t.Error(err)
 		}
 	})
@@ -569,6 +571,29 @@ func TestSessionRoutesCookieOriginResetAndShutdown(t *testing.T) {
 	}
 	if err == nil || response == nil || response.StatusCode != 429 {
 		t.Fatal("shutdown accepted a new channel")
+	}
+}
+
+func TestSessionShutdownRetainsDisconnectFailure(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	_, snapshot := f.controller(t, uuid.NewString())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.db.Pool.Exec(ctx, `CREATE FUNCTION refuse_shutdown_disconnect() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected disconnect failure'; END $$;
+		CREATE TRIGGER refuse_shutdown_disconnect BEFORE UPDATE OF connection_expires_at ON task_sessions FOR EACH ROW EXECUTE FUNCTION refuse_shutdown_disconnect()`); err != nil {
+		t.Fatal(err)
+	}
+	f.expectShutdownError = true
+	for i := 0; i < 2; i++ {
+		err := f.application.Shutdown(ctx)
+		var cause *pgconn.PgError
+		if !errors.As(err, &cause) || cause.Message != "injected disconnect failure" {
+			t.Fatalf("shutdown %d lost disconnect cause: %v", i, err)
+		}
+	}
+	var connected bool
+	if err := f.db.Pool.QueryRow(ctx, `SELECT connection_expires_at IS NOT NULL FROM task_sessions WHERE id=$1`, snapshot.SessionID).Scan(&connected); err != nil || !connected {
+		t.Fatalf("failed disconnect unexpectedly cleared connection: connected=%v error=%v", connected, err)
 	}
 }
 

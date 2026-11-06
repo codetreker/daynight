@@ -38,7 +38,7 @@ func terminalRequest(h http.Handler, method, path, body, protocol string) *httpt
 func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
 	f := terminalHTTPSetup(t)
 	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
-	a, err := New(Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
+	a, err := newTestHandler(Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 	task = claimHTTPWorker(t, h, task, claim)
 	w := apiWorker(t, task.Properties)
 	cfg := configuredTestConfig()
-	a, e := New(Dependencies{Store: db, Files: attachmentTestFiles(t)}, cfg, testLogger())
+	a, e := newTestHandler(Dependencies{Store: db, Files: attachmentTestFiles(t)}, cfg, testLogger())
 	if e != nil {
 		t.Fatal(e)
 	}
