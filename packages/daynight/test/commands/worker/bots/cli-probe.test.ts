@@ -1,3 +1,4 @@
+import { testIsolation } from "../../../../scripts/test-bootstrap.js";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -168,7 +169,7 @@ describe("owned Bot CLI capability probes", () => {
     const scope = await createBotCliProbe({ environment: { ...process.env, NODE_OPTIONS: preload }, cwd: root }, operation); scopes.push(scope);
     await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
     const result = await scope.run(process.execPath, ["-e", "console.log(process.env.NODE_OPTIONS)"]);
-    expect(result.stdout.trim()).toBe(preload);
+    expect(result.stdout.trim()).toBe(testIsolation.guardedEnvironment({ NODE_OPTIONS: preload }).NODE_OPTIONS);
     expect(await readFile(marker, "utf8")).toBe("executed");
     await scope.close(); await checkStopped(scope);
   }, 120_000);

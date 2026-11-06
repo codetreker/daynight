@@ -70,8 +70,7 @@ it("terminates only an observer command at its short deadline", async () => {
 });
 
 it.skipIf(process.platform === "win32")("bounds a probe whose exited child leaves inherited output pipes open", async () => {
-  const source = "const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1200)'], { stdio: 'inherit' }).unref(); process.stdout.write('descendant-started');";
-  const probe = runProbe(process.execPath, ["-e", source], { timeoutMs: 200, signal: new AbortController().signal });
+  const probe = runProbe("/bin/sh", ["-c", "/bin/sleep 1.2 & printf descendant-started"], { timeoutMs: 200, signal: new AbortController().signal });
   let timer;
   const bounded = await Promise.race([probe, new Promise(resolve => { timer = setTimeout(() => resolve("deadline-missed"), 600); })]);
   clearTimeout(timer);

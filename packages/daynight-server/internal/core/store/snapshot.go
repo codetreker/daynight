@@ -8,6 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Snapshot struct {
@@ -15,12 +16,27 @@ type Snapshot struct {
 }
 
 func (s *Store) ReadSnapshot(ctx context.Context, operation func(SnapshotScope) error) error {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	return readSnapshot(ctx, s.Pool, func(tx pgx.Tx) error { return operation(&Snapshot{tx: tx}) }, false)
+}
+
+// ReadOnlySnapshot shares transaction completion semantics with driver adapters.
+func ReadOnlySnapshot(ctx context.Context, pool *pgxpool.Pool, operation func(pgx.Tx) error) error {
+	return readSnapshot(ctx, pool, operation, true)
+}
+
+func readSnapshot(ctx context.Context, pool *pgxpool.Pool, operation func(pgx.Tx) error, closedConnectionCleanup bool) error {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return queryError("begin snapshot", err)
 	}
-	if err := transact(ctx, tx, func(tx pgx.Tx) error { return operation(&Snapshot{tx: tx}) }); err != nil {
-		return queryError("snapshot", err)
+	var completion error
+	if closedConnectionCleanup {
+		completion = transactReadOnly(ctx, tx, operation)
+	} else {
+		completion = transact(ctx, tx, operation)
+	}
+	if completion != nil {
+		return queryError("snapshot", completion)
 	}
 	return nil
 }

@@ -140,7 +140,10 @@ list/detail with private project creation, account/token pages, member/invitatio
 project execution-warning settings and explicit invitation acceptance.
 
 `WorkspaceSidebar` provides a Team selector, the selected Team's project links,
-Shared with me and My Workers in its scrollable upper region. On a fresh
+Shared with me and My Workers in its scrollable upper region. The Team trigger
+opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
+without shifting navigation or changing the sidebar state. It preserves native
+Team links, keyboard access, pagination and recoverable errors. On a fresh
 workspace entry, the account-scoped Team preference restores independently of
 the current project or global page. Explicit Team routes use their URL's Team;
 ordinary in-page navigation keeps the current choice, including a failed save.
@@ -491,7 +494,8 @@ new preview and confirmation. Direct grants and invitations remain intact.
 
 A validated receipt determines success. Retained access is installed in the
 Project access session; loss of access revokes the matching Task cache generation
-and clears open private views. The source Team is checked by ID for navigation:
+and clears open private views, including unsubmitted transfer previews. A dispatched
+transfer retains its result and a private-data-free unknown check. The source Team is checked by ID for navigation:
 a confirmed 404 goes to Personal, while network errors preserve the success
 notice and offer a retry. A lost response remains unknown, even if a later read
 returns 404; checking current state never replays the transfer. See the
@@ -519,13 +523,21 @@ replaying PATCH; missing access clears private Project data and the draft.
 
 Network, protocol or 5xx failure after PATCH leaves the write unconfirmed. The
 form reconciles Project and membership before enabling another mutation. Failed
-reconciliation leaves Save blocked and exposes a read retry. Navigation aborts
-obsolete client work without claiming that a committed write was rolled back;
-returning to the page loads authoritative state before editing. The existing
+reconciliation leaves Save blocked and exposes a read retry. Leaving the settings
+route cancels an undispatched save; a dispatched save and its result remain owned
+by the original user and Project for presentation on return. Unresolved outcomes
+remain retained until read-only reconciliation or scope invalidation. Returning
+reads authoritative settings without overwriting a draft; a changed version
+shows the current saved value and blocks saving until the user cancels the draft.
+An equal current value needs no write and does not establish an unknown outcome.
+Confirmed Project revocation hides private data and invalidates reads without
+cancelling a dispatched save; its result waits for renewed access. Identity scope
+termination rejects old results, and cancellation never proves that a committed
+write was rolled back. The existing
 foreground identity guard preserves same-user drafts and focus. Ordinary access
 checks do not reload the settings resource; Save waits for the current check and
-verifies the role, ownership and observed settings version before dispatch. Identity
-or project replacement invalidates old requests and results.
+verifies the role, ownership and observed settings version before dispatch. Ending
+the original identity or Project scope invalidates its requests and results.
 
 Project resources include required `settings.version`,
 `settings.executionWarningMinutes` and `ownership:{teamId,version}`. The resource
@@ -1842,6 +1854,13 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+Status, platform and automatic-permission API tests distinguish strict decoder
+inputs, target-specific write confirmation and shared transport failures. Complete
+detail/graph malformed-field matrices retain their input boundaries; representative
+HTTP cases check decoder admission and protocol classification. The
+[API proof decision](../../.agents/notes/implemented/testing/2026-11-06-web-api-proof-owners.md)
+owns that separation and its limits.
+
 The platform, pause, status and assignment controller session tests use
 `tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
 Testing Library with a 5ms default polling interval, preserving immediate
@@ -1865,11 +1884,27 @@ shard 2 runs all 28 cases before its full-stack acceptance. Its results and fail
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
-The Team management browser suite exercises the production settings page against
-controlled API responses. It checks name and action geometry, wrapping, text
-selection and rename interactions. Run `pnpm --filter @codetreker/daynight-web
-exec playwright test --config tests/navigation/team-management-playwright.config.ts`.
-Browser CI shard 2 runs this suite before full-stack acceptance.
+The Team navigation browser suite builds one production application preview for
+four Playwright projects: `team-preference` covers Team selection and Worker
+configuration identity, `team-management` covers settings and rename interactions,
+`team-members` covers membership and self-exit, and `session-record-layout` covers
+responsive execution-record selection, keyboard and touch input, history loading,
+errors and pagination. Each case owns its browser
+context and controlled API responses; the preview serves only static assets.
+Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
+tests/navigation/team-playwright.config.ts`; add `--project team-management` to
+focus on settings geometry, wrapping, text selection and rename interactions.
+Browser CI shard 2 runs the complete suite between editor navigation and Bot
+viewport checks before full-stack acceptance. One worker and zero retries remain
+in effect. Preference and Session layout cases use 45-second deadlines, while
+management and members retain 30 seconds; preview startup retains 90 seconds.
+CI gives the grouped command a 540-second aggregate deadline, equal to the three
+former 180-second command budgets. Its output remains separated under the existing
+`.tmp/team-preference-results`, `.tmp/team-management-results` and
+`.tmp/team-members-results` directories; Session layout results use
+`.tmp/session-selector/results`, and members retain failure traces. The
+[shared preview decision](../../.agents/notes/implemented/testing/2026-11-05-shared-team-navigation-preview.md)
+owns preparation sharing, isolation and deadline handling.
 
 The Bot viewport suite runs the production application, Session host and timeline
 against controlled HTTP and Session API responses. It checks long-history
@@ -1915,7 +1950,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-39 scenarios, divided into disjoint sets of 20 and 19. Default file-level partitioning
+41 scenarios, divided into disjoint sets of 21 and 20. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -2325,8 +2360,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (78 ordinary cases; local stress adds five native cases
-for 44 native / 39 container, 83 total), current manual/periodic refresh,
+The selected inventory (82 ordinary cases; local stress adds five native cases
+for 46 native / 41 container, 87 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle

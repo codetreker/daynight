@@ -1,12 +1,19 @@
 package model
 
 type Fault struct {
-	Code       string
-	Message    string
-	Cause      error
-	TaskIDs    []string
-	GraphLimit *GraphLimitDetails
-	StepsLimit *StepsLimitDetails
+	Code             string
+	Message          string
+	Cause            error
+	TaskIDs          []string
+	GraphLimit       *GraphLimitDetails
+	StepsLimit       *StepsLimitDetails
+	SearchExpression *SearchExpressionDetails
+}
+
+type SearchExpressionDetails struct {
+	Reason   string
+	Position int
+	Length   int
 }
 
 type StepsLimitDetails struct {

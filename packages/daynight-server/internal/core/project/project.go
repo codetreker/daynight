@@ -114,7 +114,12 @@ func ValidateRead(p model.Principal, id string) (string, error) {
 	}
 	return model.CanonicalID(id)
 }
-func RequireProjectRead(ctx context.Context, reader store.ProjectReader, p model.Principal, id string) (model.ProjectAccess, error) {
+
+type ProjectAccessReader interface {
+	ProjectAccess(context.Context, model.Principal, string) (model.ProjectAccess, error)
+}
+
+func RequireProjectRead(ctx context.Context, reader ProjectAccessReader, p model.Principal, id string) (model.ProjectAccess, error) {
 	id, err := ValidateRead(p, id)
 	if err != nil {
 		return model.ProjectAccess{}, err

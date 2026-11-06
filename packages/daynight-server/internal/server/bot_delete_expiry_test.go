@@ -19,8 +19,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/google/uuid"
 )
 
@@ -51,19 +52,20 @@ func TestBotDeleteHTTPRejectsExpiryAfterAdmission(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				relay := sessionrelay.New(h.Database)
+				engine := sessioncore.NewEngine(nil)
+				relay := sessionservice.New(h.Database, engine)
 				digest := sha256.Sum256([]byte("Use Daynight CLI."))
-				bound, err := relay.RegisterBot(ctx, principal, worker, bot.ID, sessionrelay.BotRegistration{BotVersion: bot.Version, Configuration: configuration, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}})
+				bound, err := relay.RegisterBot(ctx, principal, worker, bot.ID, sessioncore.BotRegistration{BotVersion: bot.Version, Configuration: configuration, RoleConfiguration: model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])}, Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, RegistrationID: uuid.NewString(), TestExecutionID: uuid.NewString(), ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString(), Provider: "codex", InitialInput: "none"}})
 				if err != nil {
 					t.Fatal(err)
 				}
 				v := bound.Session
-				if _, err = relay.GrantBot(ctx, principal, worker, bot.ID, sessionrelay.BotGrant{BotVersion: bound.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "bootstrap"}}); err != nil {
+				if _, err = relay.GrantBot(ctx, principal, worker, bot.ID, sessioncore.BotGrant{BotVersion: bound.Bot.Version, Grant: sp.Grant{Protocol: sp.Protocol, TestExecutionID: v.TestExecutionID, ControllerID: v.Identity.ControllerID, ControllerInstanceID: v.Identity.ControllerInstanceID, ExecutionGeneration: v.ExecutionGeneration, Kind: "bootstrap"}}); err != nil {
 					t.Fatal(err)
 				}
 				mux := http.NewServeMux()
 				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-				bothttp.RegisterRoutes(mux, bots, relay, h.Auth, logger)
+				bothttp.RegisterRoutes(mux, bots, botservice.NewDeletions(h.Database, nil, engine), h.Auth, logger)
 				h.Handler = httpx.RequestLogging(logger, mux)
 				cookies, authorization, table := []*http.Cookie(nil), []string{"Bearer " + pat.Token}, "personal_access_tokens"
 				if kind == model.SessionCredential {

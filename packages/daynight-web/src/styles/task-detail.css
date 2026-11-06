@@ -223,8 +223,9 @@
   .task-detail-heading { padding: 12px 19px 0; }
   .task-detail-read-error { padding: 15px 19px 0; }
   .task-detail-title { font-size: 19px; }
-  .task-detail-status-row { gap: 8px; }
-  .task-detail-badges, .task-detail-state-controls { gap: 4px; }
+  .task-detail-status-row { align-items: center; justify-content: flex-start; gap: 6px 4px; margin-inline: -8px; }
+  .task-detail-badges, .task-detail-state-controls { display: contents; }
+  .task-platform-select { field-sizing: content; padding-right: 7px; }
   .task-automation-control { gap: 7px; }
   .task-automation-control > span { font-size: 10px; }
   .task-detail-title-action { font-size: 10px; padding: 7px 9px; }

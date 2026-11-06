@@ -35,6 +35,8 @@ func seedGraph(t *testing.T, database *store.Store, projectID string, nodes, edg
 	}
 }
 
+// A full chain keeps boundary traversal deep; convergent extra edges exercise
+// the independent edge limit while retaining every node in the component.
 func seedConnectedGraph(t *testing.T, database *store.Store, projectID string, nodes, edges int) string {
 	t.Helper()
 	ctx := context.Background()
@@ -48,6 +50,10 @@ func seedConnectedGraph(t *testing.T, database *store.Store, projectID string, n
   SELECT $1::uuid, md5($1::text || ':' || target)::uuid, md5($1::text || ':' || predecessor)::uuid
   FROM generate_series(1, $2::int) target CROSS JOIN generate_series(1, $2::int) predecessor
   WHERE predecessor < target-1 ORDER BY target, predecessor LIMIT $3`, projectID, nodes, edges-(nodes-1)); err != nil {
+		t.Fatal(err)
+	}
+	// Graph queries can reach a fresh bulk fixture before autovacuum gathers statistics.
+	if _, err := database.Pool.Exec(ctx, `ANALYZE tasks, task_dependencies`); err != nil {
 		t.Fatal(err)
 	}
 	var rootID string

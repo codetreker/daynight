@@ -127,7 +127,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
     <aside ref={sidebar} id="workspace-sidebar" className={`sidebar${active ? " sidebar-drawer-open" : ""}`} aria-label={app.workspaceNavigation} role={active ? "dialog" : undefined} aria-modal={active ? true : undefined} tabIndex={-1}>
       <div className="sidebar-main">
         <a className="brand" href="/projects" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><span className="brand-mark" aria-hidden="true" /><span className="brand-name">daynight</span></a>
-        <TeamSelector personalId={personalId} selectedId={selectedTeamId} expanded={expanded} onExpand={() => { if (narrow) setDrawer({ route: routeKey }); else onToggle(); }} onNavigate={onNavigate} {...(onCreateTeam ? { onCreate: () => { if (narrow) toggle.current?.focus(); setDrawer(null); onCreateTeam(); } } : {})} />
+        <TeamSelector personalId={personalId} selectedId={selectedTeamId} onNavigate={onNavigate} {...(onCreateTeam ? { onCreate: () => { if (narrow) toggle.current?.focus(); setDrawer(null); onCreateTeam(); } } : {})} />
         <nav aria-label={app.mainNavigation}>
           <p className="nav-label">{app.workspace}</p>
           <a className="nav-button" {...teamLink((id) => id === personalId ? "/projects" : `/teams/${id}`)} aria-label={m.myProjects} title={m.myProjects} aria-current={projectsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{m.myProjects}</span></a>

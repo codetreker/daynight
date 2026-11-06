@@ -27,15 +27,18 @@ identity acquisition retains fifteen seconds on Windows and five seconds on
 POSIX; recurring identity probes retain five seconds and Job Object probes
 retain fifteen seconds. Windows proof acquisition uses the
 [native process handle](../bug-fix/2026-11-05-windows-native-process-proof.md)
-implementation, whose deadline checks join native calls without preempting a
-kernel call. The separate
+implementation. Job operations use the
+[native Job API](2026-11-05-native-controller-job-api.md) with the same fifteen-second
+operation budget. Both implementations check deadlines between native calls and
+join a call already in progress without preempting the kernel. The separate
 [startup budget decision](../bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
 owns the caller allowances; this hook does not set production launch or stop
 deadlines.
 
 Process confirmation is polled sequentially, joining each system probe before
 starting another or escalating. A polling deadline limits another round; an
-already started probe retains its per-call bound. Native proofs observed before
+already started probe retains its per-call budget and joins native work already
+in progress. Native proofs observed before
 and after shutdown are deduplicated by original process identity before cleanup.
 No timeout race releases fixture ownership while its cleanup continues.
 

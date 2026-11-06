@@ -110,6 +110,6 @@ export const WorkerDetailPage = ({ workerId, readEnabled }: { readonly workerId:
       </section><p className="worker-detail-footnote">{m.footer}</p>
     </>}
     </section>
-    {configurationOpened && <section className="worker-section" id="worker-panel-configuration" role="tabpanel" aria-labelledby="worker-tab-configuration" hidden={section !== 'configuration'}><WorkerConfigurationPanel workerId={workerId} visible={section === 'configuration'} readEnabled={readEnabled && section === 'configuration'} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} /></section>}
+    {configurationOpened && <section className="worker-section" id="worker-panel-configuration" role="tabpanel" aria-labelledby="worker-tab-configuration" hidden={section !== 'configuration'}><WorkerConfigurationPanel workerId={workerId} onContinueEditing={() => selectSection('configuration')} visible={section === 'configuration'} readEnabled={readEnabled && section === 'configuration'} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} /></section>}
   </div>;
 };

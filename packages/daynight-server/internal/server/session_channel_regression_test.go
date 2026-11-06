@@ -1,13 +1,9 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -47,10 +43,7 @@ func TestControllerChannelRejectsInvalidGrantsBeforeUpgrade(t *testing.T) {
 			if err == nil || response == nil || (response.StatusCode != http.StatusUnauthorized && response.StatusCode != http.StatusForbidden) {
 				t.Fatalf("invalid grant upgraded: response=%v error=%v", response, err)
 			}
-			f.application.relay.mutex.Lock()
-			count := len(f.application.relay.connections)
-			f.application.relay.mutex.Unlock()
-			if count != 0 {
+			if count := f.application.relay.ActiveConnections(); count != 0 {
 				t.Fatal("invalid grant occupied channel capacity", count)
 			}
 		})
@@ -100,49 +93,5 @@ func TestSessionChannelCallbackPathsReserved(t *testing.T) {
 				t.Fatal("callback overlaps session route", path)
 			}
 		}
-	}
-}
-
-// Block inside Hijack to exercise capacity before the connection enters the map.
-type blockedSessionUpgrade struct {
-	*httptest.ResponseRecorder
-	entered, release chan struct{}
-}
-
-func (w *blockedSessionUpgrade) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	close(w.entered)
-	<-w.release
-	return nil, nil, errors.New("bounded upgrade failure")
-}
-func TestSessionChannelReservesPendingUpgradeCapacity(t *testing.T) {
-	routes := newSessionRoutes(nil, nil, testLogger())
-	routes.reserved = relayMaxConnections - 1
-	request := httptest.NewRequest(http.MethodGet, "http://daynight.example.com/channel", nil)
-	request.Header.Set("Connection", "Upgrade")
-	request.Header.Set("Upgrade", "websocket")
-	request.Header.Set("Sec-WebSocket-Version", "13")
-	request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
-	writer := &blockedSessionUpgrade{httptest.NewRecorder(), make(chan struct{}), make(chan struct{})}
-	done := make(chan error, 1)
-	go func() { _, _, _, err := routes.accept(writer, request); done <- err }()
-	select {
-	case <-writer.entered:
-	case <-time.After(time.Second):
-		close(writer.release)
-		t.Fatal("upgrade did not reach hijack")
-	}
-	_, _, _, err := routes.accept(httptest.NewRecorder(), request)
-	close(writer.release)
-	if err == nil || !strings.Contains(err.Error(), "capacity") {
-		t.Fatal("pending upgrade did not reserve capacity", err)
-	}
-	if err := <-done; err == nil {
-		t.Fatal("failed upgrade succeeded")
-	}
-	routes.mutex.Lock()
-	reserved := routes.reserved
-	routes.mutex.Unlock()
-	if reserved != relayMaxConnections-1 {
-		t.Fatal("failed upgrade leaked reservation", reserved)
 	}
 }

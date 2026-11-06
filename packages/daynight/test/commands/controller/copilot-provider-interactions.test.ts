@@ -227,3 +227,90 @@ test.each(["sync", "async", "refused"] as const)("permission %s failure preserve
   expect(s.interactions.waiting).toBe(true); expect(vi.getTimerCount()).toBe(0);
   await expect(s.interactions.respond(p.interactionId, "1", { kind: "approval", action: "allow_once" })).rejects.toThrow(/submitted/);
 });
+
+const approvalDetail = (permissionRequest: object, promptRequest?: object) => {
+  const s = setup();
+  s.interactions.accept(event("permission.requested", { requestId: "detail", permissionRequest, promptRequest }));
+  const p = s.pending()[0]!;
+  expect(p?.kind).toBe("approval");
+  if (p.kind !== "approval") throw new Error("Expected approval");
+  return p;
+};
+
+test("shell approval presents the complete command once without native bookkeeping", () => {
+  const command = "ls -la && git branch --show-current";
+  const p = approvalDetail({ kind: "shell", fullCommandText: command, intention: "Inspect directory", toolCallId: "tool",
+    commands: [{ identifier: command, readOnly: false }], commandSegments: [{ fullCommandText: "ls -la", staticTokens: null }],
+    possiblePaths: [], possibleUrls: [], hasWriteFileRedirection: false, canOfferSessionApproval: false },
+  { kind: "commands", fullCommandText: command, intention: "Inspect directory", commandIdentifiers: [command], canOfferSessionApproval: false, toolCallId: "tool" });
+  expect(p.detail).toBe(command);
+  expect(p.title).toBe("Inspect directory");
+  expect(p.actions).toEqual(["allow_once", "reject"]);
+});
+
+test("shell approval preserves multiline commands, locations, URLs and native warnings", () => {
+  const command = "printf '%s\\n' 'a b'\ncat input.txt > output.txt";
+  const p = approvalDetail({ kind: "shell", fullCommandText: command,
+    commandSegments: [{ fullCommandText: command, workingDirectory: "/workspace" }],
+    possiblePaths: ["input.txt", "output.txt"], possibleUrls: [{ url: "https://example.com" }],
+    warning: "Writes outside the project", requestSandboxBypass: true, requestSandboxBypassReason: "Needs host access" },
+  { kind: "path", paths: ["/outside/output.txt"], accessKind: "write" });
+  expect(p.detail.startsWith(command + "\n")).toBe(true);
+  for (const value of ["Working directory: /workspace", "Possible paths: input.txt", "output.txt", "https://example.com", "Writes outside the project", "Sandbox bypass requested", "Needs host access", "Access: write", "/outside/output.txt"]) expect(p.detail).toContain(value);
+  expect(p.detail).not.toContain("commandSegments");
+});
+
+test.each([
+  [{ kind: "write", fileName: "notes/hello.txt", diff: "@@ -1 +1 @@\n-old\n+new" }, "notes/hello.txt\n@@ -1 +1 @@\n-old\n+new"],
+  [{ kind: "write", fileName: "notes/new.txt", diff: "", newFileContents: "hello\nworld\n" }, "notes/new.txt\nhello\nworld\n"],
+  [{ kind: "read", path: "/tmp/input.txt" }, "/tmp/input.txt"],
+])("file approvals retain the target and available changes", (request, detail) => {
+  expect(approvalDetail(request, request).detail).toBe(detail);
+});
+
+test("URL approval retains redirection and MCP approval retains opaque business arguments", () => {
+  const url = approvalDetail({ kind: "url", url: "https://example.com/new", redirectedFrom: "https://example.com/old" });
+  expect(url.detail).toBe("https://example.com/new\nRedirected from: https://example.com/old");
+  const args = { toolCallId: "business-value", commandSegments: ["business argument"], nested: { path: "/data" } };
+  const mcp = approvalDetail({ kind: "mcp", serverName: "files", toolName: "update", toolTitle: "Update file", args, readOnly: false, toolCallId: "internal-id" });
+  expect(mcp.detail).toContain("files / update");
+  expect(mcp.detail).toContain(JSON.stringify(args, null, 2));
+  expect(mcp.detail).toContain("Read only: false");
+  expect(mcp.detail).not.toContain("internal-id");
+});
+
+test("unknown and incomplete requests retain readable native decision information", () => {
+  for (const request of [{ kind: "future", target: "/important", constraints: { amount: 25 } }, { kind: "shell", operation: "native-operation" }]) {
+    const detail = approvalDetail(request).detail;
+    for (const value of Object.values(request)) expect(detail).toContain(typeof value === "string" ? value : JSON.stringify(value, null, 2).split("\n")[1]!.trim());
+  }
+});
+
+test("approval detail keeps large native content intact within the existing protocol limit", () => {
+  const content = "x".repeat(200_000) + "😀\nfinal important change";
+  expect(approvalDetail({ kind: "write", fileName: "large.txt", newFileContents: content }).detail).toBe("large.txt\n" + content);
+});
+
+test("file content remains distinct from an identical path and explicitly empty content", () => {
+  const request = { kind: "write", fileName: "same.txt", newFileContents: "same.txt" };
+  expect(approvalDetail(request, request).detail).toBe("same.txt\nsame.txt");
+  expect(approvalDetail({ ...request, newFileContents: "" }).detail).toBe("same.txt\nNew contents: (empty)");
+});
+
+test("unknown request retains intention unless already used as the card title", () => {
+  expect(approvalDetail({ kind: "future", intention: "Erase the selected records" }).detail).toContain("Erase the selected records");
+  const request = { kind: "future", intention: "Erase the selected records", target: "records" };
+  expect(approvalDetail(request, request).detail).not.toContain(request.intention);
+});
+
+test("native file content with NUL or a lone surrogate remains readable and approvable", () => {
+  const p = approvalDetail({ kind: "write", fileName: "data.txt", newFileContents: "before\0after\ud800😀" });
+  expect(p.detail).toBe("data.txt\nbefore\\u0000after\\ud800😀");
+});
+
+test("oversized approval is rejected by the existing codec instead of hiding content", () => {
+  const s = setup();
+  s.interactions.accept(event("permission.requested", { requestId: "large", permissionRequest: { kind: "write", fileName: "large.txt", newFileContents: "x".repeat(1_048_577) } }));
+  expect(s.pending()).toHaveLength(0);
+  expect(s.entries).toContainEqual(expect.objectContaining({ kind: "error", code: "copilot_interaction_unsupported" }));
+});

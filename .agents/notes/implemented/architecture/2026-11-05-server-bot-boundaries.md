@@ -39,7 +39,6 @@ implementation while exposing its Bot data operations in the shared transaction.
 
 Identical creation retries return frozen definitions before Worker availability
 is evaluated. Preferences and binding updates remain atomic with their caller's
-transaction; completion and cleanup errors retain their existing priority. The
-full bound deletion workflow remains with the existing Session integration until
-that workflow moves as a unit. SQL stays in the existing store implementation
-until its physical migration.
+transaction; completion and cleanup errors retain their existing priority. The bound deletion workflow is coordinated by `service/bot` with the shared
+Session engine and transaction-bound DAOs. SQL stays in the existing store
+implementation until its physical migration.

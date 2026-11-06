@@ -126,6 +126,7 @@ const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")), state = path.join(home, "state"), cwd = path.join(home, "ordinary");
   await mkdir(cwd); vi.stubEnv("DN_CONFIG_DIR", state);
+  const socketDirectory = process.platform === "win32" ? null : path.dirname(resolveControllerIpcEndpoint(home, "fixture"));
   const packageDirectory = path.join(home, "package"), dist = path.resolve(import.meta.dirname, "../../../dist");
   await mkdir(path.join(packageDirectory, "dist"), { recursive: true });
   const requestLog = path.join(home, "native-requests.jsonl"), launchLog = path.join(home, "controllers.jsonl"), nativeId = randomUUID();
@@ -283,7 +284,7 @@ await runController({ homeDirectory: ${JSON.stringify(home)}, provider: process.
       if (http !== null) await new Promise<void>((resolve, reject) => { http.close(error => error ? reject(error) : resolve()); http.closeAllConnections(); });
       executions.close(); store.close();
       if (stopped) {
-        if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(home, bot.id)), { recursive: true, force: true });
+        if (socketDirectory !== null) await rm(socketDirectory, { recursive: true, force: true });
         await rm(home, { recursive: true, force: true });
       }
     }

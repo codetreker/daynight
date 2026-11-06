@@ -141,6 +141,17 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
   }, []);
   const pause = () => { following.current = false; expectedTop.current = null; lastTop.current = viewport.current?.scrollTop ?? 0; capture(); };
   const latest = () => { pendingBookmark.current = null; restoreStatus.current = 'idle'; following.current = true; intent.current?.(true, null); anchor.current = null; updateRef.current(); };
+  const reveal = (target: HTMLElement, inset = 0): boolean => {
+    const box = viewport.current;
+    if (!active || !box || box.clientHeight === 0 || !box.contains(target) || identityRef.current !== identity) return false;
+    // Explicit navigation replaces a saved position even when its historical
+    // row has not loaded yet. Later pages must retain the user's new target.
+    pendingBookmark.current = null; restoreStatus.current = 'idle'; following.current = false; anchor.current = null; touchY.current = null;
+    box.scrollTop = Math.max(0, Math.min(box.scrollHeight - box.clientHeight, box.scrollTop + target.getBoundingClientRect().top - box.getBoundingClientRect().top - inset));
+    expectedTop.current = box.scrollTop; lastTop.current = box.scrollTop;
+    capture(); setShowLatest(box.scrollHeight - box.clientHeight - box.scrollTop > 64);
+    return true;
+  };
   const captureBookmark = (): TimelineReadingBookmark | null => {
     if (!reading || identityRef.current !== identity || historyEpochRef.current !== reading.historyEpoch) return null;
     const pending = pendingBookmark.current;
@@ -187,7 +198,7 @@ export function useTimelineScroll(identity: string, active: boolean, revision: u
     const box = event.currentTarget, bounds = box.getBoundingClientRect(), target = event.target.getBoundingClientRect();
     if (box.scrollTop < lastTop.current || target.top < bounds.top || target.bottom > bounds.bottom) pause();
   };
-  return { viewport, content, isFollowing: () => following.current, captureBookmark, restoreBookmark, getRestoreStatus: () => restoreStatus.current, showLatest, latest, pause, capture, onScroll, onKeyDown, onFocus,
+  return { viewport, content, isFollowing: () => following.current, captureBookmark, restoreBookmark, getRestoreStatus: () => restoreStatus.current, showLatest, latest, reveal, pause, capture, onScroll, onKeyDown, onFocus,
     onWheel: (event: WheelEvent<HTMLDivElement>) => { if (!event.defaultPrevented && event.deltaY < 0) pause(); },
     onPointerDown: (event: PointerEvent<HTMLDivElement>) => { if (event.pointerType === 'mouse' && event.target === event.currentTarget && event.clientX >= event.currentTarget.getBoundingClientRect().right - 16) pause(); },
     onTouchStart: (event: TouchEvent<HTMLDivElement>) => { touchY.current = event.touches[0]?.clientY ?? null; },

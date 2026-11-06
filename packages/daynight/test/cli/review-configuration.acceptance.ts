@@ -1,3 +1,4 @@
+import { testIsolation } from "../../scripts/test-bootstrap.js";
 import { createAcceptanceCli } from "../fixtures/acceptance-cli.js";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -53,7 +54,7 @@ const pipe = (args: string[], home: string, cwd = home, input?: string): Promise
 const terminal = async (args: string[], home: string, actions: Action[], extraEnvironment: NodeJS.ProcessEnv = {}, stderrTerminal = true): Promise<Result> => {
   const result = await capture(spawn("python3", ["-u", path.join(import.meta.dirname, "review-configuration-pty.py")], {
     cwd: home, detached: true, stdio: ["pipe", "pipe", "pipe"],
-  }), JSON.stringify({ command: [installed.receipt.launcherPath, ...args], cwd: home, environment: { ...environment(home), ...extraEnvironment }, actions, stderrTerminal }));
+  }), JSON.stringify({ command: [installed.receipt.launcherPath, ...args], cwd: home, environment: testIsolation.guardedEnvironment({ ...environment(home), ...extraEnvironment }), actions, stderrTerminal }));
   expect(result.code, result.stderr).toBe(0);
   return JSON.parse(result.stdout) as Result;
 };

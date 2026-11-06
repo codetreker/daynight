@@ -1,12 +1,12 @@
 # 助手组合、定义与 Session 准入
 
-[需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `model.Bot`、PostgreSQL store、`service.Bots` 和 HTTP 投影负责；`sessionrelay` 在原有独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
+[需求规格](../spec/assistant.md)拥有当前支持的行为。管理定义由 `core/bot`、`service/bot` 和 `server/bot` 负责；`core/session` 与 `service/session` 在独立 Session 协议上负责绑定、grant 和同步结果准入，不借用项目或 Task 生命周期。
 
 网页选择、详情与全屏组合由[助手管理页面设计](bot-management-web.md)拥有；[助手 Session 设计](bot-session-view.md)拥有共享视图绑定与缓存，不复制本文的服务端生命周期。
 
 ## 产品组合
 
-Server 的正式构造入口将同一 Store、文件存储和 `sessionrelay.Service` 注入 Bot 管理与 Worker 生命周期路由。`/bots` 与 `/bots/{botId}` 同时注册为 SPA 页面入口，使直接访问和刷新能加载应用；登录配置将 `/bots` 保留为产品路由，避免自定义认证端点覆盖它。Bot 继续使用原独立 Session 的传输身份与共享 renderer，任务 Session 和独立 Test 不转换成 Bot。
+Server 的正式构造入口将同一事务能力、文件存储和共享 Session engine 注入 Bot 管理与 Worker 生命周期路由。`/bots` 与 `/bots/{botId}` 同时注册为 SPA 页面入口，使直接访问和刷新能加载应用；登录配置将 `/bots` 保留为产品路由，避免自定义认证端点覆盖它。Bot 继续使用原独立 Session 的传输身份与共享 renderer，任务 Session 和独立 Test 不转换成 Bot。
 
 Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行、授权维护、恢复和删除组合为独立管理循环。它不等待项目准备，也不占用 Task coordinator 的执行槽。托管预检与当前有效的全局原生配置共同生成 `assistantHost`；旧 Worker 缺少该报告时，默认解析保留 unsupported。配置先按 Worker 自己的原生控制模式解析，助手采集器再检查 Web 参数兼容性；合法 Herdr 参数若不支持 Web，只将对应助手 Provider 报告为 `unsupported_arguments`，不能阻断普通 Task 状态报告。新配置更新报告和后续首次意图，已有配置与角色按持久身份保持冻结。退出先停止管理循环并汇总所有执行停止结果，再关闭 stores 与释放实例锁；失败不能转成成功。
 
@@ -26,7 +26,7 @@ Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行
 
 ## 创建事务
 
-`service.Bots.CreateResolved` 是公开创建使用的默认解析入口；`service.Bots.Create` 保留已解析配置的内部入口，两者共享创建事务。验证当前 principal 和输入后，通过 `Store.WriteBot` 在 ReadCommitted 事务中校验凭据、既有 ID 和 Worker 归属。凭据共享锁保护写入期间的撤销交错，并在等待后检查自然过期。
+`service/bot.Bots.CreateResolved` 是公开创建使用的默认解析入口；`service/bot.Bots.Create` 保留已解析配置的内部入口，两者共享创建事务。验证当前 principal 和输入后，通过 `Store.WriteBot` 在 ReadCommitted 事务中校验凭据、既有 ID 和 Worker 归属。凭据共享锁保护写入期间的撤销交错，并在等待后检查自然过期。
 
 首次读取前取得按规范化 Bot ID 命名的事务 advisory lock，串行化同一 ID 的查回与默认解析；否则两个初次读取都为空时，后到的环境失败可能掩盖另一请求已经提交的结果。锁也覆盖已解析内部创建入口，与后续 Bot 行锁保持一致顺序。哈希碰撞只会增加等待，不改变归属或请求身份。插入仍使用 `ON CONFLICT(id) DO NOTHING`。冲突后用独立 SQL 语句读取并锁定原行，才能观察另一个事务刚提交的结果；不能用同一语句的快照兜底假定一定可见。相同 owner/指纹返回原行；不同请求冲突，删除中的行不恢复。数据库错误保留 `store.Error` 和事务结果信息，不将未知提交解释成回滚。
 
@@ -40,15 +40,15 @@ Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行
 
 迁移 `036_bot_defaults.sql` 增加 `bot_worker_preferences` 和 `bot_configuration_preferences`。前者按用户保存最近成功显式 Worker；后者按用户与 Worker 保存目录和 Provider，各字段独立记录 creation_order。只选择 Provider 的新成功创建不能阻止另一请求的目录偏好首次提交；同时旧 Provider 选择也不能覆盖新成功 Provider。每个字段使用条件 upsert，不依赖 HTTP 完成时间或 Worker 时钟。
 
-`store.CommitBotPreferences(ctx, pgx.Tx, botID)` 加入调用方已有事务，不自行开启或提交。它重新读取持久 Bot，要求未删除、已绑定 Session 且 startupResult 为 ready，只提交持久显式项对应的冻结值。生命周期调用方必须先按 Bot → Session 锁序验证凭据、绑定 Worker、当前 native fence 与同步事实，再同事务持久化 ready 并调用该方法。`sessionrelay.ReportBot` 在验证当前 live 同步后调用它；该内部方法的 ready 检查不替代 native 同步验证。数据库故障回滚整个事务，不留部分偏好。重放以原 creation_order 为条件，无额外写入效果。
+`store.BotWriteDAO.CommitBotPreferences` 加入调用方已有事务，不自行开启或提交。它重新读取持久 Bot，要求未删除、已绑定 Session 且 startupResult 为 ready，只提交持久显式项对应的冻结值。生命周期调用方必须先按 Bot → Session 锁序验证凭据、绑定 Worker、当前 native fence 与同步事实，再同事务持久化 ready 并调用该方法。Session 的 `ReportBot` 用例 在验证当前 live 同步后调用它；该内部方法的 ready 检查不替代 native 同步验证。数据库故障回滚整个事务，不留部分偏好。重放以原 creation_order 为条件，无额外写入效果。
 
 默认查询无写入副作用；创建只写 pending Bot。report 将偏好提交留在同一生命周期事务中，无需独立的客户端确认请求，也不能在 spawn 回执或表单提交后提前调用成功方法。
 
 ## 登记与恢复事务
 
-`sessionrelay.RegisterBot` 验证 PAT、Bot owner、绑定 Worker 和请求结构，按 Bot → Session 顺序取得锁。首次登记要求当前版本与请求相等、角色和 Session 尚未绑定、输入 configuration 与持久配置一致，并要求独立 registration 使用 `initialInput=none` 和相同 Provider。角色全文、revision、digest 随请求提交；服务端校验全文及摘要，但不拥有角色模板。
+Session 的 `RegisterBot` 用例 验证 PAT、Bot owner、绑定 Worker 和请求结构，按 Bot → Session 顺序取得锁。首次登记要求当前版本与请求相等、角色和 Session 尚未绑定、输入 configuration 与持久配置一致，并要求独立 registration 使用 `initialInput=none` 和相同 Provider。角色全文、revision、digest 随请求提交；服务端校验全文及摘要，但不拥有角色模板。
 
-Session 行保存完整原 Bot 登记请求，包含原 botVersion、registration、configuration 和 roleConfiguration。响应丢失后的精确重放依据该记录核对，返回同一个 Session 和当前 Bot；不能以已经递增的 Bot version 拒绝原请求，也不能仅凭 registrationId 接受不同角色。删除校验先于重放。`store.BindBotSession` 加入原事务，以版本、未删除、空角色及空 Session 为条件执行 CAS；首次绑定写入完成后，`RegisterBot` 使用当前 `s.now()` 再次调用 `credential`，才允许事务提交。凭据共享锁只能阻止撤销，不能阻止等待期间的自然过期。插入 Session、冻结角色、推进 Bot 版本或最终凭据核验任一失败均一起回滚。
+Session 行保存完整原 Bot 登记请求，包含原 botVersion、registration、configuration 和 roleConfiguration。响应丢失后的精确重放依据该记录核对，返回同一个 Session 和当前 Bot；不能以已经递增的 Bot version 拒绝原请求，也不能仅凭 registrationId 接受不同角色。删除校验先于重放。`store.BotWriteDAO.BindBotSession` 加入原事务，以版本、未删除、空角色及空 Session 为条件执行 CAS；首次绑定写入完成后，`RegisterBot` 使用当前 `s.now()` 再次调用 `credential`，才允许事务提交。凭据共享锁只能阻止撤销，不能阻止等待期间的自然过期。插入 Session、冻结角色、推进 Bot 版本或最终凭据核验任一失败均一起回滚。
 
 Bot grant 在锁住 Bot 和 Session 后检查版本、Worker、独立执行身份、Controller 和 native ID，随后使用现有 grant 内核。普通 Test 入口遇到 Bot 关联直接拒绝。Bot 专用解码器允许独立身份携带 previousGeneration/stopProof；普通 Test 解码器继续禁止这些恢复参数，wire 不新增 claim 或 Worker 身份字段。
 
@@ -60,13 +60,13 @@ Bot grant 在锁住 Bot 和 Session 后检查版本、Worker、独立执行身�
 
 ready 依赖当前 relay 的 live 同步状态、当前连接及有效心跳，不能从 durable Snapshot 推导。报告事务还验证 `ConnectionParent` 对应的实际连接父 PAT；同代新 grant 可以更新 `Parent`，但尚未重新连接的 live 状态仍属于原 `ConnectionParent`，因此只验证报告者与最新 grant 的凭据不足以确认连接授权。durableSnapshot 不保存可被另一个实例误用的实时同步事实，因此没有本地同步证据的实例拒绝 ready。独立无首条输入的 Session 允许 native ID 尚未生成；报告中的 null 只在当前已同步快照同为 null 时成立，之后恢复仍需明确的原 native ID。
 
-报告先校验版本、身份和适用的同步条件；结果与持久值相同则返回原 Bot。结果变化时，`store.SetBotStartup` 以当前版本及未删除状态更新结果并推进版本；ready 随后在同一事务调用 `CommitBotPreferences`。未绑定 Session 的失败报告在写入完成后、或相同结果返回前，以当前 `s.now()` 调用 `credential` 重验 PAT；等待期间自然过期会拒绝成功响应并回滚写入。绑定后的报告继续使用 `scopePermission` 和适用的连接父 PAT 校验。成功结果与偏好不可分别提交，数据库或最终凭据核验失败必须一起回滚。持久 ready 只记录已确认的启动结果；在线状态继续由 Session Snapshot 和新鲜观测拥有。
+报告先校验版本、身份和适用的同步条件；结果与持久值相同则返回原 Bot。结果变化时，`store.BotWriteDAO.SetBotStartup` 以当前版本及未删除状态更新结果并推进版本；ready 随后在同一事务调用 `CommitBotPreferences`。未绑定 Session 的失败报告在写入完成后、或相同结果返回前，以当前 `s.now()` 调用 `credential` 重验 PAT；等待期间自然过期会拒绝成功响应并回滚写入。绑定后的报告继续使用 `scopePermission` 和适用的连接父 PAT 校验。成功结果与偏好不可分别提交，数据库或最终凭据核验失败必须一起回滚。持久 ready 只记录已确认的启动结果；在线状态继续由 Session Snapshot 和新鲜观测拥有。
 
 ## Session 锁序与持久准入
 
 带锁的 Bot 读取先单独取得行锁，再以新 SQL 语句投影完整定义及关联的 testExecutionId。这样，等待并发注册提交后，Bot 行与 Session 子查询都能看到已提交的关联；不能在同一 SELECT FOR UPDATE 内依赖子查询的旧语句快照。
 
-`sessionrelay.load` 先无锁读取 Session 的不可变 Bot 归属，再锁定 Bot，最后锁定 Session 并重新核验双方引用与 owner。持久删除状态的校验发生在 attachLive 之前，缓存中的旧同步或授权不能覆盖删除事实。普通 Task 保持 task-before-session 顺序；无 Bot 的普通 Test 保持独立规则。
+Session 加载先无锁读取 Session 的不可变 Bot 归属，再锁定 Bot，最后锁定 Session 并重新核验双方引用与 owner。持久删除状态的校验发生在 attachLive 之前，缓存中的旧同步或授权不能覆盖删除事实。普通 Task 保持 task-before-session 顺序；无 Bot 的普通 Test 保持独立规则。
 
 browser、controllerGrant、controller 和 archiveAccess 共用该加载路径，使 Snapshot、channel、command、timeline、operation、resource 请求及回传、Controller event/ack 和 archive 都遵守 Bot → Session → archive metadata 顺序。异步内容返回前原有二次 browser 准入仍执行，防止等待期间删除或身份变化后泄露内容。禁止先锁 Session 再在 scopePermission 中反向取得 Bot 锁。
 
@@ -96,7 +96,7 @@ CLI 消费 [删除与清理事务](#删除与清理事务) 的真实阶段与最
 
 ## 删除与清理事务
 
-公开 DELETE 由同一 `sessionrelay.Service` 处理。事务先通过共享凭据行锁验证 owner PAT 或登录 Session，再锁 Bot，核对 owner、原请求身份和当前版本，再按 `bot_id` 查询并锁定所有实际关联 Session，撤销 grant/连接授权，最后存入删除责任，并在事务完成前用新的当前时间再次验证凭据。精确重放在返回原结果前也执行该检查。凭据行共享锁阻止并发撤销，但不能阻止自然过期；最终检查覆盖 Bot、Session 行锁和写入等待，失效会回滚所有删除与授权变更，提交后才清除缓存。登记、归档上传和清理都使用 Bot → Session → archive metadata 锁序；已获准上传先完成，随后删除屏障生效。删除先提交时旧上传在文件写入前被拒绝。普通 Task 的历史归档流程不改变。
+公开 DELETE 由 `service/bot` 协调共享 Session engine 和事务能力处理。事务先通过共享凭据行锁验证 owner PAT 或登录 Session，再锁 Bot，核对 owner、原请求身份和当前版本，再按 `bot_id` 查询并锁定所有实际关联 Session，撤销 grant/连接授权，最后存入删除责任，并在事务完成前用新的当前时间再次验证凭据。精确重放在返回原结果前也执行该检查。凭据行共享锁阻止并发撤销，但不能阻止自然过期；最终检查覆盖 Bot、Session 行锁和写入等待，失效会回滚所有删除与授权变更，提交后才清除缓存。登记、归档上传和清理都使用 Bot → Session → archive metadata 锁序；已获准上传先完成，随后删除屏障生效。删除先提交时旧上传在文件写入前被拒绝。普通 Task 的历史归档流程不改变。
 
 屏障事务单独提交，不与物理删除同生共死。提交后丢弃本实例的 live cache 和 pending content；其它实例在下一次权威读取观察 deletion 或 Session 已不存在时也丢弃对应内容。Controller 的 scope 预查询发生在共享 load 之前，因此该预查询确认 Session 不存在时也清除缓存与等待正文，覆盖只有 Poll 或 Disconnect 到达的旧连接；数据库查询失败本身不等于持久删除。异步正文返回前的二次准入阻止删除后交付迟到内容。进程缓存只服务当前连接，不能恢复持久删除记录。
 
