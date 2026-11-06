@@ -458,6 +458,7 @@ test("main-pinned combinations retain Go module coverage and its current artifac
   assert.ok(validation);
   assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
   assert.ok(server.indexOf(pairStep(server)!) < server.indexOf(validation));
+  assert.doesNotMatch(server, /pnpm\/action-setup|Install frontend build dependencies|pnpm .*install/);
   const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance");
   assert.ok(coverage);
   assert.deepEqual(artifactPaths(coverage), ["packages/daynight-server/coverage.out"]);
