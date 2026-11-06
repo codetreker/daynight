@@ -148,9 +148,24 @@ func RegisterTeamTools(e *Entry, teams *teamservice.Teams, projects *projectserv
 		if name == "team_list" || name == "team_projects" || name == "team_member_list" {
 			class = BudgetLarge
 		}
-		err := RegisterTypedTool(e, tool, class, func(ctx context.Context, actor RequestActor, a teamArguments) (ToolResult, error) {
+		budget := func(json.RawMessage) BudgetClass { return class }
+		handler := func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+			if err := ValidateUnicodeFields(raw, "name", "expectedName"); err != nil {
+				return ToolResult{}, err
+			}
+			var a teamArguments
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
+			}
 			return teamTool(ctx, actor, name, a, teams, projects, identities)
-		}, "name", "expectedName")
+		}
+		var err error
+		switch name {
+		case "team_list", "team_show", "team_projects", "team_member_list":
+			err = e.registerReadTool(tool, budget, handler)
+		default:
+			err = e.registerTool(tool, budget, handler)
+		}
 		if err != nil {
 			return fmt.Errorf("register %s: %w", name, err)
 		}

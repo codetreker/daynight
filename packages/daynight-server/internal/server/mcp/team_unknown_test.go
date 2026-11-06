@@ -8,6 +8,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -89,23 +91,9 @@ func TestTeamUnknownWritesRetainReferencesInMCPEnvelope(t *testing.T) {
 	f := newEntryFixture(t)
 	db := &unknownTeamDB{}
 	teams := teamservice.NewTeams(db)
-	var definitions []sdk.Tool
-	if err := json.Unmarshal(teamToolsJSON, &definitions); err != nil {
+	f.entry.auth = validTeamAuth{}
+	if err := RegisterTeamTools(f.entry, teams, projectservice.NewProjects(&failedTeamReadDB{}), identity.New(nil, nil, "")); err != nil {
 		t.Fatal(err)
-	}
-	names := map[string]bool{"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true, "team_member_set_role": true, "team_member_remove": true}
-	for i := range definitions {
-		tool := &definitions[i]
-		if !names[tool.Name] {
-			continue
-		}
-		name := tool.Name
-		if err := RegisterTypedTool(f.entry, tool, BudgetControl, func(ctx context.Context, actor RequestActor, args teamArguments) (ToolResult, error) {
-			actor.Principal = model.Principal{Kind: model.PATCredential, UserID: unknownActor, CredentialID: "44444444-4444-4444-8444-444444444444"}
-			return teamTool(ctx, actor, name, args, teams, nil, nil)
-		}, "name", "expectedName"); err != nil {
-			t.Fatal(err)
-		}
 	}
 	c := f.client(t, "2025-11-25", "alice")
 	cases := []struct {
