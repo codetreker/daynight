@@ -45,7 +45,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	if err != nil {
 		return nil, err
 	}
-	if err := registerMCPTools(app.Application, endpoint); err != nil {
+	if err := registerMCPTools(app.Application, endpoint, config.PublicOrigin); err != nil {
 		endpoint.BeginShutdown()
 		return nil, err
 	}
@@ -101,9 +101,6 @@ func (a *sessionApplication) Shutdown(ctx context.Context) error {
 	return a.relay.Shutdown(ctx)
 }
 
-// registerMCPTools is the composition point for complete domain adapters.
-func registerMCPTools(_ *application.Application, _ *mcphttp.Entry) error { return nil }
-
 func healthRoutes(mux *http.ServeMux, readiness func(context.Context) error, logger *slog.Logger) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -136,4 +133,9 @@ func healthRoutes(mux *http.ServeMux, readiness func(context.Context) error, log
 			httpx.MethodNotAllowed(logger, "GET, HEAD")(w, request)
 		})
 	}
+}
+
+// registerMCPTools is the composition point for complete domain adapters.
+func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin string) error {
+	return mcphttp.RegisterProjectTools(entry, app.Projects, app.Identity, origin)
 }

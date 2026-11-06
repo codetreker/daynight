@@ -17,7 +17,7 @@ Origin against an exact allowlist, and carries its principal and credential ID
 into tool handlers. The official SDK supports the two declared protocol versions.
 Registered tools use one low-level wrapper with precompiled input and output
 schemas, safe structured errors, and explicit completion facts. The production
-registry is empty until complete business adapters are registered.
+registry exposes only complete business adapters.
 
 Separate control and large-object permits are selected by internal materialization,
 not the returned view. Permits remain held through handler and response delivery.
@@ -46,7 +46,7 @@ has not stopped.
 
 ## Consequences
 
-The entry has no business capabilities by itself; domain adapters must register
-only complete tools and select their worst-case materialization class. OAuth and
-business tools require their separately owned implementations. Clients and
-proxies handling future full resources must support the declared result capacity.
+Domain adapters register complete tools and select their worst-case materialization
+class. OAuth and other business tools require their separately owned
+implementations. Clients and proxies handling full resources must support the
+declared result capacity.

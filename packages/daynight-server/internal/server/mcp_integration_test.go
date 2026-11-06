@@ -100,7 +100,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil || len(list.Tools) != 4 {
 		t.Fatalf("production tools: %#v, %v", list, err)
 	}
 
@@ -191,7 +191,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	list, err = bobProduction.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil || len(list.Tools) != 4 {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
 	}
 }
