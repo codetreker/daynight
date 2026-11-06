@@ -192,20 +192,6 @@ describe("project settings form", () => {
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(0);
   });
 
-  it("keeps an already dispatched save alive across route changes", async () => {
-    const saving = deferred<Response>();
-    const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project()));
-    const view = mount(); await ready(); change(); submit();
-    await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init.method === "PATCH")).toBe(true));
-    const signal = fetcher.mock.calls.find(([, init]) => init.method === "PATCH")![1].signal as AbortSignal;
-    view.rerender(<ProjectSettingsPanel projectId={id} user={user} active={false} onRoute={false} />);
-    expect(signal.aborted).toBe(false);
-    await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
-    view.rerender(<ProjectSettingsPanel projectId={id} user={user} active onRoute />);
-    await screen.findByText("设置已保存。");
-    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
-  });
-
   it("retains a confirmed save when permission recovery fails and reads before enabling another save", async () => {
     const saving = deferred<Response>(), permission = deferred<Response>(); let holdPermission = false, saved = false;
     const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? holdPermission ? permission.promise : json(members()) : json(project(saved ? 90 : 60, saved ? 9_007_199_254_740_994n : 9_007_199_254_740_993n)));

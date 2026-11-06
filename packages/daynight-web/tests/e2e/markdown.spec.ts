@@ -65,6 +65,127 @@ const escapedImageFlowchart = String.raw`flowchart TD
 const imageShapeFlowchart = 'flowchart TD\n    A@{ shape: imageSquare } --> B';
 const failedFlowcharts = [imageFlowchart, escapedImageFlowchart, imageShapeFlowchart, invalidFlowchart, unsafeFlowchart];
 const fenced = (source: string): string => `\`\`\`mermaid\n${source}\n\`\`\``;
+// Representative product fixtures exercise the pinned SDK through the shared reader.
+const stableDiagrams = [
+  { name: 'flowchart', source: 'flowchart TD\nA[开始] --> B[完成]', labels: ['开始', '完成'] },
+  { name: 'flowchart-elk', source: 'flowchart-elk LR\nA[Left] --> B[Right]', labels: ['Left', 'Right'] },
+  { name: 'sequence', source: `sequenceDiagram
+  participant C as Web / CLI
+  participant S as 删除用例
+  participant P as Project 行
+  participant T as 全部 Task 行
+  participant D as 事务内 DAO
+  C->>S: DELETE Project ID
+  S->>P: 锁定 live Project
+  S->>T: 按 UUID 锁定全部 Task
+  S->>D: 当前授权与 Worker 属性校验
+  alt 存在 active claim 或没有删除权
+    S-->>C: 明确拒绝，零业务修改
+  else 允许删除
+    S->>D: 标记 Project + 撤回 Session + epoch
+    D-->>S: commit confirmed
+    S->>S: 本实例内存撤回，其他实例由既有轮询退出
+    S-->>C: 已确认删除回执
+  end`, labels: ['Web / CLI', '删除用例', 'Project 行', '全部 Task 行', '事务内 DAO', '存在 active claim', '允许删除', 'commit confirmed', '本实例内存撤回', '已确认删除回执'] },
+  { name: 'class', source: 'classDiagram\nclass Project\nclass Task\nProject --> Task : 包含', labels: ['Project', 'Task', '包含'] },
+  { name: 'state', source: 'stateDiagram-v2\n[*] --> Ready\nReady --> Done: 确认', labels: ['Ready', 'Done', '确认'] },
+  { name: 'er', source: 'erDiagram\nPROJECT ||--o{ TASK : contains', labels: ['PROJECT', 'TASK', 'contains'] },
+  { name: 'gantt', source: 'gantt\ntitle 交付\ndateFormat YYYY-MM-DD\nsection 阶段\n测试 :a, 2026-11-05, 2d', labels: ['交付', '测试'] },
+  { name: 'journey', source: 'journey\ntitle 阅读\nsection 阶段\n  确认: 5: 管理员', labels: ['阅读', '确认'] },
+  { name: 'pie', source: 'pie title 任务状态\n  "待办" : 12\n  "完成" : 24', labels: ['任务状态', '待办', '完成'] },
+  { name: 'quadrant', source: 'quadrantChart\ntitle 优先级\nx-axis Low --> High\ny-axis Low --> High\n重点: [0.8, 0.3]', labels: ['优先级', '重点'] },
+  { name: 'requirement', source: 'requirementDiagram\nrequirement deletion {\n id: PD1\n text: "检查权限"\n risk: low\n verifymethod: test\n}\nelement web {\n type: client\n}\nweb - satisfies -> deletion', labels: ['PD1', '检查权限', 'web'] },
+  { name: 'xy', source: 'xychart\ntitle "趋势"\nx-axis [Mon, Tue, Wed]\ny-axis "完成" 0 --> 20\nbar [3, 5, 8]', labels: ['趋势', 'Mon', 'Wed'] },
+  { name: 'block', source: 'block\ncolumns 2\nA["客户端"] B["数据库"]\nA --> B', labels: ['客户端', '数据库'] },
+  { name: 'packet', source: 'packet\n0-7: "版本"\n8-15: "类型"', labels: ['版本', '类型'] },
+  { name: 'kanban', source: 'kanban\n  todo[待办]\n    req[检查权限]\n  done[完成]\n    result[确认]', labels: ['待办', '检查权限', '完成'] },
+  { name: 'eventmodeling', source: 'eventmodeling\n\ntf 01 ui DeleteProjectUI\ntf 02 cmd DeleteProject\ntf 03 evt ProjectDeleted', labels: ['DeleteProjectUI', 'DeleteProject', 'ProjectDeleted'] },
+] as const;
+const rejectedDiagram = 'mindmap\n  root((Experimental))';
+const matrixMarkdown = [
+  '# 图表矩阵', ...stableDiagrams.slice(0, 3).map(({ source }) => fenced(source)),
+  fenced(rejectedDiagram), ...stableDiagrams.slice(3).map(({ source }) => fenced(source)),
+].join('\n\n');
+
+const expectStableDiagrams = async (container: Locator, info?: TestInfo): Promise<void> => {
+  const charts = container.locator('.mermaid-chart');
+  await expect(charts).toHaveCount(stableDiagrams.length + 1);
+  for (const [index, fixture] of stableDiagrams.entries()) {
+    if (index === 3) {
+      const rejected = charts.nth(3);
+      await expect(rejected.getByRole('alert')).toContainText(/not supported|不支持/);
+      await expect(rejected.locator('pre code')).toHaveText(rejectedDiagram);
+    }
+    const chart = charts.nth(index < 3 ? index : index + 1);
+    const image = chart.getByRole('img');
+    await expect(image, fixture.name).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
+    await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth > 0), { message: fixture.name, timeout: 45_000 }).toBe(true);
+    const drawing = await image.evaluate(async (element) => {
+      const svg = new DOMParser().parseFromString(await (await fetch((element as HTMLImageElement).src)).text(), 'image/svg+xml');
+      return { text: svg.documentElement.textContent ?? '', viewBox: svg.documentElement.getAttribute('viewBox'), width: svg.documentElement.getAttribute('width'), height: svg.documentElement.getAttribute('height'), scripts: svg.querySelectorAll('script').length };
+    });
+    for (const label of fixture.labels) expect(drawing.text.replace(/\s+/g, ' '), `${fixture.name}: ${label}`).toContain(label);
+    expect(drawing.scripts).toBe(0);
+    expect(drawing.viewBox).toBeTruthy();
+    expect(Number(drawing.width)).toBeGreaterThan(0);
+    expect(Number(drawing.height)).toBeGreaterThan(0);
+    if (info !== undefined) {
+      const path = info.outputPath(`diagram-${fixture.name}.png`);
+      await image.screenshot({ path });
+      await info.attach(`diagram-${fixture.name}`, { path, contentType: 'image/png' });
+    }
+  }
+};
+
+const expectEventLabelsPainted = async (container: Locator, info: TestInfo): Promise<void> => {
+  const image = container.locator('.mermaid-chart').last().getByRole('img');
+  await image.scrollIntoViewIfNeeded();
+  const original = await image.screenshot();
+  const replacement = await image.evaluate(async (element) => {
+    const imageElement = element as HTMLImageElement;
+    const originalUrl = imageElement.src;
+    const svg = new DOMParser().parseFromString(await (await fetch(originalUrl)).text(), 'image/svg+xml');
+    const labels = svg.querySelectorAll('foreignObject');
+    if (labels.length < 3) throw new Error('Event Modeling requires its XHTML labels.');
+    for (const label of labels) label.setAttribute('visibility', 'hidden');
+    const hiddenUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' }));
+    imageElement.src = hiddenUrl;
+    await imageElement.decode();
+    return { originalUrl, hiddenUrl };
+  });
+  try {
+    const hidden = await image.screenshot();
+    const changed = await container.page().evaluate(async ({ first, second }) => {
+      const read = async (base64: string) => {
+        const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = canvas.getContext('2d');
+        if (context === null) throw new Error('Cannot inspect painted diagram pixels.');
+        context.drawImage(bitmap, 0, 0); bitmap.close();
+        return { width: canvas.width, height: canvas.height, data: context.getImageData(0, 0, canvas.width, canvas.height).data };
+      };
+      const a = await read(first); const b = await read(second);
+      if (a.width !== b.width || a.height !== b.height) throw new Error('Diagram screenshot dimensions changed.');
+      let pixels = 0;
+      for (let i = 0; i < a.data.length; i += 4) {
+        if (Math.abs(a.data[i]! - b.data[i]!) + Math.abs(a.data[i + 1]! - b.data[i + 1]!) + Math.abs(a.data[i + 2]! - b.data[i + 2]!) > 30) pixels++;
+      }
+      return pixels;
+    }, { first: original.toString('base64'), second: hidden.toString('base64') });
+    expect(changed, 'XHTML labels affect pixels in the final Blob image').toBeGreaterThan(100);
+    const path = info.outputPath('event-modeling-painted-labels.png');
+    await writeFile(path, original);
+    await info.attach('event-modeling-painted-labels', { path, contentType: 'image/png' });
+  } finally {
+    await image.evaluate(async (element, urls) => {
+      const imageElement = element as HTMLImageElement;
+      imageElement.src = urls.originalUrl;
+      await imageElement.decode();
+      URL.revokeObjectURL(urls.hiddenUrl);
+    }, replacement);
+  }
+};
 const flowchartMarkdown = [
   '## 流程图 Flowcharts', '', fenced(imageFlowchart), '', fenced(escapedImageFlowchart), '', fenced(imageShapeFlowchart), '',
   fenced(flowchartTD), '', fenced(flowchartLR), '',
@@ -73,7 +194,7 @@ const flowchartMarkdown = [
 
 const expectFlowcharts = async (container: Locator): Promise<void> => {
   const diagrams = container.locator('.mermaid-diagram');
-  await expect(container.locator('.mermaid-flowchart')).toHaveCount(7);
+  await expect(container.locator('.mermaid-chart')).toHaveCount(7);
   await expect(diagrams).toHaveCount(2);
   for (const diagram of await diagrams.all()) {
     const image = diagram.getByRole('img');
@@ -102,7 +223,7 @@ const expectFlowcharts = async (container: Locator): Promise<void> => {
     expect(drawing.references.filter((reference) => /^(?:javascript|vbscript):|^data:(?:text\/html|image\/svg\+xml)/.test(reference))).toEqual([]);
   }
   await diagrams.first().getByRole('img').click();
-  const failures = container.locator('.mermaid-flowchart').filter({ has: container.page().getByRole('alert') });
+  const failures = container.locator('.mermaid-chart').filter({ has: container.page().getByRole('alert') });
   await expect(failures).toHaveCount(failedFlowcharts.length);
   for (const [index, source] of failedFlowcharts.entries()) await expect(failures.nth(index).locator('pre code')).toHaveText(source);
   for (const failure of (await failures.all()).slice(0, 2)) {
@@ -128,6 +249,7 @@ const markdown = [
 ].join('\r\n');
 
 test('task-description-markdown', { annotation: { type: 'scenario', description: 'task-description-markdown' } }, async ({ page, api: request }, info) => {
+  test.setTimeout(300_000);
   const project = await createProject(request, { name: `Markdown ${randomUUID()}` });
   const task = await createTask(request, project.id, { title: 'Markdown 描述与真实附件导航' });
   const emptyTask = await createTask(request, project.id, { title: '空描述 Empty description' });
@@ -202,7 +324,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     const ordinaryCode = description.locator('pre:has(code.language-typescript)');
     await expect(ordinaryCode).toHaveText(longCode);
     await expectFlowcharts(description);
-    const firstSource = description.locator('.mermaid-flowchart').nth(3);
+    const firstSource = description.locator('.mermaid-chart').nth(3);
     await firstSource.locator('summary').click();
     await expect(firstSource.locator('pre code')).toBeVisible();
     await expect(firstSource.locator('pre code')).toHaveText(flowchartTD);
@@ -268,9 +390,9 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       if (await docsDirectory.getAttribute('open') === null) await docsDirectory.locator(':scope > summary').click();
       await docsDirectory.locator('.attachment-file-name').filter({ hasText: /^child\.md$/ }).locator('..').click();
       await expect(flowchartReader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'docs/child.md'), baseURL).href);
-      await expect(flowchartReader.locator('.attachment-preview-body .mermaid-flowchart')).toHaveCount(1);
+      await expect(flowchartReader.locator('.attachment-preview-body .mermaid-chart')).toHaveCount(1);
       await expect.poll(() => flowchartReader.locator('.attachment-preview-body .mermaid-diagram img').evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-      expect(await flowchartReader.locator('.attachment-preview-body .mermaid-flowchart').textContent()).not.toContain('未闭合节点');
+      expect(await flowchartReader.locator('.attachment-preview-body .mermaid-chart').textContent()).not.toContain('未闭合节点');
       await flowchartReader.goBack();
       await expectFlowcharts(flowchartReader.locator('.attachment-preview-body'));
       expect(readerErrors).toEqual([]);
@@ -296,7 +418,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     expect(overwrite.status()).toBe(200);
     await attachments.getByRole('button', { name: '刷新附件', exact: true }).click();
     await expect(attachments.getByRole('heading', { name: '已覆盖内容', exact: true })).toBeVisible();
-    await expect(previewPane.locator('.mermaid-flowchart')).toHaveCount(1);
+    await expect(previewPane.locator('.mermaid-chart')).toHaveCount(1);
     await expect.poll(() => previewPane.locator('.mermaid-diagram img').evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
     expect(await previewPane.locator('.mermaid-diagram img').evaluate(async (image) => (await (await fetch((image as HTMLImageElement).src)).text()))).toContain('更新内容');
     expect(listRequests.length, 'An explicit refresh reads each inventory page once').toBe(6);
@@ -407,6 +529,25 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       expect((await page.evaluate(captureStableDependencyGeometry)).geometry, 'Description attachment navigation retains all visible nodes, routes, paint owners and viewport').toEqual(beforeSelection);
       expect(await checkDependencyGeometry(page, expected, info)).toEqual({ total: 0, examples: [] });
       await capture(page, info, 'task-description-graph-inspection');
+    });
+    await test.step('renders the stable diagram matrix in the shared readers', async () => {
+      // Earlier graph assertions freeze the page clock; ELK requires timers to advance.
+      await page.clock.resume();
+      const matrixTask = await createTask(request, project.id, { title: '稳定图表矩阵', description: `${matrixMarkdown}\n\n[图表附件](matrix.md)` });
+      const matrixPut = await request.put(attachmentDownloadUrl(project.id, matrixTask.id, 'matrix.md'), { data: matrixMarkdown, headers: { 'content-type': 'text/markdown' } });
+      expect(matrixPut.status()).toBe(201);
+      await page.goto(`/projects/${project.id}/tasks/${matrixTask.id}`);
+      const matrixDescription = page.locator('.task-detail-page .task-description');
+      await expectStableDiagrams(matrixDescription, info);
+      await expectEventLabelsPainted(matrixDescription, info);
+      await matrixDescription.getByRole('link', { name: '图表附件', exact: true }).click();
+      const matrixPreview = page.locator('.task-detail-page .attachment-preview-pane');
+      await expectStableDiagrams(matrixPreview);
+      const matrixReader = await page.context().newPage();
+      try {
+        await matrixReader.goto(attachmentPageUrl(project.id, matrixTask.id, 'matrix.md'));
+        await expectStableDiagrams(matrixReader.locator('.attachment-preview-body'));
+      } finally { await matrixReader.close(); }
     });
     expect(resourceRequests, 'Image nodes are refused before rendering can start any held resource request').toEqual([]);
     const directory = info.outputPath('markdown-evidence');

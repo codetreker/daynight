@@ -129,7 +129,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 `api/worker-configuration.ts` 复用同源客户端、no-store、取消、401、requestId 和 principal 准入，独立严格解析目标、观测与错误。每个响应在解析和资源错误处理前先核对当前账号。目标与观测版本保留规范十进制字符串，不经 Number 转换。数据含义及合法范围由[配置协议](../spec/daynight-worker-configuration.md)拥有，API 层不增加 supported 或 Task 字段。
 
-`configuration/model.ts` 拥有表单投影、校验、逐字段覆盖和结果派生；`useWorkerConfiguration` 拥有当前资源、编辑基线、原始草稿、提交快照及读取/保存状态。有效配置值与输入原文分别保存，使非法整数或 JSON 仍能完整显示。Agent/model/args 按同一 native 元组构造提交，项目覆盖仅输出显式拥有的字段；换 Agent 后的适用默认值是展示推导，不能把继承意图展开写回服务端。
+`configuration/model.ts` 拥有表单投影、校验、逐字段覆盖和结果派生；`useWorkerConfiguration` 拥有当前资源、编辑基线、原始草稿、提交快照及读取/保存状态。有效配置值与输入原文分别保存，使非法整数或 JSON 仍能完整显示。Agent/model/args 按同一 native 元组构造提交，项目覆盖仅输出显式拥有的字段；换 Agent 后的适用默认值是展示推导，不能把继承意图展开写回服务端。默认及项目配置的原生 select 使用局部容器绘制固定内缩的非交互箭头，并为箭头预留文字空间；禁用与聚焦仍由原生控件承载，长选项按可用宽度截断。
 
 配置通道在页面可见、配置面板活动、readEnabled 且账号 scope ready 时每 5 秒单飞读取。隐藏、离开页签或身份核验暂停读取；展示生命周期独立于临时准入，保持已挂载编辑器与弹窗及本地交互。scope 和 workerId 拥有资源与写入生命周期，generation 和取消信号约束读取发布；临时读取暂停不取消已派发的写入，结果在 scope ready 后发布。资源退休仍使旧请求失效。恢复后读取最新目标及观测。数据和草稿仅保留在页面内存，不进入 TaskCacheScope 的项目集合或 IndexedDB；导航注册表只持有页面提供的实时读取与取消回调，不持久化或复制草稿。TaskCacheScope 只提供认证生命周期及准入。
 
@@ -327,7 +327,7 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 挂载行、详情和具体人员筛选登记需求，按清单筛选有资格且内容缺失或版本变化的 ID，每批最多 100 项；空集合不请求，nullable 姓名和头像仍是完整资料。选择器直接使用完整清单，普通打开复用匹配内容和在途工作，Retry 恢复缺失或失败项。限定读取共享在途工作，需求变化保留同历史有效结果；保存资料 GET 实际 version，不用旧清单版本覆盖，也不因交错观察立即循环读取。scope 的 readProfiles/writeProfiles 与发布均检查身份、userFence 和当前 cacheGeneration。缓存事件与读取捕获先采用当前 generation/userFence；新历史的 assigneeVersions 为 null 时也立即撤回旧人员显示、资格、访问标记和 ready 目录，已请求目录回到 loading，未请求目录为 idle。普通 epoch 更替只保留同 userFence 原始内容，等待新在线清单匹配后恢复显示；注销/换号/身份失效及项目撤权清除所属资料。可信同用户项目 404 先按捕获 ticket 处理 scope 撤权，菜单关闭或需求变化不能丢失负向准入，旧历史不能撤回新历史。资料不写入 Task 版本或任务记录；读取与存储失败保留可恢复错误且不改 Task.assignedTo。完整内容版本和缓存机制由[负责人设计](daynight-task-assignment.md)拥有。
 
-`TaskAssigneeFilter` 拥有 all/me/unassigned/user 显示条件，状态控件提供 all/todo/in_progress/done。`ProjectPage` 在完整 index 上按同一任务同时满足负责人和状态计算匹配 ID，再筛选及分页；`StandaloneList` 只呈现匹配行，`ChainList` 保留匹配普通成员所在真实代表并显示全部普通子任务。链进度、上下文、ready、统计与图继续使用完整 component/index，task-sync 不携带此筛选；显式概览定位调整遮挡目标的条件。新增交互保留必要错误、访问状态和恢复入口。字段、人员与筛选的完整机制由[负责人设计](daynight-task-assignment.md)拥有。
+`TaskAssigneeFilter` 拥有 all/me/unassigned/user 显示条件，状态控件提供 all/todo/in_progress/done。状态筛选保留原生 select 和标签，以不拦截指针的对称 SVG 箭头替代浏览器默认箭头，并为其预留文字间距；箭头与负责人控件使用相同形状。`ProjectPage` 在完整 index 上按同一任务同时满足负责人和状态计算匹配 ID，再筛选及分页；`StandaloneList` 只呈现匹配行，`ChainList` 保留匹配普通成员所在真实代表并显示全部普通子任务。链进度、上下文、ready、统计与图继续使用完整 component/index，task-sync 不携带此筛选；显式概览定位调整遮挡目标的条件。交互保留必要错误、访问状态和恢复入口。字段、人员与筛选的完整机制由[负责人设计](daynight-task-assignment.md)拥有。
 
 ### 任务详情提示
 

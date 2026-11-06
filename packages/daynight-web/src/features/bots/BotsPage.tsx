@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useId, useState, useLayoutEffect, useSyncExternalStore, type MouseEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { botSessionKey } from './session-cache';
+import type { SessionTimelineReadingHandle } from '../task-agent-session/SessionTimeline';
+import type { TimelineReadingBookmark } from '../../ui/useTimelineScroll';
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { getBot, getBotDefaults, listBots, type BotDefinition, type CreateBotInput } from '../../api/bots';
 import { navigate } from '../../app/router';
@@ -11,7 +15,7 @@ import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotDeletionStatus } from './BotDeletionStatus';
 import { getBotDeletionCoordinator } from './deletion-coordinator';
 import { BotDetailsPanel } from './BotDetailsPanel';
-import { BotStatus } from './BotStatus';
+import { BotConversationHeader, type BotConversationTarget } from './BotConversationHeader';
 import { useBotMessages } from './messages';
 import { useBotRead } from './useBotRead';
 import { pendingBotCreation, rememberBotCreation } from './pending-creation';
@@ -67,13 +71,46 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
   const targetUnavailable = deleteTarget !== null && (deleteTarget.scope !== scope || blocked(deleteTarget.bot.id) || deleteTarget.bot.id === botId && (denied || deleted));
   useEffect(() => { if (targetUnavailable) setDeleteTarget(null); }, [targetUnavailable]);
   const binding = useMemo(() => bot && !detail.stale && bot.sessionId && bot.testExecutionId ? { ownerUserId: bot.ownerUserId, botId: bot.id, sessionId: bot.sessionId, testExecutionId: bot.testExecutionId } : null, [bot, detail.stale]);
+  const pendingReading = useRef<{ handle: SessionTimelineReadingHandle; bookmark: TimelineReadingBookmark } | null>(null);
+  const captureReading = useCallback(() => {
+    const handle = binding ? cache.snapshot().find(pane => pane.key === botSessionKey(binding))?.reading.current : null;
+    const bookmark = handle?.captureBookmark();
+    return handle && bookmark ? { handle, bookmark } : null;
+  }, [binding, cache]);
+  const restoreDetailsFocus = useRef(false);
+  const changeDetails = (open: boolean) => { pendingReading.current = captureReading(); restoreDetailsFocus.current = !open; setDetailsOpen(open); };
+  useLayoutEffect(() => {
+    const saved = pendingReading.current; pendingReading.current = null;
+    if (saved && captureReading()?.handle === saved.handle) saved.handle.restoreBookmark(saved.bookmark);
+    if (!detailsOpen && restoreDetailsFocus.current) {
+      restoreDetailsFocus.current = false;
+      const opener = detailsOpener.current;
+      if (opener?.isConnected && !opener.disabled && !opener.closest('[hidden], [inert]')) opener.focus({ preventScroll: true });
+    }
+  }, [detailsOpen, captureReading]);
+  useLayoutEffect(() => {
+    // Fullscreen updates this boundary in place. Restore its retained text
+    // anchor before a viewport reflow can emit a clamped scroll position.
+    const observer = new MutationObserver(() => {
+      const saved = captureReading();
+      if (saved) saved.handle.restoreBookmark(saved.bookmark);
+    });
+    observer.observe(conversation.current!, { attributes: true, attributeFilter: ['data-session-fullscreen', 'style'] });
+    return () => observer.disconnect();
+  }, [captureReading]);
   const selectedDeletion = deletions.find(record => record.id === botId);
   const visibleBots = (list.value ?? []).filter(item => !blocked(item.id));
   const items = visibleBots.filter(item => item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const worker = (id: string) => defaults.value?.workers.find(item => item.workerId === id);
   const showDetails = detailsOpen && botId !== null && !blocked(botId) && !scope.isInvalidated && !denied && !deleted;
-  useEffect(() => { if (botId === null || denied || deleted || scope.isInvalidated) setDetailsOpen(false); }, [botId, denied, deleted, scope]);
+  const detailsUnavailable = botId === null || blocked(botId) || denied || deleted || scope.isInvalidated;
+  useEffect(() => { if (detailsUnavailable) setDetailsOpen(false); }, [detailsUnavailable]);
+  const headerTarget: BotConversationTarget = { bot, worker: bot ? worker(bot.workerId) : undefined, stale: defaults.stale || detail.stale, name: bot?.name ?? (selectedDeletion?.name || m.loading), detailsId, detailsOpen: showDetails, detailsOpener, onDetails: () => changeDetails(!detailsOpen), follow };
   const refreshed = () => { list.refresh(); defaults.refresh(); detail.refresh(); };
+  const deleteDialog = deleteTarget && !scope.isInvalidated && !targetUnavailable ? <div className="bot-details-confirmation" onKeyDown={event => {
+    // Native dialog cancel and Tab own this layer before fullscreen handles keys.
+    if (event.key === 'Escape' || event.key === 'Tab') event.stopPropagation();
+  }}><BotDeleteDialog bot={deleteTarget.bot} opener={deleteTarget.opener} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (!readEnabled || authRequestsPaused() || scope.isInvalidated) return; const target = deleteTarget.bot; setDeleteTarget(null); void coordinator.begin(target); }} /></div> : null;
   return <section className={`bots-page${botId ? ' bot-selected' : ''}`} aria-label={m.title}>
     <aside className="bot-list-panel" aria-label={m.title}>
       <header className="bot-list-heading"><h1>{m.title}</h1><button className="button quiet bot-create" type="button" aria-label={m.create} title={m.create} disabled={!readEnabled} onClick={() => setCreating({ scope, botId })}><span aria-hidden="true">+</span></button></header>
@@ -87,18 +124,22 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
       <ul className="bot-list">{items.map(item => <BotListItem key={item.id} bot={item} selected={botId === item.id} disabled={scope.isInvalidated} worker={worker(item.workerId)} stale={defaults.stale} follow={follow} onDelete={(bot, opener) => setDeleteTarget({ scope, bot, opener })} />)}</ul>
       <div className="bot-deletions">{deletions.filter(record => record.id !== botId).map(record => <BotDeletionStatus key={record.id} record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} />)}</div>
     </aside>
-    <div className="bot-conversation" ref={conversation} tabIndex={-1}>
-      <header className="bot-conversation-heading">{botId !== null ? <><a className="button quiet" href="/bots" onClick={follow}>{m.closeChat}</a><div className="bot-conversation-title"><h2><button ref={detailsOpener} type="button" className="bot-details-toggle" disabled={!bot} aria-controls={showDetails ? detailsId : undefined} aria-expanded={showDetails} onClick={() => setDetailsOpen(value => !value)}><span className="bot-details-name">{bot?.name ?? (selectedDeletion?.name || m.loading)}</span><span className="bot-details-marker" aria-hidden="true">⌄</span></button></h2>{bot ? <BotStatus bot={bot} worker={worker(bot.workerId)} stale={defaults.stale} /> : null}</div></> : <h2>{m.select}</h2>}</header>
+    <div className="bot-conversation" ref={conversation} tabIndex={-1} onKeyDown={event => {
+      if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented && showDetails && !deleteDialog) {
+        event.preventDefault(); event.stopPropagation(); changeDetails(false);
+      }
+    }}>
+      {binding === null ? <header className="bot-conversation-heading">{botId !== null ? <BotConversationHeader target={headerTarget} /> : <h2>{m.select}</h2>}</header> : null}
       <div className="bot-conversation-body"><div className="bot-conversation-content">
       {botId !== null && detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
       {botId !== null && deletions.filter(record => record.id === botId).map(record => <div className="bot-selected-deletion" key={record.id}><BotDeletionStatus record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} /></div>)}
       {bot && bot.sessionId === null ? <p className="bot-empty" role="status">{bot.startupResult.code ? m.reason(bot.startupResult.code) : m[bot.startupResult.state]}</p> : null}
-      <div className="bot-conversation-session" hidden={binding === null}><BotSessionHost cache={cache} binding={binding} active={binding !== null} fullscreenBoundary={conversation} /></div>
+      <div className="bot-conversation-session" hidden={binding === null}><BotSessionHost cache={cache} binding={binding} active={binding !== null} fullscreenBoundary={conversation} presentation={{ variant: 'assistant', renderHeader: session => <BotConversationHeader target={headerTarget} session={session} /> }} /></div>
       </div>
-      {showDetails ? <BotDetailsPanel id={detailsId} bot={bot} worker={bot ? worker(bot.workerId) : undefined} stale={defaults.stale || detail.stale} opener={detailsOpener} onClose={() => setDetailsOpen(false)} /> : null}
+      {showDetails ? <BotDetailsPanel id={headerTarget.detailsId} bot={headerTarget.bot} worker={headerTarget.worker} stale={headerTarget.stale} opener={headerTarget.detailsOpener} cache={cache} deleteDisabled={!readEnabled || detail.stale} modalBlocked={deleteDialog !== null} onDelete={(bot, opener) => setDeleteTarget({ scope, bot, opener })} onClose={() => changeDetails(false)} /> : null}
       </div>
     </div>
-    {deleteTarget && !scope.isInvalidated && !targetUnavailable ? <BotDeleteDialog bot={deleteTarget.bot} opener={deleteTarget.opener} onClose={() => setDeleteTarget(null)} onConfirm={() => { if (!readEnabled || authRequestsPaused() || scope.isInvalidated) return; const target = deleteTarget.bot; setDeleteTarget(null); void coordinator.begin(target); }} /> : null}
+    {deleteDialog && (botId !== null && conversation.current ? createPortal(deleteDialog, conversation.current) : deleteDialog)}
   </section>;
 }
 function ReadError({ label, error, retry }: { readonly label: string; readonly error: unknown; readonly retry: () => void }) {
