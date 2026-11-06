@@ -24,7 +24,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   standalone tasks. Explore interactive dependency graphs with upstream context,
   task details and fullscreen reading.
 - **Keep the working material with the task.** Upload designs, screenshots and
-  other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
+  other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
 - **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
   post and reply as your account, with persistent history independent of Sessions.

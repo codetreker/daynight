@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { MermaidSourceError, renderMermaidFlowchart, type MermaidSourceIssue } from './MermaidRenderer';
+import { MermaidSourceError, renderMermaidDiagram, type MermaidSourceIssue } from './MermaidRenderer';
 
 type DiagramState =
   | { readonly status: 'pending' }
   | { readonly status: 'ready'; readonly url: string }
   | { readonly status: 'error'; readonly issue: MermaidSourceIssue | 'failed' };
 
-export const MermaidFlowchart = ({ source }: { readonly source: string }) => {
+export const MermaidDiagram = ({ source }: { readonly source: string }) => {
   const { messages } = useI18n();
   const text = messages.inspection.mermaid;
   const [rendered, setRendered] = useState<{ readonly source: string; readonly state: DiagramState }>({ source, state: { status: 'pending' } });
@@ -16,7 +16,7 @@ export const MermaidFlowchart = ({ source }: { readonly source: string }) => {
   useEffect(() => {
     const controller = new AbortController();
     let url: string | null = null;
-    void renderMermaidFlowchart(source, controller.signal).then((svg) => {
+    void renderMermaidDiagram(source, controller.signal).then((svg) => {
       if (controller.signal.aborted) return;
       url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
       setRendered({ source, state: { status: 'ready', url } });
@@ -30,7 +30,7 @@ export const MermaidFlowchart = ({ source }: { readonly source: string }) => {
   }, [source]);
 
   const code = <pre><code className="language-mermaid">{source}</code></pre>;
-  return <div className="mermaid-flowchart">
+  return <div className="mermaid-chart">
     {state.status === 'pending' && <p role="status">{text.loading}</p>}
     {state.status === 'ready' && <div className="mermaid-diagram" role="region" aria-label={text.diagram} tabIndex={0}>
       <img src={state.url} alt={text.diagram} onError={() => {

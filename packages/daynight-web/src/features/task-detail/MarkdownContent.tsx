@@ -1,7 +1,7 @@
 import { createContext, useContext, type ComponentPropsWithoutRef, type MouseEvent } from 'react';
 import Markdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { MermaidFlowchart } from './MermaidFlowchart';
+import { MermaidDiagram } from './MermaidDiagram';
 import '../../styles/markdown.css';
 
 type MarkdownContentProps = {
@@ -22,7 +22,7 @@ const MarkdownPre = ({ node, ...props }: ComponentPropsWithoutRef<'pre'> & Extra
   const code = node?.children[0];
   if (code?.type === 'element' && code.tagName === 'code' && Array.isArray(code.properties.className) && code.properties.className.includes('language-mermaid')) {
     const source = code.children.filter((child) => child.type === 'text').map((child) => child.value).join('');
-    return <MermaidFlowchart key={source} source={source} />;
+    return <MermaidDiagram key={source} source={source} />;
   }
   return <pre {...props} />;
 };

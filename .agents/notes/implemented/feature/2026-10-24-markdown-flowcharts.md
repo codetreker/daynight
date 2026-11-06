@@ -15,14 +15,16 @@ rendering after a document or task switch.
 ## Decision
 
 The existing `MarkdownContent` renderer recognizes `mermaid` fenced blocks at its
-`pre` renderer and delegates them to a shared asynchronous flowchart component.
+`pre` renderer and delegates them to a shared asynchronous diagram component.
 Other fenced blocks retain normal code rendering. Descriptions and attachment
 readers keep their existing URL bases, link activation and raw HTML escaping.
 The [Markdown reading decision](../architecture/2026-10-22-task-description-markdown.md)
 continues to own that composition.
 
 Mermaid 12.2.0 loads only when a diagram is encountered. `flowchart` and `graph`
-use strict security, text labels and the explicitly selected Dagre layout.
+use strict security, text labels and the explicitly selected Dagre layout. The
+[stable diagram decision](2026-11-05-stable-mermaid-diagrams.md) extends the
+accepted types and budgets while retaining these flowchart guarantees.
 A version-scoped pnpm `packageExtensions` entry supplies `type-fest` 4.41.0:
 Mermaid's shipped declarations import it, while its
 [pinned package manifest](https://github.com/mermaid-js/mermaid/blob/1fb7869866dd619168d840291c9c54b4f129758b/packages/mermaid/package.json)
@@ -34,8 +36,9 @@ Source configuration directives and frontmatter are rejected so document text
 cannot replace application security or palette settings. Application-owned
 configuration initialization, semantic preflight and rendering share one
 serialized operation; Mermaid's global configuration cannot race between
-concurrently mounted blocks. Blocks are limited to 50,000 UTF-16 code units and
-500 edges, with visible per-block errors and retained source on refusal.
+concurrently mounted blocks. Blocks are limited to 50,000 UTF-16 code units;
+flowcharts are limited to 500 nodes and 500 edges, with visible per-block errors and retained source on refusal.
+Other types have their own structural budgets.
 
 Before drawing, `mermaid.mermaidAPI.getDiagramFromText` parses the source and
 `FlowDB.getVertices()` exposes the actual vertices. A vertex with an image
@@ -79,9 +82,9 @@ it is a rendering redesign, not an additional accepted syntax case. Keeping
 this preflight before drawing and keeping result adoption tied to source and
 mount lifetime preserves those guarantees while that capability is absent.
 
-The [requirements](../../../../docs/spec/daynight-task-inspection.md#markdown-流程图)
+The [requirements](../../../../docs/spec/daynight-task-inspection.md#markdown-图表)
 own observable behavior; the
-[design](../../../../docs/design/daynight-task-inspection.md#mermaid-流程图)
+[design](../../../../docs/design/daynight-task-inspection.md#mermaid-图表)
 owns the component and rendering responsibilities.
 
 ## Alternatives
