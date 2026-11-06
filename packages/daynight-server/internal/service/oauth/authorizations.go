@@ -2,7 +2,6 @@ package oauth
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,7 +86,7 @@ func (s *Authorizations) Start(ctx context.Context, in StartInput) (StartResult,
 	if !allowed {
 		return StartResult{}, core.ErrRateLimited
 	}
-	if in.ResponseType != "code" || in.Scope != core.Scope || in.Resource != s.resource || in.CodeChallengeMethod != "S256" || !core.ValidChallenge(in.CodeChallenge) || !core.ValidState(in.State) {
+	if !core.ValidAuthorizationStart(in.ResponseType, in.Scope, in.Resource, s.resource, in.CodeChallenge, in.CodeChallengeMethod, in.State) {
 		return StartResult{}, core.ErrInvalidAuthorization
 	}
 	client, e := s.clients.Resolve(ctx, in.ClientID, in.RedirectURI)
@@ -103,7 +102,7 @@ func (s *Authorizations) Start(ctx context.Context, in StartInput) (StartResult,
 	}
 	now := s.clock()
 	result := StartResult{RequestID: uuid.NewString(), Binding: secret.Random(core.BindingPrefix)}
-	a := store.OAuthAuthorization{ID: result.RequestID, BindingHash: secret.Hash(result.Binding), Client: raw, ClientID: client.ClientID, RedirectURI: client.SelectedExactRedirect, Resource: in.Resource, Scope: in.Scope, Challenge: in.CodeChallenge, State: in.State, StatePresent: in.StatePresent || in.State != "", Status: "pending", CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute), RetainUntil: now.Add(10*time.Minute + 24*time.Hour)}
+	a := core.NewAuthorization(core.AuthorizationRequest{ID: result.RequestID, Binding: result.Binding, Client: raw, ClientID: client.ClientID, RedirectURI: client.SelectedExactRedirect, Resource: in.Resource, Scope: in.Scope, Challenge: in.CodeChallenge, State: in.State, StatePresent: in.StatePresent}, now)
 	var inserted bool
 	c, e := s.writer.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
 		var err error
@@ -117,9 +116,6 @@ func (s *Authorizations) Start(ctx context.Context, in StartInput) (StartResult,
 		return StartResult{}, core.ErrAuthorizationCapacity
 	}
 	return result, nil
-}
-func authorized(a store.OAuthAuthorization, binding string) bool {
-	return secret.Valid(binding, core.BindingPrefix) && subtle.ConstantTimeCompare(a.BindingHash, secret.Hash(binding)) == 1
 }
 func validSession(p model.Principal) bool {
 	return p.Kind == model.SessionCredential && canonicalID(p.UserID) && canonicalID(p.CredentialID)
@@ -136,7 +132,7 @@ func (s *Authorizations) Inspect(ctx context.Context, id, binding string, princi
 	if !validSession(principal) {
 		return AuthorizationView{}, model.Unauthenticated(nil)
 	}
-	if !canonicalID(id) || !secret.Valid(binding, core.BindingPrefix) {
+	if !canonicalID(id) || !core.ValidAuthorizationBinding(binding) {
 		return AuthorizationView{}, core.ErrInvalidAuthorization
 	}
 	var a store.OAuthAuthorization
@@ -162,25 +158,21 @@ func (s *Authorizations) Inspect(ctx context.Context, id, binding string, princi
 	if err := completionError(c, e); err != nil {
 		return AuthorizationView{}, err
 	}
-	if !authorized(a, binding) {
+	if !core.AuthorizationBound(a, binding) {
 		return AuthorizationView{}, core.ErrInvalidAuthorization
 	}
 	var client core.ValidatedClient
 	if json.Unmarshal(a.Client, &client) != nil {
 		return AuthorizationView{}, core.ErrInvalidAuthorization
 	}
-	status := a.Status
-	if status == "pending" && !a.ExpiresAt.After(now) {
-		status = "expired"
-	}
-	codeExpired := status == "approved" && (a.CodeExpiresAt == nil || !a.CodeExpiresAt.After(now))
+	status, codeExpired := core.AuthorizationStatus(a, now)
 	return AuthorizationView{RequestID: a.ID, Status: status, UserID: principal.UserID, ClientName: client.ClientName, ClientID: a.ClientID, ClientProvenance: client.Provenance, RedirectURI: a.RedirectURI, Resource: a.Resource, Scope: a.Scope, CodeExpired: codeExpired}, nil
 }
 func (s *Authorizations) Decide(ctx context.Context, in DecisionInput) (DecisionResult, error) {
 	if !validSession(in.Principal) {
 		return DecisionResult{}, model.Unauthenticated(nil)
 	}
-	if !canonicalID(in.RequestID) || in.Principal.UserID != in.ExpectedUserID || !secret.Valid(in.Binding, core.BindingPrefix) || (in.Decision != "approve" && in.Decision != "deny") {
+	if !canonicalID(in.RequestID) || in.Principal.UserID != in.ExpectedUserID || !core.ValidAuthorizationBinding(in.Binding) || !core.ValidAuthorizationDecision(in.Decision) {
 		return DecisionResult{}, core.ErrInvalidAuthorization
 	}
 	var result DecisionResult
@@ -200,29 +192,7 @@ func (s *Authorizations) Decide(ctx context.Context, in DecisionInput) (Decision
 		if err = lockSession(ctx, scope.IdentityDAO(), in.Principal, now); err != nil {
 			return err
 		}
-		if !authorized(a, in.Binding) || a.Status != "pending" || !a.ExpiresAt.After(now) {
-			return core.ErrInvalidAuthorization
-		}
-		fields := url.Values{"iss": {s.issuer}}
-		if a.StatePresent {
-			fields.Set("state", a.State)
-		}
-		a.UserID = in.Principal.UserID
-		a.State = ""
-		a.StatePresent = false
-		a.RetainUntil = now.Add(24 * time.Hour)
-		if in.Decision == "approve" {
-			code := secret.Random(core.CodePrefix)
-			a.CodeHash = secret.Hash(code)
-			expiry := now.Add(5 * time.Minute)
-			a.CodeExpiresAt = &expiry
-			a.Status = "approved"
-			fields.Set("code", code)
-		} else {
-			a.Status = "denied"
-			fields.Set("error", "access_denied")
-		}
-		result.RedirectURI, err = core.CallbackURI(a.RedirectURI, fields)
+		result.RedirectURI, err = core.DecideAuthorization(&a, in.Binding, in.Decision, in.Principal.UserID, s.issuer, now)
 		if err != nil {
 			return err
 		}
@@ -240,7 +210,7 @@ func (s *Authorizations) Decide(ctx context.Context, in DecisionInput) (Decision
 var errRetryCode = errors.New("retry code after releasing lock")
 
 func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenResult, error) {
-	if !secret.Valid(in.Code, core.CodePrefix) || in.ClientID == "" || in.Resource != s.resource || !core.ValidVerifier(in.Verifier) {
+	if !core.ValidAuthorizationCodeInput(in.Code, in.ClientID, in.Resource, s.resource, in.Verifier) {
 		return TokenResult{}, core.ErrInvalidGrant
 	}
 	hash := secret.Hash(in.Code)
@@ -254,8 +224,8 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 			if err != nil {
 				return err
 			}
-			if a.ClientID != in.ClientID || a.RedirectURI != in.RedirectURI || a.Resource != in.Resource || a.Scope != core.Scope || !core.VerifyChallenge(a.Challenge, in.Verifier) {
-				return core.ErrInvalidGrant
+			if err = core.CheckAuthorizationCodeBinding(a, core.CodeBinding{ClientID: in.ClientID, RedirectURI: in.RedirectURI, Resource: in.Resource, Verifier: in.Verifier}); err != nil {
+				return err
 			}
 			verified = a.ClientID
 			return nil
@@ -298,10 +268,11 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 			if err != nil {
 				return err
 			}
-			if a.ClientID != in.ClientID || a.RedirectURI != in.RedirectURI || a.Resource != in.Resource || a.Scope != core.Scope || !core.VerifyChallenge(a.Challenge, in.Verifier) {
-				return core.ErrInvalidGrant
+			replayCode, err := core.CheckAuthorizationCode(a, core.CodeBinding{ClientID: in.ClientID, RedirectURI: in.RedirectURI, Resource: in.Resource, Verifier: in.Verifier}, now)
+			if err != nil {
+				return err
 			}
-			if a.Status == "consumed" {
+			if replayCode {
 				grant, err := scope.CredentialFamilyDAO().InspectGrant(ctx, a.GrantID, false)
 				if err != nil {
 					return err
@@ -316,9 +287,6 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 				replay = true
 				return nil
 			}
-			if a.Status != "approved" || a.CodeExpiresAt == nil || !a.CodeExpiresAt.After(now) {
-				return core.ErrInvalidGrant
-			}
 			var client core.ValidatedClient
 			if json.Unmarshal(a.Client, &client) != nil {
 				return core.ErrInvalidGrant
@@ -331,17 +299,15 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 				if err != nil {
 					return err
 				}
-				if !a.CodeExpiresAt.After(now) {
-					return core.ErrInvalidGrant
+				if err = core.CheckAuthorizationCodeExpiry(a, now); err != nil {
+					return err
 				}
 			}
 			issued, err := core.IssueFamily(ctx, scope.CredentialFamilyDAO(), core.IssueInput{UserID: a.UserID, ClientID: a.ClientID, Resource: a.Resource, ClientSnapshot: a.Client}, now)
 			if err != nil {
 				return err
 			}
-			a.Status = "consumed"
-			a.GrantID = issued.Grant.ID
-			a.RetainUntil = issued.Grant.ExpiresAt
+			core.ConsumeAuthorization(&a, issued.Grant.ID, issued.Grant.ExpiresAt)
 			if err = dao.UpdateAuthorization(ctx, a); err != nil {
 				return err
 			}
@@ -375,7 +341,7 @@ func (s *Authorizations) PruneAuthorizations(ctx context.Context, budget int) (i
 		n := 0
 		c, e := s.writer.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
 			var err error
-			n, err = scope.AuthorizationDAO().PruneAuthorizations(ctx, s.clock(), batch)
+			n, err = core.PruneAuthorizationBatch(ctx, scope.AuthorizationDAO(), s.clock(), batch)
 			return err
 		})
 		if err := completionError(c, e); err != nil {

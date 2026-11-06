@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pgOAuth "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/google/uuid"
@@ -129,7 +130,7 @@ func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		completion, err := db.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
-			_, err := scope.AuthorizationDAO().PruneAuthorizations(ctx, now, 10)
+			_, err := core.PruneAuthorizationBatch(ctx, scope.AuthorizationDAO(), now, 9)
 			return err
 		})
 		if err == nil || completion.Outcome != store.TransactionNotCommitted {
@@ -143,6 +144,10 @@ func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
 		if err = db.Pool.QueryRow(ctx, `SELECT status,state,state_present FROM oauth_authorizations WHERE id=$1`, pending).Scan(&status, &state, &present); err != nil || status != "pending" || state != "state" || !present {
 			t.Fatalf("failed prune partially committed: %s %t %v", status, present, err)
 		}
+		var cursor int
+		if err = db.Pool.QueryRow(ctx, `SELECT next_kind FROM oauth_authorization_cleanup_cursor WHERE singleton=true`).Scan(&cursor); err != nil || cursor != 0 {
+			t.Fatalf("failed prune advanced cursor: %d %v", cursor, err)
+		}
 		// An unavailable table also fails the first prune statement explicitly.
 		tx, err := db.Pool.Begin(ctx)
 		if err != nil {
@@ -151,7 +156,7 @@ func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
 		if _, err = tx.Exec(ctx, `ALTER TABLE oauth_authorizations RENAME TO inaccessible_authorizations`); err != nil {
 			t.Fatal(err)
 		}
-		_, err = pgOAuth.NewDAO(tx).PruneAuthorizations(ctx, now, 10)
+		_, err = core.PruneAuthorizationBatch(ctx, pgOAuth.NewDAO(tx), now, 10)
 		if failed, state := store.DatabaseErrorFacts(err); !failed || state != "42P01" {
 			t.Fatalf("missing table: failed=%t state=%s", failed, state)
 		}
@@ -164,7 +169,7 @@ func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = pgOAuth.NewDAO(tx).PruneAuthorizations(cancelled, now, 10)
+		_, err = core.PruneAuthorizationBatch(cancelled, pgOAuth.NewDAO(tx), now, 10)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled prune: %v", err)
 		}

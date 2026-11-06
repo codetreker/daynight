@@ -223,6 +223,21 @@ describe("worker setup configuration transaction", () => {
 });
 
 describe("interactive worker setup", () => {
+  it("retains or removes an unavailable explicit Project without rebinding a replacement", async () => {
+    const f = await fixture(`${connection}worker:\n  agent: codex\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../retained\n`);
+    const replacement = { ...projects[0]!, id: uuid(4), name: "Replacement" };
+    f.dependencies.readProjects.mockResolvedValue([replacement, projects[1]!]);
+    f.answers.projectIds = [uuid(1), uuid(2)];
+    await runWorkerSetup(f.context, f.dependencies);
+    expect(f.questions).toContainEqual(expect.objectContaining({ choices: expect.arrayContaining([
+      expect.objectContaining({ value: uuid(1), name: expect.stringContaining("Unavailable"), checked: true }),
+      expect.objectContaining({ value: uuid(4), checked: false }),
+    ]) }));
+    expect((await readWorkerConfiguration(f.paths)).repositories.map(({ projectId }) => projectId)).toEqual([uuid(1), uuid(2)]);
+    f.answers.projectIds = [uuid(2)];
+    await runWorkerSetup(f.context, f.dependencies);
+    expect((await readWorkerConfiguration(f.paths)).repositories.map(({ projectId }) => projectId)).toEqual([uuid(2)]);
+  });
   it("checks first, preselects existing Projects, checks effective agent settings and confirms one atomic save", async () => {
     const f = await fixture(`${connection}worker:\n  agent: codex\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../retained\n`);
     await runWorkerSetup(f.context, f.dependencies);

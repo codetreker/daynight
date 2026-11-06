@@ -19,6 +19,10 @@ binding, startup, preferences and deletion state operations to the caller's
 transaction, preserving Bot-before-Session locking. Worker freshness and path
 rules remain in `core/worker`.
 
+`core/bot` also decides runtime owner, Worker binding, deletion and version
+checks. Runtime and Session integration retain their own facts and coordinate
+credential, Bot and Session locks in the established order.
+
 The Session-integrated deletion path uses `core/bot` to check the original
 request, owner and version, construct the initial deletion state, validate
 cleanup results, and decide receipt replay and Worker and Server cleanup
