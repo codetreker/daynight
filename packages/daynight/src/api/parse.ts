@@ -1,5 +1,5 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -187,6 +187,28 @@ export const parseProjectAccess = (value: unknown, projectId: string, userId?: s
   return access;
 };
 const sameTeamRef = (a: TeamRef, b: TeamRef): boolean => a.id === b.id && a.kind === b.kind && a.name === b.name;
+export const parseProjectDeletionPreview = (value: unknown, projectId: string): ProjectDeletionPreview => {
+  const data = fields(value, ["observedAt", "project", "summary", "activeClaims", "nextCursor"]);
+  const project = fields(data.project, ["id", "name", "repoUrl", "ownerTeam"]);
+  const summary = fields(data.summary, ["taskCount", "unfinishedTaskCount", "attachmentCount"]);
+  const parsedSummary = { taskCount: count(summary.taskCount), unfinishedTaskCount: count(summary.unfinishedTaskCount), attachmentCount: count(summary.attachmentCount) };
+  const activeClaims = array(data.activeClaims, (value): ProjectDeletionPreview["activeClaims"][number] => {
+    const claim = fields(value, ["taskId", "title", "worker"]), worker = fields(claim.worker, ["machineName", "platform", "phase", "paused", "connectivity"]);
+    const platform = worker.platform === "windows" || worker.platform === "linux" || worker.platform === "macos" ? worker.platform : malformed();
+    const phase = worker.phase === "preparing" || worker.phase === "executing" || worker.phase === "verifying" || worker.phase === "completing" || worker.phase === "waiting" || worker.phase === "paused" ? worker.phase : malformed();
+    const connectivity = worker.connectivity === "online" || worker.connectivity === "offline" || worker.connectivity === "unknown" ? worker.connectivity : malformed();
+    return { taskId: id(claim.taskId), title: text(claim.title, true), worker: { machineName: text(worker.machineName, true), platform, phase, paused: bool(worker.paused), connectivity } };
+  });
+  const parsed = { observedAt: timestamp(data.observedAt), project: { id: id(project.id), name: text(project.name, true), repoUrl: text(project.repoUrl, true), ownerTeam: parseTeamRef(project.ownerTeam) }, summary: parsedSummary, activeClaims, nextCursor: data.nextCursor === null ? null : text(data.nextCursor, true) };
+  if (parsed.project.id !== projectId || parsedSummary.unfinishedTaskCount > parsedSummary.taskCount || activeClaims.length > 100 || activeClaims.some((claim, index) => index > 0 && activeClaims[index - 1]!.taskId >= claim.taskId)) return malformed();
+  return parsed;
+};
+export const parseProjectDeletionReceipt = (value: unknown, projectId: string): ProjectDeletionReceipt => {
+  const data = fields(value, ["projectId", "deleted"]);
+  if (id(data.projectId) !== projectId || data.deleted !== true) return malformed();
+  return { projectId, deleted: true };
+};
+
 export const parseProjectTransferPreview = (value: unknown, targetTeamId: string): ProjectTransferPreview => {
   const data = fields(value, ["sourceTeam", "targetTeam", "ownership", "actorRole"]);
   const target = fields(data.targetTeam, ["id", "kind", "name", "version"]);
@@ -368,9 +390,11 @@ export const parseServerError = (value: unknown): ServerError => {
   let details: ErrorDetails | undefined;
   if (data.details !== undefined) {
     const raw = record(data.details);
+    if (raw.writeOutcome !== undefined) { fields(raw, ["writeOutcome"]); if (raw.writeOutcome !== "not_committed") return malformed(); }
     if (code === "invalid_search_expression") fields(raw, ["reason", "position", "length"]);
     if (code === "search_context_limit_exceeded") fields(raw, ["nodeCount", "edgeCount", "maxNodes", "maxEdges"]);
     details = {
+      ...(raw.writeOutcome === undefined ? {} : { writeOutcome: "not_committed" as const }),
       ...(raw.reason === undefined ? {} : { reason: text(raw.reason, true) }),
       ...(raw.position === undefined ? {} : { position: count(raw.position) }),
       ...(raw.length === undefined ? {} : { length: count(raw.length) }),
@@ -388,4 +412,13 @@ export const parseServerError = (value: unknown): ServerError => {
   if (code === "graph_limit_exceeded" && (details?.nodeCount === undefined || details.edgeCount === undefined || details.maxNodes !== 1000 || details.maxEdges !== 5000 || (details.nodeCount <= details.maxNodes && details.edgeCount <= details.maxEdges))) return malformed();
   if (code === "steps_limit_exceeded" && (details?.encodedBytes === undefined || details.maxEncodedBytes !== 67_108_864 || details.encodedBytes <= details.maxEncodedBytes)) return malformed();
   return { code, message, requestId, ...(details === undefined ? {} : { details }) };
+};
+
+// Deletion receipts and refusals establish mutation certainty, so reject
+// unrecognized envelope or detail fields rather than guessing their meaning.
+export const parseProjectDeletionError = (value: unknown): ServerError => {
+  const envelope = fields(value, ["error"]);
+  const error = fields(envelope.error, ["code", "message", "requestId", "details"]);
+  if (error.details !== undefined) fields(error.details, ["writeOutcome"]);
+  return parseServerError(value);
 };

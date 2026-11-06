@@ -20,8 +20,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { ProjectTransferPreview, ProjectTransferReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
+import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseProjectDeletionPreview, parseProjectDeletionReceipt, parseProjectDeletionError, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
 import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true };
@@ -166,6 +166,8 @@ export type ApiClient = {
   revokeTeamInvitation(userId: string, teamId: string, invitationId: string, requestId: string): Promise<TeamInvitationRevokeReceipt>;
   previewProjectTransfer(userId: string, projectId: string, targetTeamId: string): Promise<ProjectTransferPreview>;
   transferProject(userId: string, projectId: string, preview: ProjectTransferPreview, requestId: string): Promise<ProjectTransferReceipt>;
+  previewProjectDeletion(userId: string, projectId: string): Promise<ProjectDeletionPreview>;
+  deleteProject(userId: string, projectId: string, requestId: string): Promise<ProjectDeletionReceipt>;
   reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   getWorkerConfiguration(workerId: string): Promise<WorkerCloudResource>;
   reportWorkerConfiguration(workerId: string, input: WorkerReport, configuration: WorkerCloudReport): Promise<WorkerCloudReportReceipt>;
@@ -255,7 +257,7 @@ export const createApiClient = (options: {
   type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string; readonly locationHeader: string | null; readonly configurationHeader: string | null };
   type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly checkFailurePrincipal?: boolean; readonly checkPrincipalOnError?: boolean; readonly onPrincipal?: (principal: string, success: boolean) => void; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly classifyRefusal?: (status: number, error: ServerError, responseRequestId: string | undefined) => boolean; readonly parseError?: (value: unknown) => ServerError; readonly confirmMutation?: (result: T) => string; readonly secret?: string; readonly readOnly?: boolean; readonly allowIdentityMismatchRefusal?: boolean }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown; readonly maxBytes?: number } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -382,7 +384,7 @@ export const createApiClient = (options: {
           else throw new ProtocolError("The authenticated response principal does not match the expected user.");
         }
         if (mode.kind === "json") {
-          try { mode.onPrincipal?.(principalId); }
+          try { mode.onPrincipal?.(principalId, success); }
           catch (error) {
             if (error instanceof ProtocolError && (secret !== undefined || mode.allowIdentityMismatchRefusal === true) && !success && status === 409) invitationIdentityMismatch = true;
             else throw error;
@@ -430,13 +432,13 @@ export const createApiClient = (options: {
       checkRequest();
       if (!success) {
         if (status < 400 || status > 599) throw new ProtocolError("Unexpected HTTP status.");
-        serverError = parseServerError(value);
+        serverError = mode.kind === "json" && mode.parseError !== undefined ? mode.parseError(value) : parseServerError(value);
         if (invitationIdentityMismatch && serverError.code !== "identity_mismatch") { serverError = undefined; throw new ProtocolError("The authenticated response principal changed during the operation."); }
         if (secret !== undefined) {
           const safeCodes = ["unauthenticated", "forbidden", "invalid_input", "identity_mismatch", "invitation_unavailable", "write_outcome_unknown", "internal_error"];
           serverError = { code: safeCodes.includes(serverError.code) ? serverError.code : "server_error", message: "Invitation request failed.", requestId: canonicalId(serverError.requestId) === serverError.requestId ? serverError.requestId : "unavailable" };
         }
-        const confirmedRefusal = status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
+        const confirmedRefusal = mode.kind === "json" && mode.classifyRefusal !== undefined ? mode.classifyRefusal(status, serverError, responseRequestId) : status >= 400 && status < 500 || mode.kind === "json" && mode.confirmedFailure?.(status, serverError) === true;
         throw new ApiError(context, "response", { cause: new Error(serverError.message), status, serverError, confirmedRefusal, outcomeUnconfirmed: mutation && !confirmedRefusal, ...(responseRequestId === undefined ? {} : { responseRequestId }) });
       }
       if (mode.kind !== "json") throw new ProtocolError("Unexpected response mode.");
@@ -1007,6 +1009,42 @@ export const createApiClient = (options: {
         onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
         parse: (value) => parseProjectTransferReceipt(value, project, user, preview), confirmMutation: (result) => result.projectId,
       }, [200], { kind: "json", value: { ownership: { teamId: source, version: preview.ownership.version }, targetTeam: { id: target, version: preview.targetTeam.version }, expectedUserId: user } }, true);
+    },
+    previewProjectDeletion: async (userId, projectId) => {
+      const user = resourceId(userId), project = resourceId(projectId), claims: ProjectDeletionPreview["activeClaims"][number][] = [];
+      const cursors = new Set<string>();
+      let cursor: string | null = null, preview: ProjectDeletionPreview | undefined;
+      do {
+        operation.check();
+        const query = new URLSearchParams({ limit: "100", ...(cursor === null ? {} : { cursor }) });
+        preview = await exchange({ operation: "project.deletion-preview", projectId: project }, `/projects/${encodeURIComponent(project)}/deletion-preview?${query}`, "GET", {
+          kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
+          onPrincipal: (actual) => { if (actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+          decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+          parse: (value) => parseProjectDeletionPreview(value, project),
+        }, [200]);
+        for (const claim of preview.activeClaims) {
+          if (claims.length > 0 && claims[claims.length - 1]!.taskId >= claim.taskId) throw new ProtocolError("Invalid claim ordering across preview pages.");
+          claims.push(claim);
+        }
+        cursor = preview.nextCursor;
+        if (cursor !== null) { if (cursors.has(cursor)) throw new ProtocolError("Repeated pagination cursor."); cursors.add(cursor); }
+      } while (cursor !== null);
+      operation.check();
+      return { ...preview!, activeClaims: claims };
+    },
+    deleteProject: (userId, projectId, requestId) => {
+      const user = resourceId(userId), project = resourceId(projectId);
+      return exchange({ operation: "project.delete", projectId: project, sentRequestId: requestId }, `/projects/${encodeURIComponent(project)}`, "DELETE", {
+        kind: "json", requirePrincipal: true, checkFailurePrincipal: true,
+        onPrincipal: (actual, success) => { if (!success && actual !== user) throw new ProtocolError("The authenticated response principal changed during the operation."); },
+        decodeJsonSource: (source) => { jsonObjectSources(source); return parseApiJson(source); },
+        parse: (value) => parseProjectDeletionReceipt(value, project), parseError: parseProjectDeletionError, confirmMutation: (result) => result.projectId,
+        classifyRefusal: (status, error, responseId) => {
+          if (responseId !== requestId || error.requestId !== requestId) return false;
+          return status === 401 && error.code === "unauthenticated" || status === 400 && error.code === "invalid_input" || status === 403 && error.code === "forbidden" || status === 404 && error.code === "not_found" || status === 409 && error.code === "active_worker_claims" || status === 500 && error.code === "internal_error" && error.details?.writeOutcome === "not_committed";
+        },
+      }, [200], undefined, true);
     },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);

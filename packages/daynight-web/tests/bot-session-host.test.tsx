@@ -68,9 +68,11 @@ it.each(['deadline', 'buffer', 'transport'] as const)('retains the pane and clie
   fireEvent.change(input,{target:{value:'kept draft'}}); const firstGeneration=client.snapshot().connectionGeneration;
   const now=Date.now(); let clock: ReturnType<typeof vi.spyOn>|undefined;
   try {
+    // Anchor suspension and expiry to the same clock, independent of render time.
+    if(reason==='deadline') clock=vi.spyOn(Date,'now').mockReturnValue(now);
     act(()=>{paused=true;cache.syncAvailability();});
     expect(client.snapshot().authPaused).toBe(true);
-    if(reason==='deadline') { clock=vi.spyOn(Date,'now').mockReturnValue(now+60_001); }
+    if(reason==='deadline') clock!.mockReturnValue(now+60_001);
     if(reason==='buffer') act(()=>{for(let n=0;n<1001;n++)bot.receive({protocol:bot.snapshot().protocol,type:'snapshot',userId:botOwner,snapshot:bot.snapshot(),cursor:'queued'});});
     if(reason==='transport') act(()=>onClose(new Error('transport interrupted')));
     expect(screen.getByRole('textbox',{name:'Message'})).toBe(input); expect(input).toHaveValue('kept draft');

@@ -25,7 +25,7 @@ const fixture = (projects: readonly Project[] = []) => {
     addTaskStep: unavailable,
     deleteTaskStep: unavailable,
     listTaskSteps: unavailable, getTaskStep: unavailable,
-    getProjectAccess: unavailable, previewProjectTransfer: unavailable, transferProject: unavailable,
+    getProjectAccess: unavailable, previewProjectTransfer: unavailable, transferProject: unavailable, previewProjectDeletion: unavailable, deleteProject: unavailable,
     readTaskThread: unavailable, postTaskThreadMessage: unavailable,
     listProjectMembers: async () => { throw new Error("Unused project member API method"); },
     getTaskPropertySchema: async () => { throw new Error("Unused property API"); },

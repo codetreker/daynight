@@ -52,6 +52,15 @@ change the default Team or repository binding. Review the preview and follow
 [write safety](write-safety.md#project-transfers); a successful receipt may
 report that the actor no longer has access.
 
+## Project deletion
+
+With explicit authorization for the target Project, `project delete` selects an
+explicit `--project` or the Project resolved from the repository. The current
+owner Team admin can delete it; active Worker claims block deletion. Deletion
+makes the Project unavailable without a product recovery option while retaining
+server history and files. Review the complete preview and follow
+[write safety](write-safety.md#project-deletion).
+
 ## Register a project
 
 With authorization, use `project create` to register the repository as a project.

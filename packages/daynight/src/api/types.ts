@@ -163,6 +163,20 @@ export type TeamInvitationAcceptance = { readonly team: TeamRef; readonly member
 export type InvitationInspection = ProjectInvitationInspection | TeamInvitationInspection;
 export type InvitationAcceptance = ProjectInvitationAcceptance | TeamInvitationAcceptance;
 
+export type ProjectDeletionClaim = {
+  readonly taskId: string;
+  readonly title: string;
+  readonly worker: { readonly machineName: string; readonly platform: TaskPlatform; readonly phase: WorkerPhase; readonly paused: boolean; readonly connectivity: "online" | "offline" | "unknown" };
+};
+export type ProjectDeletionPreview = {
+  readonly observedAt: string;
+  readonly project: { readonly id: string; readonly name: string; readonly repoUrl: string; readonly ownerTeam: TeamRef };
+  readonly summary: { readonly taskCount: number; readonly unfinishedTaskCount: number; readonly attachmentCount: number };
+  readonly activeClaims: readonly ProjectDeletionClaim[];
+  readonly nextCursor: string | null;
+};
+export type ProjectDeletionReceipt = { readonly projectId: string; readonly deleted: true };
+
 export type ProjectTransferPreview = {
   readonly sourceTeam: TeamRef;
   readonly targetTeam: TeamRef & { readonly version: bigint };
@@ -410,6 +424,7 @@ export type TaskSearchPage = { readonly projectId: string; readonly total: numbe
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
 export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {
+  readonly writeOutcome?: "not_committed";
   readonly reason?: string;
   readonly position?: number;
   readonly length?: number;
