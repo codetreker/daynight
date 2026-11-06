@@ -21,8 +21,11 @@ registry is empty until complete business adapters are registered.
 
 Separate control and large-object permits are selected by internal materialization,
 not the returned view. Permits remain held through handler and response delivery.
-Shutdown cancels and drains MCP before stopping the shared relay and closing its
-borrowed storage. A timed-out drain retains dependencies until work has stopped.
+Shutdown cancels and waits for MCP handlers before stopping the shared relay. It
+then waits for the remaining handlers and database cancellation before closing
+borrowed storage. An HTTP drain timeout remains an error, but does not end this
+cleanup; an uncooperative handler can delay process exit beyond the configured
+HTTP drain timeout.
 
 ## Alternatives
 
@@ -33,6 +36,11 @@ preserve the same error contract for valid tool calls.
 **Per-connection identity and services.** Retaining a principal or constructing
 independent business instances per connection would complicate per-request
 credential revocation and risk divergent relay or authorization state.
+
+**Return while cleanup runs in the background.** The executable exits when the
+runtime returns, terminating asynchronous PostgreSQL cancellation before a
+blocked transaction has necessarily stopped. Waiting for cleanup preserves the
+outcome and shared-resource lifetime at the cost of a potentially delayed exit.
 
 ## Consequences
 

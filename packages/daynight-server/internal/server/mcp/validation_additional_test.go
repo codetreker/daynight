@@ -1,0 +1,144 @@
+package mcp
+
+import (
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+)
+
+func TestSchemaCompilationFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		schema any
+	}{
+		{"not JSON serializable", make(chan int)},
+		{"not a schema", map[string]any{"type": "not-a-json-type"}},
+		{"unresolved reference", map[string]any{"$ref": "#/$defs/missing"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := resolveSchema(tc.schema); err == nil {
+				t.Fatalf("compiled invalid schema %#v", tc.schema)
+			}
+		})
+	}
+}
+
+func TestSchemaErrorObjectCompatibility(t *testing.T) {
+	str := map[string]any{"type": "string"}
+	fields := func() map[string]any {
+		return map[string]any{"code": str, "message": str, "requestId": str, "writeOutcome": map[string]any{"enum": []any{"confirmed", "not_committed", "unknown"}}, "phase": str, "refs": map[string]any{"type": "object"}}
+	}
+	cases := []struct {
+		name   string
+		schema any
+		want   bool
+	}{
+		{"any object", true, true},
+		{"deny all", false, false},
+		{"type object", map[string]any{"type": "object"}, true},
+		{"non-object type", map[string]any{"type": "string"}, false},
+		{"non-schema value", "object", false},
+		{"restricted field", map[string]any{"type": "object", "properties": map[string]any{"code": map[string]any{"type": "string", "pattern": "^internal"}}}, false},
+		{"unknown top-level constraint", map[string]any{"type": "object", "maxProperties": 1}, false},
+		{"optional field required", map[string]any{"required": []any{"code", "refs"}}, false},
+		{"closed without optional fields", map[string]any{"properties": map[string]any{"code": str, "message": str, "requestId": str}, "additionalProperties": false}, false},
+		{"closed with all fields", map[string]any{"type": "object", "properties": fields(), "required": []any{"code", "message", "requestId"}, "additionalProperties": false}, true},
+		{"non-object refs", map[string]any{"properties": map[string]any{"refs": map[string]any{"type": "string"}}}, false},
+		{"non-string phase", map[string]any{"properties": map[string]any{"phase": map[string]any{"type": "number"}}}, false},
+		{"incomplete outcomes", map[string]any{"properties": map[string]any{"writeOutcome": map[string]any{"enum": []any{"unknown", "confirmed"}}}}, false},
+		{"unknown field schema", map[string]any{"properties": map[string]any{"code": true}}, true},
+		{"false field schema", map[string]any{"properties": map[string]any{"code": false}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := acceptsErrorObject(tc.schema); got != tc.want {
+				t.Fatalf("schema %#v: got %v want %v", tc.schema, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestErrorResultRetainsFactsWhenReferenceCannotEncode(t *testing.T) {
+	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	schema, err := resolveSchema(map[string]any{"type": "object"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := e.errorResult(schema, RequestActor{}, envelopeError{Code: "version_conflict", Message: "conflict", RequestID: "original", WriteOutcome: "confirmed", Phase: "output", Refs: map[string]any{"bad": make(chan int)}})
+	if !result.IsError {
+		t.Fatal("expected error")
+	}
+	failure := object(t, structured(t, result)["error"])
+	if failure["code"] != "version_conflict" || failure["requestId"] != "original" || failure["writeOutcome"] != "confirmed" || failure["phase"] != "output" {
+		t.Fatalf("lost established facts: %#v", failure)
+	}
+	if _, ok := failure["refs"]; ok {
+		t.Fatalf("unencodable refs included: %#v", failure)
+	}
+}
+
+func TestErrorResultNormalizesUnknownWriteOutcome(t *testing.T) {
+	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	schema, err := resolveSchema(map[string]any{"type": "object"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := e.errorResult(schema, RequestActor{}, envelopeError{Code: "internal_error", Message: "failure", RequestID: "original", WriteOutcome: "unsupported"})
+	failure := object(t, structured(t, result)["error"])
+	if _, ok := failure["writeOutcome"]; ok {
+		t.Fatalf("unproven completion was reported: %#v", failure)
+	}
+}
+
+func TestErrorResultFallbackWithIncompatibleSchema(t *testing.T) {
+	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// This schema cannot be registered, but fallback remains useful if a future
+	// caller passes a mismatched validator after operation completion.
+	schema, err := resolveSchema(map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "object", "properties": map[string]any{"code": map[string]any{"const": "internal_error"}}, "required": []string{"code"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := e.errorResult(schema, RequestActor{}, envelopeError{Code: "version_conflict", Message: "conflict", RequestID: "original", WriteOutcome: "confirmed", Phase: "output"})
+	failure := object(t, structured(t, result)["error"])
+	if failure["code"] != "internal_error" || failure["requestId"] != "original" || failure["writeOutcome"] != "confirmed" || failure["phase"] != "output" {
+		t.Fatalf("fallback lost facts: %#v", failure)
+	}
+	b, err := json.Marshal(result.StructuredContent)
+	if err != nil || validateJSON(schema, b) != nil {
+		t.Fatalf("fallback violates schema: %s %v", b, err)
+	}
+}
+
+func TestMapTaskFullConvertsOptionalTimeToUTC(t *testing.T) {
+	started := time.Date(2026, 11, 6, 9, 10, 11, 123, time.FixedZone("test", 3*60*60))
+	task := model.Task{StartedAt: &started}
+	got := MapTaskFull(task)
+	if got.StartedAt == nil || got.StartedAt.Location() != time.UTC || !got.StartedAt.Equal(started) || got.CompletedAt != nil {
+		t.Fatalf("unexpected optional timestamps: %+v", got)
+	}
+	if task.StartedAt.Location() == time.UTC {
+		t.Fatal("mapper changed the source timestamp")
+	}
+}
+
+func TestMCPResponseWriterSupportsResponseController(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writer := &noStoreWriter{ResponseWriter: recorder}
+	writer.Header().Set("Cache-Control", "no-store")
+	if _, err := writer.Write([]byte("body")); err != nil {
+		t.Fatal(err)
+	}
+	if err := http.NewResponseController(writer).Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if !recorder.Flushed || recorder.Body.String() != "body" || !strings.EqualFold(recorder.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("response controller did not reach underlying writer: %#v", recorder)
+	}
+}

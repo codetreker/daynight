@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -21,6 +22,51 @@ type Dependencies struct {
 	Files filestorage.Storage
 }
 
+// requestDrain accounts for handlers independently of net/http's connection
+// state, which excludes hijacked connections and does not join forced closes.
+type requestDrain struct {
+	mu       sync.Mutex
+	active   int
+	stopping bool
+	done     chan struct{}
+}
+
+func newRequestDrain() *requestDrain { return &requestDrain{done: make(chan struct{})} }
+
+func (d *requestDrain) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.mu.Lock()
+		if d.stopping {
+			d.mu.Unlock()
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		d.active++
+		d.mu.Unlock()
+		defer func() {
+			d.mu.Lock()
+			d.active--
+			if d.stopping && d.active == 0 {
+				close(d.done)
+			}
+			d.mu.Unlock()
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (d *requestDrain) stop() <-chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.stopping {
+		d.stopping = true
+		if d.active == 0 {
+			close(d.done)
+		}
+	}
+	return d.done
+}
+
 type Runtime struct {
 	Dependencies
 
@@ -32,6 +78,7 @@ type Runtime struct {
 	cancelRequests  context.CancelFunc
 	shutdownHandler func(context.Context) error
 	beginShutdown   func()
+	requests        *requestDrain
 }
 
 func Start(ctx context.Context, config Config, logger *slog.Logger, handler func(Dependencies) (http.Handler, error)) (*Runtime, error) {
@@ -63,11 +110,12 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 		return nil, &httpx.RuntimeError{Phase: "composition", Cause: errors.Join(err, listener.Close(), files.Close())}
 	}
 	requests, cancelRequests := context.WithCancel(context.Background())
+	drain := newRequestDrain()
 	runtime := &Runtime{
 		Dependencies: dependencies, files: files, listener: listener, logger: logger, shutdownTimeout: config.ShutdownTimeout,
-		cancelRequests: cancelRequests,
+		cancelRequests: cancelRequests, requests: drain,
 		http: &http.Server{
-			Handler:           httpx.RequestLogging(logger, application),
+			Handler:           httpx.RequestLogging(logger, drain.wrap(application)),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       60 * time.Second,
 			BaseContext:       func(net.Listener) context.Context { return requests },
@@ -98,6 +146,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), r.shutdownTimeout)
 	defer cancel()
+	drained := r.requests.stop()
 	if r.beginShutdown != nil {
 		r.beginShutdown()
 	}
@@ -112,20 +161,15 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if !errors.Is(serveError, http.ErrServerClosed) {
 		err = errors.Join(err, serveError)
 	}
-	// net/http does not wait for hijacked WebSocket connections. Stop the
-	// relay and await its database work before closing shared dependencies.
+	// The relay must close hijacked WebSockets before waiting for handlers.
+	// Pool.Close also joins pgx's asynchronous cancellation of interrupted SQL.
 	r.cancelRequests()
 	if r.shutdownHandler != nil {
-		shutdownErr := r.shutdownHandler(shutdown)
-		err = errors.Join(err, shutdownErr)
-		if errors.Is(shutdownErr, context.DeadlineExceeded) || errors.Is(shutdownErr, context.Canceled) {
-			// Preserve borrowed resources until the unfinished application work stops.
-			go func() { _ = r.shutdownHandler(context.Background()); _ = r.files.Close(); r.Store.Close() }()
-			return &httpx.RuntimeError{Phase: "shutdown", Cause: err}
-		}
+		err = errors.Join(err, r.shutdownHandler(context.Background()))
 	}
-	err = errors.Join(err, r.files.Close())
+	<-drained
 	r.Store.Close()
+	err = errors.Join(err, r.files.Close())
 	if err != nil {
 		return &httpx.RuntimeError{Phase: "shutdown", Cause: err}
 	}

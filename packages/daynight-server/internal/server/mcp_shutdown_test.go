@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -13,8 +14,12 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/puddle/v2"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -93,11 +98,10 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	started := time.Now()
 	cancel()
 	await(t, canceled)
-	if err := await(t, runtimeDone); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected bounded shutdown timeout, got %v", err)
-	}
-	if time.Since(started) > 2*time.Second {
-		t.Fatal("runtime did not return within the shutdown bound")
+	select {
+	case err := <-runtimeDone:
+		t.Fatalf("runtime returned before the canceled MCP handler exited: %v", err)
+	case <-time.After(150 * time.Millisecond):
 	}
 	probe, stopProbe := context.WithTimeout(context.Background(), time.Second)
 	defer stopProbe()
@@ -117,6 +121,12 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	operation.Close()
 
 	releaseWork()
+	if err := await(t, runtimeDone); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected forced shutdown deadline, got %v", err)
+	}
+	if time.Since(started) > 5*time.Second {
+		t.Fatal("runtime did not finish after the MCP handler exited")
+	}
 	await(t, clientDone)
 	read, stopRead := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopRead()
@@ -147,4 +157,82 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// A canceled database query may finish locally before pgx's asynchronous
+// CancelRequest reaches PostgreSQL. Runtime must join pool cleanup before
+// returning to a caller that can terminate the process.
+func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
+	config := testConfig(t)
+	config.ShutdownTimeout = 30 * time.Millisecond
+	query := "select pg_sleep(30) /* " + uuid.NewString() + " */"
+	queryDone := make(chan error, 1)
+	runtime, err := Start(context.Background(), config, testLogger(), func(deps Dependencies) (http.Handler, error) {
+		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
+		if err != nil {
+			return nil, err
+		}
+		engine := sessioncore.NewEngine(deps.Files)
+		sessions := sessionservice.New(deps.Store, engine)
+		relay := sessionhttp.NewRoutes(sessions, nil, testLogger())
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", endpoint)
+		mux.HandleFunc("/wait", func(w http.ResponseWriter, r *http.Request) {
+			_, err := deps.Store.Pool.Exec(r.Context(), query)
+			queryDone <- err
+		})
+		return &sessionApplication{Handler: mux, relay: relay, engine: engine, mcp: endpoint}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runtime.Run(ctx) }()
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		response, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + runtime.Address() + "/wait")
+		if err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+	t.Cleanup(func() { cancel(); await(t, clientDone) })
+	awaitSleepingQuery(t, config.DatabaseURL, query)
+	cancel()
+	if err := await(t, done); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected forced shutdown deadline, got %v", err)
+	}
+	if err := await(t, queryDone); !errors.Is(err, context.Canceled) {
+		t.Fatalf("database operation did not observe cancellation: %v", err)
+	}
+	probe, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stop()
+	observer, err := pgx.Connect(probe, config.DatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = observer.Close(context.Background()) }()
+	var active int
+	if err := observer.QueryRow(probe, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND query=$1 AND state='active'`, query).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != 0 {
+		t.Fatal("runtime returned before PostgreSQL stopped the canceled query")
+	}
+	await(t, clientDone)
+}
+
+func TestRequestDrainRejectsAdmissionAfterShutdown(t *testing.T) {
+	drain := newRequestDrain()
+	called := false
+	handler := drain.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	<-drain.stop()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusServiceUnavailable || called {
+		t.Fatalf("shutdown admitted a new handler: status=%d called=%v", response.Code, called)
+	}
+	<-drain.stop()
 }
