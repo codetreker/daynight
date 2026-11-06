@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -15,7 +15,7 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
 	projectID, taskID := uuid.NewString(), uuid.NewString()
-	input := core.Attachment{ProjectID: projectID, TaskID: taskID, Path: "docs/a.md", ContentType: "text/markdown", SizeBytes: 10}
+	input := model.Attachment{ProjectID: projectID, TaskID: taskID, Path: "docs/a.md", ContentType: "text/markdown", SizeBytes: 10}
 	first, created, err := database.PutAttachment(ctx, input)
 	if err != nil || !created || first.CreatedAt.IsZero() || !first.CreatedAt.Equal(first.UpdatedAt) {
 		t.Fatalf("insert: %#v, %v, %v", first, created, err)
@@ -29,24 +29,25 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	if _, _, err := database.PutAttachment(ctx, input); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		attachment, err := snapshot.Attachment(ctx, projectID, taskID, "docs/a.md")
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		attachment, err := snapshot.AttachmentDAO().Attachment(ctx, projectID, taskID, "docs/a.md")
 		if err != nil || !reflect.DeepEqual(attachment, updated) {
 			t.Fatalf("read: %#v, %v", attachment, err)
 		}
-		page, err := snapshot.Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1})
+		page, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1})
 		if err != nil || len(page.Items) != 1 || !page.HasMore || page.Items[0].Path != "docs/a.md" {
 			t.Fatalf("page: %#v, %v", page, err)
 		}
-		page, err = snapshot.Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1, After: &page.Items[0].Path})
+		page, err = snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 1, After: &page.Items[0].Path})
 		if err != nil || len(page.Items) != 1 || page.HasMore || page.Items[0].Path != "docs/b.md" {
 			t.Fatalf("final page: %#v, %v", page, err)
 		}
 		for _, test := range []struct {
-			path     string
-			conflict bool
-		}{{"docs", true}, {"docs/a.md/child", true}, {"docs/a.md", false}, {"docs2", false}} {
-			got, err := snapshot.AttachmentPathConflict(ctx, projectID, taskID, test.path)
+			path      string
+			ancestors []string
+			conflict  bool
+		}{{"docs", []string{}, true}, {"docs/a.md/child", []string{"docs", "docs/a.md"}, true}, {"docs/a.md", []string{"docs"}, false}, {"docs2", []string{}, false}} {
+			got, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, projectID, taskID, AttachmentConflictQuery{Ancestors: test.ancestors, DescendantPrefix: test.path + "/"})
 			if err != nil || got != test.conflict {
 				t.Fatalf("prefix %q: %v, %v", test.path, got, err)
 			}
@@ -58,14 +59,14 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 	if err := database.DeleteAttachment(ctx, projectID, taskID, "docs/a.md"); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.DeleteAttachment(ctx, projectID, taskID, "docs/a.md"); !errors.Is(err, core.ErrNotFound) {
+	if err := database.DeleteAttachment(ctx, projectID, taskID, "docs/a.md"); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing delete: %v", err)
 	}
-	err = database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.Attachment(ctx, projectID, taskID, "docs/a.md")
+	err = database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.AttachmentDAO().Attachment(ctx, projectID, taskID, "docs/a.md")
 		return err
 	})
-	if !errors.Is(err, core.ErrNotFound) {
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing read: %v", err)
 	}
 }
@@ -73,7 +74,7 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 func TestAttachmentSchemaConstraintsAndStoreFailures(t *testing.T) {
 	database := isolatedStore(t)
 	ctx := context.Background()
-	input := core.Attachment{ProjectID: uuid.NewString(), TaskID: uuid.NewString(), Path: "file", ContentType: "text/plain", SizeBytes: -1}
+	input := model.Attachment{ProjectID: uuid.NewString(), TaskID: uuid.NewString(), Path: "file", ContentType: "text/plain", SizeBytes: -1}
 	_, _, err := database.PutAttachment(ctx, input)
 	var postgresError *pgconn.PgError
 	if !errors.As(err, &postgresError) || postgresError.Code != "23514" {
@@ -86,17 +87,17 @@ func TestAttachmentSchemaConstraintsAndStoreFailures(t *testing.T) {
 	_, _, err = database.PutAttachment(ctx, input)
 	assertAttachmentStoreError(t, err)
 	assertAttachmentStoreError(t, database.DeleteAttachment(ctx, input.ProjectID, input.TaskID, input.Path))
-	for _, operation := range []func(*Snapshot) error{
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.Attachment(ctx, input.ProjectID, input.TaskID, input.Path)
+	for _, operation := range []func(SnapshotScope) error{
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.AttachmentDAO().Attachment(ctx, input.ProjectID, input.TaskID, input.Path)
 			return err
 		},
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.Attachments(ctx, input.ProjectID, input.TaskID, AttachmentQuery{Limit: 1})
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.AttachmentDAO().Attachments(ctx, input.ProjectID, input.TaskID, AttachmentQuery{Limit: 1})
 			return err
 		},
-		func(snapshot *Snapshot) error {
-			_, err := snapshot.AttachmentPathConflict(ctx, input.ProjectID, input.TaskID, input.Path)
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, input.ProjectID, input.TaskID, AttachmentConflictQuery{Ancestors: []string{}, DescendantPrefix: input.Path + "/"})
 			return err
 		},
 	} {
@@ -108,7 +109,7 @@ func assertAttachmentStoreError(t *testing.T, err error) {
 	t.Helper()
 	var postgresError *pgconn.PgError
 	var databaseError *Error
-	if !errors.As(err, &postgresError) || postgresError.Code != "42P01" || !errors.As(err, &databaseError) || errors.Is(err, core.ErrNotFound) {
+	if !errors.As(err, &postgresError) || postgresError.Code != "42P01" || !errors.As(err, &databaseError) || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing table error lost: %v", err)
 	}
 }

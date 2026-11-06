@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/coder/websocket"
-	"github.com/google/uuid"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +13,14 @@ import (
 	"testing"
 	"time"
 
-	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/google/uuid"
+
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 func terminalRequest(h http.Handler, method, path, body, protocol string) *httptest.ResponseRecorder {
@@ -34,7 +38,7 @@ func terminalRequest(h http.Handler, method, path, body, protocol string) *httpt
 func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
 	f := terminalHTTPSetup(t)
 	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
-	a, err := New(Dependencies{Store: f.app.relay.service.DB, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
+	a, err := New(Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +51,7 @@ func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
 		}
 	})
 	other := *f.h
-	other.Handler = RequestLogging(testLogger(), otherApp)
+	other.Handler = httpx.RequestLogging(testLogger(), otherApp)
 	for _, path := range []string{f.base + "/current", f.base + "/" + f.message.SessionID + "/state"} {
 		response := terminalRequest(&other, http.MethodGet, path, "", v2.Protocol)
 		if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"relay_instance_unavailable"`) {
@@ -94,34 +98,6 @@ func TestTerminalViewerClosesWhenWorkerConnectionIsReplaced(t *testing.T) {
 	}
 }
 
-func TestTerminalProtocolSelection(t *testing.T) {
-	for _, tc := range []struct {
-		header    []string
-		protocols string
-		want      string
-		bad       bool
-	}{
-		{want: sp.Protocol}, {header: []string{v2.Protocol}, want: v2.Protocol},
-		{header: []string{""}, bad: true}, {header: []string{"future"}, bad: true},
-		{header: []string{sp.Protocol, v2.Protocol}, bad: true},
-		{protocols: v2.Protocol, want: v2.Protocol}, {protocols: "other", bad: true},
-		{protocols: sp.Protocol + ", " + v2.Protocol, want: v2.Protocol},
-		{header: []string{sp.Protocol}, protocols: v2.Protocol, bad: true},
-	} {
-		r := httptest.NewRequest(http.MethodGet, "http://example.test/channel", nil)
-		if tc.header != nil {
-			r.Header[v2.ProtocolHeader] = tc.header
-		}
-		if tc.protocols != "" {
-			r.Header.Set("Sec-WebSocket-Protocol", tc.protocols)
-		}
-		got, err := selectedSessionProtocol(r)
-		if (err != nil) != tc.bad || !tc.bad && got != tc.want {
-			t.Fatalf("%+v: %q %v", tc, got, err)
-		}
-	}
-}
-
 func TestTerminalCapabilitiesAreExplicit(t *testing.T) {
 	h := projectTestHandler(t, projectTestStore(t), io.Discard)
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/session-capabilities", nil)
@@ -141,6 +117,7 @@ func TestTerminalCapabilitiesAreExplicit(t *testing.T) {
 type terminalHTTPFixture struct {
 	h       *resourceTestHandler
 	app     *sessionApplication
+	db      *store.Store
 	server  *httptest.Server
 	base    string
 	message v2.Message
@@ -163,7 +140,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 		t.Fatal(e)
 	}
 	app := a.(*sessionApplication)
-	h.Handler = RequestLogging(testLogger(), app)
+	h.Handler = httpx.RequestLogging(testLogger(), app)
 	server := httptest.NewServer(app)
 	t.Cleanup(server.Close)
 	t.Cleanup(func() {
@@ -175,7 +152,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 	})
 	pane := "pane_1"
 	m := v2.Message{Envelope: v2.Envelope{Protocol: v2.Protocol, SchemaVersion: 2, ProjectionVersion: 1, Type: "registration", SessionID: uuid.NewString(), ClaimID: w.ClaimID, ExecutionGeneration: "1", AgentControlMode: "herdr", ContentKind: "terminal_recording"}, Payload: v2.Registration{RegistrationID: uuid.NewString(), Mode: "register", Owner: v2.Owner{ProjectID: project.ID, TaskID: task.ID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, OwnerUserID: h.principal.UserID, ServerOrigin: cfg.PublicOrigin, Provider: "codex"}, Binding: v2.Binding{InstanceID: "daemon", SessionID: "native", WorkspaceID: "workspace", PaneID: v2.NativePaneID{Text: &pane}, TerminalID: "term_test"}, Capabilities: v2.Capabilities{Observe: true, Control: true, Archive: true}}}
-	return terminalHTTPFixture{h: h, app: app, server: server, base: taskPath(task) + "/sessions", message: m}
+	return terminalHTTPFixture{h: h, app: app, db: db, server: server, base: taskPath(task) + "/sessions", message: m}
 }
 func terminalMessage(t *testing.T, w *httptest.ResponseRecorder) v2.Message {
 	t.Helper()
@@ -214,7 +191,7 @@ func TestTerminalHTTPAutomationRecoveryHasAnIndependentReadbackContract(t *testi
 	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
 	f.messageRequest(t, "generation_ledger", v2.GenerationLedger{Runs: []v2.Run{{ExecutionGeneration: "1", Owner: reg.Owner, Binding: reg.Binding, StartedAt: "2026-01-01T00:00:00Z", SegmentIDs: []string{uuid.NewString()}}}})
 	f.messageRequest(t, "control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}})
-	if err := f.app.relay.service.BindTerminalConnection(ctx, f.h.principal, reg.Owner.ProjectID, reg.Owner.TaskID, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+	if err := f.app.service.BindTerminalConnection(ctx, f.h.principal, reg.Owner.ProjectID, reg.Owner.TaskID, f.message.SessionID, f.message.Envelope, "1"); err != nil {
 		t.Fatal(err)
 	}
 	prepare := v2.AutomationRecoveryPrepare{RecoveryID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", ClosingControlEpoch: "2", StopOperationID: uuid.NewString(), Binding: reg.Binding, InitialAssignment: "transport_completed"}
@@ -271,7 +248,7 @@ func TestTerminalHTTPRegistrationLedgerAndClosedUnavailable(t *testing.T) {
 		t.Fatal(readback.Code, readback.Body.String())
 	}
 	// The fixture has no native process; close only this test task's authority.
-	_, e := f.app.relay.service.DB.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, reg.Owner.TaskID)
+	_, e := f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, reg.Owner.TaskID)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -381,7 +358,7 @@ func TestTerminalWorkerAndBrowserWebSockets(t *testing.T) {
 		t.Fatal(update)
 	}
 	// Revoking membership closes the existing browser subscription.
-	_, err = f.app.relay.service.DB.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, reg.Owner.ProjectID, reg.Owner.OwnerUserID)
+	_, err = f.db.Pool.Exec(ctx, `DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2`, reg.Owner.ProjectID, reg.Owner.OwnerUserID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,6 +542,15 @@ func TestTerminalHTTPBoundaryAndReadbackErrors(t *testing.T) {
 		code                           int
 	}{
 		{"GET", "/state", "", v2.Protocol, 200},
+		{"GET", "/archive/state", "", v2.Protocol, 200},
+		{"GET", "/archive/state", "", "", 400},
+		{"GET", "/archive/state", "", sp.Protocol, 400},
+		{"GET", "/archive/state", "", "future", 400},
+		{"GET", "/archive/state?extra=1", "", v2.Protocol, 400},
+		{"GET", "/archive/state?generation=1&generation=2", "", v2.Protocol, 400},
+		{"HEAD", "/archive/state", "", v2.Protocol, 405},
+		{"POST", "/archive/state", "{}", v2.Protocol, 405},
+		{"DELETE", "/archive/state", "", v2.Protocol, 405},
 		{"GET", "/state", "", "", 400},
 		{"HEAD", "/state", "", v2.Protocol, 405},
 		{"DELETE", "/state", "", v2.Protocol, 405},
@@ -676,7 +662,7 @@ func TestTerminalArchiveDownloadPreservesReceiptBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.messageRequest(t, "recording_evidence", v2.RecordingEvidence{ResponsibilityID: responsibility.ResponsibilityID, EvidenceID: uuid.NewString(), Revision: "1", SelectedFrameCount: "1", RegisteredFrameCount: "1", Closed: true, JournalSHA256: v2.HashBytes([]byte("durable test journal")), SourceSHA256: digest})
-	if _, err = f.app.relay.service.DB.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, reg.Owner.TaskID); err != nil {
+	if _, err = f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done' WHERE id=$1`, reg.Owner.TaskID); err != nil {
 		t.Fatal(err)
 	}
 	f.messageRequest(t, "finalization", v2.Finalization{FinalizationID: doc.FinalizationID, ClaimTerminal: true, Runs: doc.Runs})
@@ -786,4 +772,59 @@ func testTerminalWorkerChannelAdvancesStoppedGeneration(t *testing.T, learnedAtS
 	}
 	// Cleanup must also use the current generation to revoke this connection.
 	waitConnected(false)
+}
+
+func TestTerminalArchiveStateHTTPRetainsDeletedOwnerReadback(t *testing.T) {
+	f := terminalHTTPSetup(t)
+	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
+	path := f.base + "/" + f.message.SessionID
+	initial := terminalRequest(f.h, http.MethodGet, path+"/state", "", v2.Protocol)
+	if initial.Code != http.StatusOK {
+		t.Fatal(initial.Code, initial.Body.String())
+	}
+	var before map[string]any
+	if err := json.Unmarshal(initial.Body.Bytes(), &before); err != nil {
+		t.Fatal(err)
+	}
+	owner := f.message.Payload.(v2.Registration).Owner
+	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE tasks SET status='done',deleted_at=now() WHERE id=$1`, owner.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	response := terminalRequest(f.h, http.MethodGet, path+"/archive/state", "", v2.Protocol)
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	var after map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) || after["connected"] != false {
+		t.Fatal(after)
+	}
+	for _, key := range []string{"protocol", "schemaVersion", "projectionVersion", "sessionId", "claimId", "executionGeneration", "owner", "binding", "ledger", "recording", "archive"} {
+		if jsonBody(t, before[key]) != jsonBody(t, after[key]) {
+			t.Fatalf("%s changed: %#v != %#v", key, before[key], after[key])
+		}
+	}
+	for _, suffix := range []string{"/state", "/archive/content"} {
+		if ordinary := terminalRequest(f.h, http.MethodGet, path+suffix, "", v2.Protocol); ordinary.Code != http.StatusNotFound {
+			t.Fatal("ordinary deleted session reopened", ordinary.Code, ordinary.Body.String())
+		}
+	}
+	if history := terminalRequest(f.h, http.MethodGet, f.base, "", v2.Protocol); history.Code != http.StatusNotFound {
+		t.Fatal(history.Code, history.Body.String())
+	}
+	for _, suffix := range []string{"/not-a-uuid/archive/state", "/" + uuid.NewString() + "/archive/state"} {
+		if result := terminalRequest(f.h, http.MethodGet, f.base+suffix, "", v2.Protocol); result.Code == http.StatusOK {
+			t.Fatal("invalid or foreign session accepted")
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, path+"/archive/state", nil)
+	authorizeResourceRequest(f.h, request)
+	request.Header[v2.ProtocolHeader] = []string{v2.Protocol, v2.Protocol}
+	recorder := httptest.NewRecorder()
+	f.h.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatal(recorder.Code, recorder.Body.String())
+	}
 }

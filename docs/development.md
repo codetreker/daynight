@@ -45,10 +45,12 @@ pnpm daynight --version
 
 `pnpm check` runs type checking and tests. Standalone `pnpm test` and
 `pnpm acceptance` build the package before exercising the compiled CLI. Native CI
-runs ordinary tests and installed acceptance in independent native jobs. Each
-job installs dependencies and builds its own current-source output; the ordinary
-job also typechecks and tests the local development installer. Both phases keep
-all three platforms and a 10-minute job limit. Ordinary suites exclude `.stress.ts` files; explicit
+runs ordinary tests and installed acceptance independently on Linux and Windows.
+macOS uses one allocation for the same two complete phases in sequence. Both
+logical phases retain all three platforms, their own validation build and
+outcome, and 10-minute validation bounds; the ordinary phase also typechecks and
+tests the local development installer. The macOS job shares dependency setup and
+has a 20-minute outer limit. Ordinary suites exclude `.stress.ts` files; explicit
 local stress commands select those workloads separately, as described in
 [local stress validation](#local-stress-validation). `pnpm build` clears the
 package's `dist/`, compiles
@@ -67,6 +69,56 @@ that normal chain. The package's existing `files: ["dist"]` rule publishes these
 `daynight` and `dn` keep the same stable JavaScript entry. The
 [SQLite design](design/cli-sqlite-migrations.md#sql-资源与参考结构) owns SQL loading,
 reference metadata and execution ordering.
+
+### CLI test isolation
+
+The ordinary, installed-acceptance and stress Vitest configurations load
+`packages/daynight/scripts/test-bootstrap.ts` before test modules. The shared
+CommonJS preload is `packages/daynight/scripts/test-isolation.cts`.
+`pnpm dev:test` first runs a standalone sentinel regression, then runs the
+development-installer tests with that preload. `pnpm completion:acceptance`
+starts a preloaded Node runner, which passes the test environment to Python and
+its shell/CLI children.
+
+The bootstrap records the original homes' `~/.daynight` directories and inherited
+`DN_CONFIG_DIR` before changing the test environment. It clears that inherited
+override and creates a private baseline home and temporary directories under the
+checkout's `.tmp/cli-tests-*`. Individual tests retain their fixture homes and
+explicit configuration overrides; unrelated provider, cache and application
+settings remain available. Child-process and native-PTY launches propagate the
+isolation metadata and append the preload to `NODE_OPTIONS`, including when a
+fixture constructs a restricted environment. A child with an explicit safe
+`DN_CONFIG_DIR` retains its supplied home. If its default `.daynight` path would
+reach protected state, the launcher supplies the isolated baseline home.
+
+Before a mutation or cleanup, the guard protects both the selected Daynight
+root entries and their physical targets. POSIX paths retain their string or
+`Buffer` components and are traversed in filesystem order: existing prefixes and
+symbolic-link targets are resolved before subsequent `..` components. Missing directories retain virtual
+components so recursive creation receives the same protection. Cleanup preserves
+trailing separators, `.` and `..`, which can require following a link before
+removing a directory. A destructive operation that would remove an ancestor of
+protected state is also refused.
+
+The checks cover mutating Node filesystem calls, writable opens, tracked
+descriptors and `FileHandle` mutations, recursive-copy destinations, and native
+SQLite constructors and backup destinations. Windows disk paths undergo Node's
+namespace preparation before physical inspection and protected-root comparison.
+Local `\\.\pipe\` addresses identify IPC objects, so they skip disk-path
+inspection. Other filesystem paths remain available to tests. The standalone
+regression checks its scratch path against protected state before creating
+sentinels and launching guarded probes.
+
+Fixtures capture owned cleanup paths before changing or restoring their
+environment. Global test teardown and the standalone owning process's exit
+cleanup remove the run's private baseline directory. The protection applies only
+to test execution; the installed CLI's configuration precedence and filesystem
+behavior remain unchanged. The
+[test-state isolation decision](../.agents/notes/implemented/testing/2026-11-06-cli-test-state-isolation.md)
+owns the mechanism's alternatives and limits.
+
+### CLI test fixtures
+
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
@@ -76,6 +128,15 @@ and its cancellation, and accelerate the incomplete socket's native expiry;
 virtual time separately exercises the authenticated response wait. The
 [test timing decision](../.agents/notes/implemented/testing/2026-11-04-cli-test-time-and-bytes.md)
 explains the distinction between Node socket timers and global fake timers.
+Controller startup timeout tests keep real SDKs, native fixture processes and
+request logs. A test-only deadline controller waits for the stalled initialization
+request before expiring its captured 30-second callback. The socket-close case
+also awaits the real SDK client socket close event before expiry. Other timers
+and real I/O continue normally; separate virtual-time assertions check the default deadline
+boundary. The strict compiled fixture retains unhandled-rejection, teardown-RPC
+and owned-process-exit checks. The
+[startup deadline decision](../.agents/notes/implemented/testing/2026-11-05-native-startup-test-deadlines.md)
+owns this timing boundary.
 Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
@@ -85,6 +146,51 @@ Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
+Real Bot integration owns a 180-second teardown hook because original process
+proof, IPC stop, Windows Job termination and diagnostics can outlast the ordinary
+hook limit. Each process confirmation probe is joined before another round or
+escalation; only complete teardown restores mocks and environment variables.
+Failed startup records the controlled child's logs, journal and parent/child
+ticket paths while retaining original errors and unknown process ownership. The
+[Bot fixture decision](../.agents/notes/implemented/testing/2026-11-05-bot-fixture-teardown.md)
+owns this isolation and budget rationale. Windows process-proof acquisition
+uses the existing Koffi dependency to query birth, parent identity and the full
+command line through one retained process handle. It retains the proof's field
+shape and birth precision, and hashes full Unicode text without PowerShell
+console encoding loss. Historical hashes of lossy command text are not
+byte-equivalent and are not accepted through a legacy fallback. Windows
+inspection throws identity uncertainty when birth still matches but command
+hash or process group differs; stop confirmation retains resources and rejects
+before querying the Job inventory. A different birth still establishes process
+replacement. Production capture starts no PowerShell/CIM query. Startup retains
+fifteen seconds on Windows and five seconds on POSIX; recurring identity
+inspection retains five seconds. Windows checks that budget between native calls
+and joins a call already in progress, so the budget cannot preempt a kernel
+call. Focused regressions cover full command-line identity, birth formatting,
+query failures, malformed native output and original-error preservation. The
+[Windows native identity regression](../packages/daynight/test/commands/controller/process-proof-native-windows.test.ts)
+requires a controlled child's self-proof and parent capture to agree, then
+compares birth and the complete command hash with one isolated CIM format
+oracle. The oracle transports explicit UTF-8 JSON in an ASCII Base64 envelope
+and validates canonical Base64 plus strict UTF-8 decoding, preserving Unicode
+independently of the console code page. Its sixty-second allowance belongs to a
+ninety-second test; production capture and inspection do not use it as a
+fallback. Mismatch diagnostics retain hashes, lengths and qualification flags
+without raw command text. The child is stopped and its close joined even when
+an assertion fails. The
+[native Windows proof decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-native-process-proof.md)
+owns the implementation and its dependency limits; the
+[startup budget decision](../.agents/notes/implemented/bug-fix/2026-11-05-windows-startup-process-proof-budget.md)
+preserves the acquisition policy's rationale.
+Controller Job Object creation, membership queries and termination use the existing
+Koffi dependency in the calling process. Each operation retains its fifteen-second
+budget, checked between native calls and after handle release; an in-progress
+kernel call is joined. Native regressions cover access failures, malformed process
+inventories and handle release, while Windows CI keeps real Bot generation,
+recovery and deletion scenarios. A test-owned handle keeps a controlled Job name
+available for direct membership and termination checks. The
+[native Job API decision](../.agents/notes/implemented/testing/2026-11-05-native-controller-job-api.md)
+owns the preserved handle lifetime and measurement boundaries.
 The native fsmonitor regression uses a real hook's invocation marker to qualify
 ordinary Git and verify protected-query suppression. Its
 [fixture decision](../.agents/notes/implemented/testing/2026-11-04-fsmonitor-fixture-marker.md)
@@ -115,7 +221,8 @@ PNPM's supported POSIX executable-link preference; npm global updates remain rea
 Project/task runtime/view preparation and self-update's initial package/global
 installation belong to case-owned setup hooks. The complete ordered business
 scenarios remain in their callbacks. Both use the existing 180-second hook and
-180-second callback limits. The independent installed job keeps a 10-minute limit.
+180-second callback limits. Installed validation keeps a 10-minute bound, either
+in its independent Linux/Windows job or its own phase of the 20-minute macOS job.
 Separating these allowances changes budget ownership; it does not mean the old
 scenario-total allowance or total runtime is unchanged. Teardown aborts and
 awaits pending preparation/behavior, reaps owned processes, closes registries
@@ -157,15 +264,18 @@ loading guarantees.
 
 Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
-build and tests on native Linux, macOS 26 ARM64 and Windows runners. Both native
-phases use the standard `macos-26` label for macOS and verify Darwin ARM64 before validation;
-the [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
-records the support boundary and runner selection. Hosted capacity failures
-require diagnosis within this ARM64 runner policy.
+build and tests on native Linux, macOS 15 ARM64 and Windows runners. macOS uses
+the standard `macos-15` label for one `verify-macos` allocation, retaining Darwin
+ARM64 verification and the complete ordinary and installed phases. The [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
+owns the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
+records the explicit image selection and its limits. Hosted capacity failures
+require diagnosis within this ARM64 runner policy, and a supported label still
+requires real allocation and complete native test results.
 Each native job resolves the latest available Node.js 24 patch.
 The ordinary Ubuntu job builds and packs the Node.js 24 artifact consumed by the
-separate runtime matrix. Runtime jobs wait for the ordinary matrix, without an
-installed-acceptance dependency, and check that packed artifact with Node.js
+separate runtime matrix. Runtime jobs wait for the ordinary Linux/Windows
+producer matrix, without an installed-acceptance or macOS dependency, and check
+that packed artifact with Node.js
 `22.14.0`, the latest `22` and `24` releases, and current
 `node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
 and exercises CLI commands, interactive prompt dependencies and SQLite. These
@@ -175,9 +285,15 @@ PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
 documentation and repository metadata. A selected CLI runs both phases on every
 native platform, the runtime compatibility matrix and the dedicated Linux shell
-completion job. Each native phase needs only module detection; neither waits for
-the other. The [phase ownership decision](../.agents/notes/implemented/testing/2026-11-04-parallel-native-cli-validation.md)
-records the independent failure gates, artifact owners and duplicated bootstrap cost.
+completion job. Both Linux/Windows matrices and the macOS job need only module
+detection. Within macOS, installed validation runs after ordinary validation even
+if the latter fails, provided shared preparation and architecture checks passed
+and the job was not cancelled. Ordinary environment/probe uploads run before the
+fixed receipt paths are cleared and the installed recorder starts. Each phase
+retains its own outcome, artifacts, build and cleanup; an ordinary failure still
+fails the job and final gate. The [phase ownership decision](../.agents/notes/implemented/testing/2026-11-04-parallel-native-cli-validation.md)
+records the original parallel model; the [single macOS allocation decision](../.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
+owns its partial replacement, failure handling and budget trade-off.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
 and bounded output in `.tmp/validation-probes.json`. Before executing `gh`, it
@@ -192,10 +308,22 @@ receipts and diagnostics use `daynight-cli-installed-*` and
 `daynight-cli-installed-probes-*`. The installed receipts include the environment,
 curated acceptance outputs and canonical preparation/cleanup result. Every
 native version and both complete phase workloads remain required whenever CLI
-validation is selected. Each phase has its own 600-second job gate, so the former
-combined platform ceiling and aggregate runner cost are not preserved. The
+validation is selected. Linux/Windows phases each have a 600-second job gate;
+macOS retains a 600-second limit per validation phase inside one 1200-second
+job, including shared setup and uploads. The
 [cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
+
+The macOS ordinary test command runs under
+`packages/daynight/scripts/observe-native-validation.mjs`. It preserves the
+complete Vitest command, default concurrency and test deadlines, and propagates
+the command's exit result. Incremental process/resource samples and a bounded
+post-exit macOS termination-log query are uploaded from `.tmp/native-validation/`
+as `daynight-cli-tests-termination-macos-15`, including after test failure.
+Unavailable probes are recorded as diagnostic errors; sampling cannot prove the
+absence of a short-lived process or identify a signal sender by itself. The
+[termination diagnostics decision](../.agents/notes/implemented/testing/2026-11-05-native-test-termination-diagnostics.md)
+describes the evidence limits and collection cost.
 
 Explicit `pnpm test:apfs` diagnostics on macOS mount temporary case-sensitive and
 case-insensitive APFS images to check path identity against both behaviors.
@@ -257,6 +385,23 @@ launch intent, stdin prompts and streamed completion/failure handling. These
 checks require no live model invocation or GitHub publication.
 
 ## Local development CLI channel
+
+The repository's [prepare-daynight-local skill](../.agents/skills/prepare-daynight-local/SKILL.md)
+guides GitHub test-repository preparation and environment refresh across the local
+site, development CLI and Worker. It covers isolated state, directory command
+routing, automatic test identities and a CLI/website/Agent test loop using only
+localhost fixtures. Its runtime checks include WebSocket Upgrade forwarding and
+the native Provider environment; normal Worker recovery preserves the original
+claim and Session without replaying confirmed input. Browser testing uses an
+isolated headless Edge instance by default. Real OAuth and device consent remain
+separate optional checks. The [UI audit reference](../.agents/skills/prepare-daynight-local/references/ui-audit.md)
+guides user-path exploration, representative fixtures, responsive and interaction
+checks, and the distinction between confirmed issues and candidates. Evidence
+capture binds selected page state to its artifact; a local package validator
+checks files and hashes before individual production handoff. Each confirmed
+improvement has its own task, evidence, prototype and acceptance criteria.
+Retesting merged fixes and correcting demonstrated false positives improve the
+reusable audit guidance while local fixtures remain separate from delivery work.
 
 On macOS and Linux, install a development build alongside the npm installation:
 
@@ -381,6 +526,9 @@ API examples, logs, updates and volume removal.
 
 ## Server development
 
+Read the [server organization rules](daynight-server.md) before adding to, changing,
+or reviewing daynight-server.
+
 Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS and pnpm 11.28.6. Run
 `pnpm install --frozen-lockfile` from the repository root before source builds. The
 [server module](../packages/daynight-server/README.md) owns configuration, startup,
@@ -404,13 +552,19 @@ responsibility independently with `bash scripts/check.sh --coverage` or
 `bash scripts/check.sh --e2e`; each prepares its own required inputs and installed
 CLI. Both require PostgreSQL, whose absence fails validation.
 
-Coverage validation builds the binary, runs vet and race-enabled `go-cov`, and
-enforces total statement coverage strictly greater than 90%, package coverage of
+Coverage validation builds the binary, runs vet and `go-cov`, and enforces total
+statement coverage strictly greater than 90%, package coverage of
 at least 85%, and function coverage of at least 80%, with critical-block checks
 enabled. The raw profile supplies an exact strict comparison; exactly 90% fails
 independently of display rounding. No production files or functions are excluded.
 Only the test-only `cmd/e2e_tests` package is removed from coverage execution;
 a recursive source check rejects non-test Go files there before validation.
+
+TaskGraph exact-limit fixtures collect planner statistics after their complete
+bulk graph load. Their real PostgreSQL traversal, 1000-node backbone, 5000
+references and independent overflow assertions remain part of ordinary validation;
+the [server fixture guide](../packages/daynight-server/README.md#task-graph-boundary-fixtures)
+owns the preparation boundary.
 
 The coverage installation supports the authentication package's installed-CLI
 assertions and its normally issued PAT handoff to two public-command deadline
@@ -421,11 +575,18 @@ single-response and 256 MiB cumulative decoded-byte probes run only through the
 explicit local stress entrypoint, preserving real exact-limit and +1-byte tests.
 Each receipt identifies actual deadlines and mock status.
 
-E2E validation runs the complete `cmd/e2e_tests` package with race detection,
-`-count=1` and a ten-minute timeout, including its freshly built race-enabled
-server and independent installed CLI. It owns built-process scenarios and
-source/artifact provenance, concurrency, refusal and cleanup assertions. It does
-not consume the coverage installation or run deadline probes.
+E2E validation runs the complete `cmd/e2e_tests` package with `-count=1` and a
+ten-minute timeout, including its freshly built server and independent installed
+CLI. E2E owns built-process scenarios, source/artifact provenance, concurrency,
+refusal and cleanup assertions. It does not consume the coverage installation or
+run deadline probes.
+
+Both modes use `DAYNIGHT_TEST_RACE`: absent means enabled locally, while the
+workflow sets `false` for PR events and `true` for main pushes. Only literal
+`true` and `false` are valid. Coverage and E2E commands receive the selected mode
+explicitly, and the E2E server matches its test binary's actual instrumentation.
+The [server race policy](../packages/daynight-server/README.md#race-instrumentation)
+owns commands and receipt interpretation.
 
 When [CI selection](#ci-selection) selects the server, `verify-server` and
 `verify-server-e2e` run concurrently on separate runners, each with its own
@@ -735,8 +896,10 @@ Their shared command changes only the runner's referenced mirror list; signed
 source stanzas and package indices remain intact. An unexpected source layout
 fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/2026-10-22-ubuntu-package-mirrors.md)
 records the provisioning failure and the retained acceptance limits.
-Native CLI jobs typecheck and build once before running ordinary and installed
-tests against the same output. The separate runtime compatibility matrix checks
+Each native phase builds current source for its own validation. Linux/Windows
+ordinary and installed phases use independent jobs; macOS shares checkout and
+dependency setup, then retains a separate build for each serial phase. The
+separate runtime compatibility matrix checks
 the packed CLI installation across the supported Node.js range. The Web selector
 enables `verify-web-quality` and two `verify-web` matrix entries, each with a
 20-minute bound. Shared workflow changes retain all-module selection.
@@ -810,7 +973,8 @@ owns those resource lifetimes. The
 owns detailed receipt and wall-time interpretation rules.
 The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
 keyed by the server `go.sum`. Coverage validation expires Go test results before
-database/race/coverage checks; E2E uses `-count=1` to require fresh observations.
+database and coverage checks; E2E uses `-count=1` to require fresh observations.
+Race instrumentation follows the PR/main/local policy described above.
 The web pipeline retains the full production build and unique image identity check. One packed/installed CLI is reused by the native
 and container browser attachment journeys. After the web pipeline and recorded
 resource recovery, Ubuntu browser shard 2 runs the existing real-container

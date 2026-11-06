@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/tasksteps"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 )
 
 type taskStepsCLIStressCapture struct {
@@ -50,16 +50,16 @@ func TestInstalledCLITaskStepsCapacityStress(t *testing.T) {
 		project := process.project(t, "Installed Steps capacity")
 		task := process.task(t, project, "Legal complete Steps resource")
 		stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
-		header := core.TaskHeader{ProjectID: project.ID, ID: task.ID, Version: math.MaxInt64}
-		rows := make([]core.TaskStep, 128)
+		header := model.TaskHeader{ProjectID: project.ID, ID: task.ID, Version: math.MaxInt64}
+		rows := make([]model.TaskStep, 128)
 		for index := range rows {
-			rows[index] = core.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: core.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
+			rows[index] = model.TaskStep{ID: fmt.Sprintf("%08x", index), Position: int64(index), Title: "<中文&>\u2028\u2029", Status: model.TaskStepTodo, CreatedAt: stamp, UpdatedAt: stamp}
 		}
-		_, base, err := tasksteps.EncodeCollection(header, rows)
+		_, base, err := taskcodec.EncodeCollection(header, rows)
 		if err != nil {
 			t.Fatal(err)
 		}
-		remaining := tasksteps.MaxEncodedBytes - len(base)
+		remaining := taskcodec.MaxEncodedBytes - len(base)
 		for index := range rows {
 			size := min(remaining, 524288)
 			rows[index].Description = strings.Repeat("X", size)
@@ -85,9 +85,9 @@ func TestInstalledCLITaskStepsCapacityStress(t *testing.T) {
 		if err != nil {
 			t.Fatal("maximum Steps producer request failed")
 		}
-		wireBytes, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, tasksteps.MaxEncodedBytes+1))
+		wireBytes, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, taskcodec.MaxEncodedBytes+1))
 		closeErr := response.Body.Close()
-		if readErr != nil || closeErr != nil || response.StatusCode != http.StatusOK || wireBytes != tasksteps.MaxEncodedBytes {
+		if readErr != nil || closeErr != nil || response.StatusCode != http.StatusOK || wireBytes != taskcodec.MaxEncodedBytes {
 			t.Fatalf("actual maximum producer bytes=%d status=%d", wireBytes, response.StatusCode)
 		}
 		syncContext, syncCancel := context.WithTimeout(context.Background(), 5*time.Second)

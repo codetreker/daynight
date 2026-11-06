@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func propertyJSON(value any) json.RawMessage {
@@ -16,15 +17,15 @@ func propertyJSON(value any) json.RawMessage {
 	return data
 }
 
-func propertyPatch(items ...core.PullRequestProperty) core.TaskPropertiesPatch {
+func propertyPatch(items ...model.PullRequestProperty) model.TaskPropertiesPatch {
 	values := make([]map[string]string, len(items))
 	for index, item := range items {
 		values[index] = map[string]string{"url": item.URL, "title": item.Title}
 	}
-	return core.TaskPropertiesPatch{"pullRequests": propertyJSON(values)}
+	return model.TaskPropertiesPatch{"pullRequests": propertyJSON(values)}
 }
 
-func testWorker(t *testing.T, properties core.TaskProperties) *core.WorkerClaim {
+func testWorker(t *testing.T, properties model.TaskProperties) *model.WorkerClaim {
 	t.Helper()
 	value, err := taskproperties.Worker(properties)
 	if err != nil {
@@ -33,7 +34,7 @@ func testWorker(t *testing.T, properties core.TaskProperties) *core.WorkerClaim 
 	return value
 }
 
-func testPRs(t *testing.T, properties core.TaskProperties) []core.PullRequestProperty {
+func testPRs(t *testing.T, properties model.TaskProperties) []model.PullRequestProperty {
 	t.Helper()
 	value, err := taskproperties.PullRequests(properties)
 	if err != nil {
@@ -42,9 +43,9 @@ func testPRs(t *testing.T, properties core.TaskProperties) []core.PullRequestPro
 	return value
 }
 
-func testWithWorker(t *testing.T, properties core.TaskProperties, worker *core.WorkerClaim) core.TaskProperties {
+func testWithWorker(t *testing.T, properties model.TaskProperties, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	values, err := taskproperties.WithWorker(properties, worker)
+	values, err := taskprops.WithWorker(properties, worker)
 	if err != nil {
 		t.Fatal(err)
 	}

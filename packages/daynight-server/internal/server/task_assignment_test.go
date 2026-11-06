@@ -29,8 +29,8 @@ func assignmentHTTPUser(t *testing.T, database *store.Store) string {
 func assignmentHTTPMember(t *testing.T, database *store.Store, projectID string) string {
 	t.Helper()
 	id := assignmentHTTPUser(t, database)
-	if err := database.WriteProject(context.Background(), projectID, func(tx *store.ProjectTx) error {
-		_, err := tx.AddInvitedMember(context.Background(), id)
+	if _, err := database.WriteProject(context.Background(), projectID, func(tx store.ProjectWriteScope) error {
+		_, err := tx.ProjectDAO().AddInvitedMember(context.Background(), id)
 		return err
 	}); err != nil {
 		t.Fatal(err)

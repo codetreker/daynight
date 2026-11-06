@@ -4,7 +4,7 @@ import { TaskPausedBadge, TaskPauseCount, usePausedTaskIds, useTaskPaused } from
 import { ListPagination } from "../projects/ListPagination";
 import type { PaginationState } from "../projects/usePagination";
 import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { GraphTask } from '../../api/types';
+import type { GraphTask, WorkerClaim } from '../../api/types';
 import { compareTaskStatus } from '../projects/task-order';
 import { timestampNanoseconds } from '../projects/task-visibility';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -12,14 +12,15 @@ import { useTaskExecution } from '../task-execution/TaskExecutionClock';
 import { TaskExecutionDuration } from '../task-execution/TaskExecutionPresentation';
 import type { GraphIndex } from './model';
 import { TaskChainDialog } from './TaskChainDialog';
+import { TaskAgentPermissionBadge } from '../task-detail/TaskAgentPermissionBadge';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import '../../styles/graph.css';
 import '../../styles/task-status-rows.css';
 
 type ChainListProps = {
   readonly projectId: string;
-  readonly matchingTaskIds?: ReadonlySet<string>;
   readonly index: GraphIndex;
+  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
   readonly representativeIds: readonly string[];
   readonly allRepresentativeIds: readonly string[];
   readonly openChainId: string | null;
@@ -28,11 +29,9 @@ type ChainListProps = {
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
   readonly pagination?: PaginationState;
-  readonly showAll: boolean;
-  readonly onShowAllChange: (show: boolean) => void;
 };
 
-type ChainRowProps = Pick<ChainListProps, 'projectId' | 'matchingTaskIds' | 'index' | 'onOpenChain' | 'onOpenTask' | 'onOpenSession'> & {
+type ChainRowProps = Pick<ChainListProps, 'projectId' | 'index' | 'workerMachines' | 'onOpenChain' | 'onOpenTask' | 'onOpenSession'> & {
   readonly rootId: string;
   readonly open: boolean;
 };
@@ -41,12 +40,13 @@ type GoalTaskRowProps = {
   readonly projectId: string;
   readonly task: GraphTask;
   readonly rootId: string;
+  readonly workerMachine: Pick<WorkerClaim, "state" | "machine"> | undefined;
   readonly onOpenTask: ChainListProps['onOpenTask'];
   readonly onOpenSession?: ChainListProps['onOpenSession'];
 };
 
-const GoalTaskRow = memo(({ projectId, task, rootId, onOpenTask, onOpenSession }: GoalTaskRowProps) => {
-  const { messages: { workspace: { project } } } = useI18n();
+const GoalTaskRow = memo(({ projectId, task, rootId, workerMachine, onOpenTask, onOpenSession }: GoalTaskRowProps) => {
+  const { messages: { graph, workspace: { project } } } = useI18n();
   const execution = useTaskExecution(task);
   const paused = useTaskPaused(task.id);
   const labelId = useId();
@@ -55,9 +55,9 @@ const GoalTaskRow = memo(({ projectId, task, rootId, onOpenTask, onOpenSession }
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   return <li>
     <div className="goal-task-row task-status-surface" data-task-status={task.status}>
-      <button className="goal-task-main" data-task-status={task.status} id={`chain-task-${rootId}-${task.id}`} aria-labelledby={`${labelId}-title${paused ? ` ${labelId}-paused` : ''} ${labelId}-status${task.ready ? ` ${labelId}-ready` : ''}${task.blockedBy.length > 0 ? ` ${labelId}-blocked` : ''}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
+      <button className="goal-task-main" data-task-status={task.status} id={`chain-task-${rootId}-${task.id}`} aria-labelledby={`${labelId}-title ${labelId}-assignee ${labelId}-permission ${labelId}-machine${paused ? ` ${labelId}-paused` : ''} ${labelId}-status${task.ready ? ` ${labelId}-ready` : ''}${task.blockedBy.length > 0 ? ` ${labelId}-blocked` : ''}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
         <span className={`goal-task-dot graph-status-${task.status}`} aria-hidden="true" />
-        <span className="root-heading" id={`${labelId}-title`}><span className="root-title">{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}<span className="task-assignee-row-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span></span>
+        <span className="root-heading"><span className="root-title" id={`${labelId}-title`}>{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}<span className="task-assignee-row-meta"><span id={`${labelId}-assignee`} className="goal-task-assignee"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span><span id={`${labelId}-permission`}><TaskAgentPermissionBadge allowAgents={task.allowAgents} /></span><span id={`${labelId}-machine`} className="goal-task-machine">{workerMachine === undefined ? graph.noMachineRecord : workerMachine.state === "active" ? graph.claimMachine({ name: workerMachine.machine.name }) : graph.recordedMachine({ name: workerMachine.machine.name })}</span></span></span>
       </button>
       <span className="goal-task-status">{paused && <span id={`${labelId}-paused`}><TaskPausedBadge /></span>}<SessionStatus statusId={`${labelId}-status`} title={title} status={task.status} indicator={session?.indicator ?? null}
         {...(session !== null && onOpenSession !== undefined ? { onActivate: (event) => onOpenSession(task.id, event.currentTarget) } : {})} />{task.ready && <span id={`${labelId}-ready`} className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span id={`${labelId}-blocked`} className="graph-blocked-badge">{project.blocked}</span>}</span>
@@ -66,8 +66,8 @@ const GoalTaskRow = memo(({ projectId, task, rootId, onOpenTask, onOpenSession }
   </li>;
 });
 
-const ChainRow = memo(({ projectId, matchingTaskIds, index, rootId, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
-  const { messages, messages: { graph: m } } = useI18n();
+const ChainRow = memo(({ projectId, index, workerMachines, rootId, open, onOpenChain, onOpenTask, onOpenSession }: ChainRowProps) => {
+  const { messages: { graph: m } } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
@@ -80,7 +80,7 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, rootId, open, onOpen
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
-    return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id) && (matchingTaskIds === undefined || matchingTaskIds.has(node.id)))
+    return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
       .toSorted((left, right) => {
         const status = compareTaskStatus(left.status, right.status);
         if (status !== 0 || left.status !== 'done') return status;
@@ -90,7 +90,7 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, rootId, open, onOpen
         const rightTime = timestampNanoseconds(right.completedAt);
         return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
       });
-  }, [index, rootId, matchingTaskIds]);
+  }, [index, rootId]);
   return <li ref={observeVisibility} className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
     <div className="goal-header task-status-surface" data-task-status={progress.status}>
       <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded}
@@ -111,10 +111,10 @@ const ChainRow = memo(({ projectId, matchingTaskIds, index, rootId, open, onOpen
       </button>
     </div>
     <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children">
-      <div className="goal-children-heading"><span>{matchingTaskIds === undefined ? m.childTasks({ count: members.length }) : messages.assignment.matchingChildren({ count: members.length })}</span>
+      <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
         <button className="goal-detail-link" type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} onClick={(event) => onOpenTask(rootId, event.currentTarget)}>{m.goalDetails}</button>
       </div>
-      <ul className="goal-task-list">{members.map((member) => <GoalTaskRow key={member.id} projectId={projectId} task={member} rootId={rootId} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
+      <ul className="goal-task-list">{members.map((member) => <GoalTaskRow key={member.id} projectId={projectId} task={member} rootId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>
   </li>;
 });
@@ -125,9 +125,8 @@ const focusAvailable = (element: HTMLElement | null | undefined) => {
   return true;
 };
 
-export const ChainList = ({ projectId, matchingTaskIds, index, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession, showAll, onShowAllChange, pagination }: ChainListProps) => {
+export const ChainList = ({ projectId, index, workerMachines, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession, pagination }: ChainListProps) => {
   const { messages: { graph: m, assignment } } = useI18n();
-  const checkbox = useRef<HTMLInputElement>(null);
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
   const focusedChain = useRef<string | null>(null);
@@ -145,7 +144,7 @@ export const ChainList = ({ projectId, matchingTaskIds, index, representativeIds
     const representative = witness === null ? undefined : index.componentByTask.get(witness);
     const target = representative !== undefined && representativeIds.includes(representative) ? representative : representativeIds[0];
     if (target !== undefined && focusAvailable(container.current?.querySelector<HTMLElement>(`#task-root-${target}`))) return;
-    if (focusAvailable(checkbox.current) || focusAvailable(container.current)) return;
+    if (focusAvailable(container.current)) return;
     const panel = container.current?.closest<HTMLElement>('[role="tabpanel"]');
     const tabId = panel?.getAttribute('aria-labelledby');
     if (tabId !== undefined && tabId !== null) focusAvailable(document.getElementById(tabId));
@@ -157,7 +156,6 @@ export const ChainList = ({ projectId, matchingTaskIds, index, representativeIds
     if (openChainId !== null || focusedControl.current === null || focusedControl.current.isConnected || document.activeElement !== document.body) return;
     restoreListFocus(focusedChain.current);
   }, [index, openChainId, representativeIds, restoreListFocus]);
-  const completedCount = useMemo(() => allRepresentativeIds.filter((id) => index.components.get(id)!.progress.status === 'done').length, [index, allRepresentativeIds]);
   return <section id="project-chain-list" aria-label={m.chainList} ref={container} tabIndex={-1} onFocusCapture={(event) => {
     if (event.currentTarget.contains(event.target)) {
       focusedControl.current = event.target;
@@ -166,14 +164,12 @@ export const ChainList = ({ projectId, matchingTaskIds, index, representativeIds
     }
   }}>
     <div className="task-view-toolbar">
-      {allRepresentativeIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
       <span className="task-view-summary" aria-label={m.chainSummaryLabel({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}>{m.chainSummary({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}</span>
     </div>
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
-      : representativeIds.length === 0 && matchingTaskIds !== undefined ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
-      : representativeIds.length === 0 ? <div className="state-box completed-chains-empty"><h3>{m.completedTitle}</h3><p>{m.completedDescription({ count: completedCount })}</p><button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowAllChange(true); }}>{m.showAll}</button></div>
-        : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} projectId={projectId} {...(matchingTaskIds === undefined ? {} : { matchingTaskIds })} index={index} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+      : representativeIds.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
+        : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
-    {openChainId !== null && <TaskChainDialog index={index} rootId={openChainId} onOpenTask={onOpenTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
+    {openChainId !== null && <TaskChainDialog projectId={projectId} index={index} rootId={openChainId} onOpenTask={onOpenTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
   </section>;
 };

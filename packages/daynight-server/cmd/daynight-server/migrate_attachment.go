@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"syscall"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 )
 
 func runAttachmentMigration(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer, logger *slog.Logger) int {
@@ -21,17 +23,17 @@ func runAttachmentMigration(ctx context.Context, args []string, getenv func(stri
 	case len(args) == 4 && args[0] == "migrate-attachment-layout" && (args[1] == "apply" || args[1] == "resume") && args[2] == "--operation-id":
 		action, operationID = args[1], args[3]
 	default:
-		logAttachmentMigrationFailure(ctx, logger, &service.AttachmentMigrationError{Phase: "arguments", Category: "invalid_input",
+		logAttachmentMigrationFailure(ctx, logger, &migration.AttachmentMigrationError{Phase: "arguments", Category: "invalid_input",
 			Diagnostic: "Use migrate-attachment-layout plan, or apply/resume --operation-id <uuid>."})
 		return 1
 	}
-	summary, err := service.MigrateAttachmentLayout(ctx, getenv("DAYNIGHT_DATABASE_URL"), getenv("DAYNIGHT_STORAGE_ROOT"), action, operationID, logger)
+	summary, err := attachmentservice.MigrateAttachmentLayout(ctx, getenv("DAYNIGHT_DATABASE_URL"), getenv("DAYNIGHT_STORAGE_ROOT"), action, operationID, logger, service.OpenAttachmentMaintenance)
 	if err != nil {
 		logAttachmentMigrationFailure(ctx, logger, err)
 		return 1
 	}
 	if err := json.NewEncoder(stdout).Encode(summary); err != nil {
-		logAttachmentMigrationFailure(ctx, logger, &service.AttachmentMigrationError{OperationID: summary.OperationID, Phase: "output", Category: "output",
+		logAttachmentMigrationFailure(ctx, logger, &migration.AttachmentMigrationError{OperationID: summary.OperationID, Phase: "output", Category: "output",
 			Diagnostic: "Migration result could not be written; inspect the recorded operation before retrying.", Cause: err})
 		return 1
 	}
@@ -39,11 +41,11 @@ func runAttachmentMigration(ctx context.Context, args []string, getenv func(stri
 }
 
 func logAttachmentMigrationFailure(ctx context.Context, logger *slog.Logger, err error) {
-	var failure *service.AttachmentMigrationError
+	var failure *migration.AttachmentMigrationError
 	if !errors.As(err, &failure) {
-		failure = &service.AttachmentMigrationError{Phase: "operation", Category: "internal", Diagnostic: "Attachment migration failed.", Cause: err}
+		failure = &migration.AttachmentMigrationError{Phase: "operation", Category: "internal", Diagnostic: "Attachment migration failed.", Cause: err}
 	}
-	cause := server.ErrorKind(err)
+	cause := httpx.ErrorKind(err)
 	switch {
 	case errors.Is(err, fs.ErrPermission):
 		cause = "permission"

@@ -39,7 +39,7 @@ const DependencyEdge = memo(({ edge, route, state, marker, label }: {
 export const DependencyEdges = memo(({ geometry, inspection }: { geometry: CanvasLayout; inspection: TaskInspection }) => {
   const { messages: { graph: m } } = useI18n();
   const markerId = `task-dependency-arrow-${useId()}`;
-  const routes = useMemo(() => geometry.edges.map((edge) => ({ edge, route: compileDependencyRoute(edge.points, edge.external) })), [geometry]);
+  const routes = useMemo(() => geometry.edges.map((edge) => ({ edge, route: compileDependencyRoute(edge.points, edge.external, geometry.direction) })), [geometry]);
   return <ViewportPortal>
     <svg className="task-dependency-edges" data-testid="task-dependency-edges" width="100%" height="100%"
       data-paint-piece-count={routes.reduce((total, { route }) => total + route.pieces.length, 0)}

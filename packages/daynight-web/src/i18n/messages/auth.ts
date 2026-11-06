@@ -19,7 +19,7 @@ export type AuthMessages = {
     readonly members: string;
     readonly projectSettings: string;
     readonly teamWorkspace: string;
-    readonly accountLink: (args: { readonly name: string }) => string;
+    readonly accountMenu: (args: { readonly name: string }) => string;
     readonly currentAccount: string;
     readonly genericProject: string;
     readonly accessUnavailable: string;
@@ -135,7 +135,7 @@ export type AuthMessages = {
     readonly loading: string; readonly unavailableDetail: string; readonly invited: string; readonly alreadyMember: string;
     readonly invitedDetail: string; readonly alreadyMemberDetail: string; readonly memberRole: string;
     readonly currentRole: string; readonly joined: string; readonly alreadyJoined: string; readonly teamId: string;
-    readonly acceptUnknown: string; readonly checkInvitation: string;
+    readonly acceptUnknown: string; readonly checkInvitation: string; readonly open: string;
   };
   readonly createProject: {
     readonly open: string;
@@ -237,6 +237,7 @@ export type AuthMessages = {
       readonly loading: string;
       readonly memberNotice: string;
       readonly invitationUnknown: string;
+      readonly invitationUnreadable: string;
     readonly invitationObserved: string;
     readonly readCurrentInvitations: string;
     readonly grantUnknown: string;
@@ -246,6 +247,17 @@ export type AuthMessages = {
       readonly accessDescription: string;
       readonly memberColumn: string;
       readonly roleColumn: string;
+      readonly effectiveColumn: string;
+      readonly teamColumn: string;
+      readonly personalTeam: string;
+      readonly directColumn: string;
+      readonly noGrant: string;
+      readonly noAccess: string;
+      readonly grantSaved: (args: { readonly name: string; readonly role: string }) => string;
+      readonly grantRemoved: (args: { readonly name: string }) => string;
+      readonly grantChange: (args: { readonly before: string; readonly after: string; readonly effective: string }) => string;
+      readonly accessLost: string;
+      readonly returnToProjects: string;
       readonly actionColumn: string;
       readonly roleLabel: (args: { readonly name: string }) => string;
       readonly removeLabel: (args: { readonly name: string }) => string;
@@ -289,6 +301,10 @@ export type AuthMessages = {
       readonly save: string;
       readonly busy: string;
       readonly unsaved: string;
+      readonly draftConflict: string;
+      readonly currentSaved: string;
+      readonly conflictPending: string;
+      readonly permissionPending: string;
       readonly memberNotice: string;
       readonly loading: string;
       readonly uncertain: string;

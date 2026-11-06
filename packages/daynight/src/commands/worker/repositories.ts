@@ -10,7 +10,8 @@ import { parseConfigurationDocument } from "../../config/document.js";
 import { updateConfigurationFile } from "../../config/files.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
-import { readWorkerConfigurationSnapshot, validateWorkerConfigurationSnapshotSource, validateWorkerConfigurationSource } from "./config.js";
+import { validateWorkerConfigurationSnapshotSource, validateWorkerConfigurationSource } from "./config.js";
+import { assertWorkerConfigurationIsLocal, readWorkerLocalConfiguration } from "./configuration-source.js";
 import type { WorkerConfiguration, WorkerConfigurationSnapshot, WorkerRepositoryConfiguration } from "./config.js";
 import type { WorkerPaths } from "./paths.js";
 
@@ -57,7 +58,7 @@ const workerSetupOwnership = {
 
 const registrationBaseline = (mapping: Record<string, unknown>): readonly unknown[] => {
   const worker = mapping.worker as Record<string, unknown> | undefined;
-  const fields = ["serverUrl", "serverToken"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
+  const fields = ["serverUrl", "serverToken", "workerId"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
   return [
     ...fields, ["worker.repositoryRoot", worker !== undefined && Object.hasOwn(worker, "repositoryRoot"), worker?.repositoryRoot],
     ["worker.repositories", worker !== undefined && Object.hasOwn(worker, "repositories"), worker?.repositories],
@@ -81,8 +82,11 @@ const repositorySnapshot = (snapshot: WorkerConfigurationSnapshot, paths: Worker
 const snapshotFromSource = async (source: string | undefined, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> =>
   repositorySnapshot(await validateWorkerConfigurationSnapshotSource(source, paths, signal), paths);
 
-export const readWorkerRepositorySnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> =>
-  repositorySnapshot(await readWorkerConfigurationSnapshot(paths, signal), paths);
+export const readWorkerRepositorySnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> => {
+  const local = await readWorkerLocalConfiguration(paths, signal);
+  await assertWorkerConfigurationIsLocal(paths, signal, { source: local.source });
+  return repositorySnapshot(await validateWorkerConfigurationSnapshotSource(local.source, paths, signal), paths);
+};
 
 export const readWorkerProjects = async (
   snapshot: WorkerRepositorySnapshot,
@@ -208,9 +212,10 @@ export const prepareWorkerSetup = async (options: WorkerSetupOptions): Promise<W
 
 export const saveWorkerSetup = async (options: WorkerSetupOptions): Promise<WorkerConfiguration> => {
   const expected = setupBaseline(options.snapshot.source, options.paths);
+  await assertWorkerConfigurationIsLocal(options.paths, options.signal);
   return updateConfigurationFile(options.paths, async (source) => {
     if (!isDeepStrictEqual(setupBaseline(source, options.paths), expected)) {
-      throw new Error("Worker agent, repository configuration or service credentials changed during setup. Run daynight worker setup again with the current configuration.");
+      throw new Error("Worker identity, agent, repository configuration or service credentials changed during setup. Run daynight worker setup again with the current configuration.");
     }
     const prepared = await prepareSetupSource(source, options);
     return { kind: "write", source: prepared.source, result: prepared.configuration, ownership: workerSetupOwnership };
@@ -230,9 +235,10 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
     return id;
   });
   if (!adding && removalIds.length === 0) throw new Error("Select at least one configured project.");
+  await assertWorkerConfigurationIsLocal(paths, signal);
   return updateConfigurationFile(paths, async (source) => {
     const current = await snapshotFromSource(source, paths, signal);
-    if (!isDeepStrictEqual(current.registrationBaseline, snapshot.registrationBaseline)) throw new Error("Worker repository configuration or service credentials changed while selecting projects. Run the command again with the current configuration.");
+    if (!isDeepStrictEqual(current.registrationBaseline, snapshot.registrationBaseline)) throw new Error("Worker identity, repository configuration or service credentials changed while selecting projects. Run the command again with the current configuration.");
     const { document, mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
     const repositories = [...current.configuration.repositories];
     let changed = false;

@@ -15,7 +15,7 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 		for _, firstCommits := range []bool{false, true} {
 			t.Run(fmt.Sprintf("transferFirst=%t/commit=%t", transferFirst, firstCommits), func(t *testing.T) {
 				s, actor, _, project := membershipFixture(t)
-				target, err := s.CreateTeam(context.Background(), actor.UserID, uuid.NewString(), "Destination")
+				target, err := testCreateTeam(s, context.Background(), actor.UserID, uuid.NewString(), "Destination")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -27,23 +27,23 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 				ready, release := make(chan uint32, 1), make(chan struct{})
 				first, second := make(chan error, 1), make(chan error, 1)
 				transfer := func(hold bool) error {
-					return s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-						ownership, err := tx.LockTransferOwnership(ctx)
+					return writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+						ownership, err := tx.ProjectDAO().LockTransferOwnership(ctx)
 						if err != nil {
 							return err
 						}
-						_, destination, err := tx.LockTransferTeams(ctx, ownership.TeamID, target.ID)
+						_, destination, err := tx.ProjectDAO().LockTransferTeams(ctx, ownership.TeamID, target.ID)
 						if err != nil {
 							return err
 						}
 						if destination.Ref.ID == "" {
 							return missing
 						}
-						if _, err := tx.MoveOwnership(ctx, target.ID); err != nil {
+						if _, err := tx.ProjectDAO().MoveOwnership(ctx, target.ID); err != nil {
 							return err
 						}
 						if hold {
-							ready <- tx.tx.Conn().PgConn().PID()
+							ready <- tx.(*ProjectTx).tx.Conn().PgConn().PID()
 							select {
 							case <-release:
 							case <-ctx.Done():
@@ -57,7 +57,7 @@ func TestTransferAndTargetTeamDeletionSerialize(t *testing.T) {
 					})
 				}
 				deleteTeam := func(hold bool) error {
-					return s.WriteTeam(ctx, target.ID, func(tx *TeamTx) error {
+					return testWriteTeam(s, ctx, target.ID, func(tx *TeamTx) error {
 						found, err := tx.HasProjects(ctx)
 						if err != nil {
 							return err

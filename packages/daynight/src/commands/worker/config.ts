@@ -13,6 +13,8 @@ import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { WorkerPaths } from "./paths.js";
 import type { ExecutionConfiguration } from "./types.js";
+import type { AgentControlMode } from "../../api/types.js";
+import type { WorkerCloudNative } from "../../api/worker-configuration.js";
 
 export type WorkerRepositoryConfiguration = ExecutionConfiguration & {
   remote: string;
@@ -75,7 +77,7 @@ const agentConfiguration = (value: Record<string, unknown>, field: string, inher
   return { agent, agentControlMode: inherited.agentControlMode ?? "herdr", model, args, recoveryLimit: inherited.recoveryLimit };
 };
 
-const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathApi: PathApi): string => {
+export const resolveWorkerRepositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathApi: PathApi): string => {
   const configured = text(value, field);
   if (configured.startsWith("~")) throw new TypeError(`${field} must be absolute or relative to the configuration directory; tilde expansion is not supported.`);
   if (pathApi.sep === "\\" && /^[a-z]:(?![\\/])/i.test(configured)) throw new TypeError(`${field} must not be a drive-relative Windows path.`);
@@ -105,7 +107,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     const identity = repositoryIdentity(remote);
     if (identities.has(identity)) throw new TypeError(`${field}.remote duplicates a repository identity.`);
     identities.add(identity);
-    const localPath = repositoryPath(repository.path, `${field}.path`, paths, pathApi);
+    const localPath = resolveWorkerRepositoryPath(repository.path, `${field}.path`, paths, pathApi);
     if (pathsOverlap(localPath, paths.stateDirectory, pathApi)) throw new TypeError(`${field}.path overlaps the Daynight state directory.`);
     if (locations.some((location) => pathsOverlap(location, localPath, pathApi))) throw new TypeError(`${field}.path overlaps another worker repository.`);
     locations.push(localPath);
@@ -148,9 +150,8 @@ export const validateWorkerConfigurationSnapshotSource = async (
 export const readWorkerConfigurationSnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfigurationSnapshot> =>
   validateWorkerConfigurationSnapshotSource(await readWorkerConfigurationSource(paths, signal), paths, signal);
 
-export const validateWorkerConfigurationSource = async (source: string, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
+export const validateWorkerRepositoryLocations = async (repositories: readonly { readonly path: string }[], paths: WorkerPaths, signal?: AbortSignal): Promise<void> => {
   signal?.throwIfAborted();
-  const configuration = parseWorkerConfiguration(source, paths);
   const physicalPaths: PhysicalDirectory[] = [];
   const physicalState = await resolvePhysicalDirectory(paths.stateDirectory);
   const ancestors = new Map<string, Promise<Set<string>>>();
@@ -170,7 +171,7 @@ export const validateWorkerConfigurationSource = async (source: string, paths: W
     const right = second.missingComponents.slice(0, length);
     return left.every((component, index) => component === right[index]) || await missingPathsReferToSameDirectory(first.ancestorPath, left, right);
   };
-  for (const [index, repository] of configuration.repositories.entries()) {
+  for (const [index, repository] of repositories.entries()) {
     signal?.throwIfAborted();
     const physical = await resolvePhysicalDirectory(repository.path);
     if (await overlaps(physical, physicalState)) throw new TypeError(`worker.repositories[${index}].path physically overlaps the Daynight state directory.`);
@@ -180,5 +181,14 @@ export const validateWorkerConfigurationSource = async (source: string, paths: W
     physicalPaths.push(physical);
   }
   signal?.throwIfAborted();
+};
+
+export const validateWorkerConfigurationSource = async (source: string, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
+  signal?.throwIfAborted();
+  const configuration = parseWorkerConfiguration(source, paths);
+  await validateWorkerRepositoryLocations(configuration.repositories, paths, signal);
   return configuration;
 };
+
+export const resolveCloudNative = (native: WorkerCloudNative, agentControlMode: AgentControlMode, recoveryLimit: number): ExecutionConfiguration =>
+  agentConfiguration({ ...native }, "worker.native", { ...native, agentControlMode, recoveryLimit });

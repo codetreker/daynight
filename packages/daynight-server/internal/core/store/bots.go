@@ -4,31 +4,35 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
-type BotTx struct{ tx pgx.Tx }
+type botTx struct{ tx pgx.Tx }
 
 type BotPage struct {
-	Items   []core.Bot
+	Items   []model.Bot
 	HasMore bool
 }
 
 // WriteBot serializes existing definitions by their Bot row. Callers must lock
 // this row before a related Session or archive record in the same transaction.
-func (s *Store) WriteBot(ctx context.Context, operation func(*BotTx) error) error {
+func (s *Store) WriteBot(ctx context.Context, operation func(BotScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return queryError("begin bot", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin bot", err)
 	}
-	if err := transact(ctx, tx, func(tx pgx.Tx) error { return operation(&BotTx{tx: tx}) }); err != nil {
-		return queryError("write bot", err)
-	}
-	return nil
+	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(&botTx{tx: tx}) })
+	return teamCompletion("write bot", err)
 }
 
-func (b *BotTx) Credential(ctx context.Context, principal core.Principal) error {
+func (b *botTx) BotDAO() BotWriteDAO { return b }
+
+// BotTransaction binds Bot operations to an existing lifecycle transaction.
+// The caller owns transaction completion and must not retain the DAO afterwards.
+func BotTransaction(tx pgx.Tx) BotWriteDAO { return &botTx{tx: tx} }
+
+func (b *botTx) Credential(ctx context.Context, principal model.Principal) error {
 	_, err := threadCredential(ctx, b.tx, principal, " FOR SHARE")
 	return err
 }
@@ -41,7 +45,7 @@ func botWorker(ctx context.Context, tx pgx.Tx, ownerID, workerID, lock string) e
 	return nil
 }
 
-func (b *BotTx) Worker(ctx context.Context, ownerID, workerID string) error {
+func (b *botTx) Worker(ctx context.Context, ownerID, workerID string) error {
 	return botWorker(ctx, b.tx, ownerID, workerID, " FOR KEY SHARE")
 }
 
@@ -53,12 +57,12 @@ const botProjection = `id::text,owner_user_id::text,worker_id::text,name,version
  requested_overrides,resolved_configuration,role_configuration,session_id::text,startup_result,deletion,created_at,updated_at,
  (SELECT bound.test_execution_id::text FROM task_sessions bound WHERE bound.id=bots.session_id AND bound.bot_id=bots.id)`
 
-func scanBot(row pgx.Row) (core.Bot, error) {
-	var bot core.Bot
+func scanBot(row pgx.Row) (model.Bot, error) {
+	var bot model.Bot
 	var overrides, configuration, role, startup, deletion []byte
 	if err := row.Scan(&bot.ID, &bot.OwnerUserID, &bot.WorkerID, &bot.Name, &bot.Version, &bot.CreationOrder, &bot.RequestFingerprint,
 		&overrides, &configuration, &role, &bot.SessionID, &startup, &deletion, &bot.CreatedAt, &bot.UpdatedAt, &bot.TestExecutionID); err != nil {
-		return core.Bot{}, err
+		return model.Bot{}, err
 	}
 	for _, field := range []struct {
 		raw    []byte
@@ -69,7 +73,7 @@ func scanBot(row pgx.Row) (core.Bot, error) {
 	} {
 		if field.raw != nil {
 			if err := json.Unmarshal(field.raw, field.target); err != nil {
-				return core.Bot{}, err
+				return model.Bot{}, err
 			}
 		}
 	}
@@ -77,11 +81,11 @@ func scanBot(row pgx.Row) (core.Bot, error) {
 	return bot, nil
 }
 
-func readBot(ctx context.Context, tx pgx.Tx, id, lock string) (core.Bot, error) {
+func readBot(ctx context.Context, tx pgx.Tx, id, lock string) (model.Bot, error) {
 	if lock != "" {
 		var locked string
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM bots WHERE id=$1`+lock, id).Scan(&locked); err != nil {
-			return core.Bot{}, queryError("lock bot", err)
+			return model.Bot{}, queryError("lock bot", err)
 		}
 	}
 	// A lock wait can observe a newly committed Bot row while a subquery keeps
@@ -89,22 +93,22 @@ func readBot(ctx context.Context, tx pgx.Tx, id, lock string) (core.Bot, error) 
 	// after acquiring the row lock so both identities describe the same binding.
 	bot, err := scanBot(tx.QueryRow(ctx, `SELECT `+botProjection+` FROM bots WHERE id=$1`, id))
 	if err != nil {
-		return core.Bot{}, queryError("read bot", err)
+		return model.Bot{}, queryError("read bot", err)
 	}
 	return bot, nil
 }
 
-func (b *BotTx) Bot(ctx context.Context, id string) (core.Bot, error) {
+func (b *botTx) Bot(ctx context.Context, id string) (model.Bot, error) {
 	return readBot(ctx, b.tx, id, " FOR UPDATE")
 }
 
-func (s *Snapshot) Bot(ctx context.Context, id string) (core.Bot, error) {
+func (s *Snapshot) Bot(ctx context.Context, id string) (model.Bot, error) {
 	return readBot(ctx, s.tx, id, "")
 }
 
 // InsertBot leaves a conflicting identity untouched. Read the row in a separate
 // ReadCommitted statement to observe a concurrent creator's committed result.
-func (b *BotTx) InsertBot(ctx context.Context, bot core.Bot) error {
+func (b *botTx) InsertBot(ctx context.Context, bot model.Bot) error {
 	overrides, err := json.Marshal(bot.RequestedOverrides)
 	if err != nil {
 		return queryError("encode bot overrides", err)
@@ -122,17 +126,30 @@ func (b *BotTx) InsertBot(ctx context.Context, bot core.Bot) error {
 	return nil
 }
 
-func (b *BotTx) DeleteBot(ctx context.Context, id string, version int64, deletion core.BotDeletion) (core.Bot, error) {
+func (b *botTx) DeleteBot(ctx context.Context, id string, version int64, deletion model.BotDeletion) (model.Bot, error) {
 	data, err := json.Marshal(deletion)
 	if err != nil {
-		return core.Bot{}, queryError("encode bot deletion", err)
+		return model.Bot{}, queryError("encode bot deletion", err)
 	}
 	bot, err := scanBot(b.tx.QueryRow(ctx, `UPDATE bots SET deletion=$3,version=version+1,updated_at=statement_timestamp()
  WHERE id=$1 AND version=$2 AND deletion IS NULL RETURNING `+botProjection, id, version, data))
 	if err != nil {
-		return core.Bot{}, queryError("record bot deletion", err)
+		return model.Bot{}, queryError("record bot deletion", err)
 	}
 	return bot, nil
+}
+
+// SaveBotDeletion advances the deletion state while the caller holds the Bot
+// lock, including the cleanup receipt and obligations in the caller's transaction.
+func (b *botTx) SaveBotDeletion(ctx context.Context, id string, deletion *model.BotDeletion) (model.Bot, error) {
+	data, err := json.Marshal(deletion)
+	if err != nil {
+		return model.Bot{}, err
+	}
+	if _, err := b.tx.Exec(ctx, `UPDATE bots SET deletion=$2,version=version+1,updated_at=statement_timestamp() WHERE id=$1`, id, data); err != nil {
+		return model.Bot{}, err
+	}
+	return b.Bot(ctx, id)
 }
 
 // Bots includes pending cleanup only for a specific Worker's expected inventory.
@@ -145,7 +162,7 @@ func (s *Snapshot) Bots(ctx context.Context, ownerID string, workerID *string, p
 		return BotPage{}, queryError("list bots", err)
 	}
 	defer rows.Close()
-	items := make([]core.Bot, 0, page.Limit+1)
+	items := make([]model.Bot, 0, page.Limit+1)
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
 			return BotPage{}, queryError("list bots", err)

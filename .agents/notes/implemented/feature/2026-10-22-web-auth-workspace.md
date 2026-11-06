@@ -23,7 +23,7 @@ tabs, graph, centered `TaskDetailDialog` and account-owned My Workers pages. The
 [Worker observation decision](../architecture/2026-10-29-web-worker-observations.md)
 owns their page-local data and freshness lifecycle inside the same authenticated
 identity; it does not add Worker data to the project cache. Workspace navigation
-keeps the account entry in its sidebar footer; the [account navigation decision](2026-10-25-bottom-account-navigation.md)
+places the account entry in the topbar avatar menu; the [account menu decision](2026-11-04-topbar-account-menu.md)
 owns its placement, and the [sidebar preference decision](2026-10-25-sidebar-preference.md)
 owns local folding and temporary narrow-screen navigation. Production `main.tsx`
 keeps the persistent `LocaleProvider` above public and authenticated branches. The
@@ -32,7 +32,7 @@ owns the reactive application selection, explicit `/login` and `/projects` entry
 `AuthenticatedApp` retains its private lifecycle. Both
 catalogs extend their complete `messages.auth` contract to login, project creation, account, members, invitations, tokens and
 management dialogs. Selectors remain available on login, invitation, workspace
-and modal surfaces. Semantic notifications and validation render through the
+and some other modal surfaces. The [global language-entry decision](../simplification/2026-11-05-global-language-entry.md) removes the management and project creation copies. The [revalidation language decision](../bug-fix/2026-11-05-revalidation-language-entry.md) removes the recovery overlay's copy while preserving its modal isolation. Semantic notifications and validation render through the
 current catalog, while native formatters render dates and counts. Changing
 language preserves inputs, one-time secrets, current identity and pending
 requests. The
@@ -50,10 +50,11 @@ replaces that presentation policy: ordinary checks keep loaded content visible
 and interactive until a changed identity, session loss or verification failure is
 confirmed. New API reads and writes wait for identity confirmation, resuming for
 the same account and cancelling on an account change. Failed checks retain the
-blocking recovery overlay and request wait through recovery. A temporary
-narrow-screen navigation drawer closes when checking starts, releasing only its
-own focus, inertness and scroll lock; desktop appearance and mounted content keep
-their existing lifetime.
+blocking recovery overlay and request wait through recovery. The
+[workspace stability decision](../bug-fix/2026-11-05-stable-workspace-during-identity-checks.md)
+keeps the narrow-screen navigation drawer open during ordinary checking and
+releases its focus, inertness and scroll lock on blocking recovery; desktop
+appearance and mounted content keep their existing lifetime.
 TaskDetailSessionProvider lives in that identity domain
 and retains each project/task status/permission operation across dialog close/reopen;
 identity changes discard its pending and unknown-outcome state. The existing

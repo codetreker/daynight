@@ -14,7 +14,7 @@ current page also keeps older running work off the first page.
 
 The project presentation reverses a copy of the exact service representative
 order, then stably orders it by complete ordinary-component status:
-`in_progress`, `todo`, `done`. Classification, recent filtering and pagination
+`in_progress`, `todo`, `done`. Classification, filtering and pagination
 consume that ordered copy. Single-member component status equals the standalone
 task's status. Equal-status entries retain exact `createdAt DESC, id DESC`
 without parsing timestamps into JavaScript milliseconds. The API, cached
@@ -35,7 +35,8 @@ This supersedes pure newest-first top-level presentation in the
 standalone placement in the
 [overview decision](../feature/2026-10-26-project-overview-progress.md).
 The [recent browsing decision](../feature/2026-10-27-recent-task-pages.md)
-retains its time window, whole-component filtering and page capacity, and the
+retains its Overview time window and page capacity. The [status filter decision](../feature/2026-11-05-task-list-status-filter.md)
+replaces the list time window with combined member matching, and the
 [Goal list decision](../feature/2026-10-26-goal-task-lists.md) retains complete
 child membership. Its original within-status snapshot order is retained for
 unfinished children and completion-time ties; the
@@ -60,8 +61,7 @@ time for the row.
 
 ## Consequences
 
-Older running outcomes can appear on the first page in the recent and full-history
-views. Equal-status positions remain deterministic, and the aggregate can move
+Older running outcomes can appear on the first page in Overview and the task lists. Equal-status positions remain deterministic, and the aggregate can move
 between pages when its status changes. Existing row keys preserve mounted row
 state when it stays on the page; moving off-page retains the existing unmount
 behavior. No API, cache format, persistent preference, page size, UI element,

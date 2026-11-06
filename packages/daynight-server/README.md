@@ -16,8 +16,43 @@ persist an ordinary/external classification and task/graph reads expose the
 required external subset. Public create and versioned PATCH accept explicit
 classification while preserving all-edge execution and project authorization.
 
+## Assistants
+
+The runtime composes Bot management with the same Store, file storage and
+Session relay used by existing sessions. `/api/v1/me/bots` exposes authenticated,
+account-owned definitions and defaults without requiring a Project. Worker Bot
+registration, grants, startup reports and deletion receipts use the bound
+Worker's normal PAT; Controller relay credentials do not authorize those writes.
+The [assistant contract](../../docs/spec/assistant.md) defines exact endpoints,
+version strings, idempotency, observed availability and failure responses.
+
+A name-only create resolves a fresh compatible Worker report and freezes its
+configuration. Older Workers without `assistantHost` remain unsupported, even
+when online. A pending definition does not prove native startup; the relay checks
+actual synchronization before committing successful preferences. Bot sessions
+retain independent Session protocol identities and are excluded from ordinary
+Test lists. Existing Task and standalone Test paths remain separate.
+
+Deletion commits a persistent access barrier before cleanup. Completed requires
+both the bound Worker's verified stop/private-file receipt and successful server
+history cleanup. The server removes Bot-associated Session rows, content and its
+restricted archive namespace, preserving minimal deletion responsibility. It does
+not delete independently created tasks, ordinary working directories or
+Provider-owned native history. There is no deleted-assistant archive entry.
+The [design](../../docs/design/assistant.md) owns lock ordering, identity checks
+and reconciliation after uncertain writes.
+
+Hosting depends on the foreground Worker remaining online; this service does not
+install an OS daemon, migrate conversations automatically or provide Webhook/MCP
+adapters. CLI/Server and production-page browser acceptance are distinct from
+live Provider acceptance.
+
+## Contracts
+
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
+Read the [organization rules](../../docs/daynight-server.md) before adding to,
+modifying, or reviewing daynight-server.
 The TypeScript review command retains its separate configuration, storage and
 lifecycle. The client HTTP foundation targets this service's API.
 
@@ -104,6 +139,14 @@ HTML retains its application origin, relative resources and keyboard behavior.
 The [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 owns composition and credential-private validation; current delivery results
 require receipts bound to the tested source.
+
+The [project Task search requirements](../../docs/spec/daynight-task-search.md)
+and [design](../../docs/design/daynight-task-search.md) define the read-only
+`POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
+titles and Markdown descriptions using literal expressions, returns ranked
+pages with real ordinary-dependency context, and rejects continuation when the
+project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
+include successful pages and typed failures.
 
 The [task-summary synchronization requirements](../../docs/spec/daynight-task-sync.md)
 and [architecture](../../docs/design/daynight-task-sync.md) define the implemented
@@ -238,13 +281,14 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status and direct command tests |
 | `cmd/e2e_tests/` | Test-only package for built-process, installed-CLI and attachment-migration acceptance |
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
-| `internal/webui/` | Embedded production HTML/assets and static response policy |
+| `internal/service/webui/` | Embedded production HTML/assets and resource reads |
+| `internal/server/webui/` | Static routes and HTTP response policy |
 | `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
-| `internal/filestorage/` | Generic bucket/path byte operations and address validation |
-| `internal/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
+| `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
+| `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
 | `api/` | Project/task/attachment, identity and membership DTOs; common HTTP error envelopes |
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
-| `internal/core/` | Shared project/task, identity/member models and resource-not-found markers |
+| `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
 
 HTTP startup prepares one local file-storage root and creates and verifies one
 concrete PostgreSQL store. The handler factory `server.New(Dependencies, Config, logger)` returns
@@ -311,7 +355,7 @@ export DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
 ```
 
 `web:build` typechecks and builds the web package, validates the real output and
-publishes it to `internal/webui/dist/`. Generated files are ignored by Git; a
+publishes it to `internal/service/webui/dist/`. Generated files are ignored by Git; a
 clean Go build without them fails at `go:embed`. No placeholder index or frontend
 runtime is used. Once built, the binary requires PostgreSQL and a writable,
 local storage directory and valid UniAuth App settings at runtime. Linux requires
@@ -440,9 +484,41 @@ to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
 
+### Task Graph boundary fixtures
+
+The TaskGraph boundary regression keeps a 1000-node backbone with 5000 dependency
+references, plus independent node and edge overflow cases. Its connected fixture
+runs `ANALYZE tasks, task_dependencies` after all links are loaded and before the
+real graph queries. These private tables can be queried before autovacuum collects
+statistics; explicit collection gives the planner the loaded graph's cardinality
+without changing its rows, topology, SQL or snapshot assertions. Preparation
+failures fail the test. The [fixture statistics decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
+owns the rationale and proof boundary.
+
+### Race instrumentation
+
+`DAYNIGHT_TEST_RACE` selects race instrumentation for both coverage and E2E
+orchestration. The only accepted values are literal `true` and `false`; an absent
+value enables it for ordinary local validation, while empty or invalid values
+fail before fixture preparation. The two Go workflow jobs set it explicitly:
+PR events use `false`, and main push events use `true`.
+
+The orchestrator passes explicit `--race=<value>` to `go-cov` and
+`-race=<value>` to `go test`; the checked-in `.go-cov.toml` keeps its enabled
+local default. Disabled coverage also appends `-race=false` to its inherited
+`GOFLAGS`, retaining other flags; enabled coverage leaves them unchanged. The E2E
+package builds its service with the actual test binary's race mode, including direct `go test -race` invocations, and records that mode as
+`raceEnabled` in `.tmp/acceptance-evidence.json`. The orchestration receipts retain
+the actual coverage and E2E command arguments. Build, vet, functional and
+concurrency cases, atomic statement coverage and all coverage thresholds run in
+both modes. The [Go validation timing decision](../../.agents/notes/implemented/testing/2026-11-04-go-validation-timing.md)
+records the event policy and its limits.
+
+### Coverage and E2E responsibilities
+
 Coverage mode builds the executable, runs `go vet`, expires project-local Go test
-results so database changes cannot be hidden by cached coverage, and runs
-race-enabled package tests through `go-cov` pinned to commit
+results so database changes cannot be hidden by cached coverage, and runs package
+tests with the selected race mode through `go-cov` pinned to commit
 `d6caf2759e330b48d69a543695e37002a48feb1d`. The checked-in `.go-cov.toml`
 requires at least 85% coverage per production package and 80% per function,
 with critical blocks enforced and no production exclusions. The Node orchestrator
@@ -460,9 +536,10 @@ normally issued PAT producer, followed by the two deadline probes and installed
 fixture cleanup. It writes `.tmp/project-task-service-evidence.json` at the
 repository root and `.tmp/coverage.out` in this module.
 
-E2E mode runs `go test -race -count=1 -timeout=10m ./cmd/e2e_tests`. Its own packed
-and installed CLI belongs to that run; the package freshly builds a race-enabled
-server and retains every process, concurrency, error-path and cleanup assertion.
+E2E mode runs `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests` with the
+selected race mode. Its own packed and installed CLI belongs to that run; the
+package freshly builds a server with matching instrumentation and retains every
+process, concurrency, error-path and cleanup assertion.
 It writes this module's `.tmp/acceptance-evidence.json` and the repository-root
 `.tmp/project-task-e2e-evidence.json`, which records command results, installed
 artifact identity and installed-fixture removal. Deadline probes and their PAT
@@ -529,6 +606,22 @@ addresses before resolving them through `os.Root`. It rejects roots that cannot
 distinguish case and rejects object access outside the root. `Open` returns the
 size of its opened handle. Callers own the returned body and input reader.
 
+New Session archives use `internal/core/model/sessionarchive.Namespace` for project/user
+and Session UUID directories. Task Web/Herdr objects use
+`session-archives/projects/<projectId>/<sessionId[:2]>/<sessionId>/<sha256>.json`;
+independent Test/Bot objects use
+`session-archives/users/<ownerUserId>/<sessionId[:2]>/<sessionId>/<sha256>.json`.
+PostgreSQL retains the object path, length, digest and archive status or receipt.
+Readers continue to open the persisted `object_path` and apply the existing
+length/digest/structure checks. Existing files and metadata stay in place;
+read behavior, same-hash ready upload retries and public URLs remain unchanged.
+The restricted `DeleteSessionArchives` operation receives a validated Namespace
+and removes that current Session directory, including unregistered objects,
+while preserving same-owner/shard siblings. Old direct-directory files are
+outside this physical cleanup scope and do not block it. The
+[Session design](../../docs/design/task-session-protocol.md#服务端归档布局)
+owns the address rule.
+
 Writes stream through an owned temporary file and publish complete contents.
 An empty internal directory can be reused as a file path; existing child files
 remain conflicts. Internal namespace synchronization belongs to this storage
@@ -540,7 +633,8 @@ Both Compose deployments mount a project-scoped `attachment-data` volume at
 `DAYNIGHT_STORAGE_ROOT=/var/lib/daynight/storage`. Fresh-volume initialization
 preserves the image directory's UID/GID `10001:10001`, and the normal nonroot
 server writes without a privileged startup process. Normal restart and rebuild
-retain PostgreSQL metadata and attachment bytes; dev-ci removes both owned data
+retain PostgreSQL metadata, attachment bytes and Session archive bodies; dev-ci
+removes both owned data
 volumes on cleanup. The [deployment guide](../../deployment/localhost/README.md#persistence-and-backup)
 owns retention and the stopped-write, paired PostgreSQL/directory backup and
 restore commands. Before reopening a restored/imported history, rotate affected
@@ -716,10 +810,11 @@ references by current project membership and undeleted-task visibility. The
 [Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
 separate storage and current-permission behavior.
 
-The shared `core.Project` and `core.Task` models have one representation across
+The shared `model.Project` and `model.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
-candidate reachability. The static property registry in `internal/taskproperties/`
-owns native validation, normalization, schemas and public writability. Generic
+candidate reachability. The static property registry in `internal/core/model/taskproperty/`
+owns native validation, normalization, schemas and read-only metadata;
+`internal/core/task/properties/` applies public write policy. Generic
 maps preserve every property key. Each task/property is a `task_properties` row,
 keyed by task_id/name, with one complete JSON value stored as text. JSON-escaped
 NUL retains its existing string semantics without SQL JSON conversion. Full
@@ -731,7 +826,7 @@ checksums remain immutable; the new checksum includes the frozen transform.
 Public mutations reject protected worker values. Missing properties are not
 materialized, and illegal stored properties fail the complete HTTP operation
 with 400 invalid_input; database failures remain 500 internal_error. The HTTP
-boundary and value codecs share strict object decoding in `internal/jsonobject/`.
+boundary and value codecs share strict object decoding in `internal/utils/jsonobject/`.
 Property PUT receives unchanged argument text as valueText; it decodes JSON or
 string shorthand through the definition rather than trusting client validation.
 The complete JSON envelope, including its extra escaping, shares the 1 MiB request
@@ -1258,7 +1353,8 @@ attachments, PRs and Sessions. Task state, disabled automatic execution, absent
 Sessions and active Worker ownership do not restrict Steps. No Steps write
 freezes a Session or calls the full Task updater.
 
-`internal/tasksteps` is the sole public DTO/codec owner. Exact Encoder output
+`internal/core/task/codec` is the sole public DTO/codec owner;
+`internal/core/task/steps` owns ordered candidates. Exact Encoder output
 includes default escaping and terminal LF, with 19 version digits reserved
 within 67,108,864 bytes. A frozen successfully encoded collection is the response
 body. An over-limit real-change candidate returns `409 steps_limit_exceeded`
@@ -1610,9 +1706,9 @@ for only this suite, including Web, UniAuth and installed CLI preparation. With
 sessions/PATs and explicit membership;
 installed commands use private origin-matched PAT configuration. Authentication
 and authorization remain on the production resource path. The E2E package's
-`TestMain` freshly builds a race-enabled server, starts only owned loopback
-children against isolated real PostgreSQL schemas, and checks HTTP workflows, restart persistence, competing
-mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
+`TestMain` freshly builds a server with the test binary's race mode, starts only
+owned loopback children against isolated real PostgreSQL schemas, and checks HTTP
+workflows, restart persistence, competing mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
 cancellation, graceful/forced SIGTERM,
 migration failures and simultaneous startup. This signal acceptance runs in the
 Ubuntu Go E2E CI job. Independent scenario subtests run with at most four concurrent
@@ -1656,11 +1752,11 @@ Thread scenario also verifies the [discussion contract](../../docs/spec/daynight
 | V1: persistent resources | `workflow_restart_persistence`, `graceful_sigterm_drains_committed_request`, `forced_sigterm_cancels_without_late_write`; complete objects survive process restart and listener reuse |
 | V2: dependency refusal and rollback | `refusals_scopes_filters_and_cursors`, `partial_write_http_failure_rolls_back`; rejected writes preserve complete tasks, with a sequence proving metadata and the first edge changed before the injected failure |
 | V3: concurrency and project independence | `concurrent_reverse_dependencies`, `canceled_request_and_independent_project`; owned backend waiters prove competing requests and independent progress |
-| V4: state gates | `three_state_read_projection`, `concurrent_status_same_version`, `concurrent_dependency_update_and_status`, `concurrent_reopen_and_successor_status` plus installed start/done/distinct-target/dependency-edit/same-state races; [service tests](internal/service/task_test.go) and [HTTP status tests](internal/server/task_transitions_test.go) cover all nine pairs, +0/+1, stale no-op and ordinary/external predecessor/dependent protection |
+| V4: state gates | `three_state_read_projection`, `concurrent_status_same_version`, `concurrent_dependency_update_and_status`, `concurrent_reopen_and_successor_status` plus installed start/done/distinct-target/dependency-edit/same-state races; [service tests](internal/service/task/task_test.go) and [HTTP status tests](internal/server/task/task_transitions_test.go) cover all nine pairs, +0/+1, stale no-op and ordinary/external predecessor/dependent protection |
 | V5: revisions and no-ops | Workflow/refusal scenarios and `concurrent_same_version`; actual changes compete on one version and matching semantic no-ops retain fields/timestamps |
 | V6: listing and HTTP contract | `refusals_scopes_filters_and_cursors`, [HTTP tests](internal/server/tasks_test.go) and service tests cover tied keysets, scoped filters, initialized empty resources, DTOs and error mapping |
 | V7: transactions and lifecycle | Partial-failure, cancellation, graceful/forced-signal, unsupported/failed-migration-history, concurrent-startup and `installed_cli_pre_lifecycle_migration_restart` scenarios; owning store tests prove finer snapshot and cross-migration interleavings |
-| V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
+| V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the [event-specific race policy](#race-instrumentation), raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
 | Task Steps: installed CLI Add | [`installed_cli_task_steps_add` and `installed_cli_task_steps_add_unknown`](cmd/e2e_tests/task_steps_cli_add_acceptance_test.go) cover options, saved placement, explicit one-POST/default GET+POST budgets, exact identities/versions, known refusals and current-fact-only observation after a real committed Add loses its response |
@@ -1849,7 +1945,7 @@ supplement the store/service/server package tests.
 The owning store/service tests retain deterministic snapshot and lock proofs:
 `TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/query_test.go),
 `TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent` in
-[service failure tests](internal/service/task_failure_test.go), and
+[service failure tests](internal/service/task/task_failure_test.go), and
 `TestMigrationsSessionLockSpansCommits` in [migration tests](internal/core/store/migrate_test.go).
 
 CI uploads `daynight-server-acceptance` after validation, including the JSON

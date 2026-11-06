@@ -69,4 +69,5 @@ Native startup and filesystem preflight remain execution responsibilities.
 transaction contract and verify current live synchronization before calling the
 preference helper. The helper's durable readiness check is not independent proof
 of a live native session; a client boolean or spawn receipt cannot replace it.
-The full assistant entry remains disabled until its hosting and UI are composed.
+The [assistant composition](2026-11-05-assistant-composition.md) enables hosting
+and navigation together; the default resolver still rejects unsupported Workers.

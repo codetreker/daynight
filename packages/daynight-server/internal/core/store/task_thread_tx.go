@@ -7,30 +7,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 )
 
 const threadClockBudget = 100 * time.Millisecond
-
-// ThreadClockError means the bounded preparation did not obtain a reliable
-// forward position; it does not assert that the database clock moved backwards.
-type ThreadClockError struct {
-	Head     core.ThreadPosition
-	Observed time.Time
-	Cause    error
-}
-
-func (err *ThreadClockError) Error() string {
-	return "reliable forward clock position was not obtained within budget"
-}
-func (err *ThreadClockError) Unwrap() error { return err.Cause }
 
 func (tx *ThreadTx) LockTaskPresence(ctx context.Context, projectID, taskID string) (TaskPresence, error) {
 	return taskPresence(ctx, tx.tx, projectID, taskID, " FOR SHARE")
 }
 
-func (tx *ThreadTx) Credential(ctx context.Context, principal core.Principal) (ThreadCredential, error) {
+func (tx *ThreadTx) Credential(ctx context.Context, principal model.Principal) (ThreadCredential, error) {
 	return threadCredential(ctx, tx.tx, principal, " FOR SHARE")
 }
 
@@ -43,19 +30,19 @@ func (tx *ThreadTx) AuthorName(ctx context.Context, userID string) (*string, err
 }
 
 // SourceTask reads only source validation fields after the parent task is locked.
-func (tx *ThreadTx) SourceTask(ctx context.Context, projectID, taskID string) (core.Task, error) {
-	result := core.Task{ID: taskID, ProjectID: projectID, Properties: core.TaskProperties{}}
+func (tx *ThreadTx) SourceTask(ctx context.Context, projectID, taskID string) (model.Task, error) {
+	result := model.Task{ID: taskID, ProjectID: projectID, Properties: model.TaskProperties{}}
 	var workerValue *string
 	err := tx.tx.QueryRow(ctx, `SELECT t.status,p.value FROM tasks t
  LEFT JOIN task_properties p ON p.task_id=t.id AND p.name='worker'
  WHERE t.project_id=$1 AND t.id=$2`, projectID, taskID).Scan(&result.Status, &workerValue)
 	if err != nil {
-		return core.Task{}, queryError("read thread source", err)
+		return model.Task{}, queryError("read thread source", err)
 	}
 	if workerValue != nil {
-		result.Properties["worker"], err = taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue), false)
+		result.Properties["worker"], err = taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue))
 		if err != nil {
-			return core.Task{}, queryError("decode thread source", err)
+			return model.Task{}, queryError("decode thread source", err)
 		}
 	}
 	return result, nil
@@ -63,7 +50,7 @@ func (tx *ThreadTx) SourceTask(ctx context.Context, projectID, taskID string) (c
 
 // LockHead uses separate statements so a concurrent first append is visible in
 // the second Read Committed snapshot after conflict-ignore waits for its commit.
-func (tx *ThreadTx) LockHead(ctx context.Context, taskID string) (*core.ThreadPosition, error) {
+func (tx *ThreadTx) LockHead(ctx context.Context, taskID string) (*model.ThreadPosition, error) {
 	if _, err := tx.tx.Exec(ctx, `INSERT INTO task_threads(task_id) VALUES($1) ON CONFLICT DO NOTHING`, taskID); err != nil {
 		return nil, queryError("initialize thread head", err)
 	}
@@ -75,16 +62,16 @@ func (tx *ThreadTx) LockHead(ctx context.Context, taskID string) (*core.ThreadPo
 	if createdAt == nil {
 		return nil, nil
 	}
-	return &core.ThreadPosition{CreatedAt: createdAt.UTC(), ID: *id}, nil
+	return &model.ThreadPosition{CreatedAt: createdAt.UTC(), ID: *id}, nil
 }
 
-func (tx *ThreadTx) ThreadMessage(ctx context.Context, taskID, id string) (core.ThreadMessage, error) {
+func (tx *ThreadTx) ThreadMessage(ctx context.Context, taskID, id string) (model.ThreadMessage, error) {
 	return readThreadMessage(ctx, tx.tx, taskID, id)
 }
 
 // InsertMessage generates the UUID once in PostgreSQL. Only the uncommitted
 // row's timestamp may subsequently be prepared to advance the locked head.
-func (tx *ThreadTx) InsertMessage(ctx context.Context, message core.ThreadMessage) (core.ThreadMessage, error) {
+func (tx *ThreadTx) InsertMessage(ctx context.Context, message model.ThreadMessage) (model.ThreadMessage, error) {
 	var claimID, workerID, provider any
 	if source := message.Author.Execution; source != nil {
 		claimID, workerID, provider = source.ClaimID, source.WorkerID, source.Provider
@@ -95,19 +82,19 @@ func (tx *ThreadTx) InsertMessage(ctx context.Context, message core.ThreadMessag
  RETURNING `+threadMessageProjection, message.TaskID, message.Author.UserID, message.Author.DisplayName,
 		message.Author.Agent, claimID, workerID, provider, message.Body, message.ReplyTo))
 	if err != nil {
-		return core.ThreadMessage{}, queryError("append thread message", err)
+		return model.ThreadMessage{}, queryError("append thread message", err)
 	}
 	return inserted, nil
 }
 
-func threadPositionAfter(candidate, head core.ThreadPosition) bool {
+func threadPositionAfter(candidate, head model.ThreadPosition) bool {
 	return candidate.CreatedAt.After(head.CreatedAt) ||
 		(candidate.CreatedAt.Equal(head.CreatedAt) && strings.Compare(candidate.ID, head.ID) > 0)
 }
 
 // PrepareTimestamp advances an uncommitted candidate past the locked head using
 // the actual database clock, retaining its UUID. It never manufactures head+1ms.
-func (tx *ThreadTx) PrepareTimestamp(ctx context.Context, message *core.ThreadMessage, head *core.ThreadPosition) error {
+func (tx *ThreadTx) PrepareTimestamp(ctx context.Context, message *model.ThreadMessage, head *model.ThreadPosition) error {
 	if head == nil || threadPositionAfter(message.Position(), *head) {
 		return ctx.Err()
 	}
@@ -130,7 +117,7 @@ func (tx *ThreadTx) PrepareTimestamp(ctx context.Context, message *core.ThreadMe
 	return ctx.Err()
 }
 
-func forwardThreadClock(ctx context.Context, head core.ThreadPosition, budget time.Duration,
+func forwardThreadClock(ctx context.Context, head model.ThreadPosition, budget time.Duration,
 	sample func(context.Context) (time.Time, error), wait func(context.Context) error) (time.Time, error) {
 	clock, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
@@ -198,7 +185,7 @@ func (tx *ThreadTx) CredentialValid(ctx context.Context, credential ThreadCreden
 	return valid, nil
 }
 
-func (tx *ThreadTx) AdvanceHead(ctx context.Context, taskID string, position core.ThreadPosition) error {
+func (tx *ThreadTx) AdvanceHead(ctx context.Context, taskID string, position model.ThreadPosition) error {
 	result, err := tx.tx.Exec(ctx, `UPDATE task_threads SET last_created_at=$2,last_message_id=$3
  WHERE task_id=$1 AND (last_created_at IS NULL OR (last_created_at,last_message_id)<($2,$3::uuid))`, taskID, position.CreatedAt, position.ID)
 	if err != nil {

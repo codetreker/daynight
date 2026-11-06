@@ -41,10 +41,49 @@ submits the real name and version; it does not waive authorization or service
 preconditions. Without confirmation, a non-interactive call does not write.
 Personal Teams cannot be renamed or deleted, and deletion requires an empty Team.
 
+Use `team member list` to observe the target's real membership version before
+changing its role or removing it; `team leave` uses the current user's membership
+version. Supply the exact positive int64 through `--if-version` for a decision
+based on an earlier observation. A Team version or Project grant version is not
+a membership version. A mismatch with the current observation fails before the
+write; a conflict requires a fresh observation and decision. Membership writes
+also require interactive confirmation or `--confirm`. The service retains an
+admin in ordinary Teams and refuses Personal membership changes. A confirmed
+receipt reports the actor's remaining Team role; self-exit consumes that receipt
+without an additional permission-sensitive Team read.
+
 A lost, cancelled or malformed response can follow a commit. Do not repeat the
 write automatically. Read current facts before another decision, but do not
 claim the original operation succeeded merely because current state matches;
 Team names can be duplicated and a read cannot restore a lost receipt.
+
+## Invitation acceptance
+
+Use `invitation inspect` to preview a same-service Project or Team link for the
+current account without consuming it. Enter the link at the hidden terminal
+prompt or use `--stdin` (up to 4096 bytes, read to EOF, with at most one
+trailing LF or CRLF); never place the link or token in arguments,
+flags, shell history, task content or logs. These commands do not resolve the
+configured default Team and cannot accept for another account.
+
+Accept only with authorization and explicit confirmation. Non-interactive
+`invitation accept` requires the boolean `--confirm`; without it no write is
+sent. An existing direct relationship preserves its role without consuming the
+invitation; inherited-only Project access still receives a direct member grant.
+A lost, cancelled or malformed acceptance response can follow a commit. Do not
+replay it automatically or claim success from a later membership read: current
+facts cannot recover the original receipt.
+
+## Project transfers
+
+With authorization, use `project transfer` with a target Team UUID or an exact
+same-service Team link. The preview identifies the Project, source and destination
+and the actor's expected access. Confirm the decision interactively or use the
+boolean `--confirm` flag. The command submits the observed ownership and destination
+versions with the current identity; a conflict requires a new preview and decision.
+The receipt can confirm success with no remaining actor access. Do not replay an
+unknown submission automatically: a later Project read, including 404, cannot
+prove whether the transfer committed. Grants and invitations remain independent.
 
 ## Task Step writes
 

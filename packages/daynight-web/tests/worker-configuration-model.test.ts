@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, emptyProjectDraft, mergeConfigurationResources, parseConfigurationDraft, resolvedProjectNative } from '../src/features/workers/configuration/model';
+import { configurationDraftsEqual, configurationFieldChanges, configurationValuesEqual, draftFromValue, emptyProjectDraft, mergeConfigurationResources, parseConfigurationDraft, resolvedProjectNative } from '../src/features/workers/configuration/model';
 import { configurationResource, configurationValue } from './helpers/worker-configuration';
 import { workerId } from './helpers/workers';
 
@@ -35,6 +35,20 @@ describe('Worker configuration draft', () => {
     const reversed = { ...first, projects: [{ projectId: workerId(3), nativeOverrides: {} }, { projectId: workerId(9), nativeOverrides: { args: ['a'], model: 'm' } }] };
     expect(configurationValuesEqual(first, reversed)).toBe(true);
     expect(configurationValuesEqual(configurationValue(), { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: { args: [] } }] })).toBe(false);
+  });
+  it('compares each valid field independently and preserves override intent', () => {
+    const value = { ...configurationValue(), projects: [{ projectId: workerId(3), nativeOverrides: { args: [] } }, { projectId: workerId(4), nativeOverrides: {} }] };
+    const base = draftFromValue(value), project = base.projects[0]!;
+    const draft = { ...base, maxConcurrent: '002', recoveryLimit: '-', native: { ...base.native, args: '[ \n ]' }, projects: [
+      { ...project, native: { ...project.native, argsMode: 'custom' as const, args: '[ ]' } },
+      { ...base.projects[1]!, native: { ...base.projects[1]!.native, argsMode: 'clear' as const } },
+    ] };
+    const changes = configurationFieldChanges(draft, value, parseConfigurationDraft(draft).errors);
+    expect(changes).toMatchObject({ maxConcurrent: false, pollIntervalMs: false, recoveryLimit: true, native: false });
+    expect(changes.projects.get(workerId(3))).toBe(false); expect(changes.projects.get(workerId(4))).toBe(true);
+    const invalid = { ...draft, native: { ...draft.native, args: '[bad' }, projects: [{ ...project, native: { ...project.native, argsMode: 'custom' as const, args: '[bad' } }] };
+    const invalidChanges = configurationFieldChanges(invalid, value, parseConfigurationDraft(invalid).errors);
+    expect(invalidChanges.native).toBe(true); expect(invalidChanges.projects.get(workerId(3))).toBe(true);
   });
   it('merges target and observation revisions independently against late reads', () => {
     const current = { ...configurationResource('3'), observationRevision: '1' };

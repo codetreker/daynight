@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -15,10 +15,10 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 	s, actor, first := storeTeamFixture(t)
 	ctx := context.Background()
 	_, other, _ := testAuthRecords(t, s)
-	if _, err := s.CreateTeam(ctx, other.UserID, uuid.NewString(), "An invisible Team between visible rows"); err != nil {
+	if _, err := testCreateTeam(s, ctx, other.UserID, uuid.NewString(), "An invisible Team between visible rows"); err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.CreateTeam(ctx, actor.UserID, uuid.NewString(), "Same visible name")
+	second, err := testCreateTeam(s, ctx, actor.UserID, uuid.NewString(), "Same visible name")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,9 +31,9 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 	page.Limit = 1
 	for {
 		var result TeamPage
-		if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 			var err error
-			result, err = snapshot.Teams(ctx, actor.UserID, page)
+			result, err = snapshot.TeamDAO().Teams(ctx, actor.UserID, page)
 			return err
 		}); err != nil {
 			t.Fatal(err)
@@ -48,7 +48,7 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 		if team.ID == first.ID && (team.Version != metadataVersion || team.Membership.Version != memberVersion) {
 			t.Fatalf("rounded versions %#v", team)
 		}
-		if len(ids) == 0 && (team.Kind != "personal" || team.Name != nil || team.Membership.Role != core.ProjectAdmin) {
+		if len(ids) == 0 && (team.Kind != "personal" || team.Name != nil || team.Membership.Role != model.ProjectAdmin) {
 			t.Fatalf("Personal projection %#v", team)
 		}
 		ids = append(ids, team.ID)
@@ -60,8 +60,8 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 	if len(ids) != 3 || ids[1] != first.ID || ids[2] != second.ID {
 		t.Fatalf("joined list pagination/order %#v", ids)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		last, err := snapshot.Teams(ctx, actor.UserID, page)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		last, err := snapshot.TeamDAO().Teams(ctx, actor.UserID, page)
 		if err == nil && (last.Items == nil || len(last.Items) != 0 || last.HasMore) {
 			t.Fatalf("empty final page %#v", last)
 		}
@@ -74,16 +74,16 @@ func TestTeamSnapshotsPaginateJoinedMembershipsAndPreciseMetadata(t *testing.T) 
 func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 	s, actor, team := storeTeamFixture(t)
 	ctx := context.Background()
-	var changed core.Team
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		before, err := snapshot.Teams(ctx, actor.UserID, Page{Limit: 100})
+	var changed model.Team
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		before, err := snapshot.TeamDAO().Teams(ctx, actor.UserID, Page{Limit: 100})
 		if err != nil {
 			return err
 		}
 		if len(before.Items) != 2 {
 			t.Fatalf("initial joined list %#v", before)
 		}
-		err = s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+		err = testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 			var err error
 			changed, err = tx.Rename(ctx, actor.UserID, "Changed after snapshot")
 			return err
@@ -91,7 +91,7 @@ func TestTeamSnapshotRetainsMetadataAndMembershipUntilNextRead(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		observed, err := snapshot.Team(ctx, actor.UserID, team.ID)
+		observed, err := snapshot.TeamDAO().Team(ctx, actor.UserID, team.ID)
 		if err == nil && !reflect.DeepEqual(observed, team) {
 			t.Fatalf("repeatable snapshot mixed metadata %#v", observed)
 		}
@@ -111,15 +111,18 @@ func TestTeamSnapshotAbsenceCancellationAndStoredIntegrityFailures(t *testing.T)
 	ctx := context.Background()
 	_, outsider, _ := testAuthRecords(t, s)
 	for _, target := range []struct{ userID, teamID string }{{outsider.UserID, team.ID}, {actor.UserID, uuid.NewString()}} {
-		err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error { _, err := snapshot.Team(ctx, target.userID, target.teamID); return err })
-		if !errors.Is(err, core.ErrNotFound) {
+		err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+			_, err := snapshot.TeamDAO().Team(ctx, target.userID, target.teamID)
+			return err
+		})
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing Team membership cause %v", err)
 		}
 	}
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		canceled, cancel := context.WithCancel(ctx)
 		cancel()
-		_, err := snapshot.Teams(canceled, actor.UserID, Page{Limit: 1})
+		_, err := snapshot.TeamDAO().Teams(canceled, actor.UserID, Page{Limit: 1})
 		return err
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -130,10 +133,13 @@ func TestTeamSnapshotAbsenceCancellationAndStoredIntegrityFailures(t *testing.T)
 		t.Fatal(err)
 	}
 	mustQueryExec(t, s, `UPDATE team_members SET role='member' WHERE team_id=$1 AND user_id=$2`, personalID, actor.UserID)
-	for _, read := range []func(*Snapshot) error{
-		func(snapshot *Snapshot) error { _, err := snapshot.Team(ctx, actor.UserID, personalID); return err },
-		func(snapshot *Snapshot) error {
-			page, err := snapshot.Teams(ctx, actor.UserID, Page{Limit: 100})
+	for _, read := range []func(SnapshotScope) error{
+		func(snapshot SnapshotScope) error {
+			_, err := snapshot.TeamDAO().Team(ctx, actor.UserID, personalID)
+			return err
+		},
+		func(snapshot SnapshotScope) error {
+			page, err := snapshot.TeamDAO().Teams(ctx, actor.UserID, Page{Limit: 100})
 			if err != nil && page.Items != nil {
 				t.Fatal("corrupt membership published a partial page")
 			}
@@ -142,7 +148,7 @@ func TestTeamSnapshotAbsenceCancellationAndStoredIntegrityFailures(t *testing.T)
 	} {
 		err := s.ReadSnapshot(ctx, read)
 		var failure *Error
-		if err == nil || errors.Is(err, core.ErrNotFound) || !errors.As(err, &failure) {
+		if err == nil || errors.Is(err, model.ErrNotFound) || !errors.As(err, &failure) {
 			t.Fatalf("invalid Personal owner was accepted/hidden %v", err)
 		}
 	}
@@ -161,7 +167,7 @@ func TestTeamRenameAndDeleteSQLFailuresRollbackCompleteLifecycle(t *testing.T) {
 			}
 			mustQueryExec(t, s, `CREATE FUNCTION refuse_team_lifecycle() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'lifecycle failure'; END $$;
     CREATE TRIGGER refuse_team_lifecycle BEFORE `+event+` ON `+triggerTable+` FOR EACH ROW EXECUTE FUNCTION refuse_team_lifecycle()`)
-			err := s.WriteTeam(context.Background(), team.ID, func(tx *TeamTx) error {
+			err := testWriteTeam(s, context.Background(), team.ID, func(tx *TeamTx) error {
 				if operation == "rename" {
 					_, err := tx.Rename(context.Background(), actor.UserID, "Uncommitted")
 					return err

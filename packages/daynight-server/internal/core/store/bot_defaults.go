@@ -4,73 +4,73 @@ import (
 	"context"
 	"errors"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 )
 
 var ErrBotPreferencesNotReady = errors.New("bot preferences require an undeleted ready bot with a bound session")
 
-func (s *Snapshot) BotDefaults(ctx context.Context, ownerID string) (core.BotDefaultsInput, error) {
+func (s *Snapshot) BotDefaults(ctx context.Context, ownerID string) (model.BotDefaultsInput, error) {
 	return readBotDefaultsInput(ctx, s.tx, ownerID)
 }
 
-func (b *BotTx) BotDefaults(ctx context.Context, ownerID string) (core.BotDefaultsInput, error) {
+func (b *botTx) BotDefaults(ctx context.Context, ownerID string) (model.BotDefaultsInput, error) {
 	return readBotDefaultsInput(ctx, b.tx, ownerID)
 }
 
 // LockCreation serializes lookup and default resolution for one canonical Bot
 // ID, including before its row exists. Hash collisions only serialize unrelated
 // requests; the durable Bot ID and fingerprint still determine identity.
-func (b *BotTx) LockCreation(ctx context.Context, id string) error {
+func (b *botTx) LockCreation(ctx context.Context, id string) error {
 	if _, err := b.tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('bot-create:' || $1, 0))`, id); err != nil {
 		return queryError("lock bot creation", err)
 	}
 	return nil
 }
 
-func readBotDefaultsInput(ctx context.Context, tx pgx.Tx, ownerID string) (core.BotDefaultsInput, error) {
-	result := core.BotDefaultsInput{Workers: []core.WorkerSnapshot{}, WorkerPreferences: map[string]core.BotWorkerPreference{}}
+func readBotDefaultsInput(ctx context.Context, tx pgx.Tx, ownerID string) (model.BotDefaultsInput, error) {
+	result := model.BotDefaultsInput{Workers: []model.WorkerSnapshot{}, WorkerPreferences: map[string]model.BotWorkerPreference{}}
 	if err := tx.QueryRow(ctx, `SELECT (SELECT worker_id::text FROM bot_worker_preferences WHERE user_id=$1)`, ownerID).
 		Scan(&result.PreferredWorkerID); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot worker preference", err)
+		return model.BotDefaultsInput{}, queryError("read bot worker preference", err)
 	}
 	rows, err := tx.Query(ctx, `SELECT `+workerSnapshotProjection+` FROM workers WHERE user_id=$1 ORDER BY created_at,worker_id`, ownerID)
 	if err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot default workers", err)
+		return model.BotDefaultsInput{}, queryError("read bot default workers", err)
 	}
 	for rows.Next() {
 		worker, err := scanWorkerSnapshot(rows)
 		if err != nil {
 			rows.Close()
-			return core.BotDefaultsInput{}, queryError("read bot default workers", err)
+			return model.BotDefaultsInput{}, queryError("read bot default workers", err)
 		}
 		result.Workers = append(result.Workers, worker)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot default workers", err)
+		return model.BotDefaultsInput{}, queryError("read bot default workers", err)
 	}
 	rows, err = tx.Query(ctx, `SELECT worker_id::text,cwd,provider FROM bot_configuration_preferences WHERE user_id=$1`, ownerID)
 	if err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
+		return model.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var workerID string
-		var preference core.BotWorkerPreference
+		var preference model.BotWorkerPreference
 		if err := rows.Scan(&workerID, &preference.Cwd, &preference.Provider); err != nil {
-			return core.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
+			return model.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
 		}
 		result.WorkerPreferences[workerID] = preference
 	}
 	if err := rows.Err(); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
+		return model.BotDefaultsInput{}, queryError("read bot configuration preferences", err)
 	}
 	// This clock evaluates freshness after the observed data is read. In a
 	// ReadCommitted creation transaction, a heartbeat may commit between queries;
 	// a clock sampled first would incorrectly classify that heartbeat as future.
 	if err := tx.QueryRow(ctx, `SELECT statement_timestamp()`).Scan(&result.ObservedAt); err != nil {
-		return core.BotDefaultsInput{}, queryError("read bot default observation", err)
+		return model.BotDefaultsInput{}, queryError("read bot default observation", err)
 	}
 	result.ObservedAt = result.ObservedAt.UTC()
 	return result, nil
@@ -83,7 +83,8 @@ func readBotDefaultsInput(ctx context.Context, tx pgx.Tx, ownerID string) (core.
 // native-session proof and this helper is not a public report endpoint.
 // Only stored explicit choices participate; each field has its own creation-order
 // watermark so a later provider-only choice cannot discard an earlier cwd choice.
-func CommitBotPreferences(ctx context.Context, tx pgx.Tx, botID string) error {
+func (b *botTx) CommitBotPreferences(ctx context.Context, botID string) error {
+	tx := b.tx
 	bot, err := readBot(ctx, tx, botID, " FOR UPDATE")
 	if err != nil {
 		return err

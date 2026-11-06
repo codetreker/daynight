@@ -62,6 +62,32 @@ afterEach(async () => {
 });
 
 describe("worker remote API", () => {
+  it("exchanges configuration through the authenticated single report operation without affecting legacy reports", async () => {
+    const requests: { method: string | undefined; url: string | undefined; capability: string | undefined; body: unknown }[] = [];
+    const value = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
+    const desired = { revision: "1", updatedAt: time, value };
+    const configuration = { bootstrap: value, observation: null };
+    const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
+    const serverUrl = await listen((request, response, body) => {
+      const capability = request.headers["daynight-worker-configuration"] as string | undefined;
+      requests.push({ method: request.method, url: request.url, capability, body });
+      if (capability !== undefined) response.setHeader("Daynight-Worker-Configuration", "1");
+      respond(response, request.method === "GET" ? { desired, observationRevision: "0", observation: null }
+        : capability === "1" ? { ...receipt, configuration: { desired, observationRevision: "0", observationAccepted: false } } : receipt);
+    });
+    const remote = await verifiedRemote(serverUrl), operation = operations.createOperation();
+    try {
+      await expect(remote.configuration(workerId, signal())).resolves.toMatchObject({ desired });
+      const opened = vi.spyOn(operations, "createOperation");
+      await expect(remote.reportConfiguration(workerId, { ...workerTelemetry, taskInventory: null }, configuration, operation)).resolves.toMatchObject({ configuration: { desired } });
+      await remote.report(workerId, { ...workerTelemetry, taskInventory: null }, operation);
+      expect(opened).not.toHaveBeenCalled();
+      expect(requests.map(({ method, capability }) => ({ method, capability }))).toEqual([{ method: "GET", capability: "1" }, { method: "POST", capability: "1" }, { method: "POST", capability: undefined }]);
+      expect(requests[1]!.body).toMatchObject({ configuration, taskInventory: null });
+      expect(requests[2]!.body).not.toHaveProperty("configuration");
+    } finally { operation.dispose(); }
+  });
+
   it("reports through the caller operation with verified identity and a 200 receipt", async () => {
     const requests: { method: string | undefined; url: string | undefined; body: unknown }[] = [];
     const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };

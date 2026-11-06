@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 )
 
-func storeTeamInvitation(team core.Team, admin core.Principal, name string) core.TeamInvitation {
+func storeTeamInvitation(team model.Team, admin model.Principal, name string) model.TeamInvitation {
 	now := time.Now().UTC()
 	hash := sha256.Sum256([]byte(name))
-	return core.TeamInvitation{ID: uuid.NewString(), TeamID: team.ID, CreatedBy: admin.UserID, TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
+	return model.TeamInvitation{ID: uuid.NewString(), TeamID: team.ID, CreatedBy: admin.UserID, TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
 }
 
 func TestTeamInvitationStoreLifecycle(t *testing.T) {
@@ -22,55 +22,55 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	ctx := context.Background()
 	_, member, _ := testAuthRecords(t, s)
 	invitation := storeTeamInvitation(team, admin, "first")
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
 		t.Fatal(err)
 	}
 	var personal string
 	if err := s.Pool.QueryRow(ctx, `SELECT id::text FROM teams WHERE personal_user_id=$1`, admin.UserID).Scan(&personal); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		got, err := snapshot.TeamInvitation(ctx, invitation.TokenHash)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		got, err := snapshot.TeamDAO().TeamInvitation(ctx, invitation.TokenHash)
 		if err != nil {
 			return err
 		}
 		if got.ID != invitation.ID || got.TeamID != team.ID || got.ExpiresAt.Sub(got.CreatedAt) != 7*24*time.Hour {
 			t.Fatal("invitation persistence")
 		}
-		list, err := snapshot.TeamInvitations(ctx, team.ID, time.Now())
+		list, err := snapshot.TeamDAO().TeamInvitations(ctx, team.ID, time.Now())
 		if err != nil {
 			return err
 		}
 		if len(list) != 1 || list[0].TokenHash != nil {
 			t.Fatal("metadata exposed hash")
 		}
-		ordinary, err := snapshot.InvitationTeam(ctx, team.ID)
+		ordinary, err := snapshot.TeamDAO().InvitationTeam(ctx, team.ID)
 		if err != nil {
 			return err
 		}
 		if ordinary.Kind != "ordinary" || ordinary.Name == nil || *ordinary.Name != "Ordinary" {
 			t.Fatal("ordinary Team reference")
 		}
-		ref, err := snapshot.InvitationTeam(ctx, personal)
+		ref, err := snapshot.TeamDAO().InvitationTeam(ctx, personal)
 		if err != nil {
 			return err
 		}
 		if ref.Kind != "personal" || ref.Name != nil {
 			t.Fatal("personal Team reference")
 		}
-		_, err = snapshot.InvitationTeam(ctx, uuid.NewString())
-		if !errors.Is(err, core.ErrNotFound) {
+		_, err = snapshot.TeamDAO().InvitationTeam(ctx, uuid.NewString())
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing Team: %v", err)
 		}
-		_, err = snapshot.InvitationTeamMember(ctx, team.ID, member.UserID)
-		if !errors.Is(err, core.ErrNotFound) {
+		_, err = snapshot.TeamDAO().InvitationTeamMember(ctx, team.ID, member.UserID)
+		if !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing member: %v", err)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 		ref, err := tx.InvitationTeam(ctx)
 		if err != nil || ref.ID != team.ID {
 			return errors.New("locked Team reference")
@@ -83,19 +83,19 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if joined.UserID != member.UserID || joined.TeamID != team.ID || joined.Role != core.ProjectMemberRole || joined.Version < 1 {
+		if joined.UserID != member.UserID || joined.TeamID != team.ID || joined.Role != model.ProjectMemberRole || joined.Version < 1 {
 			t.Fatal("invited member")
 		}
 		return tx.ConsumeInvitation(ctx, got.ID, member.UserID, time.Now())
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		memberRow, err := snapshot.InvitationTeamMember(ctx, team.ID, member.UserID)
-		if err != nil || memberRow.Role != core.ProjectMemberRole {
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		memberRow, err := snapshot.TeamDAO().InvitationTeamMember(ctx, team.ID, member.UserID)
+		if err != nil || memberRow.Role != model.ProjectMemberRole {
 			return errors.New("stored member")
 		}
-		list, err := snapshot.TeamInvitations(ctx, team.ID, time.Now())
+		list, err := snapshot.TeamDAO().TeamInvitations(ctx, team.ID, time.Now())
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	revoked := storeTeamInvitation(team, admin, "second")
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 		if err := tx.CreateInvitation(ctx, revoked); err != nil {
 			return err
 		}
@@ -123,7 +123,7 @@ func TestTeamInvitationStoreLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { return tx.Delete(ctx) }); err != nil {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { return tx.Delete(ctx) }); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -136,7 +136,7 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 	s, admin, team := storeTeamFixture(t)
 	ctx := context.Background()
 	invitation := storeTeamInvitation(team, admin, "fault")
-	if err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
+	if err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { return tx.CreateInvitation(ctx, invitation) }); err != nil {
 		t.Fatal(err)
 	}
 	// Unique hashes and member keys, and missing tables, must retain rollback evidence.
@@ -157,7 +157,7 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 			return err
 		},
 	} {
-		err := s.WriteTeam(ctx, team.ID, operation)
+		err := testWriteTeam(s, ctx, team.ID, operation)
 		var txErr *TransactionError
 		if !errors.As(err, &txErr) || txErr.Outcome != TransactionNotCommitted {
 			t.Fatalf("database failure lost rollback evidence: %v", err)
@@ -166,8 +166,8 @@ func TestTeamInvitationStoreFailurePaths(t *testing.T) {
 	if _, err := s.Pool.Exec(ctx, `DROP TABLE team_invitations`); err != nil {
 		t.Fatal(err)
 	}
-	err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		_, err := snapshot.TeamInvitations(ctx, team.ID, time.Now())
+	err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		_, err := snapshot.TeamDAO().TeamInvitations(ctx, team.ID, time.Now())
 		return err
 	})
 	if err == nil {

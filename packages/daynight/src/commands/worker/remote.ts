@@ -1,3 +1,4 @@
+import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "../../api/worker-configuration.js";
 import { readWorkerClaim } from "../../api/task-properties.js";
 import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
@@ -23,10 +24,13 @@ export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
   report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
+  configuration(workerId: string, signal: AbortSignal): Promise<WorkerCloudResource>;
+  reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation): Promise<WorkerCloudReportReceipt>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
   resume(projectId: string, taskId: string, input: ResumeWorkerTaskInput, signal: AbortSignal): Promise<Task>;
+  project(projectId: string, signal: AbortSignal): Promise<Project>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
   ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void): Promise<WorkerInventory>;
   candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal): AsyncGenerator<Task>;
@@ -93,6 +97,11 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       operation.check();
       return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
+    configuration: (workerId, signal) => request(signal, api => api.getWorkerConfiguration(workerId)),
+    reportConfiguration: (workerId, input, configuration, operation) => {
+      operation.check();
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorkerConfiguration(workerId, input, configuration);
+    },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {
       const access = await request(signal, (api) => api.getProjectAccess(projectId));
@@ -100,6 +109,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
     },
     release: (projectId, taskId, input, signal) => request(signal, (api) => api.releaseWorkerClaim(projectId, taskId, input)),
     resume: (projectId, taskId, input, signal) => request(signal, (api) => api.resumeWorkerTask(projectId, taskId, input)),
+    project: (projectId, signal) => request(signal, api => api.getProject(projectId)),
     resolveProject: async (repository, signal) => {
       const expected = repositoryIdentity(repository.repoUrl);
       let project: Project;

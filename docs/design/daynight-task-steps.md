@@ -1,6 +1,6 @@
 # Task Steps 架构设计
 
-状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show、Add、Update、Set-status、Move、Delete 与 Web Steps 阅读、状态设置、末尾添加和位置调整已实现；其余 Web 写入交互保留已确认的目标架构。本文区分已实现机制与客户端目标。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
+状态：服务端持久化、集合与单项读取、添加、内容与状态修改、移动和删除，以及 CLI list/show、Add、Update、Set-status、Move、Delete 与 Web Steps 阅读、状态设置、添加、内容编辑、位置调整和删除已实现。Web 大集合采用每页 100 行的本地分页；交互原型由所属 Daynight Task 的附件拥有，仓库不保存原型文件。
 
 ## 目标与边界
 
@@ -10,13 +10,13 @@ Steps 是 Task 拥有的有序工作记录，跨 Session 和执行环境保留�
 
 ## 现有机制与复用点
 
-以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端、CLI list/show/Add/Update/Set-status/Move/Delete 及 Web 读取、状态设置和位置调整部分描述当前实现；Agent 指令资源和其余 Web 写入部分描述尚待交付的目标机制；应用导航准入已由独立路由所有者实现。
+以下复用点的证据固定在源码 revision `b84dc4e9159d85f53f3c98f88016bdc94f27729e`。`030_task_steps.sql` 已创建步骤表；后续 `031_terminal_sessions.sql` 保持独立职责。服务端、CLI list/show/Add/Update/Set-status/Move/Delete 以及 Web 读取、状态设置、添加、内容编辑、位置调整和删除描述当前实现；Agent 指令资源描述尚待交付的目标机制。应用导航准入由独立路由所有者实现。
 
 | 证据 | 当前事实及设计含义 |
 |---|---|
 | [`WriteProject`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/project_tx.go#L35-L51) 与 [`TaskHeader`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/task_steps.go#L74-L76) | `FOR UPDATE` 依次锁项目和父任务头；Steps 使用同一锁序且不加载完整 Task。 |
 | [`ReadSnapshot`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/snapshot.go#L16-L24) | `RepeatableRead` 与 `ReadOnly` 已提供一致只读快照；父版本和步骤必须在其中共同读取。 |
-| [`UpdateTask`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/project_tx.go#L130-L174) | 更新同时写属性、替换依赖并调用 `freezeTaskSessions`；Steps 需要只触及父版本和更新时间的存储方法。 |
+| [`UpdateTask`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/project_tx.go#L130-L174) | 该历史实现同时写属性、替换依赖并冻结 Session；Steps 需要只触及父版本和更新时间的存储方法。 |
 | [`taskWriteIdentity`、`requireTaskVersion` 与 `taskWriteHeader`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/service/task_write_admission.go#L11-L48) | Task 与 Steps 共用中性的身份及精确版本检查；Steps 锁窄任务头，Worker 兼容和执行归属策略由 Task 操作拥有。 |
 | [`TaskDetailSessions`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-web/src/features/task-detail/TaskDetailSession.tsx#L11-L69) | 一个 Task 入口拥有 mutation、身份 fence 和提交互斥；Steps 接入这一所有者。 |
 | [`DETAIL_CACHE_LIMITS`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-web/src/features/task-detail/detail-cache.ts#L9-L20) | 单详情 2 MiB、总计 8 MiB；完整 Steps 不能进入该 TaskDetail 缓存。 |
@@ -40,15 +40,16 @@ flowchart LR
 
 | 位置 | 职责 |
 |---|---|
-| `internal/core/task_steps.go` | Step、状态、父任务头和有序集合领域值；不包含 HTTP 处理。 |
-| `internal/tasksteps/` | 纯字段校验、ID 规范化、不可变候选、语义比较及公开资源编码。 |
+| `internal/core/model/task_steps.go` | Step、状态、父任务头和有序集合领域值；不包含 HTTP 处理。 |
+| `internal/core/task/codec/` | 纯字段校验、ID 规范化、公开资源类型与精确编码。 |
+| `internal/core/task/steps/` | 不可变候选与顺序变更规则。 |
 | `internal/core/store/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
-| `internal/service/task_steps*.go` 与 `task_write_admission.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
-| `api/task_steps.go`、`internal/server/task_steps*.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
+| `internal/service/task/task_steps*.go` 与 `task_write_admission.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
+| `api/task_steps.go`、`internal/server/task/task_steps*.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
 | CLI `api/task-steps.ts`、`commands/task/step*.ts` | 已交付 list/show/Add/Update/Set-status/Move/Delete 的严格解析、版本分支、完整确认、同操作事实核对、输出与诊断。 |
 | Web `api/task-steps.ts`、Task 详情会话与 Steps 面板 | 独立资源读取、共享提交生命周期、草稿、呈现和附件导航。 |
 
-`internal/tasksteps` 只依赖 `core` 和标准库。service、API 与 server 可依赖它；store 依赖 core 领域类型。公开 DTO 与容量编码在中性模块只有一个定义，避免 service 反向依赖 HTTP handler 或维护第二套字节估计。
+`internal/core/task/codec` 不依赖 API 或业务流程；service、API 与 server 复用其资源类型与编码，候选规则由 `internal/core/task/steps` 拥有。公开 DTO 与容量编码只有一个定义，避免 service 反向依赖 HTTP handler 或维护第二套字节估计。
 
 ## 存储选择
 
@@ -152,7 +153,7 @@ Task 元数据与整个 Steps 集合统一使用 `Task.version`，`StepsResource
 
 ### 精确容量与时间
 
-公开 codec 使用与现有 [`writeJSON`](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/server/http.go#L163-L170)相同的 `json.Encoder.Encode` 设置，计入默认 HTML 转义及末尾换行。容量由该 codec 的实际 UTF-8 输出计量，父版本按 19 位最大正 int64 保留空间；上限恰为 67,108,864 字节。
+公开 codec 使用与现有 [`WriteJSON`](../../packages/daynight-server/internal/server/httpx/http.go)相同的 `json.Encoder.Encode` 设置，计入默认 HTML 转义及末尾换行。容量由该 codec 的实际 UTF-8 输出计量，父版本按 19 位最大正 int64 保留空间；上限恰为 67,108,864 字节。
 
 用于容量校验的 Step 时间就是将要存储和返回的时间。数据库时间先转 UTC 并保持微秒精度，再生成候选；不先用应用纳秒值计量后交由数据库截断。现有[同步精度规则](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/core/store/task_sync.go#L19-L33)已明确 PostgreSQL 的微秒边界。
 
@@ -196,11 +197,15 @@ canonical skill 的 task-content 区分持久 Steps 与 Session 计划、工具�
 
 64 MiB 集合不写入现有 TaskDetail LRU 或 IndexedDB，不改变其 schema。只读准入事务核对 ticket、generation 与当前摘要，不持久化集合。最后一个需要集合的视图退订且没有在途步骤写入操作依赖时清空完整资源、未准入响应并取消其准入等待；隐藏面板保留按 ID 的展开选择、页码和草稿，重新激活按需读取。
 
-### 已实现的状态、位置与末尾添加写入
+### 已实现的状态、位置、添加、内容与删除写入
 
-Step 状态与位置操作接入现有提交和核对生命周期，并按 Task-result/Steps-result 分派；不复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。核对期间父读取先结束而摘要或 Steps 再推进，或详情重新打开需要新的实时读取时，owner 按版本下限与打开周期合并并调度父 GET；持续落后时有界失败并保留恢复入口。Task 与 Steps 的状态发布均检查收敛，以便摘要不匹配消失时恢复提交。
+Step 状态、位置及删除操作接入现有提交和核对生命周期，并按 Task-result/Steps-result 分派；不复制第二个控制器。Steps 写成功保留确认集合，把父详情标为需刷新，并触发父 GET 和项目同步。只有当前父详情、授权摘要和 Steps 资源在同一身份与缓存 generation 下匹配父版本，才恢复共同可提交基线。同步直接跳过中间版本时仍按最新下限收敛，不重放修改。核对期间父读取先结束而摘要或 Steps 再推进，或详情重新打开需要新的实时读取时，owner 按版本下限与打开周期合并并调度父 GET；持续落后时有界失败并保留恢复入口。其他页面先提交共享缓存、而当前页面尚未收到广播时，匹配持久摘要的父响应仍作为 pending 保留，直到本页投影追上后重新准入。父详情存储失败但摘要校验允许展示时，读取错误结束本次核对并保留显式重试，不能永久显示正在读取。Task 与 Steps 的状态发布均检查收敛，以便摘要不匹配消失时恢复提交。
 
-末尾添加使用同一提交所有者，提交前确定短 ID 和独立请求 UUID。完整 201 响应须匹配 Location、版本、字段、末尾位置与已有行，才能确认；非法回执进入只读核对。草稿以请求 UUID 绑定回执，避免迟到结果作用于后来的表单。
+添加使用同一提交所有者，提交前确定短 ID 和独立请求 UUID。完整 201 响应须匹配 Location、版本、字段、请求的末尾或锚点相邻位置与已有行，才能确认；非法回执进入只读核对。草稿以请求 UUID 绑定回执，避免迟到结果作用于后来的表单。
+
+内容编辑通过同一所有者按原 Task 和 Step ID 提交包含标题和说明的 PATCH，状态由独立操作管理。确认完整资源时核对目标字段、其他项和顺序、保留字段及变化或 no-op 对应版本；不匹配的回执进入只读核对。请求 UUID 绑定表单和结果，避免迟到回执作用于后来打开的表单。
+
+删除通过同一所有者提交 JSON DELETE，完整回执必须删除目标、将版本推进一次并保持其余记录的字段、时间和顺序。确认层保存所选记录身份、创建时间及父版本，提交前重新核对；请求 UUID 与表单身份分别绑定，迟到回执不能清理后来的草稿。
 
 Web 写入 API 保留容量 details 与安全错误信息。成功 HTTP 状态但非法 body 仍需读回完整 Steps，不能展示请求目标为已确认事实。子 Step/锚点 404 保留当前可访问 Task、其他项和草稿；来源不明时按同一身份 fence 核验父 Task，只有确认父不可访问才 retirement。
 
@@ -210,17 +215,21 @@ unknown 冻结共同提交入口，保留原身份、操作和恢复所有权，
 
 ### 已实现的阅读
 
-`TaskDetailPanels` 固定提供概览之后的 Steps slot 和 `tab=steps`，继续使用相同弹窗与独立页、roving tab、hidden/inert、语言和焦点所有者。`TaskDetailSurface` 注入 `TaskStepsPanel`，`TaskDetailReading` 提供共享 Task-root Markdown render/navigation callback；正文与概览沿用同一个 `useAttachments` controller。文件链接从 Task 附件根解析，保留修饰键和既有 URL 策略，不新增附件清单或预览所有者。
+`TaskDetailPanels` 以概览、附件、Steps、可选讨论和可选 Session 的顺序生成页签和面板，同一集合驱动方向键及 Home/End 导航；`tab=steps` 继续使用相同弹窗与独立页、roving tab、hidden/inert、语言和焦点所有者。`TaskDetailSurface` 注入 `TaskStepsPanel`，`TaskDetailReading` 提供共享 Task-root Markdown render/navigation callback；正文与概览沿用同一个 `useAttachments` controller。文件链接从 Task 附件根解析，保留修饰键和既有 URL 策略，不新增附件清单或预览所有者。页签顺序的取舍见[任务详情顺序与记录空态决策](../../.agents/notes/implemented/architecture/2026-11-05-task-detail-order-and-records.md)。
 
 Steps 组件保留按稳定 ID 的多项展开状态及当前页码；服务顺序决定编号，跨页和刷新重排不重绑身份。四状态使用独立消息组，`skipped` 不进入 TaskStatus。状态控件使用四项单选菜单，提交确认前保留原状态；位置菜单提供上下、首尾及相对目标移动。
 
 完整资源仍一次读取，主列表每页最多挂载 100 行。超过 100 项展示全局范围、前后页和数值跳转，页码不生成随集合增长的 option 列表；分页只限制 DOM，不改变完整服务顺序，也不增加服务查询。刷新缩小集合时将显示页限制在仍存在的范围。600px 以下标题与状态/ID 换行，320px 下公共外壳和阅读控件保持可达。高度不超过 600px 时，分页随列表滚动，避免窄屏双行分页条覆盖正文。窄屏页签在高度充足时换行；高度不超过 500px 时使用单行横向滚动，为正文与附件预览保留空间。页签所有者在聚焦及选中样式、语言更新后的 layout 阶段显露完整目标，避免字体变粗后右缘仍被裁掉。
 
-### 已实现的末尾添加
+### 已实现的添加与内容编辑
 
-Steps workspace 按 Task 身份保存一个新增表单、草稿、预览及放弃选择，使用共享 Task-root Markdown renderer。自身 pending/unknown 冻结原字段；无关父写入只锁提交。明确拒绝保留输入，冲突和 unknown 由共同所有者只读核对；确认回执收敛后按实际 ID 定位所在页并恢复行焦点。
+Steps workspace 按 Task 身份保存一个新增或编辑表单、草稿、预览及放弃选择，使用共享 Task-root Markdown renderer。行菜单可用当前行作为前方或后方的添加锚点；表单复用有界目标选择器，选择以稳定 ID 保持。锚点消失或同 ID 的创建时间改变时保留草稿并要求重新决定位置。编辑在目标展开区进行，保留原始基线与未提交字段；选择其他表单或取消脏草稿先经保留或放弃决定。编辑草稿同时记录目标创建时间；确认目标缺失或同 ID 的创建时间不一致后停用该草稿的提交，避免将旧输入应用到可辨认的替代记录。浏览器将 textarea 的 CR 和 CRLF 显示为 LF，编辑器以原始文本和编辑选区保留未触及片段的换行原值。页签和分页变化不丢失草稿，展开按 ID 保持。自身 pending/unknown 冻结原字段；无关父写入只锁提交。明确拒绝保留输入，冲突后新基线与草稿分别保留，unknown 由共同所有者只读核对；目标消失不清除仍可访问的父 Task、其他项和草稿。确认回执收敛后按实际 ID 定位所在页并恢复行焦点。
 
-项目缓存 generation 替换时，详情等待重新准入可能暂时没有 Task 数据。阅读工作区保留并隐藏受作用域保护的新增草稿，确认层关闭；已确认资源和附件预览不在此期间展示或保留。详情重新准入后恢复草稿，身份或项目权限 retirement 和父 Task 删除仍立即销毁它。表单自身的放弃确认由详情 Surface 持有模态键盘所有权，确认打开时冻结整个详情背景。
+项目缓存 generation 替换时，详情等待重新准入可能暂时没有 Task 数据。阅读工作区保留并隐藏受作用域保护的草稿，确认层关闭；已确认资源和附件预览不在此期间展示或保留。详情重新准入后恢复草稿，身份或项目权限 retirement 和父 Task 删除仍立即销毁它。表单自身的放弃确认由详情 Surface 持有模态键盘所有权，确认打开时冻结整个详情背景。
+
+### 已实现的删除确认
+
+行操作菜单先关闭，再打开复用焦点循环与 Escape 的确认层。确认层说明移除和引用保留，并在目标有脏草稿时说明成功后的丢弃后果；取消保留草稿。面板保存请求 UUID、草稿身份和相邻项身份，不另存删除 confirmation。目标草稿清理要求当前共同所有者仍拥有同一删除请求且 phase 为 confirmed、核对已完成无错误，并准入高于提交版本的新集合。generation 替换可在回执验证后、准入前结束旧 history；共享 owner 在重新准入前立即把旧删除 confirmation 改判为 unknown，并清除被取消的旧父读取预约及重试状态，让既有只读核对调度新 history 的父详情和集合。撤权的空 generation 暂停核对并清除私有资源；重新授权的 generation 对已改判为 unknown 的删除重新启用只读核对，在父详情、摘要和 Steps 重新收敛后恢复可写，不重放 DELETE。新读取先完成也不能恢复旧请求的确认归属，因此保留草稿，其他草稿也保留。工作空间按提交时的后项、前项身份在当前集合定位焦点，必要时跳转并夹紧页码；空集合返回添加入口；若新增表单已打开则聚焦其标题。用户正在其他表单输入时不抢夺焦点。目标缺失或拒绝保留草稿，unknown 只读核对当前事实。
 
 ### 已实现的应用导航准入
 
@@ -236,11 +245,11 @@ Steps workspace 按 Task 身份保存一个新增表单、草稿、预览及放�
 
 守卫仅属于当前窗口和活动编辑作用域，不形成业务恢复或路由持久化服务。身份 scope 的同步 abort、已确认项目撤权及父 Task 删除立即终结注册、清理私有草稿并撤销待定选择，不能被保留草稿阻止；暂时读取失败或权限重校验不触发此清理。确认层复用 `TaskConfirmation` 的取消初始焦点、焦点循环及独立 Escape 层，取消返回仍存在的触发器或回退焦点。离开选择出现时先关闭 Task 内的消息详情、附件删除和 Step 移动原生对话框，避免浏览器 top layer 将应用确认层变成不可交互；取消导航不重新打开这些子层，也不丢失草稿。
 
-### 位置操作与后续写入交互
+### 位置操作与写入交互
 
-位置写入按完整集合计算相邻目标，并使用服务确认的顺序定位移动项所在页；展开和焦点按稳定 ID 恢复。用户正在新增表单中编辑时，迟到的移动回执不改变当前页或抢夺焦点。位置回执还核对所有记录的内容、时间和顺序，以及 no-op 的版本。
+位置写入按完整集合计算相邻目标，并使用服务确认的顺序定位移动项所在页；展开和焦点按稳定 ID 恢复。用户正在表单中编辑时，迟到的移动回执不改变当前页或抢夺焦点。位置回执还核对所有记录的内容、时间和顺序，以及 no-op 的版本。
 
-未提交 Markdown 预览沿用已实现的 Task-root renderer 和同一个附件 controller。添加后选择目标所在页并恢复焦点；草稿和展开状态由 ID 保存，换页不会丢失。后续删除选择相邻项所在页并恢复焦点；删除正在编辑的项时，同一确认层明确告知未保存修改会丢弃。
+未提交 Markdown 预览沿用已实现的 Task-root renderer 和同一个附件 controller。添加后选择目标所在页并恢复焦点；草稿和展开状态由 ID 保存，换页不会丢失。删除选择相邻项所在页并恢复焦点；删除正在编辑的项时，同一确认层明确告知未保存修改会丢弃。
 
 该方式沿用[现有 PR 区域](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/docs/design/daynight-task-properties.md)限制挂载数量的方式，避免合法大集合直接形成巨大 DOM。超过 100 项才出现分页控件，展示全局范围和总数；不足一页时保留原列表。视觉验收使用 Task 附件中的交互原型，覆盖 241 项、跨页移动与添加、删除末页及保留草稿等情境。
 
@@ -271,11 +280,11 @@ Steps workspace 按 Task 身份保存一个新增表单、草稿、预览及放�
 | 真实 PostgreSQL | 升级、重启、快照读写交错、并发同版本、软删除和 deferred order constraint；在已写部分位置/步骤行、已 touch 父版本但尚未提交处注入可确认回滚的失败，逐项核对完整集合、排列、父版本及全部时间零变更。提交结果未知另走读回，不能作为回滚证明。 |
 | HTTP | 严格字段、认证/成员、子 404/父 410、409 details、JSON DELETE、方法/HEAD/no-store、取消与提交后丢响应；对实际集合 GET 和修改响应检查 64 MiB 临界编码字节、换行和完整资源形状，不能只测纯 codec。 |
 | 打包 CLI | 精确大版本、一请求显式写、预读失败不递交、请求 ID 留存、非法/不匹配结果、完整 JSON 和帮助补全。 |
-| Web session/cache | 单一互斥、普通 Task/Worker 写入驱动 Steps 重读、同步跳过中间版本、迟到读取排除、非法成功 body、父/子失效、unknown 读回、关闭后回执、权限 generation；保留草稿且基线能够重新收敛。 |
+| Web session/cache | 单一互斥、普通 Task/Worker 写入驱动 Steps 重读、同步跳过中间版本、迟到读取排除、非法成功 body、父/子失效、unknown 读回、关闭后回执、权限 generation；保留草稿且基线能够重新收敛。删除回执验证后暂停真实 cache 准入事务，替换 generation 后分别在新读取完成前或完成后释放；生产详情 hook 等待新父详情和集合准入；新读取先完成时，组件在旧准入结束前及 unknown 核对后均保留草稿。删除完成后撤权再恢复，确认私有资源清除、只读核对重新启动并恢复可写，且仅一次 DELETE。普通 unknown、目标缺失和正常可见/隐藏页签确认作为对照。 |
 | 生产浏览器 | 草稿、已编号历史项单次/连续 Back/Forward 的取消及采用、四状态、排序/删除焦点、中英文、320px、长内容、241 项分页、有界目标选择、跨页移动和末页删除。 |
 | 指令语义与分发 | 持久 Steps 被保留、Session 日志不被上传；项目自定流程不被固化。打包/安装字节检查和语义情境分别报告。 |
 
-真实集成验收连接持久化服务、打包 CLI 与生产 Web，覆盖跨端互读、重启和故障。沿用 Go build/vet/race/go-cov 及严格大于 90% 覆盖门槛、CLI typecheck/test/build 和 Web 质量/浏览器门禁；原型检查只证明呈现。
+真实集成验收连接持久化服务、打包 CLI 与生产 Web，覆盖跨端互读、重启和故障。沿用 Go build/vet/go-cov 及严格大于 90% 覆盖门槛、CLI typecheck/test/build 和 Web 质量/浏览器门禁；Go race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认/main 开启、PR 关闭；原型检查只证明呈现。
 
 | 组件输出 | 技术依赖 |
 |---|---|
@@ -288,7 +297,7 @@ Steps workspace 按 Task 身份保存一个新增表单、草稿、预览及放�
 
 ## 可观测性与失败边界
 
-复用现有请求 context、slog JSON 和 [RequestLogging/LogFailure](https://github.com/codetreker/daynight/blob/b84dc4e9159d85f53f3c98f88016bdc94f27729e/packages/daynight-server/internal/server/logging.go)。middleware 建立 request_id，认证后绑定 user_id，再附加经准入的 project_id/task_id；目标操作附加规范 step_id，列表以 Task 为最具体资源身份。
+复用现有请求 context、slog JSON 和 [RequestLogging/LogFailure](../../packages/daynight-server/internal/server/httpx/logging.go)。middleware 建立 request_id，认证后绑定 user_id，再附加经准入的 project_id/task_id；目标操作附加规范 step_id，列表以 Task 为最具体资源身份。
 
 CLI 与 Web 在递交 Steps 修改前生成标准 UUID 作为此次请求 ID，使用服务已支持的 `X-Request-ID` 传递，并与原 payload、Step ID 保留。恢复 GET 使用原 ID 加 `.r1`、`.r2` 等后缀，每个请求仍有独立 request_id，可按前缀关联；无须新增 HTTP header、幂等键或后端操作记录。该关联只用于诊断，不证明历史归因，也不参与授权或版本判断。直接 API 调用仍可使用既有请求 ID 规则。
 
@@ -325,6 +334,6 @@ jq -c --arg rid "$STEP_REQUEST_ID" \
 
 ## 架构基线摘要
 
-服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add/Update/Set-status/Move/Delete 已通过独立 typed 客户端消费该资源。Web 读取、状态设置、位置调整和末尾添加接入现有详情会话的独立资源状态与共同提交生命周期，新增草稿使用窗口级导航准入；其余 Web 写入保留相同目标契约。各层保持项目流程、Worker 和 Session 边界。
+服务端采用独立步骤行、稠密顺序、共享父版本和独立 HTTP 资源；CLI list/show/Add/Update/Set-status/Move/Delete 已通过独立 typed 客户端消费该资源。Web 读取、状态设置、位置调整、添加、内容编辑和删除接入现有详情会话的独立资源状态与共同提交生命周期，草稿使用窗口级导航准入。各层保持项目流程、Worker 和 Session 边界。
 
 大集合按 100 行本地分页，只约束 DOM 挂载。集合完整性、顺序及服务端操作保持相同契约；Task 附件中的交互原型提供 Web 的具体视觉与跨页交互输入。本架构及其交付边界约束后续实现。

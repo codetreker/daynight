@@ -28,7 +28,7 @@ rows are validated and copied into an immutable insertion candidate.
 
 Before any data mutation, add checks int64 exhaustion, samples the database UTC
 microsecond clock, assigns the new Step and parent times, increments the candidate
-version and encodes the complete resource through `internal/tasksteps`. The same
+version and encodes the complete resource through `internal/core/task/codec`. The same
 codec accounts for escaping, terminal LF and 19 parent-version digits. Only a
 candidate within 64 MiB reaches position shifts, insertion and a parent touch
 that changes `version` and `updated_at` alone. Existing content timestamps and

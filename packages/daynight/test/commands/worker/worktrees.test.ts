@@ -117,6 +117,15 @@ describe("worker repositories and task worktrees", () => {
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
   });
 
+  it("can inspect managed worktrees belonging to another Project in the same repository", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const foreignProject = { ...f.project, projectId: "99999999-9999-4999-8999-999999999999" };
+    const foreignOwner = { ...f.owner, projectId: foreignProject.projectId };
+    const binding = await adapter.prepareWorktree(foreignProject, foreignOwner, operation());
+    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
+    expect(await adapter.listWorktrees(f.project, operation(), false, true)).toEqual([{ owner: foreignOwner, binding }]);
+  });
+
   it("only treats an absent repository as empty when explicitly requested, rejecting a dangling link", async () => {
     const f = await fixture(); const adapter = manager(f.root);
     const absent = { ...f.project, localPath: path.join(f.root, "missing", "repo") };
@@ -269,16 +278,29 @@ describe("worker repositories and task worktrees", () => {
     expect(result.root).toBe(destination); expect(cloneTimeout).toBe(120_000); expect(await readFile(path.join(destination, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
-  it("retains clone failures and rejects existing nonrepositories, nested paths and mismatched origins", async () => {
+  it("retries empty failed clone reservations and rejects existing nonrepositories, nested paths and mismatched origins", async () => {
     const f = await fixture(); const failed = new Error("controlled clone failure"); let attempts = 0;
     const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { if (args.includes("clone")) { attempts += 1; throw failed; } return runRepositoryGit(cwd, args, op, options); } });
     const destination = path.join(f.root, "failed clone");
     await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed);
-    expect(await readdir(destination)).toEqual([]);
-    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toThrow(/Git command failed|worktree root/); expect(attempts).toBe(1);
+    await expect(lstat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed); expect(attempts).toBe(2);
+    await mkdir(destination);
+    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toThrow(/Git command failed|worktree root/); expect(attempts).toBe(2);
     await mkdir(path.join(f.repository, "nested"));
     await expect(adapter.prepareRepository({ ...f.project, localPath: path.join(f.repository, "nested") }, operation())).rejects.toThrow("worktree root");
     await expect(adapter.prepareRepository({ ...f.project, repoUrl: "https://example.com/other/repository.git" }, operation())).rejects.toThrow("origin does not match");
+  });
+
+  it("retains nonempty failed clone output", async () => {
+    const f = await fixture(); const destination = path.join(f.root, "partial clone"), failed = new Error("clone failed");
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => {
+      if (!args.includes("clone")) return runRepositoryGit(cwd, args, op, options);
+      await writeFile(path.join(destination, "retained"), "user data");
+      throw failed;
+    } });
+    await expect(adapter.prepareRepository({ ...f.project, localPath: destination }, operation())).rejects.toBe(failed);
+    expect(await readFile(path.join(destination, "retained"), "utf8")).toBe("user data");
   });
 
   it("creates fixed task branch/path with native ownership and preserves the reserved directory inode", async () => {

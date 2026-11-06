@@ -35,10 +35,18 @@ reading-position measurements on exit. The Test entry uses the same shared view 
 Session fullscreen isolates background branches along the ancestor chain with
 counted `inert` ownership and uses the existing counted body scroll lock. These
 owners coexist with an enclosing modal and release only their own acquisitions.
-Focus stays within the Session; explicit exit returns to its available toggle
+Focus stays within the fullscreen boundary; explicit exit returns to its available toggle
 without scrolling. Inner menus consume Escape first, Session fullscreen consumes
 the next Escape, and the task retains ownership of later dismissal. The Surface
 does not compete with the Session's Tab or Escape handling.
+
+The default boundary is the Session section. Hosts may supply a stable ancestor
+that contains it; the [Bot details composition](2026-11-05-bot-details-panel.md)
+uses that option for its name, original Session and details without reparenting.
+Registration, isolation, viewport variables and focus follow that ancestor.
+Its document-level bubble listener lets inner React modal controls consume
+Escape and Tab before the outer boundary acts. The default Session handler and
+Task/Test behavior remain unchanged.
 
 The existing timeline scroll owner remains mounted. Its viewport and content
 observers restore the same text anchor or following intent after geometry

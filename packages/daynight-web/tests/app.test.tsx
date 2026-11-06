@@ -80,11 +80,13 @@ describe('application navigation', () => {
     expect(screen.getByRole('main')).toHaveFocus();
     expect(document.querySelector('.shell')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
+    const historyRequests = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/sessions?'));
+    await waitFor(() => expect(historyRequests()).toHaveLength(1));
     expect(screen.getByRole('combobox', { name: '语言 / Language' })).toBeVisible();
     fireEvent.change(screen.getByRole('combobox', { name: '语言 / Language' }), { target: { value: 'en' } });
     expect(document.title).toBe('Task details · Daynight');
     expect(screen.getByRole('link', { name: 'Download' })).toBeVisible();
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(historyRequests()).toHaveLength(1);
   });
 
   it('keeps the standalone panel and draft mounted through selection and browser history', async () => {

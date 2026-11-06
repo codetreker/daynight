@@ -32,6 +32,10 @@ preserved. Codex requires the renderer-DIM placeholder and current field
 geometry, not just its words; literal or multiline drafts and ambiguous styles
 do not become empty. RGB/indexed color arguments are not DIM evidence. Claude
 requires a genuinely blank bordered field and rejects ambiguous Try text.
+Its known permission footer is recognized alongside shortcut hints, including
+the native PR and agent-navigation suffixes. The permission label identifies a
+layout, grants no permission and cannot replace the empty bordered field; unknown
+labels, arbitrary suffixes and nonempty drafts remain unproved.
 Optional model, cwd and status-bar content are not requirements. Unknown fields
 and drafts cannot become empty. Copilot retains unavailable evidence and its
 explicit handback responsibility. The
@@ -68,15 +72,17 @@ cleanup is conditional on the preceding automation state and input safety;
 otherwise controlled stopping proceeds without an advisory prompt.
 
 Strict AttachTerminal uses the original terminal ID and a verified protocol
-profile. Read-only native TTY queries establish actual geometry; layout
+profile. Read-only native TTY queries establish actual geometry. The
+[direct geometry decision](../bug-fix/2026-11-05-herdr-native-input-geometry.md)
+replaces the original external-command implementation while preserving every
+input admission check; layout
 rectangles and observer frame dimensions do not. Every Input frame rechecks
 admission, including the Enter after a complete paste. Detach establishes only
 transport completion, and does not release the durable manual state.
 
 This extends the [lifecycle decision](2026-11-04-herdr-worker-lifecycle.md).
 Its original process evidence and stop proof remain authoritative. The shared
-Session protocol and future recording consumer retain their own responsibilities;
-combined observe/control/archive capabilities remain disabled.
+Session protocol and the [recording consumer](2026-11-04-herdr-recording-finalization.md) retain their own responsibilities. The original input-only delivery kept combined capabilities disabled; the recorder now supplies the required persistence and archive integration.
 
 ## Alternatives
 
@@ -116,7 +122,7 @@ write revocation. Missing, corrupt or incompatible input evidence fails closed.
 A transport result never establishes model acceptance. Native local clients can
 still write concurrently, and attach can have effects before an input is rejected.
 
-Incomplete recording and UI remain gated rather than being advertised through
+Recording and UI require their own combination evidence rather than being advertised through
 input availability. Future consumers use the same original Session, terminal
 binding and control entry points. Expanding the supported native protocol or
 removing the handback requirement requires new provider and failure evidence.

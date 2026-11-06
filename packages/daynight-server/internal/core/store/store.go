@@ -2,19 +2,9 @@ package store
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// Error preserves the driver cause without exposing credentials or SQL in diagnostics.
-type Error struct {
-	Phase string
-	Cause error
-}
-
-func (e *Error) Error() string { return fmt.Sprintf("database %s failed", e.Phase) }
-func (e *Error) Unwrap() error { return e.Cause }
 
 type Store struct {
 	Pool *pgxpool.Pool

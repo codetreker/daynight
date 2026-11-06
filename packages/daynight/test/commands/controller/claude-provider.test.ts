@@ -7,6 +7,25 @@ vi.mock("node:child_process", async importOriginal => ({ ...await importOriginal
 const sdk = vi.hoisted(() => ({ query: vi.fn(), getSessionInfo: vi.fn(), getSessionMessages: vi.fn() }));
 vi.mock("@anthropic-ai/claude-agent-sdk", () => sdk);
 import { openClaudeProvider } from "../../../src/commands/controller/providers/claude.js";
+import { startupFailure } from "../../../src/commands/controller/startup.js";
+import { NativeRpcTimeoutError } from "../../../src/commands/controller/providers/native-rpc.js";
+
+test.each(["reject", "timeout"])("Claude cleanup failure preserves the original startup %s without asserting stopped", async mode => {
+  const failure = mode === "reject" ? Object.assign(new Error("Native initialization rejected"), { errorClass: "control_request_failed" }) : new NativeRpcTimeoutError("initialize");
+  let wake: (() => void) | undefined, ended = false;
+  sdk.query.mockImplementation(() => ({
+    initializationResult: async () => { throw failure; },
+    async *[Symbol.asyncIterator]() { if (!ended) await new Promise<void>(resolve => { wake = resolve; }); },
+    close() { ended = true; wake?.(); throw new Error("Fixture cleanup failed"); },
+  }));
+  const activities: string[] = [], diagnostics: string[] = [];
+  const error = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline: () => {}, onState: state => activities.push(state.activity), onSpawn: () => {}, onDiagnostic: message => diagnostics.push(message),
+  }).catch(error => error);
+  expect(startupFailure(error)).toEqual(mode === "reject" ? { state: "failed", reasonCode: "native_rejected" } : { state: "unknown", reasonCode: "native_timeout" });
+  expect(diagnostics.some(message => /stop|cleanup/i.test(message))).toBe(true);
+  expect(activities).not.toContain("stopped");
+});
 
 test("Claude approval stays pending after SDK callback resolution until the matching native tool result", async () => {
   let captured!: Options, emit!: (value: unknown) => void; let end!: () => void;
@@ -62,6 +81,59 @@ const nativeFixture = (echo = true) => {
   });
   return { emit, interrupt, inputs, options: () => captured, end(error?: Error) { failure = error; ended = true; wake?.(); } };
 };
+
+test.each([
+  { name: "Bash", input: { command: 'printf "first\\nsecond"', description: "Print two lines", timeout: 0, run_in_background: false }, detail: 'printf "first\\nsecond"\ndescription: Print two lines\ntimeout: 0\nrun_in_background: false' },
+  { name: "Write", input: { file_path: "/tmp/review.ts", content: 'const value = "first";\nconsole.log(value);\n', encoding: "utf8" }, detail: 'file_path: /tmp/review.ts\nencoding: utf8\n\nContent:\nconst value = "first";\nconsole.log(value);\n' },
+  { name: "Write", input: { file_path: "/tmp/empty", content: "", extra: null }, detail: 'file_path: /tmp/empty\nextra: null\n\nContent:\n' },
+  { name: "Edit", input: { file_path: "/tmp/review.ts", old_string: 'one\n"two"', new_string: "", replace_all: false }, detail: 'file_path: /tmp/review.ts\nreplace_all: false\n\nBefore:\none\n"two"\n\nAfter:\n' },
+  { name: "MultiEdit", input: { file_path: "/tmp/review.ts", edits: [{ old_string: "one\ntwo", new_string: "three", replace_all: true }, { old_string: "", new_string: '"four"', extra: null }], extension: [] }, detail: 'file_path: /tmp/review.ts\nextension: []\nEdit 1 replace_all: true\nEdit 2 extra: null\n\nEdit 1\nBefore:\none\ntwo\n\nAfter:\nthree\n\nEdit 2\nBefore:\n\n\nAfter:\n"four"' },
+  { name: "CustomTool", input: { text: 'first\n"second"', empty: "", zero: 0, enabled: false, absent: null, options: { nested: ["value", 1] } }, detail: 'text: first\n"second"\nempty: \nzero: 0\nenabled: false\nabsent: null\noptions: {"nested":["value",1]}' },
+  { name: "Write", input: { file_path: "/tmp/review.ts", content: null }, detail: '{\n  "file_path": "/tmp/review.ts",\n  "content": null\n}' },
+  { name: "MultiEdit", input: { file_path: "/tmp/review.ts", edits: [{ old_string: "one", new_string: 2 }] }, detail: '{\n  "file_path": "/tmp/review.ts",\n  "edits": [\n    {\n      "old_string": "one",\n      "new_string": 2\n    }\n  ]\n}' },
+])("Claude $name approval preserves readable tool input", async ({ name, input, detail }) => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], abort = new AbortController();
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  const permission = fixture.options().canUseTool!(name, input, { signal: abort.signal, toolUseID: "native-tool", decisionReason: "test" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+  const expired = expect(permission).rejects.toThrow("expired");
+  try {
+    expect(entries.find(entry => entry.kind === "interaction")).toMatchObject({ interaction: { kind: "approval", title: `Approve ${name}`, detail, actions: ["allow_once", "reject"] } });
+  } finally { abort.abort(); await expired; await provider.close(); }
+});
+
+test("Claude long Write approval retains metadata before truncating content at a Unicode boundary", async () => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], abort = new AbortController();
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  const prefix = "file_path: /tmp/large\nmode: overwrite\n\nContent:\n";
+  const permission = fixture.options().canUseTool!("Write", { file_path: "/tmp/large", content: "x".repeat(199_999 - prefix.length) + "😀tail", mode: "overwrite" }, { signal: abort.signal, toolUseID: "native-tool", decisionReason: "test" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+  const expired = expect(permission).rejects.toThrow("expired");
+  try {
+    const card = entries.find(entry => entry.kind === "interaction");
+    if (card?.kind !== "interaction" || card.interaction.kind !== "approval") throw new Error("Missing approval");
+    expect(card.interaction.detail.startsWith(prefix)).toBe(true);
+    expect(card.interaction.detail.slice(prefix.length, 199_999).replaceAll("x", "")).toBe("");
+    expect(card.interaction.detail.slice(199_999)).toBe("\n[Output truncated at 200000 characters]");
+    expect(card.interaction.detail.isWellFormed()).toBe(true);
+  } finally { abort.abort(); await expired; await provider.close(); }
+});
+
+test.each(["allow_once", "reject"] as const)("Claude formatted approval leaves native %s behavior unchanged", async action => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  const input = { file_path: "/tmp/review.ts", content: 'first\n"second"\n' };
+  try {
+    const permission = fixture.options().canUseTool!("Write", input, { signal: new AbortController().signal, toolUseID: "native-tool", decisionReason: "test" } as Parameters<NonNullable<Options["canUseTool"]>>[2]);
+    const card = entries.find(entry => entry.kind === "interaction");
+    if (card?.kind !== "interaction") throw new Error("Missing approval");
+    const response = provider.respond(card.interaction.interactionId, "1", { kind: "approval", action });
+    const result = await permission;
+    if (action === "allow_once") { if (result?.behavior !== "allow") throw new Error("Missing native allow result"); expect(result.updatedInput).toBe(input); }
+    else expect(result).toEqual({ behavior: "deny", message: "User rejected this operation." });
+    expect(entries.filter(entry => entry.kind === "interaction").at(-1)).toMatchObject({ interaction: { state: "pending" } });
+    fixture.emit({ type: "user", uuid: randomUUID(), session_id: provider.nativeSessionId, message: { content: [{ type: "tool_result", tool_use_id: "native-tool", content: action === "allow_once" ? "Written" : "Rejected", is_error: action === "reject" }] } });
+    await expect(response).resolves.toEqual({ disposition: "handled" });
+  } finally { await provider.close(); }
+});
 
 test.each([false, true])("Claude disables control and rejects unconfirmed input when the native iterator ends (error=%s)", async error => {
   const fatal: Error[] = [];
@@ -343,4 +415,93 @@ test.each([false, true])("Claude propagates role startup failure and closes init
   expect(close).toHaveBeenCalledTimes(queryThrows ? 0 : 1);
   expect(fixture.inputs).toEqual([]);
   expect(entries).toEqual([]);
+});
+
+test.each([
+  ["[Request interrupted by user]", "aborted_streaming"],
+  ["[Request interrupted by user for tool use]", "aborted_tools"],
+])("Claude hides native interruption text %s and reuses its identity on resume", async (text, reason) => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], observed: string[] = [];
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: () => {} });
+  const id = randomUUID(), markerId = randomUUID();
+  // Native interruption messages omit isSynthetic, including in SDK history.
+  const marker = { type: "user", uuid: markerId, message: { content: [{ type: "text", text }] } };
+  try {
+    await provider.send("work", id, null);
+    let acknowledge!: () => void;
+    fixture.interrupt.mockImplementation(async () => {
+      fixture.emit(marker);
+      fixture.emit({ type: "result", uuid: randomUUID(), user_message_uuid: id, is_error: true, terminal_reason: reason });
+      await new Promise<void>(resolve => { acknowledge = resolve; });
+      return {};
+    });
+    const cancel = provider.cancel(id);
+    await new Promise(resolve => setImmediate(resolve));
+    const beforeReceipt = [...entries];
+    acknowledge(); await cancel;
+    expect(beforeReceipt.filter(entry => entry.kind === "user_message").every(entry => JSON.stringify(entry).includes('"work"'))).toBe(true);
+    expect(observed).toEqual([id]);
+    expect(beforeReceipt.filter(entry => entry.kind === "error")).toEqual([]);
+    expect(entries.filter(entry => entry.kind === "error")).toEqual([expect.objectContaining({ code: "turn_interrupted" })]);
+  } finally { await provider.close(); }
+  const liveMarker = entries.find(entry => entry.kind === "error");
+  nativeFixture();
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: provider.nativeSessionId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue([{ type: "user", uuid: id, message: { content: "work" } }, marker]);
+  const history: ProviderEntry[] = [], historyObserved: string[] = [];
+  const resumed = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: provider.nativeSessionId, onTimeline: entry => history.push(entry), onInputObserved: id => historyObserved.push(id), onState: () => {}, onSpawn: () => {} });
+  try {
+    expect(history.filter(entry => entry.kind === "error")).toEqual([liveMarker]);
+    expect(history.filter(entry => entry.kind === "user_message")).toHaveLength(1);
+    expect(historyObserved).toEqual([id]);
+  } finally { await resumed.close(); }
+});
+
+test.each([false, true])("Claude preserves ordinary text and tool results around interruption-like content (history=%s)", async history => {
+  const fixture = nativeFixture(), nativeId = randomUUID(), entries: ProviderEntry[] = [];
+  const marker = "[Request interrupted by user]";
+  const messages = [
+    { type: "user", uuid: randomUUID(), message: { content: `Explain ${marker}` } },
+    { type: "user", uuid: randomUUID(), isSynthetic: true, message: { content: `${marker}\n` } },
+    { type: "user", uuid: randomUUID(), message: { content: [{ type: "text", text: marker }, { type: "text", text: "quoted example" }] } },
+    { type: "user", uuid: randomUUID(), message: { content: [{ type: "tool_result", tool_use_id: "tool", content: marker, is_error: true }] } },
+    { type: "assistant", uuid: randomUUID(), message: { content: marker } },
+  ];
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue(messages);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: history ? nativeId : null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  try {
+    if (!history) { for (const message of messages) fixture.emit(message); await new Promise(resolve => setImmediate(resolve)); }
+    expect(entries.filter(entry => entry.kind === "user_message")).toHaveLength(4);
+    expect(entries.filter(entry => entry.kind === "assistant_message")).toHaveLength(1);
+    expect(entries.filter(entry => entry.kind === "tool_call")).toEqual([expect.objectContaining({ status: "failed", output: [{ type: "text", text: marker }] })]);
+    expect(entries.filter(entry => entry.kind === "error")).toEqual([]);
+  } finally { await provider.close(); }
+});
+
+test.each(["[Request interrupted by user]", "[Request interrupted by user for tool use]"])("Claude projects string-form historical interruption %s without a live receipt", async text => {
+  nativeFixture(); const nativeId = randomUUID(), entries: ProviderEntry[] = [], observed: string[] = [];
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() });
+  sdk.getSessionMessages.mockResolvedValue([{ type: "user", uuid: randomUUID(), message: { content: text } }]);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: nativeId, onTimeline: entry => entries.push(entry), onInputObserved: id => observed.push(id), onState: () => {}, onSpawn: () => {} });
+  try { expect(entries).toEqual([expect.objectContaining({ kind: "error", code: "turn_interrupted" })]); expect(observed).toEqual([]); }
+  finally { await provider.close(); }
+});
+
+test("Claude subagent interruption does not replace the main turn marker identity", async () => {
+  const fixture = nativeFixture(), entries: ProviderEntry[] = [], id = randomUUID(), mainMarker = randomUUID();
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, onTimeline: entry => entries.push(entry), onState: () => {}, onSpawn: () => {} });
+  try {
+    await provider.send("work", id, null);
+    fixture.interrupt.mockImplementation(async () => {
+      fixture.emit({ type: "user", uuid: mainMarker, message: { content: "[Request interrupted by user]" } });
+      fixture.emit({ type: "user", uuid: randomUUID(), parent_tool_use_id: "child-tool", message: { content: "[Request interrupted by user for tool use]" } });
+      fixture.emit({ type: "result", uuid: randomUUID(), user_message_uuid: id, is_error: true, terminal_reason: "aborted_streaming" });
+      return {};
+    });
+    await provider.cancel(id);
+    expect(entries.filter(entry => entry.kind === "user_message").every(entry => JSON.stringify(entry).includes('"work"'))).toBe(true);
+    const { nativeEntryId } = await import("../../../src/commands/controller/providers/projection.js");
+    expect(entries.filter(entry => entry.kind === "error")).toEqual([expect.objectContaining({ code: "turn_interrupted", entryId: nativeEntryId(provider.nativeSessionId, `${mainMarker}:0`) })]);
+  } finally { await provider.close(); }
 });

@@ -21,13 +21,18 @@ bodies. The [client design](../../../../docs/design/daynight-worker-reporting.md
 owns scheduling, sampling, cancellation and diagnostics; the
 [client requirements](../../../../docs/spec/daynight-worker-reporting.md) define
 the observable guarantees. The [account snapshot decision](2026-10-28-worker-runtime-snapshots.md)
-retains ownership of server normalization, persistence and queries.
+retains ownership of server normalization, persistence and queries. The
+[cloud application decision](2026-11-04-worker-cloud-runtime-configuration.md)
+owns the independent configuration extension: each report captures an immutable
+application snapshot and returns its target and observation acknowledgment to
+the manager. Native and Project side effects stay outside the report attempt;
+only configuration application state is persisted in its separate JSON owner.
 
 The reporter reuses the coordinator's complete immutable task references. It
 keeps unknown inventory as null and uses an explicit empty array only for
 observed idleness. The [project isolation decision](2026-11-06-worker-project-isolation.md)
-invalidates the complete observation when coverage fails or a Project is unavailable. Resource
-samples, bounded version caches, inventory and diagnostic transition state live
+invalidates the complete observation when coverage fails or a Project is
+unavailable. Resource samples, bounded version caches, inventory and diagnostic transition state live
 in the process, without adding telemetry fields to the claim SQLite index.
 
 Pure version extraction is shared with native preflight, while launch validation

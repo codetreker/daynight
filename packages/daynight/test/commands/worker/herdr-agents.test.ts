@@ -11,6 +11,7 @@ import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worke
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
 import { nativeKeyDisplays } from "../../fixtures/native-key-displays.js";
 import { nativeDisabledClips } from "../../fixtures/native-disabled-placeholders.js";
+import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 
 type Entry = Record<string, unknown>;
 const directories: string[] = [];
@@ -265,6 +266,29 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual([]);
   });
 
+  it.each(narrowSessionPickerScreens)("retains input until the primary-only $action session picker closes", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await expect(f.manager.submitInitialPrompt(f.context, binding, "initial", operation())).resolves.toMatchObject({ submission: "submitted" });
+    await f.manager.submitPrompt(f.context, binding, "continuation", operation());
+    expect(f.prompts).toEqual(["initial", "continuation"]);
+  });
+
+  it.each(expandedNarrowSessionPickerScreens)("retains input on an expanded primary-only $action picker with an inline error", async ({ screen }) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    f.screen.text = screen;
+    await expect(f.manager.start(f.context, binding, { configuration, prompt: "initial" }, operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    await expect(f.manager.submitPrompt(f.context, binding, "continuation", operation())).rejects.toMatchObject({ name: "HerdrInputBlockedError", blocker: "menu", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+    f.screen.text = `${screen}\n› Any custom current composer`;
+    await f.manager.submitInitialPrompt(f.context, binding, "initial", operation());
+    expect(f.prompts).toEqual(["initial"]);
+  });
+
   it("returns a launched process before its first input or native SessionStart", async () => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method, params) => {
@@ -453,6 +477,22 @@ describe("direct task resource management", () => {
     const f = await fixture("copilot");
     await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     expect(f.calls.find((call) => call.method === "workspace.create")!.params.env).toEqual({ XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" });
+  });
+
+  it("adds a validated shell startup nonce only to a newly created workspace", async () => {
+    const f = await fixture("codex");
+    const shellNonce = "12345678-1234-4234-8234-123456789abc";
+    const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation(), { shellNonce });
+    expect(f.calls.find(call => call.method === "workspace.create")!.params.env).toMatchObject({ DAYNIGHT_HERDR_SHELL_NONCE: shellNonce });
+    await f.manager.prepareWorkspace(f.context, taskTitle, operation(), { shellNonce: "22345678-1234-4234-8234-123456789abc" });
+    expect(f.calls.filter(call => call.method === "workspace.create")).toHaveLength(1);
+    expect(binding.paneId).toBeTruthy();
+  });
+
+  it("rejects a malformed shell startup nonce before touching a workspace", async () => {
+    const f = await fixture("codex");
+    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation(), { shellNonce: "../foreign" })).rejects.toThrow("nonce");
+    expect(f.calls).toEqual([]);
   });
 
   it("trusts the canonical working directory when the task path traverses a symlink", async () => {

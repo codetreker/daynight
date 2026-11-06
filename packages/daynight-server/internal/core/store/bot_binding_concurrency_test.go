@@ -2,7 +2,7 @@ package store
 
 import (
 	"context"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"testing"
 	"time"
@@ -18,14 +18,14 @@ func TestBotLockedReadObservesCompleteConcurrentBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Rollback(context.Background())
-	if _, err = ReadBotForUpdate(ctx, writer, bot.ID); err != nil {
+	if _, err = BotTransaction(writer).Bot(ctx, bot.ID); err != nil {
 		t.Fatal(err)
 	}
 	sid, eid := uuid.NewString(), uuid.NewString()
 	if err = insertBotSession(ctx, writer, bot, sid, eid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = BindBotSession(ctx, writer, bot.ID, 1, sid, core.BotRoleConfiguration{Instructions: "role", Revision: "1", Digest: "digest"}); err != nil {
+	if _, err = BotTransaction(writer).BindBotSession(ctx, bot.ID, 1, sid, model.BotRoleConfiguration{Instructions: "role", Revision: "1", Digest: "digest"}); err != nil {
 		t.Fatal(err)
 	}
 	reader, err := db.Pool.Begin(ctx)
@@ -38,11 +38,11 @@ func TestBotLockedReadObservesCompleteConcurrentBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	type result struct {
-		bot core.Bot
+		bot model.Bot
 		err error
 	}
 	done := make(chan result, 1)
-	go func() { b, e := ReadBotForUpdate(ctx, reader, bot.ID); done <- result{b, e} }()
+	go func() { b, e := BotTransaction(reader).Bot(ctx, bot.ID); done <- result{b, e} }()
 	for {
 		var waiting bool
 		if err = db.Pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')", pid).Scan(&waiting); err != nil {

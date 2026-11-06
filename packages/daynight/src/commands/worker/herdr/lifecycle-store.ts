@@ -3,12 +3,12 @@ import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../../platform/sqlite-format.js";
-import { assertTerminalBinding, parseSessionV2Message, parseSessionV2Owner, parseSessionV2Runs, parseTerminalBinding } from "../../../session/v2/protocol.js";
+import { assertTerminalBinding, isPreparedSessionV2StopProof, parseSessionV2Message, parseSessionV2Owner, parseSessionV2Runs, parseTerminalBinding } from "../../../session/v2/protocol.js";
 import { bool, canonicalSessionJson, choice, decodeStrictSessionJson, exact, hash, integer, list, nativeText, nullable, seq, text, timestamp, unique, uuid } from "../../../session/v2/values.js";
 import type { SessionV2Owner, SessionV2Payloads, SessionV2Run } from "../../../session/v2/types.js";
 import type { ClaimIdentity } from "../types.js";
 import type { HerdrLifecycleRecord, HerdrLocalRun, HerdrLocalSegment, HerdrPreparation, HerdrRunPhase, MacProcessIdentity } from "./lifecycle-types.js";
-import { herdrLifecycleStoreFormat } from "./lifecycle-store-format.js";
+import { createHerdrLifecycleStoreFormat, herdrLifecycleStoreFormat } from "./lifecycle-store-format.js";
 
 const same = (left: unknown, right: unknown): boolean => canonicalSessionJson(left) === canonicalSessionJson(right);
 const reject = (message: string): never => { throw new Error(message); };
@@ -32,9 +32,10 @@ const parsePreparation = (value: unknown): HerdrPreparation => {
   if (result.daemon !== null && result.daemon.role !== "daemon") return reject("Preparation requires the original daemon identity.");
   return result;
 };
-const parseLocalRun = (value: unknown, run: SessionV2Run): HerdrLocalRun => {
-  const o = exact(value, ["run", "phase", "instanceDirectory", "daemon", "processes", "stopOperationId", "stopReason", "error", "admission"]);
-  const result: HerdrLocalRun = { run, phase: choice(o.phase, phases), instanceDirectory: absolute(o.instanceDirectory), daemon: nullable(o.daemon, parseMacProcessIdentity), processes: unique(list(o.processes, parseMacProcessIdentity), processKey), stopOperationId: nullable(o.stopOperationId, uuid), stopReason: nullable(o.stopReason, v => choice(v, ["shutdown", "terminal"])), error: nullable(o.error, v => text(v, 16_384)), admission: nullable(o.admission, uuid) };
+const localRunKeys = ["run", "phase", "instanceDirectory", "daemon", "processes", "stopOperationId", "stopReason", "error", "admission"] as const;
+const parseLocalRun = (value: unknown, run: SessionV2Run, legacy: boolean): HerdrLocalRun => {
+  const o = exact(value, legacy ? localRunKeys : [...localRunKeys, "nativeLaunch"]);
+  const result: HerdrLocalRun = { run, nativeLaunch: legacy ? "unknown" : choice(o.nativeLaunch, ["not_submitted", "requested", "observed", "unknown"]), phase: choice(o.phase, phases), instanceDirectory: absolute(o.instanceDirectory), daemon: nullable(o.daemon, parseMacProcessIdentity), processes: unique(list(o.processes, parseMacProcessIdentity), processKey), stopOperationId: nullable(o.stopOperationId, uuid), stopReason: nullable(o.stopReason, v => choice(v, ["shutdown", "terminal"])), error: nullable(o.error, v => text(v, 16_384)), admission: nullable(o.admission, uuid) };
   if (result.daemon !== null && result.daemon.role !== "daemon" || result.processes.some(p => p.role === "daemon")) return reject("Daemon and native process responsibilities must remain distinct.");
   if (result.daemon !== null && result.processes.some(p => p.bootId !== result.daemon!.bootId)) return reject("A native runtime cannot combine process evidence from different boots.");
   if ((result.stopOperationId === null) !== (result.stopReason === null)) return reject("A stop operation requires its original reason.");
@@ -42,7 +43,20 @@ const parseLocalRun = (value: unknown, run: SessionV2Run): HerdrLocalRun => {
   if (result.admission !== null && result.phase !== "active") return reject("Only an active original run may admit input.");
   if (result.phase === "active" && (result.daemon === null || !result.processes.some(p => p.role === "shell") || !result.processes.some(p => p.role === "agent"))) return reject("Input admission requires the original daemon, shell and agent birth identities.");
   if ((result.phase === "stopped_confirmed") !== (run.stopProof !== null)) return reject("Confirmed stopping requires a durable original stop proof.");
+  if (legacy) {
+    if (run.stopProof !== null && isPreparedSessionV2StopProof(run.stopProof)) return reject("A legacy run cannot contain a prepared-resource stop proof.");
+    result.nativeLaunch = result.processes.some(p => p.role === "agent") ? "observed" : result.phase === "launch_requested" ? "requested"
+      : result.phase === "prepared" && result.daemon !== null && result.processes.length === 1 && result.processes[0]!.role === "shell" && result.stopOperationId === null && result.admission === null && run.segmentIds.length === 0 ? "not_submitted" : "unknown";
+  }
+  if (result.nativeLaunch === "not_submitted" && (result.processes.some(p => p.role === "agent") || run.segmentIds.length !== 0 || result.admission !== null || ["launch_requested", "active"].includes(result.phase))) return reject("Unsubmitted native launch cannot contain execution or input evidence.");
+  if (result.phase === "active" && result.nativeLaunch !== "observed" || result.nativeLaunch === "observed" && !result.processes.some(p => p.role === "agent")) return reject("Observed launch requires its original agent birth evidence.");
+  if (result.phase === "launch_requested" && result.nativeLaunch !== "requested") return reject("A native launch requires its durable requested provenance.");
+  if (result.phase === "prepared" && !["not_submitted", "unknown"].includes(result.nativeLaunch)) return reject("A prepared runtime cannot have submitted launch evidence.");
   if (run.stopProof !== null) {
+    if (isPreparedSessionV2StopProof(run.stopProof)) {
+      const daemon = result.daemon;
+      if (result.nativeLaunch !== "not_submitted" || daemon === null || !same(run.stopProof.daemon, { pid: daemon.pid, birthToken: daemon.birthToken, bootId: daemon.bootId })) return reject("Prepared stopping requires the original daemon and unsubmitted launch provenance.");
+    } else if (result.nativeLaunch !== "observed") return reject("Native stopping requires the original observed agent launch.");
     if (run.stopProof.recordId !== result.stopOperationId || result.daemon === null) return reject("The stopped run has no original stop operation or daemon evidence.");
     const expected = result.processes.map(({ role, pid, birthToken, bootId }) => ({ role, pid, birthToken, bootId }));
     if (!same(expected, run.stopProof.processes)) return reject("The stop proof must refer to the originally recorded process instances.");
@@ -62,16 +76,15 @@ const parseSegment = (value: unknown): HerdrLocalSegment => {
   }
   return result;
 };
-export const parseHerdrLifecycleRecord = (value: unknown): HerdrLifecycleRecord => {
+const parseLifecycleRecord = (value: unknown, legacy = false): HerdrLifecycleRecord => {
   const o = exact(value, ["owner", "claimId", "cwd", "sessionId", "registrationId", "connectionEpoch", "registrationRequest", "ledgerRequest", "publishedLedgerHash", "controlEpoch", "initialAssignment", "initialPrompt", "automationBlocked", "preparation", "runs", "segments", "version"]);
-  const raws = list(o.runs, value => exact(value, ["run", "phase", "instanceDirectory", "daemon", "processes", "stopOperationId", "stopReason", "error", "admission"]));
+  const raws = list(o.runs, value => exact(value, legacy ? localRunKeys : [...localRunKeys, "nativeLaunch"]));
   const runs = raws.length === 0 ? [] : parseSessionV2Runs(raws.map(raw => raw.run), String(raws.length), false);
-  const record: HerdrLifecycleRecord = { owner: parseSessionV2Owner(o.owner), claimId: uuid(o.claimId), cwd: absolute(o.cwd), sessionId: uuid(o.sessionId), registrationId: uuid(o.registrationId), connectionEpoch: nullable(o.connectionEpoch, seq), registrationRequest: null, ledgerRequest: null, publishedLedgerHash: nullable(o.publishedLedgerHash, hash), controlEpoch: seq(o.controlEpoch, true), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), initialPrompt: nullable(o.initialPrompt, v => text(v, 1024 * 1024)), automationBlocked: bool(o.automationBlocked), preparation: nullable(o.preparation, parsePreparation), runs: raws.map((raw, index) => parseLocalRun(raw, runs[index]!)), segments: unique(list(o.segments, parseSegment), segment => segment.segmentId), version: integer(o.version, 1, Number.MAX_SAFE_INTEGER) };
+  const record: HerdrLifecycleRecord = { owner: parseSessionV2Owner(o.owner), claimId: uuid(o.claimId), cwd: absolute(o.cwd), sessionId: uuid(o.sessionId), registrationId: uuid(o.registrationId), connectionEpoch: nullable(o.connectionEpoch, seq), registrationRequest: null, ledgerRequest: null, publishedLedgerHash: nullable(o.publishedLedgerHash, hash), controlEpoch: seq(o.controlEpoch, true), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), initialPrompt: nullable(o.initialPrompt, v => text(v, 1024 * 1024)), automationBlocked: bool(o.automationBlocked), preparation: nullable(o.preparation, parsePreparation), runs: raws.map((raw, index) => parseLocalRun(raw, runs[index]!, legacy)), segments: unique(list(o.segments, parseSegment), segment => segment.segmentId), version: integer(o.version, 1, Number.MAX_SAFE_INTEGER) };
   if (record.runs.some(run => !same(run.run.owner, record.owner))) return reject("Every run must retain its original execution owner.");
   if (o.registrationRequest !== null) {
     const request = parseSessionV2Message(o.registrationRequest);
     if (request.type !== "registration" || request.sessionId !== record.sessionId || request.claimId !== record.claimId || request.payload.registrationId !== record.registrationId || !same(request.payload.owner, record.owner)) return reject("The pending registration belongs to another execution.");
-    if (Object.values(request.payload.capabilities).some(Boolean)) return reject("Herdr lifecycle registration cannot advertise unimplemented combined capabilities.");
     record.registrationRequest = request;
   }
   if (o.ledgerRequest !== null) {
@@ -92,6 +105,13 @@ export const parseHerdrLifecycleRecord = (value: unknown): HerdrLifecycleRecord 
   for (const local of record.runs) if (local.run.segmentIds.some(id => !record.segments.some(segment => segment.segmentId === id && segment.executionGeneration === local.run.executionGeneration))) return reject("A run references an unregistered segment.");
   return record;
 };
+export const parseHerdrLifecycleRecord = (value: unknown): HerdrLifecycleRecord => parseLifecycleRecord(value);
+/** Empty registration is only a candidate; retirement also requires terminal and resource evidence. */
+export const isHerdrNeverStarted = (record: HerdrLifecycleRecord): boolean =>
+  record.preparation === null && record.runs.length === 0 && record.segments.length === 0
+  && record.connectionEpoch === null && record.registrationRequest === null && record.ledgerRequest === null
+  && record.publishedLedgerHash === null && record.initialAssignment === "pending" && record.initialPrompt === null && !record.automationBlocked;
+
 const transitions: Record<HerdrRunPhase, readonly HerdrRunPhase[]> = {
   prepared: ["prepared", "launch_requested", "stop_intent", "stop_unknown"],
   launch_requested: ["launch_requested", "active", "stop_intent", "stop_unknown"],
@@ -101,6 +121,7 @@ const transitions: Record<HerdrRunPhase, readonly HerdrRunPhase[]> = {
   stopped_confirmed: ["stopped_confirmed"],
   stop_unknown: ["stop_unknown", "stop_intent", "close_requested", "stopped_confirmed"],
 };
+const launchTransitions: Record<HerdrLocalRun["nativeLaunch"], readonly HerdrLocalRun["nativeLaunch"][]> = { not_submitted: ["not_submitted", "requested"], requested: ["requested", "observed"], observed: ["observed"], unknown: ["unknown"] };
 const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecord): void => {
   for (const field of ["owner", "claimId", "cwd", "sessionId", "registrationId"] as const) if (!same(before[field], after[field])) reject("The original Herdr lifecycle identity cannot change.");
   if (before.initialPrompt !== null && before.initialPrompt !== after.initialPrompt) reject("The original managed assignment cannot change.");
@@ -118,6 +139,8 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
   if (after.runs.length < before.runs.length || after.runs.length > before.runs.length + 1) reject("Runtime history is append-only, one generation at a time.");
   for (const [index, previous] of before.runs.entries()) {
     const next = after.runs[index]!;
+    if (!launchTransitions[previous.nativeLaunch].includes(next.nativeLaunch)) reject("Native launch provenance cannot be downgraded or reconstructed.");
+    if (previous.nativeLaunch !== next.nativeLaunch && (previous.nativeLaunch === "not_submitted" ? previous.phase !== "prepared" || next.phase !== "launch_requested" : previous.phase !== "launch_requested" || next.phase !== "active")) reject("Native launch provenance must follow its original launch boundary.");
     if (!transitions[previous.phase].includes(next.phase)) reject("The runtime transition bypasses a durable lifecycle boundary.");
     if (next.phase === "close_requested" && previous.stopOperationId === null) reject("A close requires an already committed stop intent.");
     if (previous.phase === "stopped_confirmed" && !same(previous, next)) reject("A confirmed original run is immutable.");
@@ -138,10 +161,10 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
   }
   if (after.runs.length > before.runs.length) {
     const previous = before.runs.at(-1), next = after.runs.at(-1)!;
-    if (next.phase !== "prepared" || next.run.stopProof !== null) reject("A new run starts at its durable preparation boundary.");
+    if (next.phase !== "prepared" || next.nativeLaunch !== "not_submitted" || next.run.stopProof !== null) reject("A new run starts at its durable preparation boundary.");
     if (previous !== undefined) {
       const native = previous.run.stopProof?.binding.nativeSessionId;
-      if (previous.phase !== "stopped_confirmed" || native === null || native === undefined || native !== next.run.binding.nativeSessionId) reject("Replacement requires the confirmed original stop and native session identity.");
+      if (previous.phase !== "stopped_confirmed" || isPreparedSessionV2StopProof(previous.run.stopProof!) || native === null || native === undefined || native !== next.run.binding.nativeSessionId) reject("Replacement requires the confirmed original stop and native session identity.");
     }
   }
   if (before.preparation !== null) {
@@ -152,12 +175,12 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
     } else if (old.instanceId !== next.instanceId || old.instanceDirectory !== next.instanceDirectory || old.phase === "launch_requested" && next.phase !== old.phase || old.daemon !== null && !same(old.daemon, next.daemon)) reject("The original pre-binding preparation cannot be replaced.");
   } else if (after.preparation !== null) {
     const previous = before.runs.at(-1);
-    if (previous !== undefined && (previous.phase !== "stopped_confirmed" || previous.run.stopProof?.binding.nativeSessionId == null)) reject("Replacement preparation requires the confirmed original stop and native session.");
+    if (previous !== undefined && (previous.phase !== "stopped_confirmed" || previous.run.stopProof === null || isPreparedSessionV2StopProof(previous.run.stopProof) || previous.run.stopProof.binding.nativeSessionId == null)) reject("Replacement preparation requires the confirmed original stop and native session.");
   }
   if (after.segments.length < before.segments.length) reject("Capture segment history cannot be removed.");
   for (const [index, previous] of before.segments.entries()) {
     const next = after.segments[index]!;
-    if (previous.endedAt !== null && !same(previous, next)) reject("A closed capture segment is immutable.");
+    if (previous.endedAt !== null && !same({ ...previous, binding: next.binding }, next)) reject("A closed capture segment observation boundary is immutable.");
     assertTerminalBinding(previous.binding, next.binding);
     const { endedAt: _end, durationMs: _duration, binding: _binding, ...stable } = previous;
     const { endedAt: _nextEnd, durationMs: _nextDuration, binding: _nextBinding, ...nextStable } = next;
@@ -185,7 +208,23 @@ export const readHerdrLifecycleRecords = (filename: string): HerdrLifecycleRecor
 };
 
 export const openHerdrLifecycleStore = (filename: string, options: { onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file: filename, format: herdrLifecycleStoreFormat, allowCreate: true,
+  const format = createHerdrLifecycleStoreFormat(db => {
+    for (const table of ["executions", "never_started_retirements"] as const) {
+      const rows = db.prepare(`SELECT identity, version, data FROM ${table} ORDER BY identity`).all() as LifecycleRow[];
+      for (const row of rows) {
+        const record = parseLifecycleRecord(decodeStrictSessionJson(row.data, 8 * 1024 * 1024), true);
+        if (key(record) !== row.identity || record.version !== row.version || table === "never_started_retirements" && !isHerdrNeverStarted(record)) reject("Legacy lifecycle ownership, version or retirement is inconsistent.");
+        const data = canonicalSessionJson(record);
+        if (Buffer.byteLength(data) > 8 * 1024 * 1024) reject("Migrated lifecycle metadata exceeds its size limit.");
+        if (table === "never_started_retirements") {
+          const original = db.prepare("SELECT data FROM executions WHERE identity = ?").get(row.identity) as { data: string } | undefined;
+          if (!original || original.data !== data) reject("The legacy retirement differs from its original lifecycle evidence.");
+        }
+        db.prepare(`UPDATE ${table} SET data = ? WHERE identity = ?`).run(data, row.identity);
+      }
+    }
+  });
+  const db = openSqliteDatabase({ file: filename, format, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
     // An unversioned journal may be the only remaining proof of a native launch.
     assertMigrationAllowed: (_db, source) => { if (source.kind === "unversioned") throw new Error("Unversioned Herdr lifecycle evidence must be retained for explicit recovery."); },
@@ -195,8 +234,16 @@ export const openHerdrLifecycleStore = (filename: string, options: { onMigration
     return db.transaction(() => { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); }).deferred();
   };
   const get = (identity: ClaimIdentity): HerdrLifecycleRecord | null => read(() => { const row = db.prepare("SELECT identity, version, data FROM executions WHERE identity = ?").get(identityKey(identity)) as { identity: string; version: number; data: string } | undefined; return row === undefined ? null : parseRow(row); });
+  const retired = (identity: ClaimIdentity): HerdrLifecycleRecord | null => read(() => {
+    const row = db.prepare("SELECT identity, version, data FROM never_started_retirements WHERE identity = ?").get(identityKey(identity)) as LifecycleRow | undefined;
+    if (!row) return null;
+    const record = parseRow(row), original = get(identity);
+    if (!isHerdrNeverStarted(record) || !same(record, original)) return reject("The never-started retirement differs from its original lifecycle evidence.");
+    return record;
+  });
   const atomic = <T>(action: () => T): T => runSqliteImmediate(db, () => { assertCurrentSqlite(db, herdrLifecycleStoreFormat); return action(); });
   const update = (expected: HerdrLifecycleRecord, change: (draft: HerdrLifecycleRecord) => void): HerdrLifecycleRecord => atomic(() => {
+    if (retired({ ...expected.owner, claimId: expected.claimId })) return reject("A retired never-started claim cannot acquire new execution evidence.");
     const original = get({ ...expected.owner, claimId: expected.claimId });
     if (original === null || original.version !== expected.version) return reject("The Herdr lifecycle version changed; reread the original execution before deciding.");
     if (!same(original, expected)) return reject("The expected lifecycle record differs from its stored version.");
@@ -210,9 +257,18 @@ export const openHerdrLifecycleStore = (filename: string, options: { onMigration
   return {
     close: (): void => { closeSqliteDatabase(db, { file: filename, format: herdrLifecycleStoreFormat }); },
     get,
+    retired,
+    listRetired: (): HerdrLifecycleRecord[] => read(() => (db.prepare("SELECT identity, version, data FROM never_started_retirements ORDER BY identity").all() as LifecycleRow[]).map(row => { const record = parseRow(row); return retired({ ...record.owner, claimId: record.claimId })!; })),
+    retireNeverStarted: (expected: HerdrLifecycleRecord): void => atomic(() => {
+      const original = get({ ...expected.owner, claimId: expected.claimId });
+      if (!same(original, expected) || !isHerdrNeverStarted(expected)) return reject("The never-started lifecycle version or evidence changed before retirement.");
+      if (retired({ ...expected.owner, claimId: expected.claimId })) return;
+      db.prepare("INSERT INTO never_started_retirements(identity, version, data) VALUES (?, ?, ?)").run(key(expected), expected.version, canonicalSessionJson(expected));
+    }),
     list: (): HerdrLifecycleRecord[] => read(() => (db.prepare("SELECT identity, version, data FROM executions ORDER BY identity").all() as { identity: string; version: number; data: string }[]).map(parseRow)),
     create: (input: { owner: SessionV2Owner; claimId: string; cwd: string }, now = new Date().toISOString()): HerdrLifecycleRecord => atomic(() => {
       timestamp(now); const owner = parseSessionV2Owner(input.owner), claimId = uuid(input.claimId), cwd = absolute(input.cwd);
+      if (retired({ ...owner, claimId })) return reject("A retired never-started claim cannot be registered again.");
       const existing = get({ ...owner, claimId });
       if (existing !== null) { if (!same(existing.owner, owner) || existing.cwd !== cwd) return reject("The original execution cannot be rebound to a different owner or worktree."); return existing; }
       const record = parseHerdrLifecycleRecord({ owner, claimId, cwd, sessionId: randomUUID(), registrationId: randomUUID(), connectionEpoch: null, registrationRequest: null, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending", initialPrompt: null, automationBlocked: false, preparation: null, runs: [], segments: [], version: 1 });

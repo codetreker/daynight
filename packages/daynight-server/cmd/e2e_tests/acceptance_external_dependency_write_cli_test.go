@@ -19,7 +19,7 @@ func TestInstalledCLIExternalDependencyWriteAcceptance(t *testing.T) {
 		cli := newAcceptanceCLI(t, receipt, scenario)
 		process := fixture.launch(t, nil).started(t)
 		cli.configure(t, process)
-		projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "External dependency write contract"))
+		projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "External dependency write contract", "--confirm"))
 		create := func(title string, dependencyOptions ...string) api.Task {
 			id := acceptanceCLIResourceID(t, cli.run(t, cli.repo, append([]string{"task", "create", "--title", title}, dependencyOptions...)...))
 			return cli.task(t, id)

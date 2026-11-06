@@ -10,6 +10,9 @@ import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
 
 type GitRunner = typeof runRepositoryGit;
+export class WorktreePreconditionError extends Error {
+  constructor(readonly code: "branch_mismatch" | "validation_failed", message: string, options?: ErrorOptions) { super(message, options); this.name = "WorktreePreconditionError"; }
+}
 type Owner = ResourceOwner & { leaf: string; root: string; common: string };
 type Registration = { directory: string; marker: string | null; pointer: string; common: string };
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
@@ -152,7 +155,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       }
     }
     const branch = await git(repository.root, [`--git-dir=${registration.directory}`, "symbolic-ref", "--quiet", "HEAD"], operation);
-    if (branch !== `refs/heads/${binding.branch}`) throw new Error("The task worktree no longer uses its original task branch.");
+    if (branch !== `refs/heads/${binding.branch}`) throw new WorktreePreconditionError("branch_mismatch", "The task worktree no longer uses its original task branch.");
     return { binding, leaf, registration };
   };
   const removeEmptyDirectory = async (target: string, operation: Operation): Promise<void> => {
@@ -189,7 +192,18 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (await directory(root) === null) {
         await mkdir(path.dirname(root), { recursive: true });
         await mkdir(root);
-        await git(path.dirname(root), ["clone", "--origin=origin", `--template=${await hookDirectory()}`, "--", project.repoUrl, root], operation, 120_000);
+        const reserved = await directory(root);
+        try {
+          await git(path.dirname(root), ["clone", "--origin=origin", `--template=${await hookDirectory()}`, "--", project.repoUrl, root], operation, 120_000);
+        } catch (error) {
+          // Remove only our unchanged, empty reservation; partial clones and replacements remain for inspection.
+          try {
+            if (reserved !== null && await directory(root) === reserved) await rmdir(root);
+          } catch (cleanupError) {
+            if (!(cleanupError instanceof Error && "code" in cleanupError && ["ENOENT", "ENOTEMPTY", "EEXIST"].includes(String(cleanupError.code)))) throw new AggregateError([error, cleanupError], "Repository clone and reservation cleanup failed.");
+          }
+          throw error;
+        }
       }
       return inspectRepository(project, operation);
     },
@@ -235,7 +249,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (result.registration === null) return null;
       return result.binding;
     },
-    listWorktrees: async (project: WorkerProject, operation: Operation, allowMissingRepository = false): Promise<OwnedWorktree[]> => {
+    listWorktrees: async (project: WorkerProject, operation: Operation, allowMissingRepository = false, includeOtherProjects = false): Promise<OwnedWorktree[]> => {
       if (allowMissingRepository) {
         const physical = await resolvePhysicalDirectory(absolute(project.localPath, "Repository path"));
         operation.check();
@@ -265,7 +279,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         if (target !== expectedPointer) throw new Error("The owned task worktree registration does not point to its fixed task path.");
         const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, true);
         if (observed.registration === null || observed.registration.directory !== admin) throw new Error("The owned task worktree registration is ambiguous.");
-        if (owner.projectId === project.projectId) result.push({ owner, binding: observed.binding });
+        if (includeOtherProjects || owner.projectId === project.projectId) result.push({ owner, binding: observed.binding });
       }
       return result.sort((left, right) => left.owner.taskId.localeCompare(right.owner.taskId) || left.owner.claimId.localeCompare(right.owner.claimId));
     },

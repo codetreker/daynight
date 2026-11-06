@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -29,19 +29,19 @@ func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
 		if _, err := tx.ProjectAccess(ctx, target); err != nil {
 			return err
 		}
-		_, err := tx.CreateGrant(ctx, target.UserID, core.ProjectAdmin)
+		_, err := tx.CreateGrant(ctx, target.UserID, model.ProjectAdmin)
 		return err
 	})
 	var failure *TransactionError
 	if !errors.As(err, &failure) || failure.Phase != "commit" || failure.Outcome != TransactionUnknown || !failure.CommitAttempted || failure.CleanupFailed || !errors.Is(err, lost) {
 		t.Fatalf("lost receipt: %#v %v", failure, err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		member, err := snapshot.DirectProjectMember(ctx, target.UserID, project.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		member, err := snapshot.ProjectDAO().DirectProjectMember(ctx, target.UserID, project.ID)
 		if err != nil {
 			return err
 		}
-		if member.Grant.Role != core.ProjectAdmin || member.Grant.Version <= 0 {
+		if member.Grant.Role != model.ProjectAdmin || member.Grant.Version <= 0 {
 			t.Fatalf("committed grant: %#v", member.Grant)
 		}
 		return nil
@@ -53,20 +53,20 @@ func TestGrantCommitResponseLostKeepsUnknownAfterRealCommit(t *testing.T) {
 func TestCreateGrantPropagatesConstraintFailure(t *testing.T) {
 	s, owner, _, project := membershipFixture(t)
 	ctx := context.Background()
-	err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		_, err := tx.CreateGrant(ctx, owner.UserID, core.ProjectMemberRole)
+	err := writeProjectForTest(s, ctx, project.ID, func(tx ProjectWriteScope) error {
+		_, err := tx.ProjectDAO().CreateGrant(ctx, owner.UserID, model.ProjectMemberRole)
 		return err
 	})
 	var databaseError *pgconn.PgError
 	if !errors.As(err, &databaseError) || databaseError.Code != "23505" {
 		t.Fatalf("duplicate grant failure lost its cause: %v", err)
 	}
-	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		member, err := snapshot.DirectProjectMember(ctx, owner.UserID, project.ID)
+	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		member, err := snapshot.ProjectDAO().DirectProjectMember(ctx, owner.UserID, project.ID)
 		if err != nil {
 			return err
 		}
-		if member.Grant.Role != core.ProjectAdmin {
+		if member.Grant.Role != model.ProjectAdmin {
 			t.Fatalf("duplicate changed stored grant: %#v", member.Grant)
 		}
 		return nil

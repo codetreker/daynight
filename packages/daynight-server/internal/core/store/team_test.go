@@ -8,28 +8,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func storeTeamFixture(t *testing.T) (*Store, core.Principal, core.Team) {
+func storeTeamFixture(t *testing.T) (*Store, model.Principal, model.Team) {
 	t.Helper()
 	s := isolatedStore(t)
 	_, actor, _ := testAuthRecords(t, s)
-	team, err := s.CreateTeam(context.Background(), actor.UserID, uuid.NewString(), "Ordinary")
+	team, err := testCreateTeam(s, context.Background(), actor.UserID, uuid.NewString(), "Ordinary")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, actor, team
 }
 
-func readStoreTeam(t *testing.T, s *Store, userID, teamID string) core.Team {
+func readStoreTeam(t *testing.T, s *Store, userID, teamID string) model.Team {
 	t.Helper()
-	var team core.Team
-	err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
+	var team model.Team
+	err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 		var err error
-		team, err = snapshot.Team(context.Background(), userID, teamID)
+		team, err = snapshot.TeamDAO().Team(context.Background(), userID, teamID)
 		return err
 	})
 	if err != nil {
@@ -44,7 +44,7 @@ func TestTeamCreationIsAtomicAndRollbackPreservesCause(t *testing.T) {
 	id := uuid.NewString()
 	mustQueryExec(t, s, `CREATE FUNCTION reject_team_member() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'member failure'; END $$;
  CREATE TRIGGER reject_team_member BEFORE INSERT ON team_members FOR EACH ROW EXECUTE FUNCTION reject_team_member()`)
-	_, err := s.CreateTeam(ctx, actor.UserID, id, "Atomic")
+	_, err := testCreateTeam(s, ctx, actor.UserID, id, "Atomic")
 	var failure *TransactionError
 	if !errors.As(err, &failure) || failure.Outcome != TransactionNotCommitted || failure.CommitAttempted {
 		t.Fatalf("creation rollback %#v %v", failure, err)
@@ -53,8 +53,8 @@ func TestTeamCreationIsAtomicAndRollbackPreservesCause(t *testing.T) {
 	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM teams WHERE id=$1`, id).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("partial Team persisted %d %v", count, err)
 	}
-	_, err = s.CreateTeam(ctx, uuid.NewString(), uuid.NewString(), "Missing creator")
-	if !errors.Is(err, core.ErrNotFound) {
+	_, err = testCreateTeam(s, ctx, uuid.NewString(), uuid.NewString(), "Missing creator")
+	if !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing creator cause lost %v", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestTeamDeleteObservesOwnershipAfterTeamLockWait(t *testing.T) {
 			occupied := errors.New("Team has projects")
 			done := make(chan error, 1)
 			go func() {
-				done <- s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+				done <- testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 					var isolation string
 					if err := tx.tx.QueryRow(ctx, "SHOW transaction_isolation").Scan(&isolation); err != nil {
 						return err
@@ -142,7 +142,7 @@ func TestTeamDeletionLockPreventsNewOrphanOwnership(t *testing.T) {
 			deleted := errors.New("rollback deletion")
 			done := make(chan error, 1)
 			projectID := uuid.NewString()
-			err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error {
+			err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error {
 				if err := tx.Delete(ctx); err != nil {
 					return err
 				}
@@ -209,7 +209,7 @@ func TestTeamOwnershipCheckDoesNotLockProject(t *testing.T) {
 	}
 	bounded, finish := context.WithTimeout(ctx, time.Second)
 	defer finish()
-	err = s.WriteTeam(bounded, team.ID, func(tx *TeamTx) error {
+	err = testWriteTeam(s, bounded, team.ID, func(tx *TeamTx) error {
 		found, err := tx.HasProjects(bounded)
 		if err == nil && !found {
 			return errors.New("ownership disappeared")
@@ -224,7 +224,7 @@ func TestTeamOwnershipCheckDoesNotLockProject(t *testing.T) {
 func TestTeamCancellationRollsBackAndDoesNotRunLateCallback(t *testing.T) {
 	s, actor, team := storeTeamFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	err := s.WriteTeam(ctx, team.ID, func(tx *TeamTx) error { _, err := tx.Rename(ctx, actor.UserID, "Changed"); cancel(); return err })
+	err := testWriteTeam(s, ctx, team.ID, func(tx *TeamTx) error { _, err := tx.Rename(ctx, actor.UserID, "Changed"); cancel(); return err })
 	var failure *TransactionError
 	if !errors.Is(err, context.Canceled) || !errors.As(err, &failure) || failure.Outcome != TransactionNotCommitted || failure.CommitAttempted {
 		t.Fatalf("canceled completion %#v %v", failure, err)
@@ -244,7 +244,9 @@ func TestTeamCancellationRollsBackAndDoesNotRunLateCallback(t *testing.T) {
 	defer stop()
 	var called atomic.Bool
 	done := make(chan error, 1)
-	go func() { done <- s.WriteTeam(waiting, team.ID, func(*TeamTx) error { called.Store(true); return nil }) }()
+	go func() {
+		done <- testWriteTeam(s, waiting, team.ID, func(*TeamTx) error { called.Store(true); return nil })
+	}()
 	waitForQueryLock(t, s, "SELECT id::text FROM teams WHERE")
 	stop()
 	bounded, finish := context.WithTimeout(context.Background(), 5*time.Second)

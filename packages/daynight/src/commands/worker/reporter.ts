@@ -1,3 +1,5 @@
+import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
+import type { WorkerCloudReport, WorkerCloudReceipt, WorkerCloudReportReceipt } from "../../api/worker-configuration.js";
 import { ApiError } from "../../api/client.js";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
@@ -9,6 +11,12 @@ import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js
 
 type SafeFailure = { category: string; cause?: SafeFailure; errors?: readonly SafeFailure[] };
 type FailureState = { signature: string; repetitions: number };
+
+const immutable = <T>(value: T): T => {
+  if (typeof value !== "object" || value === null) return value;
+  for (const child of Object.values(value)) immutable(child);
+  return Object.freeze(value);
+};
 
 const describeFailure = (error: unknown, seen = new Set<unknown>(), depth = 0): SafeFailure => {
   if (depth >= 6 || seen.has(error)) return { category: "truncated" };
@@ -47,7 +55,13 @@ export const createWorkerReporter = (options: {
   collect: (operation: Operation) => Promise<WorkerTelemetrySample>;
   send: (report: WorkerReport, operation: Operation) => Promise<WorkerReportReceipt>;
   emit: (event: WorkerDiagnostic) => void;
-}): { publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
+  configuration?: {
+    prepare?(operation: Operation): Promise<void>;
+    capture(): WorkerCloudReport;
+    send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation): Promise<WorkerCloudReportReceipt>;
+    accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
+  };
+}): { trigger(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
   const failures = new Map<string, FailureState>();
   const cleanupFailures = new Set<unknown>();
@@ -109,7 +123,18 @@ export const createWorkerReporter = (options: {
       }
       operation.check();
       phase = "send";
-      await options.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), operation);
+      if (options.configuration === undefined) await options.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), operation);
+      else {
+        phase = "configuration-read";
+        await options.configuration.prepare?.(operation);
+        operation.check();
+        const captured = options.configuration.capture();
+        const sent = immutable(parseWorkerCloudReport(captured));
+        phase = "send";
+        const receipt = await options.configuration.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), sent, operation);
+        phase = "configuration";
+        await options.configuration.accept(captured, receipt.configuration);
+      }
       operation.check();
       recover("report", phase);
     } catch (error) {
@@ -133,6 +158,7 @@ export const createWorkerReporter = (options: {
   else { timer = setInterval(trigger, 30_000); timer.unref(); trigger(); }
 
   return {
+    trigger,
     publishInventory: (value) => {
       if (stopped) return;
       inventory = value === null ? null : copyInventory(value);

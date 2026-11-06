@@ -58,7 +58,8 @@ it('renders the shared session after authentication and removes it on sign-out',
   window.sessionStorage.setItem(closedDraft, 'private draft from another page');
   const otherDraft = 'daynight:session-draft:another-principal:closed-session';
   window.sessionStorage.setItem(otherDraft, 'other principal');
-  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Account menu:/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
   await waitFor(() => expect(screen.queryByText('Private test conversation')).toBeNull());
   expect(Object.keys(window.sessionStorage).filter(key => key.includes(sessionId))).toEqual([]);
   expect(window.sessionStorage.getItem(closedDraft)).toBeNull();
@@ -175,6 +176,6 @@ it.each(['changed', 'expired'] as const)('clears the retained Test Session when 
   expect(textbox.isConnected).toBe(false);
   expect(f.sockets[0]!.close).toHaveBeenCalled();
   expect(Object.keys(window.sessionStorage).filter(key => key.startsWith(`daynight:session-draft:${owner}:`))).toEqual([]);
-  if (outcome === 'changed') expect(await screen.findByRole('link', { name: 'Account settings: Other' })).toBeVisible();
+  if (outcome === 'changed') expect(await screen.findByRole('button', { name: 'Account menu: Other' })).toBeVisible();
   else expect(await screen.findByRole('button', { name: /GitHub/ })).toBeVisible();
 });

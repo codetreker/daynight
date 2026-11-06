@@ -39,8 +39,8 @@ const indexOf = (items = seeds): GraphIndex => {
   return buildGraphIndex(graph);
 };
 const noop = () => {};
-const list = (index: GraphIndex, onOpenTask = noop) => <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
-  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
+const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
@@ -150,9 +150,9 @@ describe('Goal task lists', () => {
     const index = indexOf();
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
-      return <ChainList projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)}
-        onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
+        onOpenTask={onOpenTask} />;
     };
     render(<Wrapper />);
     const graph = screen.getByRole('button', { name: 'Goal，查看依赖关系' });

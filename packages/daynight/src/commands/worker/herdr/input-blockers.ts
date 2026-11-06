@@ -84,7 +84,10 @@ const experimentalStatus = ["Saving… Closing this popup will not cancel the wr
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker/layout.rs#L54-L90
 // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2480-L2597
 const sessionControl = `${footerShortcut}(?:/${footerShortcut})?${footerGap}(?:archive|(?:start${footerGap})?new|exit|clear(?:${footerGap}search)?|quit|focus(?:${footerGap}sort/filter)?|(?:change${footerGap})?option)`;
-const sessionFooter = `${footerShortcut}${footerGap}(?:resume|fork|restore)(?:[ \\t]{2,}${sessionControl})+`;
+const sessionPrimary = `${footerShortcut}${footerGap}(?:resume|fork|restore)`;
+const sessionFooter = `${sessionPrimary}(?:[ \\t]{2,}${sessionControl})+`;
+const codexSessionHeader = /^\s*(?:Resume|Fork) a previous session\s*$/;
+const codexSessionPrimaryFooter = new RegExp(`^[ \\t]*(?:${sessionPrimary})[ \\t]*$`, "gmi");
 const namedCodexMenus = [
   { header: /^\s*Configuration\s*$/, footer: codexConfigurationFooter },
   { header: /^\s*Keymap\s*$/, footer: codexKeymapFooter },
@@ -98,7 +101,7 @@ const namedCodexMenus = [
   { header: new RegExp(`^\\s*(?:${hookEvents}) hooks\\s*$`), footer: new RegExp(`^[ \\t]*(?:${checkboxFooter}|${hooksHandlerFooter})[ \\t]*$`, "gmi") },
   { header: /^\s*> (?:Import setup|Choose what to import)\s*$/, footer: new RegExp(`^[ \\t]*(?:${importFooter})[ \\t]*$`, "gmi") },
   { header: /^\s*Choose an import source\s*$/, footer: codexFooter },
-  { header: /^\s*(?:Resume|Fork) a previous session\s*$/, footer: new RegExp(`^[ \\t]*(?:${sessionFooter})[ \\t]*$`, "gmi") },
+  { header: codexSessionHeader, footer: new RegExp(`^[ \\t]*(?:${sessionFooter})[ \\t]*$`, "gmi") },
 ];
 
 export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeInputBlocker | null => {
@@ -106,6 +109,10 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
   if (agent === "codex") {
     const selected = (line: string) => /^\s*[›»]\s*\d+[.)]\s+\S/.test(line);
     const laterPrompt = (index: number) => lines.slice(index + 1).some(line => /^\s*[›»]/.test(line));
+    const welcome = lines.findLastIndex(line => /^\s*Welcome to Codex, OpenAI's command-line coding agent\s*$/.test(line));
+    const signIn = lines.findLastIndex(line => /^\s*>\s*\d+[.)]\s+(?:Sign in with (?:ChatGPT|Device Code)|Use (?:an OpenAI API key|Amazon Bedrock))\s*$/.test(line));
+    const onboardingEnd = lines.findLastIndex(line => /^\s*Press enter to continue\s*$/i.test(line));
+    if (welcome >= 0 && signIn > welcome && onboardingEnd > signIn && !laterPrompt(onboardingEnd)) return "menu";
     // Disabled placeholders occupy the composer's own prompt row.
     // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/bottom_pane/chat_composer.rs#L4873-L4954
     const disabled = (line: string) => {
@@ -136,11 +143,27 @@ export const nativeInputBlocker = (agent: WorkerAgent, visible: string): NativeI
       const end = footerEnd(menu.footer);
       if (header >= 0 && end > header && !laterPrompt(end)) return "menu";
     }
+    // Narrow session footers prune secondary controls before dropping the primary label.
+    // Require the full title and a search/list row so a lone action in prose is not evidence.
+    // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2174-L2183
+    // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/resume_picker.rs#L2597-L2618
+    const sessionHeader = lines.findLastIndex(line => codexSessionHeader.test(line));
+    const sessionEnd = footerEnd(codexSessionPrimaryFooter);
+    const sessionRows = lines.slice(sessionHeader + 1, sessionEnd);
+    if (sessionHeader >= 0 && sessionEnd > sessionHeader && sessionRows.some(line => /^\s*(?:Type to search|Search: .+|[›»⌄]\s+\S.*)$/.test(line)) && !laterPrompt(sessionEnd)) return "menu";
     return null;
   }
   if (agent === "claude") {
     const laterPrompt = (index: number) => lines.slice(index + 1).some(line => /^\s*❯/.test(line));
     const selected = lines.findLastIndex(line => /^\s*❯\s*\d+[.)]\s+\S/.test(line));
+    // First-run theme and security screens consume Enter before a business composer exists.
+    const welcome = lines.findLastIndex(line => /^\s*Welcome to Claude Code v\S+\s*$/.test(line));
+    const theme = lines.findLastIndex(line => /^\s*Choose the text style that looks best with your terminal\s*$/.test(line));
+    const themeEnd = lines.findLastIndex(line => /^\s*Syntax theme: .+ \(ctrl\+t to disable\)\s*$/.test(line));
+    if (welcome >= 0 && theme > welcome && selected > theme && themeEnd > selected && !laterPrompt(themeEnd)) return "menu";
+    const security = lines.findLastIndex(line => /^\s*Security notes:\s*$/.test(line));
+    const onboardingEnd = lines.findLastIndex(line => /^\s*Press Enter to continue(?:…|\.{3})?\s*$/i.test(line));
+    if (welcome >= 0 && security > welcome && onboardingEnd > security && !laterPrompt(onboardingEnd)) return "menu";
     // Keep the footer controls together rather than matching ordinary prose about cancellation.
     // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/detect/manifests/claude.toml
     const footer = lines.findLastIndex(line => /^\s*Enter to (?:confirm|select(?:\s*·\s*(?:(?:tab\/arrow|arrow) keys|arrows|↑\/↓|↑↓) to navigate)?)\s*·\s*Esc to cancel\s*$/i.test(line));

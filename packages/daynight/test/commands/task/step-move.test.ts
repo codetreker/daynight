@@ -23,7 +23,7 @@ const fixture = () => {
   const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
   const stdout = vi.fn<(text: string) => void>();
   const context = { version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn(() => { throw new Error("private-config"); }), workingDirectory: vi.fn(() => "/"), stdout, stderr: vi.fn(), stdoutBytes: vi.fn<CliContext["stdoutBytes"]>(async (chunk) => { stdout(Buffer.from(chunk).toString("utf8")); }) } satisfies CliContext;
-  const dependencies = { resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue({ id: projectId } as Project), runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => { const output = await command({ api, operation, serverUrl: "http://localhost:8787" }); if (typeof output === "string") current.stdout(output); else if (output !== undefined) await current.stdoutBytes(Buffer.from(output.output), operation.signal); }) };
+  const dependencies = { resolveProject: vi.fn<TaskCommandDependencies["resolveProject"]>().mockResolvedValue({ id: projectId } as Project), runServerCommand: vi.fn<TaskCommandDependencies["runServerCommand"]>(async (current, command) => { const output = await command({ api, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } }); if (typeof output === "string") current.stdout(output); else if (output !== undefined) await current.stdoutBytes(Buffer.from(output.output), operation.signal); }) };
   const args = (more: readonly string[] = []) => ["step", "move", taskId.toUpperCase(), "00ABCDEF", `--project=${projectId.toUpperCase()}`, ...more];
   return { operation, fetch, api, context, dependencies, args };
 };

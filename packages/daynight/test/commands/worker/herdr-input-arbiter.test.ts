@@ -93,17 +93,51 @@ describe("durable Herdr input arbitration", () => {
     });
     f.arbiter.recover(); expect(f.arbiter.record().initialOutcome).toBe("unknown"); expect(f.arbiter.state().state).toBe("suspended");
     const denied = await f.arbiter.control(f.control("resume_automation")); expect(denied.result.state).toBe("rejected");
-    const ack = await f.arbiter.control(f.control("resume_automation", { initialUnknownDisposition: "delivered_continue" }));
+    expect(f.arbiter.state().availableActions).toContain("resolve_initial_assignment");
+    expect(f.arbiter.state().availableActions).not.toContain("resume_automation");
+    const request = f.control("resolve_initial_assignment", { initialUnknownDisposition: "delivered_continue" });
+    const ack = await f.arbiter.control(request);
     expect(ack.result.state).toBe("transport_completed"); expect(f.arbiter.record().initialOutcome).toBe("unknown");
     expect(f.arbiter.record().initialDisposition).toMatchObject({ actorUserId: id(8), disposition: "delivered_continue" });
-    expect(f.arbiter.state()).toMatchObject({ state: "automation", initialAssignment: "transport_completed" });
+    expect(f.arbiter.state()).toMatchObject({ state: "suspended", initialAssignment: "transport_completed" });
+    expect(await f.arbiter.control(request)).toEqual(ack);
+    expect((await f.arbiter.submit({ operationId: id(80), source: "continuation", text: "continue" })).state).toBe("rejected");
+    expect(f.arbiter.state().availableActions).not.toContain("resolve_initial_assignment");
+    expect(f.arbiter.state().availableActions).toContain("resume_automation");
     expect(f.arbiter.record().operations[0]!.result.state).toBe("unknown"); expect(f.writes).toHaveLength(0);
+    const resume = f.control("resume_automation");
+    f.close();
+    const reopened = openHerdrInputStore(f.filename, { onMigration: () => {} }); cleanups.push(() => reopened.close());
+    expect(reopened.get(f.target.sessionId)).toMatchObject({ state: "suspended", initialOutcome: "unknown", initialDisposition: { operationId: request.payload.request.operationId } });
+    const recovered = createHerdrInputArbiter({ store: reopened, sessionId: f.target.sessionId, execute: async () => { throw new Error("Control decisions must not write native input"); }, verify: async () => {} });
+    expect((await recovered.control(resume)).result.state).toBe("transport_completed");
+    expect(recovered.state()).toMatchObject({ state: "automation", initialAssignment: "transport_completed" });
+    expect(recovered.record().initialOutcome).toBe("unknown");
   });
   it("expires a lease on monotonic time and requires explicit handback", async () => {
     const f = fixture(); await f.initial(); await f.arbiter.control(f.control("acquire_control")); const input = f.input();
     f.advance(30_000); expect(f.arbiter.state().state).toBe("suspended");
     expect((await f.arbiter.input(input)).state).toBe("rejected");
     expect((await f.arbiter.control(f.control("resume_automation"))).result.state).toBe("transport_completed");
+  });
+  it("refuses initial disposition outside an unresolved suspended execution", async () => {
+    const f = fixture();
+    const resolve = () => f.control("resolve_initial_assignment", { initialUnknownDisposition: "delivered_continue" });
+    expect((await f.arbiter.control(resolve())).result.state).toBe("rejected");
+    f.store.update(f.arbiter.record(), draft => { draft.state = "suspended"; draft.initialOutcome = "unconfirmed"; draft.unknownInput = true; });
+    const stale = resolve();
+    await f.arbiter.control(f.control("acquire_control"));
+    expect(f.arbiter.state().availableActions).not.toContain("resolve_initial_assignment");
+    await expect(f.arbiter.control(resolve())).rejects.toThrow();
+    await f.arbiter.control(f.control("release_control"));
+    expect((await f.arbiter.control(stale)).result).toMatchObject({ state: "rejected", errorCode: "stale_fence" });
+    const ack = await f.arbiter.control(resolve());
+    expect(ack.controlState).toMatchObject({ state: "suspended", initialAssignment: "transport_completed" });
+    expect(f.arbiter.record()).toMatchObject({ initialOutcome: "unconfirmed", unknownInput: true });
+    expect((await f.arbiter.control(resolve())).result.state).toBe("rejected");
+    f.arbiter.beginClosing();
+    expect((await f.arbiter.control(resolve())).result.state).toBe("rejected");
+    expect(f.writes).toEqual([]);
   });
   it("revoke wins before native write and an already written batch stays unknown", async () => {
     for (const written of [false, true]) {

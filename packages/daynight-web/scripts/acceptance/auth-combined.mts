@@ -9,7 +9,7 @@ import { chromium, expect, request as playwrightRequest, type Browser, type Brow
 import { authenticatedAPI, browserFetch, tokenContext, type AuthenticatedAPI } from '../../tests/e2e/authentication.ts';
 import { stringifyApiJson } from '../../src/api/json.ts';
 import { login } from './auth-fixture.mts';
-import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recoverBrowsers, type BrowserInventory } from './browser.mts';
+import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recoverBrowsers, setBrowserViewport, type BrowserInventory } from './browser.mts';
 import { createAcceptanceCli, validateInstalledCli } from './installed-cli.mts';
 import { command } from './process.mts';
 import { processIdentity, requireGroupStopped, type ProcessIdentity } from './identity.mts';
@@ -150,8 +150,15 @@ export const validateAuthCombinedReceipt = (value: unknown, target: CombinedTarg
 const bilingualToken = async (page: Page, context: BrowserContext, origin: string, secrets: Set<string>, signal: AbortSignal): Promise<Token> => {
   await page.goto(`${origin}/account`);
   await page.getByRole('button', { name: 'Access tokens', exact: true }).click();
+  await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
+  await page.getByRole('button', { name: '创建令牌', exact: true }).click();
+  await expect(page.getByRole('dialog').getByLabel('令牌名称', { exact: false })).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+  await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
+  await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
   await page.getByRole('button', { name: 'Create token', exact: true }).click();
   const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
   const name = `Combined CLI ${randomUUID()}`;
   const input = dialog.getByLabel('Token name', { exact: false });
   await input.fill(name);
@@ -186,19 +193,18 @@ const bilingualToken = async (page: Page, context: BrowserContext, origin: strin
   try {
     await dialog.getByRole('button', { name: 'Create token', exact: true }).click();
     const token = await fetched.promise;
-    await dialog.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
-    check(await originalInput.evaluate((element) => element.isConnected), 'Language switching replaced the pending token input.');
-    check(await originalInput.evaluate((element) => (element as HTMLInputElement).value) === name && posts === 1, 'Language switching changed token input or repeated submission.');
+    check(await originalInput.evaluate((element) => element.isConnected), 'The pending token input was replaced.');
+    check(await originalInput.evaluate((element) => (element as HTMLInputElement).value) === name && posts === 1, 'The pending token input changed or submission repeated.');
     release.resolve();
     await finished.promise;
-    const secret = page.getByLabel('一次性访问令牌', { exact: true });
+    const secret = page.getByLabel('One-time access token', { exact: true });
     await expect(secret).toBeVisible();
     check(await secret.inputValue() === token.token, 'Production one-time token field differs from its response.');
     const originalSecret = await secret.elementHandle();
     check(originalSecret !== null, 'The revealed token element is missing.');
-    await page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
-    check(await originalSecret.evaluate((element) => element.isConnected), 'Language switching replaced the revealed token.');
-    check(await originalSecret.evaluate((element) => (element as HTMLTextAreaElement).value) === token.token && posts === 1, 'Language switching changed the token or repeated submission.');
+    await expect(page.getByRole('dialog').getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
+    check(await originalSecret.evaluate((element) => element.isConnected), 'The revealed token was replaced.');
+    check(await originalSecret.evaluate((element) => (element as HTMLTextAreaElement).value) === token.token && posts === 1, 'The revealed token changed or submission repeated.');
     await page.getByRole('dialog').getByRole('button', { name: 'I have saved it, close', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     return token;
@@ -257,7 +263,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 640 }, { width: 320, height: 240 }]) {
-      await page.setViewportSize(viewport);
+      await setBrowserViewport(page, viewport);
       await expect.poll(async () => {
         const box = await detail.boundingBox();
         return box !== null && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1
@@ -280,7 +286,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
         await detail.getByRole('tab', { name: '附件', exact: true }).click();
       }
     }
-    await page.setViewportSize({ width: 1440, height: 1000 });
+    await setBrowserViewport(page, { width: 1440, height: 1000 });
     await (await attachmentFileActions(detail, 'docs/long.md')).click();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('menu')).toHaveCount(0);
@@ -315,7 +321,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
   await (await attachmentFileButton(detail, 'docs/long.md')).click();
   await expect(detail.locator('.attachment-markdown h1')).toHaveText('Fullscreen reading');
   await toggle.click();
-  await page.setViewportSize({ width: 320, height: 240 });
+  await setBrowserViewport(page, { width: 320, height: 240 });
   const markdown = detail.locator('.attachment-preview-body');
   shortReading.markdownHeight = await visibleReadingHeight(markdown);
   shortReading.markdownScroll = await scrollReading(page, markdown);
@@ -323,7 +329,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
-  await page.setViewportSize({ width: 1440, height: 1000 });
+  await setBrowserViewport(page, { width: 1440, height: 1000 });
 
   const reader = await context.newPage();
   try {
@@ -452,7 +458,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     browser = await launchAuthCombinedBrowser(temporaryRoot, async () => chromium.launch({
       headless: true, channel: 'chromium', env: { ...process.env, TMPDIR: '.tmp', DAYNIGHT_ACCEPTANCE_DIRECTORY: options.directory },
       ...(process.env.DAYNIGHT_BROWSER_EXECUTABLE === undefined ? {} : { executablePath: process.env.DAYNIGHT_BROWSER_EXECUTABLE }) }));
-    await recordBrowserOwnership(browser, options.directory);
+    await recordBrowserOwnership(browser, options.directory, receipt.browserInventory);
     receipt.browser = { name: browser.browserType().name(), version: browser.version(), platform: process.platform, executableOverride: process.env.DAYNIGHT_BROWSER_EXECUTABLE !== undefined }; await save();
     const aliceContext = await browser.newContext({ baseURL: origin, locale: 'en-US', viewport: { width: 1440, height: 1000 } });
     const bobContext = await browser.newContext({ baseURL: origin, locale: 'en-US', viewport: { width: 1440, height: 1000 } });
@@ -491,7 +497,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await record('normal-member-writes', { taskId: task.id, privateTaskId: privateTask.id, memberVersion: bobMember.directGrant.version.toString(), administratorDenial: 403 });
     const originalToken = await bilingualToken(bobPage, bobContext, origin, secrets, signal);
     await screenshots(bobPage, 'account-english-after-secret-close');
-    await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['en', 'zh-CN', 'en'] });
+    await record('bilingual-token', { tokenId: originalToken.id, requests: 1, pendingInputRetained: true, revealedElementRetained: true, locales: ['zh-CN', 'en'] });
     const bobCli = await cli(originalToken.token, 'original-cli');
     const tokenApi = await tokenContext(playwrightRequest, origin, originalToken.token);
     tokenClients.push(tokenApi);
