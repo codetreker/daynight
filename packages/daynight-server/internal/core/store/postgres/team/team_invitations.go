@@ -7,6 +7,7 @@ import (
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -49,6 +50,36 @@ func (s *reader) TeamInvitations(ctx context.Context, id string, now time.Time) 
 	}
 	return result, pg.AuthQueryError("list Team invitations", rows.Err())
 }
+
+func (s *reader) TeamInvitationPage(ctx context.Context, id string, now time.Time, page store.Page) (store.TeamInvitationPage, error) {
+	afterTime, afterID := pg.PageValues(page)
+	rows, err := s.tx.Query(ctx, `SELECT id::text,team_id::text,created_by::text,NULL::bytea,created_at,expires_at,consumed_by::text,consumed_at,revoked_at FROM team_invitations
+		WHERE team_id=$1 AND expires_at>$2 AND consumed_at IS NULL AND revoked_at IS NULL
+		AND ($3::timestamptz IS NULL OR (created_at,id)>($3,$4::uuid))
+		ORDER BY created_at,id LIMIT $5`, id, now, afterTime, afterID, page.Limit+1)
+	if err != nil {
+		return store.TeamInvitationPage{}, pg.QueryError("list Team invitations", err)
+	}
+	defer rows.Close()
+	items := make([]model.TeamInvitation, 0, page.Limit+1)
+	for rows.Next() {
+		i, err := scanTeamInvitation(rows)
+		if err != nil {
+			return store.TeamInvitationPage{}, pg.QueryError("list Team invitations", err)
+		}
+		i.TokenHash = nil
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return store.TeamInvitationPage{}, pg.AuthQueryError("list Team invitations", err)
+	}
+	more := len(items) > page.Limit
+	if more {
+		items = items[:page.Limit]
+	}
+	return store.TeamInvitationPage{Items: items, HasMore: more}, nil
+}
+
 func (tx *writer) RevokeInvitation(ctx context.Context, id string, now time.Time) (bool, error) {
 	result, err := tx.tx.Exec(ctx, `UPDATE team_invitations SET revoked_at=$3 WHERE team_id=$1 AND id=$2 AND revoked_at IS NULL AND consumed_at IS NULL`, tx.teamID, id, now)
 	if err != nil {

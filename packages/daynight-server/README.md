@@ -326,11 +326,14 @@ ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
 The endpoint advertises Project creation, transfer, listing and inspection,
-and Task creation, reading, updating, status, deletion and property tools. A tool
-is discoverable only after its complete business adapter is registered. Task
-mutation inputs use the existing 1 MiB business JSON limit; versions are decimal
-strings and property values use `valueText`. Task results default to a marked
-summary; request `full` for the complete resource.
+Team invitation creation, listing and revocation, inspection and acceptance of
+Team or Project invitations, and Task creation, reading, updating, status,
+deletion and property tools. A tool is discoverable only after its complete
+business adapter is registered. Invitation links are returned only by creation;
+listing returns metadata without secrets. Task mutation inputs use the existing
+1 MiB business JSON limit; versions are decimal strings and property values use
+`valueText`. Task results default to a marked summary; request `full` for the
+complete resource.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
@@ -511,6 +514,18 @@ sequence. Use `bash scripts/check.sh --coverage` or `bash scripts/check.sh --e2e
 to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
+
+### HTTP scenario ownership
+
+Domain packages own their HTTP integration scenarios, including those that
+construct the production application and use real PostgreSQL and UniAuth
+fixtures. The root `internal/server` package retains tests that need internal
+composition access, shared startup/channel fixtures and runtime shutdown
+ordering. A second package calling the same production application does not
+provide another HTTP boundary: shared scenarios run once in their domain owner,
+while internal-only assertions remain in the root package. The
+[HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+records the distinction and preservation requirements.
 
 ### Task Graph boundary fixtures
 
