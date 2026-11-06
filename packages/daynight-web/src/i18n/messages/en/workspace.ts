@@ -26,6 +26,14 @@ export const workspace: WorkspaceMessages = {
     refreshFailed: "Refresh failed", showingSnapshot: "Showing the last successfully loaded data.", retryRefresh: "Retry refresh", selectedTaskRemoved: "The selected task is no longer in the updated task graph. Its details have been closed.", dismissNotice: "Dismiss notification",
     statistics: "Project task statistics", totalTasks: "Total tasks", uniqueTasks: "Unique task IDs", completion: ({ percent }) => `${number(percent)}% complete`, waiting: "Waiting to start", advancing: "Work in progress", ready: "Ready", blocked: "Blocked", todoSubset: "A subset of to-do tasks", empty: "No tasks yet", emptyDetail: "Project tasks will appear here. Create a task, then refresh to see it.", chains: "Task dependency chains",
   },
+  search: {
+    form: "Search project tasks", input: "Search task titles and descriptions", placeholder: "Search titles and descriptions with AND, OR, NOT…", submit: "Search", clear: "Clear search",
+    help: "Search syntax", helpDescription: "Search the complete title and description in this project.", helpExamples: 'Use spaces for AND, OR, NOT, parentheses, quoted phrases, title: and description:. For example: title:cache AND (Worker OR Agent)',
+    heading: "Search results", applied: ({ query }) => `Results for: ${query}`, empty: "No matching tasks", loading: "Searching tasks…",
+    failed: "Search could not be completed.", stale: "Showing the last successful results; refresh failed.", syntax: ({ position, reason }) => `Search syntax at character ${position}: ${reason}`,
+    reasons: { empty_query: "Enter an expression.", empty_phrase: "A phrase cannot be empty.", expected_operand: "An expression is required here.", field_group_not_supported: "Fields cannot be applied to a group.", invalid_escape: "Use only escaped quotes or backslashes.", missing_field_value: "A field needs a value.", nesting_too_deep: "Too many nested groups.", query_too_large: "The expression is too long.", too_many_terms: "The expression has too many terms.", unclosed_group: "Close the parentheses.", unclosed_quote: "Close the quoted phrase.", unexpected_closing_group: "Unexpected closing parenthesis.", unexpected_token: "Unexpected token.", unknown_field: "Unknown field; use title or description." },
+    open: ({ title }) => `Open task: ${title}`, titleMatch: "Title match", descriptionMatch: "Description match", negativeMatch: "Negative condition", updated: ({ date }) => `Updated ${date}`,
+  },
   overview: {
     heading: "Overall progress", standalone: "Standalone tasks", standaloneScope: "Unfinished tasks + tasks completed today or in the previous 6 days",
     allCompleted: "No recent tasks", allCompletedDetail: "There are no unfinished tasks or tasks completed today or in the previous 6 days.",
