@@ -375,7 +375,6 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                   </aside>
                 </div></>} />}
         </div>
-        <footer className="task-detail-footer">{m.footer}</footer>
         {status !== 'deleted' && <TaskDeletionFeedback key={`${scope}/deletion`} mutation={task.mutation} onReconcile={task.reconcile} />}
         <TaskWithdrawalFeedback key={`${scope}/withdrawal`} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskPauseFeedback key={`${scope}/pause`} mutation={task.mutation} onReconcile={task.reconcile} />
