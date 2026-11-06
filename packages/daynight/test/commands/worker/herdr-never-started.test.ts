@@ -28,7 +28,7 @@ const fixture = () => {
   let store = openWorkerStore(paths.databaseFile); cleanups.push(() => store.close());
   const project = { projectId: uuid(3), repoUrl: "https://example.test/org/repo.git", localPath: path.join(root, "repo") }; mkdirSync(project.localPath); store.registerProject(project);
   const tasks = new Map<string, Task>(), events: WorkerEvent[] = [];
-  const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => userId), readTask: vi.fn(async (_project: string, id: string) => tasks.get(id)!), ownInventory: vi.fn(async () => [] as Task[]), candidates: vi.fn(async function* () {}), claim: vi.fn() } as unknown as WorkerRemote;
+  const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => userId), readTask: vi.fn(async (_project: string, id: string) => tasks.get(id)!), ownInventory: vi.fn(async () => ({ tasks: [] as Task[], coveredProjectIds: [project.projectId], unavailableProjectIds: [] })), candidates: vi.fn(async function* () {}), claim: vi.fn() } as unknown as WorkerRemote;
   const git = { listWorktrees: vi.fn(async () => []), findWorktree: vi.fn(async () => null), prepareWorktree: vi.fn(async () => { throw new Error("Preparation failed before creating resources."); }), removeWorktree: vi.fn(), removeEmptyReservation: vi.fn() } as unknown as WorkerGitManager;
   const open = () => createDurableWorkerHerdr({ paths, homeDirectory: root, serverOrigin: origin, serverToken: "fixture", workerId, readTask: (...args) => remote.readTask(...args), currentUserId: (...args) => remote.currentUserId(...args), createAdapter: () => ({}) as WorkerHerdrAdapter });
   let herdr = open(); cleanups.push(() => herdr.lifecycle!.close());
@@ -145,12 +145,12 @@ it.each(["exact", "wrong-task", "unconfirmed"])("requires an authoritative origi
 });
 it("waits for the original preparation job to settle before retiring its failed registration", async () => {
   const f = fixture(), owner = f.register(0), coordinator = f.coordinator(true);
-  vi.mocked(f.remote.ownInventory).mockImplementation(async () => [f.tasks.get(owner.taskId)!]);
+  vi.mocked(f.remote.ownInventory).mockImplementation(async () => ({ tasks: [f.tasks.get(owner.taskId)!], coveredProjectIds: [owner.projectId], unavailableProjectIds: [] }));
   let rejectPreparation!: (error: Error) => void;
   vi.mocked(f.git.prepareWorktree).mockImplementation(() => new Promise((_resolve, reject) => { rejectPreparation = reject; }));
   await coordinator.tick();
   await vi.waitFor(() => expect(f.git.prepareWorktree).toHaveBeenCalledOnce());
-  f.end(owner); vi.mocked(f.remote.ownInventory).mockResolvedValue([]);
+  f.end(owner); vi.mocked(f.remote.ownInventory).mockResolvedValue({ tasks: [], coveredProjectIds: [owner.projectId], unavailableProjectIds: [] });
   await coordinator.tick(); expect(f.herdr.lifecycle!.neverStarted!.retired()).toEqual([]);
   rejectPreparation(new Error("Preparation failed before acquiring resources."));
   await new Promise<void>(resolve => setImmediate(resolve));
