@@ -95,6 +95,13 @@ describe("owned Bot CLI capability probes", () => {
     await f.scope.close(); await checkStopped(f.scope);
   }, 120_000);
 
+  it("reports an output limit distinctly and still stops every owned descendant", async () => {
+    const f = await fixture("process.stdout.write('x'.repeat(65537));");
+    await expect(f.scope.run(process.execPath, [f.file])).rejects.toMatchObject({ code: "limit_exceeded" });
+    expect((await readFile(f.pidFile, "utf8")).trim()).not.toBe("");
+    await f.scope.close(); await checkStopped(f.scope);
+  }, 120_000);
+
   it("stops the complete scope after a command deadline", async () => {
     const f = await fixture("setInterval(() => {}, 1000);", undefined, 5_000);
     await expect(f.scope.run(process.execPath, [f.file])).rejects.toThrow(/deadline/);

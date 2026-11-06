@@ -2,17 +2,19 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { validateServerToken, validateTokenTransport } from "../../../config/server-token.js";
 import type { WorkerDirectoryInput, WorkerDirectoryResult } from "./directory.js";
+import { parseWorkerModelInput, type WorkerModelInput, type WorkerModelResult } from "./models.js";
 
 export const WORKER_READONLY_PROTOCOL = "daynight.worker-readonly.v1";
 /** Add operations with their own input validation and bounded executor; never accept shell commands. */
 export interface WorkerReadOnlyOperations {
   "directory.list": { input: WorkerDirectoryInput; result: WorkerDirectoryResult };
+  "model.list": { input: WorkerModelInput; result: WorkerModelResult };
 }
 export type WorkerReadOnlyOperation = keyof WorkerReadOnlyOperations;
 type Fence = { protocol: typeof WORKER_READONLY_PROTOCOL; ownerUserId: string; workerId: string; connectionId: string; capabilityGeneration: string };
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-const codes = new Set(["permission_denied", "not_found", "timeout", "cancelled", "invalid_path", "invalid_cursor", "io_error", "limit_exceeded", "unsupported", "busy"]);
+const codes = new Set(["permission_denied", "not_found", "timeout", "cancelled", "invalid_path", "invalid_cursor", "io_error", "limit_exceeded", "unsupported", "busy", "invalid_input", "capability_error", "cleanup_unknown", "stale_configuration"]);
 const validInput = (value: unknown): value is WorkerDirectoryInput => {
   if (!record(value) || Object.keys(value).some(key => !["path", "filter", "showHidden", "cursor", "limit"].includes(key))) return false;
   for (const key of ["path", "filter", "cursor"]) if (Object.hasOwn(value, key) && (typeof value[key] !== "string" || !value[key].isWellFormed() || value[key].includes("\0") || Buffer.byteLength(value[key]) > (key === "cursor" ? 16384 : 4096))) return false;
@@ -25,6 +27,7 @@ export const createWorkerReadOnlyChannel = (options: {
   configurationSignature(): string;
   execute<K extends WorkerReadOnlyOperation>(operation: K, input: WorkerReadOnlyOperations[K]["input"], signal: AbortSignal): Promise<WorkerReadOnlyOperations[K]["result"]>;
   onError(message: string): void;
+  onInvalidate?(): void;
 }) => {
   validateTokenTransport(options.serverOrigin);
   const token = validateServerToken(options.serverToken);
@@ -36,6 +39,7 @@ export const createWorkerReadOnlyChannel = (options: {
   const executing = new Set<Promise<unknown>>();
   const detach = (): void => {
     const old = socket; socket = undefined; fence = undefined;
+    options.onInvalidate?.();
     for (const item of pending.values()) { clearTimeout(item.timer); item.controller.abort(); }
     pending.clear(); retryAt = Date.now() + 5000;
     old?.terminate();
@@ -54,7 +58,7 @@ export const createWorkerReadOnlyChannel = (options: {
     socket = ws;
     ws.on("open", () => {
       if (socket !== ws || stopped) return;
-      send(ws, { type: "hello", protocol: WORKER_READONLY_PROTOCOL, capabilityGeneration: generation, operations: ["directory.list"] });
+      send(ws, { type: "hello", protocol: WORKER_READONLY_PROTOCOL, capabilityGeneration: generation, operations: ["directory.list", "model.list"] });
     });
     ws.on("error", () => { if (socket === ws) { options.onError("Worker read-only channel is unavailable; reconnecting."); detach(); } });
     ws.on("close", () => { if (socket === ws) detach(); });
@@ -84,28 +88,40 @@ export const createWorkerReadOnlyChannel = (options: {
         const reply = (body: unknown): void => {
           if (socket === ws && fence?.connectionId === requestFence.connectionId && options.configurationSignature() === signature) send(ws, { type: "result", ...requestFence, requestId, ...body as object });
         };
-        if (value.operation !== "directory.list") { reply({ error: { code: "unsupported", message: "This Worker does not support the requested read-only operation." } }); return; }
-        if (!validInput(value.input)) { reply({ error: { code: "invalid_path", message: "Directory query input is invalid." } }); return; }
+        if (value.operation !== "directory.list" && value.operation !== "model.list") { reply({ error: { code: "unsupported", message: "This Worker does not support the requested read-only operation." } }); return; }
+        const operationName = value.operation;
+        let input: WorkerDirectoryInput | WorkerModelInput;
+        if (operationName === "directory.list") {
+          if (!validInput(value.input)) { reply({ error: { code: "invalid_path", message: "Directory query input is invalid." } }); return; }
+          input = value.input;
+        } else {
+          try { input = parseWorkerModelInput(value.input); }
+          catch { reply({ error: { code: "invalid_input", message: "Model query input is invalid." } }); return; }
+        }
         if (executing.size >= 16) { reply({ error: { code: "busy", message: "Worker read-only request capacity is unavailable." } }); return; }
         const controller = new AbortController();
         const item = { controller, timer: setTimeout(() => {
           if (pending.get(requestId) !== item) return;
-          pending.delete(requestId); controller.abort(); reply({ error: { code: "timeout", message: "Worker directory query timed out." } });
+          pending.delete(requestId); controller.abort(); reply({ error: { code: "timeout", message: "Worker read-only query timed out." } });
         }, 10000) };
         pending.set(requestId, item);
-        let operation: Promise<WorkerDirectoryResult>;
-        try { operation = options.execute("directory.list", value.input, controller.signal); }
+        let operation: Promise<WorkerDirectoryResult | WorkerModelResult>;
+        try { operation = options.execute(operationName, input, controller.signal); }
         catch (error) { operation = Promise.reject(error); }
         executing.add(operation);
         void operation.then(result => {
           if (pending.get(requestId) !== item) return;
-          if (Buffer.byteLength(JSON.stringify(result)) > 64 * 1024 || result.entries.length > 100) reply({ error: { code: "limit_exceeded", message: "Directory result exceeds its limit." } });
+          const entries = operationName === "directory.list" ? (result as WorkerDirectoryResult).entries : (result as WorkerModelResult).models;
+          if (Buffer.byteLength(JSON.stringify(result)) > 64 * 1024 || entries.length > 100) reply({ error: { code: "limit_exceeded", message: "Read-only result exceeds its limit." } });
           else reply({ result });
         }, error => {
-          if (pending.get(requestId) !== item) return;
           const code = record(error) && typeof error.code === "string" && codes.has(error.code) ? error.code : "io_error";
+          // Cleanup can finish after cancellation removed the response waiter.
+          // Its owner still retains the proof; keep the failure observable too.
+          if (code === "cleanup_unknown") options.onError("Worker model probe cleanup remains unconfirmed (cleanup_unknown).");
+          if (pending.get(requestId) !== item) return;
           // Do not expose native exception text, filesystem details or credentials.
-          reply({ error: { code, message: `Worker directory query failed (${code}).` } });
+          reply({ error: { code, message: `Worker read-only query failed (${code}).` } });
         }).catch(() => { if (socket === ws) detach(); }).finally(() => {
           executing.delete(operation); clearTimeout(item.timer);
           if (pending.get(requestId) === item) pending.delete(requestId);

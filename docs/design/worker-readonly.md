@@ -15,7 +15,7 @@
 | `GET /api/v1/me/workers/{workerId}/readonly/channel` | Worker 以 PAT 建立 WebSocket |
 | `POST /api/v1/me/workers/{workerId}/readonly/requests` | 所有者提交有界查询，HTTP 请求保持到结果或失败 |
 
-Worker 首帧为 `{type:"hello",protocol,capabilityGeneration,operations:["directory.list"]}`，其中能力代次为 UUID。服务端生成连接 UUID 并返回 `ready`，其身份字段为 `ownerUserId`、`workerId`、`connectionId`、`capabilityGeneration` 和 `protocol`。
+Worker 首帧为 `{type:"hello",protocol,capabilityGeneration,operations:["directory.list","model.list"]}`，其中能力代次为 UUID。旧 Worker 可只声明目录操作；服务端保存连接声明的操作，未声明的查询返回 unsupported。服务端生成连接 UUID 并返回 `ready`，其身份字段为 `ownerUserId`、`workerId`、`connectionId`、`capabilityGeneration` 和 `protocol`。
 
 HTTP 请求包含 UUID `requestId`、`operation:"directory.list"`、`input`。目录输入的 `path`、`filter`、`showHidden`、`cursor`、`limit` 均可省略；`null` 不等同省略。默认值分别为 Worker cwd、空筛选、false、第一页和 100 项。路径最多 4,096 UTF-8 字节，筛选最多 256 字节，游标最多 4,096 字节。
 
@@ -42,7 +42,7 @@ Node 文件系统调用没有可依赖的原生取消机制。浏览器在超时
 
 Web 的 `api/worker-readonly.ts` 提供 `requestWorkerReadonly` 与 `browseWorkerDirectory`，校验响应用户、Worker、请求 ID、身份字段和容量。账号认证代次改变或调用方 AbortSignal 取消时拒绝返回结果。调用方切换 Worker 或关闭浏览页时必须取消原 signal；可附加当前表单代次判断。只读操作不自动重试。
 
-CLI 的 `WorkerReadOnlyOperations` 是类型化操作扩展点。增加模型发现时应新增明确的输入/输出校验与有界执行器，并更新协议能力，不接受任意命令字符串。目录 UI 与模型具体选项不属于本通道。
+CLI 的 `WorkerReadOnlyOperations` 是类型化操作扩展点。[模型发现](worker-model-discovery.md)拥有 `model.list` 的输入、结果、原生探测和分页快照；通道不接受任意命令字符串。Go 保存待处理请求的操作和 Provider，据此校验返回值；不能将任意已认证结果当作目录或模型结果。Web 的 `discoverWorkerModels` 同样保留信封并复核 Provider。目录 UI 与模型具体选项不属于通道的通用机制。
 
 ## 验证入口
 

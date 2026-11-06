@@ -139,7 +139,7 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 		return
 	}
 	if r.Context().Err() == nil {
-		raw, err := readOnlyResultJSON(result)
+		raw, err := readOnlyResultJSON(result, input.Operation)
 		if err != nil {
 			h.failure(w, r, err)
 			return
@@ -152,8 +152,8 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 	}
 }
 
-func readOnlyResultJSON(result ro.Message) ([]byte, error) {
-	if err := ro.ValidateResult(result); err != nil {
+func readOnlyResultJSON(result ro.Message, operation string) ([]byte, error) {
+	if err := ro.ValidateOperationResult(result, operation); err != nil {
 		return nil, err
 	}
 	var raw bytes.Buffer

@@ -53,6 +53,9 @@ import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
 import { browseWorkerDirectory } from "./read-only/directory.js";
+import { createWorkerModelDiscovery, WorkerModelDiscoveryError, type WorkerModelInput } from "./read-only/models.js";
+import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
+import type { WorkerDirectoryInput } from "./read-only/directory.js";
 import { createWorkerGitManager } from "./worktrees.js";
 import { normalizeWorkerNative, workerRuntimeConfigurationReport } from "./native-overrides.js";
 import type { WorkerLocalNativeOverrides } from "./local-native.js";
@@ -220,6 +223,7 @@ export const runWorker = async (options: {
   let bots: WorkerBotHost | undefined;
   let botRun: Promise<void> | undefined;
   let readOnly: ReturnType<typeof createWorkerReadOnlyChannel> | undefined;
+  let modelDiscovery: ReturnType<typeof createWorkerModelDiscovery> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
   const localMappingJobs = new Map<string, Promise<void>>();
   const localMappingRetryAt = new Map<string, number>();
@@ -386,9 +390,24 @@ export const runWorker = async (options: {
       }
     }
     const manager = configuration;
+    modelDiscovery = createWorkerModelDiscovery({
+      defaultCwd: options.workingDirectory, environment: process.env, verifier: selectionVerifier,
+      configuration: () => {
+        const native = manager.current().effective.native;
+        if (native === null) throw new WorkerModelDiscoveryError("capability_error");
+        return normalizeWorkerNative(native, "web", local, false);
+      },
+    });
+    const executeReadOnly = async <K extends WorkerReadOnlyOperation>(operation: K, input: WorkerReadOnlyOperations[K]["input"], requestSignal: AbortSignal): Promise<WorkerReadOnlyOperations[K]["result"]> => {
+      const result = operation === "directory.list"
+        ? await browseWorkerDirectory(input as WorkerDirectoryInput, { defaultCwd: options.workingDirectory, signal: requestSignal })
+        : await modelDiscovery!.discover(input as WorkerModelInput, requestSignal);
+      return result as WorkerReadOnlyOperations[K]["result"];
+    };
     readOnly = createWorkerReadOnlyChannel({ serverOrigin: serverUrl, serverToken, ownerUserId: userId, workerId,
-      configurationSignature: () => JSON.stringify(manager.current().effective),
-      execute: (_operation, input, requestSignal) => browseWorkerDirectory(input, { defaultCwd: options.workingDirectory, signal: requestSignal }),
+      configurationSignature: () => JSON.stringify([manager.current().effective, local.agentModel, local.agentReasoningEffort]),
+      execute: executeReadOnly,
+      onInvalidate: () => modelDiscovery?.invalidate(),
       onError: message => emit({ kind: "worker-readonly", message }),
     });
     const scheduleLocalMappingChecks = (): void => {
@@ -669,6 +688,7 @@ export const runWorker = async (options: {
   } finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
     readOnly?.close();
+    modelDiscovery?.close();
     await Promise.allSettled([...localMappingJobs.values()]);
     await renewal;
     try { await reporter?.stop(); } catch (error) { failures.push(error); }

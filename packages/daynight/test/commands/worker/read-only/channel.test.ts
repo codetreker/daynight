@@ -14,15 +14,16 @@ afterEach(() => { disposals.splice(0).forEach(close => close()); sockets.length 
 const setup = (execute = vi.fn(async () => ({ path: "/", parentPath: null, entries: [], nextCursor: null }))) => {
   const ownerUserId = randomUUID(), workerId = randomUUID();
   let signature = "one";
+  const onError = vi.fn();
   const channel = createWorkerReadOnlyChannel({ serverOrigin: "http://127.0.0.1:1234", serverToken: "test-token", ownerUserId, workerId,
-    configurationSignature: () => signature, execute, onError: vi.fn() });
+    configurationSignature: () => signature, execute, onError });
   disposals.push(channel.close);
   const socket = sockets[0]; socket.emit("open");
   const hello = socket.sent[0];
   const fence = { protocol: WORKER_READONLY_PROTOCOL, ownerUserId, workerId, connectionId: randomUUID(), capabilityGeneration: hello.capabilityGeneration };
   const emit = (value: unknown) => socket.emit("message", Buffer.from(JSON.stringify(value)), false);
   emit({ type: "ready", ...fence });
-  return { channel, socket, fence, emit, execute, change: () => { signature = "two"; } };
+  return { channel, socket, fence, emit, execute, onError, change: () => { signature = "two"; } };
 };
 test("routes only the ready identity and preserves all result fences", async () => {
   const { socket, fence, emit, execute } = setup();
@@ -102,4 +103,40 @@ test("native errors are classified without leaking their messages", async () => 
   emit({ type: "request", ...fence, requestId: randomUUID(), operation: "directory.list", input: {}, timeoutMs: 10000 });
   await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
   expect(socket.sent[1].error.code).toBe("permission_denied"); expect(JSON.stringify(socket.sent)).not.toContain("secret path");
+});
+
+test("model requests dispatch independently of directory result shape", async () => {
+  const result = { schemaVersion: 1, provider: "codex", models: [], nextCursor: null };
+  const execute = vi.fn(async () => result as any);
+  const { emit, fence, socket } = setup(execute);
+  expect(socket.sent[0].operations).toContain("model.list");
+  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex" }, timeoutMs: 10000 });
+  await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+  expect(socket.sent[1].result).toEqual(result);
+  expect(execute).toHaveBeenCalledWith("model.list", { provider: "codex" }, expect.any(AbortSignal));
+});
+
+test("model input failures do not dispatch and cleanup errors remain distinguishable", async () => {
+  const execute = vi.fn(async () => { throw Object.assign(new Error("private process proof"), { code: "cleanup_unknown" }); });
+  const { emit, fence, socket } = setup(execute);
+  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex", model: null }, timeoutMs: 10000 });
+  expect(socket.sent.at(-1).error.code).toBe("invalid_input");
+  expect(execute).not.toHaveBeenCalled();
+  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex" }, timeoutMs: 10000 });
+  await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+  expect(socket.sent[2].error.code).toBe("cleanup_unknown");
+  expect(JSON.stringify(socket.sent)).not.toContain("private process proof");
+});
+
+test("reports unconfirmed cleanup even after the caller cancels", async () => {
+  let reject!: (error: unknown) => void;
+  const execute = vi.fn(() => new Promise<any>((_resolve, failure) => { reject = failure; }));
+  const { emit, fence, socket, onError } = setup(execute);
+  const requestId = randomUUID();
+  emit({ type: "request", ...fence, requestId, operation: "model.list", input: { provider: "codex" }, timeoutMs: 10000 });
+  emit({ type: "cancel", ...fence, requestId });
+  reject(Object.assign(new Error("private proof"), { code: "cleanup_unknown" }));
+  await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("cleanup_unknown")));
+  expect(socket.sent).toHaveLength(1);
+  expect(JSON.stringify(onError.mock.calls)).not.toContain("private proof");
 });
