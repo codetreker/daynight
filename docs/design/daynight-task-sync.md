@@ -222,7 +222,7 @@ projectSummaries 显式从图节点投影剔除 version 与 properties，保留 
 
 Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完整 Task 与 `TaskCacheEpoch`；事务完成后才发布原完整正文与 `Daynight-Task-Epoch`。Web 的 `getTaskObservation` 严格验证主体、身份及 epoch。`TaskObservationInput` 区分摘要和 direct；后者由 `TaskCacheScope` 建立 userFence、项目 revision、history generation、Task、opening 和请求 generation 围栏，不要求 manifest。成功观察只属于当前 opening，不能写入持久详情或推进同步水位。摘要来源保留原完整摘要校验和持久化规则。
 
-图同步和 Task GET 使用同一 history 观察。有效 epoch 更替先退休旧投影、详情、Steps 与阅读子树并使旧 ticket 失效，再在新围栏下至多补读一次；缺失或 invalidated manifest 不是 epoch 更替证据。已确认写保留 committedVersion，实时 GET 达到下界才能重新可写；unknown 和 conflict 只读核对。来源资格、父版本与写前审阅由详情会话统一检查。direct 的关系、人员目录和 Session 记录各自读取并受同一 opening 资格约束，不用伪造摘要授权；局部关系不承诺完整外部后续。
+图同步和 Task GET 使用同一 history 观察。有效 epoch 更替先退休旧投影、详情、Steps 与阅读子树并使旧 ticket 失效，再在新围栏下至多补读一次；缺失或 invalidated manifest 不是 epoch 更替证据。其他标签提交的 manifest 与当前实时 epoch 冲突时，先退休已有准入并触发实时补读；该持久结果可能来自更早的请求，不能单独证明历史先后或永久退休当前 epoch，只有当前网络观察确认更替后才能退休旧 epoch。持久 manifest 与已知实时 epoch 不一致时不能作为项目预览发布，网络失败也不能恢复该旧投影。普通身份核验期间保留当前详情、关系和本地输入，认证屏障仍阻止新的网络请求与写入；实际身份、项目或历史失效立即撤回内容。已确认写保留 committedVersion，实时 GET 达到下界才能重新可写；unknown 和 conflict 只读核对。来源资格、父版本与写前审阅由详情会话统一检查。direct 的关系、人员目录和 Session 记录各自读取并受同一 opening 资格约束，不用伪造摘要授权；局部关系不承诺完整外部后续。
 
 ### 详情存储与预算
 

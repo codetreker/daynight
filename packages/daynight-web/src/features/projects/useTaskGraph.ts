@@ -134,7 +134,7 @@ export const useTaskGraph = (projectId: string) => {
       if (event.historyChanged === true) {
         liveAccess.current = false; receipt.current = null;
         setState({ projectId, scope, snapshot: null, status: "loading", refreshing: false, error: null });
-        if (!observingHistory.current) void request(false, true);
+        if (!observingHistory.current) void request(false, event.historyHint !== true);
         return;
       }
       if (event.accessRestored === true) { void request(); return; }

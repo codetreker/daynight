@@ -96,6 +96,7 @@ type Entry = {
   source: "project-summary" | "direct";
   receipt: DirectTaskReceipt | null;
   historyRetry: boolean;
+  historyHintRetry: boolean;
   directParentReadFailed: boolean;
   withdrawn: boolean;
   operationFence: TaskReadFence | null;
@@ -167,9 +168,10 @@ export class TaskDetailSessions {
       for (const entry of this.entries.values()) {
         if (entry.steps.projectId !== event.projectId) continue;
         if (entry.source === "direct" && (event.historyChanged || event.accessRevoked)) {
-          const canRetry = event.historyChanged === true && !entry.historyRetry && entry.listeners.size > 0;
+          const canRetry = event.historyChanged === true && (event.historyHint ? !entry.historyHintRetry : !entry.historyRetry) && entry.listeners.size > 0;
           this.retireMutation(entry);
-          entry.historyRetry = event.historyChanged === true;
+          if (event.historyHint) entry.historyHintRetry = true;
+          else if (event.historyChanged) entry.historyRetry = true;
           this.cancelRead(event.projectId, entry.steps.taskId);
           entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null; entry.committedVersion = null;
           entry.pending = null; entry.mismatch = null; entry.admitted = !event.accessRevoked;
@@ -219,7 +221,7 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, source: "project-summary", receipt: null, historyRetry: false, directParentReadFailed: false, withdrawn: false, operationFence: null, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, source: "project-summary", receipt: null, historyRetry: false, historyHintRetry: false, directParentReadFailed: false, withdrawn: false, operationFence: null, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -232,14 +234,14 @@ export class TaskDetailSessions {
       entry.receipt.fence.openingSequence === entry.openingGeneration ? entry.receipt.detail.version : null;
     return this.summaryVersion(entry.steps.projectId, entry.steps.taskId);
   }
-  private ticketCurrent(entry: Entry, ticket: ReadTicket): boolean {
-    return "historyGeneration" in ticket ? entry.source === "direct" && ticket.openingSequence === entry.openingGeneration && this.scope.isTaskReadCurrent(ticket)
+  private ticketCurrent(entry: Entry, ticket: ReadTicket, allowAuthPaused = false): boolean {
+    return "historyGeneration" in ticket ? entry.source === "direct" && ticket.openingSequence === entry.openingGeneration && this.scope.isTaskReadCurrent(ticket, allowAuthPaused)
       : entry.source === "project-summary" && ticket.scopeRevision === this.scope.getProjectRevision(ticket.projectId) && this.projectGeneration(ticket.projectId) === ticket.cacheGeneration;
   }
   historyGeneration(projectId: string): number { return this.scope.getHistoryGeneration(projectId); }
-  directRequiresFreshRead(projectId: string, taskId: string): boolean {
+  directRequiresFreshRead(projectId: string, taskId: string, allowAuthPaused = false): boolean {
     const entry = this.entry(projectId, taskId);
-    return entry.source !== "direct" || entry.receipt === null || !this.ticketCurrent(entry, entry.receipt.fence) || entry.state.requiresFreshRead ||
+    return entry.source !== "direct" || entry.receipt === null || !this.ticketCurrent(entry, entry.receipt.fence, allowAuthPaused) || entry.state.requiresFreshRead ||
       this.hasRetiredWrite(projectId, taskId) ||
       entry.state.status !== "ready" || entry.state.error !== null || entry.state.detail?.version !== entry.receipt.detail.version ||
       entry.state.mutation.phase === "unknown" || entry.state.mutation.reconciling || entry.state.mutation.reconciliationError !== null ||
@@ -311,7 +313,7 @@ export class TaskDetailSessions {
     this.retireMutation(entry, true);
     this.cancelRead(projectId, taskId);
     this.clearSteps(entry.steps, emptyTaskStepsState);
-    entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.receipt = null; entry.admitted = true;
+    entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.historyHintRetry = false; entry.receipt = null; entry.admitted = true;
     entry.observedGeneration = this.entryGeneration(entry); entry.committedVersion = null; entry.deletedGeneration = null;
     entry.liveVersion = null; entry.pending = null; entry.mismatch = null;
     this.publish(entry, { ...initialState(), revision: 1 });
@@ -918,7 +920,7 @@ export class TaskDetailSessions {
         throw new ApiError("protocol");
       }
       entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
-      entry.historyRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
+      entry.historyRetry = false; entry.historyHintRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
       const mutation = reconciliation
         ? { ...entry.state.mutation, phase: entry.state.mutation.phase === "unknown" ? "reconciled" as const : entry.state.mutation.phase,
           ...(entry.state.mutation.phase === "unknown" ? { reconciledFrom: "unknown" as const } : {}), reconciling: false, reconciliationError: null }

@@ -4,7 +4,7 @@ import { isThreadScopeLoss } from '../task-thread/api';
 import { TaskDiscussion } from '../task-thread/TaskDiscussion';
 import { readPullRequests, readTaskPaused, readWorkerClaim } from "../../api/task-properties";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ApiError } from '../../api/client';
+import { ApiError, authRequestsPaused } from '../../api/client';
 import { navigate, taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { browserNavigation } from '../../app/navigation';
 import { DraftNavigationConfirmation, TaskDraftBoundary, useDraftNavigationDecision, useRetireTaskDraft } from './TaskDraftNavigation';
@@ -113,7 +113,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const input: TaskObservationInput = observation ?? (snapshot === null ? { kind: 'direct' } : { kind: 'project-summary', revision: snapshot.revision, task: snapshot.index.nodes.get(taskId) });
   const task = useTaskDetail(projectId, taskId, input);
   const direct = input.kind === 'direct';
-  const relations = useTaskRelations(projectId, taskId, task.historyGeneration, direct && task.detail !== null && !task.requiresFreshRead && task.mutation.phase !== 'pending');
+  const relations = useTaskRelations(projectId, taskId, task.historyGeneration, direct && task.detail !== null && !task.displayRequiresFreshRead && task.mutation.phase !== 'pending');
   const nodes = direct ? relations.relations?.nodes : snapshot?.index.nodes;
   const refreshRelations = direct ? relations.refresh : onRefreshGraph;
   const { detail, status, error, retry } = task;
@@ -255,7 +255,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   }, [taskId, status, error, snapshot?.revision, confirmationOpen]);
 
   const snapshotNode = snapshot?.index.nodes.get(taskId);
-  const retainedDetail = detail !== null && (error !== null || task.requiresFreshRead);
+  const retainedDetail = detail !== null && (error !== null || task.displayRequiresFreshRead);
   const stale = !direct && (task.graphMismatch || detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail));
   const readNoticeEvent = useMemo(() => ({}), [error, retainedDetail]);
   const staleNoticeEvent = useMemo(() => ({}), [stale]);
@@ -315,7 +315,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                     <div className="task-detail-state-controls">
                       <div className="task-detail-status-assignee">
                         <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />
-                        <TaskAssigneeSelect direct={direct} projectId={projectId} detail={detail} disabled={!task.canSetAssignedTo} owner={dialogRef} resetKey={`${taskId}/${task.historyGeneration}/${fullscreen.active}`} onSelect={(assignedTo) => task.setAssignedTo(assignedTo, detail.version)} />
+                        <TaskAssigneeSelect direct={direct} projectId={projectId} detail={detail} disabled={!task.canDisplayAssignee} selectionBlocked={direct && authRequestsPaused()} owner={dialogRef} resetKey={`${taskId}/${task.historyGeneration}/${fullscreen.active}`} onSelect={(assignedTo) => task.setAssignedTo(assignedTo, detail.version)} />
                       </div>
                       <TaskPlatformSelect detail={detail} disabled={!task.canSetRequiredPlatform} describedBy={platformFeedbackId}
                         onReview={(requiredPlatform) => requestConfirmation({ kind: 'requiredPlatform', detail, requiredPlatform })} />

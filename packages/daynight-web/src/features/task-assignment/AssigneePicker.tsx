@@ -7,7 +7,7 @@ import { AssigneeAvatar, personName } from './TaskAssigneeIdentity';
 import type { AssigneePeopleSnapshot } from '../task-assignees/TaskAssignees';
 
 type Choice = { readonly value: string; readonly label: string; readonly person?: ProjectPerson };
-export const AssigneePicker = ({ projectId, label, children, value, choices, disabled = false, resetKey, owner, triggerLabel, includeFormer = false, directCatalogue, onSelect }: {
+export const AssigneePicker = ({ projectId, label, children, value, choices, disabled = false, resetKey, owner, triggerLabel, includeFormer = false, directCatalogue, selectionBlocked = false, onSelect }: {
   readonly projectId: string;
   readonly taskId?: string;
   readonly label: string;
@@ -18,6 +18,7 @@ export const AssigneePicker = ({ projectId, label, children, value, choices, dis
   readonly value: string;
   readonly choices: readonly Choice[];
   readonly disabled?: boolean;
+  readonly selectionBlocked?: boolean;
   readonly resetKey?: string;
   readonly owner?: RefObject<HTMLElement | null>;
   readonly onSelect: (value: string) => void;
@@ -102,9 +103,9 @@ export const AssigneePicker = ({ projectId, label, children, value, choices, dis
     <div className="assignee-search-wrap"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg><input className="assignee-search" ref={search} aria-label={m.search} placeholder={m.search} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>
     {catalogue.status === 'error' ? <div className="assignee-menu-state" role="alert"><p>{m.loadFailed}</p><button className="button" type="button" ref={retry} onClick={catalogue.retry}>{m.retry}</button></div>
       : catalogue.status !== 'ready' ? <div className="assignee-menu-state" role="status"><span className="spinner" aria-hidden="true" />{m.loading}</div>
-      : <div className="assignee-options" role="listbox" aria-label={label}>{matches.length === 0 ? <p className="assignee-menu-state">{m.noPeople}</p> : matches.map((choice, index) => <button type="button" role="option" aria-selected={value === choice.value} tabIndex={-1}
+      : <div className="assignee-options" role="listbox" aria-label={label}>{matches.length === 0 ? <p className="assignee-menu-state">{m.noPeople}</p> : matches.map((choice, index) => <button type="button" role="option" aria-selected={value === choice.value} tabIndex={-1} disabled={selectionBlocked}
         className="assignee-option" key={choice.value} ref={(node) => { options.current[index] = node; }}
-        onClick={() => { close(true); onSelect(choice.value); }}>
+        onClick={() => { if (!selectionBlocked) { close(true); onSelect(choice.value); } }}>
         <AssigneeAvatar {...(choice.person === undefined ? {} : { person: choice.person })} name={choice.value === '' ? null : choice.label} />
         <span className="assignee-option-name">{choice.label}{choice.person?.hasProjectAccess === false && <span className="assignee-former">{m.formerMember}</span>}</span><span className="assignee-check" aria-hidden="true">{choice.value === value ? '✓' : ''}</span>
       </button>)}</div>}

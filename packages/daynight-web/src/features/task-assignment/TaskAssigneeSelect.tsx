@@ -11,10 +11,11 @@ const DirectPicker = ({ taskId, ...props }: React.ComponentProps<typeof Assignee
   return <AssigneePicker {...props} directCatalogue={catalogue} />;
 };
 
-export const TaskAssigneeSelect = ({ projectId, detail, disabled, owner, resetKey, direct = false, onSelect }: {
+export const TaskAssigneeSelect = ({ projectId, detail, disabled, selectionBlocked = false, owner, resetKey, direct = false, onSelect }: {
   readonly projectId: string;
   readonly detail: TaskDetail;
   readonly disabled: boolean;
+  readonly selectionBlocked?: boolean;
   readonly direct?: boolean;
   readonly owner: RefObject<HTMLElement | null>;
   readonly resetKey: string;
@@ -27,7 +28,7 @@ export const TaskAssigneeSelect = ({ projectId, detail, disabled, owner, resetKe
   const triggerLabel = `${m.personLabel({ name })}${person?.hasProjectAccess === false ? ` · ${m.formerMember}` : ""}`;
   const Picker = direct ? DirectPicker : AssigneePicker;
   return <span className="task-assignee-field"><span className="assignee-field-label">{m.label}</span>
-    <Picker taskId={detail.id} projectId={projectId} label={m.label} triggerLabel={triggerLabel} value={detail.assignedTo === null ? '' : detail.assignedTo} choices={[{ value: '', label: m.unassigned }]} disabled={disabled} owner={owner} resetKey={resetKey}
+    <Picker taskId={detail.id} projectId={projectId} label={m.label} triggerLabel={triggerLabel} value={detail.assignedTo === null ? '' : detail.assignedTo} choices={[{ value: '', label: m.unassigned }]} disabled={disabled} selectionBlocked={selectionBlocked} owner={owner} resetKey={resetKey}
       onSelect={(value) => { const assignedTo = value === '' ? null : value; if (assignedTo !== detail.assignedTo) onSelect(assignedTo); }}>
       <TaskAssigneeIdentity projectId={projectId} assignedTo={detail.assignedTo} compact />
     </Picker>
