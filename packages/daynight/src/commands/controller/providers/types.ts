@@ -8,6 +8,7 @@ export type ProviderOptions = {
   /** Frozen role text for native prompt append on start and resume, separate from user input. */
   instructions?: string;
   unattended?: boolean;
+  validateNativeSelection?: true;
   agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
   onTimeline(entry: ProviderEntry): void;

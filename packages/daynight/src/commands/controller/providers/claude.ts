@@ -3,7 +3,7 @@ import { NativeTurns } from "./turns.js";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { query, getSessionInfo, getSessionMessages, type SDKUserMessage, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import { query, getSessionInfo, getSessionMessages, type SDKUserMessage, type PermissionResult, type Options } from "@anthropic-ai/claude-agent-sdk";
 import type { InteractionResponse, SessionInteraction } from "../../../session/protocol.js";
 import { record, string, NativeRpcError, NativeRpcTimeoutError } from "./native-rpc.js";
 import { ControllerStartupError } from "../startup.js";
@@ -162,7 +162,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const native = query({ prompt: input, options: {
     ...(options.resumeNativeSessionId ? { resume: nativeId } : { sessionId: nativeId }), cwd: options.cwd,
     ...(options.instructions !== undefined ? { systemPrompt: { type: "preset", preset: "claude_code", append: options.instructions } as const } : {}),
-    ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}),
+    ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort as NonNullable<Options["effort"]> } : {}),
     ...(config.additionalDirectories ? { additionalDirectories: config.additionalDirectories } : {}),
     ...(options.executable ? { pathToClaudeCodeExecutable: options.executable } : {}), env: options.env ?? process.env,
     allowDangerouslySkipPermissions: true, persistSession: true, includePartialMessages: true, settingSources: ["user", "project", "local"], ...(!options.resumeNativeSessionId ? { permissionMode: options.unattended ? "bypassPermissions" : config.permissionMode ?? "default", ...(options.unattended ? { sandbox: { enabled: false } } : {}) } : {}),
@@ -215,7 +215,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     await Promise.all(children.map(child => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : deadline(new Promise<void>(resolve => child.once("close", () => resolve())), "Native Claude stop is unconfirmed.", 10_000)));
     await pump; activity = "stopped"; for (const p of interactions.values()) { publishInteraction({ ...p.interaction, revision: "2", state: "expired" }); p.reject(stopped); p.rejectConfirmation?.(stopped); } interactions.clear(); state();
   };
-  try { await deadline(native.initializationResult(), "Claude initialization timed out."); if (disconnected) throw new Error("Native Claude connection ended during initialization."); await controls.refresh(); activity = "idle"; state(); }
+  try { await deadline(native.initializationResult(), "Claude initialization timed out."); if (disconnected) throw new Error("Native Claude connection ended during initialization."); await controls.refresh(); if (options.validateNativeSelection && !options.resumeNativeSessionId) controls.validateSelection({ model: options.model, ...(config.effort === undefined ? {} : { effort: config.effort }) }); activity = "idle"; state(); }
   catch (error) {
     // The SDK marks a native control_response rejection separately from transport errors.
     const failure = error instanceof Error && "errorClass" in error && error.errorClass === "control_request_failed"

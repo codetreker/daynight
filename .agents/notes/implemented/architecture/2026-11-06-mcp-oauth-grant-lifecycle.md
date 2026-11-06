@@ -48,5 +48,6 @@ the winning family's access usable after the replay was detected.
 Concurrent refreshes can invalidate the winner's family when the second request
 replays the consumed credential. Access operations serialize with revocation via
 existing credential locks. Cleanup may take multiple rounds under load, and
-failures leave remaining records for a later round. Public profile discovery and
-browser integration remain separate from these unmounted adapters.
+failures leave remaining records for a later round. The [browser integration
+decision](2026-11-06-mcp-oauth-browser-consent.md) owns public profile discovery
+and the consent journey.

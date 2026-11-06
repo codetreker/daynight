@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -371,6 +372,21 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
 		}
 		scope.hold(release)
+		if class == BudgetControl {
+			var once sync.Once
+			var admissionErr error
+			actor.admitContent = func(admissionCtx context.Context) error {
+				once.Do(func() {
+					var contentRelease func()
+					contentRelease, admissionErr = actor.Budget.Acquire(admissionCtx, BudgetContent)
+					if admissionErr == nil {
+						scope.hold(contentRelease)
+						release()
+					}
+				})
+				return admissionErr
+			}
+		}
 		result, err := handler(ctx, actor, raw)
 		logger := e.logger.With(threadLogReferences(tool.Name, result.Refs)...)
 		if err != nil {
@@ -389,7 +405,9 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 					failure.WriteOutcome = "unknown"
 				}
 			}
-			if fault, ok := taskservice.ThreadResponseFault(err); ok && !facts.CleanupFailed {
+			if errors.Is(err, ErrResourceBusy) {
+				failure.Code, failure.Message = "resource_busy", "The tool resource budget is unavailable."
+			} else if fault, ok := taskservice.ThreadResponseFault(err); ok && !facts.CleanupFailed {
 				failure.Code = fault.Code
 				failure.Message = fault.Message
 			} else if fault, ok := operation.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code {

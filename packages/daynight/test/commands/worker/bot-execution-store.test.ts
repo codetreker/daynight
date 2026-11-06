@@ -64,7 +64,7 @@ describe("Bot execution evidence", () => {
     const f = fixture(); f.store.prepare(f.record); const db = f.database;
     db.prepare("UPDATE bot_executions SET record=json_set(record, '$.launchSubmission', 'lost')").run();
     expect(() => f.store.get(f.record)).toThrow(/submission/i);
-    db.pragma("user_version=12"); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma("user_version=11");
+    db.pragma("user_version=13"); expect(() => f.store.get(f.record)).toThrow(/unsupported-version/); db.pragma("user_version=12");
   });
 });
 

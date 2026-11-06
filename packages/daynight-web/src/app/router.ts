@@ -23,6 +23,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "testSession"; readonly sessionId: string }
   | { readonly kind: "account" | "invitations" | "teamInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
+  | { readonly kind: "oauthConsent"; readonly requestId: string | null }
   | { readonly kind: "members" | "settings"; readonly projectId: string };
 export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
 
@@ -91,6 +92,11 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/account") return { kind: "account" };
   if (pathname === "/invitations") return { kind: "invitations" };
   if (pathname === "/team-invitations") return { kind: "teamInvitations" };
+  if (pathname === "/oauth/consent") {
+    const params = new URLSearchParams(search);
+    const ids = params.getAll("request");
+    return { kind: "oauthConsent", requestId: ids.length === 1 && [...params.keys()].every((key) => key === "request") ? canonicalId(ids[0]!) : null };
+  }
   if (pathname === "/device") {
     const codes = new URLSearchParams(search).getAll("user_code");
     return { kind: "device", userCode: codes.length === 0 ? null : codes.length === 1 ? codes[0]! : "" };
@@ -109,6 +115,7 @@ export const isLoginReturnPath = (value: string): boolean => {
     if (/[\\\u0000-\u001f\u007f]/.test(decodeURIComponent(value))) return false;
     const target = new URL(value, "https://daynight.invalid");
     if (target.origin !== "https://daynight.invalid") return false;
+    if (target.pathname === "/oauth/consent") return parseProtectedRoute(target.pathname, target.search).kind === "oauthConsent" && (parseProtectedRoute(target.pathname, target.search) as { requestId: string | null }).requestId !== null;
     return target.pathname === "/" || target.pathname === "/setup" || parseProtectedRoute(target.pathname, target.search).kind !== "notFound";
   } catch {
     return false;

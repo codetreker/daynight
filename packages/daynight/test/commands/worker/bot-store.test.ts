@@ -47,10 +47,10 @@ describe("durable Bot inventory", () => {
       expect(() => f.store.observe(owner, { ...bot(), ...changed } as Bot, 2)).toThrow();
       expect(f.store.get(owner, id(3))).toEqual(before);
     }
-    const db = f.database; db.pragma("user_version = 12");
+    const db = f.database; db.pragma("user_version = 13");
     expect(() => f.store.observe(owner, { ...bot(), version: "2" }, 2)).toThrow(/unsupported-version/);
     expect(() => f.store.list(owner)).toThrow(/unsupported-version/);
-    db.pragma("user_version = 11"); expect(f.store.get(owner, id(3))).toEqual(before);
+    db.pragma("user_version = 12"); expect(f.store.get(owner, id(3))).toEqual(before);
   });
 });
 

@@ -172,14 +172,14 @@ const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
 
 describe("native argument ownership", () => {
   it.each([undefined, nativeId])("owns full access while preserving model/configuration/exact resume selection (%s)", (resume) => {
-    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? [] : ["resume", resume]), "--model", "model-a", ...configuration.args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments("/task")]);
-    expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, "/task", resume)).toEqual([...(resume === undefined ? [] : [`--resume=${resume}`]), "--allow-tool=shell(git:*)", "--reasoning-effort", "low", "--allow-all", "--no-ask-user", "--no-sandbox"]);
+    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? ["--model", "model-a"] : ["resume", resume]), ...(resume === undefined ? configuration.args : ["--no-alt-screen"]), "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments("/task")]);
+    expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, "/task", resume)).toEqual([...(resume === undefined ? [] : [`--resume=${resume}`]), "--allow-tool=shell(git:*)", ...(resume === undefined ? ["--reasoning-effort", "low"] : []), "--allow-all", "--no-ask-user", "--no-sandbox"]);
   });
   it.each([undefined, nativeId])("disables startup updates after configurable overrides for fresh/resumed Codex (%s)", (resume) => {
     for (const configured of [["-c", "check_for_update_on_startup=true"], ["--config", "check_for_update_on_startup=true"], ["--config=check_for_update_on_startup=true"]]) {
       const args = buildHerdrAgentArguments({ ...configuration, args: configured }, "/task", resume);
       expect(args.slice(-4)).toEqual(["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments("/task")]);
-      expect(args.slice(resume === undefined ? 3 : 5, -(4 + 2))).toEqual(configured);
+      expect(args.slice(3, -(4 + 2))).toEqual(configured);
     }
   });
   it.each(['/repo/.worktrees/task.name', '/repo/中文/"quoted"', 'C:\\repo\\.worktrees\\中文 "task"'])('encodes the exact trust path in a final inline TOML table: %s', (cwd) => {
@@ -221,8 +221,16 @@ describe("native argument ownership", () => {
     expect(() => buildHerdrAgentArguments(configuration, "relative")).toThrow("absolute path");
   });
   it("owns Claude resume and model arguments while refusing print, prompt, and settings overrides", () => {
-    expect(buildHerdrAgentArguments({ agent: "claude", model: "sonnet", args: ["--permission-mode", "default"] }, "/task", nativeId)).toEqual(["--resume", nativeId, "--model", "sonnet", "--permission-mode", "default", "--dangerously-skip-permissions"]);
+    expect(buildHerdrAgentArguments({ agent: "claude", model: "sonnet", args: ["--permission-mode", "default"] }, "/task", nativeId)).toEqual(["--resume", nativeId, "--permission-mode", "default", "--dangerously-skip-permissions"]);
     for (const arg of ["--print", "--resume", "--session-id", "--settings", "--setting-sources", "business prompt"]) expect(() => validateHerdrAgentArguments("claude", [arg])).toThrow();
+  });
+  it("resumes each provider without overriding its saved model or effort", () => {
+    expect(buildHerdrAgentArguments({ agent: "codex", model: "new", args: ["--config=model=\"new\"", "-c", 'model_reasoning_effort="high"', "--config", '"model_reasoning_effort"="low"', "-c", 'features.web_search_request=true', "--profile", "work"] }, "/task", nativeId))
+      .toEqual(["--no-daemon", "resume", nativeId, "-c", "features.web_search_request=true", "--profile", "work", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments("/task")]);
+    expect(buildHerdrAgentArguments({ agent: "claude", model: "new", args: ["--effort=high", "--effort", "low", "--add-dir", "/other"] }, "/task", nativeId))
+      .toEqual(["--resume", nativeId, "--add-dir", "/other", "--dangerously-skip-permissions"]);
+    expect(buildHerdrAgentArguments({ agent: "copilot", model: "new", args: ["--reasoning-effort=xhigh", "--reasoning-effort", "low", "--no-auto-update"] }, "/task", nativeId))
+      .toEqual([`--resume=${nativeId}`, "--no-auto-update", "--allow-all", "--no-ask-user", "--no-sandbox"]);
   });
 });
 
@@ -1152,7 +1160,7 @@ it("launches and resumes Claude with its original hook identity", async () => {
   const config = { agent:"claude" as const, model:"sonnet", args:[] };
   const result = await f.manager.start(f.context,prepared,{ ...prepared,configuration:config,prompt:"managed task",resumeSessionId:nativeId },operation());
   expect(result.kind).toBe("claude"); expect(result.nativeSession?.sessionId).toBe(nativeId);
-  expect(f.calls.find(call=>call.method==="agent.start")?.params.args).toEqual(["--resume",nativeId,"--model","sonnet","--dangerously-skip-permissions"]);
+  expect(f.calls.find(call=>call.method==="agent.start")?.params.args).toEqual(["--resume",nativeId,"--dangerously-skip-permissions"]);
   expect(f.prompts).toEqual(["managed task"]);
 });
 

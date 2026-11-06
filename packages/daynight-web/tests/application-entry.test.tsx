@@ -30,6 +30,20 @@ beforeEach(() => {
 });
 
 describe("public and authenticated entry ownership", () => {
+  it("shows a local bilingual OAuth error without logging in or retaining request parameters", () => {
+    window.history.replaceState(null, "", "/oauth/authorize?client_id=bad&state=private&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback");
+    const fetcher = vi.fn(() => { throw new Error("Error page must not fetch or authenticate"); });
+    vi.stubGlobal("fetch", fetcher);
+    mount();
+    expect(screen.getByRole("heading", { name: "Cannot authorize this client" })).toBeVisible();
+    expect(screen.getByText("No authorization information was sent to this return address.")).toBeVisible();
+    expect(window.location.pathname).toBe("/oauth/authorize");
+    expect(window.location.search).toBe("");
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "zh-CN" } });
+    expect(screen.getByRole("heading", { name: "无法授权此客户端" })).toBeVisible();
+    expect(screen.getByText("未向此返回地址发送授权信息。")).toBeVisible();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it("reacts to public navigation and history without mounting an authenticated lifecycle", async () => {
     window.history.replaceState(null, "", "/");
     const fetcher = vi.fn(() => { throw new Error("Public reading must not mount the authenticated application"); });

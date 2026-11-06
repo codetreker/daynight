@@ -20,6 +20,13 @@ const page = { observedAt, items: [summary], nextCursor: null };
 const context = () => ({ version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn(() => { throw new Error("Unexpected home access"); }), workingDirectory: vi.fn(() => { throw new Error("Unexpected cwd access"); }), stdout: vi.fn(), stderr: vi.fn(), stdoutBytes: vi.fn(async () => {}) });
 
 describe("remote worker response validation", () => {
+  it("reads current runtime sources and preserves their removal in later reports", () => {
+    const runtimeConfiguration = { schemaVersion: 1, native: { agent: "codex", model: { value: "model", source: "local" }, reasoningEffort: { value: null, source: "native" } }, projects: [] };
+    const current = { ...detail, worker: { ...detail.worker, telemetry: { ...telemetry, runtimeConfiguration } } };
+    expect(parseWorkerDetail(current, workerId)).toEqual(current);
+    expect(parseWorkerDetail(detail, workerId).worker.telemetry).not.toHaveProperty("runtimeConfiguration");
+    expect(() => parseWorkerDetail({ ...current, worker: { ...current.worker, telemetry: { ...current.worker.telemetry, runtimeConfiguration: null } } }, workerId)).toThrow();
+  });
   it("preserves observation timestamps and unknown task inventory without inventing idle capacity", () => {
     expect(parseWorkerPage(page)).toEqual(page);
     expect(parseWorkerDetail(detail, workerId)).toEqual(detail);

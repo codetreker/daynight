@@ -60,6 +60,7 @@ export const isAbortError = (error: unknown): boolean =>
 
 let authGeneration = 0;
 let authPauseRevision = 0;
+export const readAuthRequestGeneration = (): number => authGeneration;
 const unauthorizedListeners = new Set<() => void>();
 type AuthPause = { readonly waiters: Set<() => void>; owner: symbol };
 let authPause: AuthPause | null = null;
@@ -118,7 +119,7 @@ export const assertResponsePrincipal = (response: Response, expectedUserId: stri
   }
 };
 
-export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void): Promise<Response> => {
+export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void, onUnauthorized?: () => void): Promise<Response> => {
   signal.throwIfAborted();
   const generation = authGeneration;
   if (url !== "/api/v1/me" && url !== "/api/v1/auth/logout") {
@@ -142,6 +143,7 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   }
   signal.throwIfAborted();
   if (response.status === 401 && generation === authGeneration) {
+    onUnauthorized?.();
     for (const listener of unauthorizedListeners) listener();
   }
   return response;

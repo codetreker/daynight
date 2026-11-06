@@ -3,6 +3,22 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
 import type { ProviderState } from "../../../src/commands/controller/providers/types.js";
+test("new Codex execution applies effort to thread startup before validating its native receipt", async () => {
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: "native-model", args: ["--effort", "high"], resumeNativeSessionId: null, validateNativeSelection: true,
+    env: { ...process.env, CODEX_TEST_APPLY_EFFORT: "1", CODEX_TEST_MODELS: JSON.stringify([{ model: "native-model", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }] }]), CODEX_TEST_THREAD_SETTINGS: JSON.stringify({ model: "native-model" }) },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  await provider.close();
+});
+test("new Codex execution rejects unsupported effort before accepting input and closes its process", async () => {
+  let child: import("node:child_process").ChildProcess | undefined;
+  const opening = openCodexProvider({ cwd: process.cwd(), model: "native-model", args: ["--effort", "high"], resumeNativeSessionId: null, validateNativeSelection: true,
+    env: { ...process.env, CODEX_TEST_MODELS: JSON.stringify([{ model: "native-model", supportedReasoningEfforts: [{ reasoningEffort: "low" }] }]), CODEX_TEST_THREAD_SETTINGS: JSON.stringify({ model: "native-model", reasoningEffort: "low" }) },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: value => { child = value; } });
+  const result = await opening.then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
+  try { expect(result.error).toBeInstanceOf(Error); expect(result.error.message).toContain("effort"); }
+  finally { await result.provider?.close(); }
+  expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+});
 test("a late turn/start receipt does not resurrect a completed native turn", async () => {
   const states: ProviderState[] = [];
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: s => states.push(s), onSpawn: () => {} });

@@ -29,7 +29,8 @@ and checks its current expiry and active grant references after the lock wait.
 Initial issuance must use the provided pin operation to hold the DCR row through
 the transaction that creates its grant; configured and CIMD clients have no DCR row. The [credential family decision](2026-11-06-mcp-oauth-credentials.md)
 owns grant and secret lifecycle semantics. The [authorization lifecycle](2026-11-06-mcp-oauth-grant-lifecycle.md)
-schedules cleanup; browser integration mounts the production OAuth profile.
+schedules cleanup; the [browser integration decision](2026-11-06-mcp-oauth-browser-consent.md)
+owns the production OAuth profile.
 
 ## Alternatives
 

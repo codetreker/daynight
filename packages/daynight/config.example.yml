@@ -53,7 +53,8 @@ review:
 # selection and global/per-Project agent/model/args. Local managed values cannot
 # overwrite that target. Normal worker run accepts an empty selection and does
 # not open a Project picker.
-# Paths, identity, service credentials and agentControlMode remain local. Native
+# Paths, identity, service credentials, agentControlMode and the optional
+# agentModel/agentReasoningEffort overrides remain local. Native
 # credentials and the official Herdr integration must be configured explicitly.
 # Every fresh/resumed native agent uses fixed full access and task-folder trust;
 # args cannot lower that policy or re-enable permission prompts. The fixed launch
@@ -74,10 +75,16 @@ worker:
   agent: copilot
   model: null
   args: []
+  # Persistent local overrides for new executions, including enrolled Workers.
+  # Omit either field to follow its cloud value, then the native Agent default.
+  # Empty strings and null are invalid; remove the key to restore inheritance.
+  # A non-null legacy model must agree with agentModel when both are present.
+  # agentModel: MODEL_ID
+  # agentReasoningEffort: high
   # Initial Project selection and native overrides become cloud configuration.
   # Local transports/paths remain bindings; they do not choose the cloud scope.
-  # Existing native processes retain their launch parameters. Herdr restarts use
-  # current applicable values; Web recovery keeps its frozen execution record.
+  # New claims freeze their native configuration for Web and Herdr recovery.
+  # Local or cloud default changes apply only to subsequent new executions.
   repositories:
     - remote: https://github.com/OWNER/REPO.git
       # Paths follow the same config-directory-relative rule as review paths.

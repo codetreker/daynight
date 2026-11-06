@@ -151,7 +151,6 @@ export const inspection: InspectionMessages = {
     created: "Created", updated: "Updated", taskId: "Task ID",
     copyTaskId: "Copy task ID", copyTaskTitle: "Copy task title", copied: "Copied",
     copyFailed: "Could not copy the task ID. Select and copy it manually.", copyTitleFailed: "Could not copy the task title. Select and copy it manually.",
-    footer: "Prerequisites and blockers use the displayed task details; names and successors use the task graph snapshot.",
     countedHeading: ({ label, count }) => `${label} · ${count}`,
   },
   pr: {
