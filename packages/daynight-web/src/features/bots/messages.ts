@@ -1,6 +1,12 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 
 const en = {
+  welcomeTitle: 'Start with a conversation', welcomeDescription: 'Check progress, clarify an idea, or move your work forward.',
+  conversationStarters: [
+    { label: 'See which tasks are running', prompt: 'Show me which tasks are running right now' },
+    { label: 'Break an idea into smaller tasks', prompt: 'Help me break this idea into smaller tasks' },
+    { label: 'Plan today’s priorities', prompt: 'Help me work out what to prioritize today' },
+  ],
   runInformation: 'Run information', sessionInformation: 'Session', botStartup: 'Assistant startup', workerObservation: 'Worker availability', sessionUnavailable: 'Session information unavailable',
   conversationActions: 'More actions', backToList: 'Back to assistants', connected: 'Connected',
   yourAssistants: 'Your assistants', workerUnknown: 'Worker status unknown', workerStates: { offline: 'Worker offline', stale: 'Worker report stale', unsupported: 'Hosting unsupported', unavailable: 'Worker unavailable' },
@@ -11,6 +17,12 @@ const en = {
   refresh: 'Refresh', retry: 'Retry', loading: 'Loading…', more: 'Load more', search: 'Search assistants', empty: 'No assistants yet', noMatches: 'No matching assistants', select: 'Choose an assistant to open its conversation.', closeChat: 'Close conversation', listError: 'Could not load assistants.', detailError: 'Could not load this assistant.', pending: 'Starting', ready: 'Started', failed: 'Startup failed', offline: 'Worker offline', unsupported: 'This Worker does not support assistant hosting.', stale: 'The Worker capability report is out of date.', unavailable: 'Assistant hosting is unavailable.', noWorker: 'No available Worker. Connect a Worker that supports assistant hosting.', deleted: 'This assistant has been deleted.', end: 'All assistants are shown.', requestId: 'Request ID', automatic: 'Automatic', defaultAgent: 'Worker default', providerUnavailable: 'This Agent is unavailable on the selected Worker.', host: 'Hosted by', connectionUnknown: 'Connection unconfirmed',
 };
 const zh: typeof en = {
+  welcomeTitle: '从一段对话开始', welcomeDescription: '查进度、理清想法，或一起推进手头的工作。',
+  conversationStarters: [
+    { label: '看看现在有哪些任务在执行', prompt: '看看我现在有哪些任务在执行' },
+    { label: '把一个想法拆成几个小任务', prompt: '帮我把这个想法拆成几个小任务' },
+    { label: '梳理今天的优先事项', prompt: '帮我梳理今天应该优先处理什么' },
+  ],
   runInformation: '运行信息', sessionInformation: '会话', botStartup: '助手启动', workerObservation: 'Worker 可用性', sessionUnavailable: '会话信息暂不可用',
   conversationActions: '更多操作', backToList: '返回助手列表', connected: '已连接',
   yourAssistants: '你的助手', workerUnknown: 'Worker 状态未知', workerStates: { offline: 'Worker 离线', stale: 'Worker 信息过期', unsupported: '不支持助手托管', unavailable: 'Worker 不可用' },
