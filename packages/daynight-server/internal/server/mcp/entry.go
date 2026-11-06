@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -70,18 +71,8 @@ type Entry struct {
 	cancel     context.CancelFunc
 	mu         sync.Mutex
 	stopped    bool
+	drained    chan struct{}
 	active     sync.WaitGroup
-}
-
-// ValidateOrigins accepts exact browser origins without paths or credentials.
-func ValidateOrigins(origins []string) error {
-	for _, origin := range origins {
-		u, err := url.Parse(origin)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.String() != origin || u.Hostname() == "" || u.Hostname() != strings.ToLower(u.Hostname()) {
-			return errors.New("invalid MCP allowed origin")
-		}
-	}
-	return nil
 }
 
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
@@ -89,7 +80,7 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	if auth == nil || logger == nil {
 		return nil, errors.New("MCP authentication and logger are required")
 	}
-	if err := ValidateOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
+	if err := config.ValidateMCPOrigins(append([]string{publicOrigin}, allowedOrigins...)); err != nil {
 		return nil, err
 	}
 	origins := make(map[string]bool)
@@ -147,14 +138,10 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	w.Header().Set("Cache-Control", "no-store")
-	e.mu.Lock()
-	if e.stopped {
-		e.mu.Unlock()
+	if !e.beginWork() {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	e.active.Add(1)
-	e.mu.Unlock()
 	defer e.active.Done()
 	if _, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && !e.allowedHost(r.Host) {
 		http.Error(w, "forbidden host", http.StatusForbidden)
@@ -203,19 +190,38 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	e.http.ServeHTTP(w, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
 }
 
-// Shutdown rejects new requests, cancels and waits for active requests.
-func (e *Entry) BeginShutdown() {
+// beginWork synchronizes HTTP and tool admission with shutdown's wait start.
+func (e *Entry) beginWork() bool {
 	e.mu.Lock()
-	e.stopped = true
-	e.cancel()
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	if e.stopped {
+		return false
+	}
+	e.active.Add(1)
+	return true
 }
 
-// Shutdown waits until active requests have finished.
+// BeginShutdown rejects new work and cancels admitted requests.
+func (e *Entry) BeginShutdown() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stopped {
+		return
+	}
+	e.stopped = true
+	e.cancel()
+	e.drained = make(chan struct{})
+	// No Add can follow the admission closure, including tool callbacks that
+	// were dispatched by an HTTP request just as shutdown began.
+	go func() { e.active.Wait(); close(e.drained) }()
+}
+
+// Shutdown waits for the same drain across timeouts and retries.
 func (e *Entry) Shutdown(ctx context.Context) error {
 	e.BeginShutdown()
-	done := make(chan struct{})
-	go func() { e.active.Wait(); close(done) }()
+	e.mu.Lock()
+	done := e.drained
+	e.mu.Unlock()
 	select {
 	case <-done:
 		return nil

@@ -48,7 +48,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 	task = claimHTTPWorker(t, h, task, claim)
 	w := apiWorker(t, task.Properties)
 	cfg := configuredTestConfig()
-	a, e := New(Dependencies{Store: db, Files: attachmentTestFiles(t)}, cfg, testLogger())
+	a, e := newTestHandler(Dependencies{Store: db, Files: attachmentTestFiles(t)}, cfg, testLogger())
 	if e != nil {
 		t.Fatal(e)
 	}

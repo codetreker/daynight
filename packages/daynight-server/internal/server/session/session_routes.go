@@ -43,6 +43,8 @@ type Routes struct {
 	connections     map[*websocket.Conn]context.CancelFunc
 	terminalViewers map[string]*websocket.Conn
 	active          sync.WaitGroup
+	drained         chan struct{}
+	drainErr        error
 }
 
 func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger *slog.Logger) *Routes {
@@ -419,25 +421,55 @@ func (h *Routes) ActiveConnections() int {
 	return len(h.connections)
 }
 
+// completedDrainError retains disconnect failures after all relay work has exited.
+type completedDrainError struct{ cause error }
+
+func (e completedDrainError) Error() string { return e.cause.Error() }
+func (e completedDrainError) Unwrap() error { return e.cause }
+func (e completedDrainError) Drained() bool { return true }
+
 func (h *Routes) Shutdown(ctx context.Context) error {
 	h.mutex.Lock()
-	h.closing = true
-	connections := make([]*websocket.Conn, 0, len(h.connections))
-	for conn, cancel := range h.connections {
-		cancel()
-		connections = append(connections, conn)
+	var connections []*websocket.Conn
+	if !h.closing {
+		h.closing = true
+		h.drained = make(chan struct{})
+		// Admission and Add share this mutex, so no work can be added after
+		// the wait starts, including upgrades already holding a reservation.
+		go func() { h.active.Wait(); close(h.drained) }()
+		connections = make([]*websocket.Conn, 0, len(h.connections))
+		for conn, cancel := range h.connections {
+			cancel()
+			connections = append(connections, conn)
+		}
 	}
+	done := h.drained
 	h.mutex.Unlock()
 	for _, conn := range connections {
 		_ = conn.CloseNow()
 	}
-	done := make(chan struct{})
-	go func() { h.active.Wait(); close(done) }()
 	select {
 	case <-done:
+		h.mutex.Lock()
+		err := h.drainErr
+		h.mutex.Unlock()
+		if err != nil {
+			return completedDrainError{cause: err}
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (h *Routes) recordDrainError(err error) {
+	if err == nil {
+		return
+	}
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	if h.closing {
+		h.drainErr = errors.Join(h.drainErr, err)
 	}
 }
 func relayWrite(ctx context.Context, conn *websocket.Conn, value any) error {
@@ -532,7 +564,7 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		closeContext, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
 		defer cancel()
-		_ = h.service.Disconnect(closeContext, fence)
+		h.recordDrainError(h.service.Disconnect(closeContext, fence))
 	}()
 	seq, err := h.service.SourceSeq(ctx, fence)
 	if err != nil {

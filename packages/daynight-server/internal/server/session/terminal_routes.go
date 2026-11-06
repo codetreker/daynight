@@ -331,7 +331,7 @@ func (h *Routes) terminalWorkerChannel(w http.ResponseWriter, r *http.Request, p
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
 		defer cancel()
-		_ = h.service.DisconnectTerminal(ctx, p, project, task, id, channelFence, epoch)
+		h.recordDrainError(h.service.DisconnectTerminal(ctx, p, project, task, id, channelFence, epoch))
 	}()
 	if err = relayWrite(ctx, conn, ack); err != nil {
 		return
@@ -439,7 +439,7 @@ func (h *Routes) terminalBrowserChannel(w http.ResponseWriter, r *http.Request, 
 	defer func() {
 		release, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
 		defer cancel()
-		_ = h.service.DisconnectTerminalViewer(release, p, project, task, id, browserID, claimID, connectionEpoch)
+		h.recordDrainError(h.service.DisconnectTerminalViewer(release, p, project, task, id, browserID, claimID, connectionEpoch))
 		h.mutex.Lock()
 		if h.terminalViewers[key] == conn {
 			delete(h.terminalViewers, key)

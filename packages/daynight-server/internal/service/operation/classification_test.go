@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 func TestCompletionFactsPreservesTransactionAndCleanup(t *testing.T) {
@@ -24,6 +25,9 @@ func TestCompletionFactsPreservesTransactionAndCleanup(t *testing.T) {
 		{"committed cleanup failure", &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true}, Facts{Outcome: store.TransactionCommitted, Phase: "cleanup", CleanupFailed: true}},
 		{"thread unknown", &store.ThreadTransactionError{Phase: "commit", CommitAttempted: true, OutcomeUnknown: true}, Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
 		{"thread cleanup", &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true}, Facts{Phase: "rollback", CleanupFailed: true}},
+		{"thread rolled back", &taskservice.ThreadMessageError{Outcome: store.TransactionNotCommitted, Cause: &store.ThreadTransactionError{Phase: "callback", Cause: refusal}}, Facts{Outcome: store.TransactionNotCommitted, Phase: "callback"}},
+		{"thread committed cleanup failure", &taskservice.ThreadMessageError{Outcome: store.TransactionCommitted, Cause: &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true}}, Facts{Outcome: store.TransactionCommitted, Phase: "rollback", CleanupFailed: true}},
+		{"thread contradictory completion", &taskservice.ThreadMessageError{Outcome: store.TransactionNotCommitted, Cause: &store.ThreadTransactionError{Phase: "commit", OutcomeUnknown: true}}, Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
 		{"conflicting facts", errors.Join(&store.TransactionError{Outcome: store.TransactionCommitted}, &store.TransactionError{Outcome: store.TransactionNotCommitted}), Facts{Outcome: store.TransactionUnknown}},
 	}
 	for _, tc := range cases {

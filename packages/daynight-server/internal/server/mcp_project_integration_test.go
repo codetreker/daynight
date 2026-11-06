@@ -13,6 +13,7 @@ import (
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -32,7 +33,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 	config.UniAuthAppID, config.UniAuthAppSecret = gateway.AppID, gateway.AppSecret
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler, err := New(Dependencies{Store: database, Files: files}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func TestMCPProjectProductionLifecycle(t *testing.T) {
 	})
 	browsers := []*sdk.ClientSession{}
 	principals := []model.Principal{}
-	identityClient, err := config.identityClient()
+	identityClient, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}
