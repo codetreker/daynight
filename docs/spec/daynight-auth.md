@@ -190,7 +190,7 @@ Unicode 文本、不含 NUL、且不全部由 Unicode `White_Space` 组成；原
 精确版本下的相同原文是 no-op，保留版本和全部时间；真实名称改变使元数据版本加一。
 元数据版本达到最大正 int64 时仍接受同值 no-op，真实改名返回 `409 version_exhausted`。
 删除同时核对精确元数据版本和当前名称原文，任一不符返回 `409 version_conflict`；只有没有
-Project ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
+活跃 Project 的 ownership 引用的普通 Team 可删除，否则返回 `409 team_not_empty`。删除原子移除
 现有邀请、成员和 Team，不隐式转移或删除 Project，不改写独立 Project grant。
 
 目录每项是 `membership` 的字段加 `profile:{name,email,avatarUrl}`；profile 对象必填，三个字段
@@ -490,7 +490,7 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | 独立授权存在性或观察版本不符；ownership 或 Team 元数据版本过期，或删除 Team 的名称原文不匹配 | 409 version_conflict |
 | 新增独立授权的目标不是有效 participant | 404 not_found |
 | 变更 Personal Team | 409 personal_team_immutable |
-| 删除仍有 Project ownership 引用的 Team | 409 team_not_empty |
+| 删除仍有活跃 Project ownership 引用的 Team | 409 team_not_empty |
 | Team 真实改名或项目真实转移所需版本已达最大正 int64 | 409 version_exhausted；经核对的 no-op 仍有效 |
 | 无法确认 Team 管理、项目创建或转移、独立授权或邀请写入的提交结果 | 503 write_outcome_unknown；不得自动重放 |
 | 生命周期前态不符或前置未完成 | 409 invalid_transition / dependency_unsatisfied |

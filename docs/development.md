@@ -202,7 +202,10 @@ global prefix. Ordinary CLI tests own command behavior and its error and
 concurrency cases. The installed suite does not modify the operator's installed
 CLI or require live review credentials.
 
-Shell completion has a separate real-shell acceptance command. It requires
+Ordinary CLI tests require Python 3 and exercise completion behavior through a real
+Bash 4.2 or newer editor on Linux and a real zsh editor on macOS. The completion CI job also runs the module behavior
+matrix on Bash 4.2, modern Bash and zsh. Shell completion has a separate
+real-shell artifact acceptance command. It requires
 Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
 isolated shell executables from the repository root:
 

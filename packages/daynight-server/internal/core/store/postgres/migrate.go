@@ -135,11 +135,14 @@ var privateTransfersSQL string
 //go:embed migrations/042_oauth_cleanup_cursor.sql
 var oauthCleanupCursorSQL string
 
-//go:embed migrations/044_bot_native_preferences.sql
+//go:embed migrations/045_bot_native_preferences.sql
 var botNativePreferencesSQL string
 
 //go:embed migrations/043_upload_chunks.sql
 var uploadChunksSQL string
+
+//go:embed migrations/044_project_soft_delete.sql
+var projectSoftDeleteSQL string
 
 type migration struct {
 	version         int64
@@ -192,7 +195,8 @@ var schemaMigrations = []migration{
 	{version: 41, sql: privateTransfersSQL},
 	{version: 42, sql: oauthCleanupCursorSQL},
 	{version: 43, sql: uploadChunksSQL},
-	{version: 44, sql: botNativePreferencesSQL},
+	{version: 44, sql: projectSoftDeleteSQL},
+	{version: 45, sql: botNativePreferencesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

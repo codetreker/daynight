@@ -44,7 +44,7 @@ Worker 的历史清理超时只能在原探测可靠确认后解除阻塞，并�
 
 `store.BotWriteDAO.CommitBotPreferences` 加入调用方已有事务，不自行开启或提交。它重新读取持久 Bot，要求未删除、已绑定 Session 且 startupResult 为 ready，只提交持久显式项对应的冻结值。生命周期调用方必须先按 Bot → Session 锁序验证凭据、绑定 Worker、当前 native fence 与同步事实，再同事务持久化 ready 并调用该方法。Session 的 `ReportBot` 用例 在验证当前 live 同步后调用它；该内部方法的 ready 检查不替代 native 同步验证。数据库故障回滚整个事务，不留部分偏好。重放以原 creation_order 为条件，无额外写入效果。
 
-默认查询无写入副作用；创建只写 pending Bot。迁移 `044_bot_native_preferences.sql` 增加独立模型和 effort 偏好表。model 偏好按 owner/Worker/Provider 保存，reasoningEffort 偏好再按有效模型隔离，各自使用 creation_order 水位。只有显式选择的字段在 ready 事务内提交；未知模型不能生成 effort 偏好。report 将偏好提交留在同一生命周期事务中，无需独立的客户端确认请求，也不能在 spawn 回执或表单提交后提前调用成功方法。
+默认查询无写入副作用；创建只写 pending Bot。迁移 `045_bot_native_preferences.sql` 增加独立模型和 effort 偏好表。model 偏好按 owner/Worker/Provider 保存，reasoningEffort 偏好再按有效模型隔离，各自使用 creation_order 水位。只有显式选择的字段在 ready 事务内提交；未知模型不能生成 effort 偏好。report 将偏好提交留在同一生命周期事务中，无需独立的客户端确认请求，也不能在 spawn 回执或表单提交后提前调用成功方法。
 
 ## 原生选择与冻结
 

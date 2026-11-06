@@ -134,6 +134,33 @@ describe("remote worker commands over HTTP", () => {
     expect(JSON.parse(current.context.stdout.mock.calls[0]![0])).toEqual(detail);
     expect(current.context.workingDirectory).not.toHaveBeenCalled();
   });
+  it("prints two workers and the supported host's observed empty inventory", async () => {
+    const probe = { state: "error", checkedAt: observedAt, code: "unavailable" };
+    const assistantHost = { protocolVersion: 1, observedAt, defaultCwd: "/ordinary", defaultProvider: "codex", providers: [
+      { provider: "codex", available: true, reason: null, model: null, args: [] },
+      { provider: "claude", available: false, reason: "not_found", model: null, args: [] },
+      { provider: "copilot", available: false, reason: "not_found", model: null, args: [] },
+    ] };
+    const supported = { ...summary, taskObservationState: "observed", taskObservedAt: observedAt, activeTaskCount: 0 };
+    const legacy = { ...supported, workerId: secondId };
+    const telemetry = { machine: summary.machine, platform: "macos", workingDirectory: "/ordinary", sampledAt: observedAt, os: probe, cpu: probe, memory: probe, disk: probe, versions: { daynight: "0.41.0", herdr: { state: "not_running", checkedAt: observedAt }, codex: { state: "not_installed", checkedAt: observedAt }, copilot: probe }, assistantHost };
+    const detail = { observedAt, worker: { ...supported, telemetry, inventoryObservedAt: observedAt, tasks: [] } };
+    const requests: string[] = [];
+    const authorizations: (string | undefined)[] = [];
+    const current = await fixture((request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      authorizations.push(request.headers.authorization);
+      respond(response, request.url === `/api/v1/me/workers/${workerId}` ? detail : { observedAt, items: [legacy, supported], nextCursor: null });
+    });
+    expect(await runCli(["worker", "list", "--json"], current.context)).toBe(0);
+    expect(await runCli(["worker", "show", workerId, "--json"], current.context)).toBe(0);
+    expect(current.context.stdout).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(current.context.stdout.mock.calls[0]![0])).toEqual({ observedAt, items: [legacy, supported] });
+    expect(JSON.parse(current.context.stdout.mock.calls[1]![0])).toEqual(detail);
+    expect(current.context.stderr).not.toHaveBeenCalled();
+    expect(requests).toEqual(["GET /api/v1/me/workers?limit=100", `GET /api/v1/me/workers/${workerId}`]);
+    expect(authorizations).toEqual(["Bearer fixture-token", "Bearer fixture-token"]);
+  });
   it("canonicalizes show UUID and preserves a 404 through the public command without local Worker state", async () => {
     const requests: string[] = [];
     const current = await fixture((request, response) => { requests.push(request.url!); respond(response, { error: { code: "not_found", message: "Worker was not found", requestId: "show-404" } }, 404); });

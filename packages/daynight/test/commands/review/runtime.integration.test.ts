@@ -163,9 +163,9 @@ describe("foreground runtime ownership", () => {
     const harness = path.join(home, "control.mjs");
     await writeFile(harness, "process.on('message', (message) => { if (message === 'shutdown') { process.emit('SIGINT'); process.disconnect(); } });\n");
     const executable = fileURLToPath(new URL("../../../dist/main.js", import.meta.url));
-    const launch = () => {
+    const launch = (cwd = home) => {
       const child = spawn(process.execPath, ["--import", pathToFileURL(harness).href, executable, "review", "run"], {
-        cwd: home, stdio: ["ignore", "ignore", "pipe", "ipc"],
+        cwd, stdio: ["ignore", "ignore", "pipe", "ipc"],
         env: { ...process.env, HOME: home, USERPROFILE: home, PATH: emptyPath, Path: emptyPath },
       });
       let errors = "";
@@ -193,7 +193,7 @@ describe("foreground runtime ownership", () => {
       first.child.kill("SIGKILL");
       await first.exited;
       expect(JSON.parse(await readFile(path.join(state, "instance.lock"), "utf8"))).toEqual(firstRecord);
-      second = launch();
+      second = launch(emptyPath);
       await second.started;
       expect(JSON.parse(await readFile(path.join(state, "instance.lock"), "utf8"))).toMatchObject({ pid: second.child.pid });
       second.child.send("shutdown");
