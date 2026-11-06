@@ -241,7 +241,7 @@ func acceptancePreStatusSchema(t *testing.T, fixture *acceptanceFixture) {
 	t.Helper()
 	fixture.exec(t, `CREATE TABLE schema_migrations (version bigint PRIMARY KEY, checksum text NOT NULL CHECK (length(checksum) = 64), applied_at timestamptz NOT NULL DEFAULT statement_timestamp())`)
 	for index, name := range []string{"001_projects.sql", "002_tasks.sql", "003_task_properties.sql", "004_task_attachments.sql", "005_identity.sql", "006_project_membership.sql", "007_task_proposed.sql", "008_task_proposed_default.sql", "009_task_timing.sql", "010_project_settings.sql", "011_task_agent_permission.sql", "012_external_dependencies.sql"} {
-		data, err := os.ReadFile(filepath.Join("..", "..", "internal", "core", "store", "migrations", name))
+		data, err := os.ReadFile(filepath.Join("..", "..", "internal", "core", "store", "postgres", "migrations", name))
 		if err != nil {
 			t.Fatal("cannot read genuine pre-status migration SQL")
 		}
