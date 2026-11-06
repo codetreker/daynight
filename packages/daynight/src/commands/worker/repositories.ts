@@ -146,11 +146,18 @@ const prepareSetupSource = async (source: string | undefined, options: WorkerSet
   if (!path.isAbsolute(options.homeDirectory)) throw new Error("The current user's home directory must be an absolute path.");
   if (options.agent !== "codex" && options.agent !== "copilot" && options.agent !== "claude") throw new Error("Choose Codex, Claude or Copilot as the worker agent.");
   if (new Set(options.projectIds).size !== options.projectIds.length) throw new Error("Select distinct Projects for worker setup.");
-  const projects = selectedProjects(options.projectIds, options.projects);
   const current = await snapshotFromSource(source, paths, signal);
+  const unavailableIds = options.projectIds.filter((id) => !options.projects.some((project) => project.id === id));
+  for (const id of unavailableIds) {
+    if (!current.configuration.repositories.some((repository) => repository.projectId === id)) throw new Error(`Project ${id} is not an accessible existing remote project or configured worker project.`);
+  }
+  const accessibleIds = options.projectIds.filter((id) => !unavailableIds.includes(id));
+  const projects = accessibleIds.length === 0 ? [] : selectedProjects(accessibleIds, options.projects);
+  if (options.projectIds.length === 0) throw new Error("Select at least one existing remote project.");
   const { document, mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
   const root = resolveRepositoryRoot(current.configuration.repositoryRoot, paths, options.homeDirectory, "worker.repositoryRoot");
-  const retained = new Map<number, Project>();
+  const retained = new Map<number, Project | null>();
+  for (const id of unavailableIds) retained.set(current.configuration.repositories.findIndex((repository) => repository.projectId === id), null);
   const additions: Project[] = [];
   for (const project of projects) {
     const index = registeredProjectIndex(current.configuration.repositories, project);
@@ -172,12 +179,12 @@ const prepareSetupSource = async (source: string | undefined, options: WorkerSet
   for (let index = current.configuration.repositories.length - 1; index >= 0; index -= 1) {
     const repository = current.configuration.repositories[index]!;
     const project = retained.get(index);
-    if (project === undefined) {
+    if (!retained.has(index)) {
       document.deleteIn(["worker", "repositories", index]);
       removedRepositories.unshift(repository);
       continue;
     }
-    document.setIn(["worker", "repositories", index, "projectId"], project.id);
+    if (project !== null && project !== undefined) document.setIn(["worker", "repositories", index, "projectId"], project.id);
     document.deleteIn(["worker", "repositories", index, "agent"]);
     if (repository.agent !== options.agent) {
       document.deleteIn(["worker", "repositories", index, "model"]);
@@ -216,7 +223,13 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
   if (!path.isAbsolute(options.homeDirectory)) throw new Error("The current user's home directory must be an absolute path.");
   if ((options.addProjectIds === undefined) === (options.removeProjectIds === undefined)) throw new Error("Choose exactly one repository registration operation.");
   const adding = options.addProjectIds !== undefined;
-  const projects = selectedProjects(adding ? options.addProjectIds! : options.removeProjectIds!, options.projects);
+  const projects = adding ? selectedProjects(options.addProjectIds!, options.projects) : [];
+  const removalIds = adding ? [] : options.removeProjectIds!.map((value) => {
+    const id = canonicalId(value);
+    if (id === null) throw new Error("Project ID must be a hyphenated UUID.");
+    return id;
+  });
+  if (!adding && removalIds.length === 0) throw new Error("Select at least one configured project.");
   return updateConfigurationFile(paths, async (source) => {
     const current = await snapshotFromSource(source, paths, signal);
     if (!isDeepStrictEqual(current.registrationBaseline, snapshot.registrationBaseline)) throw new Error("Worker repository configuration or service credentials changed while selecting projects. Run the command again with the current configuration.");
@@ -245,8 +258,16 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
         changed = true;
       }
     } else {
-      const removals = repositories.flatMap((repository, index) => projects.some((project) => repository.projectId === project.id ||
-        (repository.projectId === undefined && repositoryIdentity(repository.remote) === repositoryIdentity(project.repoUrl))) ? [index] : []);
+      const selected = new Set(removalIds);
+      const knownProjects = options.projects.filter((project) => selected.has(project.id));
+      for (const id of selected) {
+        if (!repositories.some((repository) => repository.projectId === id) && !knownProjects.some((project) => project.id === id)) {
+          throw new Error(`Project ${id} is not an accessible existing remote project or configured worker project.`);
+        }
+      }
+      const removals = repositories.flatMap((repository, index) => repository.projectId !== undefined
+        ? selected.has(repository.projectId) ? [index] : []
+        : knownProjects.some((project) => repositoryIdentity(repository.remote) === repositoryIdentity(project.repoUrl)) ? [index] : []);
       for (const index of removals.toReversed()) { document.deleteIn(["worker", "repositories", index]); changed = true; }
     }
     if (!changed) return { kind: "unchanged", result: current.configuration.repositories };

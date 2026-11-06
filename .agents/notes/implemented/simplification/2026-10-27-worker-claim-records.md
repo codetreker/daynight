@@ -89,17 +89,18 @@ saved SQLite ID chooses resume or fresh execution. Static task/claim/worktree
 identity stays unchanged. Live agents reconnect without recreation, and inactive
 references are not promoted into the row's session_id.
 
-Capacity is the claim-deduplicated union of local active rows, actual attributed
-resources, already selected terminal cleanup and pending adapter stop
-confirmations. A rowless orphan keeps its reservation and same-task barrier
+Capacity is the claim-deduplicated union of local active rows, observed resources,
+already selected terminal cleanup and pending adapter stop confirmations.
+Unproven resources retain capacity without granting cleanup authority. A rowless orphan keeps its reservation and same-task barrier
 until cleanup finishes, even when its pane is already closed and the remaining
 responsibility is Git deletion or stop confirmation.
 
 Still-owned local active tasks are queued for fresh target recovery before
 global Git discovery. Their reservation already exists, so an unrelated
-checkout's filesystem error must not suppress their progress. Pending startup
-and new acquisition still require successful full discovery to account for
-unknown managed resources before reserving another slot.
+checkout's filesystem error must not suppress their progress. The [project isolation decision](../architecture/2026-11-06-worker-project-isolation.md)
+uses target-project inventory and resource observation for pending startup and
+new acquisition, while retaining known resources and responsibilities in global
+capacity.
 
 Pending startup advances Project rotation after each successful slot allocation
 and may use multiple free slots in one round. Project-local pending order is

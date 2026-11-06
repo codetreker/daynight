@@ -729,7 +729,7 @@ export const createApiClient = (options: {
     },
     getProject: (projectId) => {
       const project = resourceId(projectId);
-      return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
+      return exchange({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", { kind: "json", checkPrincipalOnError: true, parse: (value) => parseProject(value, project) }, [200]);
     },
     listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parsePage(value, (item) => parseProject(item), (project) => project.id), (project) => project.id),
     getProjectAccess: (projectId) => {
@@ -796,11 +796,11 @@ export const createApiClient = (options: {
       if (query.cursor !== undefined && (typeof query.cursor !== "string" || query.cursor === "")) throw new Error("Task page cursor must be a nonempty string.");
       const search = new URLSearchParams({ ...taskFilterQuery(query), limit: String(query.limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
       const parse = taskPageParser(project, query);
-      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value, metadata) => {
+      return exchange({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", { kind: "json", checkPrincipalOnError: true, parse: (value, metadata) => {
         const page = parse(value, metadata);
         if (page.items.length > query.limit) throw new ProtocolError("Task page exceeds the requested limit.");
         return page;
-      });
+      } }, [200]);
     },
     listReadyTasks: (projectId, limit, filters = {}) => {
       const project = resourceId(projectId);

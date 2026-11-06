@@ -10,6 +10,15 @@ import { validateServerToken, validateTokenTransport } from "../../config/server
 import { repositoryIdentity } from "../../repository/identity.js";
 import type { ProjectIdentity } from "./types.js";
 
+export type WorkerInventory = {
+  readonly tasks: readonly Task[];
+  readonly coveredProjectIds: readonly string[];
+  readonly unavailableProjectIds: readonly string[];
+};
+
+export const isUnavailableProject = (error: unknown): boolean =>
+  error instanceof ApiError && error.phase === "response" && error.status === 404 && error.code === "not_found";
+
 export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
@@ -19,7 +28,7 @@ export type WorkerRemote = {
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
   resume(projectId: string, taskId: string, input: ResumeWorkerTaskInput, signal: AbortSignal): Promise<Task>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
-  ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal): Promise<readonly Task[]>;
+  ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal, onUnavailable?: (projectId: string) => void): Promise<WorkerInventory>;
   candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal): AsyncGenerator<Task>;
   claim(candidate: Task, descriptor: WorkerClaimDescriptor, signal: AbortSignal): Promise<Task>;
   update(task: Task, input: Omit<UpdateWorkerClaimInput, "version" | "claimId">, signal: AbortSignal): Promise<Task>;
@@ -108,7 +117,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       signal.throwIfAborted();
       return project;
     },
-    ownInventory: async (projects, workerId, signal) => {
+    ownInventory: async (projects, workerId, signal, onUnavailable) => {
       const owner = verifiedUserId();
       const selected = new Map<string, ProjectIdentity>();
       for (const project of projects) {
@@ -116,15 +125,25 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
         if (projectId === null) throw new Error("Worker project ID must be a hyphenated UUID.");
         selected.set(projectId, project);
       }
-      const result: Task[] = [];
+      const result: Task[] = [], coveredProjectIds: string[] = [], unavailableProjectIds: string[] = [];
       for (const projectId of selected.keys()) {
-        for await (const task of taskPages(projectId, { workerId }, signal)) {
-          if (readWorkerClaim(task.properties)?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
-          result.push(task);
+        const projectTasks: Task[] = [];
+        try {
+          for await (const task of taskPages(projectId, { workerId }, signal)) {
+            if (readWorkerClaim(task.properties)?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
+            projectTasks.push(task);
+          }
+        } catch (error) {
+          if (!isUnavailableProject(error)) throw error;
+          onUnavailable?.(projectId);
+          unavailableProjectIds.push(projectId);
+          continue;
         }
+        coveredProjectIds.push(projectId);
+        result.push(...projectTasks);
       }
       signal.throwIfAborted();
-      return result;
+      return { tasks: result, coveredProjectIds, unavailableProjectIds };
     },
     candidates: async function* (projectId, platform, signal) {
       for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform, assignedTo: "me" }, signal)) {

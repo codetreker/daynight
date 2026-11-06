@@ -208,24 +208,53 @@ export const runWorker = async (options: {
       onError: message => diagnostics?.emit({ kind: "credential-renewal-error", message }),
     }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
     const repositories: WorkerRepositoryAssignment[] = [];
-    for (const repository of configuration.repositories) {
-      const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
-      const previous = store.getProject({ projectId: project.id });
+    const sources = new Map<string, typeof configuration.repositories[number]>();
+    const prepared = new Set<string>();
+    const unresolved = new Set(configuration.repositories.filter(repository => repository.projectId === undefined));
+    const registerBinding = async (projectId: string, repository: typeof configuration.repositories[number], operationSignal: AbortSignal) => {
+      const previous = store!.getProject({ projectId });
       if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) {
-        const operation = createOperation({ signal });
+        const operation = createOperation({ signal: operationSignal });
         try {
-          if ((await git.listWorktrees(previous, operation)).length > 0) throw new Error("Owned worktrees prevent changing the project's original repository binding.");
+          if ((await git!.listWorktrees(previous, operation)).length > 0) throw new Error("Owned worktrees prevent changing the project's original repository binding.");
         } finally { operation.dispose(); }
       }
-      const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
-      const operation = createOperation({ signal });
-      try { await git.prepareRepository(binding, operation); }
+      return store!.registerProject({ projectId, repoUrl: repository.remote, localPath: repository.path });
+    };
+    const prepareProject = async (projectId: string, operationSignal: AbortSignal): Promise<void> => {
+      if (prepared.has(projectId)) return;
+      const repository = sources.get(projectId);
+      if (repository === undefined) throw new Error(`Project ${projectId} is not configured for this worker.`);
+      const project = await remote.resolveProject({ repoUrl: repository.remote, projectId }, operationSignal);
+      const binding = await registerBinding(project.id, repository, operationSignal);
+      const operation = createOperation({ signal: operationSignal });
+      try { await git!.prepareRepository(binding, operation); }
       finally { operation.dispose(); }
-      repositories.push({ project: binding, configuration: { agent: repository.agent, agentControlMode: repository.agentControlMode ?? "herdr", model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
-    }
+      prepared.add(projectId);
+    };
+    const registerRepository = async (repository: typeof configuration.repositories[number]): Promise<void> => {
+      try {
+        const projectId = repository.projectId ?? (await remote.resolveProject({ repoUrl: repository.remote }, signal)).id;
+        if (sources.has(projectId)) throw new Error(`Project ${projectId} is already configured for this worker.`);
+        sources.set(projectId, repository);
+        const binding = { projectId, repoUrl: repository.remote, localPath: repository.path };
+        repositories.push({ project: binding, configuration: { agent: repository.agent, agentControlMode: repository.agentControlMode ?? "herdr", model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+        unresolved.delete(repository);
+        try { await registerBinding(projectId, repository, signal); }
+        catch (error) { if (signal.aborted) throw error; diagnostics!.emit({ kind: "warning", message: `Project ${projectId} could not register its repository binding.`, error }); }
+        try { await prepareProject(projectId, signal); }
+        catch (error) { if (signal.aborted) throw error; diagnostics!.emit({ kind: "warning", message: `Project ${projectId} could not be prepared; it will be retried after a successful inventory.`, error }); }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        diagnostics!.emit({ kind: "warning", message: `Worker repository ${repository.projectId ?? repository.remote} could not be registered.`, error });
+      }
+    };
+    for (const repository of configuration.repositories) await registerRepository(repository);
     coordinator = createWorkerCoordinator({
       store, git, herdr: lazyHerdr, ...web, remote, serverOrigin: serverUrl, workerId, platform,
       machine, repositories, hasHerdrJournal: await hasHerdrJournal(paths, platform),
+      prepareProject,
+      configurationComplete: () => unresolved.size === 0,
       onInventory: reporter.publishInventory, onClaim: reporter.recordClaim,
       maxConcurrent: configuration.maxConcurrent, globalConfiguration: configuration,
       buildPrompt: await createWorkerPromptBuilder(options.packageDirectory),
@@ -235,6 +264,7 @@ export const runWorker = async (options: {
     let attachmentShown = false;
     while (!signal.aborted) {
       try {
+        for (const repository of unresolved) await registerRepository(repository);
         await coordinator.tick();
         await web.backfillArchives(signal);
         if (!attachmentShown && herdr !== undefined) {
@@ -305,10 +335,21 @@ export const runWorkerControl = async (options: {
     await remote.currentUserId(signal);
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     const repositories: WorkerRepositoryAssignment[] = [];
+    const matches = store.listTasks().filter((task) => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
+    if (matches.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
+    const targetProjectId = matches[0]?.projectId ?? options.request.projectId;
+    if (targetProjectId === undefined && configuration.repositories.length > 1) throw new Error("This claim has no local execution; supply --project to resume it explicitly.");
     for (const repository of configuration.repositories) {
-      const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
-      const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
-      repositories.push({ project: binding, configuration: { agent: repository.agent, agentControlMode: repository.agentControlMode ?? "herdr", model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+      if (targetProjectId !== undefined && repository.projectId !== undefined && repository.projectId !== targetProjectId) continue;
+      try {
+        const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
+        if (targetProjectId !== undefined && project.id !== targetProjectId) continue;
+        const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
+        repositories.push({ project: binding, configuration: { agent: repository.agent, agentControlMode: repository.agentControlMode ?? "herdr", model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+      } catch (error) {
+        if (signal.aborted || repository.projectId === targetProjectId || targetProjectId === undefined) throw error;
+        diagnostics.emit({ kind: "warning", message: "An unrelated worker repository could not be resolved for management.", error });
+      }
     }
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });

@@ -71,6 +71,19 @@ it("keeps a claim grant unknown until a complete inventory establishes its obser
   await reporter.stop();
 });
 
+it("invalidates a complete observation during partial coverage until coverage is restored", async () => {
+  const f = fixture(), reporter = f.start(); await settle();
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("old")] }); await settle();
+  reporter.publishInventory(null); await settle();
+  reporter.recordClaim(claim("new")); await settle();
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(f.send.mock.calls.slice(2).map(([report]) => report.taskInventory)).toEqual([null, null, null]);
+  expect(f.send.mock.calls[4]![0].machine).toEqual(telemetry.machine);
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("new")] }); await settle();
+  expect(f.send.mock.calls[5]![0].taskInventory).toEqual({ observedAt: timestamp, claims: [claim("new")] });
+  await reporter.stop();
+});
+
 it("copies inventory and grant references without changing an in-flight payload", async () => {
   const f = fixture(), blocked = deferred<{ observedAt: string; lastReportedAt: string }>();
   const reporter = f.start(); await settle();

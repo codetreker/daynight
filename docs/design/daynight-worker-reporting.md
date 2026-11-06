@@ -30,9 +30,9 @@ runtime 根 signal 中止时，reporter 同步停止 interval、清除 pending �
 
 ## 完整清单复用
 
-coordinator 在完整 ownInventory 成功返回后、资源观察和较长任务操作前发布观测。分页或任一项目读取失败不发布部分集合。实际 claim 成功且本机 pending 已登记后，再发布确认的 task 引用。两个回调都不等待 HTTP。
+coordinator 在全部项目的 ownInventory 完整覆盖后、资源观察和较长任务操作前发布观测。项目 404 形成局部覆盖时使旧完整清单失效，不发布部分集合；其他分页或读取错误同样使清单失效并保留真实错误分类。实际 claim 成功且本机 pending 已登记后，再发布确认的 task 引用。回调都不等待 HTTP。
 
-reporter 防御性复制并冻结清单及引用。初始 inventory 为 null，完整成功观测替换它，包括空数组；失败不清空。新 claim 只在完整清单已知时按 taskId upsert，并保留该完整清单 observedAt。发送时取最新清单，避免采集开始后确认的新 claim 被同次报告遗漏。清单来源时间独立于 sampledAt 和服务端 lastReportedAt。
+reporter 防御性复制并冻结清单及引用。初始 inventory 为 null，完整成功观测替换它，包括空数组；覆盖不完整或读取失败时显式清空。新 claim 只在完整清单已知时按 taskId upsert，并保留该完整清单 observedAt。发送时取最新清单，避免采集开始后确认的新 claim 被同次报告遗漏。清单来源时间独立于 sampledAt 和服务端 lastReportedAt。
 
 ## 资源采集与有界等待
 

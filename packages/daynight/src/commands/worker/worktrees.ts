@@ -235,7 +235,12 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (result.registration === null) return null;
       return result.binding;
     },
-    listWorktrees: async (project: WorkerProject, operation: Operation): Promise<OwnedWorktree[]> => {
+    listWorktrees: async (project: WorkerProject, operation: Operation, allowMissingRepository = false): Promise<OwnedWorktree[]> => {
+      if (allowMissingRepository) {
+        const physical = await resolvePhysicalDirectory(absolute(project.localPath, "Repository path"));
+        operation.check();
+        if (physical.missingComponents.length > 0) return [];
+      }
       const repository = await inspectRepository(project, operation);
       const namespace = path.join(repository.root, ".worktrees", "daynight");
       await directory(path.dirname(namespace));

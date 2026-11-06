@@ -33,8 +33,9 @@ errors, duplicate identities and repeated cursors do not produce a partial
 success. `listTaskPage` remains an explicitly partial operation. No public task
 CLI option or new worker runtime is introduced by this contract.
 
-A caller must collect workerId-only pages for every relevant project successfully
-before using absence as an ownership fact. It cannot use extra candidate filters
+A caller must collect workerId-only pages for the relevant project successfully
+before using absence as an ownership fact. The [project isolation decision](2026-11-06-worker-project-isolation.md)
+permits other successfully covered projects to progress when one is unavailable. It cannot use extra candidate filters
 or a failed/partial traversal to authorize cleanup. Automatic reconciliation uses
 claim membership, not task-status classification. Known-task reads remain useful
 for explicit version-bound writes and uncertain mutation results.

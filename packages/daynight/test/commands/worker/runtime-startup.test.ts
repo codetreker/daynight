@@ -56,6 +56,55 @@ afterEach(async () => {
 });
 
 describe("worker repository preparation lifecycle", () => {
+  it("retries legacy repository discovery and withholds complete coverage until it resolves", async () => {
+    const f = await fixture(false, true); const controller = new AbortController();
+    const { projectId: _projectId, ...legacy } = f.repository;
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [legacy], pollIntervalMs: 1 } }));
+    let attempts = 0;
+    const resolveProject = vi.fn(async () => {
+      if (++attempts <= 2) throw new Error("Discovery temporarily unavailable");
+      return { id: uuid(1) };
+    });
+    mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject });
+    let ticks = 0;
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      if (++ticks === 1) {
+        expect(options.configurationComplete!()).toBe(false);
+        expect(options.repositories).toHaveLength(0);
+      } else {
+        expect(options.configurationComplete!()).toBe(true);
+        expect(options.repositories.map(({ project }) => project.projectId)).toEqual([uuid(1)]);
+        expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull();
+        controller.abort();
+      }
+    }));
+    await runWorker({ ...f, signal: controller.signal });
+    expect(ticks).toBe(2);
+    expect(mocks.git.mock.results[0]!.value.prepareRepository).toHaveBeenCalledOnce();
+  });
+  it("retains an unavailable explicit Project and retries its preparation independently", async () => {
+    const f = await fixture(false, true); const controller = new AbortController();
+    const second = { ...f.repository, projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository, second], maxConcurrent: 2 } }));
+    let available = false;
+    const resolveProject = vi.fn(async ({ projectId }: { projectId: string }) => {
+      if (projectId === uuid(1) && !available) throw new Error("Project unavailable");
+      return { id: projectId };
+    });
+    mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject });
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      expect(options.store.listProjects().map(({ projectId }) => projectId)).toEqual([uuid(1), uuid(2)]);
+      expect(options.repositories.map(({ project }) => project.projectId)).toEqual([uuid(1), uuid(2)]);
+      expect(mocks.git.mock.results[0]!.value.prepareRepository).toHaveBeenCalledTimes(1);
+      available = true;
+      await options.prepareProject!(uuid(1), controller.signal);
+      await options.prepareProject!(uuid(2), controller.signal);
+      controller.abort();
+    }));
+    await runWorker({ ...f, signal: controller.signal });
+    expect(mocks.git.mock.results[0]!.value.prepareRepository).toHaveBeenCalledTimes(2);
+    expect(resolveProject.mock.calls.every(([repository]) => repository.projectId !== undefined)).toBe(true);
+  });
   it("keeps cold cancellation before identity, locks, databases and native controllers", async () => {
     const f = await fixture();
     const before = (await readdir(f.homeDirectory, { recursive: true })).sort();

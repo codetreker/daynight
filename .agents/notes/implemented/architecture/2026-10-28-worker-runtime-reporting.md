@@ -24,8 +24,9 @@ the observable guarantees. The [account snapshot decision](2026-10-28-worker-run
 retains ownership of server normalization, persistence and queries.
 
 The reporter reuses the coordinator's complete immutable task references. It
-keeps unknown inventory as null, preserves successful observations through read
-failures, and uses an explicit empty array only for observed idleness. Resource
+keeps unknown inventory as null and uses an explicit empty array only for
+observed idleness. The [project isolation decision](2026-11-06-worker-project-isolation.md)
+invalidates the complete observation when coverage fails or a Project is unavailable. Resource
 samples, bounded version caches, inventory and diagnostic transition state live
 in the process, without adding telemetry fields to the claim SQLite index.
 

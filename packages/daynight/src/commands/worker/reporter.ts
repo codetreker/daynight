@@ -47,7 +47,7 @@ export const createWorkerReporter = (options: {
   collect: (operation: Operation) => Promise<WorkerTelemetrySample>;
   send: (report: WorkerReport, operation: Operation) => Promise<WorkerReportReceipt>;
   emit: (event: WorkerDiagnostic) => void;
-}): { publishInventory(inventory: WorkerTaskInventory): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
+}): { publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
   const failures = new Map<string, FailureState>();
   const cleanupFailures = new Set<unknown>();
@@ -135,7 +135,7 @@ export const createWorkerReporter = (options: {
   return {
     publishInventory: (value) => {
       if (stopped) return;
-      inventory = copyInventory(value);
+      inventory = value === null ? null : copyInventory(value);
       trigger();
     },
     recordClaim: (reference) => {

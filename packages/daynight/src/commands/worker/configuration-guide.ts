@@ -51,26 +51,28 @@ const changeRepositories = async (
   const snapshot = await dependencies.readSnapshot(paths, signal);
   const projects = await dependencies.readProjects(snapshot, signal);
   signal.throwIfAborted();
-  if (projects.length === 0) throw new Error("No accessible Daynight Projects exist. Create a Project before configuring worker repositories.");
+  if (projects.length === 0 && request.kind === "add") throw new Error("No accessible Daynight Projects exist. Create a Project before configuring worker repositories.");
+  const configured = new Set(dependencies.configuredProjectIds(snapshot, projects));
   let projectIds: readonly string[];
   if (request.projectId !== undefined) {
-    if (!projects.some(({ id }) => id === request.projectId)) throw new Error(`Project ${request.projectId} does not exist or is not accessible.`);
+    if (!projects.some(({ id }) => id === request.projectId) && !(request.kind === "remove" && configured.has(request.projectId))) throw new Error(`Project ${request.projectId} does not exist or is not accessible.`);
     projectIds = [request.projectId];
   } else {
-    const configured = new Set(dependencies.configuredProjectIds(snapshot, projects));
     const choices = projects.filter(({ id }) => request.kind === "add" ? !configured.has(id) : configured.has(id));
-    if (choices.length === 0) throw new Error(request.kind === "add"
+    const unavailable = request.kind === "remove" ? snapshot.configuration.repositories.filter(({ projectId }) => projectId !== undefined && !projects.some(({ id }) => id === projectId)) : [];
+    const selection = [...choices.map((project) => ({ name: projectLabel(project), value: project.id })), ...unavailable.map((repository) => ({ name: `Unavailable · ${repository.projectId!} · ${terminalText(repository.remote)}`, value: repository.projectId! }))];
+    if (selection.length === 0) throw new Error(request.kind === "add"
       ? "All accessible Daynight Projects are already configured for this worker."
       : "No configured worker repository matches an accessible Daynight Project.");
     const prompt = context.prompt;
     if (prompt?.isInteractive !== true) throw new Error(`Interactive worker repository configuration requires terminal input and stderr. Run daynight worker repo ${request.kind} --project <project-id>.`);
     projectIds = await prompt.selectMany<string>({
       message: request.kind === "add" ? "Run tasks from which existing Daynight Projects?" : "Remove which existing Daynight Projects from worker configuration?",
-      choices: choices.map((project) => ({ name: projectLabel(project), value: project.id })),
+      choices: selection,
       requiredMessage: "Select at least one Project.",
     }, signal);
     signal.throwIfAborted();
-    const available = new Set(choices.map(({ id }) => id));
+    const available = new Set(selection.map(({ value }) => value));
     if (projectIds.length === 0 || projectIds.some((id) => !available.has(id)) || new Set(projectIds).size !== projectIds.length) {
       throw new Error("Select one or more distinct Projects from the available choices.");
     }
