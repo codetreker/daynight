@@ -92,6 +92,10 @@ const fresh = async (runtime = false) => {
       send(200, { items: [], nextCursor: null });
       return;
     }
+    if (runtime && request.method === "GET" && url.pathname === `/api/v1/me/workers/${workerId}/readonly/channel`) {
+      send(404, { error: { code: "not_found", message: "This fixture service predates Worker read-only channels.", requestId: "worker-legacy-service" } });
+      return;
+    }
     if (runtime && request.method === "POST" && url.pathname === `/api/v1/me/workers/${workerId}/report`) {
       response.setHeader("Daynight-Worker-Configuration", "1");
       let body = "";
@@ -235,6 +239,7 @@ it.skipIf(process.platform === "win32")("runs a zero-repository installed worker
   await vi.waitFor(() => { expect(first.child.exitCode, first.stderr()).toBeNull(); expect(first.stderr()).toContain("Foreground worker"); }, { timeout: 15_000 });
   await vi.waitFor(() => expect(f.reports.some(report => report.taskInventory?.claims.length === 0)).toBe(true), { timeout: 15_000 });
   await vi.waitFor(() => expect(f.calls.some(call => call.method === "GET" && call.path === `/api/v1/me/workers/${workerId}/bots?limit=100`)).toBe(true), { timeout: 15_000 });
+  await vi.waitFor(() => expect(f.calls.some(call => call.method === "GET" && call.path === `/api/v1/me/workers/${workerId}/readonly/channel`)).toBe(true), { timeout: 15_000 });
   const second = launch();
   await vi.waitFor(() => expect(second.child.exitCode, second.stderr()).not.toBeNull(), { timeout: 15_000 });
   const duplicate = await second.closed;
@@ -255,7 +260,7 @@ it.skipIf(process.platform === "win32")("runs a zero-repository installed worker
     expect(db.pragma("user_version", { simple: true })).toBe(11);
     for (const table of ["projects", "tasks", "cleanup_schedules", "bots", "bot_executions"]) expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
   } finally { db.close(); }
-  const allowed = ["GET /api/v1/me", `GET /api/v1/me/workers/${workerId}/configuration`, `POST /api/v1/me/workers/${workerId}/report`, `GET /api/v1/me/workers/${workerId}/bots?limit=100`];
+  const allowed = ["GET /api/v1/me", `GET /api/v1/me/workers/${workerId}/configuration`, `POST /api/v1/me/workers/${workerId}/report`, `GET /api/v1/me/workers/${workerId}/bots?limit=100`, `GET /api/v1/me/workers/${workerId}/readonly/channel`];
   expect(f.calls.every(call => call.authorization === `Bearer ${token}` && allowed.includes(`${call.method} ${call.path}`))).toBe(true);
   expect(f.reports.every(report => report.assistantHost === undefined)).toBe(true);
 });

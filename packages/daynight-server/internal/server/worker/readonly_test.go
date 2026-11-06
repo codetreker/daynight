@@ -329,3 +329,111 @@ func TestReadOnlyChannelRefusalsBoundUnreadBodies(t *testing.T) {
 		})
 	}
 }
+
+func TestReadOnlyChannelRejectsInvalidHandshakeAndFrames(t *testing.T) {
+	f := newReadOnlyFixture(t)
+	for _, mode := range []string{"binary_hello", "malformed_hello", "unsupported_hello", "unknown_worker", "malformed_result", "wrong_fence"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			worker := f.worker
+			if mode == "unknown_worker" {
+				worker = uuid.NewString()
+			}
+			c, _, err := websocket.Dial(ctx, strings.Replace(f.server.URL, "http:", "ws:", 1)+"/api/v1/me/workers/"+worker+"/readonly/channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.token}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.CloseNow()
+			hello := ro.Hello{Type: "hello", Protocol: ro.Protocol, CapabilityGeneration: uuid.NewString(), Operations: []string{"directory.list"}}
+			if mode == "unsupported_hello" {
+				hello.Protocol = "unsupported"
+			}
+			raw, _ := json.Marshal(hello)
+			kind := websocket.MessageText
+			if mode == "binary_hello" {
+				kind = websocket.MessageBinary
+			}
+			if mode == "malformed_hello" {
+				raw = []byte(`{"unexpected":true}`)
+			}
+			if err = c.Write(ctx, kind, raw); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "malformed_result" || mode == "wrong_fence" {
+				ready := readOnlyRead(t, c)
+				frame := []byte(`{"unexpected":true}`)
+				if mode == "wrong_fence" {
+					ready.ConnectionID = uuid.NewString()
+					frame, _ = json.Marshal(ro.Message{Fence: ready.Fence, Type: "result", RequestID: uuid.NewString(), Error: &ro.Error{Code: "not_found", Message: "not found"}})
+				}
+				if err = c.Write(ctx, websocket.MessageText, frame); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, err = c.Read(ctx); err == nil {
+				t.Fatal("invalid channel remained usable")
+			}
+		})
+	}
+	// A cookie can invoke reads but cannot stand in for a Worker channel.
+	r, _ := http.NewRequest("GET", f.server.URL+"/api/v1/me/workers/"+f.worker+"/readonly/channel", nil)
+	r.AddCookie(f.cookie)
+	response, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 403 {
+		t.Fatal("cookie channel accepted", response.StatusCode)
+	}
+}
+func TestReadOnlyChannelHeartbeatAndShutdownCancelReader(t *testing.T) {
+	f := newReadOnlyFixture(t)
+	c, _ := f.connect(t, f.worker, f.token)
+	closed := make(chan error, 1)
+	go func() { _, _, err := c.Read(context.Background()); closed <- err }()
+	// Keep the socket reader active so the real WebSocket heartbeat is answered.
+	select {
+	case err := <-closed:
+		t.Fatal("healthy channel closed", err)
+	case <-time.After(5200 * time.Millisecond):
+	}
+	f.routes.BeginShutdown()
+	select {
+	case err := <-closed:
+		if err == nil {
+			t.Fatal("shutdown yielded data")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown retained channel")
+	}
+}
+func TestReadOnlyShutdownDeadlineIsObservable(t *testing.T) {
+	b := ro.New(func(context.Context, model.Principal, string) error { return nil })
+	h := NewReadOnlyRoutes(b, nil, slog.Default())
+	h.active.Add(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := h.Shutdown(ctx); err != context.Canceled {
+		t.Fatal("shutdown deadline hidden", err)
+	}
+	h.active.Done()
+	if err := h.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestReadOnlyHTTPErrorStatusesRemainDistinct(t *testing.T) {
+	h := NewReadOnlyRoutes(nil, nil, slog.Default())
+	for _, item := range []struct {
+		code   string
+		status int
+	}{{"offline", 503}, {"unsupported", 501}, {"busy", 429}, {"timeout", 504}, {"cancelled", 409}, {"invalid_input", 400}} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/", nil)
+		h.failure(w, r, &model.Fault{Code: item.code, Message: "read-only request unavailable"})
+		if w.Code != item.status {
+			t.Fatalf("%s status %d", item.code, w.Code)
+		}
+	}
+}
