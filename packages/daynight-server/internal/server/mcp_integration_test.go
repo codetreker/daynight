@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -57,7 +58,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	newApp := func() *sessionApplication {
 		t.Helper()
-		h, err := New(Dependencies{Store: database, Files: files}, config, logger)
+		h, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -80,7 +81,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	testauth.Login(t, alice, origin, "alice")
 	testauth.Login(t, bob, origin, "bob")
 	tokens := []string{testauth.CreatePAT(t, alice, origin), testauth.CreatePAT(t, bob, origin)}
-	client, err := config.identityClient()
+	client, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}

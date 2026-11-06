@@ -294,13 +294,12 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
 | `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
 
-HTTP startup prepares one local file-storage root and creates and verifies one
-concrete PostgreSQL store. The handler factory `server.New(Dependencies, Config, logger)` returns
-`(http.Handler, error)`, validating mandatory authentication configuration before
-assembling the mux. `Dependencies` supplies `Store` and `Files` before the listener
-accepts requests. The composition
-root assembles services without opening another pool or file root. The runtime
-owns HTTP shutdown, storage closure and pool closure. Startup applies the embedded migrations before accepting requests.
+Startup validates neutral configuration and constructs the UniAuth client before
+opening one local file root and one PostgreSQL resource. `service.App` assembles
+and owns the shared modules and resources; `server.New` registers their HTTP
+routes. The runtime stops admission and drains HTTP and WebSocket work before
+the application closes the Session engine, files and pool. A cleanup timeout
+retains resources for another close attempt. Startup applies the embedded migrations before accepting requests.
 One pinned connection holds a session advisory lock across version checks and all
 migration transactions; unknown versions, gaps and checksum mismatches stop startup.
 
@@ -358,9 +357,10 @@ go test -race -tags=stress ./internal/server -run '^TestStressMCPStepsCapacityAn
 ```
 
 The application rejects and cancels MCP requests during shutdown before stopping
-the shared relay. A drain timeout cancels active requests, but the
-runtime waits for handlers, the relay and database cleanup before closing shared
-storage and returning the timeout error.
+the shared relay. A drain timeout cancels active requests, but the runtime waits
+for handlers, the relay and database cleanup within a separate five-second
+cleanup budget before closing shared storage. If cleanup times out, it retains
+resources and returns an error; a caller can retry close.
 
 ## Local Docker deployment
 
@@ -460,10 +460,11 @@ in the startup log. Invalid timeout values fail validation.
 `SIGINT` and `SIGTERM` stop accepting connections and begin draining requests.
 Active REST request contexts remain usable during the drain; MCP requests are
 canceled when shutdown begins. On deadline, the runtime cancels remaining request
-contexts and force-closes HTTP connections. It waits for active handlers, relay
-and session work, and database cancellation to finish before closing the file
-root and pool and returning the timeout error. A handler that does not finish can
-delay process exit beyond `DAYNIGHT_SHUTDOWN_TIMEOUT`. Database operations must
+contexts, signals Session operations and force-closes HTTP connections. It waits
+up to five additional seconds for active handlers, relay and session work, and
+database cancellation before closing the file root and pool. The timeout remains
+an error; if cleanup is incomplete, ownership is retained for another close
+attempt. Database operations must
 use the request context and release acquired connections.
 The runtime also closes an acquired file root on later startup failure. Local
 files remain on disk when the handle closes. Startup fixtures supply isolated

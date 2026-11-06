@@ -17,9 +17,7 @@
 
 ## 现状与可复用机制
 
-`server.New(Dependencies, Config, logger)` 先校验必需配置并构造真实 UniAuth SDK，
-再注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI；失败返回
-error，运行时关闭已获得的 listener、数据库和文件根句柄。业务服务显式接受
+`internal/config` 先校验必需配置，`service.App` 在打开文件和数据库之前构造真实 UniAuth SDK；`server.New` 使用组装好的应用注册身份、Team、成员、project/task/graph/property/attachment、健康检查和 UI。启动失败返回 error 并按依赖顺序释放已获得的资源。业务服务显式接受
 model.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
 直接实现私有创建和按成员过滤。正式 Application 在常驻 LocaleProvider 下选择公开首页、
 公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
