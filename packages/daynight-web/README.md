@@ -1955,12 +1955,17 @@ unknown/duplicate/missing scenarios or a mismatched selection fail validation.
 The pure `scripts/acceptance/inventory.mts` owns canonical functional and
 combined-authentication check names.
 
-After Chromium installation, the three navigation suites run serially in one
-branch while the production acceptance runner runs in another. Navigation hosts
-use separate ports, build/cache directories and routed API fixtures; production
-targets keep their private databases, profiles and installed CLI. A failure in
-either branch aborts the shared controller and both branches drain before the
-wrapper returns, preserving command and cleanup failures. The
+After Chromium installation, CI requests navigation checks through its existing
+source/run-bound acceptance receipt. The container callback waits for permission
+and installed-CLI validation, then overlaps the serial navigation branch with
+container functional validation. Both branches drain before combined
+authentication can restart a target and before callback exit allows dev-ci network
+cleanup. Navigation hosts use separate ports, build/cache directories and routed
+API fixtures. A branch failure cancels their shared controller and preserves
+operation and cleanup failures. Navigation command cancellation escalates after
+one second, within dev-ci's callback termination grace, while its verification
+deadlines remain unchanged. Direct acceptance callers and shard 1 keep their
+existing paths. The
 [browser job scheduling decision](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
 owns this isolation and resource trade-off.
 

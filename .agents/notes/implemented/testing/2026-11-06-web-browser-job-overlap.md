@@ -7,29 +7,49 @@ Status: implemented
 The second Web browser job runs three navigation suites before starting its
 production acceptance runner. Navigation builds, browser work and teardown form
 a serial prefix even though their fixtures do not use the production targets.
-Reducing an individual case does not establish a shorter CI job; the execution
-schedule and its complete resource lifetime must be measured together.
+Reducing an individual case does not establish a shorter CI job; execution
+scheduling and complete resource lifetimes must be measured together.
+
+Browser navigation can also overlap host networking changes if it starts while
+Docker builds or services are being prepared. An initial unrestricted overlap
+produced `ERR_NETWORK_CHANGED`; the available logs did not retain the exact
+kernel event. Scheduling must provide a network-lifetime boundary without
+relying on a navigation branch usually finishing first.
 
 ## Decision
 
-Chromium and its OS dependencies finish installation before browser validation
-starts. The three navigation commands remain serial in one branch while the
-existing production acceptance runner executes in a second branch. Quality mode
-and the first shard's acceptance path retain their existing schedules.
+Chromium and its OS dependencies finish installation before CI starts acceptance.
+The shared-check owner requests navigation through an optional
+`navigationChecks: true` in the existing run/source-bound parent evidence.
+The field admits absence or literal true and is restricted to functional shared
+checks. The container callback verifies the same intent when rereading its
+parent after the existing permission wait and installed-CLI validation. Direct
+acceptance and the first shard retain their existing paths.
+
+The callback overlaps two operations: the three navigation commands run serially
+in one branch, while the existing container functional browser runs in another.
+Both branches settle before combined authentication can restart the container.
+Only after authentication and callback exit can dev-ci remove its networks.
+Existing native functional work can overlap this callback as before. No new
+receipt file, schema version, CLI flag or cross-runner artifact handoff is needed.
 
 Navigation uses ports 4193, 4194 and 4198, dedicated Vite cache/output directories
-and browser-routed API fixtures. Its hosts do not write production build outputs
-or use production service databases. Acceptance retains its run/phase-private
+and browser-routed API fixtures. It does not write production build outputs or
+use production service databases. Acceptance retains its run/phase-private
 browser inventory, installed CLI receipts, credentials and process ownership.
 Each target keeps its existing one-worker execution, source/image checks and
 native/container preparation and cleanup barriers. Scenario IDs, native
 Playwright sharding, canonical union and once-only check ownership are unchanged.
 
-Both branches share the existing cancellation controller. A failure aborts it
-promptly, and the wrapper waits for both branches to settle before reporting
-success, cancellation or failure. Distinct operation and cleanup errors remain
-available; cancellation does not release another branch's owned resources.
+A branch failure aborts the shared callback controller promptly. Both branches
+drain before callback settlement, preserving distinct operation and cleanup
+errors; the parent pipeline then joins its native and container resources.
 Existing command wrappers still require complete process-group termination.
+Navigation cancellation escalates its owned command group after one second,
+inside dev-ci's five-second callback termination grace. The navigation
+verification deadlines remain 180, 540 and 180 seconds; this cleanup ordering
+does not relax those checks. A real TERM-ignoring subprocess regression verifies
+that callback cleanup joins the forced group before the outer grace expires.
 The [functional target decision](2026-11-04-web-functional-target-overlap.md)
 continues to own the production runner's independent target resources.
 
@@ -46,13 +66,21 @@ job measurements remain separate from constrained-container observations.
 and memory use, but delays independent production preparation and browser work
 until all navigation hosts finish.
 
+**Run navigation during all production preparation.** This overlaps the largest
+prefix but allows Docker build/service networking changes during navigation.
+The observed navigation failure makes that unrestricted schedule unsuitable.
+
+**Await navigation before releasing container permission.** This keeps the
+network alive, but puts navigation back before the critical container browser
+branch and can retain the original critical-path sum.
+
 **Increase workers inside a production target.** Cases share a target's database
-and controlled fault state. More workers would change that isolation boundary;
+and controlled fault state. More workers change that isolation boundary;
 independent navigation hosts provide concurrency without sharing those states.
 
 **Move cases between shards at the same time.** Repartitioning could reduce a
-later imbalance but changes another variable. The scheduling change keeps the
-existing selection and records which job becomes the workflow's critical path.
+later imbalance but changes another variable. This change keeps the selection
+and records which job becomes the workflow's critical path.
 
 **Share artifacts across runners.** This introduces handoff dependencies and
 ownership beyond the serial prefix. Existing source builds and per-run receipts
@@ -60,7 +88,7 @@ remain sufficient for this scheduling change.
 
 ## Consequences
 
-The second browser job can overlap its navigation prefix with production work.
+The second browser job can overlap navigation with container functional work.
 CPU, memory and I/O competition may lengthen either branch, so saved serial time
 is only a model until whole-job measurements confirm it. Cancellation waits for
 real cleanup, which can finish after the first error.

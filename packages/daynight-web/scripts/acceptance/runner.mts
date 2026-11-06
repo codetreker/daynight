@@ -13,6 +13,7 @@ import { processIdentity, requireGroupStopped, requireStopped, sameProcess, type
 import { browserInventory, browserTemporaryRoot, recoverBrowsers, type BrowserInventory } from './browser.mts';
 import { waitForContainerPermission, writeContainerPermission } from './permission.mts';
 import { runPipeline } from './pipeline.mts';
+import { runContainerFunctionalChecks } from './navigation.mts';
 import { prepareStorage, cleanupStorage, type StorageReceipt } from './storage.mts';
 import { recoverCliProcesses, validateInstalledCli, type InstalledCliReceipt } from './installed-cli.mts';
 import { reserveLoopbackPort, startAuthFixture, type AuthFixture } from './auth-fixture.mts';
@@ -35,7 +36,7 @@ const json = async (path: string, value: unknown): Promise<void> => {
 };
 const readJson = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, 'utf8'));
 export type AcceptanceCommand = (file: string, args: readonly string[], options?: Omit<CommandOptions, 'cwd'> & { cwd?: string }) => Promise<string>;
-export type AcceptanceOptions = { allowApfsImage?: boolean; stress?: boolean; shard?: FunctionalShard };
+export type AcceptanceOptions = { allowApfsImage?: boolean; stress?: boolean; shard?: FunctionalShard; navigationChecks?: true };
 
 type InstalledPreparation = { receipt: InstalledCliReceipt; receiptPath: string; cleanup(): Promise<void> };
 type InstalledFactoryOptions = { signal: AbortSignal; temporaryRoot: string; rootDirectory: string; onSpawn(child: ChildProcess): Promise<void> };
@@ -167,6 +168,9 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
   const shard = options.shard === undefined ? undefined : requireShard(options.shard);
   if (stress && shard !== undefined) throw new Error('Browser stress acceptance cannot be sharded.');
   if (stress && process.env.CI !== undefined) throw new Error('Browser stress acceptance is local-only and cannot run in CI.');
+  if (Object.hasOwn(options, 'navigationChecks') && (options.navigationChecks !== true || stress || !ownsSharedChecks(shard))) {
+    throw new Error('Navigation checks require functional acceptance with shared checks.');
+  }
   const expectedServerShutdowns = new WeakSet<ChildProcess>();
   const run = (file: string, args: readonly string[], options: Omit<CommandOptions, 'cwd'> & { cwd?: string } = {}): Promise<string> =>
     command(file, args, { cwd: repositoryRoot, signal: cancellation.signal, ...options });
@@ -205,7 +209,15 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     cleanup: 'pending' | 'passed' | 'failed'; finishedAt?: string; error?: string; cleanupErrors?: string[];
     installedCli?: InstalledEvidence;
     runner: ProcessIdentity; devCi?: { runId?: string; runner?: ProcessIdentity };
-    authCombined?: AuthCombinedReceipt[]; shard?: FunctionalShard; selection?: readonly string[];
+    authCombined?: AuthCombinedReceipt[]; shard?: FunctionalShard; selection?: readonly string[]; navigationChecks?: true;
+  };
+
+  const navigationIntent = (evidence: Evidence, selectedShard: FunctionalShard | undefined): true | undefined => {
+    if (!Object.hasOwn(evidence, 'navigationChecks')) return undefined;
+    if (evidence.navigationChecks !== true || evidence.mode !== 'functional' || !ownsSharedChecks(selectedShard)) {
+      throw new Error('Navigation checks require functional acceptance with shared checks.');
+    }
+    return true;
   };
 
   const sourceIdentity = async (): Promise<Source> => {
@@ -309,6 +321,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     const parentShard = evidence.shard === undefined ? undefined : requireShard(evidence.shard);
     if (parentShard !== undefined && evidence.mode !== 'functional') throw new Error('Sharded callback requires functional acceptance.');
     const selection = requireSelection(evidence.selection, parentShard);
+    const navigationChecks = navigationIntent(evidence, parentShard);
     const project = `daynight-dev-ci-${runId}`;
     const callback = await processIdentity(process.pid);
     if (callback === null) throw new Error('Container callback process identity disappeared.');
@@ -323,11 +336,21 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
       sourceGitSha: evidence.source.gitSha }, { signal: cancellation.signal, timeoutMs: 900_000 });
     cancellation.signal.throwIfAborted();
     const prepared = await readJson(join(acceptanceDirectory, 'evidence.json')) as Evidence;
+    const preparedShard = prepared.shard === undefined ? undefined : requireShard(prepared.shard);
+    if (prepared.schemaVersion !== evidence.schemaVersion || prepared.runId !== evidence.runId
+      || prepared.source.gitSha !== evidence.source.gitSha || prepared.source.gitTreeSha !== evidence.source.gitTreeSha
+      || prepared.mode !== evidence.mode || preparedShard?.current !== parentShard?.current
+      || navigationIntent(prepared, preparedShard) !== navigationChecks) throw new Error('Container navigation intent changed after permission.');
     const installation = readyInstallation(prepared.installedCli);
     await validateInstalledCli(installation.receiptPath, acceptanceDirectory);
-    const phase = await playwright({ target: 'container', phase: 'functional', result: 'running', startedAt: new Date().toISOString(),
+    const functional = () => playwright({ target: 'container', phase: 'functional', result: 'running', startedAt: new Date().toISOString(),
       browserCleanup: 'not-started', caseSensitiveStorage: true, baseUrl, postgresContainer,
       projectLabel: { key: 'com.docker.compose.project', value: project }, database: 'daynight' }, directory, installation, selection, parentShard);
+    let phase: BrowserPhase | undefined;
+    const verifyFunctional = async (): Promise<void> => { phase = await functional(); };
+    if (navigationChecks === true) await runContainerFunctionalChecks(cancellation, verifyFunctional);
+    else await verifyFunctional();
+    if (phase === undefined) throw new Error('Container functional verification did not produce its phase.');
     if (!ownsSharedChecks(parentShard)) return;
     const serverId = await run('docker', ['ps', '--quiet', '--no-trunc', '--filter', `label=com.docker.compose.project=${project}`,
       '--filter', 'label=com.docker.compose.service=server'], { quiet: true, timeoutMs: 10_000 });
@@ -697,7 +720,8 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
       result: 'running', native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
         binary: join(directory, 'daynight-server'), storageRoot: join(directory, 'native-storage'),
         postgresImage, cleanup: 'pending' }, targets: [], stages: [], cleanup: 'pending', runner, authCombined: [],
-      ...(shard === undefined ? {} : { shard }) };
+      ...(shard === undefined ? {} : { shard }),
+      ...(options.navigationChecks === undefined ? {} : { navigationChecks: options.navigationChecks }) };
     let evidenceWrites = Promise.resolve();
     const save = (): Promise<void> => {
       evidenceWrites = evidenceWrites.then(async () => {
