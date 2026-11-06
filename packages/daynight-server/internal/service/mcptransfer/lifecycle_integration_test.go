@@ -18,6 +18,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -32,8 +33,8 @@ type lifecycleFixture struct {
 	db          *postgres.Store
 	files       *local.Storage
 	lifecycle   *Lifecycle
-	actor       Actor
-	binding     Binding
+	actor       transfer.Actor
+	binding     transfer.Binding
 	root        string
 	databaseURL string
 }
@@ -47,7 +48,7 @@ func newFixture(t *testing.T) lifecycleFixture {
 	if _, err := db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'test',now())`, id, session.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
-	actor := Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: session.UserID, CredentialID: id}, AuthorityKind: "pat", AuthorityID: id}
+	actor := transfer.Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: session.UserID, CredentialID: id}, AuthorityKind: "pat", AuthorityID: id}
 	root := t.TempDir()
 	files, err := local.New(root)
 	if err != nil {
@@ -69,7 +70,7 @@ func newFixture(t *testing.T) lifecycleFixture {
 			t.Error(err)
 		}
 	})
-	return lifecycleFixture{db: db, files: files, lifecycle: l, actor: actor, root: root, databaseURL: databaseURL, binding: Binding{ID: uuid.NewString(), Direction: "upload", ProjectID: project.ID, TaskID: task.ID, Path: "file", ContentType: "text/plain", Parameters: []byte(`{"length":3}`)}}
+	return lifecycleFixture{db: db, files: files, lifecycle: l, actor: actor, root: root, databaseURL: databaseURL, binding: transfer.Binding{ID: uuid.NewString(), Direction: "upload", ProjectID: project.ID, TaskID: task.ID, Path: "file", ContentType: "text/plain", Parameters: []byte(`{"length":3}`)}}
 }
 
 func openRecord(t *testing.T, f lifecycleFixture) model.PrivateTransfer {
@@ -114,13 +115,13 @@ func TestLifecycleOAuthGrantSurvivesAccessReplacement(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	newAccess := func(grantID string) Actor {
+	newAccess := func(grantID string) transfer.Actor {
 		id := uuid.NewString()
 		hash := sha256.Sum256([]byte(id))
 		if _, err := f.db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,now(),now()+interval '30 minutes')`, id, grantID, f.actor.Principal.UserID, hash[:]); err != nil {
 			t.Fatal(err)
 		}
-		return Actor{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.actor.Principal.UserID, CredentialID: id}, AuthorityKind: "oauth", AuthorityID: grantID}
+		return transfer.Actor{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.actor.Principal.UserID, CredentialID: id}, AuthorityKind: "oauth", AuthorityID: grantID}
 	}
 	first, replacement, other := newAccess(grant), newAccess(grant), newAccess(otherGrant)
 	if _, created, err := f.lifecycle.OpenRecord(ctx, first, f.binding); err != nil || !created {
@@ -347,7 +348,7 @@ func TestLifecyclePendingCommitRecordsOnlyOriginalOperation(t *testing.T) {
 	}
 	facts := json.RawMessage(`{"operationId":"` + operation + `","receipt":"confirmed"}`)
 	r, err = f.lifecycle.CompletePending(t.Context(), permit, f.actor, r.ID, r.Version, "committed", facts)
-	if err != nil || r.State != "cleanup_pending" || r.CleanupFromState == nil || *r.CleanupFromState != "committed" || operationID(r.Data) != operation {
+	if err != nil || r.State != "cleanup_pending" || r.CleanupFromState == nil || *r.CleanupFromState != "committed" || transfer.OperationID(r.Data) != operation {
 		t.Fatalf("late completion: %+v %v", r, err)
 	}
 	if err := permit.Close(); err != nil {
@@ -412,8 +413,8 @@ func TestLifecycleBlockedAuthorizationDoesNotStarveOtherUser(t *testing.T) {
 	if _, err := f.db.Pool.Exec(t.Context(), `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at) VALUES($1,$2,$3,'test',now())`, id, user.UserID, hash[:]); err != nil {
 		t.Fatal(err)
 	}
-	actor := Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: user.UserID, CredentialID: id}, AuthorityKind: "pat", AuthorityID: id}
-	binding := Binding{ID: uuid.NewString(), Direction: "download", ProjectID: project.ID, TaskID: task.ID, Path: "file"}
+	actor := transfer.Actor{Principal: model.Principal{Kind: model.PATCredential, UserID: user.UserID, CredentialID: id}, AuthorityKind: "pat", AuthorityID: id}
+	binding := transfer.Binding{ID: uuid.NewString(), Direction: "download", ProjectID: project.ID, TaskID: task.ID, Path: "file"}
 	if _, _, err := f.lifecycle.OpenRecord(t.Context(), actor, binding); err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +844,7 @@ func TestEqualJSONExtremeExponentsBounded(t *testing.T) {
 			{"0", "0e1000000000", true},
 			{"0", "-0.000e-1000000000", true},
 		} {
-			if got := equalJSON(json.Number(tc.a), json.Number(tc.b)); got != tc.equal {
+			if got := transfer.EqualJSON(json.Number(tc.a), json.Number(tc.b)); got != tc.equal {
 				t.Errorf("compare %s and %s: got %v, want %v", tc.a, tc.b, got, tc.equal)
 			}
 		}
@@ -889,8 +890,8 @@ func TestLifecycleCapacityAndStorageFailures(t *testing.T) {
 		free, reserved int64
 		want           error
 	}{
-		{"disk reserve", 9, 10, ErrCapacity},
-		{"insufficient bytes", 12, 10, ErrCapacity},
+		{"disk reserve", 9, 10, transfer.ErrCapacity},
+		{"insufficient bytes", 12, 10, transfer.ErrCapacity},
 		{"sampling failure", 0, 0, errors.New("disk unavailable")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -935,7 +936,7 @@ func TestLifecycleInputAndTransitionRefusals(t *testing.T) {
 	if _, _, err := f.lifecycle.OpenRecord(t.Context(), bad, f.binding); err == nil {
 		t.Fatal("mismatched PAT accepted")
 	}
-	if _, err := f.lifecycle.LookupBound(t.Context(), Actor{}, f.binding.ID); err == nil {
+	if _, err := f.lifecycle.LookupBound(t.Context(), transfer.Actor{}, f.binding.ID); err == nil {
 		t.Fatal("missing actor accepted")
 	}
 	if _, err := f.lifecycle.LookupBound(t.Context(), f.actor, "invalid"); err == nil {
@@ -985,7 +986,7 @@ func TestLifecycleInputAndTransitionRefusals(t *testing.T) {
 	if _, err := f.lifecycle.AcquirePermit(ctx, f.actor, r.ID); err == nil {
 		t.Fatal("canceled permit admitted")
 	}
-	if _, err := f.lifecycle.RequestCleanup(t.Context(), Actor{}, r.ID); err == nil {
+	if _, err := f.lifecycle.RequestCleanup(t.Context(), transfer.Actor{}, r.ID); err == nil {
 		t.Fatal("cleanup without actor accepted")
 	}
 }
@@ -1139,7 +1140,7 @@ func TestEqualJSONStructuredBindings(t *testing.T) {
 		{`1`, `"1"`, false},
 		{`null`, `null`, true},
 	} {
-		if got := equalJSON(parse(tc.a), parse(tc.b)); got != tc.equal {
+		if got := transfer.EqualJSON(parse(tc.a), parse(tc.b)); got != tc.equal {
 			t.Errorf("%s versus %s: %v", tc.a, tc.b, got)
 		}
 	}
@@ -1215,19 +1216,19 @@ func TestBindingNumberLimitsAndOperationFences(t *testing.T) {
 		{"1.1e-9223372036854775808", "1", false},
 		{"10e9223372036854775807", "1", false},
 	} {
-		if got := equalJSON(json.Number(tc.a), json.Number(tc.b)); got != tc.equal {
+		if got := transfer.EqualJSON(json.Number(tc.a), json.Number(tc.b)); got != tc.equal {
 			t.Errorf("%s versus %s: %v", tc.a, tc.b, got)
 		}
 	}
-	if got := operationID(json.RawMessage(`{"operationId":2}`)); got != "" {
+	if got := transfer.OperationID(json.RawMessage(`{"operationId":2}`)); got != "" {
 		t.Fatalf("invalid operation ID: %q", got)
 	}
 	for _, terminal := range []string{"closed", "failed", "committed", "cleanup_pending"} {
-		if allowed(terminal, "receiving") {
+		if transfer.Allowed(terminal, "receiving") {
 			t.Errorf("%s transfer can restart", terminal)
 		}
 	}
-	if !allowed("unknown", "unknown") || allowed("unknown", "committing") {
+	if !transfer.Allowed("unknown", "unknown") || transfer.Allowed("unknown", "committing") {
 		t.Fatal("unknown commit permits replay")
 	}
 }

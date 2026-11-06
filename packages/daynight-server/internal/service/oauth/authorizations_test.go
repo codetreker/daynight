@@ -721,3 +721,27 @@ func TestCodeAdmissionReleasesConnectionBeforeClientBudget(t *testing.T) {
 		t.Fatalf("single-connection exchange: %+v %v", tokens, err)
 	}
 }
+
+func TestCodeAdmissionRequiresBindingButChargesExpiredCode(t *testing.T) {
+	ctx, db, svc, user, in := authorizationFixture(t)
+	started, redeem := approvedCode(t, ctx, svc, user, in)
+	calls := 0
+	redeem.AdmitClient = func(_ context.Context, id string) error {
+		calls++
+		if id != in.ClientID {
+			t.Fatalf("charged wrong client: %s", id)
+		}
+		return nil
+	}
+	wrong := redeem
+	wrong.Verifier = strings.Repeat("b", 43)
+	if _, err := svc.RedeemCode(ctx, wrong); !errors.Is(err, core.ErrInvalidGrant) || calls != 0 {
+		t.Fatalf("mismatched binding charged client: calls=%d err=%v", calls, err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE oauth_authorizations SET code_expires_at=now()-interval '1 second' WHERE id=$1`, started.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RedeemCode(ctx, redeem); !errors.Is(err, core.ErrInvalidGrant) || calls != 1 {
+		t.Fatalf("expired bound code admission: calls=%d err=%v", calls, err)
+	}
+}

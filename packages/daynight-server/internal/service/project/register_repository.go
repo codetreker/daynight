@@ -14,12 +14,10 @@ func (s *Projects) RegisterRepository(ctx context.Context, principal model.Princ
 	if err := core.ValidateCreateFields(principal, input); err != nil {
 		return model.Project{}, false, err
 	}
-	identity, err := core.RepositoryIdentity(input.RepoURL)
+	match, err := core.NewRepositoryMatch(input.RepoURL)
 	if err != nil {
 		return model.Project{}, false, err
 	}
-	var match model.Project
-	matches := 0
 	request := core.ProjectListRequest{Page: model.PageRequest{Limit: 100}}
 	err = read(ctx, s.store, func(dao store.ProjectReader) error {
 		for {
@@ -28,16 +26,8 @@ func (s *Projects) RegisterRepository(ctx context.Context, principal model.Princ
 				return err
 			}
 			for _, candidate := range page.Items {
-				candidateIdentity, err := core.RepositoryIdentity(candidate.RepoURL)
-				if err != nil {
+				if err := match.Add(candidate); err != nil {
 					return err
-				}
-				if candidateIdentity == identity {
-					match = candidate
-					matches++
-					if matches > 1 {
-						return &model.Fault{Code: "resource_conflict", Message: "Multiple accessible Projects match this repository."}
-					}
 				}
 			}
 			if !page.HasMore {
@@ -53,11 +43,9 @@ func (s *Projects) RegisterRepository(ctx context.Context, principal model.Princ
 	if err != nil {
 		return model.Project{}, false, err
 	}
-	if matches == 1 {
-		return match, false, nil
-	}
-	if !confirm {
-		return model.Project{}, false, &model.Fault{Code: "invalid_input", Message: "Project creation requires confirmation."}
+	selected, create, err := match.Select(confirm)
+	if err != nil || !create {
+		return selected, false, err
 	}
 	created, _, err := s.createValidated(ctx, principal, input)
 	if err != nil {
