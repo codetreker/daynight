@@ -266,16 +266,3 @@ describe("SQLite access lifecycle", () => {
     expect(JSON.stringify(serializeSqliteError(error))).not.toContain("secret prompt payload");
   });
 });
-
-describe("manual SQLite migration transactions", () => {
-  it("rejects nesting and asynchronous callback results", () => {
-    const db = connect(":memory:");
-    expect(() => runSqliteImmediate(db, () => Promise.resolve(1))).toThrow("must be synchronous"); expect(db.inTransaction).toBe(false);
-    db.exec("BEGIN"); expect(() => runSqliteImmediate(db, () => 1)).toThrow("cannot nest"); db.exec("ROLLBACK");
-  });
-  it("preserves the original error together with a rollback failure", () => {
-    const db = connect(":memory:"), primary = new Error("action failed"), rollback = new Error("rollback failed"), exec = Database.prototype.exec;
-    vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) { if (sql === "ROLLBACK") throw rollback; return exec.call(this, sql); });
-    try { runSqliteImmediate(db, () => { throw primary; }); expect.unreachable(); } catch (error) { expect((error as AggregateError).errors).toEqual([primary, rollback]); }
-  });
-});

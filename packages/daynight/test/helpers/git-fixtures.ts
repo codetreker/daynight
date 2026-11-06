@@ -10,6 +10,7 @@ import type { Store } from "../../src/commands/review/store.js";
 import type { PullRequestObservation } from "../../src/commands/review/model.js";
 import { writeGitSnapshot } from "./git-objects.js";
 import type { GitSnapshotEntry } from "./git-objects.js";
+import { createMemoryDatabase } from "./sqlite.js";
 
 export const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 export const proof = { processesExcluded: true, operationsStopped: true } as const;
@@ -72,7 +73,8 @@ export const createGitTestFixtures = (name: string, prepareSource?: (upstream: s
       if (result.error !== null && args.includes("clone")) process.stderr.write(`Local Git clone fixture failure: ${result.stderr}\n`);
       return result;
     };
-    const store = openStore(path.join(directory, "state.sqlite"));
+    const database = createMemoryDatabase();
+    const store = openStore(database);
     stores.add(store);
     store.registerRepository({ ...repository, remote: configuration.remote, localPath: configuration.path });
     store.initializeRepository(repository, 100, 1);
@@ -91,7 +93,7 @@ export const createGitTestFixtures = (name: string, prepareSource?: (upstream: s
       rawGit(upstream, ["update-ref", "refs/pull/101/head", nextHead]);
       return reserve();
     };
-    return { directory, upstream, base, head, configuration, repository, client, store, calls, execute, manager, reserve, update, nextRevision,
+    return { directory, upstream, base, head, configuration, repository, client, database, store, calls, execute, manager, reserve, update, nextRevision,
       setIntercept: (value: CommandExecutor | undefined) => { intercept = value; }, setOnGet: (value: (() => void) | undefined) => { onGet = value; } };
   };
 

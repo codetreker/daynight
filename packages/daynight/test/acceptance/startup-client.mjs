@@ -16,7 +16,7 @@ try {
   const filename = path.join(directory, "input.json");
   await writeFile(filename, JSON.stringify(input), { mode: 0o600 });
   const run = spawnSync(process.execPath, [path.join(packageRoot, "node_modules/vitest/vitest.mjs"), "run",
-    "test/commands/worker/startup-chain.test.ts", "-t", "startup HTTP acceptance"], {
+    "test/commands/worker/startup-chain.integration.test.ts", "-t", "startup HTTP acceptance"], {
     cwd: packageRoot, env: { ...process.env, DAYNIGHT_STARTUP_HTTP_INPUT: filename },
     encoding: "utf8", timeout: 90_000, maxBuffer: 2 * 1024 * 1024,
   });

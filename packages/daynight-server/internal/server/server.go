@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -60,7 +61,11 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(dependencies.Store), auth, logger)
 	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(dependencies.Store), auth, logger)
 	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
-	attachmenthttp.RegisterRoutes(mux, attachmentservice.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
+	var attachmentMutations store.AttachmentMutationWriter
+	if dependencies.Store != nil {
+		attachmentMutations = attachmentpostgres.New(dependencies.Store.Pool)
+	}
+	attachmenthttp.RegisterRoutes(mux, attachmentservice.NewAttachments(dependencies.Store, attachmentMutations, dependencies.Files), auth, logger)
 	engine := sessioncore.NewEngine(dependencies.Files)
 	sessions := sessionservice.New(dependencies.Store, engine)
 	deletions := botservice.NewDeletions(dependencies.Store, dependencies.Files, engine)

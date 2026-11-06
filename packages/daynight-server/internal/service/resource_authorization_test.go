@@ -1,6 +1,7 @@
 package service
 
 import (
+	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -28,7 +29,7 @@ import (
 func TestResourceServicesRejectAbsentPrincipals(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.NewString()
-	projects, tasks, attachments := projectservice.NewProjects(nil), taskservice.NewTasks(nil), attachmentservice.NewAttachments(nil, nil)
+	projects, tasks, attachments := projectservice.NewProjects(nil), taskservice.NewTasks(nil), attachmentservice.NewAttachments(nil, nil, nil)
 	for _, principal := range []model.Principal{{}, {UserID: id, CredentialID: id, Kind: "unknown"}} {
 		calls := []func() error{
 			func() error { _, err := projects.Get(ctx, principal, id); return err },
@@ -84,7 +85,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 		}
 	})
 	probe := &authorizationStorage{Storage: files}
-	attachments := attachmentservice.NewAttachments(f.database, probe)
+	attachments := attachmentservice.NewAttachments(f.database, attachmentpostgres.New(f.database.Pool), probe)
 	putAttachment(t, attachments, admin, task, "secret.html", "<h1>same-origin</h1>")
 	ctx := context.Background()
 	readAndWrite := func(principal model.Principal) []func() error {
@@ -214,7 +215,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 		}
 	})
 	probe := &authorizationStorage{Storage: files, admitted: make(chan struct{}), release: make(chan struct{})}
-	attachments := attachmentservice.NewAttachments(f.database, probe)
+	attachments := attachmentservice.NewAttachments(f.database, attachmentpostgres.New(f.database.Pool), probe)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
@@ -229,20 +230,46 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err := f.memberships.Remove(context.Background(), admin, project.ID, member.UserID, coreproject.RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID}); err != nil {
-		close(probe.release)
-		t.Fatal(err)
+	removed := make(chan error, 1)
+	go func() {
+		removed <- f.memberships.Remove(ctx, admin, project.ID, member.UserID, coreproject.RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID})
+	}()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		if err := f.database.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+			WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE '%project_grants%'
+			AND cardinality(pg_blocking_pids(pid)) > 0)`).Scan(&waiting); err != nil {
+			close(probe.release)
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-removed:
+			close(probe.release)
+			t.Fatalf("removal did not wait for the admitted write: %v", err)
+		case <-ticker.C:
+		case <-ctx.Done():
+			close(probe.release)
+			t.Fatal(ctx.Err())
+		}
 	}
 	close(probe.release)
 	if err := <-result; err != nil {
-		t.Fatalf("admitted write refused after removal: %v", err)
+		t.Fatalf("admitted write failed: %v", err)
+	}
+	if err := <-removed; err != nil {
+		t.Fatalf("member removal failed: %v", err)
 	}
 	_, _, err = attachments.Put(context.Background(), member, project.ID, task.ID, "later.txt", "text/plain", strings.NewReader("Later"))
 	requireFault(t, err, "not_found")
 	if probe.count() != 1 {
 		t.Fatal("later write reached filesystem")
 	}
-	read := attachmentservice.NewAttachments(f.database, files)
+	read := attachmentservice.NewAttachments(f.database, attachmentpostgres.New(f.database.Pool), files)
 	_, object, err := read.Open(context.Background(), admin, project.ID, task.ID, "admitted.txt")
 	if err != nil {
 		t.Fatal(err)

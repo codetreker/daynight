@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -17,7 +18,7 @@ const fixture = async (delay: number) => {
   await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-"));
   roots.push(home);
-  const store = openWebExecutionStore(path.join(home, "worker.sqlite"));
+  const store = openWebExecutionStore(createMemoryDatabase());
   try {
     const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
     const identity = { ...project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID() };

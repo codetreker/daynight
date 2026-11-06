@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -27,7 +28,7 @@ it('hydrates over real WebSockets after offline compaction and fences a page bef
     ipcEndpoint: path.join(home, 'c.sock'), ipcSecret: 'a'.repeat(64), createdAt: new Date().toISOString(),
   };
   await writeFile(ticket.credentialFile, JSON.stringify({ token: 'local-test-token', expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
-  const journal = openControllerLifecycleStore(path.join(home, 'journal.sqlite'), ticket, { contentOwnedLocally: true, maxOutboxBytes: 1024 });
+  const journal = openControllerLifecycleStore(path.join(home, 'journal.sqlite'), ticket, { database: createMemoryDatabase(), contentOwnedLocally: true, maxOutboxBytes: 1024 });
   let relay: ReturnType<typeof createControllerRelay> | undefined;
   const errors: string[] = [];
   try {
