@@ -892,6 +892,8 @@ run serial navigation alongside its functional browser, after permission and
 installed-CLI validation. Both branches drain before combined-authentication
 restart and callback exit, keeping network teardown outside navigation. Their
 hosts, output directories, profiles and API fixtures remain separate. Navigation
+command environments omit the production browser-ownership marker while retaining
+browser-channel and tool settings. Navigation
 command cancellation uses a one-second escalation grace inside the callback's
 outer termination grace, preserving verification deadlines. The
 [browser job scheduling decision](../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)

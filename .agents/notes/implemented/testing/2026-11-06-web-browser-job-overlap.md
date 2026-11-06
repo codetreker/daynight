@@ -34,8 +34,13 @@ Existing native functional work can overlap this callback as before. No new
 receipt file, schema version, CLI flag or cross-runner artifact handoff is needed.
 
 Navigation uses ports 4193, 4194 and 4198, dedicated Vite cache/output directories
-and browser-routed API fixtures. It does not write production build outputs or
-use production service databases. Acceptance retains its run/phase-private
+and browser-routed API fixtures. Every navigation command receives a copied
+environment without the production `DAYNIGHT_ACCEPTANCE_DIRECTORY` marker;
+explicit browser-channel and other tool settings remain intact. Production
+browser recovery can therefore finish while a same-executable navigation browser
+remains active, without claiming it as an unrecorded owned process. Navigation
+does not write production build outputs or use production service databases.
+Acceptance retains its run/phase-private
 browser inventory, installed CLI receipts, credentials and process ownership.
 Each target keeps its existing one-worker execution, source/image checks and
 native/container preparation and cleanup barriers. Scenario IDs, native

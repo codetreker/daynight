@@ -1962,7 +1962,9 @@ container functional validation. Both branches drain before combined
 authentication can restart a target and before callback exit allows dev-ci network
 cleanup. Navigation hosts use separate ports, build/cache directories and routed
 API fixtures. A branch failure cancels their shared controller and preserves
-operation and cleanup failures. Navigation command cancellation escalates after
+operation and cleanup failures. Navigation commands receive an environment copy
+without the production browser-ownership marker, preserving explicit browser
+channel and tool settings. Navigation command cancellation escalates after
 one second, within dev-ci's callback termination grace, while its verification
 deadlines remain unchanged. Direct acceptance callers and shard 1 keep their
 existing paths. The

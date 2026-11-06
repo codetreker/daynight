@@ -24,6 +24,9 @@ export const runCiCommand = async (file: string, args: readonly string[], option
 };
 
 export const runNavigationChecks = async (cancellation: AbortController, execute = runCiCommand): Promise<void> => {
+  const environment = { ...process.env };
+  // Production recovery owns only browsers carrying its phase marker.
+  delete environment.DAYNIGHT_ACCEPTANCE_DIRECTORY;
   for (const [configuration, timeoutMs] of [
     ['tests/navigation/playwright.config.ts', 180_000],
     ['tests/navigation/team-playwright.config.ts', 540_000],
@@ -32,7 +35,7 @@ export const runNavigationChecks = async (cancellation: AbortController, execute
     cancellation.signal.throwIfAborted();
     await execute('pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', configuration],
       // The dev-ci callback receives five seconds to drain before its group is killed.
-      { timeoutMs, forceAfterMs: 1_000, cwd: repositoryRoot, signal: cancellation.signal });
+      { timeoutMs, forceAfterMs: 1_000, cwd: repositoryRoot, env: environment, signal: cancellation.signal });
   }
 };
 
