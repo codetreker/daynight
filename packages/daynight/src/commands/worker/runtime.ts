@@ -53,6 +53,8 @@ import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
+import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
+import { browseWorkerDirectory } from "./read-only/directory.js";
 import { createWorkerGitManager } from "./worktrees.js";
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
@@ -211,6 +213,7 @@ export const runWorker = async (options: {
   let reporter: ReturnType<typeof createWorkerReporter> | undefined;
   let bots: WorkerBotHost | undefined;
   let botRun: Promise<void> | undefined;
+  let readOnly: ReturnType<typeof createWorkerReadOnlyChannel> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
   const localMappingJobs = new Map<string, Promise<void>>();
   const localMappingRetryAt = new Map<string, number>();
@@ -376,6 +379,11 @@ export const runWorker = async (options: {
       }
     }
     const manager = configuration;
+    readOnly = createWorkerReadOnlyChannel({ serverOrigin: serverUrl, serverToken, ownerUserId: userId, workerId,
+      configurationSignature: () => JSON.stringify(manager.current().effective),
+      execute: (_operation, input, requestSignal) => browseWorkerDirectory(input, { defaultCwd: options.workingDirectory, signal: requestSignal }),
+      onError: message => emit({ kind: "worker-readonly", message }),
+    });
     const scheduleLocalMappingChecks = (): void => {
       for (const projectId of unobservedLocalMappings) {
         if (localMappingJobs.has(projectId) || (localMappingRetryAt.get(projectId) ?? 0) > Date.now()) continue;
@@ -637,6 +645,7 @@ export const runWorker = async (options: {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
+    readOnly?.close();
     await Promise.allSettled([...localMappingJobs.values()]);
     await renewal;
     try { await reporter?.stop(); } catch (error) { failures.push(error); }

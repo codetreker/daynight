@@ -77,6 +77,8 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
+	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
+	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, auth, logger)
 	taskhttp.TaskSearchRoutes(mux, app.TaskSearch, auth, logger)
 	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
@@ -95,24 +97,33 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint}, nil
+	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly}, nil
 }
 
 type sessionApplication struct {
 	http.Handler
-	relay   *sessionhttp.Routes
-	service *sessionservice.Service
-	engine  *sessioncore.Engine
-	mcp     *mcphttp.Entry
+	relay          *sessionhttp.Routes
+	service        *sessionservice.Service
+	engine         *sessioncore.Engine
+	mcp            *mcphttp.Entry
+	workerReadOnly *workerhttp.ReadOnlyRoutes
 }
 
 func (a *sessionApplication) BeginShutdown() {
+	if a.workerReadOnly != nil {
+		a.workerReadOnly.BeginShutdown()
+	}
 	if a.mcp != nil {
 		a.mcp.BeginShutdown()
 	}
 }
 
 func (a *sessionApplication) Shutdown(ctx context.Context) error {
+	if a.workerReadOnly != nil {
+		if err := a.workerReadOnly.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
 	if a.mcp != nil {
 		if err := a.mcp.Shutdown(ctx); err != nil {
 			return err

@@ -60,6 +60,7 @@ export const isAbortError = (error: unknown): boolean =>
 
 let authGeneration = 0;
 let authPauseRevision = 0;
+export const readAuthRequestGeneration = (): number => authGeneration;
 const unauthorizedListeners = new Set<() => void>();
 type AuthPause = { readonly waiters: Set<() => void>; owner: symbol };
 let authPause: AuthPause | null = null;
