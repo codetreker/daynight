@@ -1,6 +1,6 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { ApiError, authRequestsPaused, deleteTask, getTaskObservation, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
+import { ApiError, authRequestsPaused, authRequestsPauseRevision, deleteTask, getTaskObservation, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, withdrawWorkerClaim } from "../../api/client";
 import { addTaskStep, deleteTaskStep, editTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
@@ -250,9 +250,9 @@ export class TaskDetailSessions {
   private hasRetiredWrite(projectId: string, taskId: string): boolean {
     return [...this.retiredMutations.values()].some((retired) => retired.projectId === projectId && retired.taskId === taskId && retired.fence !== null && this.scope.isTaskHistoryPossiblyCurrent(retired.fence));
   }
-  captureDirectQualification(projectId: string, taskId: string): DirectQualification | null {
+  captureDirectQualification(projectId: string, taskId: string, allowAuthPaused = false): DirectQualification | null {
     const entry = this.entry(projectId, taskId);
-    return this.directRequiresFreshRead(projectId, taskId) || entry.state.mutation.phase === "pending" && !isStepOperation(entry.state.mutation.operation) || entry.receipt === null ? null : { [directQualification]: entry.receipt };
+    return this.directRequiresFreshRead(projectId, taskId, allowAuthPaused) || entry.state.mutation.phase === "pending" && !isStepOperation(entry.state.mutation.operation) || entry.receipt === null ? null : { [directQualification]: entry.receipt };
   }
   isDirectQualificationCurrent(projectId: string, taskId: string, qualification: DirectQualification): boolean {
     const entry = this.entry(projectId, taskId);
@@ -1370,6 +1370,37 @@ export class TaskDetailSessions {
         else this.finishRetiredMutation(operation, confirmed, error, committedVersion);
         return true;
       };
+      const runOutcome = async (outcomeTicket: ReadTicket | null, error: unknown, work: () => void | Promise<void>, before?: () => boolean, verify = true): Promise<void> => {
+        // Verify and admit in the same turn; retry only the read-only part.
+        for (;;) {
+          let admissionPauseRevision = authRequestsPauseRevision();
+          let admitted = false;
+          try {
+            await this.runMutationStage(projectId, taskId, operation, async () => {
+              if (settleRetired(error) || before?.() === false) return;
+              if (verify && outcomeTicket !== null && "historyGeneration" in outcomeTicket) {
+                admissionPauseRevision = authRequestsPauseRevision();
+                const current = await this.scope.verifyTaskRead(outcomeTicket, signal);
+                if (settleRetired(error)) return;
+                if ((authRequestsPaused() || admissionPauseRevision !== authRequestsPauseRevision()) && this.scope.isTaskReadCurrent(outcomeTicket, true)) throw new TaskCacheLifecycleChanged();
+                if (!current) return;
+              }
+              if (!this.admitMutationOutcome(projectId, taskId, operation, outcomeTicket, error, confirmed, committedVersion)) return;
+              admitted = true;
+              await work();
+            }, () => !admitted);
+            return;
+          } catch (failure) {
+            if (settleRetired(error)) return;
+            // A pause can also end before the rejected transaction is observed.
+            if (!admitted && failure instanceof TaskCacheLifecycleChanged && admissionPauseRevision !== authRequestsPauseRevision() &&
+              outcomeTicket !== null && "historyGeneration" in outcomeTicket && this.scope.isTaskReadCurrent(outcomeTicket, true)) {
+              continue;
+            }
+            throw failure;
+          }
+        }
+      };
       try {
         if (review.receipt !== null) ticket = review.receipt.fence;
         else {
@@ -1413,11 +1444,7 @@ export class TaskDetailSessions {
                 : moveTaskStep(projectId, taskId, operation.stepId, operation.placement, operation.version, signal, admission, operation.requestId);
           }, () => !submitted);
           if (response === null) return;
-          await this.runMutationStage(projectId, taskId, operation, async () => {
-            if (settleRetired(null)) return;
-            const current = !("historyGeneration" in requestTicket) || await this.scope.verifyTaskRead(requestTicket, signal);
-            if (settleRetired(null) || !current) return;
-            if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, committedVersion)) return;
+          await runOutcome(requestTicket, null, async () => {
             const result = response.value;
             const expected = operation.action === "stepPosition" ? moved : operation.action === "stepDelete" ? previousSteps!.steps.filter((step) => step.id !== operation.stepId) : previousSteps!.steps;
             const valid = operation.action === "stepAdd"
@@ -1449,11 +1476,8 @@ export class TaskDetailSessions {
             return deleteTask(projectId, taskId, operation.version, operation.removeDepends, signal, admission);
           }, () => !submitted);
           if (response === null) return;
-          await this.runMutationStage(projectId, taskId, operation, async () => {
-            if (settleRetired(null)) return;
-            const current = !("historyGeneration" in requestTicket) || await this.scope.verifyTaskRead(requestTicket, signal);
-            if (settleRetired(null) || !current) return;
-            if (this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, committedVersion)) this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, null);
+          await runOutcome(requestTicket, null, () => {
+            this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, null);
           });
           return;
         }
@@ -1475,11 +1499,7 @@ export class TaskDetailSessions {
         }, () => !submitted);
         if (response === null) return;
         const detail = response.value;
-        await this.runMutationStage(projectId, taskId, operation, async () => {
-          if (settleRetired(null)) return;
-          const current = !("historyGeneration" in requestTicket) || await this.scope.verifyTaskRead(requestTicket, signal);
-          if (settleRetired(null) || !current) return;
-          if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, committedVersion)) return;
+        await runOutcome(requestTicket, null, async () => {
           if (confirmed) entry.committedVersion = committedVersion;
           if (this.disposed) {
             entry.state = { ...entry.state, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } };
@@ -1527,24 +1547,27 @@ export class TaskDetailSessions {
           this.scope.reportTaskNotFound(projectId);
           return;
         }
-        if (ticket !== null && "historyGeneration" in ticket && !(error instanceof ApiError && error.kind === "server" && (error.status === 404 || error.status === 410))) {
-          if (error instanceof TaskCacheError && error.category === "storage") { this.failDirectFence(entry, operation, error, submitted, confirmed, committedVersion); return; }
+        if (ticket !== null && "historyGeneration" in ticket && error instanceof TaskCacheError && error.category === "storage") {
+          this.failDirectFence(entry, operation, error, submitted, confirmed, committedVersion); return;
+        }
+        const settleError = async (work: () => void | Promise<void>): Promise<void> => {
+          const negative = error instanceof ApiError && error.kind === "server" && (error.status === 404 || error.status === 410);
           try {
-            const current = await this.scope.verifyTaskRead(ticket, signal);
-            if (settleRetired(error) || !current) return;
+            await runOutcome(ticket, error, work, () => {
+              if (error instanceof TaskMutationReviewExpired || !submitted && (isAbortError(error) || ticket !== null && !this.mutationIsCurrent(projectId, entry, operation, ticket))) {
+                this.expireMutationReview(projectId, taskId, operation);
+                return false;
+              }
+              return true;
+            }, !negative);
           } catch (failure) {
             if (settleRetired(error)) return;
-            if (failure instanceof TaskCacheError && failure.category === "storage") this.failDirectFence(entry, operation, failure, submitted, confirmed, committedVersion);
-            return;
+            if (ticket !== null && "historyGeneration" in ticket && (failure instanceof TaskCacheLifecycleChanged && this.scope.isTaskReadCurrent(ticket, true) || failure instanceof TaskCacheError && failure.category === "storage"))
+              this.failDirectFence(entry, operation, failure, submitted, confirmed, committedVersion);
           }
-        }
+        };
         if (isStepOperation(operation)) {
-          await this.runMutationStage(projectId, taskId, operation, async () => {
-            if (error instanceof TaskMutationReviewExpired || !submitted && (isAbortError(error) || ticket !== null && !this.mutationIsCurrent(projectId, entry, operation, ticket))) {
-              this.expireMutationReview(projectId, taskId, operation);
-              return;
-            }
-            if (!this.admitMutationOutcome(projectId, taskId, operation, ticket, error, confirmed, committedVersion)) return;
+          await settleError(async () => {
             if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") { this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, error); return; }
             if (validated) {
               // The complete receipt proves the write even if local admission fails later.
@@ -1574,12 +1597,7 @@ export class TaskDetailSessions {
           }
           return;
         }
-        await this.runMutationStage(projectId, taskId, operation, async () => {
-          if (error instanceof TaskMutationReviewExpired || !submitted && (isAbortError(error) || ticket !== null && !this.mutationIsCurrent(projectId, entry, operation, ticket))) {
-            this.expireMutationReview(projectId, taskId, operation);
-            return;
-          }
-          if (!this.admitMutationOutcome(projectId, taskId, operation, ticket, error, confirmed, committedVersion)) return;
+        await settleError(async () => {
           if (confirmed) entry.committedVersion = committedVersion;
           if (submitted && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
             this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, error);

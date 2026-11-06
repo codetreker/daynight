@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listProjectPeople } from '../../api/auth';
-import { isAbortError } from '../../api/client';
+import { authRequestsPauseRevision } from '../../api/client';
 import type { ProjectPerson } from '../../api/auth-types';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
-import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
+import { TaskCacheLifecycleChanged } from '../task-cache/project-cache';
+import { canSetAssignedTo, useTaskDetailSessions } from '../task-detail/TaskDetailSession';
 
 export const useDirectAssigneeCatalogue = (projectId: string, taskId: string, enabled: boolean, identity: string) => {
   const scope = useTaskCacheScope();
@@ -21,18 +22,38 @@ export const useDirectAssigneeCatalogue = (projectId: string, taskId: string, en
     const controller = new AbortController(); active.current = controller;
     const signal = AbortSignal.any([controller.signal, scope.signal]);
     setState({ status: 'loading', items: [], error: null });
+    // Capture the opening synchronously, including while same-account checks
+    // suspend requests; a later opening cannot authorize this intent.
+    const qualification = sessions.captureDirectQualification(projectId, taskId, true);
     void (async () => {
       try {
-        await scope.ready(signal);
-        const qualification = sessions.captureDirectQualification(projectId, taskId);
-        if (qualification === null) throw new Error('Task observation is no longer current.');
-        const result = await listProjectPeople(projectId, { kind: 'catalogue' }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch });
-        await scope.ready(signal);
-        if (signal.aborted) return;
-        if (!await sessions.verifyDirectQualification(projectId, taskId, qualification, signal)) throw new Error('Task observation is no longer current.');
-        setState({ status: 'ready', items: result.items, error: null });
+        if (qualification === null || !canSetAssignedTo(sessions.snapshot(projectId, taskId))) throw new Error('Task observation is no longer current.');
+        // The catalogue is a project resource; a newer receipt can authorize it
+        // only within the original opening and history, with current write eligibility.
+        const eligible = () => sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualification) &&
+          sessions.captureDirectQualification(projectId, taskId) !== null && canSetAssignedTo(sessions.snapshot(projectId, taskId));
+        const runQualified = async <T,>(work: () => T): Promise<T> => {
+          for (;;) {
+            const pauseRevision = authRequestsPauseRevision();
+            try {
+              await scope.ready(signal);
+              const current = await sessions.verifyDirectQualificationHistory(projectId, taskId, qualification, signal);
+              if (authRequestsPauseRevision() !== pauseRevision && !signal.aborted && !scope.isInvalidated &&
+                sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualification)) continue;
+              signal.throwIfAborted();
+              if (!current || !eligible()) throw new Error('Task observation is no longer current.');
+              return work();
+            } catch (error) {
+              if (error instanceof TaskCacheLifecycleChanged && authRequestsPauseRevision() !== pauseRevision && !signal.aborted && !scope.isInvalidated &&
+                sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualification)) continue;
+              throw error;
+            }
+          }
+        };
+        const result = await runQualified(() => listProjectPeople(projectId, { kind: 'catalogue' }, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch }));
+        await runQualified(() => setState({ status: 'ready', items: result.items, error: null }));
       } catch (error) {
-        if (!signal.aborted && !isAbortError(error)) setState({ status: 'error', items: [], error });
+        if (!signal.aborted && !scope.isInvalidated) setState({ status: 'error', items: [], error });
       }
     })();
   }, [scope, sessions, projectId, taskId, enabled]);

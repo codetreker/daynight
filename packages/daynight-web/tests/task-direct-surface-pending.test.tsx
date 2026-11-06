@@ -4,9 +4,11 @@ import { useState, type ReactNode } from 'react';
 import { pauseAuthRequests } from '../src/api/client';
 import { CurrentAccountProvider } from '../src/app/CurrentAccountContext';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { afterEach, expect, it, vi } from 'vitest';
 import { TaskDetailSurface } from '../src/features/task-detail/TaskDetailSurface';
 import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
+import { useDirectAssigneeCatalogue } from '../src/features/task-assignment/useDirectAssigneeCatalogue';
 import { detailFixture, graphFixture, resourceResponse } from './helpers/taskDetail';
 import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -163,7 +165,11 @@ it('suspends a reopened Session after retired Step 404 parent verification fails
   unsubscribe();
 });
 
-function mountIdentityCheck(fetcher: ReturnType<typeof vi.fn>) {
+function CatalogueProbe() {
+  const catalogue = useDirectAssigneeCatalogue(projectId, taskId, true, 'test');
+  return <><button onClick={catalogue.open}>Load catalogue</button><output data-testid="catalogue-status">{catalogue.status}</output></>;
+}
+function mountIdentityCheck(fetcher: ReturnType<typeof vi.fn>, probe = false) {
   vi.stubGlobal('fetch', fetcher);
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
@@ -172,7 +178,7 @@ function mountIdentityCheck(fetcher: ReturnType<typeof vi.fn>) {
     const [checking, set] = useState(false); setChecking = set;
     const [navigation, setNavigation] = useState<{ tab: 'overview' | 'attachments' | 'steps' | 'discussion' | 'session'; path: string | null }>({ tab: 'overview', path: null });
     return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: null }} admissionBlocked={checking}>
-      <TaskDetailSessionProvider><Capture /><TaskDetailSurface presentation="page" projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} navigation={navigation} onNavigate={setNavigation} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} fullscreen={{ active: false, onChange: vi.fn() }} /></TaskDetailSessionProvider>
+      <TaskDetailSessionProvider><Capture />{probe && <CatalogueProbe />}<TaskDetailSurface presentation="page" projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} navigation={navigation} onNavigate={setNavigation} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} fullscreen={{ active: false, onChange: vi.fn() }} /></TaskDetailSessionProvider>
     </CurrentAccountProvider>;
   }
   const view = renderWithLocale(<Harness />, { locale: 'en', taskCache: { scope } });
@@ -185,6 +191,148 @@ function identityResources(url: string) {
   if (url.includes('/task-assignees')) return resourceResponse({ items: [{ userId: otherId, version: 'a'.repeat(64), name: 'Alice', avatarUrl: null, hasProjectAccess: true }], unresolvedUserIds: [] }, TEST_VIEWER_ID);
   return resources(url);
 }
+it('keeps an in-flight assignee catalogue across an unchanged direct Task poll', async () => {
+  const catalogue = deferred<Response>(); let parentReads = 0; let catalogueReads = 0;
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+    if (url.endsWith(`/tasks/${taskId}`)) parentReads++;
+    if (url.includes('/task-assignees')) { catalogueReads++; return catalogue.promise; }
+    return Promise.resolve(identityResources(url));
+  });
+  const { scope, view } = mountIdentityCheck(fetcher);
+  try {
+    await screen.findByRole('button', { name: /Successor/ });
+    fireEvent.click(screen.getByRole('button', { name: /^Assignee:/ }));
+    await waitFor(() => expect(catalogueReads).toBe(1));
+    const before = parentReads;
+    act(() => sessions.load(projectId, taskId, 1, 'automatic'));
+    await waitFor(() => expect(parentReads).toBeGreaterThan(before));
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId)).toMatchObject({ status: 'ready', refreshing: false, requiresFreshRead: false }));
+    await act(async () => catalogue.resolve(identityResources('/task-assignees')));
+    expect(await screen.findByRole('option', { name: 'Alice' })).toBeVisible();
+    expect(catalogueReads).toBe(1);
+  } finally { view.unmount(); scope.dispose(); }
+});
+
+it.each(['status', 'opening', 'pending'] as const)('rejects an in-flight assignee catalogue after %s invalidates its qualification', async invalidation => {
+  const catalogue = deferred<Response>(); const write = deferred<Response>(); let parentReads = 0; let catalogueReads = 0; let writes = 0;
+  let changed = false;
+  const fetcher = vi.fn((url: string, options?: RequestInit) => {
+    if (options?.method === 'PUT') { writes++; return write.promise; }
+    if (url.endsWith(`/tasks/${taskId}`)) {
+      parentReads++;
+      if (changed) return Promise.resolve(resourceResponse(detailFixture(projectId, taskId, { title: 'Parent', version: 2n, status: 'in_progress', startedAt: '2026-10-22T10:00:00Z' }), TEST_VIEWER_ID));
+    }
+    if (url.includes('/task-assignees')) { catalogueReads++; return catalogue.promise; }
+    return Promise.resolve(identityResources(url));
+  });
+  const { scope, view } = mountIdentityCheck(fetcher, true);
+  try {
+    await screen.findByRole('heading', { name: 'Parent' });
+    fireEvent.click(screen.getByRole('button', { name: 'Load catalogue' }));
+    await waitFor(() => expect(catalogueReads).toBe(1));
+    if (invalidation === 'status') {
+      changed = true; const before = parentReads;
+      act(() => sessions.load(projectId, taskId, 1, 'automatic'));
+      await waitFor(() => expect(parentReads).toBeGreaterThan(before));
+      await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail).toMatchObject({ version: 2n, status: 'in_progress' }));
+    } else if (invalidation === 'opening') {
+      act(() => { sessions.releaseRead(projectId, taskId); sessions.openDirect(projectId, taskId); });
+      await waitFor(() => expect(parentReads).toBeGreaterThan(1));
+      await waitFor(() => expect(sessions.captureDirectQualification(projectId, taskId)).not.toBeNull());
+    } else {
+      act(() => sessions.setStatus(projectId, taskId, 'in_progress', 1n));
+      await waitFor(() => expect(writes).toBe(1));
+    }
+    await act(async () => catalogue.resolve(identityResources('/task-assignees')));
+    await waitFor(() => expect(screen.getByTestId('catalogue-status')).toHaveTextContent('error'));
+    expect(catalogueReads).toBe(1);
+  } finally { view.unmount(); scope.dispose(); }
+});
+
+it.each(['same', 'reopened'] as const)('binds a catalogue opened during identity verification to the %s opening', async opening => {
+  let catalogueReads = 0;
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+    if (url.includes('/task-assignees')) catalogueReads++;
+    return Promise.resolve(identityResources(url));
+  });
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher, true);
+  let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('heading', { name: 'Parent' });
+    act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    fireEvent.click(screen.getByRole('button', { name: 'Load catalogue' }));
+    expect(screen.getByTestId('catalogue-status')).toHaveTextContent('loading');
+    expect(catalogueReads).toBe(0);
+    if (opening === 'reopened') act(() => { sessions.releaseRead(projectId, taskId); sessions.openDirect(projectId, taskId); });
+    act(() => { resume?.(); resume = undefined; setChecking(false); });
+    await waitFor(() => expect(screen.getByTestId('catalogue-status')).toHaveTextContent(opening === 'same' ? 'ready' : 'error'));
+    expect(catalogueReads).toBe(opening === 'same' ? 1 : 0);
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+
+it.each(['resume', 'retire'] as const)('settles an assignee catalogue after identity pauses during verification: %s', async outcome => {
+  const entered = deferred<void>(); const release = deferred<void>(); let catalogueReads = 0;
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+    if (url.includes('/task-assignees')) catalogueReads++;
+    return Promise.resolve(identityResources(url));
+  });
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher, true);
+  const database = (scope as unknown as { database: { open: () => Promise<unknown> } }).database;
+  const open = database.open.bind(database); const verify = scope.verifyTaskRead.bind(scope);
+  let verifying = false; let held = false; let interruption: (() => void) | undefined;
+  vi.spyOn(database, 'open').mockImplementation(async () => {
+    const result = await open();
+    if (verifying && !held) { held = true; entered.resolve(); await release.promise; }
+    return result;
+  });
+  vi.spyOn(scope, 'verifyTaskRead').mockImplementation(async (fence, signal) => {
+    verifying = catalogueReads > 0 && !held;
+    try { return await verify(fence, signal); }
+    catch (error) {
+      if (held && error instanceof TaskCacheLifecycleChanged) {
+        interruption?.(); interruption = undefined;
+        // The pause may have ended before the rejected transaction is handled.
+        const resumeAgain = pauseAuthRequests(); resumeAgain();
+        setChecking(false);
+      }
+      throw error;
+    } finally { verifying = false; }
+  });
+  try {
+    await screen.findByRole('heading', { name: 'Parent' });
+    fireEvent.click(screen.getByRole('button', { name: 'Load catalogue' }));
+    await entered.promise;
+    act(() => { interruption = pauseAuthRequests(); setChecking(true); if (outcome === 'retire') scope.suspendProject(projectId); });
+    await act(async () => { release.resolve(); });
+    await waitFor(() => expect(screen.getByTestId('catalogue-status')).toHaveTextContent(outcome === 'resume' ? 'ready' : 'error'));
+    expect(catalogueReads).toBe(1);
+  } finally { interruption?.(); release.resolve(); view.unmount(); scope.dispose(); }
+});
+
+it.each(['pause', 'stale'] as const)('handles a false catalogue history verification after %s without repeating the request', async reason => {
+  let catalogueReads = 0; let verificationAttempts = 0;
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+    if (url.includes('/task-assignees')) catalogueReads++;
+    return Promise.resolve(identityResources(url));
+  });
+  const { scope, view } = mountIdentityCheck(fetcher, true);
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, 'verifyTaskRead').mockImplementation(async (fence, signal) => {
+    if (catalogueReads > 0 && ++verificationAttempts === 1) {
+      if (reason === 'pause') { const resume = pauseAuthRequests(); resume(); }
+      return false;
+    }
+    return verify(fence, signal);
+  });
+  try {
+    await screen.findByRole('heading', { name: 'Parent' });
+    fireEvent.click(screen.getByRole('button', { name: 'Load catalogue' }));
+    await waitFor(() => expect(screen.getByTestId('catalogue-status')).toHaveTextContent(reason === 'pause' ? 'ready' : 'error'));
+    expect(catalogueReads).toBe(1);
+    expect(verificationAttempts).toBe(reason === 'pause' ? 2 : 1);
+  } finally { view.unmount(); scope.dispose(); }
+});
+
 it('retains the direct relations, open assignee menu and search during an identity check without requests or writes', async () => {
   const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
   const { scope, setChecking, view } = mountIdentityCheck(fetcher);

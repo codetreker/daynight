@@ -59,6 +59,7 @@ export const isAbortError = (error: unknown): boolean =>
   typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 
 let authGeneration = 0;
+let authPauseRevision = 0;
 const unauthorizedListeners = new Set<() => void>();
 type AuthPause = { readonly waiters: Set<() => void>; owner: symbol };
 let authPause: AuthPause | null = null;
@@ -71,6 +72,7 @@ const releaseAuthRequests = (): void => {
 
 export const invalidateAuthRequests = (): void => { authGeneration += 1; releaseAuthRequests(); };
 export const pauseAuthRequests = (): (() => void) => {
+  authPauseRevision += 1;
   const owner = Symbol();
   if (authPause === null) authPause = { waiters: new Set(), owner };
   else authPause.owner = owner;
@@ -79,6 +81,7 @@ export const pauseAuthRequests = (): (() => void) => {
 };
 
 export const authRequestsPaused = (): boolean => authPause !== null;
+export const authRequestsPauseRevision = (): number => authPauseRevision;
 
 const waitForIdentity = (pause: AuthPause, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   const cleanup = () => { pause.waiters.delete(resume); signal.removeEventListener("abort", abort); };

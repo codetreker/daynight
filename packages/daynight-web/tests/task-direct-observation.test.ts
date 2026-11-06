@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { waitFor } from "@testing-library/react";
 import { getTaskObservation, pauseAuthRequests } from "../src/api/client";
-import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
+import { createTaskCacheScope, TaskCacheLifecycleChanged, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { TaskCacheError, TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA } from "../src/features/task-cache/database";
 import { openDB } from "idb";
 import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
@@ -671,6 +671,143 @@ it("settles a submitted Step write while closed without locking its next opening
   sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
   expect(sessions.stepsSnapshot(project, task).resource?.steps[0]?.status).toBe("done"); expect(writes).toBe(1);
   reopenSteps(); reopen();
+});
+
+it.each([
+  ["status", 409, false, "throw"], ["step", 409, false, "throw"], ["status", 500, false, "throw"], ["step", 500, false, "throw"],
+  ["status", 200, false, "throw"], ["step", 200, false, "throw"], ["status", 500, true, "throw"],
+  ["status", 409, false, "false"], ["step", 500, false, "false"], ["status", 200, true, "false"],
+] as const)("settles a %s write with HTTP %s when result verification is interrupted by identity checking (fast resume: %s, result: %s)", async (kind, status, fastResume, interrupted) => {
+  const { sessions, scope } = world(); const verification = deferred<void>();
+  let verifying = false; let held = false; let rejected = false; let writes = 0;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  const parent = () => status === 200 && writes > 0 ? kind === "status"
+    ? { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" } : body(2n) : body();
+  const steps = () => ({ projectId: project, taskId: task, version: status === 200 && writes > 0 ? 2n : 1n,
+    steps: [{ ...step, status: status === 200 && writes > 0 ? "done" : "todo" }] });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "PUT") {
+      writes++;
+      if (status !== 200) return Promise.resolve(response({ error: { code: status === 409 ? "version_conflict" : "internal_error", message: "Failed", requestId: "write" } }, null, status));
+      return Promise.resolve(response(kind === "step" ? steps() : parent()));
+    }
+    return Promise.resolve(response(url.endsWith("/steps") ? steps() : parent()));
+  }));
+  sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const unsubscribe = kind === "step" ? sessions.subscribeSteps(project, task, () => {}) : () => {};
+  if (kind === "step") { sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true)); }
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, abortSignal) => {
+    if (writes && !held) {
+      held = true; verifying = true; await verification.promise;
+      rejected = true;
+      if (interrupted === "false") return false;
+      throw new TaskCacheLifecycleChanged();
+    }
+    return verify(ticket, abortSignal);
+  });
+  if (kind === "step") sessions.setStepStatus(project, task, step.id, "done", 1n);
+  else sessions.setStatus(project, task, "in_progress", 1n);
+  await waitFor(() => expect(verifying).toBe(true));
+  const resume = pauseAuthRequests();
+  try {
+    verification.resolve();
+    if (fastResume) resume();
+    else {
+      await waitFor(() => expect(rejected).toBe(true));
+      expect(sessions.snapshot(project, task).mutation.phase).toBe("pending");
+      expect(writes).toBe(1);
+    }
+  } finally { resume(); }
+  await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({
+    phase: status === 200 ? "confirmed" : status === 409 && kind === "status" ? "conflict" : "reconciled", reconciling: false,
+  }));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(writes).toBe(1);
+  unsubscribe();
+});
+
+it.each(["throw", "false"] as const)("retries read-only result admission after consecutive identity pauses that have already resumed (%s)", async interrupted => {
+  const { sessions, scope } = world(); let writes = 0; let interruptions = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response({ error: { code: "internal_error", message: "Failed", requestId: "write" } }, null, 500)); }
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, abortSignal) => {
+    if (writes && interruptions < 2) {
+      interruptions++; const resume = pauseAuthRequests(); resume();
+      if (interrupted === "false") return false;
+      throw new TaskCacheLifecycleChanged();
+    }
+    return verify(ticket, abortSignal);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n);
+  await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: "reconciled", reconciling: false }));
+  expect(interruptions).toBe(2); expect(writes).toBe(1);
+});
+
+it.each([200, 409] as const)("holds HTTP %s outcome when identity pauses just after successful result verification", async status => {
+  const { sessions, scope } = world(); const paused = deferred<void>(); let resume: (() => void) | null = null; let writes = 0; let held = false;
+  const changed = { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") {
+      writes++;
+      return Promise.resolve(status === 200 ? response(changed) : response({ error: { code: "version_conflict", message: "Conflict", requestId: "write" } }, null, 409));
+    }
+    return Promise.resolve(response(status === 200 && writes ? changed : body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, abortSignal) => {
+    const current = await verify(ticket, abortSignal);
+    if (writes && !held) { held = true; queueMicrotask(() => { resume = pauseAuthRequests(); paused.resolve(); }); }
+    return current;
+  });
+  sessions.setStatus(project, task, "in_progress", 1n); await paused.promise;
+  try { expect(sessions.snapshot(project, task).mutation.phase).toBe("pending"); expect(writes).toBe(1); }
+  finally { (resume as (() => void) | null)?.(); }
+  await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: status === 200 ? "confirmed" : "conflict", reconciling: false }));
+  expect(writes).toBe(1);
+});
+
+it("withdraws the old result when identity retires during its paused admission", async () => {
+  const { sessions, scope } = world(); const verification = deferred<void>(); let writes = 0; let reads = 0; let verifying = false;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response({ error: { code: "internal_error", message: "Failed", requestId: "write" } }, null, 500)); }
+    reads++; return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, abortSignal) => {
+    if (writes) { verifying = true; await verification.promise; throw new TaskCacheLifecycleChanged(); }
+    return verify(ticket, abortSignal);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(verifying).toBe(true));
+  const resume = pauseAuthRequests();
+  try { const retired = scope.invalidateScope(); verification.resolve(); resume(); await retired; }
+  finally { resume(); }
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "error", detail: null, mutation: { phase: "idle" } }));
+  expect(scope.isInvalidated).toBe(true); expect(writes).toBe(1); expect(reads).toBe(1);
+});
+
+it("does not spin or retain a pending write on unrelated result-admission lifecycle failure", async () => {
+  const { sessions, scope } = world(); let writes = 0; let verifications = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response({ error: { code: "internal_error", message: "Failed", requestId: "write" } }, null, 500)); }
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, abortSignal) => {
+    if (writes) { verifications++; throw new TaskCacheLifecycleChanged(); }
+    return verify(ticket, abortSignal);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n);
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "error", mutation: { phase: "unknown" } }));
+  expect(verifications).toBe(1); expect(writes).toBe(1);
 });
 
 it.each([
