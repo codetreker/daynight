@@ -9,7 +9,7 @@ import test from 'node:test';
 import { parseCiArguments, runCi, runCiCommand } from './ci.mts';
 import { runContainerFunctionalChecks, runNavigationChecks } from './acceptance/navigation.mts';
 import type { AcceptanceOptions } from './acceptance/runner.mts';
-import { isGroupStopped, processIdentity, requireGroupStopped } from './acceptance/identity.mts';
+import { isGroupStopped, processIdentity, requireGroupStopped, waitForGroupStopped } from './acceptance/identity.mts';
 import { commandBytes, terminateGroup, type CommandOptions } from './acceptance/process.mts';
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
@@ -224,19 +224,6 @@ const withDirectory = async (run: (directory: string) => Promise<void>): Promise
   await mkdir(temporary, { recursive: true });
   const directory = await mkdtemp(join(temporary, 'ci-command-test-'));
   try { await run(directory); } finally { await rm(directory, { recursive: true, force: true }); }
-};
-
-const waitForGroupStopped = async (pid: number): Promise<void> => {
-  const deadline = performance.now() + 3_000;
-  while (performance.now() < deadline) {
-    try { if (isGroupStopped(pid)) return; }
-    catch (error) {
-      // macOS may report EPERM while the last group member exits; only ESRCH proves absence.
-      if (!(error instanceof Error && 'code' in error && error.code === 'EPERM')) throw error;
-    }
-    await delay(10);
-  }
-  requireGroupStopped(pid);
 };
 
 test('CI cleanup waits through transient EPERM until the group is absent', { skip: !['linux', 'darwin'].includes(process.platform) }, async (context) => {

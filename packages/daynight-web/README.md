@@ -1995,8 +1995,15 @@ owned cleanup. Both entries require the actual built/running image identity,
 source validation, browser recovery and CLI cleanup. Matrix `fail-fast` is false
 so a failure does not cancel the other shard's diagnostics or cleanup.
 
-The CI wrapper requires each owned command group to stop after settlement,
-including descendants. Command, cancellation and cleanup failures fail validation.
+The CI wrapper requires each owned command group to disappear, including
+descendants. A failed or cancelled command has a two-second bounded group join
+after settlement, independent of its aborted signal, followed by the strict
+absence check. A successful command is checked immediately. Missing process
+identity or an unreaped zombie does not establish group disappearance. The
+original operation error is preserved; cleanup errors are aggregated with it.
+The [navigation lifetime decision](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
+records why command close and operating-system reaping need separate checks.
+Command, cancellation and cleanup failures fail validation.
 The [single-target decision](../../.agents/notes/implemented/testing/2026-11-06-single-target-web-acceptance.md)
 owns the removed native repetition and representative layout matrices. The
 archived [quality isolation decision](../../.agents/notes/archived/testing/2026-10-26-web-quality-job-isolation.md)

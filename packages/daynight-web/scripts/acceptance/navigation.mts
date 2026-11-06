@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { requireGroupStopped } from './identity.mts';
+import { requireGroupStopped, waitForGroupStopped } from './identity.mts';
 import { command, type CommandOptions } from './process.mts';
 
 const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -16,7 +16,11 @@ export const runCiCommand = async (file: string, args: readonly string[], option
     } });
   } catch (error) { failure = error; }
   if (child?.pid !== undefined) {
-    try { requireGroupStopped(child.pid); }
+    try {
+      // A killed descendant can remain in the group until its parent reaps it.
+      if (failure !== undefined) await waitForGroupStopped(child.pid, 2_000);
+      requireGroupStopped(child.pid);
+    }
     catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], 'CI command and process-group cleanup failed.', { cause: failure }); }
   }
   if (failure !== undefined) throw failure;

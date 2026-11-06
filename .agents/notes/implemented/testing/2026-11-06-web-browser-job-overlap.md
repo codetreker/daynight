@@ -17,6 +17,15 @@ produced `ERR_NETWORK_CHANGED`; the available logs did not retain the exact
 kernel event. Scheduling must provide a network-lifetime boundary without
 relying on a navigation branch usually finishing first.
 
+Command settlement and process-group disappearance also have different lifetimes.
+Node 24
+[documents `close`](https://nodejs.org/download/release/v24.19.0/docs/api/child_process.html#event-close)
+as the child process and its stdio closing. It does not confirm that all group
+members have been reaped. After forced termination, an exited descendant can
+remain a zombie while the group probe still reports it present, even when normal
+process identity lookup no longer returns an executable. An immediate strict
+check can misclassify that bounded reaping window as failed termination.
+
 ## Decision
 
 Chromium and its OS dependencies finish installation before CI starts acceptance.
@@ -57,12 +66,22 @@ once-only check ownership remain enforced.
 A branch failure aborts the shared callback controller promptly. Both branches
 drain before callback settlement, preserving distinct operation and cleanup
 errors; the parent then completes its selected target's resource cleanup.
-Existing command wrappers still require complete process-group termination.
-Navigation cancellation escalates its owned command group after one second,
-inside dev-ci's five-second callback termination grace. The navigation
-verification deadlines remain 180, 540 and 180 seconds; this cleanup ordering
-does not relax those checks. A real TERM-ignoring subprocess regression verifies
-that callback cleanup joins the forced group before the outer grace expires.
+CI command wrappers require the entire owned process group to disappear. After
+an operation fails or is cancelled, `runCiCommand` allows up to two seconds for
+that disappearance, then performs the strict group check. The cleanup wait runs
+even when the command signal is already aborted. Only `ESRCH` proves absence;
+zombies, missing executable identity or a permission error cannot satisfy it.
+Unexpected probe errors propagate, and a permission error is rechecked only
+within the bound. A successful command receives the immediate strict check, so a
+live descendant left by nominal success still fails promptly. The original
+operation error remains the outcome; a cleanup error is aggregated with that
+error and retains it as the cause.
+
+Navigation cancellation retains one-second escalation before the bounded group
+join, within dev-ci's five-second callback termination grace. Verification
+deadlines remain 180, 540 and 180 seconds, and per-case limits are unchanged.
+The termination regression retains a real TERM-ignoring descendant; a separate
+success-path check retains immediate leaked-group rejection.
 The [single-target decision](2026-11-06-single-target-web-acceptance.md) owns the
 production runner's target selection and removed duplicate preparation.
 
@@ -87,6 +106,10 @@ The observed navigation failure makes that unrestricted schedule unsuitable.
 network alive, but puts navigation back before the critical container browser
 branch and can retain the original critical-path sum.
 
+**Accept command close or zombie identity as stopped.** This removes the
+cleanup error without proving group disappearance. A bounded join retains the
+existing ownership gate and lets the operating system complete reaping.
+
 **Increase workers inside a production target.** Cases share a target's database
 and controlled fault state. More workers change that isolation boundary;
 independent navigation hosts provide concurrency without sharing those states.
@@ -103,8 +126,10 @@ remain sufficient for this scheduling change.
 
 The second browser job can overlap navigation with container functional work.
 CPU, memory and I/O competition may lengthen either branch, so saved serial time
-is only a model until whole-job measurements confirm it. Cancellation waits for
-real cleanup, which can finish after the first error.
+is only a model until whole-job measurements confirm it. Failed or cancelled
+commands can spend up to two seconds joining process-group disappearance after
+settlement. The original failure and any cleanup failure remain visible; the
+wait changes cleanup synchronization, not the accepted termination evidence.
 
 A shorter second shard may move the workflow bottleneck to the first shard or
 Go validation. Job improvement and overall workflow improvement therefore have

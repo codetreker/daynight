@@ -59,8 +59,12 @@ The dual-target pipeline and container-permission protocol are removed. A
 container callback validates its existing run/source-bound parent and prepared
 CLI before browser work. Navigation can still overlap container functional work
 after networking is ready; both branches drain before combined authentication
-restarts the service or dev-ci tears its networks down. Stage and cleanup errors
-remain failures. Recovery uses the declared target and verified ownership.
+restarts the service or dev-ci tears its networks down. Failed/cancelled CI
+commands join a bounded process-group reaping window before strict cleanup
+verification; successful commands require immediate group disappearance. The
+[navigation lifetime decision](2026-11-06-web-browser-job-overlap.md) owns that
+synchronization and failure preservation. Stage and cleanup errors remain
+failures. Recovery uses the declared target and verified ownership.
 
 ### Representative browser layouts
 

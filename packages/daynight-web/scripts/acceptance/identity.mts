@@ -1,4 +1,5 @@
 import { readFile, readlink, readdir, stat } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { darwinArguments, darwinFind, darwinIdentity } from './process-darwin.mts';
 
 export type ProcessIdentity = { platform: 'linux' | 'darwin'; pid: number; executable: string; startTicks: string; group: number };
@@ -96,4 +97,17 @@ export const isGroupStopped = (pid: number): boolean => {
 
 export const requireGroupStopped = (pid: number): void => {
   if (!isGroupStopped(pid)) throw new Error('Original acceptance process group is still running; recovery refused.');
+};
+
+export const waitForGroupStopped = async (pid: number, timeoutMs = 3_000): Promise<void> => {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    try { if (isGroupStopped(pid)) return; }
+    catch (error) {
+      // macOS may report EPERM while the last member exits; only ESRCH proves absence.
+      if (!(error instanceof Error && 'code' in error && error.code === 'EPERM')) throw error;
+    }
+    await delay(10);
+  }
+  requireGroupStopped(pid);
 };

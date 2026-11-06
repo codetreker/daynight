@@ -874,8 +874,13 @@ functional；两分支排空后才进行 combined-auth 重启，callback 结束�
 才允许 dev-ci 清理网络。导航使用独立端口、Vite cache/outDir 和受控 API，不修改
 生产目标数据库、profile 或安装 CLI；其环境副本移除生产浏览器归属标记
 `DAYNIGHT_ACCEPTANCE_DIRECTORY`，保留显式 browser channel 与工具配置。
-任一分支失败立即取消共享 controller，排空后传播原始和清理错误。导航取消后的
-一秒 escalation 位于 dev-ci callback 的五秒 TERM grace 内，验证时限保持不变。
+任一分支失败立即取消共享 controller，排空后传播原始和清理错误。命令失败或取消后，
+`runCiCommand` 在已取消信号之外最多等待两秒确认整个进程组消失，再执行严格检查；
+正常成功立即严格检查遗留组。Node `close`、缺失进程身份或未回收 zombie 不能代替
+组消失，只有 `ESRCH` 成立；原始错误保留，清理错误与之合并并保留 cause。导航取消
+仍在一秒后 escalation，组回收等待位于 dev-ci callback 的五秒 TERM grace 内，
+180/540/180 秒验证及各 case 时限不变。操作与回收时序的理由由
+[导航生命周期决策](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)拥有。
 
 Shard 2 统一拥有完整 editor navigation-contract、Team/Bot routine 选择、
 部署生命周期 fixture、一次容器十一项
