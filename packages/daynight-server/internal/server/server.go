@@ -9,6 +9,7 @@ import (
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth"
 	oauthauthorization "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/authorization"
+	granthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/grants"
 	oauthtoken "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/token"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
@@ -71,6 +72,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	mux.HandleFunc("/api/v1/oauth/requests/{id}/decision", authorization.Decide)
 	oauthhttp.RegisterMetadata(mux, config.PublicOrigin)
 	auth.RegisterRoutes(mux)
+	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)

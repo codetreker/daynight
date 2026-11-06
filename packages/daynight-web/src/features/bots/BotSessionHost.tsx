@@ -43,6 +43,7 @@ export function BotSessionHost({ cache, binding, active = true, fullscreenBounda
     ...presentation,
     variant: 'assistant',
     renderEmpty: slot => <BotConversationEmpty {...slot} />,
+    composer: { ...presentation?.composer, compactMenus: true },
   };
   useLayoutEffect(() => { cache.select(binding); }, [cache, key, current, guardRevision]);
   const selected = current && panes.some(pane => pane.key === key);

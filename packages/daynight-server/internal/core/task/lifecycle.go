@@ -112,16 +112,18 @@ func ValidateDelete(ctx context.Context, dao store.TaskWriteDAO, current model.T
 	return nil
 }
 
-// AssignmentChanged validates the Task-owned state rule. The caller must verify
-// project access for a new assignee before applying AssignmentValues.
-func AssignmentChanged(current model.Task, values store.TaskWrite) (bool, error) {
+// AssignmentCandidate returns the Task-owned transition. Before applying a
+// changed candidate, the caller must verify a non-nil assignee's project access
+// in the same project write scope.
+func AssignmentCandidate(current model.Task, values store.TaskWrite) (store.TaskWrite, bool, error) {
 	if model.EqualOptional(current.AssignedTo, values.AssignedTo) {
-		return false, nil
+		return values, false, nil
 	}
 	if current.Status == model.TaskInProgress {
-		return false, &model.Fault{Code: "invalid_transition", Message: "Task assignment cannot change while the task is in progress."}
+		return store.TaskWrite{}, false, &model.Fault{Code: "invalid_transition", Message: "Task assignment cannot change while the task is in progress."}
 	}
-	return true, nil
+	values.AllowAgents = false
+	return values, true, nil
 }
 
 func ActiveWorker(current model.Task, claimID string) (*model.WorkerClaim, error) {
