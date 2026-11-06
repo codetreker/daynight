@@ -47,5 +47,5 @@ if [[ "$race" == false ]]; then
 fi
 
 export CI=true
-go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.0 --coverprofile=coverage.out --skip-result-packages tests/ "$@"
+go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.3 --coverprofile=coverage.out --skip-result-packages tests/ "$@"
 node scripts/coverage.mts coverage.out
