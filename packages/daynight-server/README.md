@@ -333,7 +333,12 @@ Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, Task discussion reads and posts, and attachment listing and removal.
+and writes, Task discussion reads and posts, and attachment listing, removal and
+bounded reads. Attachment open creates a private immutable snapshot for ranged
+reads; each request rechecks access. Inspection returns metadata by default,
+explicit reads default to 8 KiB, and binary content requires base64 selection.
+Inspect and open results are limited to 16 KiB; exceptionally oversized MIME or
+paths are rejected explicitly. Close and expiry reclaim only the private snapshot.
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
@@ -379,8 +384,11 @@ discovery and the complete token endpoint are not yet mounted.
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
 operations have a separate 16-slot budget. A saturated budget returns
-`resource_busy`. Permits remain held until the handler and response delivery
-finish. The opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
+`resource_busy`. Attachment inspection and new download snapshots use a separate
+four-slot content budget; repeated open and transfer control calls remain on the
+control budget. A new open releases its control slot only after acquiring a content
+slot. Permits remain held until the handler and response delivery finish. The
+opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
 the 64 MiB Step collection and concurrent summary write admission with sampled
 Go heap. After preparing the isolated database and UniAuth fixture, run it
 separately from CI:
