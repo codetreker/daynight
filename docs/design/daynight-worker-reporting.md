@@ -30,6 +30,8 @@ reporter 构造时立即触发，并设置独立 30 秒 interval。`running` 表
 
 runtime 根 signal 中止时，reporter 同步停止 interval、清除 pending 并取消当前 Operation；coordinator 的同一根信号监听同步关闭调度并中止全部 job controller，包括终止清理 job。取消阶段不等待 reporter.stop()，因此慢报告不能延后任务取消，终止清理也不能在报告 join 期间继续删除 worktree 或完成本机行。随后 runtime 等待 reporter.stop()，再进入 coordinator shutdown 等待所有 job，直接停止受管执行并保留未完成 claim、worktree、原生 session ID 及 active/pending 行；backend、存储、日志与实例锁最后收尾。普通报告失败不终止执行；探测进程收尾无法确认与诊断输出失败会由 stop() 保留并传递，其他资源清理仍继续。
 
+reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发并 join 当前采集后，按原确认状态判断剩余责任。已确认的历史清理超时及 reporter 自身取消包装不再单独导致退出失败；混合 `AggregateError` 中仍未确认的清理、独立错误和诊断输出失败继续传播。已确认清理错误自身携带的原始命令失败仍属于历史上下文，不等同于聚合中独立的退出失败。此判断不清除历史错误分类，也不触发新探测；停止或取消的采集不会因晚到确认复活。
+
 ## 配置快照与回执
 
 reporter 通过 capture/send/accept 接缝与配置模块协作。发送前捕获不可变配置快照，与当前机器报告和最新任务引用组成一次新请求；成功回执交给同一快照对应的确认处理。配置模块串行接纳当前目标、观测 CAS 与确认，只清除该快照中相同身份且已被服务端接纳的失败。飞行期间的新失败保留，恢复不提前丢弃 lastFailure；CAS 拒绝只更新比较版本。
@@ -64,17 +66,23 @@ OS、内存和 CPU 使用 Node OS API。CPU 每次先读取逻辑处理器 times
 
 collector 对完整 Herdr 观察使用现有有界等待，每次异步步骤后检查同一 collection Operation。采集超时返回 timeout，根取消仍使整体采集失败；未完成的只读调用不被宣称已取消，其完成后不能发起后续 peer 或 RPC。原始 journal、run 路径、进程与 claim 身份仅用于本机判断，不加入 wire schema 或诊断正文。
 
-命令 runner 用 `HerdrCommandCleanupError` 显式标记无法确认进程树及流关闭。collector 对出现该标记的工具在本进程内永久禁止替代探测，后续返回 unavailable；reporter 保存原错误用于退出并继续其余部分心跳。一般 AggregateError 不触发此屏障。
+命令 runner 用 `HerdrCommandCleanupError` 标记该次命令曾未能确认清理，`hasHerdrCommandCleanupFailure` 保留这一历史分类。私有 `WeakMap` 将错误关联到原始 `ChildProcess` 既有 `close` 监听的状态；确认依赖该命令对象及其输出流关闭，不使用可复用 PID、全局 Provider 标记或另一探测的结果。仅等待 `close` 超时且终止调用未失败的错误可以在晚到 `close` 后得到确认。只有 `exit`、leader 消失、终止失败后 `close`，以及其它清理 owner 或旧构造产生的无确认句柄错误，都不能据此解除阻塞。
+
+`hasUnconfirmedHerdrCommandCleanup` 单独查询当前责任，递归检查 `Error.cause` 和 `AggregateError.errors`；任何一项尚未确认，整个对应探测仍受屏障保护。普通聚合错误没有清理标记时不产生清理屏障。`versions` 为 Codex/Copilot 分别保留原失败及 `cleanupUncertain`，未确认时继续返回 unavailable，不因 60 秒缓存到期启动替代进程。原责任全部确认后，下一轮正常采集先删除该工具的旧失败缓存，再执行版本命令；新探测结果使用本轮 `checkedAt`，成功才发布新版本，失败保留实际错误；未确认时返回的 unavailable 也带本轮检查时间，该时间不是成功证据。确认事件本身不产生成功报告、额外调度、轮询进程、重复监听或更长预算。历史取舍与不能以时间或缓存替代清理证据的原因见[探测恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-06-native-probe-cleanup-recovery.md)。
 
 ## 助手托管预检接入
 
-`worker/bots/host-capabilities.ts` 拥有独立的助手预检采集器，`telemetry.ts` 通过可选采集器接入同一次报告。默认 runtime 不传入该采集器，因此现有 Worker 不会在完整托管链路组合前发布 `assistantHost`。缺字段的消费者行为与[快照协议](../spec/daynight-worker-snapshots.md#助手托管预检)一致；此接入点不是用户配置开关。
+`worker/bots/host-capabilities.ts` 拥有独立的助手预检采集器，`telemetry.ts` 通过可选采集器接入同一次报告。runtime 将 Bot 管理组合的 `collect` 接入 `assistantHost`，使用当前有效的全局原生配置；组合与配置生效规则由[助手设计](assistant.md#产品组合)拥有。缺字段的旧 Worker 消费行为与[快照协议](../spec/daynight-worker-snapshots.md#助手托管预检)一致；此接入点不是用户配置开关。
 
 预检读取 Worker 启动时的真实绝对目录与全局执行配置，不选择项目或创建目录。全局 Provider 保留自己的 model/args，其它 Provider 使用 null/[]，避免切换后继承错误的模型或参数。全部配置按 Web 适配器参数解析器检查，任务的 Herdr/Web 模式不改变 Bot 的 Web 规则。不支持的配置只返回闭合错误码并清空参数，不将原始错误或敏感参数带入 wire。
 
 可执行来源与 Web 运行适配器一致：Codex 使用原生 PATH，Copilot 使用其随包平台可执行文件，Claude 使用 SDK 的随包平台可执行文件。只运行版本和启动参数帮助探测，不启动原生 Session、不发用户消息，也不读取认证文件来声称账户可用。目录存在、工具存在和参数可识别仍不能保证未来的认证、模型访问或真实启动成功；启动者必须再次验证并等待原生同步事实。
 
-助手预检在报告 Operation 内拥有独立的五秒预算和严格进程清理责任。遥测采集先保存助手成功或失败的结果，等待普通采集和全部原生命令结束后，再传播取消或失败并保留所有清理错误；`reporter.stop()` 因而不会在其它探测尚未完成清理时成功返回。无法确认清理的工具不再启动替代探测；报告仅包含有限 reason，私有 issue 通过现有 reporter 诊断和退出错误链传递。预检来源 observedAt 不随新的普通机器报告刷新，消费端以服务器时间独立检查 120 秒年龄上限。
+助手预检在报告 Operation 内拥有独立的五秒预算和严格进程清理责任。遥测采集先保存助手成功或失败的结果，等待普通采集和全部原生命令的有界收尾结束后，再传播取消或失败并保留所有清理错误；超时返回仍未确认，不等同于进程已经退出。`reporter.stop()` 在 join 后继续传播真实未确认责任。
+
+助手采集器用 `cleanupFailures` 按 Codex、Claude、Copilot 分别持有原错误；未确认期间禁止该 Provider 的替代探测。下轮正常采集确认原责任已解除后才移除对应阻塞，再执行版本与 Web 参数帮助探测，成功后才报告 `available=true`；新失败按实际原因返回，新的清理错误重新绑定到新命令。它与 `versions` 的缓存各自持有责任，同一 Provider 的两类探测、不同 Provider 和不同轮次均不能互相确认。每轮仍检查当前配置、目录、预算及取消；确认不会绕过这些准入条件。报告仅包含有限 reason，私有 issue 通过现有 reporter 诊断和退出错误链传递。预检来源 observedAt 不随新的普通机器报告刷新，消费端以服务器时间独立检查 120 秒年龄上限。
+
+该恢复机制只覆盖只读探测。默认解析仍使用当前有效报告，目标 Provider 不可用时保留拒绝原因，不自动改选同机其它 Provider；已有 Bot 的持久 ready 不能证明当前可创建。确认状态属于运行中 runner 的原始对象，网页刷新既不升级旧 Worker 代码，也不能补回旧错误缺失的确认句柄。升级及现场验证必须分别核对真实运行版本、Worker 报告和实际创建结果，不能从文档或新 collector 成功推定旧 Worker 已恢复。
 
 ## 失败与可观察性
 
