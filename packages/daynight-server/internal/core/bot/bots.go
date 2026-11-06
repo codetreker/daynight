@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -228,43 +227,6 @@ func ListResult(principal model.Principal, workerID *string, records store.BotPa
 		result.NextCursor = &cursor
 	}
 	return result, nil
-}
-
-// Delete records an intent; bound sessions require the separate deletion barrier.
-func Delete(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, id string, input store.DeleteBot) (model.Bot, error) {
-	if err := botCredentialError(tx.Credential(ctx, principal)); err != nil {
-		return model.Bot{}, err
-	}
-	current, err := tx.Bot(ctx, id)
-	if errors.Is(err, model.ErrNotFound) {
-		return model.Bot{}, &model.Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
-	}
-	if err != nil {
-		return model.Bot{}, err
-	}
-	if err := botOwner(current, principal); err != nil {
-		return model.Bot{}, err
-	}
-	if current.Deletion != nil {
-		if current.Deletion.DeletionID != input.DeletionID || current.Deletion.RequestedVersion != input.Version {
-			return model.Bot{}, botConflict("Bot deletion belongs to a different request.")
-		}
-		return current, botCredentialError(tx.Credential(ctx, principal))
-	}
-	if current.Version != input.Version {
-		return model.Bot{}, &model.Fault{Code: "version_conflict", Message: "Bot version has changed."}
-	}
-	if current.SessionID != nil {
-		return model.Bot{}, botConflict("A bound Bot requires the Session deletion barrier.")
-	}
-	if current.Version == math.MaxInt64 {
-		return model.Bot{}, &model.Fault{Code: "version_exhausted", Message: "Bot version cannot advance."}
-	}
-	result, err := tx.DeleteBot(ctx, id, input.Version, model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})
-	if err != nil {
-		return model.Bot{}, err
-	}
-	return result, botCredentialError(tx.Credential(ctx, principal))
 }
 
 func ResultError(operation string, err error) error {
