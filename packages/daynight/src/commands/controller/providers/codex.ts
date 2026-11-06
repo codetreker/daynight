@@ -1,8 +1,8 @@
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { codexNativeHome } from "./codex-settings-metadata.js";
 import { CodexInterruptions } from "./codex-interruptions.js";
 import { CodexControls } from "./controls-codex.js";
+import { persistCodexInitialSettings } from "./codex-initial-settings.js";
 import { CodexErrors } from "./codex-errors.js";
 import { codexApprovalDetail } from "./codex-approval-detail.js";
 import { NativeTurns } from "./turns.js";
@@ -19,7 +19,9 @@ type Pending = { nativeId: unknown; interaction: SessionInteraction; result(resp
 export const openCodexProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
   const config = parseProviderArguments("codex", options.args, options.validateNativeSelection);
   const executable = options.executable ?? "codex";
-  const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: options.env ?? process.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
+  const childEnvironment = { ...(options.env ?? process.env) };
+  const nativeHome = codexNativeHome(childEnvironment, options.cwd);
+  const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
   let projection: CodexProjection;
@@ -28,6 +30,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const terminalProjections = new Set<Promise<void>>();
   let turnStartedAt: string | null = null;
   let controls: CodexControls;
+  const initialSettingsAbort = new AbortController(); let awaitingInitialSettings = false;
   const pending = new Map<string, Pending>(); const turns = new NativeTurns();
   const approvalItems = new Map<string, NativeObject>();
   const errors = new CodexErrors(options.onTimeline);
@@ -130,11 +133,12 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") projection?.delta(string(p.itemId), string(p.delta), "reasoning");
     if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") projection?.toolDelta(string(p.itemId), string(p.delta));
     if (method === "serverRequest/resolved") for (const [id, value] of pending) if (value.nativeId === p.requestId) { value.interaction = { ...value.interaction, state: "resolved", revision: "2" }; showInteraction(value); pending.delete(id); value.settled?.(); state(); }
-    if (method === "error") errors.notification(p, nativeId, currentTurnId);
+    if (method === "error") { errors.notification(p, nativeId, currentTurnId); if (awaitingInitialSettings) initialSettingsAbort.abort(new Error("Native Codex rejected initial settings asynchronously.")); }
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
   });
-  controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, options.env?.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"), state, options.onControlConfirmed, options.controlsRevisionFloor);
+  controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor);
   child.once("close", () => {
+    initialSettingsAbort.abort(new Error("Native Codex closed before initial settings persistence was confirmed."));
     closed = true;
     const error = new Error("Native Codex connection ended; pending operation results are unknown.");
     if (currentTurnId) turns.complete(currentTurnId, error);
@@ -142,6 +146,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (!closing) options.onFatalError?.(error);
   });
   const close = async () => {
+    initialSettingsAbort.abort(new Error("Native Codex stopped before initial settings persistence was confirmed."));
     closing = true; controls.close();
     if (closed) { rpc.dispose(); await Promise.all(terminalProjections); return; }
     const exited = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Native Codex stop is unconfirmed.")), 10_000); child.once("close", () => { clearTimeout(timer); resolve(); }); });
@@ -185,8 +190,21 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         await readItems();
       }
     } else {
+      const hasInitialSettings = Boolean(options.model || config.effort);
       // Persist an empty thread where supported; an absent native file is never guessed on recovery.
-      await rpc.request("thread/read", { threadId: nativeId, includeTurns: true }).catch(error => { if (!(error instanceof NativeRpcError)) throw error; });
+      await rpc.request("thread/read", { threadId: nativeId, includeTurns: true }).catch(error => {
+        if (!(error instanceof NativeRpcError) || hasInitialSettings && (error.code !== -32601 || error.message !== "list_turns is not supported yet")) throw error;
+      });
+      if (hasInitialSettings) {
+        awaitingInitialSettings = true;
+        try {
+          await persistCodexInitialSettings({ path: thread.path, home: nativeHome, cwd: options.cwd, threadId: nativeId,
+            env: childEnvironment,
+            readConfiguration: async () => { const [config, requirements] = await Promise.all([rpc.request("config/read", { cwd: options.cwd, includeLayers: false }), rpc.request("configRequirements/read", {})]); return { config, requirements }; },
+            expected: { ...(options.model ? { model: options.validateNativeSelection ? string(response.model) : options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }, signal: initialSettingsAbort.signal,
+            update: () => rpc.request("thread/settings/update", { threadId: nativeId, ...(options.model ? { model: options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }) });
+        } finally { awaitingInitialSettings = false; }
+      }
     }
     activity = "idle"; state();
   } catch (error) { await close(); throw error; }
