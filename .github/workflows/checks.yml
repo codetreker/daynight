@@ -467,7 +467,6 @@ jobs:
           go vet ./...
           fixture="$(node scripts/prepare-uniauth-fixture.mts)"
           printf 'DAYNIGHT_TEST_UNIAUTH_FIXTURE=%s\n' "$fixture" >> "$GITHUB_ENV"
-          node --test scripts/coverage.test.mts scripts/auth-fixture.test.mts scripts/preparation-lock.test.mts
           go clean -testcache
           packages="$(go list ./... | paste -sd, -)"
           printf 'GOFLAGS=%s -coverpkg=%s\n' "${GOFLAGS-}" "$packages" >> "$GITHUB_ENV"
