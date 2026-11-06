@@ -43,12 +43,6 @@ func botID(value string) bool {
 func botText(value string) bool {
 	return utf8.ValidString(value) && strings.TrimSpace(value) != "" && !strings.ContainsRune(value, 0)
 }
-func botVersion(bot model.Bot, version int64) error {
-	if version != bot.Version {
-		return fault("version_conflict", "Bot version has changed.")
-	}
-	return nil
-}
 func validSessionBot(bot *model.Bot, r *record) bool {
 	if bot == nil {
 		return r.BotID == nil
@@ -131,7 +125,7 @@ func (s *Execution) GrantBot(ctx context.Context, p model.Principal, workerID, i
 		return out, fault("invalid_input", "Invalid native Session identity.")
 	}
 	err := s.botRun(ctx, p, workerID, id, func(bot model.Bot) error {
-		if err := botVersion(bot, input.BotVersion); err != nil {
+		if err := botcore.CheckVersion(bot, input.BotVersion); err != nil {
 			return err
 		}
 		if bot.SessionID == nil {
@@ -162,7 +156,7 @@ func (s *Execution) ReportBot(ctx context.Context, p model.Principal, workerID, 
 	if input.NativeSessionID != nil && !botText(*input.NativeSessionID) {
 		return out, fault("invalid_input", "Invalid native Session identity.")
 	}
-	err := s.botRun(ctx, p, workerID, id, func(bot model.Bot) error { return botVersion(bot, input.BotVersion) }, nil, func(op *Operation, scope store.SessionScope, bot model.Bot, access *Access, recheck func(model.Principal) error) error {
+	err := s.botRun(ctx, p, workerID, id, func(bot model.Bot) error { return botcore.CheckVersion(bot, input.BotVersion) }, nil, func(op *Operation, scope store.SessionScope, bot model.Bot, access *Access, recheck func(model.Principal) error) error {
 		_, tx := op.scoped(scope)
 		if access == nil {
 			if input.Result.State != "failed" || input.Fence != nil || input.ControllerID != "" || input.ControllerInstanceID != "" || input.NativeSessionID != nil {

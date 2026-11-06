@@ -446,7 +446,7 @@ func TestAuthorizationCleanupFairAcrossOneRowBatches(t *testing.T) {
 		count := 0
 		c, err := db.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
 			var e error
-			count, e = scope.AuthorizationDAO().PruneAuthorizations(ctx, now, 1)
+			count, e = core.PruneAuthorizationBatch(ctx, scope.AuthorizationDAO(), now, 1)
 			return e
 		})
 		if err != nil || c.Outcome != store.TransactionCommitted || count != 1 {

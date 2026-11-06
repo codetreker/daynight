@@ -40,6 +40,25 @@ func runtimeConflict() error {
 	return &model.Fault{Code: "session_conflict", Message: "Session identity or state no longer matches."}
 }
 
+// AuthorizeRuntime checks the locked Bot's owner, Worker binding and deletion state.
+func AuthorizeRuntime(bot model.Bot, userID, workerID string) error {
+	if bot.OwnerUserID != userID || bot.WorkerID != workerID {
+		return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
+	}
+	if bot.Deletion != nil {
+		return &model.Fault{Code: "resource_conflict", Message: "Bot is deleted."}
+	}
+	return nil
+}
+
+// CheckVersion validates the version supplied for a Bot runtime operation.
+func CheckVersion(bot model.Bot, version int64) error {
+	if version != bot.Version {
+		return &model.Fault{Code: "version_conflict", Message: "Bot version has changed."}
+	}
+	return nil
+}
+
 func sameJSON(a, b any) bool {
 	x, err := json.Marshal(a)
 	if err != nil {
@@ -60,8 +79,8 @@ func BindingRoleMatches(bot model.Bot, role model.BotRoleConfiguration) bool {
 
 // PrepareBinding validates a first binding after the caller has locked the Bot.
 func PrepareBinding(bot model.Bot, version int64) error {
-	if version != bot.Version {
-		return &model.Fault{Code: "version_conflict", Message: "Bot version has changed."}
+	if err := CheckVersion(bot, version); err != nil {
+		return err
 	}
 	if bot.Version == math.MaxInt64 {
 		return &model.Fault{Code: "version_exhausted", Message: "Bot version cannot advance."}

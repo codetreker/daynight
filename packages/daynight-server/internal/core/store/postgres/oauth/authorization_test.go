@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -92,7 +93,7 @@ func TestAuthorizationPruneHonorsBatchLimitAndRetention(t *testing.T) {
 	check(t, err)
 	_, err = tx.Exec(ctx, `UPDATE oauth_authorizations SET status='denied',retain_until=$2 WHERE id=$1`, denied.ID, now.Add(-time.Minute))
 	check(t, err)
-	changed, err := dao.PruneAuthorizations(ctx, now, 1)
+	changed, err := core.PruneAuthorizationBatch(ctx, dao, now, 1)
 	check(t, err)
 	if changed != 1 {
 		t.Fatalf("first prune changed=%d", changed)
@@ -107,7 +108,7 @@ func TestAuthorizationPruneHonorsBatchLimitAndRetention(t *testing.T) {
 	if retained.Status != "denied" {
 		t.Fatalf("batch limit lost denied row=%#v", retained)
 	}
-	changed, err = dao.PruneAuthorizations(ctx, now, 10)
+	changed, err = core.PruneAuthorizationBatch(ctx, dao, now, 10)
 	check(t, err)
 	if changed != 1 {
 		t.Fatalf("retention prune changed=%d", changed)
@@ -124,7 +125,7 @@ func TestAuthorizationPruneHonorsBatchLimitAndRetention(t *testing.T) {
 	if retained.Status != "expired" {
 		t.Fatalf("unexpired retention row lost=%#v", retained)
 	}
-	changed, err = dao.PruneAuthorizations(ctx, now, 10)
+	changed, err = core.PruneAuthorizationBatch(ctx, dao, now, 10)
 	check(t, err)
 	if changed != 0 {
 		t.Fatalf("repeat prune changed=%d", changed)
@@ -143,4 +144,47 @@ func authorizationEqual(actual, expected store.OAuthAuthorization) bool {
 		expected.CodeExpiresAt = &at
 	}
 	return reflect.DeepEqual(actual, expected)
+}
+
+func TestAuthorizationPruneSharesQuotaAndUsesSpare(t *testing.T) {
+	tx, dao := transaction(t)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
+	for range 4 {
+		a := authorizationRecord(now)
+		created, err := dao.InsertAuthorization(ctx, a, 10, now)
+		check(t, err)
+		if !created {
+			t.Fatal("fixture capacity refused")
+		}
+		_, err = tx.Exec(ctx, `UPDATE oauth_authorizations SET expires_at=$2 WHERE id=$1`, a.ID, now.Add(-time.Minute))
+		check(t, err)
+	}
+	denied := authorizationRecord(now)
+	created, err := dao.InsertAuthorization(ctx, denied, 10, now)
+	check(t, err)
+	if !created {
+		t.Fatal("fixture capacity refused")
+	}
+	_, err = tx.Exec(ctx, `UPDATE oauth_authorizations SET status='denied',retain_until=$2 WHERE id=$1`, denied.ID, now.Add(-time.Minute))
+	check(t, err)
+	count, err := core.PruneAuthorizationBatch(ctx, dao, now, 3)
+	check(t, err)
+	if count != 3 {
+		t.Fatalf("first batch: %d", count)
+	}
+	var pending, expired, removed int
+	check(t, tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'),count(*) FILTER (WHERE status='expired'),count(*) FILTER (WHERE id=$1) FROM oauth_authorizations`, denied.ID).Scan(&pending, &expired, &removed))
+	if pending != 2 || expired != 2 || removed != 0 {
+		t.Fatalf("quota distribution: %d %d %d", pending, expired, removed)
+	}
+	count, err = core.PruneAuthorizationBatch(ctx, dao, now, 3)
+	check(t, err)
+	if count != 2 {
+		t.Fatalf("spare capacity: %d", count)
+	}
+	check(t, tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'),count(*) FILTER (WHERE status='expired') FROM oauth_authorizations`).Scan(&pending, &expired))
+	if pending != 0 || expired != 4 {
+		t.Fatalf("spare allocation: %d %d", pending, expired)
+	}
 }
