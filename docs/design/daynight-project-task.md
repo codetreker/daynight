@@ -373,6 +373,7 @@ flowchart TD
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
 | `project transfer` | 确定 Project 与 `/me`，读取目标预览，确认后提交 `POST /api/v1/projects/{id}/transfer` |
+| `project delete` | 使用相同的中性 Project 选择，完整读取 `GET /api/v1/projects/{id}/deletion-preview`，确认后最多一次无条件 `DELETE /api/v1/projects/{id}` |
 | `team list` | `GET /api/v1/me`，再读取全部 `GET /api/v1/teams` 页 |
 | `team show`、`team default show` | `GET /api/v1/me`，再按选定 ID 读取 `GET /api/v1/teams/{id}` |
 | `team default set <uuid\|personal>` | `GET /api/v1/me` 与指定 Team；验证成员资格并确认后更新本地配置，不提交远程 mutation |

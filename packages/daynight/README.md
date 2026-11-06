@@ -163,6 +163,7 @@ daynight project create <name> [--repo <repo>] [--team <uuid|personal>] [--confi
 daynight project list [--json]
 daynight project show <project-id> [--json]
 daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]
+daynight project delete [--project <uuid>] [--confirm] [--json]
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
 daynight team create <name> [--confirm] [--json]
@@ -601,6 +602,16 @@ optional `--if-version` rejects a preview with a different ownership version.
 A successful receipt may report no remaining access. Conflicts require a fresh
 preview and decision; a lost receipt remains unknown even if a later read is 404.
 Project grants and invitations are preserved.
+
+`project delete` selects an explicit Project or the current repository's Project,
+then reads the complete deletion preview. Only an administrator of the current
+owner Team can delete it. The Project becomes unavailable without a product
+recovery option; server history and files are retained. Active Worker claims
+block deletion. Interactive use requires the displayed JSON string literal of the
+Project name, even with `--confirm`; noninteractive use requires `--confirm`.
+The preview is an observation, not a condition on the deletion. JSON output
+contains only the confirmed receipt; preview text goes to stderr. An unknown
+outcome is never automatically retried, and a later 404 cannot prove success.
 
 ## Team context
 
