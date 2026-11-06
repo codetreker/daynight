@@ -72,6 +72,34 @@ describe('project creation context', () => {
     view.unmount(); admission.dispose();
   });
 
+  it('withdraws an unknown-outcome project list and rejects a late continuation', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const id = '10000000-0000-4000-8000-000000000035';
+    const signal = new AbortController().signal;
+    const ticket = await admission.beginSync(id, signal);
+    const project = { id, name: 'Private project', repoUrl: 'git@example.test:private.git', ownership: { teamId: teamA, version: 1 }, settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' };
+    const page = (nextCursor: string | null) => new Response(JSON.stringify({ items: [project], nextCursor }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    const late = Promise.withResolvers<Response>();
+    const fetch = vi.fn((_url: string, options?: RequestInit) => options?.method === 'POST' ? Promise.reject(new Error('connection lost')) : fetch.mock.calls.filter(([, init]) => init?.method !== 'POST').length === 1 ? Promise.resolve(page('next')) : late.promise);
+    vi.stubGlobal('fetch', fetch);
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Project' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:repo.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Check projects' }));
+    await screen.findByRole('link', { name: 'Private project' }, { timeout: 10000 });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more projects' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    await act(async () => { await admission.revokeProject(ticket, signal, false); });
+    expect(screen.queryByRole('link', { name: 'Private project' })).toBeNull();
+    await act(async () => late.resolve(page(null)));
+    expect(screen.queryByText('git@example.test:private.git')).toBeNull();
+    expect(screen.getByText(/creation result is unknown/i)).toBeTruthy();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Project');
+    view.unmount(); admission.dispose();
+  });
+
   it.each(['same', 'changed'] as const)('holds a successful creation until the %s identity is confirmed', async (outcome) => {
     const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
     const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();

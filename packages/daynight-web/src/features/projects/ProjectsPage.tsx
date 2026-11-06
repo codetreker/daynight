@@ -82,6 +82,13 @@ export const ProjectsPage = ({ onCreate, title, subtitle, emptyDetail }: { reado
         </section>
       )}
 
+      {projects.status === 'ready' && projects.error !== null && (
+        <div className="continuation-error" role="alert">
+          <ErrorDetail error={projects.error} />
+          <button className="button" type="button" onClick={projects.refresh}>{m.retry}</button>
+        </div>
+      )}
+
       {projects.status === 'ready' && projects.items.length > 0 && (
         <ul className="project-grid" aria-label={m.list}>
           {projects.items.map((project) => (

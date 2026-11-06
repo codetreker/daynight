@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAbortError, listProjects } from '../../api/client';
 import type { Project } from '../../api/types';
 import type { TaskCacheScope } from '../task-cache/project-cache';
+import { TaskCacheError } from '../task-cache/database';
 
 export type ProjectScope = { readonly kind: 'all' } | { readonly kind: 'team'; readonly teamId: string } | { readonly kind: 'shared' };
 
@@ -34,6 +35,10 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
   const [state, setState] = useState<ProjectsState>(() => initialState(scopeKey));
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
+  const activeSnapshot = useRef<ReadonlyMap<string, string> | null>(null);
+  const itemGenerations = useRef(new Map<string, ReadonlyMap<string, string>>());
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const request = useCallback(async (cursor: string | null, append: boolean) => {
     if (blockedRef.current || admission?.isInvalidated) return;
@@ -41,14 +46,16 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
     const controller = new AbortController();
     const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal]);
     active.current = controller;
+    activeSnapshot.current = null;
     const currentGeneration = ++generation.current;
     setState((previous) => append && previous.scopeKey === scopeKey
       ? { ...previous, loadingMore: true, moreError: null }
       : initialState(scopeKey));
 
     try {
-      if (admission !== undefined) await admission.ready(signal);
+      const snapshot = admission === undefined ? new Map<string, string>() : await admission.prepareProjection(signal);
       if (signal.aborted || blockedRef.current || currentGeneration !== generation.current || scopeRef.current !== scopeKey) return;
+      activeSnapshot.current = snapshot;
       const page = await listProjects({
         limit: 50,
         ...(cursor === null ? {} : { cursor }),
@@ -56,10 +63,13 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
       }, signal, admission === undefined ? undefined : { userId: admission.userId, onPrincipalMismatch: admission.principalMismatch });
       if (admission !== undefined) await admission.ready(signal);
       if (signal.aborted || blockedRef.current || currentGeneration !== generation.current || scopeRef.current !== scopeKey) return;
+      if (!append) itemGenerations.current.clear();
+      const visible = page.items.filter((project) => admission?.projectionSnapshotDenied(snapshot, project.id) !== true);
+      for (const project of visible) if (!append || !itemGenerations.current.has(project.id)) itemGenerations.current.set(project.id, snapshot);
       setState((previous) => {
         if (blockedRef.current || admission?.isInvalidated || scopeRef.current !== scopeKey || previous.scopeKey !== scopeKey) return previous;
         const projects = new Map<string, Project>();
-        for (const project of [...(append ? previous.items : []), ...page.items]) {
+        for (const project of [...(append ? previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true) : []), ...visible]) {
           if (!projects.has(project.id)) projects.set(project.id, project);
         }
         return {
@@ -67,7 +77,7 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
           items: [...projects.values()],
           nextCursor: page.nextCursor,
           status: 'ready',
-          error: null,
+          error: admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null),
           loadingMore: false,
           moreError: null,
         };
@@ -80,9 +90,26 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
         ? { ...previous, loadingMore: false, moreError: error }
         : { ...initialState(scopeKey), status: 'error', error });
     } finally {
-      if (currentGeneration === generation.current) active.current = null;
+      if (currentGeneration === generation.current) { active.current = null; activeSnapshot.current = null; }
     }
   }, [scopeKey, admission]);
+
+  useEffect(() => {
+    if (admission === undefined) return;
+    return admission.subscribeProjection((event) => {
+      if (!event.accessRevoked) return;
+      const observed = itemGenerations.current.get(event.projectId);
+      const remove = observed !== undefined && admission.projectionEventMatches(observed, event);
+      const cancel = !(event.error instanceof TaskCacheError) && active.current !== null && admission.projectionEventMatches(activeSnapshot.current, event);
+      if (cancel) { ++generation.current; active.current?.abort(); active.current = null; activeSnapshot.current = null; }
+      if (remove || cancel || event.error instanceof TaskCacheError && admission.isProjectionDenied(event.projectId)) {
+        setState((previous) => ({ ...previous, items: remove ? previous.items.filter((item) => item.id !== event.projectId) : previous.items,
+          loadingMore: cancel ? false : previous.loadingMore,
+          error: event.error instanceof TaskCacheError ? event.error : previous.error }));
+      }
+      if (cancel && stateRef.current.status === 'loading' && !(event.error instanceof TaskCacheError)) void request(null, false);
+    });
+  }, [admission, request]);
 
   useEffect(() => {
     if (!blockedRef.current) void request(null, false);

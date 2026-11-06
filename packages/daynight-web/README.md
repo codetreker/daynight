@@ -301,8 +301,12 @@ minimum-version or semantic-version check.
 `api/workers.ts` decodes the account snapshot contract and admits the principal
 before parsing either a successful response or a resource error, including 404.
 `useWorkers`, `useWorker` and `useWorkerObservation` retain only page-local memory.
-They reuse TaskCacheScope for authenticated lifetime and foreground admission;
-Worker data never enters the project cache, IndexedDB or a global registry.
+They reuse TaskCacheScope for authenticated lifetime, foreground admission and
+Project withdrawal generations; Worker data never enters the project cache,
+IndexedDB or a global registry. Independent reads capture generations before
+requesting data, withdraw matching private projections on access-negative events
+and fence late responses. A Worker detail filters affected task rows; a list
+invalidates counts without per-project provenance until an authoritative reread.
 Reads and publication both wait for identity confirmation, and abort signals,
 resource identity and request generations fence late results. The shell's
 `readEnabled` pauses private work during identity checking and blocking recovery.
@@ -529,9 +533,13 @@ authorization without removing the old-generation fences.
 
 Ordinary broadcast hints contain no task content or access grant; authorized
 receivers reread committed stores without another network request. Negative hints
-carry userFence/revokedGeneration and immediately deny matching peers, including
-a bound cold peer with no projection, without rebroadcast. Stale hints cannot
-replace a newer generation or denial. Failed IDB opening,
+carry userFence/revokedGeneration. Independent projections compare the event to
+the generation captured at read start, even if cleanup has already advanced the
+durable manifest. The manifest persists successive generations atomically, and denial tickets
+carry their complete ancestry. New-generation denial withdraws older observations
+even if replacement hints were lost, without letting an old denial withdraw a
+proven later observation. Corrupt unknown history is isolated and reread. A bound cold cache peer records a matching durable denial
+without rebroadcast. Stale hints cannot replace a newer generation or denial. Failed IDB opening,
 blocked upgrades, abnormal close, corruption or writes use existing visible
 error/Retry states and retain an allowed current view. Missing or malformed user
 scope records are repaired in one shared-cache transaction: replace the fence,
@@ -1735,7 +1743,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-36 scenarios, divided into two disjoint sets of 18. Default file-level partitioning
+37 scenarios, divided into disjoint sets of 19 and 18. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -1819,9 +1827,9 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary local command requires thirty-six functional scenarios on each
-native/container target, seventy-two in total. CI retains that complete inventory
-across two disjoint case shards, running eighteen selected scenarios per shard on both targets. The explicit local stress command adds five native
+The ordinary local command requires thirty-seven functional scenarios on each
+native/container target, seventy-four in total. CI retains that complete inventory
+across two disjoint case shards, running 19 and 18 selected scenarios on both targets. The explicit local stress command adds five native
 capacity/limit scenarios and their performance receipt. From this package, use
 `pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
 `--apfs --stress` combines the local capacity matrix with explicit APFS storage.
@@ -1876,7 +1884,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same seventy-two functional scenarios and
+macOS local acceptance runs the same seventy-four functional scenarios and
 additional combined authentication checks, with native filesystem coverage
 qualified by its recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
@@ -1893,7 +1901,7 @@ separate PostgreSQL container/volume and ephemeral loopback listener. In paralle
 the normal dev-ci runner builds and starts the actual production image. Browser
 execution overlaps the same selected functional scenarios in native and
 production-image stream-gateway targets. Local ordinary execution selects all
-thirty-six scenarios; each CI shard selects eighteen, and the final gate requires the complete disjoint union. Explicit local stress mode then runs five native
+thirty-seven scenarios; the CI shards select 19 and 18, and the final gate requires the complete disjoint union. Explicit local stress mode then runs five native
 capacity/limit scenarios. In
 that mode, the native process and PostgreSQL remain alive through capacity;
 other preparation commands and the complete container stack finish before it
@@ -2009,7 +2017,7 @@ records the original data-sharing, rendering and independent-reading proof choic
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate eleven-check receipt on each runtime target, alongside the
-72 ordinary Playwright cases or 77 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
+74 ordinary Playwright cases or 79 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
 independence, revocation, admitted upload, real socket interruption and normally
@@ -2115,8 +2123,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (72 ordinary cases; local stress adds five native cases
-for 41 native / 36 container, 77 total), current manual/periodic refresh,
+The selected inventory (74 ordinary cases; local stress adds five native cases
+for 42 native / 37 container, 79 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2133,6 +2141,7 @@ The [graph functional scenarios](tests/e2e/workflow.spec.ts),
 [platform journey](tests/e2e/task-platform.spec.ts),
 [standalone-detail journey](tests/e2e/task-detail-page.spec.ts),
 [project-settings journey](tests/e2e/project-settings.spec.ts),
+[project access withdrawal journey](tests/e2e/project-access-projections.spec.ts),
 [execution-time journey](tests/e2e/task-execution-time.spec.ts),
 [capacity scenarios](tests/e2e/capacity.spec.ts) and
 [acceptance runner](scripts/acceptance.mts) map to the
@@ -2170,6 +2179,7 @@ the remaining functional scenarios.
 | L2, L4–L5 | `language-state-preservation`: graph geometry/viewport, fullscreen and modal focus, PR page, file input and iframe identity; pending upload, overwrite and deletion execute once |
 | L3–L4, L6–L8 | `language-errors-and-narrow`: storage failures/retry, owned-database failure with current-language safe text and unchanged request ID, English/Chinese 1440px/320px graph/dialog/attachment layout |
 | L9–L10 | Task-attached offline mockup checks, typed catalog/component checks, and complete native/container production receipts with the existing coverage and cleanup gates |
+| Project access withdrawal | `project-access-projections`: real grant revocation and trusted 404 across same-account tabs, independent directory and Worker/configuration projections, delayed Worker response, invalidated count and authoritative reread, and access restoration |
 | Authentication | `auth-login-session`, `auth-project-isolation`, `auth-project-members`, `auth-personal-tokens`, `auth-invitations`, `auth-resource-session`: normal login/logout, private project access, roles and removal, PAT creation/revocation, explicit invitation acceptance, protected files and resource-session loss |
 
 Receipts live in `packages/daynight-web/.tmp/acceptance/<run-id>/`, with the
@@ -2206,9 +2216,9 @@ Full shard artifacts are `daynight-web-acceptance-1` and
 `daynight-web-acceptance-2`, separate from raw coverage and retained for 30 days.
 Inspect the artifact from the exact workflow run and tested checkout identity,
 which is normally a merge revision for PR runs. Complete ordinary validation
-requires thirty-six native and thirty-six container functional scenarios across
+requires thirty-seven native and thirty-seven container functional scenarios across
 the two CI shards or in one local run. Explicit local stress requires their
-strict native union with five capacity/limit scenarios and the same thirty-six
+strict native union with five capacity/limit scenarios and the same thirty-seven
 container scenarios. Every selected phase rejects missing, extra or duplicate
 scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source

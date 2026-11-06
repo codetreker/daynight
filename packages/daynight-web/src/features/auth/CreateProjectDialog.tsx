@@ -6,6 +6,7 @@ import { useI18n } from "../../i18n/LocaleProvider";
 import { LanguageSelector } from "../../i18n/LanguageSelector";
 import { useBodyScrollLock } from "../../app/useBodyScrollLock";
 import type { TaskCacheScope } from "../task-cache/project-cache";
+import { TaskCacheError } from "../task-cache/database";
 
 export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = true, admission, onIdentityMismatch, onClose, onCreated }: { readonly userId: string; readonly teamId?: string; readonly teamName?: string; readonly teamPersonal?: boolean; readonly admission?: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onClose: () => void; readonly onCreated: (project: Project) => void }) => {
   const targetTeamId = useRef(teamId).current;
@@ -14,6 +15,9 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   const dialog = useRef<HTMLDialogElement>(null);
   const name = useRef<HTMLInputElement>(null);
   const active = useRef<AbortController | null>(null);
+  const checkActive = useRef<AbortController | null>(null);
+  const checkSnapshot = useRef<ReadonlyMap<string, string> | null>(null);
+  const itemGenerations = useRef(new Map<string, ReadonlyMap<string, string>>());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [check, setCheck] = useState<{ status: "idle" | "loading" | "ready" | "error"; items: readonly Project[]; nextCursor: string | null; error: unknown }>({ status: "idle", items: [], nextCursor: null, error: null });
@@ -27,23 +31,50 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
     return () => { if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); };
   }, []);
   useEffect(() => () => active.current?.abort(), []);
+  useEffect(() => {
+    if (admission === undefined) return;
+    return admission.subscribeProjection((event) => {
+      if (!event.accessRevoked) return;
+      const observed = itemGenerations.current.get(event.projectId);
+      const remove = observed !== undefined && admission.projectionEventMatches(observed, event);
+      const cancel = !(event.error instanceof TaskCacheError) && checkActive.current !== null && admission.projectionEventMatches(checkSnapshot.current, event);
+      if (cancel) { checkActive.current?.abort(); if (active.current === checkActive.current) active.current = null; checkActive.current = null; checkSnapshot.current = null; }
+      if (remove || cancel || event.error instanceof TaskCacheError && admission.isProjectionDenied(event.projectId)) {
+        setCheck((previous) => ({ ...previous, items: remove ? previous.items.filter((item) => item.id !== event.projectId) : previous.items,
+          status: event.error instanceof TaskCacheError ? "error" : cancel ? "ready" : previous.status,
+          error: event.error instanceof TaskCacheError ? event.error : previous.error }));
+      }
+    });
+  }, [admission]);
   const checkProjects = (cursor: string | null) => {
     if (active.current !== null) return;
     const controller = new AbortController();
     const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal]);
     active.current = controller;
+    checkActive.current = controller;
+    checkSnapshot.current = null;
     setCheck((previous) => ({ status: "loading", items: cursor === null ? [] : previous.items, nextCursor: cursor, error: null }));
     void (async () => {
       try {
-        if (admission !== undefined) await admission.ready(signal);
+        const snapshot = admission === undefined ? new Map<string, string>() : await admission.prepareProjection(signal);
+        if (signal.aborted) return;
+        checkSnapshot.current = snapshot;
         const page = await listProjects({ limit: 50, ...(cursor === null ? {} : { cursor }), ...(targetTeamId === undefined ? {} : { teamId: targetTeamId }) }, signal, { userId, onPrincipalMismatch: onIdentityMismatch });
         if (admission !== undefined) await admission.ready(signal);
-        if (!signal.aborted) setCheck((previous) => ({ status: "ready", items: cursor === null ? page.items : [...previous.items, ...page.items], nextCursor: page.nextCursor, error: null }));
+        if (!signal.aborted) {
+          const visible = page.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
+          if (cursor === null) itemGenerations.current.clear();
+          for (const item of visible) if (!itemGenerations.current.has(item.id)) itemGenerations.current.set(item.id, snapshot);
+          setCheck((previous) => {
+            const failure = admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null);
+            return { status: failure === null ? "ready" : "error", items: cursor === null ? visible : [...previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true), ...visible], nextCursor: page.nextCursor, error: failure };
+          });
+        }
       } catch (cause) {
         if (signal.aborted || isAbortError(cause)) return;
         try { if (admission !== undefined) await admission.ready(signal); } catch { return; }
         if (!signal.aborted) setCheck((previous) => ({ ...previous, status: "error", error: cause }));
-      } finally { if (active.current === controller) active.current = null; }
+      } finally { if (active.current === controller) active.current = null; if (checkActive.current === controller) { checkActive.current = null; checkSnapshot.current = null; } }
     })();
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {

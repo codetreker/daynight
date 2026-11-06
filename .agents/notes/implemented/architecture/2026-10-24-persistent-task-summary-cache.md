@@ -96,8 +96,12 @@ records, replacing the published graph index or broadcasting. Ordinary hints
 carry scope/project and ask authorized receivers to reread committed stores
 without another network cycle. Access-negative hints instead carry user fence
 and revoked generation, withdraw matching reuse immediately before cleanup commits,
-and do not rebroadcast. A bound cold peer also records the denial; an old hint
-cannot replace a newer generation or pending denial. Neither hint grants access. Timestamp comparison preserves UTC seconds and all
+and do not rebroadcast. A bound cold peer records the denial when its durable generation still matches;
+independent projections also receive the hint and compare it with their own read
+generation, even if cleanup has already advanced the manifest. An old hint
+cannot replace a newer generation or pending denial. Neither hint grants access.
+The [projection withdrawal decision](2026-11-06-web-project-projection-withdrawal.md)
+owns directory and Worker consumers. Timestamp comparison preserves UTC seconds and all
 nine fractional digits. Task and settings versions remain bigint values.
 
 The [time-window API decision](2026-10-24-task-summary-window-api.md) owns server

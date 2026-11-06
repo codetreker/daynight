@@ -17,8 +17,10 @@ The authenticated workspace exposes peer My projects and My Workers navigation.
 `/workers` and `/workers/{workerId}` use page-local memory inside the existing
 user/generation lifetime. Their strict typed API admits the response principal
 before either success parsing or 404 handling. The existing TaskCacheScope
-provides only authentication lifetime, foreground readiness and identity-mismatch
-invalidation; Worker observations do not enter project storage or IndexedDB.
+provides authentication lifetime, foreground readiness, identity-mismatch
+invalidation and Project withdrawal generations; Worker observations do not enter
+project storage or IndexedDB. The [projection withdrawal decision](2026-11-06-web-project-projection-withdrawal.md)
+explains the independent read fences and affected task counts.
 Resource keys and cancellation include Worker ID as well as account lifetime.
 The [configuration editor](2026-11-04-web-worker-configuration-editor.md) uses a
 separate resource and draft owner on the same detail page; absence or expiry of
