@@ -61,3 +61,19 @@ func TestKnownFaultRejectsUnsafeJoinedTransaction(t *testing.T) {
 		t.Fatalf("lost completion facts: %#v", facts)
 	}
 }
+
+func TestKnownFaultSuppressesJoinedDatabaseFailure(t *testing.T) {
+	fault := &model.Fault{Code: "invalid_search_expression", Message: "invalid search"}
+	database := &store.Error{Phase: "query", SQLState: "XX000", DatabaseFailure: true, Cause: errors.New("private database details")}
+	for _, err := range []error{
+		errors.Join(fault, database),
+		&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: errors.Join(fault, database)},
+	} {
+		if got, ok := KnownFault(err); ok {
+			t.Fatalf("database failure exposed as business rejection: %#v", got)
+		}
+	}
+	if got, ok := KnownFault(fault); !ok || got.Code != "invalid_search_expression" {
+		t.Fatalf("valid search refusal lost: %#v %v", got, ok)
+	}
+}

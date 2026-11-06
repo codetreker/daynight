@@ -55,6 +55,14 @@ SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](.
 
 已知非零迁移保留业务记录及原有转换语义。Web 版本 1→2 在 SQL 中移除重复的 cleanup 操作回执和资源完成字段，当前 parser 读取迁移后的清理意图，不在运行时代码兼容旧字段。Web 2→3 只新增 orchestration_blockers 表，不改写原执行 JSON；旧版本受版本守卫保护而拒绝新库。其他 Web 字段保留原有解析语义；未来收紧字段仍需新增版本转换。Journal 的非零升级保留原有 JSON 字符串、序列、ACK、原生身份和 BLOB，不把原类型断言当成已经增加全面运行时校验。
 
+## 连接来源与所有权
+
+`SqliteDatabaseSource` 接受绝对文件路径或已经打开的原生 `Database.Database`。生产入口继续提供文件路径，按 `allowCreate` 打开文件并保留 WAL、FULL 同步、缺失判定和维护锁行为。显式提供连接时，访问层复用该连接并通过 SQLite 的 `memory` 属性选择真实 journal mode：内存连接使用 MEMORY，文件连接仍要求 WAL；两者都执行相同的格式检查、迁移、业务准入和同步 startup 事务。迁移事件及错误使用连接的 `name` 标识来源，内存连接显示为 `:memory:`。
+
+可写 opener 接管提供的连接；返回的 store 负责关闭，初始化失败按实际事务和关闭结果报告。只读入口借用连接，调用方继续负责迁移互斥与最终关闭。借用读取暂时启用 `query_only`，在同一个 DEFERRED 事务中检查格式并查询，随后恢复原设置；需要升级时在该连接上完成转换后再读。这个入口不检查文件缺失或申请文件系统维护 permit，失败也不代替连接所有者关闭数据库。文件路径入口继续采用下面的独立只读连接与维护重开流程。
+
+Controller 的文件路径还标识独立的待归档正文目录，因此保留 `file` 参数，并通过 options 中的 `database` 接收显式连接。内存连接不对数据库文件执行 chmod；ticket/generation 校验、writer 认领和待归档正文核对仍处于原来的 startup 事务。Git、IPC 和正文文件各自保留真实资源生命周期。
+
 ## 事务与业务启动
 
 `inspectSqlite` 不修改数据库；`upgradeSqlite` 要求已有 immediate 写事务，并在事务内重新检查来源，不接受等待写锁之前缓存的迁移计划。版本 0 在业务准入后重置用户 schema，再执行基线与全部后续迁移、验证目标并推进 `user_version`。非零受支持版本只执行未完成步骤。
@@ -63,7 +71,7 @@ SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](.
 
 Controller 的升级和原 ticket/generation 校验、writer 认领位于同一外层事务；纯升级不运行这些业务步骤。Lease 的建库/迁移、查重和首个 INSERT 同样在一笔事务内。原有异步的文件、账号和进程证明准备留在事务外，最终事务重查稳定身份与格式。
 
-可写连接先在一个短 DEFERRED 读取事务内完成整个来源初检，使 user_version 和所有非零来源结构读取属于同一快照。版本 0 只识别重置，不执行历史 schema 或 JSON 来源验证。该读取事务结束后，才配置现有 writer 所需的 WAL/FULL；随后取得 IMMEDIATE 写事务并重新检查版本、结构及所需外键模式，不把初检结果当成迁移依据。如果并发 writer 已使来源改变、所需外键模式与连接不符，先结束这笔尚未运行准入或 startup 的纯读取事务，在事务外重配后重入；至多一次交接，再次模式变化明确失败。只有模式匹配才运行准入和迁移。这样并发连接提交升级时，初检仍看到完整的旧格式，后续写事务则使用实际已提交格式。事务原子性覆盖结构、记录和版本，不承诺 journal mode 或数据库/WAL 文件逐字节回到打开前。SQLite 的单 writer 和事务语义见[官方事务说明](https://sqlite.org/lang_transaction.html)；同步 callback 的约束见 [better-sqlite3 API](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/docs/api.md)。
+可写连接先在一个短 DEFERRED 读取事务内完成整个来源初检，使 user_version 和所有非零来源结构读取属于同一快照。版本 0 只识别重置，不执行历史 schema 或 JSON 来源验证。该读取事务结束后，才配置 writer 所需的 journal mode 和 FULL 同步；文件连接使用 WAL，显式内存连接使用 MEMORY；随后取得 IMMEDIATE 写事务并重新检查版本、结构及所需外键模式，不把初检结果当成迁移依据。如果并发 writer 已使来源改变、所需外键模式与连接不符，先结束这笔尚未运行准入或 startup 的纯读取事务，在事务外重配后重入；至多一次交接，再次模式变化明确失败。只有模式匹配才运行准入和迁移。这样并发连接提交升级时，初检仍看到完整的旧格式，后续写事务则使用实际已提交格式。事务原子性覆盖结构、记录和版本，不承诺 journal mode 或数据库/WAL 文件逐字节回到打开前。SQLite 的单 writer 和事务语义见[官方事务说明](https://sqlite.org/lang_transaction.html)；同步 callback 的约束见 [better-sqlite3 API](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/docs/api.md)。
 
 ## 查询与维护连接
 
@@ -106,6 +114,6 @@ Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版�
 
 首次切换需退出完全没有格式检查的旧 Worker、Review、独立 launcher、Controller 和 resume 父进程，保留未知归属。新代码无法使旧二进制遵守格式 guard；不承诺与这些旧版本混跑或自动降级。
 
-来源 fixture 独立于当前 opener。真实 SQLite 验证各库新建、空版本 0、任意版本 0 schema 与坏 JSON 重置、非零旧格式行/JSON/BLOB 保留，以及 DDL 和版本回滚；重置覆盖外键、trigger、view、虚拟表及其 shadow 表。独立进程验证并发与中断后重新读取。当前格式 WAL 快照、旧锁保留、lease 阻塞、提交/关闭双失败、IPC catch 与本地停止各有行为断言。SQLite 转换不替换原库文件、不删除 WAL/SHM、不创建跨库分布式事务或后台迁移任务。
+来源 fixture 独立于当前 opener。业务单测在独立的真实内存 SQLite 中验证建库、迁移、约束、状态转换和事务回滚。文件集成测试验证各库新建、空版本 0、任意版本 0 schema 与坏 JSON 重置、非零旧格式行/JSON/BLOB 保留，以及 DDL 和版本回滚；重置覆盖外键、trigger、view、虚拟表及其 shadow 表。独立进程验证并发与中断后重新读取。两类测试都进入常规 `pnpm test`，不通过缩小发现范围替代迁移。当前格式 WAL 快照、旧锁保留、lease 阻塞、提交/关闭双失败、IPC catch 与本地停止各有行为断言。SQLite 转换不替换原库文件、不删除 WAL/SHM、不创建跨库分布式事务或后台迁移任务。
 
-版本 0 重置、独立版本、事务、所有权和 SQL 资源打包的决策依据及备选方案由[升级决策](../../.agents/notes/implemented/architecture/2026-10-30-cli-sqlite-migrations.md)拥有。
+内存单测与文件集成的取舍见[测试存储决策](../../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)。版本 0 重置、独立版本、事务、所有权和 SQL 资源打包的决策依据及备选方案由[升级决策](../../.agents/notes/implemented/architecture/2026-10-30-cli-sqlite-migrations.md)拥有。

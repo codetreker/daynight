@@ -70,12 +70,16 @@ reset. Web version 2 removes obsolete cleanup JSON fields in its SQL migration;
 current CRUD reads the resulting intent representation without old-field fallbacks.
 
 Version and nonzero source-structure inspection share one snapshot, including a
-writable opener's short preflight before WAL/FULL configuration. The IMMEDIATE
-write transaction inspects the actual source again. Current-format queries
-inspect and read business data in one readonly snapshot without a migration
-permit or additional write permission. A query needing reset or upgrade closes
-that snapshot, performs admitted maintenance and reopens a current-format
-snapshot. Missing-file meanings remain entrypoint-specific; other open failures
+writable opener's short preflight before journal-mode and FULL configuration.
+Production file sources require WAL. Explicit native memory connections use
+MEMORY journaling with the same conversion and startup transactions; the
+[memory-test decision](../testing/2026-11-06-cli-memory-sqlite-tests.md) owns their
+connection lifetimes and test selection. The IMMEDIATE write transaction inspects
+the actual source again. Current-format file queries inspect and read business
+data in one readonly snapshot without a migration permit or additional write
+permission. A file query needing reset or upgrade closes that snapshot, performs
+admitted maintenance and reopens a current-format snapshot. Missing-file meanings
+remain entrypoint-specific; other open failures
 remain visible. The [requirements](../../../../docs/spec/cli-sqlite-migrations.md)
 and [design](../../../../docs/design/cli-sqlite-migrations.md) own the complete
 access and refusal contracts.

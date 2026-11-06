@@ -2,7 +2,7 @@ package team_test
 
 import (
 	"context"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"testing"
@@ -30,7 +30,7 @@ func (action taskQueryAction) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ 
 	}
 }
 
-func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *store.Store {
+func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *postgres.Store {
 	t.Helper()
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -42,5 +42,5 @@ func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *stor
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return &store.Store{Pool: pool}
+	return &postgres.Store{Pool: pool}
 }

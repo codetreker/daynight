@@ -56,15 +56,15 @@ Tasks 服务和 taskHandler 复用既有项目读取组合，专用 core/API 条
 
 HTTP 以局部 query 解析只允许重复 userId，不放宽共用 queryValues 的单值规则。省略参数是完整目录；明确的限定模式先校验非空、最多 100 个互异规范 UUID。service 同样验证直接调用，避免空数组被当作完整模式。两个模式均在一次 ReadSnapshot 内先 RequireProjectRead，再读资格和资料。
 
-store/project_access.go 拥有单主体准入和批量查询共用的 projectAccessRelation；当前关系合并 owner Team 成员与 direct grant，为每个 project/user 返回最大有效角色及原始用户 ID。负责人目录、限定解析和 hasProjectAccess 复用该关系，不另写 direct 资格 SQL；用户资料由各自读取路径单独投影。
+store/postgres/internal/project_access.go 拥有单主体准入和批量查询共用的 ProjectAccessRelation；当前关系合并 owner Team 成员与 direct grant，为每个 project/user 返回最大有效角色及原始用户 ID。负责人目录、限定解析和 hasProjectAccess 复用该关系，不另写 direct 资格 SQL；用户资料由各自读取路径单独投影。
 
 ### 完整目录
 
-从 projectAccessRelation 的原始 user_id 与当前项目未软删除 tasks 的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，只有软删除任务的引用不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
+从 ProjectAccessRelation 的原始 user_id 与当前项目未软删除 tasks 的 DISTINCT assigned_to 做 UNION，再 LEFT JOIN users，并读取原始候选 ID 与 nullable users.id。这样仍有原始关联但用户行缺失时可以报告完整性错误，不会被 INNER JOIN 静默删去。访问关系存在性给出 hasProjectAccess；失权但仍被任务引用的人保留为 false，只有软删除任务的引用不保留资格。结果按 UUID 排序，unresolvedUserIds 为空。
 
 ### 限定解析
 
-从最多 100 项的 unnest(requested UUID array) 出发，将项目和请求用户 ID 限定到 projectAccessRelation，并以项目内 assigned_to 索引的 LATERAL LIMIT 1 探测保留资格，再按资格 LEFT JOIN users。两种来源分别按 Team member 与 grant 的原生主键探测。限定模式不先枚举全项目负责人，工作集合只来自请求 ID；未请求的坏用户引用不影响本次解析。
+从最多 100 项的 unnest(requested UUID array) 出发，将项目和请求用户 ID 限定到 ProjectAccessRelation，并以项目内 assigned_to 索引的 LATERAL LIMIT 1 探测保留资格，再按资格 LEFT JOIN users。两种来源分别按 Team member 与 grant 的原生主键探测。限定模式不先枚举全项目负责人，工作集合只来自请求 ID；未请求的坏用户引用不影响本次解析。
 
 | 资格与资料 | 组装结果 |
 |---|---|

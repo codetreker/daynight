@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment/migration"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
 func TestMigrationCommandRejectsInvalidArgumentsBeforeConfiguration(t *testing.T) {
@@ -71,7 +71,7 @@ func (writer attachmentMigrationOutputFailure) Write([]byte) (int, error) { retu
 
 func TestMigrationCommandOutputFailurePreservesResumableOperation(t *testing.T) {
 	values := processAPIEnvironment(t)
-	database, err := store.Open(context.Background(), values["DAYNIGHT_DATABASE_URL"])
+	database, err := postgres.Open(context.Background(), values["DAYNIGHT_DATABASE_URL"])
 	if err != nil {
 		t.Fatal(err)
 	}

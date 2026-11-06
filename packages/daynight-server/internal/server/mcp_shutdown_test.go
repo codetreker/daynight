@@ -15,6 +15,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -105,7 +106,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	}
 	probe, stopProbe := context.WithTimeout(context.Background(), time.Second)
 	defer stopProbe()
-	if err := runtime.Store.Pool.Ping(probe); err != nil {
+	if err := runtime.Store.(*postgres.Store).Pool.Ping(probe); err != nil {
 		t.Fatalf("database closed while MCP work remained active: %v", err)
 	}
 	if _, err := runtime.Files.Put(probe, "runtime", "shutdown.txt", strings.NewReader("active")); err != nil {
@@ -142,7 +143,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 		}
 		engineClosed := operationErr != nil
 		probe, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		databaseClosed := errors.Is(runtime.Store.Pool.Ping(probe), puddle.ErrClosedPool)
+		databaseClosed := errors.Is(runtime.Store.(*postgres.Store).Pool.Ping(probe), puddle.ErrClosedPool)
 		object, openErr := runtime.Files.Open(probe, "runtime", "shutdown.txt")
 		if openErr == nil {
 			_ = object.Body.Close()
@@ -178,7 +179,7 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", endpoint)
 		mux.HandleFunc("/wait", func(w http.ResponseWriter, r *http.Request) {
-			_, err := deps.Store.Pool.Exec(r.Context(), query)
+			_, err := deps.Store.(*postgres.Store).Pool.Exec(r.Context(), query)
 			queryDone <- err
 		})
 		return &sessionApplication{Handler: mux, relay: relay, engine: engine, mcp: endpoint}, nil

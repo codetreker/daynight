@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -63,14 +64,13 @@ func TestTaskSearchProjectAccessUsesSnapshot(t *testing.T) {
 func TestTaskSearchRejectsInvalidDAOInputs(t *testing.T) {
 	valid := &query.Node{Kind: query.Leaf, Atom: query.Atom{Field: query.AnyField, Term: "word"}}
 	invalid := []*query.Node{nil, {Kind: query.Leaf}, {Kind: query.Leaf, Atom: query.Atom{Field: query.Field(255), Term: "word"}}, {Kind: query.Kind(255)}, {Kind: query.And, Left: nil, Right: valid}, {Kind: query.Or, Left: valid, Right: nil}}
-	for _, node := range invalid {
-		c := sqlCompiler{atoms: make(map[atomKey]int)}
-		if c.collect(node) == nil {
-			t.Fatalf("accepted invalid expression: %+v", node)
-		}
-	}
 	db := searchTestStore(t)
 	err := NewTaskSearch(db.Pool).ReadTaskSearch(context.Background(), func(s store.TaskSearchSnapshot) error {
+		for _, node := range invalid {
+			if _, err := s.Matches(context.Background(), uuid.NewString(), store.TaskSearchQuery{Expression: node, Limit: 1}); err == nil {
+				t.Fatalf("accepted invalid expression: %+v", node)
+			}
+		}
 		for _, input := range []store.TaskSearchQuery{{Expression: valid, Limit: 0}, {Expression: valid, Limit: 101}, {Expression: valid, Limit: 1, AssignedTo: model.TaskAssignmentFilter{Mode: "invalid"}}} {
 			if _, err := s.Matches(context.Background(), uuid.NewString(), input); err == nil {
 				t.Errorf("accepted invalid query %+v", input)
@@ -147,8 +147,8 @@ func TestTaskSearchReadFailuresDoNotBecomeResults(t *testing.T) {
 		{"titles query", 1, false, false, true}, {"titles scan", 1, true, false, true}, {"titles iteration", 1, false, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := store.ReadOnlySnapshot(ctx, db.Pool, func(tx pgx.Tx) error {
-				s := &taskSearchSnapshot{tx: &faultQueryTx{Tx: tx, failAt: test.failAt, scan: test.scan, iteration: test.iteration}}
+			err := ReadOnlySnapshot(ctx, db.Pool, func(tx pgx.Tx) error {
+				s := task.NewSearchSnapshot(&faultQueryTx{Tx: tx, failAt: test.failAt, scan: test.scan, iteration: test.iteration})
 				var err error
 				if test.titles {
 					_, err = s.Titles(ctx, project, []string{a})

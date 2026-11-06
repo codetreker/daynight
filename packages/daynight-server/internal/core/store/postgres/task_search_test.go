@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func searchTestStore(t *testing.T) *store.Store {
+func searchTestStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()
 	raw := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
@@ -47,7 +47,7 @@ func searchTestStore(t *testing.T) *store.Store {
 	values := u.Query()
 	values.Set("search_path", schema)
 	u.RawQuery = values.Encode()
-	db, err := store.Open(ctx, u.String())
+	db, err := Open(ctx, u.String())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
@@ -39,12 +38,8 @@ type Application struct {
 	Sessions     *session.Service
 }
 
-func New(database *store.Store, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration) *Application {
+func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration) *Application {
 	engine := sessioncore.NewEngine(files)
-	var mutations store.AttachmentMutationWriter
-	if database != nil {
-		mutations = attachmentpostgres.New(database.Pool)
-	}
 	return &Application{
 		Identity:     identity.New(database, client, callbackURL),
 		Memberships:  project.NewMemberships(database),
@@ -54,11 +49,11 @@ func New(database *store.Store, files filestorage.Storage, client *uniauth.Clien
 		Bots:         bot.New(database),
 		BotDeletions: bot.NewDeletions(database, files, engine),
 		Tasks:        task.NewTasks(database),
-		TaskSearch:   task.NewTaskSearch(database),
+		TaskSearch:   database,
 		TaskSteps:    task.NewTaskSteps(database),
 		TaskThreads:  task.NewTaskThreads(database),
 		TaskSync:     task.NewTaskSync(database, overlap),
-		Attachments:  attachment.NewAttachments(database, mutations, files),
+		Attachments:  attachment.NewAttachments(database, database, files),
 		Engine:       engine,
 		Sessions:     session.New(database, engine),
 	}

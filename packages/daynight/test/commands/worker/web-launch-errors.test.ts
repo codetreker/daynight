@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -16,7 +17,7 @@ afterEach(async () => { vi.restoreAllMocks(); vi.clearAllMocks(); for (const sto
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/web-launch-errors"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
-  const store = openWebExecutionStore(path.join(home, "state.sqlite"), { onMigration: () => {} }); stores.push(store);
+  const store = openWebExecutionStore(createMemoryDatabase(), { onMigration: () => {} }); stores.push(store);
   const project = { serverOrigin: "https://daynight.example", projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
   let task = store.register({ ...project, project, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
   task = store.bindWorktree(task, { repositoryPath: home, commonDirectory: home, worktreePath: home, branch: "task" }, 2); task = store.initializeWebExecution(task, 3);

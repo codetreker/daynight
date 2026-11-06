@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/google/uuid"
@@ -118,7 +118,7 @@ func TestTerminalCapabilitiesAreExplicit(t *testing.T) {
 type terminalHTTPFixture struct {
 	h       *resourceTestHandler
 	app     sessionApplication
-	db      *store.Store
+	db      *postgres.Store
 	server  *httptest.Server
 	base    string
 	message v2.Message

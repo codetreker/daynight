@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -11,7 +12,7 @@ afterEach(()=>{for(const cleanup of cleanups.splice(0).reverse())cleanup();vi.un
 const fixture=()=>{
  const root=path.resolve(import.meta.dirname,"../../../../../.tmp/t15/delete-tests");mkdirSync(root,{recursive:true});
  const home=mkdtempSync(path.join(root,"h-"));cleanups.push(()=>rmSync(home,{recursive:true,force:true}));vi.stubEnv("DN_CONFIG_DIR",path.join(home,"state"));
- const store=openBotStore(path.join(home,"worker.sqlite"),{onMigration:()=>{}}),executions=openBotExecutionStore(path.join(home,"worker.sqlite"),{onMigration:()=>{}});cleanups.push(()=>store.close(),()=>executions.close());
+ const database=createMemoryDatabase(),store=openBotStore(database,{onMigration:()=>{}}),executions=openBotExecutionStore(database,{onMigration:()=>{}});cleanups.push(()=>store.close(),()=>executions.close());
  const owner={serverOrigin:"https://daynight.example",ownerUserId:id(1),workerId:id(2)};
  const bot:Bot={id:id(3),workerId:owner.workerId,ownerUserId:owner.ownerUserId,version:"1",name:"Bot",creationOrder:"1",requestedOverrides:{},resolvedConfiguration:{workerId:owner.workerId,cwd:home,provider:"codex",model:null,args:[]},roleConfiguration:null,sessionId:null,testExecutionId:null,startupResult:{state:"pending",code:null},deletion:null,createdAt:"2026-11-05T00:00:00Z",updatedAt:"2026-11-05T00:00:00Z"};
  store.observe(owner,bot,1);store.prepare(owner,bot.id,{homeDirectory:home,recoveryLimit:3});

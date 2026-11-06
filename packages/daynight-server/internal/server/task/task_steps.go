@@ -20,7 +20,6 @@ import (
 	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type taskStepsHandler struct {
@@ -258,10 +257,9 @@ func writeStepsError(w http.ResponseWriter, request *http.Request, logger *slog.
 			cause = "internal"
 		}
 	}
-	sqlstate := ""
-	var databaseError *pgconn.PgError
-	if errors.As(err, &databaseError) && validSQLState(databaseError.Code) {
-		sqlstate = databaseError.Code
+	_, sqlstate := store.DatabaseErrorFacts(err)
+	if !validSQLState(sqlstate) {
+		sqlstate = ""
 	}
 	logger.ErrorContext(request.Context(), "task steps operation failed", "type", "operation_error", "component", "task_step", "phase", phase, "cause", cause, "error_code", response.Code, "diagnostic", stepsDiagnostic(response.Code), "sqlstate", sqlstate, "request_id", httpx.RequestID(request.Context()))
 	response.RequestID = httpx.RequestID(request.Context())

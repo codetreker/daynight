@@ -87,7 +87,7 @@ func acceptsErrorEnvelope(value any) bool {
 	if json.Unmarshal(raw, &root) != nil || root == nil || !onlySchemaKeys(root, "type", "properties", "required", "additionalProperties", "oneOf") {
 		return false
 	}
-	if typ, ok := root["type"]; ok && typ != "object" {
+	if root["type"] != "object" {
 		return false
 	}
 	if !requiredSubset(root["required"], "error") {

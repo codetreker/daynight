@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func TestSchemaCompilationFailures(t *testing.T) {
@@ -140,5 +142,53 @@ func TestMCPResponseWriterSupportsResponseController(t *testing.T) {
 	}
 	if !recorder.Flushed || recorder.Body.String() != "body" || !strings.EqualFold(recorder.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("response controller did not reach underlying writer: %#v", recorder)
+	}
+}
+
+// Output discovery requires the schema's root type even when the schema would
+// otherwise accept an error object under JSON Schema validation.
+func TestMCPDiscoveryRejectsOutputWithoutObjectType(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	e := additionalEntry(t, logger)
+	handler := func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		return ToolResult{Data: map[string]any{"ok": true}}, nil
+	}
+	for _, tc := range []struct {
+		name   string
+		output any
+	}{
+		{"empty", map[string]any{}},
+		{"properties_only", map[string]any{"properties": map[string]any{"error": map[string]any{"type": "object"}}}},
+		{"wrong_type", map[string]any{"type": "string"}},
+	} {
+		if err := e.RegisterTool(simpleTestTool(tc.name, testObjectSchema(), tc.output), BudgetControl, handler); err == nil {
+			t.Fatalf("registered %s with invalid output schema", tc.name)
+		}
+	}
+	if err := e.RegisterTool(simpleTestTool("valid", testObjectSchema(), testObjectSchema()), BudgetControl, handler); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpx.RequestLogging(logger, e))
+	t.Cleanup(server.Close)
+	fixture := &entryFixture{entry: e, server: server}
+	client := fixture.client(t, "2026-07-28", "alice")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	list, err := client.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Tools) != 1 || list.Tools[0].Name != "valid" {
+		t.Fatalf("unexpected discovery: %#v", list.Tools)
+	}
+	data, err := json.Marshal(list.Tools[0].OutputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &output); err != nil || output.Type != "object" {
+		t.Fatalf("output schema %s: %v", data, err)
 	}
 }

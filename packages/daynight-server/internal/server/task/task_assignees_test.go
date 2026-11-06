@@ -16,7 +16,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
@@ -37,7 +37,7 @@ func taskAssigneesPath(projectID string) string {
 	return "/api/v1/projects/" + projectID + "/task-assignees"
 }
 
-func assigneeHTTPIdentity(t *testing.T, database *store.Store, handler *resourceTestHandler, userID string) *resourceTestHandler {
+func assigneeHTTPIdentity(t *testing.T, database *postgres.Store, handler *resourceTestHandler, userID string) *resourceTestHandler {
 	t.Helper()
 	entropy := sha256.Sum256([]byte(userID + uuid.NewString()))
 	token := "dnpat_" + base64.RawURLEncoding.EncodeToString(entropy[:])
@@ -122,7 +122,7 @@ func assigneeHTTPEntries(t *testing.T, actual assigneeHTTPResult, expected map[s
 	return result
 }
 
-func taskAssigneeHTTPFacts(t *testing.T, database *store.Store, projectID string) string {
+func taskAssigneeHTTPFacts(t *testing.T, database *postgres.Store, projectID string) string {
 	t.Helper()
 	var facts string
 	if err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_agg(to_jsonb(t) ORDER BY id)::text FROM tasks t WHERE project_id=$1`, projectID).Scan(&facts); err != nil {

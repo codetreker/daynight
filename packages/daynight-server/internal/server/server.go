@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
 )
 
@@ -72,7 +71,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
 	relay.RegisterRoutes(mux)
-	healthRoutes(mux, dependencies.Store, logger)
+	healthRoutes(mux, dependencies.Ready, logger)
 	web := webhttp.New(webresources.New())
 	web.RegisterRoutes(mux, logger)
 	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
@@ -104,7 +103,7 @@ func (a *sessionApplication) Shutdown(ctx context.Context) error {
 	return errors.Join(a.relay.Shutdown(ctx), a.engine.Stop(ctx))
 }
 
-func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger) {
+func healthRoutes(mux *http.ServeMux, readiness func(context.Context) error, logger *slog.Logger) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteJSON(w, request, logger, http.StatusOK, struct {
@@ -115,7 +114,13 @@ func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger
 		w.Header().Set("Cache-Control", "no-store")
 		ready, cancel := context.WithTimeout(request.Context(), 2*time.Second)
 		defer cancel()
-		if err := database.Pool.Ping(ready); err != nil {
+		var err error
+		if readiness == nil {
+			err = errors.New("readiness is unavailable")
+		} else {
+			err = readiness(ready)
+		}
+		if err != nil {
 			httpx.LogFailure(logger, request.Context(), "health", "ready", err)
 			httpx.WriteJSON(w, request, logger, http.StatusServiceUnavailable, api.ErrorResponse{Error: api.Error{Code: "service_unavailable", Message: "Service is not ready.", RequestID: httpx.RequestID(request.Context())}})
 			return

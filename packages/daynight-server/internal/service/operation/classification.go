@@ -9,6 +9,9 @@ import (
 )
 
 func KnownFault(err error) (*model.Fault, bool) {
+	if failed, _ := store.DatabaseErrorFacts(err); failed {
+		return nil, false
+	}
 	unsafe := false
 	var visit func(error)
 	visit = func(current error) {

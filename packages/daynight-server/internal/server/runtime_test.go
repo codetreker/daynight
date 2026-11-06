@@ -16,6 +16,7 @@ import (
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -167,7 +168,7 @@ func TestGracefulDrainPreservesActiveRequestsAndReleasesResources(t *testing.T) 
 				canceled <- true
 			case <-release:
 				canceled <- false
-				if err := dependencies.Store.Pool.Ping(r.Context()); err != nil {
+				if err := dependencies.Ready(r.Context()); err != nil {
 					t.Error(err)
 				}
 				if _, err := dependencies.Files.Put(r.Context(), "runtime", "active.txt", strings.NewReader("complete")); err != nil {
@@ -214,7 +215,7 @@ func TestGracefulDrainPreservesActiveRequestsAndReleasesResources(t *testing.T) 
 	if err := await(t, result); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.Store.Pool.Acquire(context.Background()); err == nil {
+	if _, err := runtime.Store.(*postgres.Store).Pool.Acquire(context.Background()); err == nil {
 		t.Fatal("database pool remained open")
 	}
 	if object, err := runtime.Files.Open(context.Background(), "runtime", "active.txt"); err == nil {
@@ -235,7 +236,7 @@ func TestForcedDrainCancelsDatabaseWork(t *testing.T) {
 	queryResult := make(chan error, 1)
 	runtime, err := Start(context.Background(), config, testLogger(), func(dependencies Dependencies) (http.Handler, error) {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			connection, err := dependencies.Store.Pool.Acquire(r.Context())
+			connection, err := dependencies.Store.(*postgres.Store).Pool.Acquire(r.Context())
 			if err != nil {
 				queryResult <- err
 				return
@@ -290,7 +291,7 @@ func TestClientCancellationReachesDatabase(t *testing.T) {
 	queryResult := make(chan error, 1)
 	runtime, err := Start(context.Background(), config, testLogger(), func(dependencies Dependencies) (http.Handler, error) {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, err := dependencies.Store.Pool.Exec(r.Context(), query)
+			_, err := dependencies.Store.(*postgres.Store).Pool.Exec(r.Context(), query)
 			queryResult <- err
 		}), nil
 	})
@@ -328,7 +329,7 @@ func TestClientCancellationReachesDatabase(t *testing.T) {
 	if err := await(t, queryResult); !errors.Is(err, context.Canceled) {
 		t.Fatalf("query cancellation failed: %v", err)
 	}
-	if err := runtime.Store.Pool.Ping(context.Background()); err != nil {
+	if err := runtime.Ready(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	stop()
@@ -355,7 +356,7 @@ func TestServeFailureAndAlreadyClosed(t *testing.T) {
 		if !closed && !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("unexpected serve failure: %v", err)
 		}
-		if _, err := runtime.Store.Pool.Acquire(context.Background()); err == nil {
+		if _, err := runtime.Store.(*postgres.Store).Pool.Acquire(context.Background()); err == nil {
 			t.Fatal("failed server leaked pool")
 		}
 	}
@@ -388,7 +389,7 @@ func TestCompositionFailureReleasesOpenedResources(t *testing.T) {
 		if !errors.As(err, &failure) || failure.Phase != "composition" || !missingHandler && !errors.Is(err, cause) {
 			t.Fatalf("composition failure lost phase/cause: %v", err)
 		}
-		if _, err := opened.Store.Pool.Acquire(context.Background()); err == nil {
+		if _, err := opened.Store.(*postgres.Store).Pool.Acquire(context.Background()); err == nil {
 			t.Fatal("composition failure retained database pool")
 		}
 		if object, err := opened.Files.Open(context.Background(), "runtime", "composition.txt"); err == nil {

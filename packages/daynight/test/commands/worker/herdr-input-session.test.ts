@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -271,7 +272,7 @@ test.each(["readiness", "cancel", "written"] as const)("publishes the durable in
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, "publication-"));
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
-  const store = openHerdrInputStore(path.join(directory, "input.sqlite"), { onMigration: () => {} });
+  const store = openHerdrInputStore(createMemoryDatabase(), { onMigration: () => {} });
   cleanup.push(() => store.close());
   const target = { sessionId: f.record.sessionId, claimId: f.record.claimId, executionGeneration: "1", connectionEpoch: "1", segmentId: f.record.segments[0]!.segmentId, binding: f.registration.payload.binding };
   store.bind(target);
