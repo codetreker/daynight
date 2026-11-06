@@ -88,13 +88,6 @@ func TestDAOFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 		{"grant insert", []databaseStep{fail}, func(d *DAO) error { return d.IssueFamily(ctx, issue) }},
 		{"access insert", []databaseStep{ok, fail}, func(d *DAO) error { return d.IssueFamily(ctx, issue) }},
 		{"refresh insert", []databaseStep{ok, ok, fail}, func(d *DAO) error { return d.IssueFamily(ctx, issue) }},
-		{"authorization cleanup lock", []databaseStep{fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
-		{"authorization cleanup cursor read", []databaseStep{ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
-		{"authorization cleanup cursor write", []databaseStep{ok, {values: []any{0}}, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
-		{"authorization cleanup first quota", []databaseStep{ok, {values: []any{0}}, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
-		{"authorization cleanup second quota", []databaseStep{ok, {values: []any{0}}, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
-		{"authorization cleanup first spare", []databaseStep{ok, {values: []any{0}}, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
-		{"authorization cleanup second spare", []databaseStep{ok, {values: []any{0}}, ok, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
 		{"refresh lookup", []databaseStep{fail}, func(d *DAO) error { _, err := d.Refresh(ctx, nil, false); return err }},
 		{"access grant lookup", []databaseStep{fail}, func(d *DAO) error { _, err := d.AccessGrant(ctx, nil); return err }},
 		{"owner grants query", []databaseStep{fail}, func(d *DAO) error { _, err := d.OwnerGrants(ctx, "user"); return err }},
@@ -160,9 +153,11 @@ func TestAuthorizationFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 		{"authorization read", []databaseStep{fail}, func(d *DAO) error { _, err := d.Authorization(ctx, "id", true); return err }},
 		{"code read", []databaseStep{fail}, func(d *DAO) error { _, err := d.AuthorizationByCode(ctx, nil, true); return err }},
 		{"update", []databaseStep{fail}, func(d *DAO) error { return d.UpdateAuthorization(ctx, record) }},
-		{"prune lock", []databaseStep{fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
-		{"prune expire", []databaseStep{ok, zero, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
-		{"prune delete", []databaseStep{ok, {values: []any{1}}, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
+		{"prune lock", []databaseStep{fail}, func(d *DAO) error { return d.LockAuthorizationCapacity(ctx) }},
+		{"prune candidates", []databaseStep{fail}, func(d *DAO) error { _, err := d.ExpiredAuthorizations(ctx, now, 1); return err }},
+		{"prune delete", []databaseStep{fail}, func(d *DAO) error { _, err := d.DeleteRetainedAuthorizations(ctx, now, 1); return err }},
+		{"prune cursor read", []databaseStep{fail}, func(d *DAO) error { _, err := d.AuthorizationCleanupCursor(ctx); return err }},
+		{"prune cursor update", []databaseStep{fail}, func(d *DAO) error { return d.SetAuthorizationCleanupCursor(ctx, 1) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := &failingTx{steps: append([]databaseStep(nil), tc.steps...)}

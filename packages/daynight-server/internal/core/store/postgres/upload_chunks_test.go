@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -20,7 +21,7 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 	r := transferRecord(uuid.NewString(), time.Now().UTC())
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, _, e = d.Create(ctx, r)
+		r, _, e = transfer.Create(ctx, d, r)
 		return e
 	})
 	if err != nil {
@@ -28,7 +29,7 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 	}
 	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
 		var e error
-		r, e = d.Reserve(ctx, r.ID, 10, 100)
+		r, e = transfer.Reserve(ctx, d, r.ID, 10, 100)
 		return e
 	})
 	if err != nil {
@@ -40,7 +41,7 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 		if e := d.InsertUploadChunk(ctx, chunk); e != nil {
 			return e
 		}
-		if _, e := d.ConsumeReservation(ctx, r.ID, chunk.Size, r.Version); e != nil {
+		if _, e := transfer.ConsumeReservation(ctx, d, r.ID, chunk.Size, r.Version); e != nil {
 			return e
 		}
 		return rollback
@@ -62,12 +63,12 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 		if e = d.InsertUploadChunk(ctx, chunk); e != nil {
 			return e
 		}
-		current, e = d.ConsumeReservation(ctx, r.ID, chunk.Size, current.Version)
+		current, e = transfer.ConsumeReservation(ctx, d, r.ID, chunk.Size, current.Version)
 		if e != nil {
 			return e
 		}
 		current.Data = []byte(`{"nextOffset":"10"}`)
-		r, e = d.Update(ctx, current, current.Version)
+		r, e = transfer.Update(ctx, d, current, current.Version)
 		return e
 	})
 	if err != nil {
@@ -111,9 +112,8 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 		{TransferID: r.ID, ChunkID: uuid.NewString(), ObjectID: uuid.NewString(), Size: 1, SHA256: strings.Repeat("A", 64)},
 	} {
 		_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { return d.InsertUploadChunk(ctx, bad) })
-		var fault *model.Fault
-		if !errors.As(err, &fault) || fault.Code != "invalid_input" {
-			t.Fatalf("invalid receipt: %v", err)
+		if err == nil {
+			t.Fatalf("database accepted invalid receipt: %+v", bad)
 		}
 	}
 	retainUntil := time.Now().UTC().Add(time.Hour)
@@ -123,11 +123,11 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 			return e
 		}
 		current.State = "cleanup_pending"
-		current, e = d.Update(ctx, current, current.Version)
+		current, e = transfer.Update(ctx, d, current, current.Version)
 		if e != nil {
 			return e
 		}
-		_, e = d.Close(ctx, r.ID, current.Version, retainUntil)
+		_, e = transfer.Close(ctx, d, r.ID, current.Version, retainUntil)
 		return e
 	})
 	if err != nil {
@@ -137,7 +137,7 @@ func TestUploadChunkReceiptsAtomicWithReservationAndState(t *testing.T) {
 		if _, e := d.UploadChunk(ctx, r.ID, chunk.ChunkID); e != nil {
 			return e
 		}
-		pruned, e := d.Prune(ctx, retainUntil.Add(time.Second), 100)
+		pruned, e := transfer.Prune(ctx, d, retainUntil.Add(time.Second), 100)
 		if e != nil || pruned != 1 {
 			t.Fatalf("prune: %d, %v", pruned, e)
 		}

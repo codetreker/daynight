@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
@@ -15,7 +16,7 @@ import (
 
 type uploadFixture struct {
 	calls         int
-	actor         mcptransfer.Actor
+	actor         transfer.Actor
 	project, task string
 	input         mcptransfer.UploadInput
 	data          map[string]any
@@ -27,7 +28,7 @@ type blockingUploads struct {
 	release chan struct{}
 }
 
-func (s *blockingUploads) Execute(ctx context.Context, _ mcptransfer.Actor, _, _ string, input mcptransfer.UploadInput) (map[string]any, error) {
+func (s *blockingUploads) Execute(ctx context.Context, _ transfer.Actor, _, _ string, input mcptransfer.UploadInput) (map[string]any, error) {
 	switch input.Action {
 	case "inline", "chunk", "commit":
 		s.entered <- input.Action
@@ -114,7 +115,7 @@ func TestUploadContentSaturationPreservesControlCalls(t *testing.T) {
 	}
 }
 
-func (s *uploadFixture) Execute(_ context.Context, actor mcptransfer.Actor, project, task string, input mcptransfer.UploadInput) (map[string]any, error) {
+func (s *uploadFixture) Execute(_ context.Context, actor transfer.Actor, project, task string, input mcptransfer.UploadInput) (map[string]any, error) {
 	s.calls++
 	s.actor, s.project, s.task, s.input = actor, project, task, input
 	return s.data, s.err

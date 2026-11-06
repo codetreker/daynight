@@ -16,6 +16,7 @@ import (
 
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
@@ -42,23 +43,11 @@ func NewUploads(lifecycle *Lifecycle, files filestorage.TransferStorage, attachm
 	return &Uploads{lifecycle: lifecycle, files: files, attachments: attachments}
 }
 
-type uploadData struct {
-	NextOffset   int64             `json:"nextOffset"`
-	OperationID  string            `json:"operationId,omitempty"`
-	TotalBytes   *int64            `json:"totalBytes,omitempty"`
-	SHA256       string            `json:"sha256,omitempty"`
-	WriteOutcome string            `json:"writeOutcome,omitempty"`
-	Attachment   *model.Attachment `json:"attachment,omitempty"`
-	Created      *bool             `json:"created,omitempty"`
-}
+type uploadData = transfer.UploadData
 
-func uploadDataOf(r model.PrivateTransfer) (uploadData, error) {
-	var d uploadData
-	err := json.Unmarshal(r.Data, &d)
-	return d, err
-}
-func encodeUpload(d uploadData) json.RawMessage { b, _ := json.Marshal(d); return b }
-func decimal(n int64) string                    { return strconv.FormatInt(n, 10) }
+func uploadDataOf(r model.PrivateTransfer) (uploadData, error) { return transfer.DecodeUploadData(r) }
+func encodeUpload(d uploadData) json.RawMessage                { return transfer.EncodeUploadData(d) }
+func decimal(n int64) string                                   { return strconv.FormatInt(n, 10) }
 func number(s string) (int64, error) {
 	n, e := strconv.ParseInt(s, 10, 64)
 	if e != nil || n < 0 || decimal(n) != s {
@@ -115,17 +104,17 @@ func uploadResult(r model.PrivateTransfer) (map[string]any, error) {
 	}
 	return result, nil
 }
-func (s *Uploads) bound(ctx context.Context, a Actor, project, task, id string) (model.PrivateTransfer, error) {
+func (s *Uploads) bound(ctx context.Context, a transfer.Actor, project, task, id string) (model.PrivateTransfer, error) {
 	r, e := s.lifecycle.LookupBound(ctx, a, id)
 	if e != nil {
 		return r, e
 	}
 	if r.Direction != "upload" || r.ProjectID != project || r.TaskID != task {
-		return model.PrivateTransfer{}, ErrConflict
+		return model.PrivateTransfer{}, transfer.ErrConflict
 	}
 	return r, nil
 }
-func (s *Uploads) Execute(ctx context.Context, a Actor, project, task string, in UploadInput) (map[string]any, error) {
+func (s *Uploads) Execute(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
 	if s == nil || s.lifecycle == nil || s.files == nil || s.attachments == nil {
 		return nil, errors.New("upload service unavailable")
 	}
@@ -166,7 +155,7 @@ func (s *Uploads) Execute(ctx context.Context, a Actor, project, task string, in
 		if e = attachmentcore.ValidateContentType(in.ContentType); e != nil {
 			return nil, e
 		}
-		r, _, e := s.lifecycle.OpenRecord(ctx, a, Binding{ID: in.TransferID, Direction: "upload", ProjectID: project, TaskID: task, Path: address.RelativePath, ContentType: in.ContentType})
+		r, _, e := s.lifecycle.OpenRecord(ctx, a, transfer.Binding{ID: in.TransferID, Direction: "upload", ProjectID: project, TaskID: task, Path: address.RelativePath, ContentType: in.ContentType})
 		if e != nil {
 			return nil, e
 		}
@@ -210,8 +199,8 @@ func (s *Uploads) Execute(ctx context.Context, a Actor, project, task string, in
 	}
 }
 
-func (s *Uploads) chunk(ctx context.Context, a Actor, project, task string, in UploadInput) (map[string]any, error) {
-	if !canonical(in.ChunkID) {
+func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
+	if !transfer.Canonical(in.ChunkID) {
 		return nil, uploadFault("Invalid chunk ID.")
 	}
 	off, e := number(in.Offset)
@@ -239,7 +228,7 @@ func (s *Uploads) chunk(ctx context.Context, a Actor, project, task string, in U
 		return nil, e
 	}
 	if r.State != "receiving" {
-		return nil, ErrState
+		return nil, transfer.ErrState
 	}
 	d, e := uploadDataOf(r)
 	if e != nil {
@@ -277,31 +266,21 @@ func (s *Uploads) chunk(ctx context.Context, a Actor, project, task string, in U
 	}
 	e = s.lifecycle.admittedUpload(p.Context, p, func(dao store.PrivateTransferDAO, current model.PrivateTransfer) error {
 		var err error
-		if current.State != "receiving" || current.Version != r.Version || !live(current, time.Now()) {
-			return ErrState
+		if current.State != "receiving" || current.Version != r.Version || !transfer.Live(current, time.Now()) {
+			return transfer.ErrState
 		}
-		data, err := uploadDataOf(current)
+		next, err := transfer.AcceptUploadChunk(current, chunk, time.Now().UTC())
 		if err != nil {
 			return err
-		}
-		if data.NextOffset != off {
-			return ErrState
 		}
 		if err = dao.InsertUploadChunk(p.Context, chunk); err != nil {
 			return err
 		}
-		current, err = dao.ConsumeReservation(p.Context, current.ID, chunk.Size, current.Version)
+		current, err = transfer.ConsumeReservation(p.Context, dao, current.ID, chunk.Size, current.Version)
 		if err != nil {
 			return err
 		}
-		data.NextOffset += chunk.Size
-		current.Data = encodeUpload(data)
-		now := time.Now().UTC()
-		current.ExpiresAt = now.Add(IdleLifetime)
-		if current.ExpiresAt.After(current.HardExpiresAt) {
-			current.ExpiresAt = current.HardExpiresAt
-		}
-		r, err = dao.Update(p.Context, current, current.Version)
+		r, err = transfer.Update(p.Context, dao, next, current.Version)
 		return err
 	})
 	if e != nil {
@@ -395,7 +374,7 @@ func (s *Uploads) stream(ctx context.Context, p *Permit, id string, total int64)
 	}
 	return &chunkStream{ctx: ctx, service: s, permit: p, namespace: n, total: total}, nil
 }
-func (s *Uploads) commit(ctx context.Context, a Actor, project, task string, in UploadInput) (map[string]any, error) {
+func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task string, in UploadInput) (map[string]any, error) {
 	total, e := number(in.TotalBytes)
 	if e != nil {
 		return nil, e
@@ -412,11 +391,11 @@ func (s *Uploads) commit(ctx context.Context, a Actor, project, task string, in 
 		if err != nil {
 			return nil, err
 		}
-		return result, ErrState
+		return result, transfer.ErrState
 	}
 	p, e := s.lifecycle.AcquirePermit(ctx, a, in.TransferID)
 	if e != nil {
-		if errors.Is(e, ErrState) {
+		if errors.Is(e, transfer.ErrState) {
 			if current, readErr := s.bound(ctx, a, project, task, in.TransferID); readErr == nil && current.State != "receiving" {
 				result, resultErr := uploadResult(current)
 				if resultErr != nil {
@@ -438,7 +417,7 @@ func (s *Uploads) commit(ctx context.Context, a Actor, project, task string, in 
 	}
 	if r.State != "receiving" {
 		result, _ := uploadResult(r)
-		return result, ErrState
+		return result, transfer.ErrState
 	}
 	if d.NextOffset != total {
 		return nil, uploadFault("Total does not match accepted bytes.")

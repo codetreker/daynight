@@ -2,16 +2,12 @@ package postgres
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
-	"math"
-	"strings"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -46,6 +42,8 @@ func (s *Store) WritePrivateTransfer(ctx context.Context, operation func(store.P
 	return store.Completion{Outcome: outcome}, err
 }
 
+// Fixed state predicates in these queries match the partial indexes in migration 041,
+// including when PostgreSQL selects a generic prepared plan.
 func (d *privateTransferDAO) Stats(ctx context.Context) (store.PrivateTransferStats, error) {
 	var stats store.PrivateTransferStats
 	err := d.tx.QueryRow(ctx, `SELECT l.reserved_bytes, count(t.id), min(t.created_at) FROM private_transfer_ledger l LEFT JOIN private_transfers t ON t.state='cleanup_pending' WHERE l.singleton GROUP BY l.reserved_bytes`).Scan(&stats.ReservedBytes, &stats.CleanupPending, &stats.OldestPendingCreatedAt)
@@ -134,10 +132,7 @@ func (d *privateTransferDAO) Get(ctx context.Context, id string) (model.PrivateT
 	return scanPrivateTransfer(d.tx.QueryRow(ctx, `SELECT `+transferColumns+` FROM private_transfers WHERE id=$1 FOR UPDATE`, id))
 }
 
-func (d *privateTransferDAO) Create(ctx context.Context, t model.PrivateTransfer) (model.PrivateTransfer, bool, error) {
-	if t.ReservedBytes != 0 || t.OutstandingBytes != 0 || t.State == "closed" || t.State == "cleanup_pending" {
-		return model.PrivateTransfer{}, false, &model.Fault{Code: "invalid_input", Message: "Invalid initial transfer state."}
-	}
+func (d *privateTransferDAO) Insert(ctx context.Context, t model.PrivateTransfer) (model.PrivateTransfer, bool, error) {
 	result, err := scanPrivateTransfer(d.tx.QueryRow(ctx, `INSERT INTO private_transfers(id,user_id,authority_kind,authority_id,direction,project_id,task_id,path,content_type,binding,data,state,created_at,updated_at,expires_at,hard_expires_at,lease_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (id) DO NOTHING RETURNING `+transferColumns, t.ID, t.UserID, t.AuthorityKind, t.AuthorityID, t.Direction, t.ProjectID, t.TaskID, t.Path, t.ContentType, t.Binding, t.Data, t.State, t.CreatedAt, t.UpdatedAt, t.ExpiresAt, t.HardExpiresAt, t.LeaseUntil))
 	if errors.Is(err, model.ErrNotFound) {
 		existing, e := d.Get(ctx, t.ID)
@@ -146,17 +141,15 @@ func (d *privateTransferDAO) Create(ctx context.Context, t model.PrivateTransfer
 	if err != nil {
 		return model.PrivateTransfer{}, false, err
 	}
-	if err := d.LockLedger(ctx); err != nil {
-		return model.PrivateTransfer{}, false, err
-	}
-	var active int
-	if err := d.tx.QueryRow(ctx, `SELECT count(*) FROM private_transfers WHERE user_id=$1 AND state<>'closed'`, t.UserID).Scan(&active); err != nil {
-		return model.PrivateTransfer{}, false, pg.QueryError("count active private transfers", err)
-	}
-	if active > 4 {
-		return model.PrivateTransfer{}, false, &model.Fault{Code: "capacity_unavailable", Message: "The active transfer limit was reached."}
-	}
 	return result, true, nil
+}
+
+func (d *privateTransferDAO) CountActive(ctx context.Context, userID string) (int, error) {
+	var active int
+	if err := d.tx.QueryRow(ctx, `SELECT count(*) FROM private_transfers WHERE user_id=$1 AND state<>'closed'`, userID).Scan(&active); err != nil {
+		return 0, pg.QueryError("count active private transfers", err)
+	}
+	return active, nil
 }
 
 func (d *privateTransferDAO) LockLedger(ctx context.Context) error {
@@ -193,53 +186,14 @@ func (d *privateTransferDAO) ReservedTotal(ctx context.Context) (int64, error) {
 	return total, nil
 }
 
-func (d *privateTransferDAO) Reserve(ctx context.Context, id string, additional, budget int64) (model.PrivateTransfer, error) {
-	if additional < 0 || budget < 0 {
-		return model.PrivateTransfer{}, &model.Fault{Code: "invalid_input", Message: "Invalid transfer reservation."}
-	}
-	t, err := d.Get(ctx, id)
-	if err != nil {
-		return t, err
-	}
-	if t.State == "closed" || t.State == "cleanup_pending" {
-		return model.PrivateTransfer{}, &model.Fault{Code: "transfer_conflict", Message: "Transfer is being cleaned up."}
-	}
-	if err = d.LockLedger(ctx); err != nil {
-		return model.PrivateTransfer{}, err
-	}
-	var total int64
-	if err = d.tx.QueryRow(ctx, `SELECT reserved_bytes FROM private_transfer_ledger WHERE singleton`).Scan(&total); err != nil {
-		return model.PrivateTransfer{}, pg.QueryError("read private transfer capacity", err)
-	}
-	if total > budget || additional > budget-total || additional > math.MaxInt64-t.ReservedBytes || additional > math.MaxInt64-t.OutstandingBytes {
-		return model.PrivateTransfer{}, &model.Fault{Code: "capacity_unavailable", Message: "Temporary content capacity is unavailable."}
-	}
-	if additional == 0 {
-		return t, nil
-	}
-	if _, err = d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET reserved_bytes=reserved_bytes+$1,outstanding_bytes=outstanding_bytes+$1 WHERE singleton`, additional); err != nil {
+func (d *privateTransferDAO) AddReservation(ctx context.Context, id string, additional int64) (model.PrivateTransfer, error) {
+	if _, err := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET reserved_bytes=reserved_bytes+$1,outstanding_bytes=outstanding_bytes+$1 WHERE singleton`, additional); err != nil {
 		return model.PrivateTransfer{}, pg.QueryError("reserve private transfer capacity", err)
 	}
 	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET reserved_bytes=reserved_bytes+$2,outstanding_bytes=outstanding_bytes+$2,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING `+transferColumns, id, additional))
 }
 
-func (d *privateTransferDAO) ConsumeReservation(ctx context.Context, id string, amount, expected int64) (model.PrivateTransfer, error) {
-	if amount < 0 {
-		return model.PrivateTransfer{}, &model.Fault{Code: "invalid_input", Message: "Invalid transfer materialization."}
-	}
-	original, err := d.Get(ctx, id)
-	if err != nil {
-		return model.PrivateTransfer{}, err
-	}
-	if original.Version != expected || original.State == "cleanup_pending" || original.State == "closed" || amount > original.OutstandingBytes {
-		return model.PrivateTransfer{}, model.ErrNotFound
-	}
-	if amount == 0 {
-		return original, nil
-	}
-	if err := d.LockLedger(ctx); err != nil {
-		return model.PrivateTransfer{}, err
-	}
+func (d *privateTransferDAO) SubtractOutstanding(ctx context.Context, id string, amount int64) (model.PrivateTransfer, error) {
 	result, err := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET outstanding_bytes=outstanding_bytes-$1 WHERE singleton AND outstanding_bytes >= $1`, amount)
 	if err != nil {
 		return model.PrivateTransfer{}, pg.QueryError("consume transfer reservation", err)
@@ -270,14 +224,6 @@ func (d *privateTransferDAO) UploadChunkAt(ctx context.Context, transferID strin
 }
 
 func (d *privateTransferDAO) InsertUploadChunk(ctx context.Context, c model.UploadChunk) error {
-	canonical := func(value string) bool {
-		id, err := uuid.Parse(value)
-		return err == nil && id != uuid.Nil && id.String() == value
-	}
-	_, hashErr := hex.DecodeString(c.SHA256)
-	if !canonical(c.TransferID) || !canonical(c.ChunkID) || !canonical(c.ObjectID) || c.Offset < 0 || c.Size < 1 || c.Size > 524288 || c.Offset > math.MaxInt64-c.Size || len(c.SHA256) != 64 || strings.ToLower(c.SHA256) != c.SHA256 || hashErr != nil {
-		return &model.Fault{Code: "invalid_input", Message: "Invalid upload chunk receipt."}
-	}
 	result, err := d.tx.Exec(ctx, `INSERT INTO private_upload_chunks (transfer_id,chunk_id,object_id,byte_offset,byte_size,sha256) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, c.TransferID, c.ChunkID, c.ObjectID, c.Offset, c.Size, c.SHA256)
 	if err != nil {
 		return pg.QueryError("insert upload chunk receipt", err)
@@ -288,45 +234,22 @@ func (d *privateTransferDAO) InsertUploadChunk(ctx context.Context, c model.Uplo
 	return nil
 }
 
-func (d *privateTransferDAO) Update(ctx context.Context, t model.PrivateTransfer, expected int64) (model.PrivateTransfer, error) {
-	if t.State == "closed" {
-		return model.PrivateTransfer{}, &model.Fault{Code: "invalid_input", Message: "Close requires completed cleanup."}
-	}
-	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET cleanup_from_state=CASE WHEN $3='cleanup_pending' THEN state ELSE cleanup_from_state END,state=$3,data=$4,expires_at=$5,lease_until=$6,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 AND version=$2 AND state NOT IN ('cleanup_pending','closed') RETURNING `+transferColumns, t.ID, expected, t.State, t.Data, t.ExpiresAt, t.LeaseUntil))
+func (d *privateTransferDAO) Put(ctx context.Context, t model.PrivateTransfer, expected int64) (model.PrivateTransfer, error) {
+	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET cleanup_from_state=$7,state=$3,data=$4,expires_at=$5,lease_until=$6,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 AND version=$2 RETURNING `+transferColumns, t.ID, expected, t.State, t.Data, t.ExpiresAt, t.LeaseUntil, t.CleanupFromState))
 }
 
-func (d *privateTransferDAO) UpdatePending(ctx context.Context, t model.PrivateTransfer, expected int64) (model.PrivateTransfer, error) {
-	if t.CleanupFromState == nil || *t.CleanupFromState == "" {
-		return model.PrivateTransfer{}, &model.Fault{Code: "invalid_input", Message: "Missing cleanup outcome."}
-	}
-	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET cleanup_from_state=$3,data=$4,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 AND version=$2 AND state='cleanup_pending' RETURNING `+transferColumns, t.ID, expected, *t.CleanupFromState, t.Data))
-}
-
-func (d *privateTransferDAO) Close(ctx context.Context, id string, expected int64, retainUntil time.Time) (model.PrivateTransfer, error) {
-	original, err := d.Get(ctx, id)
-	if err != nil {
-		return model.PrivateTransfer{}, err
-	}
-	if original.Version != expected || original.State != "cleanup_pending" {
-		return model.PrivateTransfer{}, model.ErrNotFound
-	}
-	if err := d.LockLedger(ctx); err != nil {
-		return model.PrivateTransfer{}, err
-	}
-	result, err := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET reserved_bytes=reserved_bytes-$1,outstanding_bytes=outstanding_bytes-$2 WHERE singleton AND reserved_bytes >= $1 AND outstanding_bytes >= $2`, original.ReservedBytes, original.OutstandingBytes)
+func (d *privateTransferDAO) Release(ctx context.Context, t model.PrivateTransfer, expected int64, retainUntil time.Time, closedState string) (model.PrivateTransfer, error) {
+	result, err := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET reserved_bytes=reserved_bytes-$1,outstanding_bytes=outstanding_bytes-$2 WHERE singleton AND reserved_bytes >= $1 AND outstanding_bytes >= $2`, t.ReservedBytes, t.OutstandingBytes)
 	if err != nil {
 		return model.PrivateTransfer{}, pg.QueryError("release private transfer capacity", err)
 	}
 	if result.RowsAffected() != 1 {
 		return model.PrivateTransfer{}, errors.New("private transfer ledger underflow")
 	}
-	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET state='closed',reserved_bytes=0,outstanding_bytes=0,retain_until=$3,lease_until=NULL,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 AND version=$2 AND state='cleanup_pending' RETURNING `+transferColumns, id, expected, retainUntil))
+	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET state=$4,reserved_bytes=0,outstanding_bytes=0,retain_until=$3,lease_until=NULL,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 AND version=$2 RETURNING `+transferColumns, t.ID, expected, retainUntil, closedState))
 }
 
 func (d *privateTransferDAO) Due(ctx context.Context, now time.Time, limit int) ([]model.PrivateTransfer, error) {
-	if limit < 1 || limit > 100 {
-		return nil, &model.Fault{Code: "invalid_input", Message: "Invalid maintenance batch size."}
-	}
 	rows, err := d.tx.Query(ctx, `WITH candidates AS (
  SELECT id FROM private_transfers WHERE state<>'closed'
  AND (state='cleanup_pending' OR expires_at<=$1 OR hard_expires_at<=$1 OR (state='committing' AND (lease_until IS NULL OR lease_until<=$1)))
@@ -352,9 +275,6 @@ func (d *privateTransferDAO) Due(ctx context.Context, now time.Time, limit int) 
 }
 
 func (d *privateTransferDAO) Prune(ctx context.Context, now time.Time, limit int) (int64, error) {
-	if limit < 1 || limit > 100 {
-		return 0, &model.Fault{Code: "invalid_input", Message: "Invalid maintenance batch size."}
-	}
 	result, err := d.tx.Exec(ctx, `DELETE FROM private_transfers WHERE id IN (SELECT id FROM private_transfers WHERE state='closed' AND retain_until<=$1 ORDER BY retain_until,id LIMIT $2)`, now, limit)
 	if err != nil {
 		return 0, pg.QueryError("prune private transfers", err)

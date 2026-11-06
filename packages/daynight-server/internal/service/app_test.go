@@ -14,6 +14,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 )
 
@@ -22,7 +23,7 @@ func TestUploadUnavailableWithoutPrivateStorage(t *testing.T) {
 	if app.PrivateContent != nil || app.Uploads == nil {
 		t.Fatal("unexpected private content composition")
 	}
-	_, err := app.Uploads.Execute(context.Background(), mcptransfer.Actor{}, "", "", mcptransfer.UploadInput{Action: "inline"})
+	_, err := app.Uploads.Execute(context.Background(), transfer.Actor{}, "", "", mcptransfer.UploadInput{Action: "inline"})
 	if err == nil || !strings.Contains(err.Error(), "upload service unavailable") {
 		t.Fatalf("upload without private storage: %v", err)
 	}
@@ -354,5 +355,43 @@ func TestAppCloseWaitsForFileCloseAndRetainsFailure(t *testing.T) {
 	}
 	if files.calls.Load() != 1 || persistenceCalls.Load() != 1 {
 		t.Fatal("resources closed more than once")
+	}
+}
+
+func TestOpenAppReportsUnusableStorageRoot(t *testing.T) {
+	c := appTestConfig(t)
+	if err := os.WriteFile(c.StorageRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := OpenAppWithLogger(context.Background(), c, nil)
+	var failure *config.ConfigurationError
+	if app != nil || !errors.As(err, &failure) || failure.Field != "DAYNIGHT_STORAGE_ROOT" || errors.Unwrap(failure) == nil {
+		t.Fatalf("unusable storage root was not reported with its cause: app=%v, error=%v", app, err)
+	}
+	contents, readErr := os.ReadFile(c.StorageRoot)
+	if readErr != nil || string(contents) != "not a directory" {
+		t.Fatalf("startup changed the existing storage root: contents=%q, error=%v", contents, readErr)
+	}
+}
+
+func TestOpenAppReportsDatabaseStartupFailure(t *testing.T) {
+	c := appTestConfig(t)
+	c.DatabaseURL = "postgres://user:secret@bad%host/database"
+	app, err := OpenAppWithLogger(context.Background(), c, nil)
+	if app != nil || err == nil {
+		t.Fatalf("invalid database was accepted: app=%v, error=%v", app, err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("database startup error exposed credentials: %v", err)
+	}
+}
+
+func TestOpenPersistenceRejectsInvalidDatabaseURL(t *testing.T) {
+	persistence, err := OpenPersistence(context.Background(), "postgres://user:secret@bad%host/database")
+	if persistence != nil || err == nil {
+		t.Fatalf("invalid database was accepted: persistence=%v, error=%v", persistence, err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("database startup error exposed credentials: %v", err)
 	}
 }

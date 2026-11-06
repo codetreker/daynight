@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot, SessionOperation } from '../src/api/types';
 import type { SessionControls } from '../../daynight/src/session/controls';
+import { sessionBinding } from '../../daynight/src/session/protocol';
 import { SessionComposer } from '../src/features/task-agent-session/SessionComposer';
 import { SessionControlsPanel } from '../src/features/task-agent-session/SessionControlsPanel';
 import { hydrateSession, emptySessionState } from '../src/features/task-agent-session/state';
@@ -16,6 +17,80 @@ const controls: SessionControls = { revision: '3', settings: [
 const snapshot = (): SessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), controls, turnStartedAt: null });
 const state = () => hydrateSession(emptySessionState(), snapshot(), []);
 const base = () => ({ state: state(), connected: true, onSend: vi.fn(async () => {}), onCancel: vi.fn(async () => {}), onExecuteCommand: vi.fn(async () => {}), onUpdateSetting: vi.fn(async () => {}), onRefreshControls: vi.fn(async () => {}) });
+
+describe('compact assistant settings', () => {
+  it.each([
+    ['Model', 'Model', '{Enter}'],
+    ['Model', 'Model', ' '],
+    ['Permissions', 'Approval policy', '{Enter}'],
+    ['Permissions', 'Approval policy', ' '],
+  ])('enters %s settings with %s control after keyboard activation %s', async (triggerName, controlName, key) => {
+    vi.stubGlobal('innerHeight', 400);
+    const user = userEvent.setup(), props = base();
+    render(<section className="task-agent-session"><SessionComposer {...props} presentation={{ compactMenus: true }} /></section>);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Keep this assistant draft' } });
+    expect(input.closest('form')).toHaveClass('session-composer-compact-menus');
+    act(() => screen.getByRole('button', { name: triggerName }).focus());
+    await user.keyboard(key);
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('combobox', { name: controlName })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue('Keep this assistant draft');
+    expect(props.onUpdateSetting).not.toHaveBeenCalled();
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(props.onCancel).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Model', 'Model', 'model', 'native-a', 'native-b'],
+    ['Permissions', 'Approval policy', 'permissions', 'ask', 'allow'],
+  ])('retains the confirmed %s value and blocks duplicate changes until confirmation', async (triggerName, controlName, settingId, previous, next) => {
+    vi.stubGlobal('innerHeight', 400);
+    const props = base(), change = Promise.withResolvers<void>();
+    props.onUpdateSetting.mockReturnValue(change.promise);
+    const element = (current = props.state, intents = new Map<string, { operationId: string; settingId: string; value: string; confirmedValue: string }>()) =>
+      <section className="task-agent-session"><SessionComposer {...props} state={current} settingIntents={intents} presentation={{ compactMenus: true }} /></section>;
+    const view = render(element()), input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Draft during settings confirmation' } });
+    fireEvent.click(screen.getByRole('button', { name: triggerName }));
+    const select = screen.getByRole('combobox', { name: controlName });
+    fireEvent.change(select, { target: { value: next } });
+    expect(props.onUpdateSetting).toHaveBeenCalledExactlyOnceWith(settingId, next, '3');
+    expect(select).toHaveValue(previous);
+    expect(select).toBeDisabled();
+    fireEvent.change(select, { target: { value: next } });
+    expect(props.onUpdateSetting).toHaveBeenCalledOnce();
+
+    const s = props.state.snapshot!;
+    const operation: SessionOperation = { protocol: s.protocol, sessionId: s.sessionId, ...sessionBinding(s), executionGeneration: s.executionGeneration, operationId: 'settings-change', kind: 'update_setting', state: 'accepted', providerResult: null, error: null };
+    const intents = new Map([[settingId, { operationId: operation.operationId, settingId, value: next, confirmedValue: previous }]]);
+    await act(async () => change.resolve());
+    view.rerender(element({ ...props.state, operations: new Map([[operation.operationId, operation]]) }, intents));
+    expect(screen.getByRole('combobox', { name: controlName })).toBe(select);
+    expect(select).toHaveValue(previous);
+    expect(select).toBeDisabled();
+    expect(screen.getByRole('button', { name: triggerName })).toHaveAttribute('data-pending', 'true');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(props.onSend).not.toHaveBeenCalled();
+
+    const confirmed = { ...props.state, snapshot: { ...s, controls: { ...controls, revision: '4', settings: controls.settings.map(setting => setting.id === settingId ? { ...setting, value: next } : setting) } }, operations: new Map([[operation.operationId, { ...operation, state: 'confirmed' as const }]]) };
+    view.rerender(element(confirmed, intents));
+    expect(select).toHaveValue(next);
+    expect(select).toBeEnabled();
+    expect(screen.getByRole('button', { name: triggerName })).not.toHaveAttribute('data-pending');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+    expect(screen.getByRole('textbox')).toBe(input);
+    expect(input).toHaveValue('Draft during settings confirmation');
+    expect(props.onUpdateSetting).toHaveBeenCalledOnce();
+    expect(props.onSend).not.toHaveBeenCalled();
+    expect(props.onCancel).not.toHaveBeenCalled();
+  });
+});
 
 describe('command candidate reverse navigation', () => {
   it.each(['/model', '/permissions', '/compact', '/rev'])('preserves plain Tab confirmation for %s', async value => {

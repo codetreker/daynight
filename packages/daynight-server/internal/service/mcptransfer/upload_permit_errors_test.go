@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
@@ -15,10 +16,10 @@ func TestAdmittedUploadRejectsMissingClosedAndWrongBinding(t *testing.T) {
 	f := newFixture(t)
 	r := openRecord(t, f)
 	ctx := t.Context()
-	if _, err := f.lifecycle.admittedUploadRecord(ctx, nil); !errors.Is(err, ErrState) {
+	if _, err := f.lifecycle.admittedUploadRecord(ctx, nil); !errors.Is(err, transfer.ErrState) {
 		t.Fatalf("nil permit: %v", err)
 	}
-	if _, err := f.lifecycle.admittedUploadRecord(ctx, &Permit{}); !errors.Is(err, ErrState) {
+	if _, err := f.lifecycle.admittedUploadRecord(ctx, &Permit{}); !errors.Is(err, transfer.ErrState) {
 		t.Fatalf("foreign permit: %v", err)
 	}
 	p, err := f.lifecycle.AcquirePermit(ctx, f.actor, r.ID)
@@ -28,14 +29,14 @@ func TestAdmittedUploadRejectsMissingClosedAndWrongBinding(t *testing.T) {
 	defer p.Close()
 	original := p.actor
 	p.actor.AuthorityID = uuid.NewString()
-	if _, err := f.lifecycle.admittedUploadRecord(ctx, p); !errors.Is(err, ErrConflict) {
+	if _, err := f.lifecycle.admittedUploadRecord(ctx, p); !errors.Is(err, transfer.ErrConflict) {
 		t.Fatalf("wrong binding: %v", err)
 	}
 	p.actor = original
 	if _, err := f.db.Pool.Exec(ctx, `UPDATE private_transfers SET direction='download' WHERE id=$1`, r.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.lifecycle.admittedUploadRecord(ctx, p); !errors.Is(err, ErrConflict) {
+	if _, err := f.lifecycle.admittedUploadRecord(ctx, p); !errors.Is(err, transfer.ErrConflict) {
 		t.Fatalf("wrong direction: %v", err)
 	}
 	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM private_transfers WHERE id=$1`, r.ID); err != nil {
@@ -47,7 +48,7 @@ func TestAdmittedUploadRejectsMissingClosedAndWrongBinding(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.lifecycle.admittedUploadRecord(ctx, p); !errors.Is(err, ErrState) {
+	if _, err := f.lifecycle.admittedUploadRecord(ctx, p); !errors.Is(err, transfer.ErrState) {
 		t.Fatalf("closed permit: %v", err)
 	}
 }
@@ -61,7 +62,7 @@ func TestReserveAdmittedUploadRejectsCapacityAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	if _, err := f.lifecycle.reserveAdmittedUpload(ctx, p, -1); !errors.Is(err, ErrState) {
+	if _, err := f.lifecycle.reserveAdmittedUpload(ctx, p, -1); !errors.Is(err, transfer.ErrState) {
 		t.Fatalf("negative reservation: %v", err)
 	}
 	private := f.lifecycle.private
@@ -69,7 +70,7 @@ func TestReserveAdmittedUploadRejectsCapacityAndCleanup(t *testing.T) {
 	f.lifecycle.reservedFree = 10
 	for _, tc := range []struct{ free, bytes int64 }{{9, 1}, {11, 2}} {
 		f.lifecycle.private = constrainedStorage{TransferStorage: private, free: tc.free}
-		if _, err := f.lifecycle.reserveAdmittedUpload(ctx, p, tc.bytes); !errors.Is(err, ErrCapacity) {
+		if _, err := f.lifecycle.reserveAdmittedUpload(ctx, p, tc.bytes); !errors.Is(err, transfer.ErrCapacity) {
 			t.Fatalf("insufficient disk capacity: %v", err)
 		}
 	}
@@ -86,7 +87,7 @@ func TestReserveAdmittedUploadRejectsCapacityAndCleanup(t *testing.T) {
 	if _, err := f.lifecycle.RequestCleanup(ctx, f.actor, r.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.lifecycle.reserveAdmittedUpload(ctx, p, 1); !errors.Is(err, ErrState) {
+	if _, err := f.lifecycle.reserveAdmittedUpload(ctx, p, 1); !errors.Is(err, transfer.ErrState) {
 		t.Fatalf("cleanup barrier: %v", err)
 	}
 }

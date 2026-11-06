@@ -16,13 +16,13 @@ const key = `daynight.selectedTeam:${alice}`;
 type Role = 'admin' | 'member';
 type Member = { role: Role; version: number; name: string | null; email: string | null };
 type Gate = { started: () => void; wait: Promise<void> };
-type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
+type State = { members: Map<string, Member>; betaMember: Member; writeEvents: string[]; writes: { method: string; path: string; body: Record<string, unknown> }[]; lost: boolean; refusal: string | null; failReadsAfterWrite: boolean; holdWrite: Gate | null; holdMe: Gate | null; holdTeamRead: Gate | null; holdRosterRead: Gate | null; holdProjectsRead: Gate | null; holdInvitation: Gate | null; holdInvitationRead: Gate | null; invitationWrites: number; invitationSuccess: boolean; teamReadNetworkFailure: boolean; rosterReadNetworkFailure: boolean; grant: { userId: string; role: Role; version: number } };
 const task = detailFixture(projectId, taskId, { title: 'Retained Task', version: 9_223_372_036_854_775_807n });
 const graph = graphFixture([task]);
 const access = directAccessFixture(projectId, alice, 'admin');
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> => {
-  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdInvitation: null, holdInvitationRead: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
+  const state: State = { members: new Map([[alice, { role: actorRole, version: 1, name: 'Alice', email: null }], [bob, { role: 'admin', version: 2, name: 'Bob', email: 'bob@example.com' }], [charlie, { role: 'member', version: 3, name: null, email: null }]]), betaMember: { role: 'member', version: 22, name: 'Bob', email: 'bob@example.com' }, writeEvents: [], writes: [], lost: false, refusal: null, failReadsAfterWrite: false, holdWrite: null, holdMe: null, holdTeamRead: null, holdRosterRead: null, holdProjectsRead: null, holdInvitation: null, holdInvitationRead: null, invitationWrites: 0, invitationSuccess: false, teamReadNetworkFailure: false, rosterReadNetworkFailure: false, grant: { userId: alice, role: 'admin', version: 7 } };
   const membership = (id: string, team = teamId) => { const m = team === personalId ? { role: 'admin' as const, version: 9, name: 'Alice', email: null } : state.members.get(id)!; return { teamId: team, userId: id, role: m.role, version: m.version, createdAt: time, updatedAt: time }; };
   const team = (id: string) => ({ id, kind: id === personalId ? 'personal' : 'ordinary', name: id === personalId ? null : id === betaId ? 'Beta' : 'Alpha', version: 1, createdAt: time, updatedAt: time, membership: id === betaId ? { teamId: betaId, userId: alice, role: 'admin', version: 20, createdAt: time, updatedAt: time } : membership(alice, id) });
   const roster = (id: string) => id === personalId ? [{ ...membership(alice, id), profile: { name: 'Alice', email: null, avatarUrl: null } }] : [...state.members].map(([userId, m]) => ({ ...membership(userId), profile: { name: m.name, email: m.email, avatarUrl: null } }));
@@ -30,7 +30,7 @@ const install = async (page: Page, actorRole: Role = 'admin'): Promise<State> =>
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ json: body, status, headers: { 'Daynight-User-ID': alice } });
     if (path === '/api/v1/me') { const gate = state.holdMe; state.holdMe = null; if (gate) { gate.started(); await gate.wait; } return send({ id: alice, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Alice', email: null, emailVerified: null, avatarUrl: null }); }
-    if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === '/api/v1/projects') { const gate = state.holdProjectsRead; state.holdProjectsRead = null; if (gate) { gate.started(); await gate.wait; } return send({ items: [], nextCursor: null }); }
     const sendWire = (body: unknown) => route.fulfill({ body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': alice } });
     if (path === `/api/v1/projects/${projectId}/access`) return sendWire(access);
     if (path === `/api/v1/projects/${projectId}/task-sync`) return sendWire(taskSyncFixture(graph, { actorAccess: access, query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
@@ -170,11 +170,14 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
 test('member loading and read failure retain a working retry', async ({ page }) => {
   const api = await install(page);
   const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const projectsStarted = Promise.withResolvers<void>(), finishProjects = Promise.withResolvers<void>();
   api.holdRosterRead = { started: started.resolve, wait: finish.promise };
+  api.holdProjectsRead = { started: projectsStarted.resolve, wait: finishProjects.promise };
   try {
-    await page.goto(`/teams/${teamId}/members`); await started.promise;
-    await expect(page.getByRole('status').filter({ hasText: 'Loading' })).toBeVisible();
-  } finally { finish.resolve(); }
+    await page.goto(`/teams/${teamId}/members`); await Promise.all([started.promise, projectsStarted.promise]);
+    await expect(page.locator('#workspace-sidebar').getByRole('status').filter({ hasText: 'Loading projects' })).toBeVisible();
+    await expect(page.locator('#main-content').getByRole('status').filter({ hasText: 'Loading' })).toBeVisible();
+  } finally { finish.resolve(); finishProjects.resolve(); }
   await expect(page.getByLabel('Team role: Bob')).toBeVisible();
   api.rosterReadNetworkFailure = true; await page.reload();
   await expect(page.getByRole('alert').filter({ hasText: 'Unable to read members.' })).toBeVisible();

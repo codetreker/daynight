@@ -23,16 +23,17 @@ flowchart TD
   Compare -->|否| Persist[原任务写入]
   Compare -->|是| Running{当前 in_progress}
   Running -->|是| Refuse[暂存领域拒绝]
-  Running -->|否| Access[新目标非空时验证项目访问]
-  Access --> Reset[候选 allowAgents=false]
-  Reset --> Persist
+  Running -->|否| Reset[生成候选 allowAgents=false]
+  Reset --> Access[新目标非空时验证项目访问]
+  Access --> Adopt[采用候选]
+  Adopt --> Persist
 ```
 
 ## 共用规则与错误
 
 Tasks.write 在明确 no-op/删除路径之后，只对真正 create/update 的完整候选执行负责人策略。等值状态和 worker 摘要可能没有候选 values，不能把零值解释成清空负责人。
 
-策略只在负责人实际变化时检查执行状态和新目标资格，然后强制关闭许可；同一 SQL 写 assigned_to、allow_agents、版本与更新时间。新目标通过当前 ProjectTx 的 ProjectAccess 判定有效访问，不以独立授权记录或用户资料作为资格所有者。赋值相同则保留其他合法修改，历史目标即使失权也不阻止无关操作。状态不变使既有 SQL 计时 CASE 保留原区间。
+`core/task` 判断负责人是否实际变化，先检查执行状态，再生成强制关闭许可的完整候选；service 在同一项目写事务中通过 ProjectAccess 验证非空新目标后才采用候选。同一 SQL 写 assigned_to、allow_agents、版本与更新时间；独立授权记录或用户资料不拥有目标资格。赋值相同则保留其他合法修改，历史目标即使失权也不阻止无关操作。状态不变使既有 SQL 计时 CASE 保留原区间。
 
 策略拒绝和候选准备拒绝使用同一错误分类。目标 ProjectAccess 不存在明确转为 invalid_input，避免被外层误译为项目不存在；Fault 暂存，在事务正常完成后返回。事务提交、回滚、取消或存储失败优先于暂存拒绝并保留错误链。
 

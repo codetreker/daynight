@@ -15,6 +15,7 @@ import (
 
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
@@ -53,11 +54,11 @@ type uploadFailureDAO struct {
 	owner *uploadFailureWriter
 }
 
-func (d uploadFailureDAO) Update(ctx context.Context, record model.PrivateTransfer, version int64) (model.PrivateTransfer, error) {
+func (d uploadFailureDAO) Put(ctx context.Context, record model.PrivateTransfer, version int64) (model.PrivateTransfer, error) {
 	if d.owner.enabled.Load() && record.State == d.owner.state {
 		return model.PrivateTransfer{}, errors.New("injected private transfer update failure")
 	}
-	return d.PrivateTransferDAO.Update(ctx, record, version)
+	return d.PrivateTransferDAO.Put(ctx, record, version)
 }
 
 func (w *uploadFailureWriter) WritePrivateTransfer(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error) {
@@ -91,13 +92,13 @@ func TestUploadAdmissionSurvivesAccessRevocation(t *testing.T) {
 	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'test','{}','https://example.test/mcp','daynight:mcp',now(),now()+interval '1 hour')`, grant, f.actor.Principal.UserID); err != nil {
 		t.Fatal(err)
 	}
-	newAccess := func() Actor {
+	newAccess := func() transfer.Actor {
 		id := uuid.NewString()
 		hash := sha256.Sum256([]byte(id))
 		if _, err := f.db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,now(),now()+interval '30 minutes')`, id, grant, f.actor.Principal.UserID, hash[:]); err != nil {
 			t.Fatal(err)
 		}
-		return Actor{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.actor.Principal.UserID, CredentialID: id}, AuthorityKind: "oauth", AuthorityID: grant}
+		return transfer.Actor{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.actor.Principal.UserID, CredentialID: id}, AuthorityKind: "oauth", AuthorityID: grant}
 	}
 	first, replacement := newAccess(), newAccess()
 	id := uuid.NewString()
@@ -206,7 +207,7 @@ func TestUploadAdmissionSurvivesTaskDeletion(t *testing.T) {
 	}
 }
 
-func runUpload(t *testing.T, s *Uploads, f lifecycleFixture, actor Actor, in UploadInput) map[string]any {
+func runUpload(t *testing.T, s *Uploads, f lifecycleFixture, actor transfer.Actor, in UploadInput) map[string]any {
 	t.Helper()
 	result, err := s.Execute(t.Context(), actor, f.binding.ProjectID, f.binding.TaskID, in)
 	if err != nil {
@@ -324,13 +325,13 @@ func TestUploadOAuthAccessReplacement(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	newAccess := func(grantID string) Actor {
+	newAccess := func(grantID string) transfer.Actor {
 		id := uuid.NewString()
 		hash := sha256.Sum256([]byte(id))
 		if _, err := f.db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,now(),now()+interval '30 minutes')`, id, grantID, f.actor.Principal.UserID, hash[:]); err != nil {
 			t.Fatal(err)
 		}
-		return Actor{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.actor.Principal.UserID, CredentialID: id}, AuthorityKind: "oauth", AuthorityID: grantID}
+		return transfer.Actor{Principal: model.Principal{Kind: model.OAuthCredential, UserID: f.actor.Principal.UserID, CredentialID: id}, AuthorityKind: "oauth", AuthorityID: grantID}
 	}
 	first, next, other := newAccess(grant), newAccess(grant), newAccess(otherGrant)
 	id := uuid.NewString()
@@ -339,7 +340,7 @@ func TestUploadOAuthAccessReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := UploadInput{Action: "chunk", TransferID: id, ChunkID: uuid.NewString(), Offset: "0", ContentBase64: base64.StdEncoding.EncodeToString([]byte("refreshed"))}
-	for _, denied := range []Actor{first, other, f.actor} {
+	for _, denied := range []transfer.Actor{first, other, f.actor} {
 		if _, err := s.Execute(ctx, denied, f.binding.ProjectID, f.binding.TaskID, in); err == nil {
 			t.Fatal("different or invalid authority accepted")
 		}
@@ -483,7 +484,7 @@ func TestAdmittedUploadRenewalAndLateReceipt(t *testing.T) {
 			}
 			confirmed := encodeUpload(uploadData{OperationID: opID, WriteOutcome: "confirmed"})
 			result, err := f.lifecycle.FinishCommit(t.Context(), p, f.actor, r.ID, 0, "committed", confirmed)
-			if err != nil || result.State != "committed" || operationID(result.Data) != opID {
+			if err != nil || result.State != "committed" || transfer.OperationID(result.Data) != opID {
 				t.Fatalf("late original receipt: %+v %v", result, err)
 			}
 			if err = f.lifecycle.keepAdmittedUpload(t.Context(), p, opID); err == nil {
