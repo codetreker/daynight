@@ -76,7 +76,44 @@ type sessionHTTPFixture struct {
 	registration        sp.Registration
 	snapshot            sp.Snapshot
 	grant               sessioncore.GrantResult
-	expectShutdownError bool
+	expectShutdownError func(error) bool
+}
+
+func shutdownFaultMatches(err error, code string) bool {
+	if drained, ok := err.(interface {
+		Drained() bool
+		Unwrap() error
+	}); ok && drained.Drained() {
+		return shutdownFaultMatches(drained.Unwrap(), code)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if !shutdownFaultMatches(cause, code) {
+				return false
+			}
+		}
+		return len(joined.Unwrap()) > 0
+	}
+	fault, ok := err.(*model.Fault)
+	return code != "" && ok && fault.Code == code && fault.Cause == nil
+}
+
+func shutdownDatabaseFailureMatches(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if !shutdownDatabaseFailureMatches(cause) {
+				return false
+			}
+		}
+		return len(joined.Unwrap()) > 0
+	}
+	if cause, ok := err.(*pgconn.PgError); ok {
+		return cause.Message == "injected disconnect failure"
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return shutdownDatabaseFailureMatches(wrapped.Unwrap())
+	}
+	return false
 }
 
 func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
@@ -110,7 +147,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := f.application.Shutdown(ctx); err != nil && !f.expectShutdownError {
+		if err := f.application.Shutdown(ctx); err != nil && (f.expectShutdownError == nil || !f.expectShutdownError(err)) {
 			t.Error(err)
 		}
 	})
@@ -282,6 +319,7 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 	if _, err = sp.DecodeEvent(frame["event"]); err != nil {
 		t.Fatal(err)
 	}
+	f.expectShutdownError = func(err error) bool { return shutdownFaultMatches(err, "unauthenticated") }
 	if _, err = f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +621,7 @@ func TestSessionShutdownRetainsDisconnectFailure(t *testing.T) {
 		CREATE TRIGGER refuse_shutdown_disconnect BEFORE UPDATE OF connection_expires_at ON task_sessions FOR EACH ROW EXECUTE FUNCTION refuse_shutdown_disconnect()`); err != nil {
 		t.Fatal(err)
 	}
-	f.expectShutdownError = true
+	f.expectShutdownError = shutdownDatabaseFailureMatches
 	for i := 0; i < 2; i++ {
 		err := f.application.Shutdown(ctx)
 		var cause *pgconn.PgError

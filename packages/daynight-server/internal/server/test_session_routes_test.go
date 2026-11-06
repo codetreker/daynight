@@ -78,6 +78,7 @@ func TestTestSessionHTTPAndChannelRequireOwnerCredential(t *testing.T) {
 		t.Fatal("offer scope", offer)
 	}
 	// Revocation closes both already-open channels and rejects every subsequent read.
+	f.expectShutdownFault = "unauthenticated"
 	if _, err = f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +181,7 @@ func TestTestSessionHTTPStopRequiresValidProofOwnerAndScope(t *testing.T) {
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID, ControllerInstanceID: registration.ControllerInstanceID, Provider: "codex", SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0"})
 	sessionWSKind(t, controller, "welcome")
 	assertProjectError(t, projectRequest(f.handler, http.MethodPost, path+"/stop", jsonBody(t, proof)), http.StatusConflict, "session_conflict")
+	f.expectShutdownFault = "session_conflict"
 	_ = controller.CloseNow()
 	proof.StopProof.Kind = ""
 	archived = decodeResponse[struct {

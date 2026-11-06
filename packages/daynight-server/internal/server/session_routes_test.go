@@ -64,15 +64,35 @@ func TestSessionRoutesCapabilitiesRequireAuthentication(t *testing.T) {
 }
 
 type sessionHTTPFixture struct {
-	db           *postgres.Store
-	handler      *resourceTestHandler
-	server       *httptest.Server
-	application  *sessionApplication
-	task         api.Task
-	base         string
-	registration sp.Registration
-	snapshot     sp.Snapshot
-	grant        sessioncore.GrantResult
+	db                  *postgres.Store
+	handler             *resourceTestHandler
+	server              *httptest.Server
+	application         *sessionApplication
+	task                api.Task
+	base                string
+	registration        sp.Registration
+	snapshot            sp.Snapshot
+	grant               sessioncore.GrantResult
+	expectShutdownFault string
+}
+
+func shutdownFaultMatches(err error, code string) bool {
+	if drained, ok := err.(interface {
+		Drained() bool
+		Unwrap() error
+	}); ok && drained.Drained() {
+		return shutdownFaultMatches(drained.Unwrap(), code)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if !shutdownFaultMatches(cause, code) {
+				return false
+			}
+		}
+		return len(joined.Unwrap()) > 0
+	}
+	fault, ok := err.(*model.Fault)
+	return code != "" && ok && fault.Code == code && fault.Cause == nil
 }
 
 func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
@@ -106,7 +126,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := f.application.Shutdown(ctx); err != nil {
+		if err := f.application.Shutdown(ctx); err != nil && !shutdownFaultMatches(err, f.expectShutdownFault) {
 			t.Error(err)
 		}
 	})
@@ -278,6 +298,7 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 	if _, err = sp.DecodeEvent(frame["event"]); err != nil {
 		t.Fatal(err)
 	}
+	f.expectShutdownFault = "unauthenticated"
 	if _, err = f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}
