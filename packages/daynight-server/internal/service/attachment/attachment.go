@@ -20,6 +20,20 @@ type Attachments struct {
 	files     filestorage.Storage
 }
 
+// fileEffectError records that a file mutation was entered. The underlying
+// transaction result remains available, but cannot undo that external effect.
+type fileEffectError struct{ cause error }
+
+func (e *fileEffectError) Error() string { return e.cause.Error() }
+func (e *fileEffectError) Unwrap() error { return e.cause }
+
+// FileEffectPossible reports whether an unsuccessful operation entered file
+// mutation; an error after this point cannot prove the file was unchanged.
+func FileEffectPossible(err error) bool {
+	var effect *fileEffectError
+	return errors.As(err, &effect)
+}
+
 func NewAttachments(database store.SnapshotReader, mutations store.AttachmentMutationWriter, files filestorage.Storage) *Attachments {
 	return &Attachments{store: database, mutations: mutations, files: files}
 }
@@ -93,9 +107,17 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 	if err != nil {
 		return model.Attachment{}, false, err
 	}
+	if err := attachmentcore.ValidateWritePath(address.RelativePath); err != nil {
+		return model.Attachment{}, false, err
+	}
 	if err := attachmentcore.ValidateContentType(contentType); err != nil {
 		return model.Attachment{}, false, err
 	}
+	permit, err := s.files.AcquireGate(ctx, filestorage.TargetGate, address.StoragePath)
+	if err != nil {
+		return model.Attachment{}, false, fmt.Errorf("acquire attachment gate: %w", err)
+	}
+	defer permit.Close()
 	var attachment model.Attachment
 	var created bool
 	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
@@ -129,6 +151,11 @@ func (s *Attachments) Open(ctx context.Context, principal model.Principal, proje
 	if err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
+	permit, err := s.files.AcquireGate(ctx, filestorage.TargetGate, address.StoragePath)
+	if err != nil {
+		return model.Attachment{}, filestorage.Object{}, fmt.Errorf("acquire attachment gate: %w", err)
+	}
+	defer permit.Close()
 	var attachment model.Attachment
 	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
 		var err error
@@ -153,10 +180,17 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 	if err != nil {
 		return err
 	}
-	return s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
+	permit, err := s.files.AcquireGate(ctx, filestorage.TargetGate, address.StoragePath)
+	if err != nil {
+		return fmt.Errorf("acquire attachment gate: %w", err)
+	}
+	defer permit.Close()
+	fileStarted := false
+	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
 		if _, err := attachmentcore.Metadata(ctx, dao, address); err != nil {
 			return err
 		}
+		fileStarted = true
 		if err := s.files.Delete(ctx, attachmentcore.Bucket, address.StoragePath); err != nil {
 			return fmt.Errorf("delete attachment content: %w", err)
 		}
@@ -165,9 +199,26 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 		}
 		return nil
 	})
+	if err != nil && fileStarted {
+		return &fileEffectError{cause: err}
+	}
+	return err
 }
 
 func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (attachmentcore.Page, error) {
+	return s.list(ctx, principal, projectID, taskID, request, 0, 0)
+}
+
+// ListBounded omits oversized path or content type fields and marks those rows.
+// It avoids materializing unbounded metadata before an adapter's output limit.
+func (s *Attachments) ListBounded(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
+	if maxPathBytes < 1 || maxFieldBytes < 1 {
+		return attachmentcore.Page{}, &model.Fault{Code: "invalid_input", Message: "Field limit must be positive."}
+	}
+	return s.list(ctx, principal, projectID, taskID, request, maxPathBytes, maxFieldBytes)
+}
+
+func (s *Attachments) list(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return attachmentcore.Page{}, err
 	}
@@ -183,6 +234,8 @@ func (s *Attachments) List(ctx context.Context, principal model.Principal, proje
 	if err != nil {
 		return attachmentcore.Page{}, err
 	}
+	query.MaxFieldBytes = maxFieldBytes
+	query.MaxPathBytes = maxPathBytes
 	var result store.AttachmentPage
 	err = s.read(ctx, principal, projectID, taskID, func(reader store.AttachmentReader) error {
 		var err error
