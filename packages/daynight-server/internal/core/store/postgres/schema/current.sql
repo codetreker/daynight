@@ -1,4 +1,4 @@
--- Schema snapshot version: 44
+-- Schema snapshot version: 45
 
 CREATE TABLE "bot_configuration_preferences" (
     "user_id" "uuid" NOT NULL,
@@ -11,6 +11,30 @@ CREATE TABLE "bot_configuration_preferences" (
     CONSTRAINT "bot_configuration_preferences_check1" CHECK (((("provider" IS NULL) AND ("provider_creation_order" IS NULL)) OR (("provider" IS NOT NULL) AND ("provider_creation_order" IS NOT NULL) AND ("provider_creation_order" > 0)))),
     CONSTRAINT "bot_configuration_preferences_check2" CHECK ((("cwd" IS NOT NULL) OR ("provider" IS NOT NULL))),
     CONSTRAINT "bot_configuration_preferences_provider_check" CHECK (("provider" = ANY (ARRAY['codex'::"text", 'claude'::"text", 'copilot'::"text"])))
+);
+
+CREATE TABLE "bot_effort_preferences" (
+    "user_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "provider" "text" NOT NULL,
+    "model" "text" NOT NULL,
+    "reasoning_effort" "text" NOT NULL,
+    "creation_order" bigint NOT NULL,
+    CONSTRAINT "bot_effort_preferences_creation_order_check" CHECK (("creation_order" > 0)),
+    CONSTRAINT "bot_effort_preferences_model_check" CHECK ((("octet_length"("model") >= 1) AND ("octet_length"("model") <= 256))),
+    CONSTRAINT "bot_effort_preferences_provider_check" CHECK (("provider" = ANY (ARRAY['codex'::"text", 'claude'::"text", 'copilot'::"text"]))),
+    CONSTRAINT "bot_effort_preferences_reasoning_effort_check" CHECK ((("octet_length"("reasoning_effort") >= 1) AND ("octet_length"("reasoning_effort") <= 64)))
+);
+
+CREATE TABLE "bot_model_preferences" (
+    "user_id" "uuid" NOT NULL,
+    "worker_id" "uuid" NOT NULL,
+    "provider" "text" NOT NULL,
+    "model" "text" NOT NULL,
+    "creation_order" bigint NOT NULL,
+    CONSTRAINT "bot_model_preferences_creation_order_check" CHECK (("creation_order" > 0)),
+    CONSTRAINT "bot_model_preferences_model_check" CHECK ((("octet_length"("model") >= 1) AND ("octet_length"("model") <= 256))),
+    CONSTRAINT "bot_model_preferences_provider_check" CHECK (("provider" = ANY (ARRAY['codex'::"text", 'claude'::"text", 'copilot'::"text"])))
 );
 
 CREATE TABLE "bot_worker_preferences" (
@@ -600,6 +624,12 @@ CREATE TABLE "workers" (
 ALTER TABLE ONLY "bot_configuration_preferences"
     ADD CONSTRAINT "bot_configuration_preferences_pkey" PRIMARY KEY ("user_id", "worker_id");
 
+ALTER TABLE ONLY "bot_effort_preferences"
+    ADD CONSTRAINT "bot_effort_preferences_pkey" PRIMARY KEY ("user_id", "worker_id", "provider", "model");
+
+ALTER TABLE ONLY "bot_model_preferences"
+    ADD CONSTRAINT "bot_model_preferences_pkey" PRIMARY KEY ("user_id", "worker_id", "provider");
+
 ALTER TABLE ONLY "bot_worker_preferences"
     ADD CONSTRAINT "bot_worker_preferences_pkey" PRIMARY KEY ("user_id");
 
@@ -885,6 +915,12 @@ CREATE INDEX "workers_recent" ON "workers" USING "btree" ("user_id", "last_seen_
 
 ALTER TABLE ONLY "bot_configuration_preferences"
     ADD CONSTRAINT "bot_configuration_preferences_user_id_worker_id_fkey" FOREIGN KEY ("user_id", "worker_id") REFERENCES "workers"("user_id", "worker_id");
+
+ALTER TABLE ONLY "bot_effort_preferences"
+    ADD CONSTRAINT "bot_effort_preferences_user_id_worker_id_fkey" FOREIGN KEY ("user_id", "worker_id") REFERENCES "workers"("user_id", "worker_id");
+
+ALTER TABLE ONLY "bot_model_preferences"
+    ADD CONSTRAINT "bot_model_preferences_user_id_worker_id_fkey" FOREIGN KEY ("user_id", "worker_id") REFERENCES "workers"("user_id", "worker_id");
 
 ALTER TABLE ONLY "bot_worker_preferences"
     ADD CONSTRAINT "bot_worker_preferences_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id");
