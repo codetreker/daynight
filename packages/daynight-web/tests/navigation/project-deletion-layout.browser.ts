@@ -26,6 +26,11 @@ test('a collapsed deletion result reserves space for the task Session composer',
   const deletedProject = { id: deleting, name: 'Project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time,
     ownership: { teamId, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 } };
   const access = (id: string) => ({ ...directAccessFixture(id, TEST_VIEWER_ID, 'admin'), teamRole: 'admin' as const, canTransfer: true });
+  await page.addInitScript(() => {
+    const viewport = Object.assign(new EventTarget(), { width: innerWidth, height: innerHeight, offsetTop: 0, offsetLeft: 0 });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+    (window as unknown as { viewportProbe: typeof viewport }).viewportProbe = viewport;
+  });
   await page.routeWebSocket('**/channel*', socket => socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' })));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -47,6 +52,20 @@ test('a collapsed deletion result reserves space for the task Session composer',
     if (path === `${root}/sessions` || path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'missing' } }, 404);
   });
+  const visual = async (width: number, height: number, top: number, left: number, event = 'resize') => page.evaluate(({ width, height, top, left, event }) => {
+    const viewport = (window as unknown as { viewportProbe: EventTarget & { width: number; height: number; offsetTop: number; offsetLeft: number } }).viewportProbe;
+    Object.assign(viewport, { width, height, offsetTop: top, offsetLeft: left }); viewport.dispatchEvent(new Event(event));
+  }, { width, height, top, left, event });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=session`);
+  await expect(page.locator('.session-composer textarea')).toBeVisible();
+  await visual(280, 400, 50, 20);
+  await page.locator('.session-fullscreen-toggle').click();
+  await expect(page.locator('.session-fullscreen-toggle')).toHaveAttribute('aria-pressed', 'true');
+  const originalViewport = await page.locator('.task-agent-session').boundingBox();
+  expect(originalViewport).toEqual({ x: 20, y: 50, width: 280, height: 400 });
+  await visual(280, 400, 70, 30, 'scroll');
+  await expect.poll(async () => page.locator('.task-agent-session').boundingBox()).toEqual({ x: 30, y: 70, width: 280, height: 400 });
+  await page.locator('.session-fullscreen-toggle').click();
   await page.goto(`/projects/${deleting}/settings`);
   await page.getByRole('button', { name: 'Delete project', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Delete this project?' });
@@ -75,11 +94,37 @@ test('a collapsed deletion result reserves space for the task Session composer',
   for (const width of [320, 375, 768]) { await page.setViewportSize({ width, height: 720 }); await assertSpace(); }
   await page.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
   await assertSpace();
+  await visual(768, 720, 0, 0);
   await page.locator('.session-fullscreen-toggle').click();
   await expect(page.locator('.session-fullscreen-toggle')).toHaveAttribute('aria-pressed', 'true');
   await assertSpace();
+  await page.locator('.session-composer textarea').fill('Unsent message');
+  await expect(page.locator('.session-composer button[type="submit"]')).toBeEnabled();
+  await visual(350, 300, 80, 45);
+  await expect.poll(async () => page.locator('.task-agent-session').evaluate(root => root.getBoundingClientRect().top)).toBe(80);
+  const verifyVisualBounds = async (top: number, left: number, width: number, height: number) => {
+    const rects = await page.evaluate(() => {
+      const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON();
+      const send = document.querySelector<HTMLElement>('.session-composer button[type="submit"]')!;
+      const box = send.getBoundingClientRect(), hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return { session: rect('.task-agent-session'), slot: rect('.standalone-deletion-slot'), composer: rect('.session-composer'), header: rect('.session-header'), send: box.toJSON(), hit: hit === send || send.contains(hit) };
+    });
+    expect(rects.session.left).toBeCloseTo(left, 1); expect(rects.session.top).toBeCloseTo(top, 1);
+    expect(rects.session.width).toBeCloseTo(width, 1); expect(rects.session.bottom).toBeLessThanOrEqual(rects.slot.top + 1);
+    expect(rects.slot.bottom).toBeLessThanOrEqual(top + height + 1); expect(rects.slot.left).toBeCloseTo(left, 1);
+    expect(rects.send.bottom, JSON.stringify(rects)).toBeLessThanOrEqual(rects.slot.top + 1); expect(rects.hit, JSON.stringify(rects)).toBe(true);
+    await page.locator('.session-composer textarea').focus(); await expect(page.locator('.session-composer textarea')).toBeFocused();
+  };
+  await verifyVisualBounds(80, 45, 350, 300);
+  await visual(350, 300, 110, 65, 'scroll');
+  await expect.poll(async () => page.locator('.task-agent-session').evaluate(root => root.getBoundingClientRect().left)).toBe(65);
+  await verifyVisualBounds(110, 65, 350, 300);
   await page.getByRole('button', { name: 'Show deletion results' }).focus();
   await page.keyboard.press('Enter'); await expect(page.getByText(/project deletion result is unknown/i)).toBeVisible();
+  const expanded = await page.locator('.standalone-deletion-panel').boundingBox();
+  expect(expanded!.y).toBeGreaterThanOrEqual(110); expect(expanded!.x).toBeGreaterThanOrEqual(65);
+  expect(expanded!.x + expanded!.width).toBeLessThanOrEqual(415);
+  expect(expanded!.y + expanded!.height).toBeLessThanOrEqual(410);
   const lastResult = page.getByRole('link', { name: 'Return to projects' });
   await lastResult.focus(); await page.keyboard.press('Tab');
   expect(await page.locator('.task-agent-session').evaluate(root => root.contains(document.activeElement))).toBe(true);

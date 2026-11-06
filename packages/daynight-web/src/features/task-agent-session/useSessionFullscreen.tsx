@@ -7,6 +7,11 @@ export type SessionFullscreenRegistration = { readonly owner: object; readonly r
 export const SessionFullscreenContext = createContext<((registration: SessionFullscreenRegistration) => (() => void)) | null>(null);
 
 type Identity = { readonly client: object; readonly userId: string; readonly identity: string | null };
+type ViewportOwner = { refresh: () => void };
+type ViewportOwnership = { readonly original: readonly string[]; readonly owners: ViewportOwner[] };
+const viewportOwners = new WeakMap<HTMLElement, ViewportOwnership>();
+type RootViewportOwnership = { readonly fullscreen: string | null; readonly original: readonly string[]; readonly reserve: string; readonly owners: ViewportOwner[] };
+const rootViewportOwners = new WeakMap<HTMLElement, RootViewportOwnership>();
 
 export function useSessionFullscreen({ client, userId, active, identity, fullscreenBoundary }: Identity & { readonly active: boolean; readonly fullscreenBoundary?: RefObject<HTMLElement | null> }) {
   const sectionRef = useRef<HTMLElement>(null);
@@ -89,31 +94,66 @@ export function useSessionFullscreen({ client, userId, active, identity, fullscr
   useLayoutEffect(() => {
     if (!fullscreen) return;
     const root = rootElement();
-    const originalFullscreen = root.getAttribute('data-session-fullscreen');
-    root.setAttribute('data-session-fullscreen', 'true');
     const viewport = window.visualViewport;
     const keys = ['width', 'height', 'top', 'left'] as const;
-    const original = keys.map(key => root.style.getPropertyValue(`--session-viewport-${key}`));
+    const rootState = rootViewportOwners.get(root) ?? { fullscreen: root.getAttribute('data-session-fullscreen'), original: keys.map(key => root.style.getPropertyValue(`--session-viewport-${key}`)), reserve: root.style.getPropertyValue('--session-result-reserve'), owners: [] };
+    const route = root.closest<HTMLElement>('.standalone-task-route');
+    const slot = resultSlot();
+    const routeKeys = [...keys.map(key => `--standalone-session-viewport-${key}`), '--standalone-session-result-reserve'];
+    const routeState: ViewportOwnership | null = route !== null && slot !== null
+      ? viewportOwners.get(route) ?? { original: routeKeys.map(key => route.style.getPropertyValue(key)), owners: [] }
+      : null;
+    const routeOwner: ViewportOwner = { refresh: () => {} };
+    rootState.owners.push(routeOwner); rootViewportOwners.set(root, rootState);
+    root.setAttribute('data-session-fullscreen', 'true');
+    if (route !== null && routeState !== null) { routeState.owners.push(routeOwner); viewportOwners.set(route, routeState); }
     const resize = () => {
       const values = [viewport?.width ?? window.innerWidth, viewport?.height ?? window.innerHeight, viewport?.offsetTop ?? 0, viewport?.offsetLeft ?? 0];
-      keys.forEach((key, index) => root.style.setProperty(`--session-viewport-${key}`, `${values[index]}px`));
+      const currentRoot = rootState.owners.at(-1) === routeOwner;
+      if (currentRoot) keys.forEach((key, index) => root.style.setProperty(`--session-viewport-${key}`, `${values[index]}px`));
+      if (route !== null && slot !== null && routeState !== null) {
+        const reserve = `${slot.getBoundingClientRect().height}px`;
+        if (currentRoot) root.style.setProperty('--session-result-reserve', reserve);
+        if (routeState.owners.at(-1) === routeOwner) {
+          keys.forEach((key, index) => route.style.setProperty(`--standalone-session-viewport-${key}`, `${values[index]}px`));
+          route.style.setProperty('--standalone-session-result-reserve', reserve);
+        }
+      }
     };
+    routeOwner.refresh = resize;
     resize();
+    const slotObserver = slot !== null && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
+    if (slot !== null) slotObserver?.observe(slot);
     window.addEventListener('resize', resize);
     viewport?.addEventListener('resize', resize);
     viewport?.addEventListener('scroll', resize);
     return () => {
-      if (originalFullscreen === null) root.removeAttribute('data-session-fullscreen');
-      else root.setAttribute('data-session-fullscreen', originalFullscreen);
       window.removeEventListener('resize', resize);
       viewport?.removeEventListener('resize', resize);
       viewport?.removeEventListener('scroll', resize);
-      keys.forEach((key, index) => {
-        if (original[index]) root.style.setProperty(`--session-viewport-${key}`, original[index]!);
-        else root.style.removeProperty(`--session-viewport-${key}`);
-      });
+      slotObserver?.disconnect();
+      if (route !== null && routeState !== null) {
+        const index = routeState.owners.indexOf(routeOwner);
+        const wasCurrent = index === routeState.owners.length - 1;
+        if (index >= 0) routeState.owners.splice(index, 1);
+        if (routeState.owners.length === 0) {
+          routeKeys.forEach((key, index) => { if (routeState.original[index]) route.style.setProperty(key, routeState.original[index]!); else route.style.removeProperty(key); });
+          viewportOwners.delete(route);
+        } else if (wasCurrent) routeState.owners.at(-1)!.refresh();
+      }
+      const index = rootState.owners.indexOf(routeOwner);
+      const wasCurrent = index === rootState.owners.length - 1;
+      if (index >= 0) rootState.owners.splice(index, 1);
+      if (rootState.owners.length === 0) {
+        if (rootState.fullscreen === null) root.removeAttribute('data-session-fullscreen');
+        else root.setAttribute('data-session-fullscreen', rootState.fullscreen);
+        keys.forEach((key, index) => { if (rootState.original[index]) root.style.setProperty(`--session-viewport-${key}`, rootState.original[index]!); else root.style.removeProperty(`--session-viewport-${key}`); });
+        if (rootState.reserve) root.style.setProperty('--session-result-reserve', rootState.reserve);
+        else root.style.removeProperty('--session-result-reserve');
+        rootViewportOwners.delete(root);
+      } else if (wasCurrent) rootState.owners.at(-1)!.refresh();
     };
-  }, [fullscreen, rootElement]);
+  }, [fullscreen, rootElement, resultSlot]);
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLElement> | globalThis.KeyboardEvent) => {
     if (!fullscreen || event.defaultPrevented) return;
