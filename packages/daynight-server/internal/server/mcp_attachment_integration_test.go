@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -32,7 +33,7 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	files := attachmentTestFiles(t)
-	handler, err := New(Dependencies{Store: database, Files: files}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +48,7 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	identityClient, err := config.identityClient()
+	identityClient, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}
