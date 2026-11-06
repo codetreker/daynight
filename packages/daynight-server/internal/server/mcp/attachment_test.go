@@ -160,7 +160,7 @@ func TestAttachmentListStopsBeforeOversizedMetadata(t *testing.T) {
 	args["cursor"] = first["nextCursor"]
 	fault := object(t, invitationCall(t, client, "task_attachment_list", args, true)["error"])
 	refs := object(t, fault["refs"])
-	if fault["code"] != "resource_conflict" || refs["path"] != "b" || refs["readTool"] != "task_attachment_read" {
+	if fault["code"] != "resource_conflict" || refs["path"] != "b" || refs["restListPath"] != "/api/v1/projects/"+invitationTestProjectID+"/tasks/"+invitationTestTeamID+"/attachments" {
 		t.Fatalf("oversized: %#v", fault)
 	}
 	args["cursor"] = refs["nextCursor"]
@@ -186,7 +186,7 @@ func TestAttachmentListHighEscapeBudget(t *testing.T) {
 		t.Fatalf("unbounded error: %d %v", len(encoded), err)
 	}
 	refs := object(t, object(t, out["error"])["refs"])
-	if refs["path"] != "000" || refs["readTool"] != "task_attachment_read" {
+	if refs["path"] != "000" || refs["restListPath"] == nil {
 		t.Fatalf("missing reference: %+v", refs)
 	}
 }
@@ -270,7 +270,7 @@ func TestAttachmentListMissingPathDoesNotInventReference(t *testing.T) {
 	client := fixture.client(t, "2026-07-28", "alice")
 	failure := object(t, invitationCall(t, client, "task_attachment_list", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}, true)["error"])
 	refs := object(t, failure["refs"])
-	if failure["code"] != "resource_conflict" || refs["path"] != nil || refs["nextCursor"] != nil || refs["readTool"] != nil || s.calls != 2 {
+	if failure["code"] != "resource_conflict" || refs["path"] != nil || refs["nextCursor"] != nil || refs["restListPath"] != nil || s.calls != 2 {
 		t.Fatalf("invented reference: %#v calls=%d", failure, s.calls)
 	}
 }

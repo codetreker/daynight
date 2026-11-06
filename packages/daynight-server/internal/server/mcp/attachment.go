@@ -168,8 +168,8 @@ func oversizedAttachment(actor RequestActor, project, task string, item model.At
 	if err != nil {
 		return ToolResult{}, err
 	}
-	refs["path"], refs["readTool"], refs["nextCursor"] = item.Path, "task_attachment_read", continuation.NextCursor
-	return ToolResult{Refs: refs}, &model.Fault{Code: "resource_conflict", Message: "Attachment exceeds the page budget; inspect it and continue with nextCursor."}
+	refs["path"], refs["restListPath"], refs["nextCursor"] = item.Path, "/api/v1/projects/"+project+"/tasks/"+task+"/attachments", continuation.NextCursor
+	return ToolResult{Refs: refs}, &model.Fault{Code: "resource_conflict", Message: "MCP cannot return this attachment metadata within the page budget. Use GET restListPath with a PAT or browser session and follow REST nextCursor pages to find path. MCP OAuth access tokens cannot authenticate REST. Continue MCP with nextCursor."}
 }
 
 func removeAttachment(ctx context.Context, actor RequestActor, attachments attachmentOperations, input attachmentInput) (ToolResult, error) {

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -143,8 +145,62 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	page := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "limit": 2}, false)["data"])
 	oversized := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": page["nextCursor"]}, true)["error"])
 	refs := obj(oversized["refs"])
-	if oversized["code"] != "resource_conflict" || refs["path"] != "giant" || refs["readTool"] != "task_attachment_read" {
+	if oversized["code"] != "resource_conflict" || refs["path"] != "giant" || refs["projectId"] != projectID || refs["taskId"] != parent.ID || refs["restListPath"] == nil || refs["nextCursor"] == nil {
 		t.Fatalf("oversized metadata: %+v", oversized)
+	}
+	message := oversized["message"].(string)
+	if !strings.Contains(message, "PAT or browser session") || !strings.Contains(message, "MCP OAuth access tokens cannot authenticate REST") {
+		t.Fatalf("REST credential guidance: %s", message)
+	}
+	found := false
+	var restCursor *string
+	pages := 0
+	for {
+		address := origin + refs["restListPath"].(string) + "?limit=1"
+		if restCursor != nil {
+			address += "&cursor=" + url.QueryEscape(*restCursor)
+		}
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, address, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+tokens[0])
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restPage struct {
+			Items []struct {
+				Path        string `json:"path"`
+				ContentType string `json:"contentType"`
+				SizeBytes   int64  `json:"sizeBytes"`
+			} `json:"items"`
+			NextCursor *string `json:"nextCursor"`
+		}
+		decodeErr := json.NewDecoder(response.Body).Decode(&restPage)
+		closeErr := response.Body.Close()
+		if response.StatusCode != http.StatusOK || decodeErr != nil || closeErr != nil {
+			t.Fatalf("REST recovery status=%d decode=%v close=%v", response.StatusCode, decodeErr, closeErr)
+		}
+		pages++
+		for _, item := range restPage.Items {
+			if item.Path == refs["path"] {
+				found = true
+				if item.ContentType != "text/plain; x="+strings.Repeat("a", 100000) || item.SizeBytes != 1 {
+					t.Fatalf("REST recovery metadata: %+v", item)
+				}
+			}
+		}
+		if found || restPage.NextCursor == nil {
+			break
+		}
+		if pages >= 10 {
+			t.Fatal("REST recovery did not converge")
+		}
+		restCursor = restPage.NextCursor
+	}
+	if !found || pages < 2 {
+		t.Fatal("REST recovery did not return the attachment")
 	}
 	boundaryPath := strings.Repeat(strings.Repeat("😀", 50)+"/", 20) + "😀😀😀😀"
 	boundedContentType := "text/plain; x=" + strings.Repeat("a", 4000)
