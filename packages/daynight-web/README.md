@@ -1844,8 +1844,16 @@ The existing root `build`, `test` and `acceptance` commands retain their CLI sco
 
 `web:test` serially composes two required package commands. `test:harness` runs
 all Node acceptance/tooling harness tests, including the coverage checker,
-asset publication and acceptance receipts. `test:coverage` runs the ordinary
-Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
+asset publication and acceptance receipts. `test:coverage` runs both ordinary
+Vitest projects in one V8 collection and then the exact statement gate. The
+explicit `node` inventory in `vitest.config.ts` selects browser-independent
+algorithms, parsing, HTTP and state tests. Its setup restores mocks, globals and
+timers after each case. The complementary `ui` project uses jsdom and the complete
+React, IndexedDB and navigation setup; new test files enter that project until
+their dependencies have been reviewed. Both projects retain isolated `forks`
+workers and share the command's total worker budget. The
+[test environment decision](../../.agents/notes/implemented/testing/2026-11-06-web-test-environments.md)
+owns that selection and its maintenance trade-off. Full-scale graph,
 model and geometry workloads live in `.stress.ts` files and run only through
 `pnpm test:stress` from this package (`pnpm web:test:stress` from the repository
 root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
