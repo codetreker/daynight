@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
@@ -102,6 +105,34 @@ func TestSessionResultHandlesCancellationEncodingAndWriteFailure(t *testing.T) {
 		t.Fatal("encoding failure did not become a response error")
 	}
 	routes.Result(&failingResponseWriter{header: make(http.Header)}, request, http.StatusOK, map[string]string{"text": "<>&"}, nil)
+}
+
+func TestChannelAdmissionFailureDuringShutdown(t *testing.T) {
+	for _, tc := range []struct {
+		name, code, message, retry string
+		closing                    bool
+		err                        error
+		status                     int
+	}{
+		{"active unavailable", "internal_error", "internal server error", "", false, &model.Fault{Code: "service_unavailable", Message: "private detail"}, http.StatusInternalServerError},
+		{"closing unavailable", "rate_limited", "Session channel capacity is unavailable.", "60", true, &model.Fault{Code: "service_unavailable", Message: "private detail"}, http.StatusTooManyRequests},
+		{"closing forbidden", "forbidden", "not allowed", "", true, &model.Fault{Code: "forbidden", Message: "not allowed"}, http.StatusForbidden},
+		{"closing operational error", "internal_error", "internal server error", "", true, errors.New("private detail"), http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routes := NewRoutes(nil, nil, testLogger())
+			routes.closing = tc.closing
+			response := httptest.NewRecorder()
+			routes.channelAdmissionFailure(response, httptest.NewRequest(http.MethodGet, "/channel", nil), tc.err)
+			var body api.ErrorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != tc.status || body.Error.Code != tc.code || body.Error.Message != tc.message || response.Header().Get("Retry-After") != tc.retry {
+				t.Fatalf("admission response: status=%d body=%+v retry=%q", response.Code, body.Error, response.Header().Get("Retry-After"))
+			}
+		})
+	}
 }
 
 // Block inside Hijack to exercise capacity before the connection enters the map.
@@ -226,6 +257,9 @@ func TestSessionShutdownRetainsOnlyDrainErrors(t *testing.T) {
 		err := routes.Shutdown(ctx)
 		if !errors.Is(err, first) || !errors.Is(err, second) || errors.Is(err, ordinary) {
 			t.Fatalf("shutdown %d returned wrong disconnect failures: %v", i, err)
+		}
+		if !strings.Contains(err.Error(), first.Error()) || !strings.Contains(err.Error(), second.Error()) {
+			t.Fatalf("shutdown %d lost disconnect diagnostics: %v", i, err)
 		}
 		if completed, ok := err.(interface{ Drained() bool }); !ok || !completed.Drained() {
 			t.Fatalf("shutdown %d did not report completed drain: %v", i, err)

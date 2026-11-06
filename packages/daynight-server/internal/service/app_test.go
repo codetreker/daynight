@@ -177,3 +177,17 @@ func TestConcurrentCloseHonorsCallerDeadline(t *testing.T) {
 		t.Fatal("first close did not finish")
 	}
 }
+
+func TestIdentityClientPreservesSafeSDKFailure(t *testing.T) {
+	c := appTestConfig(t)
+	c.UniAuthAppID = "invalid:private-id"
+	c.UniAuthAppSecret = "private-secret"
+	client, err := NewIdentityClient(c)
+	var failure *config.ConfigurationError
+	if client != nil || !errors.As(err, &failure) || errors.Unwrap(failure) == nil {
+		t.Fatalf("SDK failure lost configuration context or cause: %v", err)
+	}
+	if strings.Contains(err.Error(), c.UniAuthAppID) || strings.Contains(err.Error(), c.UniAuthAppSecret) || strings.Contains(errors.Unwrap(failure).Error(), c.UniAuthAppSecret) {
+		t.Fatal("SDK failure exposed credentials")
+	}
+}

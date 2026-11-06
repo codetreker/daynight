@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -771,5 +772,80 @@ func TestCompletedRelayFailureReleasesAppAndRemainsVisible(t *testing.T) {
 				t.Fatalf("unexpected calls: relay=%d drain=%d close=%d", relayCalls.Load(), drainCalls.Load(), closeCalls.Load())
 			}
 		})
+	}
+}
+
+// multiCause represents an independently supplied aggregate, including malformed
+// or empty aggregates that cannot establish a cancellation-only result.
+type multiCause struct{ causes []error }
+
+func (e multiCause) Error() string   { return "aggregate" }
+func (e multiCause) Unwrap() []error { return e.causes }
+
+func TestCancellationOnlyErrorClassification(t *testing.T) {
+	cleanup := errors.New("cleanup failed")
+	cases := []struct {
+		name        string
+		err         error
+		onlyContext bool
+	}{
+		{"nil", nil, false},
+		{"canceled", context.Canceled, true},
+		{"wrapped deadline", fmt.Errorf("drain: %w", context.DeadlineExceeded), true},
+		{"nested context causes", fmt.Errorf("close: %w", errors.Join(context.Canceled, errors.Join(fmt.Errorf("deadline: %w", context.DeadlineExceeded), context.Canceled))), true},
+		{"nested mixed causes", fmt.Errorf("close: %w", errors.Join(context.Canceled, fmt.Errorf("cleanup: %w", cleanup))), false},
+		{"empty aggregate", multiCause{}, false},
+		{"aggregate with empty cause", multiCause{[]error{context.Canceled, nil}}, false},
+		{"unrelated error", cleanup, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := onlyContextError(c.err); got != c.onlyContext {
+				t.Fatalf("classify %v = %v, want %v", c.err, got, c.onlyContext)
+			}
+		})
+	}
+}
+
+func TestConcurrentCloseWaiterDeadlineDoesNotChangeOwner(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	var relayCalls, closeCalls atomic.Int32
+	runtime, err := Start(context.Background(), "127.0.0.1:0", time.Second, time.Second, testLogger(), http.NotFoundHandler(), func(context.Context) error {
+		relayCalls.Add(1)
+		close(entered)
+		<-release
+		return nil
+	}, nil, nil, func(context.Context) error { closeCalls.Add(1); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() { first <- runtime.Close(context.Background()) }()
+	await(t, entered)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	err = runtime.Close(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting close did not respect its deadline: %v", err)
+	}
+	if relayCalls.Load() != 1 || closeCalls.Load() != 0 {
+		t.Fatal("waiting caller changed the active drain")
+	}
+	close(release)
+	if err := await(t, first); err != nil {
+		t.Fatalf("owning close failed: %v", err)
+	}
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatalf("completed close failed: %v", err)
+	}
+	if relayCalls.Load() != 1 || closeCalls.Load() != 1 {
+		t.Fatalf("unexpected calls: relay=%d close=%d", relayCalls.Load(), closeCalls.Load())
 	}
 }
