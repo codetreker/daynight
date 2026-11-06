@@ -172,10 +172,14 @@ const operation=createOperation({limits:{totalMs:5000,requestMs:5000}});try{awai
     const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => parent.once("close", (code, signal) => resolve({ code, signal })));
     const retained = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("The retained daemon must not be replaced"); } });
     try {
-      await waitUntil(async () => await present(resultFile) && await present(f.ready));
-      const result = JSON.parse(await readFile(resultFile, "utf8")) as { daemonPid: number; error?: string };
-      expect(result.error).toMatch(failure === "registration" ? /journal refused/ : /protocol 22/);
-      expect(Number(await readFile(f.ready, "utf8"))).toBe(result.daemonPid);
+      let result: { daemonPid: number; error?: string } | undefined;
+      await waitUntil(async () => {
+        if (!await present(resultFile) || !await present(f.ready)) return false;
+        try { result = JSON.parse(await readFile(resultFile, "utf8")) as typeof result; return true; }
+        catch (error) { if (error instanceof SyntaxError) return false; throw error; }
+      });
+      expect(result!.error).toMatch(failure === "registration" ? /journal refused/ : /protocol 22/);
+      expect(Number(await readFile(f.ready, "utf8"))).toBe(result!.daemonPid);
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const outcome = await Promise.race([closed, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 2_000); })]);

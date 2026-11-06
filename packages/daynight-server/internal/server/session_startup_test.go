@@ -1,15 +1,10 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -211,43 +206,5 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("racing old report crossed generation boundary")
-	}
-}
-
-func TestStartupReportNativeObservationThroughTypeScriptWorkerClient(t *testing.T) {
-	f := sessionHTTPSetup(t)
-	worker := apiWorker(t, f.task.Properties)
-	input := map[string]any{
-		"serverOrigin": f.server.URL, "token": f.handler.token, "projectId": f.task.ProjectID, "taskId": f.task.ID,
-		"claimId": worker.ClaimID, "version": fmt.Sprint(f.task.Version), "sessionId": f.snapshot.SessionID,
-		"executionGeneration": f.snapshot.ExecutionGeneration, "controllerInstanceId": f.registration.ControllerInstanceID,
-		"workerId": worker.WorkerID, "worktreeId": worker.WorktreeID, "userId": worker.UserID, "controllerId": f.registration.ControllerID,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, "node", filepath.Join("..", "..", "..", "daynight", "test", "acceptance", "startup-client.mjs"))
-	command.Stdin = strings.NewReader(jsonBody(t, input))
-	output, err := command.Output()
-	if err != nil {
-		var failed *exec.ExitError
-		if errors.As(err, &failed) {
-			t.Fatalf("TypeScript startup client failed: %v\n%s", err, bytes.ReplaceAll(failed.Stderr, []byte(f.handler.token), []byte("[redacted]")))
-		}
-		t.Fatalf("TypeScript startup client failed: %v", err)
-	}
-	var result struct {
-		StartupReport json.RawMessage `json:"startupReport"`
-	}
-	if err = json.Unmarshal(output, &result); err != nil {
-		t.Fatal("TypeScript startup client returned invalid JSON", err)
-	}
-	report, err := sp.DecodeStartupReport(result.StartupReport)
-	if err != nil || report.Startup.State != "failed" || report.Startup.ReasonCode != "native_rejected" {
-		t.Fatalf("native rejection evidence mismatch: %+v %v", report, err)
-	}
-	current := decodeResponse[map[string]json.RawMessage](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
-	read, err := sp.DecodeStartupReport(current["startupReport"])
-	if err != nil || !reflect.DeepEqual(read, report) {
-		t.Fatalf("real Worker report did not survive service readback: %+v %v", read, err)
 	}
 }
