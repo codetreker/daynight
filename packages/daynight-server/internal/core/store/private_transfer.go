@@ -41,6 +41,12 @@ type PrivateTransferDAO interface {
 	SubtractOutstanding(context.Context, string, int64) (model.PrivateTransfer, error)
 	Put(context.Context, model.PrivateTransfer, int64) (model.PrivateTransfer, error)
 	Release(context.Context, model.PrivateTransfer, int64, time.Time, string) (model.PrivateTransfer, error)
+	// Chunk receipts are accessed under the owning transfer lock by an admitted
+	// operation. Insert, reservation consumption, and the transfer state update
+	// must share one transaction after the private object is published.
+	UploadChunk(context.Context, string, string) (model.UploadChunk, error)
+	UploadChunkAt(context.Context, string, int64) (model.UploadChunk, error)
+	InsertUploadChunk(context.Context, model.UploadChunk) error
 	Due(context.Context, time.Time, int) ([]model.PrivateTransfer, error)
 	Prune(context.Context, time.Time, int) (int64, error)
 }

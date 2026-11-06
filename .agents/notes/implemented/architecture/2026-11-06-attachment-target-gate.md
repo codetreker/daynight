@@ -28,7 +28,9 @@ This partially supersedes the concurrency limitation in the archived
 [attachment storage decision](../../archived/architecture/2026-10-21-task-attachment-storage-design.md),
 while retaining its non-atomic failure boundary. The
 [Task deletion serialization](2026-11-06-attachment-task-deletion-serialization.md)
-remains independently necessary for the Task lifecycle.
+continues to govern ordinary attachment mutations. The
+[resumable upload decision](2026-11-06-resumable-mcp-upload.md) records the
+separate admission boundary for MCP upload commits.
 
 ## Alternatives
 
