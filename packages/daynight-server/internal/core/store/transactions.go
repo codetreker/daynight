@@ -10,6 +10,8 @@ type Transactions interface {
 	CredentialFamilyWriter
 	PrivateTransferWriter
 	OAuthClientWriter
+	AuthorizationWriter
+	GrantLifecycleWriter
 	WorkerWriter
 	BotWriter
 	SessionWriter

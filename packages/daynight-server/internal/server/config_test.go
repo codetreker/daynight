@@ -73,7 +73,7 @@ func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) 
 }
 
 func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
-	for _, callbackPath := range []string{"/mcp", "/mcp/callback", "/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
+	for _, callbackPath := range []string{"/mcp", "/mcp/callback", "/oauth", "/oauth/consent", "/.well-known/oauth-authorization-server", "/api/v1/oauth/requests", "/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config := configuredTestConfig()
 			config.UniAuthCallbackURL = config.PublicOrigin + callbackPath

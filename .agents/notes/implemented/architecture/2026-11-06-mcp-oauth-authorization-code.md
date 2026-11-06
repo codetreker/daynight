@@ -30,8 +30,9 @@ code hashes and bindings remain until the grant expires so replay can be detecte
 
 Pending request allocation and pruning share a capacity lock. The public start
 budget precedes client metadata resolution and storage allocation. The browser
-and token adapters are usable in a controlled host; production discovery and
-consent integration remain separate responsibilities.
+and token adapters are mounted with the production consent journey and discovery;
+the [browser integration decision](2026-11-06-mcp-oauth-browser-consent.md)
+owns that composition.
 
 ## Alternatives
 

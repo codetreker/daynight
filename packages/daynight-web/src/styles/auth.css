@@ -417,3 +417,32 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
 .members-project-name { overflow-wrap: anywhere; min-height: 1.5em; }
 .members-project-name-placeholder { display: inline-block; width: min(22rem, 100%); height: 1em; border-radius: 3px; background: var(--line); vertical-align: middle; }
 .members-page-heading > .button { flex-shrink: 0; }
+
+.consent-card .subtitle { text-align: center; line-height: 1.8; }
+.client-identity, .callback-box { border: 1px solid var(--line); border-radius: 8px; background: #fafbfe; padding: 16px; min-width: 0; overflow-wrap: anywhere; }
+.client-identity { display: flex; align-items: flex-start; gap: 12px; margin: 24px 0 22px; }
+.client-identity > div:last-child { min-width: 0; }
+.client-mark { width: 37px; height: 37px; display: flex; align-items: center; justify-content: center; flex: none; border-radius: 9px; color: var(--indigo); background: #efeffd; }
+.client-name { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+.client-origin, .callback-box p, .callback-box code { font-size: 11px; color: #7b8598; overflow-wrap: anywhere; }
+.callback-box { margin-bottom: 24px; }
+.callback-box strong { display: block; font-size: 12px; margin: 6px 0; }
+.callback-box summary { cursor: pointer; color: #6666ca; font-size: 11px; }
+.callback-box code { display: block; margin-top: 8px; }
+.callback-box .callback-local { margin-top: 10px; }
+.access-heading { font-size: 12px; font-weight: 600; color: #4c5870; margin-bottom: 12px; }
+.access-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 13px; }
+.access-list li { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.access-mark { width: 25px; height: 25px; flex: none; display: flex; align-items: center; justify-content: center; color: #7776b4; background: #f2f2fb; border-radius: 6px; }
+.access-list strong { font-size: 12px; color: #4c5870; }
+.access-list p { font-size: 11px; line-height: 1.75; color: #7b8598; overflow-wrap: anywhere; margin-top: 2px; }
+.access-summary, .authorization-duration { font-size: 11px; line-height: 1.85; color: #7c8799; margin-top: 18px; }
+.resource-label { display: flex; gap: 8px; flex-wrap: wrap; font-size: 10px; color: #7b8598; margin-top: 13px; }
+.resource-label code { font: inherit; overflow-wrap: anywhere; color: #59677e; }
+.consent-card .invite-footer { margin-top: 22px; padding-top: 20px; }
+.consent-card .device-actions { margin-top: 20px; }
+.consent-card .invite-account, .consent-card .person { min-width: 0; }
+.consent-card .person-meta, .consent-card .result-detail { overflow-wrap: anywhere; }
+.consent-card .device-result .button { margin-top: 22px; white-space: normal; }
+.consent-card .result-detail { margin-top: 10px; font-size: 11px; color: #7c8799; }
+.consent-card .device-loading { min-height: 270px; flex-direction: column; gap: 15px; }

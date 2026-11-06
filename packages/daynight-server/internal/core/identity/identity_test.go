@@ -298,3 +298,23 @@ func TestPATLifecycleValidationAndFailures(t *testing.T) {
 		t.Fatalf("no-op expiry: %v", err)
 	}
 }
+
+func TestOAuthConsentLoginReturn(t *testing.T) {
+	identity := NewIdentity("https://daynight.example/api/v1/auth/callback")
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/oauth/consent?request=1d455112-e730-45e8-a4c1-749f053fd279", true},
+		{"/oauth/consent?request=invalid", false},
+		{"/oauth/consent?request=1d455112-e730-45e8-a4c1-749f053fd279&request=1d455112-e730-45e8-a4c1-749f053fd279", false},
+		{"/oauth/consent?request=1d455112-e730-45e8-a4c1-749f053fd279&next=https%3A%2F%2Fevil.example", false},
+		{"/oauth/authorize?client_id=client", false},
+		{"/oauth/consent/../authorize", false},
+		{"/oauth/consent?request=1d455112-e730-45e8-a4c1-749f053fd279#fragment", false},
+	} {
+		if got := identity.validReturnPath(tc.path); got != tc.want {
+			t.Errorf("%q: got %v", tc.path, got)
+		}
+	}
+}

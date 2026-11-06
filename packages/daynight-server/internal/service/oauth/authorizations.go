@@ -22,15 +22,16 @@ type StartInput struct {
 }
 type StartResult struct{ RequestID, Binding string }
 type AuthorizationView struct {
-	RequestID   string `json:"requestId"`
-	Status      string `json:"status"`
-	UserID      string `json:"userId"`
-	ClientName  string `json:"clientName"`
-	ClientID    string `json:"clientId"`
-	RedirectURI string `json:"redirectUri"`
-	Resource    string `json:"resource"`
-	Scope       string `json:"scope"`
-	CodeExpired bool   `json:"codeExpired"`
+	RequestID        string `json:"requestId"`
+	Status           string `json:"status"`
+	UserID           string `json:"userId"`
+	ClientName       string `json:"clientName"`
+	ClientID         string `json:"clientId"`
+	ClientProvenance string `json:"clientProvenance"`
+	RedirectURI      string `json:"redirectUri"`
+	Resource         string `json:"resource"`
+	Scope            string `json:"scope"`
+	CodeExpired      bool   `json:"codeExpired"`
 }
 type DecisionInput struct {
 	RequestID, Binding, ExpectedUserID, Decision string
@@ -173,7 +174,7 @@ func (s *Authorizations) Inspect(ctx context.Context, id, binding string, princi
 		status = "expired"
 	}
 	codeExpired := status == "approved" && (a.CodeExpiresAt == nil || !a.CodeExpiresAt.After(now))
-	return AuthorizationView{RequestID: a.ID, Status: status, UserID: principal.UserID, ClientName: client.ClientName, ClientID: a.ClientID, RedirectURI: a.RedirectURI, Resource: a.Resource, Scope: a.Scope, CodeExpired: codeExpired}, nil
+	return AuthorizationView{RequestID: a.ID, Status: status, UserID: principal.UserID, ClientName: client.ClientName, ClientID: a.ClientID, ClientProvenance: client.Provenance, RedirectURI: a.RedirectURI, Resource: a.Resource, Scope: a.Scope, CodeExpired: codeExpired}, nil
 }
 func (s *Authorizations) Decide(ctx context.Context, in DecisionInput) (DecisionResult, error) {
 	if !validSession(in.Principal) {
