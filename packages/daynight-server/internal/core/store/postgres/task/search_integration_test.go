@@ -2,9 +2,9 @@ package task_test
 
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	query "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 	"testing"
 )
 
