@@ -272,8 +272,10 @@ export const runWorker = async (options: {
     const reserveRepository = (binding: WorkerProject, applicationSignal: AbortSignal): Promise<void> => {
       const reservation = reservationTail.then(async () => {
         applicationSignal.throwIfAborted();
+        if (reservations.has(binding.projectId)) throw new Error(`Project ${binding.projectId} already has a repository preparation in progress.`);
         const retained = getStore().listProjects().filter(project => project.projectId !== binding.projectId);
-        await validateWorkerRepositoryLocations([...retained.map(value => ({ path: value.localPath })), ...[...reservations.values()].map(value => ({ path: value })), { path: binding.localPath }], paths, applicationSignal);
+        const retainedIds = new Set(retained.map(project => project.projectId));
+        await validateWorkerRepositoryLocations([...retained.map(value => ({ path: value.localPath })), ...[...reservations].filter(([projectId]) => !retainedIds.has(projectId)).map(([, value]) => ({ path: value })), { path: binding.localPath }], paths, applicationSignal);
         applicationSignal.throwIfAborted();
         reservations.set(binding.projectId, binding.localPath);
       });

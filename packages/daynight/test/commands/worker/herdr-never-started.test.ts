@@ -5,7 +5,7 @@ import { ApiError } from "../../../src/api/client.js";
 import { execFileSync } from "node:child_process";
 import { runRepositoryGit } from "../../../src/repository/git.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, existsSync } from "node:fs";
 import { afterEach, expect, it, onTestFailed, vi } from "vitest";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
@@ -168,3 +168,85 @@ it("does not require a historical project mapping after retired local bookkeepin
   expect(() => coordinator.assertCanAcquire({ projectId: uuid(999), taskId: uuid(998) })).not.toThrow();
   expect(f.git.findWorktree).not.toHaveBeenCalled(); expect(await coordinator.shutdown()).toBe(true);
 });
+it("retains real Git worktrees and durable stop evidence when their Project returns 404", async () => {
+  const f = fixture(), activeOwner = f.register(0), stoppedOwner = f.register(1);
+  const second = { projectId: uuid(30), repoUrl: "https://example.test/org/healthy.git", localPath: path.join(f.root, "healthy") };
+  mkdirSync(second.localPath); f.store.registerProject(second);
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", timeout: 10000 });
+  for (const project of [f.project, second]) {
+    git(project.localPath, "init");
+    git(project.localPath, "config", "remote.origin.url", project.repoUrl);
+    git(project.localPath, "-c", "core.hooksPath=" + path.join(f.root, "no-hooks"), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--no-gpg-sign", "--allow-empty", "-m", "Fixture");
+  }
+  const manager = createWorkerGitManager({ temporaryDirectory: f.paths.temporaryDirectory });
+  const operation = createOperation();
+  const markerFiles: { path: string; bytes: Buffer; contents: string }[] = [];
+  for (const owner of [activeOwner, stoppedOwner]) {
+    const binding = await manager.prepareWorktree(f.project, owner, operation);
+    const dirty = path.join(binding.worktreePath, "private.txt"); writeFileSync(dirty, `private ${owner.claimId}`);
+    const pointer = readFileSync(path.join(binding.worktreePath, ".git"), "utf8").trim();
+    const admin = path.resolve(binding.worktreePath, pointer.replace(/^gitdir: /, ""));
+    const marker = path.join(admin, "locked");
+    markerFiles.push({ path: marker, bytes: readFileSync(marker), contents: dirty });
+    f.store.activateTask(f.store.getTask(owner)!);
+  }
+  const writer = openHerdrLifecycleStore(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"));
+  const native = (role: "daemon" | "shell" | "agent", pid: number) => ({ role, pid, birthToken: `1700000000:${pid}`, bootId: "fixture-boot", auditToken: [501, 501, 20, 501, 20, pid, 100000, pid + 100], ppid: 1, pgid: pid, sid: pid });
+  try {
+    for (const [index, owner] of [activeOwner, stoppedOwner].entries()) {
+      let record = writer.get(owner)!;
+      const daemon = native("daemon", 101 + index * 10), shell = native("shell", 102 + index * 10), agent = native("agent", 103 + index * 10);
+      record = writer.update(record, draft => { draft.runs.push({ run: { executionGeneration: "1", owner: draft.owner, binding: { instanceId: `daemon-${index}`, sessionId: "w", workspaceId: `workspace-${index}`, paneId: `pane-${index}`, terminalId: `terminal-${index}`, nativeSessionId: null }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory: f.root, daemon: null, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }); });
+      record = writer.update(record, draft => { const run = draft.runs[0]!; run.phase = "launch_requested"; run.nativeLaunch = "requested"; run.daemon = daemon; });
+      record = writer.update(record, draft => { const run = draft.runs[0]!; run.phase = "active"; run.nativeLaunch = "observed"; run.processes = [shell, agent]; run.admission = uuid(700 + index); });
+      if (owner === stoppedOwner) {
+        const stopId = uuid(710);
+        record = writer.update(record, draft => { const run = draft.runs[0]!; run.phase = "stop_intent"; run.stopOperationId = stopId; run.stopReason = "shutdown"; run.admission = null; });
+        record = writer.update(record, draft => { draft.runs[0]!.phase = "close_requested"; });
+        writer.update(record, draft => { const run = draft.runs[0]!; run.phase = "stopped_confirmed"; run.run.stoppedAt = "2026-11-04T00:01:00.000Z"; run.run.stopProof = { recordId: stopId, executionGeneration: "1", binding: run.run.binding, bootId: "fixture-boot", stoppedAt: run.run.stoppedAt, method: "instances_exited", terminalStopped: true, processes: run.processes.map(({ role, pid, birthToken, bootId }) => ({ role: role as "shell" | "agent", pid, birthToken, bootId })) }; });
+      }
+    }
+  } finally { writer.close(); }
+  const rows = () => {
+    const database = new Database(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"), { readonly: true });
+    try { return (database.prepare("SELECT data FROM executions ORDER BY identity").all() as { data: string }[]).filter(row => JSON.parse(row.data).owner.projectId === f.project.projectId).map(row => row.data); }
+    finally { database.close(); }
+  };
+  const before = rows(), claims = [activeOwner, stoppedOwner].map(owner => f.store.getTask(owner));
+  const remoteClaims = [activeOwner, stoppedOwner].map(owner => structuredClone(f.tasks.get(owner.taskId)));
+  expect(f.read(activeOwner).runs[0]!.run.stopProof).toBeNull();
+  expect(f.read(stoppedOwner).runs[0]!.run.stopProof).not.toBeNull();
+  const candidate = { id: uuid(800), projectId: second.projectId, title: "Healthy", description: "", status: "todo", allowAgents: true, assignedTo: userId, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n, properties: {}, createdAt: "2026-11-05T00:00:00Z", updatedAt: "2026-11-05T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true } as Task;
+  let granted: Task | undefined;
+  vi.mocked(f.remote.ownInventory).mockImplementation(async (_projects, _worker, _signal, unavailable) => { unavailable?.(f.project.projectId); return { tasks: granted === undefined ? [] : [granted], coveredProjectIds: [second.projectId], unavailableProjectIds: [f.project.projectId] }; });
+  vi.mocked(f.remote.candidates).mockImplementation(async function* (projectId) { if (projectId === second.projectId && granted === undefined) yield candidate; });
+  vi.mocked(f.remote.claim).mockImplementation(async (task, descriptor) => {
+    granted = { ...task, status: "in_progress", ready: false, version: 2n, properties: { worker: { ...descriptor, agentControlMode: "herdr", userId, state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-05T00:00:00Z" } } };
+    return granted;
+  });
+  let release!: () => void, entered = false, settled!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; }), completed = new Promise<void>(resolve => { settled = resolve; });
+  const managedGit: WorkerGitManager = { ...manager, prepareWorktree: async (project, owner, call) => {
+    if (project.projectId === second.projectId) { entered = true; try { await blocked; call.check(); } finally { settled(); } }
+    return manager.prepareWorktree(project, owner, call);
+  } };
+  const herdr: WorkerHerdrAdapter = { ...f.herdr, ensureInstance: async () => ({ reconnected: true, version: "0.9.5", protocol: 22, snapshot: {} }), tasks: { ...f.herdr.tasks, pendingStops: () => [], listResources: async () => [] } };
+  const cancellation = new AbortController();
+  const configuration = { agent: "codex" as const, agentControlMode: "herdr" as const, args: [], model: null, recoveryLimit: 0 };
+  const coordinator = createWorkerCoordinator({ store: f.store, remote: f.remote, git: managedGit, herdr, serverOrigin: origin, workerId, platform: "macos", machine: { id: uuid(4), name: "fixture" }, repositories: [{ project: f.project, configuration }, { project: second, configuration }], globalConfiguration: configuration, maxConcurrent: 3, hasHerdrJournal: true, availableDiskBytes: () => 10_000_000_000n, buildPrompt: () => "fixture", emit: event => f.events.push(event), signal: cancellation.signal });
+  try {
+    await coordinator.tick();
+    await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000, interval: 10 });
+    await coordinator.tick();
+    expect(f.remote.claim).toHaveBeenCalledOnce(); expect(granted?.projectId).toBe(second.projectId);
+    expect(rows()).toEqual(before);
+    expect([activeOwner, stoppedOwner].map(owner => f.store.getTask(owner))).toEqual(claims);
+    expect([activeOwner, stoppedOwner].map(owner => f.tasks.get(owner.taskId))).toEqual(remoteClaims);
+    for (const [index, item] of markerFiles.entries()) {
+      expect(readFileSync(item.path)).toEqual(item.bytes);
+      expect(readFileSync(item.contents, "utf8")).toBe(`private ${[activeOwner, stoppedOwner][index]!.claimId}`);
+    }
+    expect(f.read(activeOwner).runs[0]!.run.stopProof).toBeNull();
+    expect(f.read(stoppedOwner).runs[0]!.run.stopProof).not.toBeNull();
+  } finally { cancellation.abort(); release(); if (entered) await completed; operation.dispose(); await manager.dispose(); }
+}, 15_000);
