@@ -29,7 +29,6 @@ type BotWriteDAO interface {
 	Bot(context.Context, string) (model.Bot, error)
 	BotDefaults(context.Context, string) (model.BotDefaultsInput, error)
 	InsertBot(context.Context, model.Bot) error
-	DeleteBot(context.Context, string, int64, model.BotDeletion) (model.Bot, error)
 	SaveBotDeletion(context.Context, string, *model.BotDeletion) (model.Bot, error)
 	BindBotSession(context.Context, string, int64, string, model.BotRoleConfiguration) (model.Bot, error)
 	SetBotStartup(context.Context, string, int64, model.BotStartupResult) (model.Bot, error)

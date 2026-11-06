@@ -16,6 +16,8 @@ func ThreadCredential(ctx context.Context, tx pgx.Tx, principal model.Principal,
 		table = "sessions"
 	case model.PATCredential:
 		table = "personal_access_tokens"
+	case model.OAuthCredential:
+		table = "oauth_access_tokens"
 	default:
 		return store.ThreadCredential{}, QueryError("read thread credential", model.ErrNotFound)
 	}

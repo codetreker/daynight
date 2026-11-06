@@ -96,10 +96,10 @@ type wireIdentityDAO struct {
 
 func (s *wireIdentityScope) IdentityDAO() store.IdentityDAO         { s.dao.scope = s; return &s.dao }
 func (s *wireIdentityScope) PersonalTeamDAO() store.PersonalTeamDAO { return nil }
-func (d *wireIdentityDAO) IdentityUser(_ context.Context, id string) (core.User, store.PersonalTeamFacts, error) {
+func (d *wireIdentityDAO) IdentityPersonalTeam(_ context.Context, id string) (store.PersonalTeamFacts, error) {
 	s := d.scope
 	s.userID = id
-	return core.User{ID: id}, store.PersonalTeamFacts{ID: s.teamID, MemberCount: 1, OwnerAdminCount: 1}, s.err
+	return store.PersonalTeamFacts{ID: s.teamID, MemberCount: 1, OwnerAdminCount: 1}, s.err
 }
 func (s *wireIdentityScope) WriteIdentity(ctx context.Context, f func(store.IdentityScope) error) (store.Completion, error) {
 	if err := f(s); err != nil {
