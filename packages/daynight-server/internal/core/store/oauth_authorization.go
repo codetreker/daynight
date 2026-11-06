@@ -33,5 +33,7 @@ type AuthorizationDAO interface {
 	AuthorizationByCode(context.Context, []byte, bool) (OAuthAuthorization, error)
 	UpdateAuthorization(context.Context, OAuthAuthorization) error
 	FreshTime(context.Context, time.Time) (time.Time, error)
-	PruneAuthorizations(context.Context, time.Time, int) (int, error)
+	LockAuthorizationCapacity(context.Context) error
+	ExpiredAuthorizations(context.Context, time.Time, int, string) ([]OAuthAuthorization, error)
+	DeleteRetainedAuthorizations(context.Context, time.Time, int) (int, error)
 }

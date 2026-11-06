@@ -54,15 +54,29 @@ func (d *DAO) UpdateAuthorization(ctx context.Context, a store.OAuthAuthorizatio
 	_, err := d.tx.Exec(ctx, `UPDATE oauth_authorizations SET state=$2,state_present=$9,status=$3,user_id=NULLIF($4,'')::uuid,grant_id=NULLIF($5,'')::uuid,code_hash=$6,code_expires_at=$7,retain_until=$8 WHERE id=$1`, a.ID, a.State, a.Status, a.UserID, a.GrantID, a.CodeHash, a.CodeExpiresAt, a.RetainUntil, a.StatePresent)
 	return pg.AuthQueryError("update OAuth authorization", err)
 }
-func (d *DAO) PruneAuthorizations(ctx context.Context, now time.Time, limit int) (int, error) {
-	if _, err := d.tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, authorizationCapacityLock); err != nil {
-		return 0, pg.AuthQueryError("lock OAuth authorization capacity", err)
-	}
-	tag, err := d.tx.Exec(ctx, `UPDATE oauth_authorizations SET status='expired',state='',state_present=false WHERE id IN (SELECT id FROM oauth_authorizations WHERE status='pending' AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED)`, now, limit)
+func (d *DAO) LockAuthorizationCapacity(ctx context.Context) error {
+	_, err := d.tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, authorizationCapacityLock)
+	return pg.AuthQueryError("lock OAuth authorization capacity", err)
+}
+
+func (d *DAO) ExpiredAuthorizations(ctx context.Context, now time.Time, limit int, status string) ([]store.OAuthAuthorization, error) {
+	rows, err := d.tx.Query(ctx, `SELECT `+authorizationColumns+` FROM oauth_authorizations WHERE status=$3 AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED`, now, limit, status)
 	if err != nil {
-		return 0, pg.AuthQueryError("expire OAuth authorizations", err)
+		return nil, pg.AuthQueryError("read expiring OAuth authorizations", err)
 	}
-	expired := int(tag.RowsAffected())
-	tag, err = d.tx.Exec(ctx, `DELETE FROM oauth_authorizations WHERE id IN (SELECT id FROM oauth_authorizations WHERE retain_until<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY retain_until,id LIMIT $2 FOR UPDATE SKIP LOCKED)`, now, limit-expired)
-	return expired + int(tag.RowsAffected()), pg.AuthQueryError("prune OAuth authorizations", err)
+	defer rows.Close()
+	var result []store.OAuthAuthorization
+	for rows.Next() {
+		var a store.OAuthAuthorization
+		if err := rows.Scan(&a.ID, &a.BindingHash, &a.Client, &a.ClientID, &a.RedirectURI, &a.Resource, &a.Scope, &a.Challenge, &a.State, &a.StatePresent, &a.Status, &a.UserID, &a.GrantID, &a.CodeHash, &a.CreatedAt, &a.ExpiresAt, &a.CodeExpiresAt, &a.RetainUntil); err != nil {
+			return nil, pg.AuthQueryError("read expiring OAuth authorizations", err)
+		}
+		result = append(result, a)
+	}
+	return result, pg.AuthQueryError("read expiring OAuth authorizations", rows.Err())
+}
+
+func (d *DAO) DeleteRetainedAuthorizations(ctx context.Context, now time.Time, limit int) (int, error) {
+	tag, err := d.tx.Exec(ctx, `DELETE FROM oauth_authorizations WHERE id IN (SELECT id FROM oauth_authorizations WHERE retain_until<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY retain_until,id LIMIT $2 FOR UPDATE SKIP LOCKED)`, now, limit)
+	return int(tag.RowsAffected()), pg.AuthQueryError("prune OAuth authorizations", err)
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -92,7 +93,7 @@ func TestAuthorizationPruneHonorsBatchLimitAndRetention(t *testing.T) {
 	check(t, err)
 	_, err = tx.Exec(ctx, `UPDATE oauth_authorizations SET status='denied',retain_until=$2 WHERE id=$1`, denied.ID, now.Add(-time.Minute))
 	check(t, err)
-	changed, err := dao.PruneAuthorizations(ctx, now, 1)
+	changed, err := core.PruneAuthorizationBatch(ctx, dao, now, 1)
 	check(t, err)
 	if changed != 1 {
 		t.Fatalf("first prune changed=%d", changed)
@@ -107,7 +108,7 @@ func TestAuthorizationPruneHonorsBatchLimitAndRetention(t *testing.T) {
 	if retained.Status != "denied" {
 		t.Fatalf("batch limit lost denied row=%#v", retained)
 	}
-	changed, err = dao.PruneAuthorizations(ctx, now, 10)
+	changed, err = core.PruneAuthorizationBatch(ctx, dao, now, 10)
 	check(t, err)
 	if changed != 1 {
 		t.Fatalf("retention prune changed=%d", changed)
@@ -124,7 +125,7 @@ func TestAuthorizationPruneHonorsBatchLimitAndRetention(t *testing.T) {
 	if retained.Status != "expired" {
 		t.Fatalf("unexpired retention row lost=%#v", retained)
 	}
-	changed, err = dao.PruneAuthorizations(ctx, now, 10)
+	changed, err = core.PruneAuthorizationBatch(ctx, dao, now, 10)
 	check(t, err)
 	if changed != 0 {
 		t.Fatalf("repeat prune changed=%d", changed)

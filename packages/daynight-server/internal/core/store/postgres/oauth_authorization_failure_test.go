@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pgOAuth "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/oauth"
 	"github.com/google/uuid"
@@ -129,7 +130,7 @@ func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		completion, err := db.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
-			_, err := scope.AuthorizationDAO().PruneAuthorizations(ctx, now, 10)
+			_, err := core.PruneAuthorizationBatch(ctx, scope.AuthorizationDAO(), now, 10)
 			return err
 		})
 		if err == nil || completion.Outcome != store.TransactionNotCommitted {
@@ -151,7 +152,7 @@ func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
 		if _, err = tx.Exec(ctx, `ALTER TABLE oauth_authorizations RENAME TO inaccessible_authorizations`); err != nil {
 			t.Fatal(err)
 		}
-		_, err = pgOAuth.NewDAO(tx).PruneAuthorizations(ctx, now, 10)
+		_, err = core.PruneAuthorizationBatch(ctx, pgOAuth.NewDAO(tx), now, 10)
 		if failed, state := store.DatabaseErrorFacts(err); !failed || state != "42P01" {
 			t.Fatalf("missing table: failed=%t state=%s", failed, state)
 		}
@@ -164,7 +165,7 @@ func TestOAuthAuthorizationDAOFailurePaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = pgOAuth.NewDAO(tx).PruneAuthorizations(cancelled, now, 10)
+		_, err = core.PruneAuthorizationBatch(cancelled, pgOAuth.NewDAO(tx), now, 10)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled prune: %v", err)
 		}

@@ -139,9 +139,9 @@ func TestAuthorizationFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 		{"authorization read", []databaseStep{fail}, func(d *DAO) error { _, err := d.Authorization(ctx, "id", true); return err }},
 		{"code read", []databaseStep{fail}, func(d *DAO) error { _, err := d.AuthorizationByCode(ctx, nil, true); return err }},
 		{"update", []databaseStep{fail}, func(d *DAO) error { return d.UpdateAuthorization(ctx, record) }},
-		{"prune lock", []databaseStep{fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
-		{"prune expire", []databaseStep{ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
-		{"prune delete", []databaseStep{ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
+		{"prune lock", []databaseStep{fail}, func(d *DAO) error { return d.LockAuthorizationCapacity(ctx) }},
+		{"prune candidates", []databaseStep{fail}, func(d *DAO) error { _, err := d.ExpiredAuthorizations(ctx, now, 1, "pending"); return err }},
+		{"prune delete", []databaseStep{fail}, func(d *DAO) error { _, err := d.DeleteRetainedAuthorizations(ctx, now, 1); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := &failingTx{steps: append([]databaseStep(nil), tc.steps...)}

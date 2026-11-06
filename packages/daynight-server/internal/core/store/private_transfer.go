@@ -23,30 +23,27 @@ type PrivateTransferStats struct {
 	OldestPendingCreatedAt *time.Time
 }
 
+// PrivateTransferDueStates describes the indexed states selected for maintenance.
+type PrivateTransferDueStates struct{ Closed, Pending, Committing string }
+
 type PrivateTransferDAO interface {
-	Stats(context.Context) (PrivateTransferStats, error)
+	Stats(context.Context, string) (PrivateTransferStats, error)
 	// Authorize verifies the current credential, stable authority, Task presence,
 	// and Project access, rechecking expiry after all potentially blocking locks.
 	Authorize(context.Context, model.Principal, string, string, string, string) error
 	Get(context.Context, string) (model.PrivateTransfer, error)
-	// Create returns an existing record without consuming a second slot; its caller
-	// must compare the complete immutable binding before returning any information.
-	Create(context.Context, model.PrivateTransfer) (model.PrivateTransfer, bool, error)
-	// LockLedger follows the transfer and authorization locks. Sampling disk free
-	// space and reading totals must happen while this lock is held.
+	// Insert returns an existing row on conflict; the caller checks its binding.
+	Insert(context.Context, model.PrivateTransfer) (model.PrivateTransfer, bool, error)
+	CountActive(context.Context, string, string) (int, error)
+	// Transfer and authorization locks precede the ledger. Do not acquire another
+	// transfer or authorization lock after the ledger has been acquired.
 	LockLedger(context.Context) error
 	ReservedTotal(context.Context) (int64, error)
 	OutstandingTotal(context.Context) (int64, error)
-	Reserve(context.Context, string, int64, int64) (model.PrivateTransfer, error)
-	// ConsumeReservation must share the receipt transaction after file publication.
-	// It reduces only unmaterialized bytes; all reserved bytes remain charged until cleanup.
-	ConsumeReservation(context.Context, string, int64, int64) (model.PrivateTransfer, error)
-	Update(context.Context, model.PrivateTransfer, int64) (model.PrivateTransfer, error)
-	// UpdatePending only records late facts for the same operation while cleanup waits.
-	UpdatePending(context.Context, model.PrivateTransfer, int64) (model.PrivateTransfer, error)
-	// Close must only be invoked after acquiring the namespace gate and successfully
-	// deleting its objects; it atomically releases the reservation and slot.
-	Close(context.Context, string, int64, time.Time) (model.PrivateTransfer, error)
-	Due(context.Context, time.Time, int) ([]model.PrivateTransfer, error)
-	Prune(context.Context, time.Time, int) (int64, error)
+	AddReservation(context.Context, string, int64) (model.PrivateTransfer, error)
+	SubtractOutstanding(context.Context, string, int64) (model.PrivateTransfer, error)
+	Put(context.Context, model.PrivateTransfer, int64) (model.PrivateTransfer, error)
+	Release(context.Context, model.PrivateTransfer, int64, time.Time, string) (model.PrivateTransfer, error)
+	Due(context.Context, time.Time, int, PrivateTransferDueStates) ([]model.PrivateTransfer, error)
+	Prune(context.Context, time.Time, int, string) (int64, error)
 }
