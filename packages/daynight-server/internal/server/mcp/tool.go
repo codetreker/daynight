@@ -304,9 +304,18 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 	return e.registerTool(tool, func(json.RawMessage) BudgetClass { return class }, handler)
 }
 
-// registerTool selects a budget after input validation and before business work.
-func (e *Entry) registerTool(tool *sdk.Tool, selectClass func(json.RawMessage) BudgetClass, handler ToolHandler) error {
-	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || selectClass == nil {
+// registerTool selects admission after validation and preserves write completion facts.
+func (e *Entry) registerTool(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler) error {
+	return e.registerToolFor(tool, budget, handler, true)
+}
+
+// registerReadTool never classifies read-only snapshot completion as a write.
+func (e *Entry) registerReadTool(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler) error {
+	return e.registerToolFor(tool, budget, handler, false)
+}
+
+func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, write bool) error {
+	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || budget == nil {
 		return errors.New("invalid MCP tool registration")
 	}
 	input, err := resolveSchema(tool.InputSchema)
@@ -351,7 +360,7 @@ func (e *Entry) registerTool(tool *sdk.Tool, selectClass func(json.RawMessage) B
 		if err := validateJSON(input, raw); err != nil {
 			return e.errorResult(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
 		}
-		class := selectClass(raw)
+		class := budget(raw)
 		if class != BudgetControl && class != BudgetLarge {
 			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
 		}
@@ -367,7 +376,7 @@ func (e *Entry) registerTool(tool *sdk.Tool, selectClass func(json.RawMessage) B
 			if failure.Phase == "" {
 				failure.Phase = facts.Phase
 			}
-			if failure.WriteOutcome == "" {
+			if write && failure.WriteOutcome == "" {
 				switch facts.Outcome {
 				case store.TransactionCommitted:
 					failure.WriteOutcome = "confirmed"

@@ -95,7 +95,11 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 				return listTool(ctx, actor, listInput{ProjectID: in.ProjectID, Limit: in.Limit, Status: &status, Ready: &ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View}, tasks, true)
 			})
 		case "task_graph":
-			err = RegisterTypedTool(entry, tool, BudgetControl, func(ctx context.Context, actor RequestActor, in graphInput) (ToolResult, error) {
+			err = entry.registerReadTool(tool, func(json.RawMessage) BudgetClass { return BudgetControl }, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+				var in graphInput
+				if err := json.Unmarshal(raw, &in); err != nil {
+					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
+				}
 				return graphTool(ctx, actor, in, tasks)
 			})
 		default:
@@ -111,7 +115,7 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 // Summary queries use bounded DAO projections; full queries materialize one
 // complete task at a time under the large-object permit.
 func registerTaskListTool(entry *Entry, tool *sdk.Tool, handler ToolHandler) error {
-	return entry.registerTool(tool, func(raw json.RawMessage) BudgetClass {
+	return entry.registerReadTool(tool, func(raw json.RawMessage) BudgetClass {
 		var input struct {
 			View string `json:"view"`
 		}

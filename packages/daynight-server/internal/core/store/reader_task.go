@@ -16,6 +16,14 @@ type TaskGraphSelection struct {
 	LiveOnly              bool
 }
 
+// TaskStepProjection contains either the complete Step or a bounded title
+// prefix and no description. TitleTruncated reports that the original title
+// exceeds the requested preview size in bytes.
+type TaskStepProjection struct {
+	Step           model.TaskStep
+	TitleTruncated bool
+}
+
 type TaskReader interface {
 	Task(context.Context, string, string) (model.Task, error)
 	Tasks(context.Context, string, TaskQuery) (TaskPage, error)
@@ -25,6 +33,8 @@ type TaskReader interface {
 	TaskHeader(context.Context, string, string) (model.TaskHeader, error)
 	TaskStep(context.Context, string, string) (model.TaskStep, error)
 	TaskSteps(context.Context, string) ([]model.TaskStep, error)
+	TaskStepPage(context.Context, string, int64, int, bool) ([]TaskStepProjection, error)
+	TaskStepSummary(context.Context, string, string) (TaskStepProjection, error)
 	ThreadMessage(context.Context, string, string) (model.ThreadMessage, error)
 	ThreadCandidates(context.Context, string, *model.ThreadPosition, bool, int) ([]model.ThreadMessage, error)
 	ThreadSides(context.Context, string, model.ThreadPosition, model.ThreadPosition) (bool, bool, error)

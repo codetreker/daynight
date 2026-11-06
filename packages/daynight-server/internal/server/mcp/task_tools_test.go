@@ -20,10 +20,11 @@ type queryStub struct {
 	request   taskcore.MCPListRequest
 	principal model.Principal
 	err       error
+	graphErr  error
 }
 
 func (s *queryStub) Graph(context.Context, model.Principal, string, string) (model.TaskGraph, error) {
-	return model.TaskGraph{}, nil
+	return model.TaskGraph{}, s.graphErr
 }
 func (s *queryStub) MCPList(_ context.Context, principal model.Principal, _ string, request taskcore.MCPListRequest, visit func(store.TaskPriorityItem, string, bool) bool) error {
 	s.request, s.principal = request, principal
@@ -200,5 +201,31 @@ func TestReadyFullBudgetContinuationDisclosesDescriptionLimit(t *testing.T) {
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "payload_too_large" || failure.Refs["taskId"] != "0" || failure.Refs["readWith"] != "task_show" {
 		t.Fatalf("first item failure: %#v, %v", failure, err)
+	}
+}
+
+func TestTaskQueriesDoNotReportSnapshotFailureAsWrite(t *testing.T) {
+	f := newEntryFixture(t)
+	failure := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: errors.New("snapshot failed")}
+	stub := &queryStub{err: failure, graphErr: failure}
+	if err := registerTaskQueryTools(f.entry, stub); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, name := range []string{"task_list", "task_ready", "task_graph"} {
+		args := map[string]any{"projectId": "c450e1ca-60a7-42d7-a17a-a112bc71fd8a"}
+		if name == "task_graph" {
+			args["taskId"] = "f8836e8f-a543-4d43-b4a2-65a8243baa54"
+		}
+		result, err := client.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
+		if err != nil || !result.IsError {
+			t.Fatalf("%s: %#v %v", name, result, err)
+		}
+		failure := object(t, structured(t, result)["error"])
+		if _, present := failure["writeOutcome"]; present {
+			t.Fatalf("%s reported a write: %#v", name, failure)
+		}
 	}
 }
