@@ -202,7 +202,8 @@ export class TaskCacheScope {
       const event = { projectId, accessRevoked: true as const, scopeSuspended: true as const, revokedGeneration: generation, unknownAncestors: true as const };
       if (provisional) this.emit(event); else this.emitProjection(event);
     };
-    const unsubscribePause = unknownAncestors ? subscribeAuthPause(isolateUnknown) : () => {};
+    let unsubscribePause = unknownAncestors ? subscribeAuthPause(isolateUnknown) : null;
+    const stopPause = (): void => { const stop = unsubscribePause; unsubscribePause = null; stop?.(); };
     const releaseProvisional = (): boolean => {
       if (!provisional) return true;
       const count = this.pendingUnknownProjects.get(projectId) ?? 0;
@@ -231,12 +232,14 @@ export class TaskCacheScope {
           // provisional isolation until the same live scope can check again.
           if (error instanceof TaskCacheLifecycleChanged && !this.isInvalidated && !this.signal.aborted) continue;
           if (!unknownAncestors || isAbortError(error)) throw error;
+          stopPause();
           this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error });
           releaseProvisional();
           if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).catch(() => {});
           throw error;
         }
       }
+      stopPause();
       const released = releaseProvisional();
       if (!matches) {
         if (released && provisional) this.emit({ projectId, accessRestored: true });
@@ -254,7 +257,7 @@ export class TaskCacheScope {
         for (const value of newlyRetired) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: value, error });
         console.warn("Task cache access cleanup failed", { projectId, error_category: error instanceof TaskCacheError ? error.category : "protocol" });
       }
-    }).finally(() => { unsubscribePause(); this.projectionHints.delete(work); });
+    }).finally(() => { stopPause(); this.projectionHints.delete(work); });
     this.projectionHints.add(work);
     if (authRequestsPaused()) isolateUnknown();
     for (const value of newlyRetired) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: value, error: new ApiError("server", 404, "not_found") });

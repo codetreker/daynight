@@ -226,3 +226,56 @@ it.each(['current denial', 'obsolete denial', 'scope invalidated'] as const)('is
   const count = events.length, resume = pauseAuthRequests(); resume();
   expect(events).toHaveLength(count);
 });
+
+it('does not re-isolate a resolved denial when identity pauses during cleanup', async () => {
+  const owner = scope(), peer = scope(); await apply(owner); await apply(peer);
+  const db = await database(); await corruptGeneration(db);
+  const denied = await owner.beginSync(projectId, signal()); await owner.revokeProject(denied, signal());
+  const hint = negative(), started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const unsubscribe = vi.fn(), subscribe = client.subscribeAuthPause;
+  vi.spyOn(client, 'subscribeAuthPause').mockImplementation(listener => { const stop = subscribe(listener); return () => { stop(); unsubscribe(); }; });
+  const revoke = peer.revokeProject.bind(peer);
+  vi.spyOn(peer, 'revokeProject').mockImplementation((...args) => {
+    const result = revoke(...args); started.resolve();
+    return (async () => { const value = await result; await finish.promise; return value; })();
+  });
+  try {
+    deliver(1, hint); await started.promise;
+    const resume = pauseAuthRequests();
+    try { expect(peer.isProjectSuspended(projectId)).toBe(false); expect(unsubscribe).toHaveBeenCalledOnce(); } finally { resume(); }
+  } finally { finish.resolve(); }
+  await peer.prepareProjection(signal());
+  expect(unsubscribe).toHaveBeenCalledOnce();
+  expect(peer.getAuthorizedProject(projectId)).toBeNull();
+  await apply(peer);
+  expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
+  expect(peer.isProjectSuspended(projectId)).toBe(false);
+});
+
+it('stops pause observation before reporting a terminal durable-read failure', async () => {
+  const owner = scope(), peer = scope(); await apply(owner); await apply(peer);
+  const db = await database(); await corruptGeneration(db);
+  const denied = await owner.beginSync(projectId, signal()); await owner.revokeProject(denied, signal());
+  const hint = negative(), failed = Promise.withResolvers<void>();
+  const unsubscribe = vi.fn(), subscribe = client.subscribeAuthPause;
+  vi.spyOn(client, 'subscribeAuthPause').mockImplementation(listener => { const stop = subscribe(listener); return () => { stop(); unsubscribe(); }; });
+  let resume: (() => void) | undefined, armed = true;
+  const get = IDBObjectStore.prototype.get;
+  vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === 'projects' && armed) { armed = false; throw new DOMException('Injected durable-read failure', 'UnknownError'); }
+    return get.apply(this, args);
+  });
+  peer.subscribeProjection(event => {
+    if (resume === undefined && (event.error as { category?: string } | undefined)?.category === 'storage') {
+      resume = pauseAuthRequests(); failed.resolve();
+    }
+  });
+  try {
+    deliver(1, hint); await failed.promise;
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(peer.isProjectSuspended(projectId)).toBe(false);
+  } finally { resume?.(); }
+  await peer.prepareProjection(signal());
+  expect(unsubscribe).toHaveBeenCalledOnce();
+  await apply(peer); expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
+});
