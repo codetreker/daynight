@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,6 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
+      image_pair_manifest_commit: ${{ steps.image-pairs.outputs.manifest_commit }}
+      image_pair_combined_tree: ${{ steps.image-pairs.outputs.combined_tree }}
+      image_pair_combined_commit: ${{ steps.image-pairs.outputs.combined_commit }}
+      image_pair_production_tree: ${{ steps.image-pairs.outputs.production_tree }}
       cli: ${{ steps.modules.outputs.cli }}
       server: ${{ steps.modules.outputs.server }}
       web: ${{ steps.modules.outputs.web }}
@@ -30,8 +35,18 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ vars.DAYNIGHT_IMAGE_TEST_PAIRS_COMMIT }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - name: Test module selection and job gates
-        run: node --test .github/scripts/ci-modules.test.mts .github/scripts/checks.test.mts
+        run: node --test .github/scripts/ci-modules.test.mts .github/scripts/checks.test.mts .github/scripts/image-test-pairs.test.mts
       - name: Select modules from the complete PR diff
         id: modules
         env:
@@ -39,6 +54,15 @@ jobs:
           MODULE_BASE: ${{ github.event.pull_request.base.sha }}
           MODULE_HEAD: ${{ github.event.pull_request.head.sha }}
         run: node .github/scripts/ci-modules.mts
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-detect-changes
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   verify:
     name: verify (CLI tests, ${{ matrix.os }})
@@ -63,6 +87,17 @@ jobs:
           node-version: 24
           check-latest: true
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.28.6
@@ -108,6 +143,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-${{ matrix.os }}
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   verify-installed:
     name: verify (installed CLI, ${{ matrix.os }})
@@ -132,6 +176,17 @@ jobs:
           node-version: 24
           check-latest: true
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.28.6
@@ -168,6 +223,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-installed-${{ matrix.os }}
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   verify-macos:
     name: verify (macOS ARM64)
@@ -188,6 +252,17 @@ jobs:
           node-version: 24
           check-latest: true
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11.28.6
@@ -277,6 +352,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-macos
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   verify-runtime:
     name: verify (Node.js ${{ matrix.node }})
@@ -294,6 +378,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
@@ -303,6 +403,25 @@ jobs:
         with:
           name: daynight-runtime-package
           path: .tmp/
+      - name: Download runtime package pairing evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-ubuntu-latest
+          path: .tmp/runtime-pair
+      - name: Verify runtime package input identity
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const producer = JSON.parse(readFileSync('.tmp/runtime-pair/image-test-pairs.json', 'utf8'));
+          const consumer = JSON.parse(readFileSync('.tmp/image-test-pairs.json', 'utf8'));
+          assert.equal(producer.schemaVersion, 1);
+          assert.equal(consumer.schemaVersion, 1);
+          for (const field of ['manifestCommit', 'combinedTree', 'combinedCommit', 'productionTree', 'head']) {
+            assert.match(producer[field], /^[0-9a-f]{40}$/, `Runtime package ${field} must be a complete Git identity.`);
+            assert.equal(producer[field], consumer[field], `Runtime package ${field} must match its checked test input.`);
+          }
+          NODE
       - name: Strictly install the packed CLI and its runtime dependencies
         run: |
           mkdir -p .tmp/runtime-consumer
@@ -310,6 +429,15 @@ jobs:
           npm install --prefix .tmp/runtime-consumer --engine-strict --no-audit --no-fund --package-lock=false "$GITHUB_WORKSPACE/.tmp/daynight-runtime.tgz"
       - name: Verify the installed CLI, SQLite and interactive prompts
         run: node packages/daynight/scripts/check-runtime.mjs .tmp/runtime-consumer/node_modules/@codetreker/daynight
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-runtime-${{ matrix.node }}
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   verify-completion:
     name: verify (shell completion)
@@ -324,10 +452,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.28.6
@@ -347,6 +487,15 @@ jobs:
         with:
           name: daynight-completion-acceptance
           path: .tmp/completion-evidence.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-completion
+          path: .tmp/image-test-pairs.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -391,6 +540,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Prepare module-local tool directories
         run: mkdir -p .tmp/go-cache .tmp/go-mod .tmp/go .tmp/bin .tmp/tmp .tmp/config .tmp/cache
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -402,6 +552,17 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.28.6
@@ -420,6 +581,15 @@ jobs:
           path: |
             packages/daynight-server/.tmp/coverage.out
             .tmp/project-task-service-evidence.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-server
+          path: .tmp/image-test-pairs.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -464,6 +634,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Prepare module-local tool directories
         run: mkdir -p .tmp/go-cache .tmp/go-mod .tmp/go .tmp/bin .tmp/tmp .tmp/config .tmp/cache
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -475,6 +646,17 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.28.6
@@ -496,6 +678,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-server-e2e
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   verify-web-quality:
     name: verify (web quality)
@@ -511,10 +702,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.28.6
@@ -532,6 +735,15 @@ jobs:
           path: |
             packages/daynight-web/.tmp/coverage/coverage-final.json
             packages/daynight-web/.tmp/coverage/summary.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-web-quality
+          path: .tmp/image-test-pairs.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -560,10 +772,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.28.6
@@ -582,10 +806,14 @@ jobs:
         run: sudo bash .github/scripts/use-ubuntu-archives.sh /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt
       - name: Verify production dashboard and container deployment
         id: web-acceptance
-        run: node packages/daynight-web/scripts/ci.mts browser --shard=${{ matrix.shard }}/2
+        env:
+          IMAGE_PAIR_COMBINED_COMMIT: ${{ steps.image-pairs.outputs.combined_commit }}
+        run: env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/ci.mts browser --shard=${{ matrix.shard }}/2
       - name: Recover recorded dashboard acceptance resources
         if: ${{ always() && steps.web-acceptance.outcome != 'skipped' }}
-        run: node packages/daynight-web/scripts/acceptance.mts --cleanup
+        env:
+          IMAGE_PAIR_COMBINED_COMMIT: ${{ steps.image-pairs.outputs.combined_commit }}
+        run: env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/acceptance.mts --cleanup
       - name: Verify attachment persistence and paired backup restoration
         if: ${{ matrix.shard == 2 }}
         run: node deployment/dev-ci/tests/attachments.mts
@@ -611,11 +839,21 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+      - name: Upload protected image test input evidence
+        if: ${{ always() && steps.image-pairs.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-image-test-pairs-verify-web-${{ matrix.shard }}
+          path: .tmp/image-test-pairs.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   checks:
     if: ${{ always() }}
     needs: [detect-changes, verify, verify-installed, verify-macos, verify-runtime, verify-completion, verify-server, verify-server-e2e, verify-web-quality, verify-web]
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 5
     steps:
       - name: Require preceding jobs to succeed or be skipped
         env:
@@ -630,14 +868,153 @@ jobs:
           test "$WEB_QUALITY_RESULT" = success
           test "$WEB_SHARD_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ needs.detect-changes.outputs.web == 'true' }}
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: ${{ needs.detect-changes.outputs.web == 'true' }}
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Validate and materialize protected image test inputs
+        id: image-pairs
+        working-directory: ${{ github.workspace }}
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_EVENT: ${{ github.event_name }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/image-test-pairs.mts
+      - name: Download pairing evidence for detect-changes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-detect-changes
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-detect-changes
+      - name: Download pairing evidence for verify-ubuntu-latest
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-ubuntu-latest
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-ubuntu-latest
+      - name: Download pairing evidence for verify-windows-latest
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-windows-latest
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-windows-latest
+      - name: Download pairing evidence for verify-installed-ubuntu-latest
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-installed-ubuntu-latest
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-installed-ubuntu-latest
+      - name: Download pairing evidence for verify-installed-windows-latest
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-installed-windows-latest
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-installed-windows-latest
+      - name: Download pairing evidence for verify-macos
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-macos
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-macos
+      - name: Download pairing evidence for verify-runtime-22.14.0
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-runtime-22.14.0
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-runtime-22.14.0
+      - name: Download pairing evidence for verify-runtime-22
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-runtime-22
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-runtime-22
+      - name: Download pairing evidence for verify-runtime-24
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-runtime-24
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-runtime-24
+      - name: Download pairing evidence for verify-runtime-node
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-runtime-node
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-runtime-node
+      - name: Download pairing evidence for verify-completion
+        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-completion
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-completion
+      - name: Download pairing evidence for verify-server
+        if: ${{ needs.detect-changes.outputs.server == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-server
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-server
+      - name: Download pairing evidence for verify-server-e2e
+        if: ${{ needs.detect-changes.outputs.server == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-server-e2e
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-server-e2e
+      - name: Download pairing evidence for verify-web-quality
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-web-quality
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-web-quality
+      - name: Download pairing evidence for verify-web-1
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-web-1
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-web-1
+      - name: Download pairing evidence for verify-web-2
+        if: ${{ needs.detect-changes.outputs.web == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-image-test-pairs-verify-web-2
+          path: .tmp/image-pair-jobs/daynight-image-test-pairs-verify-web-2
+      - name: Verify pairing evidence from every selected job
+        env:
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}
+          IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}
+          IMAGE_PAIR_COMBINED_COMMIT: ${{ needs.detect-changes.outputs.image_pair_combined_commit }}
+          IMAGE_PAIR_PRODUCTION_TREE: ${{ needs.detect-changes.outputs.image_pair_production_tree }}
+          IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          IMAGE_PAIR_CLI: ${{ needs.detect-changes.outputs.cli }}
+          IMAGE_PAIR_SERVER: ${{ needs.detect-changes.outputs.server }}
+          IMAGE_PAIR_WEB: ${{ needs.detect-changes.outputs.web }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readdirSync, readFileSync } from 'node:fs';
+          for (const field of ['IMAGE_PAIR_MANIFEST_COMMIT', 'IMAGE_PAIR_EXPECTED_COMBINED_TREE', 'IMAGE_PAIR_COMBINED_COMMIT', 'IMAGE_PAIR_PRODUCTION_TREE', 'IMAGE_PAIR_HEAD']) assert.match(process.env[field], /^[0-9a-f]{40}$/, field);
+          for (const field of ['IMAGE_PAIR_CLI', 'IMAGE_PAIR_SERVER', 'IMAGE_PAIR_WEB']) assert.ok(['true', 'false'].includes(process.env[field]), field);
+          const expected = ['detect-changes'];
+          if (process.env.IMAGE_PAIR_CLI === 'true') expected.push('verify-ubuntu-latest', 'verify-windows-latest', 'verify-installed-ubuntu-latest', 'verify-installed-windows-latest', 'verify-macos', 'verify-runtime-22.14.0', 'verify-runtime-22', 'verify-runtime-24', 'verify-runtime-node', 'verify-completion');
+          if (process.env.IMAGE_PAIR_SERVER === 'true') expected.push('verify-server', 'verify-server-e2e');
+          if (process.env.IMAGE_PAIR_WEB === 'true') expected.push('verify-web-quality', 'verify-web-1', 'verify-web-2');
+          const root = '.tmp/image-pair-jobs';
+          const names = expected.map(name => `daynight-image-test-pairs-${name}`);
+          assert.deepEqual(readdirSync(root).sort(), names.sort(), 'Every selected job must provide exactly one pairing receipt.');
+          for (const name of names) {
+            const evidence = JSON.parse(readFileSync(`${root}/${name}/image-test-pairs.json`, 'utf8'));
+            assert.equal(evidence.schemaVersion, 1);
+            assert.equal(evidence.manifestCommit, process.env.IMAGE_PAIR_MANIFEST_COMMIT, name);
+            assert.equal(evidence.combinedTree, process.env.IMAGE_PAIR_EXPECTED_COMBINED_TREE, name);
+            assert.equal(evidence.combinedCommit, process.env.IMAGE_PAIR_COMBINED_COMMIT, name);
+            assert.equal(evidence.productionTree, process.env.IMAGE_PAIR_PRODUCTION_TREE, name);
+            assert.equal(evidence.head, process.env.IMAGE_PAIR_HEAD, name);
+          }
+          console.log(JSON.stringify({ manifestCommit: process.env.IMAGE_PAIR_MANIFEST_COMMIT, combinedTree: process.env.IMAGE_PAIR_EXPECTED_COMBINED_TREE, productionTree: process.env.IMAGE_PAIR_PRODUCTION_TREE, jobs: expected }));
+          NODE
       - name: Download first Web shard summary
         if: ${{ needs.detect-changes.outputs.web == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -652,4 +1029,6 @@ jobs:
           path: .tmp/web-shards/2
       - name: Verify complete Web shard evidence
         if: ${{ needs.detect-changes.outputs.web == 'true' }}
-        run: node packages/daynight-web/scripts/acceptance/report.mts --shards .tmp/web-shards/1/*/evidence.json .tmp/web-shards/2/*/evidence.json
+        env:
+          IMAGE_PAIR_COMBINED_COMMIT: ${{ steps.image-pairs.outputs.combined_commit }}
+        run: env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/acceptance/report.mts --shards .tmp/web-shards/1/*/evidence.json .tmp/web-shards/2/*/evidence.json
