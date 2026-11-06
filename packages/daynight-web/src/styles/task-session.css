@@ -99,13 +99,19 @@
   .session-header-default { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "status" "actions"; }
   .session-header-default > .session-header-actions { justify-self: end; }
 }
-.task-agent-session.session-fullscreen {
+.task-agent-session.session-fullscreen, .bot-conversation[data-session-fullscreen="true"] {
   position: fixed;
   z-index: 40;
-  top: var(--session-viewport-top, 0px);
-  left: var(--session-viewport-left, 0px);
-  width: var(--session-viewport-width, 100%);
-  height: var(--session-viewport-height, 100dvh);
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  box-sizing: border-box;
+  /* The opaque surface covers the layout viewport, including the region behind
+     keyboard accessories. Only its content box follows the visual viewport. */
+  padding-top: calc(var(--session-viewport-top, 0px) + var(--session-fullscreen-inset, 0px));
+  padding-left: calc(var(--session-viewport-left, 0px) + var(--session-fullscreen-inset, 0px));
+  padding-right: calc(max(0px, 100vw - var(--session-viewport-left, 0px) - var(--session-viewport-width, 100vw)) + var(--session-fullscreen-inset, 0px));
+  padding-bottom: calc(max(0px, 100dvh - var(--session-viewport-top, 0px) - var(--session-viewport-height, 100dvh)) + var(--session-fullscreen-inset, 0px) + var(--session-result-reserve, 0px));
   max-width: none;
   max-height: none;
   margin: 0;
@@ -113,7 +119,10 @@
   border-radius: 0;
   overflow: hidden;
   background: #fff;
+  overscroll-behavior: contain;
 }
+.session-fullscreen :is(textarea, .session-controls-panel, .session-command-menu, .session-receipts, .session-request-content),
+.bot-conversation[data-session-fullscreen="true"] :is(textarea, .session-controls-panel, .session-command-menu, .session-receipts, .session-request-content) { overscroll-behavior: contain; }
 .session-fullscreen .session-timeline-shell { min-height: 0; }
 .session-fullscreen > .session-empty { flex-shrink: 1; min-height: 0; overflow: auto; }
 @media (max-width: 600px) {

@@ -62,9 +62,11 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await page.locator('.session-fullscreen-toggle').click();
   await expect(page.locator('.session-fullscreen-toggle')).toHaveAttribute('aria-pressed', 'true');
   const originalViewport = await page.locator('.task-agent-session').boundingBox();
-  expect(originalViewport).toEqual({ x: 20, y: 50, width: 280, height: 400 });
+  expect(originalViewport).toEqual({ x: 0, y: 0, ...page.viewportSize()! });
+  await expect.poll(() => page.locator('.session-header').evaluate(node => node.getBoundingClientRect().top)).toBe(50);
   await visual(280, 400, 70, 30, 'scroll');
-  await expect.poll(async () => page.locator('.task-agent-session').boundingBox()).toEqual({ x: 30, y: 70, width: 280, height: 400 });
+  await expect.poll(() => page.locator('.session-header').evaluate(node => ({ x: node.getBoundingClientRect().left, y: node.getBoundingClientRect().top }))).toEqual({ x: 30, y: 70 });
+  expect(await page.locator('.task-agent-session').boundingBox()).toEqual({ x: 0, y: 0, ...page.viewportSize()! });
   await page.locator('.session-fullscreen-toggle').click();
   await page.goto(`/projects/${deleting}/settings`);
   await page.getByRole('button', { name: 'Delete project', exact: true }).click();
@@ -101,7 +103,7 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await page.locator('.session-composer textarea').fill('Unsent message');
   await expect(page.locator('.session-composer button[type="submit"]')).toBeEnabled();
   await visual(350, 300, 80, 45);
-  await expect.poll(async () => page.locator('.task-agent-session').evaluate(root => root.getBoundingClientRect().top)).toBe(80);
+  await expect.poll(async () => page.locator('.session-header').evaluate(root => root.getBoundingClientRect().top)).toBe(80);
   const verifyVisualBounds = async (top: number, left: number, width: number, height: number) => {
     const rects = await page.evaluate(() => {
       const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON();
@@ -109,18 +111,19 @@ test('a collapsed deletion result reserves space for the task Session composer',
       const box = send.getBoundingClientRect(), hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
       return { session: rect('.task-agent-session'), slot: rect('.standalone-deletion-slot'), composer: rect('.session-composer'), header: rect('.session-header'), send: box.toJSON(), hit: hit === send || send.contains(hit) };
     });
-    expect(rects.session.left).toBeCloseTo(left, 1); expect(rects.session.top).toBeCloseTo(top, 1);
-    expect(rects.session.width).toBeCloseTo(width, 1); expect(rects.session.bottom).toBeLessThanOrEqual(rects.slot.top + 1);
+    expect(rects.session.left).toBe(0); expect(rects.session.top).toBe(0);
+    expect(rects.session.width).toBe(page.viewportSize()!.width); expect(rects.session.height).toBe(page.viewportSize()!.height);
+    expect(rects.header.left).toBeCloseTo(left, 1); expect(rects.header.top).toBeCloseTo(top, 1);
+    expect(rects.header.width).toBeCloseTo(width, 1); expect(rects.composer.bottom).toBeLessThanOrEqual(rects.slot.top + 1);
     expect(rects.slot.bottom).toBeLessThanOrEqual(top + height + 1); expect(rects.slot.left).toBeCloseTo(left, 1);
     expect(rects.send.bottom, JSON.stringify(rects)).toBeLessThanOrEqual(rects.slot.top + 1); expect(rects.hit, JSON.stringify(rects)).toBe(true);
     await page.locator('.session-composer textarea').focus(); await expect(page.locator('.session-composer textarea')).toBeFocused();
   };
   await verifyVisualBounds(80, 45, 350, 300);
   await visual(350, 300, 110, 65, 'scroll');
-  await expect.poll(async () => page.locator('.task-agent-session').evaluate(root => root.getBoundingClientRect().left)).toBe(65);
+  await expect.poll(async () => page.locator('.session-header').evaluate(root => root.getBoundingClientRect().left)).toBe(65);
   await verifyVisualBounds(110, 65, 350, 300);
-  await page.getByRole('button', { name: 'Show deletion results' }).focus();
-  await page.keyboard.press('Enter'); await expect(page.getByText(/project deletion result is unknown/i)).toBeVisible();
+  await page.getByRole('button', { name: 'Show deletion results' }).click(); await expect(page.getByText(/project deletion result is unknown/i)).toBeVisible();
   const expanded = await page.locator('.standalone-deletion-panel').boundingBox();
   expect(expanded!.y).toBeGreaterThanOrEqual(110); expect(expanded!.x).toBeGreaterThanOrEqual(65);
   expect(expanded!.x + expanded!.width).toBeLessThanOrEqual(415);
@@ -135,7 +138,8 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await page.getByRole('tab', { name: 'Steps' }).click();
   await page.getByRole('button', { name: 'Add step' }).click();
   await page.getByRole('textbox', { name: 'Title' }).fill('Other task draft');
-  await lastResult.click();
+  // Keyboard activation gives every engine the same explicit focus owner.
+  await lastResult.focus(); await page.keyboard.press('Enter');
   const confirmation = page.getByRole('alertdialog');
   await expect(confirmation).toBeVisible();
   await expect(page.locator('.standalone-deletion-slot')).toHaveAttribute('inert');
