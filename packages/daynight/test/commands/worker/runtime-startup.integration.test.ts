@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
+import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
@@ -109,6 +110,234 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("retains unavailable local IDs while running healthy projects and bootstraps only after full recovery", async () => {
+    const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
+    const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
+    let available = false;
+    const unavailable = new ApiError({ operation: "project.show" }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(null));
+    remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => {
+      if (projectId === uuid(1) && !available) throw unavailable;
+      return { id: projectId, repoUrl: projectId === uuid(1) ? remoteUrl : second.remote };
+    });
+    remote.project.mockImplementation(async (id: string) => {
+      if (id === uuid(1) && !available) throw unavailable;
+      return { id, repoUrl: id === uuid(1) ? remoteUrl : second.remote };
+    });
+    let reporterOptions: ReporterOptions | undefined;
+    let assertionFailure: unknown;
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { reporterOptions = options; return reporter(); });
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+      let current = options;
+      let rounds = 0;
+      return {
+        updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
+        tick: vi.fn(async () => {
+          try {
+          if (rounds++ === 0) {
+            expect(current.store.listProjects().map(project => project.projectId)).toEqual([uuid(1), uuid(2)]);
+            expect(current.targetProjectIds).toEqual([uuid(1), uuid(2)]);
+            expect(current.readyProjectIds).toEqual([uuid(2)]);
+            expect(reporterOptions!.configuration!.capture().bootstrap).toBeNull();
+            available = true;
+          } else {
+            expect(current.readyProjectIds).toEqual([uuid(1), uuid(2)]);
+            expect(reporterOptions!.configuration!.capture().bootstrap?.projects.map(project => project.projectId)).toEqual([uuid(1), uuid(2)]);
+            cancellation.abort();
+          }
+          } catch (error) { assertionFailure = error; cancellation.abort(error); }
+        }),
+        shutdown: vi.fn(async () => true),
+      };
+    });
+    await runWorker({ ...f, signal: cancellation.signal });
+    if (assertionFailure !== undefined) throw assertionFailure;
+    expect(remote.resolveProject.mock.calls.every(([repository]: [{ projectId?: string }]) => repository.projectId !== undefined)).toBe(true);
+  });
+
+  it.each(["protocol", "request"] as const)("does not treat a %s bootstrap error as an unavailable project", async (phase) => {
+    const f = await fixture();
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(null));
+    const failure = new ApiError({ operation: "project.show" }, phase, { cause: new Error("Identity or transport failure") });
+    remote.resolveProject.mockRejectedValue(failure);
+    await expect(runWorker(f)).rejects.toBe(failure);
+    expect(mocks.coordinator).not.toHaveBeenCalled();
+    expect(mocks.reporter).not.toHaveBeenCalled();
+  });
+
+  it("invalidates an unavailable fallback project before another project's lookup finishes", async () => {
+    const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
+    const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
+    const unavailable = new ApiError({ operation: "project.show", projectId: uuid(1) }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
+    let firstAvailable = false, blockSecond = false, entered = false;
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(null));
+    remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => {
+      if (projectId === uuid(1) && !firstAvailable) throw unavailable;
+      if (projectId === uuid(2) && blockSecond) { entered = true; await blocked; }
+      return { id: projectId, repoUrl: projectId === uuid(1) ? remoteUrl : second.remote };
+    });
+    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: id === uuid(1) ? remoteUrl : second.remote }));
+    const reported = reporter(), invalidateProject = vi.fn();
+    mocks.reporter.mockReturnValue(reported);
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+      let rounds = 0;
+      return { updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => {
+        if (rounds++ === 0) firstAvailable = true;
+        else if (rounds === 2) { options.onInventory!({ observedAt: "2026-11-04T00:00:00Z", claims: [] }); firstAvailable = false; blockSecond = true; }
+      }) };
+    });
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000, interval: 10 });
+      expect(invalidateProject).toHaveBeenCalledWith(uuid(1));
+      expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
+    } finally { cancellation.abort(); release(); await running; }
+  });
+
+  it("invalidates a cloud project as soon as its asynchronous preparation observes 404", async () => {
+    const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
+    const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository, second] } }));
+    const unavailable = new ApiError({ operation: "project.show", projectId: uuid(1) }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
+    let rejectFirst!: (error: unknown) => void, entered = false;
+    const first = new Promise<never>((_resolve, reject) => { rejectFirst = reject; });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([uuid(1), uuid(2)])));
+    remote.project.mockImplementation(async (id: string) => id === uuid(1) ? first : { id, repoUrl: second.remote });
+    remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => ({ id: projectId, repoUrl: projectId === uuid(1) ? remoteUrl : second.remote }));
+    const reported = reporter(), invalidateProject = vi.fn();
+    mocks.reporter.mockReturnValue(reported);
+    mocks.coordinator.mockImplementation(() => ({ updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => { entered = true; }) }));
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000, interval: 10 });
+      reported.publishInventory({ observedAt: "2026-11-04T00:00:00Z", claims: [] });
+      rejectFirst(unavailable);
+      await vi.waitFor(() => expect(invalidateProject).toHaveBeenCalledWith(uuid(1)), { timeout: 5000, interval: 10 });
+      expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
+    } finally { cancellation.abort(); rejectFirst(unavailable); await running; }
+  });
+
+  it.each(["conflict", "io"] as const)("keeps admission incomplete when a local mapping fails with %s", async failure => {
+    const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
+    const localPath = failure === "io" ? path.join(f.homeDirectory, "ordinary-file", "repo") : f.repository.path;
+    if (failure === "io") await writeFile(path.join(f.homeDirectory, "ordinary-file"), "not a directory");
+    else f.store!.registerProject({ projectId: uuid(9), repoUrl: "https://git.example/team/retained.git", localPath });
+    const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [{ ...f.repository, path: localPath }, second] } }));
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([uuid(1), uuid(2)])));
+    remote.project.mockImplementation(async (id: string) => {
+      if (id === uuid(1)) throw new ApiError({ operation: "project.show" }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
+      return { id, repoUrl: second.remote };
+    });
+    remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => ({ id: projectId, repoUrl: second.remote }));
+    let coordinatorOptions: WorkerCoordinatorOptions | undefined;
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => { coordinatorOptions = options; return coordinator(async () => {}); });
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(1)}\"`) && event.message.includes('"state":"error"'))).toBe(true), { timeout: 5000, interval: 10 });
+      await vi.waitFor(() => expect(coordinatorOptions).toBeDefined(), { timeout: 5000, interval: 10 });
+      expect(coordinatorOptions!.configurationComplete!()).toBe(false);
+      expect(f.store!.getProject({ projectId: uuid(1) })).toBeNull();
+    } finally { cancellation.abort(); await running; }
+  }, 12_000);
+
+  it.each([true, false])("keeps a local mapping in capacity accounting while lookup is blocked (initially selected: %s)", async initiallySelected => {
+    const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
+    const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository, second], agent: "invalid-old-native-settings" } }));
+    let release!: () => void, entered = false;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const original = configurationSource.workerLocalRepositoryForId;
+    const lookup = vi.spyOn(configurationSource, "workerLocalRepositoryForId").mockImplementation(async (local, paths, id) => {
+      if (id === uuid(1)) { entered = true; await held; }
+      return original(local, paths, id);
+    });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired(initiallySelected ? [uuid(1), uuid(2)] : [uuid(2)])));
+    remote.project.mockImplementation(async (id: string) => {
+      if (id === uuid(1)) throw new ApiError({ operation: "project.show" }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
+      return { id, repoUrl: second.remote };
+    });
+    remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => ({ id: projectId, repoUrl: second.remote }));
+    let channel!: ReporterOptions["configuration"], options: WorkerCoordinatorOptions | undefined;
+    mocks.reporter.mockImplementation((value: ReporterOptions) => { channel = value.configuration!; return reporter(); });
+    mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => { expect(entered).toBe(true); expect(options).toBeDefined(); }, { timeout: 5000, interval: 10 });
+      expect(options!.configurationComplete!()).toBe(false);
+      if (initiallySelected) {
+        await channel!.accept(channel!.capture(), { desired: { ...desired([uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
+        expect(options!.configurationComplete!()).toBe(false);
+      }
+      release();
+      await vi.waitFor(() => expect(options!.store.getProject({ projectId: uuid(1) })).toMatchObject({ localPath: f.repository.path }), { timeout: 5000, interval: 10 });
+      await vi.waitFor(() => expect(options!.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
+    } finally { cancellation.abort(); release(); await running; lookup.mockRestore(); }
+  }, 12_000);
+
+  it.each(["retained", "discovered", "unavailable", "absent", "foreign"] as const)("reconciles an unbound local repository against cloud selection: %s", async scenario => {
+    const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
+    const { projectId: _projectId, ...legacy } = f.repository;
+    const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [legacy, second], agent: "invalid-old-native-settings" } }));
+    if (scenario !== "absent") await mkdir(f.repository.path);
+    if (scenario === "retained") f.store!.registerProject({ projectId: uuid(1), repoUrl: remoteUrl, localPath: f.repository.path });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([uuid(2)])));
+    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: second.remote }));
+    remote.resolveProject.mockImplementation(async ({ projectId }: { projectId?: string }) => {
+      if (projectId === undefined && scenario === "unavailable") throw new Error("Project does not exist for the configured worker repository.");
+      return { id: projectId ?? uuid(1), repoUrl: projectId === undefined ? remoteUrl : second.remote };
+    });
+    if (scenario === "foreign") mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees: vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]) });
+    let options: WorkerCoordinatorOptions | undefined;
+    mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => expect(options).toBeDefined(), { timeout: 5000, interval: 10 });
+      if (scenario === "unavailable" || scenario === "foreign") {
+        await vi.waitFor(() => expect(remote.resolveProject).toHaveBeenCalledWith({ repoUrl: remoteUrl }, expect.any(AbortSignal)), { timeout: 5000, interval: 10 });
+        if (scenario === "foreign") await vi.waitFor(() => expect(mocks.git.mock.results[0]!.value.listWorktrees).toHaveBeenCalled(), { timeout: 5000, interval: 10 });
+        expect(options!.configurationComplete!()).toBe(false);
+        expect(options!.store.getProject({ projectId: uuid(1) })).toBeNull();
+      } else {
+        await vi.waitFor(() => expect(options!.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
+        if (scenario !== "absent") expect(options!.store.getProject({ projectId: uuid(1) })).toMatchObject({ localPath: f.repository.path });
+      }
+    } finally { cancellation.abort(); await running; }
+  }, 12_000);
+
+  it.each([null, "not-a-uuid"])("retains unknown managed resources when the old Project ID is %s", async invalidId => {
+    const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
+    const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
+    await mkdir(f.repository.path);
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [{ ...f.repository, projectId: invalidId }, second] } }));
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockResolvedValue(resource(desired([uuid(2)])));
+    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: second.remote }));
+    remote.resolveProject.mockImplementation(async ({ projectId }: { projectId?: string }) => ({ id: projectId ?? uuid(1), repoUrl: second.remote }));
+    const listWorktrees = vi.fn(async () => [{ owner: { projectId: uuid(9), taskId: uuid(10), claimId: uuid(11), worktreeId: uuid(12) }, binding: {} }]);
+    mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}), listWorktrees });
+    let options: WorkerCoordinatorOptions | undefined;
+    mocks.coordinator.mockImplementation((value: WorkerCoordinatorOptions) => { options = value; return coordinator(async () => {}); });
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => { expect(options).toBeDefined(); expect(listWorktrees).toHaveBeenCalled(); }, { timeout: 5000, interval: 10 });
+      expect(options!.configurationComplete!()).toBe(false);
+      expect(options!.store.getProject({ projectId: uuid(9) })).toBeNull();
+      expect(remote.resolveProject).not.toHaveBeenCalledWith({ repoUrl: remoteUrl }, expect.any(AbortSignal));
+    } finally { cancellation.abort(); await running; }
+  }, 12_000);
   it("keeps pre-cancelled startup before identity, locks, databases and remote requests", async () => {
     const f = await fixture(false, false);
     const before = (await readdir(f.homeDirectory, { recursive: true })).sort();
@@ -207,34 +436,36 @@ describe("worker cloud-first startup", () => {
   });
 
   it("keeps configuration exchange live without publishing incomplete inventory and publishes after mapping recovers", async () => {
-    const f = await fixture(), controller = new AbortController(); cancellations.add(controller);
+    const f = await fixture(false, false), controller = new AbortController(); cancellations.add(controller);
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.project.mockRejectedValue(new Error("Project lookup unavailable"));
     const reported = reporter();
     let channel!: ReporterOptions["configuration"];
     mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration!; return reported; });
     const inventory = { observedAt: "2026-11-04T00:00:00Z", claims: [] };
+    let assertionFailure: unknown;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
       try {
         expect(options.store.getProject({ projectId: uuid(1) })).toBeNull();
         options.onInventory!(inventory);
-        expect(reported.publishInventory).not.toHaveBeenCalled();
+        expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
         const captured = channel!.capture();
         expect(captured.observation).not.toBeNull();
         remote.project.mockResolvedValue({ id: uuid(1), repoUrl: remoteUrl });
         await channel!.accept(captured, { desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false });
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
-        expect(reported.publishInventory).toHaveBeenCalledExactlyOnceWith(inventory);
-      } finally { controller.abort(); }
+        expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
+      } catch (error) { assertionFailure = error; } finally { controller.abort(); }
     }));
     await runWorker({ ...f, signal: controller.signal });
+    if (assertionFailure !== undefined) throw assertionFailure;
   });
 
   it("does not publish an in-flight inventory after the cloud target adds an unmapped project", async () => {
     const f = await fixture(), controller = new AbortController(); cancellations.add(controller);
     const second = { projectId: uuid(2), remote: "https://git.example/team/second.git", path: path.join(f.homeDirectory, "second") };
-    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, repositories: [f.repository, second] } }));
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, repositories: [f.repository] } }));
     const remote = mocks.remote(); mocks.remote.mockClear();
     let secondAvailable = false;
     remote.project.mockImplementation(async (id: string) => {
@@ -244,22 +475,25 @@ describe("worker cloud-first startup", () => {
     const reported = reporter(); let channel!: ReporterOptions["configuration"];
     mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration!; return reported; });
     const inventory = { observedAt: "2026-11-04T00:00:00Z", claims: [] };
+    let assertionFailure: unknown;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
       try {
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         const captured = channel!.capture();
         await channel!.accept(captured, { desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
         options.onInventory!(inventory);
-        expect(reported.publishInventory).not.toHaveBeenCalled();
+        expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
+        await vi.waitFor(() => expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(2)}\"`) && event.message.includes('"state":"error"'))).toBe(true), { timeout: 5000, interval: 10 });
         secondAvailable = true;
         await channel!.accept(channel!.capture(), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false });
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
-        expect(reported.publishInventory).toHaveBeenCalledExactlyOnceWith(inventory);
-      } finally { controller.abort(); }
+        expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
+      } catch (error) { assertionFailure = error; } finally { controller.abort(); }
     }));
     await runWorker({ ...f, signal: controller.signal });
-  });
+    if (assertionFailure !== undefined) throw assertionFailure;
+  }, 12_000);
 
   it("registers every successfully prepared cloud project mapping on an empty database", async () => {
     const f = await fixture(), controller = new AbortController(); cancellations.add(controller);

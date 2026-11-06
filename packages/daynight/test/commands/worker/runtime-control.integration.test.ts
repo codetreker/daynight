@@ -58,6 +58,22 @@ const staleManagedSource = (mode = "herdr") => `serverUrl: ${origin}\nserverToke
 const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
 
 describe("worker synchronous management runtime ownership", () => {
+  it("resolves only the target Project when an unrelated explicit Project is unavailable", async () => {
+    const f = await fixture();
+    const unavailable = { projectId: uuid(10), remote: "https://example.test/org/unavailable.git", path: path.join(f.homeDirectory, "unavailable") };
+    await writeFile(f.paths.configFile, `serverUrl: ${origin}\nserverToken: dn_pat_abcdefghijklmnopqrstuvwxyz1234567890\nworkerId: ${uuid(4)}\nworker:\n  repositories:\n    - projectId: ${unavailable.projectId}\n      remote: ${unavailable.remote}\n      path: ${unavailable.path}\n    - projectId: ${f.project.projectId}\n      remote: ${f.project.repoUrl}\n      path: ${f.project.localPath}\n`);
+    const resolveProject = vi.fn(async ({ projectId }: { projectId: string }) => {
+      if (projectId === unavailable.projectId) throw new Error("Project unavailable");
+      return { id: projectId };
+    });
+    mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: null, observationRevision: "0", observation: null })), resolveProject });
+    const request = { kind: "retry" as const, taskId: f.task.taskId, claimId: f.task.claimId };
+    await runWorkerControl({ ...f, request });
+    expect(resolveProject).toHaveBeenCalledOnce();
+    expect(resolveProject.mock.calls[0]![0].projectId).toBe(f.project.projectId);
+    expect(mocks.submit).toHaveBeenCalledOnce();
+    await expect(runWorkerControl({ ...f, request: { ...request, projectId: unavailable.projectId } })).rejects.toThrow("Project unavailable");
+  });
   it("submits once under the instance lock and leaves sibling resources and shared Herdr intact", async () => {
     const f = await fixture();
     let held = false;

@@ -65,20 +65,22 @@ export const runWorkerSetup = async (
   const projects = await dependencies.readProjects(snapshot, signal);
   signal.throwIfAborted();
   context.stderr("[passed] Daynight login: Accessible Projects loaded from the configured service.\n");
-  if (projects.length === 0) throw new Error("No accessible Daynight Projects exist. Create a Project before running daynight worker setup.");
   const configured = new Set(configuredWorkerProjectIds(snapshot, projects));
+  const unavailable = snapshot.configuration.repositories.filter(({ projectId }) => projectId !== undefined && !projects.some(({ id }) => id === projectId));
+  if (projects.length === 0 && unavailable.length === 0) throw new Error("No accessible Daynight Projects exist. Create a Project before running daynight worker setup.");
+  const choices = [...projects.map((project) => ({
+    name: `${terminalText(project.name)} · ${project.id} · ${terminalText(project.repoUrl)}`,
+    value: project.id,
+    checked: configured.has(project.id),
+  })), ...unavailable.map((repository) => ({ name: `Unavailable · ${repository.projectId!} · ${terminalText(repository.remote)}`, value: repository.projectId!, checked: true }))];
   const projectIds = await prompt.selectMany<string>({
     message: "Run tasks from which existing Daynight Projects? This replaces the configured selection.",
-    choices: projects.map((project) => ({
-      name: `${terminalText(project.name)} · ${project.id} · ${terminalText(project.repoUrl)}`,
-      value: project.id,
-      checked: configured.has(project.id),
-    })),
+    choices,
     requiredMessage: "Select at least one Project.",
   }, signal);
   signal.throwIfAborted();
   if (projectIds.length === 0 || new Set(projectIds).size !== projectIds.length ||
-    projectIds.some((id) => !projects.some((project) => project.id === id))) {
+    projectIds.some((id) => !choices.some((choice) => choice.value === id))) {
     throw new Error("Select one or more distinct Projects from the available choices.");
   }
   const options = { paths, homeDirectory, snapshot, projects, projectIds, agent, signal };
@@ -99,8 +101,8 @@ export const runWorkerSetup = async (
   }
   context.stderr(`\nWorker configuration\nAgent: ${agentName(agent)}\n`);
   for (const repository of plan.configuration.repositories) {
-    const project = projects.find(({ id }) => id === repository.projectId)!;
-    context.stderr(`Project: ${terminalText(project.name)} · ${project.id}\n  Repository: ${terminalText(repository.remote)}\n  Path: ${terminalText(repository.path)}\n`);
+    const project = projects.find(({ id }) => id === repository.projectId);
+    context.stderr(`Project: ${project === undefined ? `Unavailable · ${repository.projectId!}` : `${terminalText(project.name)} · ${project.id}`}\n  Repository: ${terminalText(repository.remote)}\n  Path: ${terminalText(repository.path)}\n`);
   }
   for (const repository of plan.removedRepositories) context.stderr(`Remove from worker selection: ${repository.projectId === undefined ? terminalText(repository.remote) : repository.projectId}\n`);
   if (plan.resetGlobalNativeSettings) context.stderr(`Reset global model and native arguments for the switch to ${agentName(agent)}.\n`);

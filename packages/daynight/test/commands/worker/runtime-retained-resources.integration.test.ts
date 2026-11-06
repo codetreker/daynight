@@ -88,7 +88,7 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
   const remote = {
     serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), reportConfiguration: report, report: vi.fn(),
     project: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })), resolveProject: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })),
-    ownInventory: vi.fn(async () => [task]), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
+    ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
   mocks.remote.mockReturnValue(remote);
   const lifecycle = { responsibilities: vi.fn(() => []), isStopped: vi.fn(() => false), close: vi.fn(), registerClaim: vi.fn(), assertCanAdvance: vi.fn(), hasPreparedRun: vi.fn(() => false), stop: vi.fn(async () => {}) };
