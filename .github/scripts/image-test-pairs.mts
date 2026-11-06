@@ -170,7 +170,7 @@ const pull = async (source: GitHubSource, id: number, repository: string): Promi
   if (typeof base.ref !== "string" || base.ref.length === 0) throw new Error("Unreadable PR base ref.");
   sha(head.sha, "PR HEAD SHA");
   if (value.merged === true) sha(value.merge_commit_sha, "Actual PR merge commit");
-  if (object(head.repo, "HEAD repository").full_name !== repository || object(base.repo, "Base repository").full_name !== repository) throw new Error("Candidate must belong to the configured repository.");
+  if (object(base.repo, "Base repository").full_name !== repository) throw new Error("Pull request must target the configured repository.");
   positiveInteger(object(value.user, "PR author").id, "PR author ID");
   return value;
 };
@@ -311,6 +311,11 @@ export const validatePairs = async (options: Options): Promise<Evidence> => {
   if (gitText(cwd, ["status", "--porcelain", "--untracked-files=no"]) !== "") throw new Error("Image pair composition requires a clean tracked checkout.");
   const pulls = new Map<number, Promise<ObjectValue>>();
   const getPull: PullReader = (pr) => { if (!pulls.has(pr)) pulls.set(pr, pull(options.source, pr, options.repository)); return pulls.get(pr)!; };
+  const getCandidatePull: PullReader = async (pr) => {
+    const value = await getPull(pr);
+    if (object(object(value.head, "Candidate HEAD").repo, "HEAD repository").full_name !== options.repository) throw new Error("Candidate must belong to the configured repository.");
+    return value;
+  };
   const incorporated = async (pr: ObjectValue): Promise<boolean> => {
     if (pr.merged !== true) return false;
     const merged = sha(pr.merge_commit_sha, "Actual PR merge commit");
@@ -319,7 +324,7 @@ export const validatePairs = async (options: Options): Promise<Evidence> => {
   };
   const active: Pair[] = [];
   for (const pair of manifest.pairs) {
-    const [implementation, tests] = await Promise.all([getPull(pair.implementation.pr), getPull(pair.tests.pr)]);
+    const [implementation, tests] = await Promise.all([getCandidatePull(pair.implementation.pr), getCandidatePull(pair.tests.pr)]);
     const hasImplementation = await incorporated(implementation); const hasTests = await incorporated(tests);
     if (hasTests && !hasImplementation) throw new Error("Recorded tests are incorporated without their implementation merge commit.");
     if (hasImplementation && !hasTests) active.push(pair);
@@ -343,8 +348,8 @@ export const validatePairs = async (options: Options): Promise<Evidence> => {
       const comparison = gitText(cwd, ["merge-base", base, options.head]);
       if (!sameEntry(entries(cwd, comparison).get(manifestPath), entries(cwd, options.head).get(manifestPath))) {
         const proposed = readManifest(cwd, options.head);
-        for (const pair of changedPairs(manifest, proposed)) await verifyCandidate(pair, options, getPull, index);
-        await verifyRegistryTransition(manifest, proposed, options, getPull, mainCommit);
+        for (const pair of changedPairs(manifest, proposed)) await verifyCandidate(pair, options, getCandidatePull, index);
+        await verifyRegistryTransition(manifest, proposed, options, getCandidatePull, mainCommit);
         evidence.registryChecked = true;
       }
     }
@@ -353,14 +358,14 @@ export const validatePairs = async (options: Options): Promise<Evidence> => {
       const previousEntry = parent ? entries(cwd, parent).get(manifestPath) : undefined;
       if (!sameEntry(previousEntry, entries(cwd, options.head).get(manifestPath))) {
         const previous = previousEntry ? readManifest(cwd, parent!) : { schemaVersion: 1 as const, pairs: [] };
-        for (const pair of changedPairs(previous, manifest)) await verifyCandidate(pair, options, getPull, index);
-        await verifyRegistryTransition(previous, manifest, options, getPull, options.head);
+        for (const pair of changedPairs(previous, manifest)) await verifyCandidate(pair, options, getCandidatePull, index);
+        await verifyRegistryTransition(previous, manifest, options, getCandidatePull, options.head);
         evidence.registryChecked = true;
       }
     }
     const materialize: Array<{ path: string; oid: string }> = [];
     if (selected) {
-      const { before, after, changed } = await verifyCandidate(selected, options, getPull, index);
+      const { before, after, changed } = await verifyCandidate(selected, options, getCandidatePull, index);
       if (registered && options.head !== (registered.implementation.pr === options.pr ? registered.implementation.sha : registered.tests.sha)) throw new Error("Event HEAD differs from the pinned candidate.");
       const current = entries(cwd, checkoutCommit);
       if (strippedTree(cwd, checkoutCommit, selected.allowPaths, index) !== selected.productionTree) throw new Error("Production tree differs from the approved implementation.");
