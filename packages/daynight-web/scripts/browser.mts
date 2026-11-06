@@ -33,6 +33,7 @@ export const browserConfigs = [
   'task-view-continuity-playwright.config.ts',
   'graph-visibility-browser-playwright.config.ts',
   'team-invitation-browser-playwright.config.ts',
+  'graph-direction-browser-playwright.config.ts',
   'session-header-playwright.config.ts',
   'session-column-playwright.config.ts',
   'session-record-layout-playwright.config.ts',
