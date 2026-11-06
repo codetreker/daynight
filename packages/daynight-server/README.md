@@ -298,9 +298,21 @@ opening one local file root and one PostgreSQL resource. `service.App` assembles
 and owns the shared modules and resources; `server.New` registers their HTTP
 routes. The runtime stops admission and drains HTTP and WebSocket work before
 the application closes the Session engine, files and pool. A cleanup timeout
-retains resources for another close attempt. Startup applies the embedded migrations before accepting requests.
-One pinned connection holds a session advisory lock across version checks and all
-migration transactions; unknown versions, gaps and checksum mismatches stop startup.
+retains resources for another close attempt. Startup validates the embedded
+format snapshot and prepares the target PostgreSQL schema before accepting
+requests. One pinned connection holds the migration advisory lock while
+inspecting the target namespace and initializing or upgrading its format.
+
+An empty namespace receives the current snapshot, required initial rows and the
+complete original migration-checksum ledger in one transaction. Historical SQL
+and Go transforms do not execute on that path. Any SQL, initial-data, ledger or
+commit failure rolls back the complete initialization. A namespace containing
+user objects follows the existing ordered migration path, even when it has no
+migration ledger; objects in another schema do not affect that choice. Unknown
+versions, gaps and checksum mismatches stop startup. Reopening an initialized
+schema preserves its existing data and ledger timestamps. The
+[initialization decision](../../.agents/notes/implemented/architecture/2026-11-06-postgres-schema-bootstrap.md)
+owns the namespace, transaction and concurrency guarantees.
 
 Migration `032_personal_project_ownership.sql` creates the Personal Team/member
 and Project ownership records and renames the existing member table, sequence,
@@ -427,7 +439,8 @@ on the host; valid authentication settings remain mandatory. The [deployment gui
 prerequisites, API examples, port selection and persistence/teardown commands.
 The gateway publishes host `127.0.0.1:8787` and forwards TCP to the server's
 loopback listener in their shared network namespace; the database has no
-published host port. Startup uses this module's embedded migrations. Open
+published host port. Startup initializes or upgrades the database with this
+module's embedded format snapshot and migrations. Open
 `http://127.0.0.1:8787/` for projects and task graphs. The
 [dev-ci deployment](../../deployment/dev-ci/README.md) reuses the production
 Dockerfile and gateway in a unique disposable project for tests.
@@ -607,7 +620,9 @@ records the distinction and preservation requirements.
 format produced by the complete embedded migration history. It includes the
 migration-ledger table definition, required initial rows and sequence state;
 it does not freeze migration-ledger rows or their application timestamps.
-Runtime startup continues to apply the historical migrations.
+Runtime startup uses the snapshot for an empty target namespace and retains
+historical migrations for existing namespaces. A stale snapshot version stops
+startup before initialization or upgrade, exposing an incomplete format update.
 
 The ordinary module check compares a fresh historical database with a fresh
 snapshot database through PostgreSQL catalogs and initial table data. It checks
