@@ -207,6 +207,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,
 		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
+		"task_attachment_list": true, "task_attachment_remove": true,
 	}
 	for _, tool := range tools {
 		if !want[tool.Name] {

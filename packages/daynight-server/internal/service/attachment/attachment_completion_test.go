@@ -59,10 +59,36 @@ func TestAttachmentUnknownCommitDoesNotClaimSuccessOrCompensate(t *testing.T) {
 				if !errors.As(err, &transactionError) || transactionError.Outcome != store.TransactionUnknown || (!noError && (!transactionError.CommitAttempted || !errors.Is(err, cause))) {
 					t.Fatalf("unknown completion lost: %#v %v", transactionError, err)
 				}
+				if operation == "delete" && !FileEffectPossible(err) {
+					t.Fatal("delete file effect was not recorded")
+				}
 				// The fixture committed before losing the response. The service must not guess or undo that result.
 				assertAttachmentState(t, t.Context(), database, files, task, operation != "delete", "after")
 			})
 		}
+	}
+}
+
+func TestDeleteFileEffectFact(t *testing.T) {
+	attachments, _, database, files, task, principal := attachmentService(t)
+	missing := attachments.Delete(t.Context(), principal, task.ProjectID, task.ID, "missing")
+	if FileEffectPossible(missing) {
+		t.Fatalf("missing metadata reached file: %v", missing)
+	}
+	putAttachment(t, attachments, principal, task, "file", "before")
+	sentinel := errors.New("file delete failed")
+	subject := newAttachmentService(database, attachmentFaultStorage{Storage: files, delete: sentinel})
+	err := subject.Delete(t.Context(), principal, task.ProjectID, task.ID, "file")
+	if !errors.Is(err, sentinel) || !FileEffectPossible(err) {
+		t.Fatalf("file effect or cause lost: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	subject = newAttachmentService(database, attachmentFaultStorage{Storage: files, afterDelete: cancel})
+	err = subject.Delete(ctx, principal, task.ProjectID, task.ID, "file")
+	var transactionError *store.TransactionError
+	if !FileEffectPossible(err) || !errors.Is(err, context.Canceled) || !errors.As(err, &transactionError) || transactionError.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("file effect or transaction fact lost: %v", err)
 	}
 }
 

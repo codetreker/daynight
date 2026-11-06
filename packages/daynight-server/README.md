@@ -331,7 +331,8 @@ an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin
 The endpoint advertises Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Task creation, reading, updating, status, deletion
-and property tools, and ordered Task Steps reads and writes. Invitation links
+and property tools, ordered Task Steps reads and writes, and attachment listing
+and removal. Invitation links
 are returned only by creation; listing returns metadata without secrets. Task
 mutation inputs use the existing 1 MiB business JSON limit; versions are
 decimal strings and property values use `valueText`. Task and Step reads default
@@ -684,8 +685,9 @@ owns the address rule.
 Writes stream through an owned temporary file and publish complete contents.
 An empty internal directory can be reused as a file path; existing child files
 remain conflicts. Internal namespace synchronization belongs to this storage
-instance and does not coordinate filesystem operations with PostgreSQL or with
-other processes sharing a root. The accepted non-atomicity issue is owned by the
+instance. Attachment operations additionally use a persistent, cross-process
+target gate through file and metadata completion; an opened handle remains stable
+after releasing it. The accepted non-atomicity issue is owned by the
 [attachment requirements](../../docs/spec/daynight-task-attachments.md).
 
 Both Compose deployments mount a project-scoped `attachment-data` volume at

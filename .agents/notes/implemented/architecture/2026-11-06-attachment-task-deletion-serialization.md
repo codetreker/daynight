@@ -39,6 +39,7 @@ the required deletion boundary without serializing unrelated tasks.
 Deletion can wait for an in-flight file stream, and cancellation must preserve
 the observed transaction outcome. A database rollback cannot undo a published
 file or deletion, and an unknown commit cannot justify guessed compensation.
-The accepted cross-storage inconsistency remains; this boundary only serializes
-lifecycle changes. The PostgreSQL transaction releases its locks at completion,
+The accepted cross-storage failure boundary remains; this boundary serializes
+lifecycle changes. The [target gate](2026-11-06-attachment-target-gate.md)
+separately protects successful same-path publication. The PostgreSQL transaction releases its locks at completion,
 while unrelated tasks remain independently writable.

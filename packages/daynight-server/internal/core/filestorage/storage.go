@@ -27,7 +27,18 @@ type Object struct {
 	Info FileInfo
 }
 
+// GateDomain separates target attachment operations from private transfer I/O.
+type GateDomain string
+
+const (
+	TargetGate  GateDomain = "target"
+	PrivateGate GateDomain = "private"
+)
+
 type Storage interface {
+	// AcquireGate serializes a domain/key across all instances sharing the root.
+	// The permit remains held until Close, independently of database leases.
+	AcquireGate(ctx context.Context, domain GateDomain, key string) (io.Closer, error)
 	Put(ctx context.Context, bucket, path string, content io.Reader) (FileInfo, error)
 	Open(ctx context.Context, bucket, path string) (Object, error)
 	Delete(ctx context.Context, bucket, path string) error

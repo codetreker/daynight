@@ -25,6 +25,7 @@ type Storage struct {
 	exactSpelling bool
 	namespace     sync.Mutex
 	fileSync      func(*os.File) error
+	gates         [2][256]chan struct{}
 }
 
 var _ filestorage.Storage = (*Storage)(nil)
@@ -71,7 +72,13 @@ func newWithDirectorySync(root string, fileSync func(*os.File) error) (*Storage,
 	if !sensitive && runtime.GOOS != "darwin" {
 		return nil, errors.Join(ErrCaseInsensitive, directory.Close())
 	}
-	return &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync}, nil
+	storage := &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync}
+	for domain := range storage.gates {
+		for stripe := range storage.gates[domain] {
+			storage.gates[domain][stripe] = make(chan struct{}, 1)
+		}
+	}
+	return storage, nil
 }
 
 func (s *Storage) Close() error {
@@ -163,6 +170,9 @@ func (s *Storage) Delete(ctx context.Context, bucket, name string) error {
 }
 
 func checkedAddress(ctx context.Context, bucket, name string) (string, error) {
+	if strings.EqualFold(bucket, gateDirectory) {
+		return "", fmt.Errorf("%w: reserved storage control namespace", filestorage.ErrInvalidAddress)
+	}
 	if err := filestorage.ValidateAddress(bucket, name); err != nil {
 		return "", err
 	}
