@@ -85,11 +85,6 @@
 .standalone-task-route .task-detail-page { height: 100%; }
 .standalone-task-route .task-detail-page:is(.task-detail-fullscreen, .task-detail-session-fullscreen) { position: absolute; inset: 0; height: 100%; max-height: 100%; }
 .standalone-task-route:has(> .standalone-deletion-slot:not(:empty)) .task-agent-session.session-fullscreen {
-  position: fixed;
-  top: var(--session-viewport-top, 0px);
-  left: var(--session-viewport-left, 0px);
-  width: var(--session-viewport-width, 100%);
-  height: max(0px, calc(var(--session-viewport-height, 100dvh) - var(--session-result-reserve, 0px)));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -98,6 +93,7 @@
 .standalone-task-route > .standalone-deletion-slot { position: relative; z-index: 35; flex: none; padding: 8px 12px; background: #fff; }
 .standalone-task-route:has(.task-agent-session.session-fullscreen) > .standalone-deletion-slot:not(:empty) {
   position: fixed;
+  z-index: 41;
   top: calc(var(--standalone-session-viewport-top, 0px) + var(--standalone-session-viewport-height, 100dvh) - var(--standalone-session-result-reserve, 0px));
   left: var(--standalone-session-viewport-left, 0px);
   width: var(--standalone-session-viewport-width, 100%);

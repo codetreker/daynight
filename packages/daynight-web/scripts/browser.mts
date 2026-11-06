@@ -38,6 +38,7 @@ export const browserConfigs = [
   'graph-direction-browser-playwright.config.ts',
   'session-header-playwright.config.ts',
   'session-column-playwright.config.ts',
+  'session-keyboard-playwright.config.ts',
   'session-record-layout-playwright.config.ts',
   'worker-configuration-navigation-playwright.config.ts',
   'bots-viewport-playwright.config.ts',
