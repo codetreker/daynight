@@ -154,6 +154,7 @@ export class BotDisplaySnapshotStore {
           this.account(ownerUserId).memoryOnly = true;
         }
       }
+      this.account(ownerUserId).memoryOnly = true;
       return run(false);
     };
     const result = this.realm.tail.then(execute);
