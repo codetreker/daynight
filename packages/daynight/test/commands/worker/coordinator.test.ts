@@ -13,12 +13,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OperationError } from "../../../src/api/operation.js";
+import { ApiError } from "../../../src/api/client.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
-import { WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
+import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
@@ -104,7 +105,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     findWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
-    listWorktrees: vi.fn(async (source: WorkerProject) => [...worktrees.values()].filter(({ owner }) => owner.projectId === source.projectId)),
+    listWorktrees: vi.fn(async (source: WorkerProject, _operation: Operation, _allowMissing = false, includeOtherProjects = false) => [...worktrees.values()].filter(({ owner, binding }) => binding.repositoryPath === source.localPath && (includeOtherProjects || owner.projectId === source.projectId))),
     removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); }),
   } as unknown as WorkerGitManager;
   const tasks = {
@@ -148,7 +149,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
   };
   const remote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => uuid(2)),
-    ownInventory: vi.fn(async () => [...grants.values()]),
+    ownInventory: vi.fn(async (projects: readonly { projectId: string }[]) => ({ tasks: [...grants.values()], coveredProjectIds: [...new Set(projects.map(project => project.projectId))], unavailableProjectIds: [] })),
     candidates: vi.fn(async function* (projectId: string) { for (const candidate of candidates) if (candidate.projectId === projectId && ![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
     claim: vi.fn(async (candidate: Task, descriptor: WorkerClaimDescriptor) => grant(candidate, descriptor)),
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
@@ -222,6 +223,240 @@ const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) =
 };
 
 describe("worker report publication boundaries", () => {
+  it("counts a Git-only owner of another Project in a selected repository", async () => {
+    const f = await fixture(1);
+    const oldOwner = { projectId: uuid(11), taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    f.worktrees.set(oldOwner.claimId, { owner: oldOwner, binding: { repositoryPath: f.project.localPath, commonDirectory: path.join(f.project.localPath, ".git"), worktreePath: path.join(f.project.localPath, ".worktrees", "daynight", oldOwner.taskId), branch: `daynight/${oldOwner.taskId}` } });
+    await f.coordinator.tick();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    f.worktrees.delete(oldOwner.claimId);
+    await f.coordinator.tick();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+  });
+  it("fences an in-flight inventory when another observer invalidates one project", async () => {
+    const f = await fixture(2), publish = vi.fn();
+    const second = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.splice(1, 1, task(second.projectId, uuid(102)));
+    let entered!: () => void, release!: () => void;
+    const requested = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(f.remote.ownInventory).mockImplementationOnce(async () => {
+      entered(); await held;
+      return { tasks: [], coveredProjectIds: [f.project.projectId, second.projectId], unavailableProjectIds: [] };
+    });
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory: publish });
+    const tick = coordinator.tick();
+    try {
+      await requested;
+      coordinator.invalidateProject(f.project.projectId);
+      expect(publish).toHaveBeenLastCalledWith(null);
+      release(); await tick;
+      expect(publish).toHaveBeenLastCalledWith(null);
+      expect(f.remote.claim).toHaveBeenCalledOnce();
+      expect(vi.mocked(f.remote.claim).mock.calls[0]![0].projectId).toBe(second.projectId);
+      await coordinator.tick();
+      expect(vi.mocked(f.remote.claim).mock.calls[1]![0].projectId).toBe(f.project.projectId);
+    } finally { release(); await tick; }
+  });
+  it("fences a 404 delivered after inventory processing but before its caller resumes", async () => {
+    const f = await fixture(2), publish = vi.fn();
+    const second = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.splice(0, f.candidates.length, task(second.projectId, uuid(102)));
+    const original = await f.remote.claim(task(f.project.projectId, uuid(120)), {
+      claimId: uuid(121), workerId, worktreeId: uuid(122), machine: { id: uuid(4), name: "fixture" }, platform: "linux", agent: "codex",
+    }, new AbortController().signal);
+    vi.mocked(f.remote.claim).mockClear();
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory: publish });
+    const register = f.store.registerPending.bind(f.store);
+    let injected = false;
+    vi.spyOn(f.store, "registerPending").mockImplementation(input => {
+      const local = register(input);
+      if (input.projectId === f.project.projectId && !injected) {
+        injected = true;
+        queueMicrotask(() => coordinator.invalidateProject(f.project.projectId));
+      }
+      return local;
+    });
+    await coordinator.tick();
+    expect(injected).toBe(true);
+    expect(publish.mock.calls.every(([value]) => value === null)).toBe(true);
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(vi.mocked(f.remote.claim).mock.calls[0]![0].projectId).toBe(second.projectId);
+    expect(f.store.getTask({ projectId: original.projectId, taskId: original.id, claimId: uuid(121) })?.status).toBe("pending");
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  });
+  it("invalidates an otherwise complete inventory when project preparation observes 404 before claiming another project", async () => {
+    const f = await fixture();
+    const other = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
+    f.store.registerProject(other); f.options.repositories.push({ project: other, configuration });
+    f.candidates.splice(0, f.candidates.length, task(other.projectId, uuid(102)));
+    const publish = vi.fn();
+    const missing = new ApiError({ operation: "project.show", projectId: f.project.projectId }, "response", { cause: new Error("missing"), status: 404, serverError: { code: "not_found", message: "missing", requestId: "missing" } });
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory: publish, prepareProject: async id => { if (id === f.project.projectId) throw missing; }, onClaim: () => { expect(publish.mock.lastCall).toEqual([null]); } });
+    await coordinator.tick();
+    expect(publish).toHaveBeenLastCalledWith(null);
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
+  it("does not report a complete inventory while configuration discovery is incomplete", async () => {
+    const f = await fixture(); const publish = vi.fn(); let complete = false;
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory: publish, configurationComplete: () => complete });
+    await coordinator.tick();
+    expect(publish).toHaveBeenCalledWith(null);
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    complete = true;
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
+  it("invalidates an inventory if configuration changes and then returns during its read", async () => {
+    const f = await fixture(); const publish = vi.fn();
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory: publish });
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const requested = new Promise<void>(resolve => { entered = resolve; });
+    vi.mocked(f.remote.ownInventory).mockImplementationOnce(async () => {
+      entered(); await waiting;
+      return { tasks: [], coveredProjectIds: [f.project.projectId], unavailableProjectIds: [] };
+    });
+    const tick = coordinator.tick();
+    try {
+      await requested;
+      coordinator.updateConfiguration({ ...f.options, maxConcurrent: 2 });
+      coordinator.updateConfiguration(f.options);
+      release(); await tick;
+      expect(publish.mock.calls.every(([value]) => value === null)).toBe(true);
+      expect(f.remote.claim).not.toHaveBeenCalled();
+      await coordinator.tick();
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    } finally { release(); await tick; await coordinator.shutdown(); }
+  });
+
+  it("cancels unavailable project work without treating its claim as ended and still starts a healthy project", async () => {
+    const f = await fixture(2);
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let operationSignal: AbortSignal | undefined;
+    const prepare = vi.mocked(f.git.prepareWorktree).getMockImplementation()!;
+    vi.mocked(f.git.prepareWorktree).mockImplementation(async (project, owner, operation) => {
+      if (project.projectId === f.project.projectId) { operationSignal = operation.signal; entered(); await held; operation.check(); }
+      return prepare(project, owner, operation);
+    });
+    await f.coordinator.tick();
+    await started;
+    const a = f.store.listTasks()[0]!;
+    const b = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
+    f.store.registerProject(b); f.options.repositories.push({ project: b, configuration });
+    f.coordinator.updateConfiguration(f.options);
+    f.candidates.push(task(b.projectId, uuid(102)));
+    let releasePoll!: () => void, enteredPoll!: () => void;
+    const pollHeld = new Promise<void>(resolve => { releasePoll = resolve; });
+    const pollEntered = new Promise<void>(resolve => { enteredPoll = resolve; });
+    vi.mocked(f.remote.ownInventory).mockImplementation(async (_projects, _worker, _signal, onUnavailable) => {
+      onUnavailable?.(f.project.projectId); enteredPoll(); await pollHeld;
+      return { tasks: [...f.grants.values()].filter(item => item.projectId === b.projectId), coveredProjectIds: [b.projectId], unavailableProjectIds: [f.project.projectId] };
+    });
+    try {
+      const tick = f.coordinator.tick();
+      await pollEntered;
+      expect(operationSignal?.aborted).toBe(true);
+      releasePoll(); await tick;
+      expect(f.store.getTask(a)?.status).toBe("active");
+      expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(f.remote.claim).toHaveBeenCalledTimes(2);
+    } finally { releasePoll(); release(); }
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(1));
+  });
+
+  it("counts an unproven Git resource without cleaning it, while an unavailable ID alone consumes no slot", async () => {
+    const f = await fixture(1);
+    const unavailable = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "unavailable") };
+    f.store.registerProject(unavailable); f.options.repositories.push({ project: unavailable, configuration });
+    const owner = { projectId: unavailable.projectId, taskId: uuid(910), claimId: uuid(911), worktreeId: uuid(912) };
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    vi.mocked(f.remote.ownInventory).mockResolvedValue({ tasks: [], coveredProjectIds: [f.project.projectId], unavailableProjectIds: [unavailable.projectId] });
+    await f.coordinator.tick();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    f.worktrees.delete(owner.claimId);
+    await f.coordinator.tick();
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
+  it("keeps new admissions blocked when another repository's local resources cannot be scanned", async () => {
+    const f = await fixture(2);
+    const unavailable = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "unavailable") };
+    f.store.registerProject(unavailable); f.options.repositories.push({ project: unavailable, configuration });
+    vi.mocked(f.remote.ownInventory).mockResolvedValue({ tasks: [], coveredProjectIds: [f.project.projectId], unavailableProjectIds: [unavailable.projectId] });
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation, allowMissing) => {
+      if (project.projectId === unavailable.projectId) throw new Error("local discovery denied");
+      return list(project, operation, allowMissing);
+    });
+    await f.coordinator.tick();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "warning", message: expect.stringContaining("Could not inspect Git worktrees") }));
+    expect(f.remote.claim).not.toHaveBeenCalled();
+  });
+
+  it.each(["unselected-absent", "unselected-invalid", "selected-absent"] as const)("checks a retained repository before admitting another Project: %s", async situation => {
+    const f = await fixture(2);
+    const retained = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "retained") };
+    f.store.registerProject(retained);
+    if (situation === "unselected-invalid") await mkdir(retained.localPath);
+    const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementation((project, operation, allowMissing, includeOtherProjects) => project.projectId === retained.projectId
+      ? manager.listWorktrees(project, operation, allowMissing, includeOtherProjects)
+      : list(project, operation, allowMissing, includeOtherProjects));
+    const coordinator = createWorkerCoordinator({ ...f.options,
+      targetProjectIds: situation === "selected-absent" ? [f.project.projectId, retained.projectId] : [f.project.projectId],
+      readyProjectIds: [f.project.projectId],
+    });
+    try {
+      await coordinator.tick();
+      if (situation === "unselected-absent") expect(f.remote.claim).toHaveBeenCalledOnce();
+      else expect(f.remote.claim).not.toHaveBeenCalled();
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    } finally { await manager.dispose(); }
+  });
+
+  it("invalidates and cancels an active project if its candidate page returns 404", async () => {
+    const f = await fixture(2); let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let activeSignal: AbortSignal | undefined;
+    const prepare = vi.mocked(f.git.prepareWorktree).getMockImplementation()!;
+    vi.mocked(f.git.prepareWorktree).mockImplementation(async (project, owner, operation) => {
+      if (project.projectId === f.project.projectId) { activeSignal = operation.signal; entered(); await held; operation.check(); }
+      return prepare(project, owner, operation);
+    });
+    const publish = vi.fn(); const coordinator = createWorkerCoordinator({ ...f.options, onInventory: publish });
+    await coordinator.tick(); await started;
+    const other = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
+    f.store.registerProject(other); f.options.repositories.push({ project: other, configuration });
+    coordinator.updateConfiguration(f.options);
+    const missing = new ApiError({ operation: "task.list-page", projectId: f.project.projectId }, "response", { cause: new Error("missing"), status: 404, serverError: { code: "not_found", message: "missing", requestId: "missing" } });
+    vi.mocked(f.remote.candidates).mockImplementation(async function* (projectId) {
+      if (projectId === f.project.projectId) throw missing;
+      yield task(other.projectId, uuid(102));
+    });
+    try {
+      await coordinator.tick();
+      expect(activeSignal?.aborted).toBe(true);
+      expect(publish).toHaveBeenLastCalledWith(null);
+      expect(f.remote.claim).toHaveBeenCalledTimes(2);
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    } finally { release(); }
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
   it("persists a new Herdr claim before activating or preparing its execution", async () => {
     const f = await fixture();
     const registerClaim = vi.fn((context: HerdrExecutionContext, userId: string) => {
@@ -289,11 +524,11 @@ describe("worker report publication boundaries", () => {
     expect(f.store.getTask(reference)).not.toBeNull();
   });
 
-  it("does not publish an inventory when the complete remote observation fails", async () => {
+  it("invalidates an inventory when the complete remote observation fails", async () => {
     const f = await fixture(), onInventory = vi.fn(), failure = new Error("later inventory page failed");
     vi.mocked(f.remote.ownInventory).mockRejectedValue(failure);
     await expect(createWorkerCoordinator({ ...f.options, onInventory }).tick()).rejects.toBe(failure);
-    expect(onInventory).not.toHaveBeenCalled();
+    expect(onInventory).toHaveBeenCalledExactlyOnceWith(null);
     expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
   });
 
@@ -321,6 +556,18 @@ describe("worker report publication boundaries", () => {
     await coordinator.tick();
     expect(onClaim).not.toHaveBeenCalled(); expect(f.store.listTasks()).toEqual([]);
     await coordinator.shutdown();
+  });
+
+  it("invalidates an inventory when a claim returns 404 without classifying the whole project as unavailable", async () => {
+    const f = await fixture(), onInventory = vi.fn(), onClaim = vi.fn();
+    const missing = new ApiError({ operation: "worker.claim", projectId: f.project.projectId, taskId: f.candidates[0]!.id }, "response", { cause: new Error("missing"), status: 404, serverError: { code: "not_found", message: "missing", requestId: "missing" } });
+    vi.mocked(f.remote.claim).mockRejectedValueOnce(missing);
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory, onClaim });
+    await coordinator.tick();
+    expect(onInventory.mock.calls.map(([value]) => value)).toEqual([{ observedAt: new Date(1000).toISOString(), claims: [] }, null]);
+    expect(onClaim).not.toHaveBeenCalled();
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
   });
 });
 
@@ -377,7 +624,7 @@ describe("minimal worker resource reconciliation", () => {
     const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(971), worktreeId: uuid(972) };
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     await f.coordinator.tick();
-    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([f.candidates[1]!.id]);
+    expect(f.remote.claim).not.toHaveBeenCalled();
     expect(f.worktrees.has(owner.claimId)).toBe(true);
     await f.coordinator.shutdown();
   });
@@ -708,7 +955,7 @@ describe("minimal worker resource reconciliation", () => {
     const requested = new Promise<void>(resolve => { entered = resolve; });
     vi.mocked(f.remote.ownInventory).mockImplementationOnce(async projects => {
       expect(projects.map(project => project.projectId)).toEqual([f.project.projectId]);
-      entered(); await waiting; return [];
+      entered(); await waiting; return { tasks: [], coveredProjectIds: [f.project.projectId], unavailableProjectIds: [] };
     });
     const tick = coordinator.tick();
     try {
@@ -723,7 +970,7 @@ describe("minimal worker resource reconciliation", () => {
       f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.bind(owner).worktreePath, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(213) }, stateChangeSeq: 2, completionSeq: 0 }] });
       release(); await tick;
       expect(f.store.getTask(row)?.status).toBe("active");
-      expect(onInventory).not.toHaveBeenCalled();
+      expect(onInventory).toHaveBeenLastCalledWith(null);
       expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
       expect(f.resources.has(owner.claimId)).toBe(true);
@@ -731,8 +978,8 @@ describe("minimal worker resource reconciliation", () => {
       await coordinator.tick();
       expect(vi.mocked(f.remote.ownInventory).mock.calls[1]![0].map(item => item.projectId)).toContain(project.projectId);
       expect(f.store.getTask(row)?.status).toBe("active");
-      expect(onInventory).toHaveBeenCalledOnce();
-      expect(onInventory.mock.calls[0]![0].claims).toEqual([{ projectId: project.projectId, taskId: owner.taskId, claimId: owner.claimId }]);
+      expect(onInventory).toHaveBeenCalledTimes(2);
+      expect(onInventory.mock.calls[1]![0].claims).toEqual([{ projectId: project.projectId, taskId: owner.taskId, claimId: owner.claimId }]);
       expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
       expect(f.git.removeWorktree).not.toHaveBeenCalled();
     } finally { release(); await tick; }
@@ -832,7 +1079,7 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.tasks.stopAndClose).toHaveBeenCalledOnce(); expect(f.tasks.submitPrompt).not.toHaveBeenCalled();
     expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.grants.get(old.claimId)).toEqual(originalClaim);
     expect(f.remote.ownInventory).toHaveBeenCalledTimes(inventoryReads);
-    vi.mocked(f.remote.ownInventory).mockResolvedValue([...f.grants.values()]);
+    vi.mocked(f.remote.ownInventory).mockResolvedValue({ tasks: [...f.grants.values()], coveredProjectIds: f.store.listProjects().map(project => project.projectId), unavailableProjectIds: [] });
     await createWorkerCoordinator(f.options).tick();
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
     expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId });
@@ -981,7 +1228,8 @@ describe("minimal worker resource reconciliation", () => {
   it("reports an unknown project resource without treating it as ended", async () => {
     const f = await fixture(); f.candidates.splice(0);
     f.resources.set(uuid(800), { owner: { projectId: uuid(900), taskId: uuid(901), claimId: uuid(800), worktreeId: uuid(902) }, workspaceId: "unknown", panes: [] });
-    await expect(f.coordinator.tick()).rejects.toThrow("Restore the project configuration");
+    await f.coordinator.tick();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "warning", message: expect.stringContaining("Restore the project configuration") }));
     expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
   });
 
@@ -1017,7 +1265,7 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
     const stale = [...f.grants.values()];
     let current: Task = { ...stale[0]!, properties: { ...stale[0]!.properties, paused: true } };
-    vi.mocked(f.remote.ownInventory).mockResolvedValue(stale);
+    vi.mocked(f.remote.ownInventory).mockResolvedValue({ tasks: stale, coveredProjectIds: [f.project.projectId], unavailableProjectIds: [] });
     vi.mocked(f.remote.readTask).mockImplementation(async () => current);
     const pane = [...f.resources.values()][0]!.panes[0]!;
     pane.status = "idle"; pane.stateChangeSeq = 3; pane.completionSeq = 1;
@@ -1958,7 +2206,7 @@ describe("cloud project removal", () => {
     vi.mocked(f.remote.ownInventory).mockImplementationOnce(async projects => {
       expect(projects.map(project => project.projectId)).toEqual([f.project.projectId]);
       await pending;
-      return [];
+      return { tasks: [], coveredProjectIds: [f.project.projectId], unavailableProjectIds: [] };
     });
     const tick = f.coordinator.tick();
     try {
@@ -2023,7 +2271,7 @@ describe("cloud project removal", () => {
     } finally { release(); await tick; await f.coordinator.shutdown(); }
   });
 
-  it("isolates unreadable repositories without recorded ownership from healthy project admission", async () => {
+  it("waits for unreadable repository resource discovery before healthy project admission", async () => {
     const f = await fixture();
     const broken: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/broken.git", localPath: path.join(f.root, "broken") };
     f.store.registerProject(broken);
@@ -2033,13 +2281,16 @@ describe("cloud project removal", () => {
       return list(project, operation);
     });
     await f.coordinator.tick();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(f.events.some(event => event.message.includes(`Could not inspect Git worktrees for project ${broken.projectId}`))).toBe(true);
+    vi.mocked(f.git.listWorktrees).mockImplementation(list);
+    await f.coordinator.tick();
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     expect(f.remote.claim).toHaveBeenCalledOnce();
-    expect(f.events.some(event => event.message.includes(`Could not inspect Git worktrees for project ${broken.projectId}`))).toBe(true);
     await f.coordinator.shutdown();
   });
 
-  it("does not charge completed historical claims when their repository later becomes unreadable", async () => {
+  it("retains completed historical claims and waits for repository discovery", async () => {
     const f = await fixture();
     const broken: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/broken.git", localPath: path.join(f.root, "broken") };
     f.store.registerProject(broken);
@@ -2051,6 +2302,9 @@ describe("cloud project removal", () => {
       if (project.projectId === broken.projectId) throw new Error("cannot inspect repository");
       return list(project, operation);
     });
+    await f.coordinator.tick();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    vi.mocked(f.git.listWorktrees).mockImplementation(list);
     await f.coordinator.tick();
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     expect(f.remote.claim).toHaveBeenCalledOnce();
@@ -2082,6 +2336,8 @@ describe("cloud project removal", () => {
       expect(f.worktrees.has(owner.claimId)).toBe(true);
       release();
       await eventually(() => expect(f.worktrees.has(owner.claimId)).toBe(false));
+      await f.coordinator.tick(); expect(f.remote.claim).not.toHaveBeenCalled();
+      vi.mocked(f.git.listWorktrees).mockImplementation(list);
       await eventually(async () => { await f.coordinator.tick(); expect(f.remote.claim).toHaveBeenCalledOnce(); });
     } finally { release(); await f.coordinator.shutdown(); }
   });

@@ -19,11 +19,10 @@ mkdir -p "$downloads" "$toolchain_directory/toolchains"
 
 # We exercise the unpatched GNU release to verify the declared Bash 4.2 minimum.
 if [[ ! -x "$bash_install/bin/bash" ]]; then
-  if [[ ! -f "$bash_archive" ]]; then
-    curl --fail --location --show-error --connect-timeout 15 --max-time 120 \
-      https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz --output "$bash_archive"
-  fi
-  printf '%s  %s\n' "$bash_checksum" "$bash_archive" | sha256sum --check -
+  bash "$script_directory/download-completion-archive.sh" "$bash_archive" "$bash_checksum" \
+    https://ftp.gnu.org/gnu/bash/bash-4.2.tar.gz \
+    https://mirrors.kernel.org/gnu/bash/bash-4.2.tar.gz \
+    https://mirrors.ibiblio.org/gnu/bash/bash-4.2.tar.gz
   if [[ -e "$bash_source" ]]; then
     printf '%s\n' 'An incomplete Bash source tree exists; remove .tmp/shell-completion/toolchains/bash-4.2 before preparing again.' >&2
     exit 1
