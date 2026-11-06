@@ -7,10 +7,21 @@ import (
 
 func TestMCPRegistrationStopsAtFailure(t *testing.T) {
 	failure := errors.New("registration failed")
-	calls := 0
-	register := func() error { calls++; return nil }
-	err := registerMCPToolSet(register, func() error { calls++; return failure }, register)
-	if !errors.Is(err, failure) || calls != 2 {
-		t.Fatalf("registration continued after failure: calls=%d err=%v", calls, err)
+	for _, index := range []int{0, 1, 2, 3} {
+		calls := 0
+		adapters := make([]func() error, 4)
+		for i := range adapters {
+			adapters[i] = func() error {
+				calls++
+				if i == index {
+					return failure
+				}
+				return nil
+			}
+		}
+		err := registerMCPToolSet(adapters...)
+		if !errors.Is(err, failure) || calls != index+1 {
+			t.Fatalf("failure at %d: calls=%d err=%v", index, calls, err)
+		}
 	}
 }

@@ -325,13 +325,15 @@ The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The endpoint advertises Project creation, transfer, listing and inspection
-tools, and ordered Task Steps reads and writes. Step reads default to bounded
-summaries; explicit full reads return complete content. Page cursors bind the
-parent version and reject continuation after a change. Step writes return
-confirmed version and change facts, and preserve the original collection
-capacity. A tool is discoverable only after its complete business adapter is
-registered.
+The endpoint advertises Project creation, transfer, listing and inspection,
+Team invitation creation, listing and revocation, inspection and acceptance of
+Team or Project invitations, and ordered Task Steps reads and writes. Invitation
+links are returned only by creation; listing returns metadata without secrets.
+Step reads default to bounded summaries; explicit full reads return complete
+content. Page cursors bind the parent version and reject continuation after a
+change. Step writes return confirmed version and change facts, and preserve the
+original collection capacity. A tool is discoverable only after its complete
+business adapter is registered.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
@@ -521,6 +523,18 @@ sequence. Use `bash scripts/check.sh --coverage` or `bash scripts/check.sh --e2e
 to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
+
+### HTTP scenario ownership
+
+Domain packages own their HTTP integration scenarios, including those that
+construct the production application and use real PostgreSQL and UniAuth
+fixtures. The root `internal/server` package retains tests that need internal
+composition access, shared startup/channel fixtures and runtime shutdown
+ordering. A second package calling the same production application does not
+provide another HTTP boundary: shared scenarios run once in their domain owner,
+while internal-only assertions remain in the root package. The
+[HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+records the distinction and preservation requirements.
 
 ### Task Graph boundary fixtures
 
