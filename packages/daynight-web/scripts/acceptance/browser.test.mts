@@ -114,6 +114,61 @@ test('recovery preserves sibling startup profiles and rejects an unrecorded prof
   }
 });
 
+test('functional recovery preserves overlapping navigation with the same executable and its inherited temporary directories', {
+  skip: !['linux', 'darwin'].includes(process.platform), timeout: 30_000,
+}, async () => {
+  const { processIdentity, sameProcess } = await import('./identity.mts');
+  const directory = phaseDirectory('container');
+  const root = browserModule.browserTemporaryRoot(directory);
+  await Promise.all([directory, root].map(path => mkdir(path, { recursive: true })));
+  const navigationRoot = await mkdtemp(join(temporaryRoot, 'navigation-ownership-'));
+  const executable = join(navigationRoot, 'browser');
+  await copyFile(process.execPath, executable);
+  const file = await stat(executable, { bigint: true });
+  const inventory: browserModule.BrowserInventory = { executables: [await realpath(executable)], profilesBefore: [],
+    ...(process.platform === 'darwin' ? { executableFiles: [{ executable: await realpath(executable), device: String(file.dev), inode: String(file.ino) }] } : {}) };
+  await writeFile(join(directory, 'inventory.json'), JSON.stringify(inventory));
+  const profile = await mkdtemp(join(root, 'playwright_chromiumdev_profile-'));
+  const fixture = fileURLToPath(new URL('./navigation-ownership.fixture.mts', import.meta.url));
+  const functional = spawn(executable, [fixture, 'functional', directory, executable, `--user-data-dir=${profile}`], {
+    detached: true, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, TMPDIR: root, DAYNIGHT_ACCEPTANCE_DIRECTORY: directory },
+  });
+  let callback: ReturnType<typeof spawn> | undefined;
+  try {
+    const [output] = await once(functional.stdout!, 'data', { signal: AbortSignal.timeout(10_000) });
+    const owned = JSON.parse(String(output)) as browserModule.BrowserOwnership;
+    assert.equal(owned.identity.pid, functional.pid);
+    const environment: NodeJS.ProcessEnv = { ...process.env, DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_BROWSER_CHANNEL: 'chromium',
+      TMPDIR: navigationRoot, TMP: join(navigationRoot, 'tmp'), TEMP: join(navigationRoot, 'temp') };
+    callback = spawn(process.execPath, [fixture, 'callback', directory, executable], {
+      detached: true, stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: environment,
+    });
+    const [message] = await once(callback, 'message', { signal: AbortSignal.timeout(10_000) });
+    const navigation = message as { identity: browserModule.BrowserOwnership['identity']; profile: string; environment: NodeJS.ProcessEnv };
+    assert.equal(navigation.identity.executable, owned.identity.executable);
+    assert.notEqual(navigation.identity.group, owned.identity.group);
+    await browserModule.recoverBrowsers(directory, inventory);
+    assert.equal(await processIdentity(owned.identity.pid), null);
+    assert.ok(sameProcess(navigation.identity, await processIdentity(navigation.identity.pid)));
+    assert.equal(dirname(navigation.profile), navigationRoot);
+    assert.ok((await stat(navigation.profile)).isDirectory());
+    assert.equal(Object.hasOwn(navigation.environment, 'DAYNIGHT_ACCEPTANCE_DIRECTORY'), false);
+    for (const key of ['DAYNIGHT_BROWSER_CHANNEL', 'PATH', 'TMPDIR', 'TMP', 'TEMP']) assert.equal(navigation.environment[key], environment[key]);
+    assert.equal(callback.exitCode, null);
+    const exited = once(callback, 'exit'); callback.send('finish');
+    assert.deepEqual(await exited, [0, null]);
+    assert.equal(await processIdentity(navigation.identity.pid), null);
+    await browserModule.recoverBrowsers(directory, inventory);
+  } finally {
+    for (const child of [callback, functional]) {
+      if (child !== undefined && child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, 'exit'); child.kill('SIGTERM'); await exited;
+      }
+    }
+    await rm(navigationRoot, { recursive: true, force: true });
+  }
+});
+
 test('browser ownership reads exact argv with a profile containing spaces', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
   await mkdir(root, { recursive: true });
   const profile = await mkdtemp(join(root, 'playwright_chromiumdev_profile-spaces in '));

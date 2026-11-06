@@ -866,6 +866,20 @@ dev-ci 拥有唯一镜像、实际运行镜像身份校验和完整 shell 清理
 错误、取消、意外服务退出和清理失败都传播并排空已启动任务。两个目标结束后才做
 run-wide CLI 回收，避免清除另一活动目标的命令或凭据。
 
+Chromium 安装完成后，CI 通过现有 run/source 绑定的父 evidence 请求导航检查；
+可选字段仅允许缺省或 `navigationChecks: true`，且必须属于 functional 共享检查分片。
+容器 callback 验证原有 permission 和安装 CLI 后，并行执行串行导航与 container
+functional；两个分支排空后才进行 combined-auth 重启，callback 结束后 dev-ci 才可
+清理网络。导航使用独立端口、Vite cache/outDir 和受控 API，不修改生产目标数据库、
+profile 或安装 CLI。导航命令使用环境副本并移除生产浏览器归属标记
+`DAYNIGHT_ACCEPTANCE_DIRECTORY`，保留显式 browser channel 与工具配置，使相同
+executable 的导航浏览器不会被 functional cleanup 视为未记录生产进程。
+任一分支失败立即取消共享 controller，等待所属资源清理完成后
+传播原始与清理错误。导航命令取消后的一秒 escalation 位于 dev-ci callback 的五秒
+TERM grace 内；180/540/180 秒验证时限保持不变。此调度不改变分片选择、worker 数、原有许可和 native/container
+屏障；direct acceptance 与 shard 1 保持原路径。资源权衡由
+[浏览器 job 调度决策](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)拥有。
+
 较轻的 shard 2 统一拥有全部 28 项 navigation-contract、部署生命周期 fixture、
 原生/容器各十一项 combined-auth，以及真实附件持久化与成对备份恢复。
 归属仅由分片身份推导。Shard 1 完成其功能和所有所属资源清理；两个分片都保留
