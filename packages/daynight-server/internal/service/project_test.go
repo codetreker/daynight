@@ -5,12 +5,15 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
 func requireFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
 	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" || err.Error() != fault.Message {
+	var transaction *store.TransactionError
+	wrapped := errors.As(err, &transaction) && transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed
+	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" || (!wrapped && err.Error() != fault.Message) {
 		t.Fatalf("expected %s fault, got %#v", code, err)
 	}
 	return fault

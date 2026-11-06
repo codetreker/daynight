@@ -7,7 +7,7 @@ import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import type { TaskSessionSnapshot } from '../helpers/session';
 import { stringifyWireJson } from '../helpers/wireJson';
-import { navigateNativeSelect } from '../e2e/native-select';
+import { navigateNativeSelect } from '../helpers/native-select';
 
 test.use({ hasTouch: true });
 

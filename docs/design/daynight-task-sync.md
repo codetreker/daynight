@@ -2,12 +2,12 @@
 
 状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch 和认证响应归属，以及浏览器 IndexedDB schema 8、本地图投影、15 秒增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
-[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/implemented/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/implemented/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。
+[需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。
 
 ## 1. 总体方案
 
 服务端实现入口为 `internal/service/task/task_sync.go` 的 `TaskSync.Get`、
-`internal/core/store/task_sync.go` 及 `internal/server/task/task_sync.go`；配置在 composition
+`internal/core/store/postgres/task/task_sync.go` 及 `internal/server/task/task_sync.go`；配置在 composition
 显式传给 `NewTaskSync`。`015_task_sync.sql` 提供 epoch 和更新时间索引。
 浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：可见页面每 15 秒自动读取，隐藏暂停，首次读取、显式刷新和恢复可见立即触发；自动触发遇到活动读取时跳过。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
 

@@ -68,11 +68,15 @@ list filters.
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
 handoff, local users, browser sessions, personal access tokens and project
-membership. The [identity foundation](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
-implements persistent users, browser-bound login transactions, sessions, PATs and
-callable HTTP handlers. NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The [membership foundation](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
-adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, private
-project creation, filtered project lists, administrator changes and invitations.
+membership. The identity module implements persistent users, browser-bound login
+transactions, sessions, PATs and callable HTTP handlers;
+NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The
+membership module provides NewMemberships/NewMembershipRoutes, transaction-scoped
+access checks, private project creation, filtered project lists, administrator
+changes and invitations. The
+[identity foundation](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
+and [membership foundation](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
+record the original separation and its rationale.
 GET/HEAD `/api/v1/me` authenticates and reads the current user before comparing a
 strong ETag over the complete identity-bound JSON representation. Successful
 responses use `Cache-Control: private, no-cache`; an unchanged validator receives
@@ -136,8 +140,7 @@ admin. Every Project has a real ownership row; existing projects migrate to the
 Personal Team of the earliest-joined current administrator. A missing current
 admin or invalid reference stops migration. Trusted executable
 HTML retains its application origin, relative resources and keyboard behavior.
-The [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
-owns composition and credential-private validation; current delivery results
+The [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for composition and credential-private validation; current delivery results
 require receipts bound to the tested source.
 
 The [project Task search requirements](../../docs/spec/daynight-task-search.md)
@@ -283,20 +286,20 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/service/webui/` | Embedded production HTML/assets and resource reads |
 | `internal/server/webui/` | Static routes and HTTP response policy |
-| `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
+| `internal/core/store/` | Database-neutral DAO, scope and transaction contracts |
+| `internal/core/store/postgres/` | PostgreSQL implementation, migrations, scoped writes and consistent reads |
 | `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
 | `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
 | `api/` | Project/task/attachment, identity and membership DTOs; common HTTP error envelopes |
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
 | `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
 
-HTTP startup prepares one local file-storage root and creates and verifies one
-concrete PostgreSQL store. The handler factory `server.New(Dependencies, Config, logger)` returns
-`(http.Handler, error)`, validating mandatory authentication configuration before
-assembling the mux. `Dependencies` supplies `Store` and `Files` before the listener
-accepts requests. The composition
-root assembles services without opening another pool or file root. The runtime
-owns HTTP shutdown, storage closure and pool closure. Startup applies the embedded migrations before accepting requests.
+Startup validates neutral configuration and constructs the UniAuth client before
+opening one local file root and one PostgreSQL resource. `service.App` assembles
+and owns the shared modules and resources; `server.New` registers their HTTP
+routes. The runtime stops admission and drains HTTP and WebSocket work before
+the application closes the Session engine, files and pool. A cleanup timeout
+retains resources for another close attempt. Startup applies the embedded migrations before accepting requests.
 One pinned connection holds a session advisory lock across version checks and all
 migration transactions; unknown versions, gaps and checksum mismatches stop startup.
 
@@ -316,6 +319,73 @@ writers. Start the matching application after migration; old binaries do not
 understand the renamed grants or inherited authority. After a committed migration,
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
+
+## MCP HTTP entry
+
+The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
+`2026-07-28` and `2025-11-25`. Configure a client with the service's HTTPS URL
+ending in `/mcp` and an `Authorization: Bearer <PAT>` header. The entry also
+accepts MCP OAuth access credentials for its exact resource and `daynight:mcp`
+scope. OAuth authorization and token endpoints are not yet exposed. Each request
+validates its own credential; browser cookies are not accepted. Requests carrying
+an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
+The endpoint advertises Team lifecycle, membership and scoped Project tools,
+Project creation, transfer, listing and inspection,
+Team invitation creation, listing and revocation, inspection and acceptance of
+Team or Project invitations, Bot management, Task creation, reading, updating,
+status, deletion, property, list, ready and graph tools, ordered Task Steps reads
+and writes, and Task discussion reads and posts. Invitation links are returned
+only by creation; listing returns metadata without secrets. Task mutation inputs
+use the existing 1 MiB business JSON limit; versions are decimal strings and
+property values use `valueText`. Task and Step reads default to marked, bounded
+summaries; request `full` for complete content. Step page cursors bind the parent
+version and reject
+continuation after a change. Step writes return confirmed version and change facts
+and preserve the original collection capacity. Discussion reads return complete
+messages in oldest-first order; an explicit claim ID supplies agent attribution.
+A lost post response does not establish a receipt: read the thread before
+deciding whether to send again. Bot creation resolves omitted settings from
+available Worker defaults and does not imply startup readiness. Bot deletion
+requires an explicit version and reports the separate Worker and server cleanup
+states. Team and membership versions are decimal strings, and list results use
+scoped cursors. An item in a Team, Team member or scoped Project list that
+exceeds its response budget produces an explicit error; complete MCP retrieval
+and continuation past that item are not yet available.
+
+Task list excludes done tasks by default and orders in-progress, ready, blocked
+and done tasks before paging. Its cursor binds the caller, project, filters and
+view to a snapshot fence; `list_changed` requires restarting traversal when
+project task versions change. Graphs retain their node and edge limits. When a
+full ready result exceeds the response budget, continuation uses `task_list`,
+whose full projection omits descriptions; use `task_show` with `view: full` to
+read those complete Tasks. The continuation identifies this difference.
+
+OAuth grant families store only hashes of access and refresh secrets. Initial
+issuance and revocation participate in the caller's transaction; access lasts at
+most one hour and the grant and refresh at most 30 days. The principal carries
+the access credential ID, while the stable authority reference carries the grant
+ID. Revocation invalidates access rows in the same transaction, and Thread and
+Bot credential checks recheck expiry after lock waits. OAuth credentials do not
+authenticate ordinary REST or private Worker endpoints.
+
+The request body limit is 4 MiB. Operations that may materialize large objects
+reserve a single 512 MiB working slot before calling a use case; bounded control
+operations have a separate 16-slot budget. A saturated budget returns
+`resource_busy`. Permits remain held until the handler and response delivery
+finish. The opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
+the 64 MiB Step collection and concurrent summary write admission with sampled
+Go heap. After preparing the isolated database and UniAuth fixture, run it
+separately from CI:
+
+```bash
+go test -race -tags=stress ./internal/server -run '^TestStressMCPStepsCapacityAndConcurrentSummaryHeap$' -count=1 -timeout=10m
+```
+
+The application rejects and cancels MCP requests during shutdown before stopping
+the shared relay. A drain timeout cancels active requests, but the runtime waits
+for handlers, the relay and database cleanup within a separate five-second
+cleanup budget before closing shared storage. If cleanup times out, it retains
+resources and returns an error; a caller can retry close.
 
 ## Local Docker deployment
 
@@ -381,6 +451,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
+| `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
 | `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin | Required |
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth backend App ID | Required |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Server-only UniAuth App secret | Required |
@@ -395,7 +466,7 @@ diagnostics and cause categories.
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/login`, `/setup`, `/teams` and every descendant path, together with the
+`/mcp`, `/login`, `/setup`, `/teams` and every descendant path, together with the
 `/api/v1/teams` API namespace. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
 starting the server. Login return loops, including `/login`, are rejected before a
@@ -412,10 +483,14 @@ Port `0` requests an ephemeral loopback port; the bound address appears
 in the startup log. Invalid timeout values fail validation.
 
 `SIGINT` and `SIGTERM` stop accepting connections and begin draining requests.
-Active request contexts remain usable during the drain. On deadline, the runtime
-cancels remaining request contexts, force-closes HTTP connections, and closes the
-file-storage root and database pool after request-owned resources are released.
-Database operations must use the request context and release acquired connections.
+Active REST request contexts remain usable during the drain; MCP requests are
+canceled when shutdown begins. On deadline, the runtime cancels remaining request
+contexts, signals Session operations and force-closes HTTP connections. It waits
+up to five additional seconds for active handlers, relay and session work, and
+database cancellation before closing the file root and pool. The timeout remains
+an error; if cleanup is incomplete, ownership is retained for another close
+attempt. Database operations must
+use the request context and release acquired connections.
 The runtime also closes an acquired file root on later startup failure. Local
 files remain on disk when the handle closes. Startup fixtures supply isolated
 roots; built-process restart tests reuse their fixture root.
@@ -484,6 +559,18 @@ to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
 
+### HTTP scenario ownership
+
+Domain packages own their HTTP integration scenarios, including those that
+construct the production application and use real PostgreSQL and UniAuth
+fixtures. The root `internal/server` package retains tests that need internal
+composition access, shared startup/channel fixtures and runtime shutdown
+ordering. A second package calling the same production application does not
+provide another HTTP boundary: shared scenarios run once in their domain owner,
+while internal-only assertions remain in the root package. The
+[HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+records the distinction and preservation requirements.
+
 ### Task Graph boundary fixtures
 
 The TaskGraph boundary regression keeps a 1000-node backbone with 5000 dependency
@@ -511,7 +598,7 @@ package builds its service with the actual test binary's race mode, including di
 `raceEnabled` in `.tmp/acceptance-evidence.json`. The orchestration receipts retain
 the actual coverage and E2E command arguments. Build, vet, functional and
 concurrency cases, atomic statement coverage and all coverage thresholds run in
-both modes. The [Go validation timing decision](../../.agents/notes/implemented/testing/2026-11-04-go-validation-timing.md)
+both modes. The [Go validation timing decision](../../.agents/notes/archived/testing/2026-11-04-go-validation-timing.md)
 records the event policy and its limits.
 
 ### Coverage and E2E responsibilities
@@ -527,8 +614,10 @@ that test-only package from coverage execution. Because the tool uses substring
 matching, `go list ./...` must confirm that the full-path match selects exactly
 that package; extended or nested matches fail. The orchestrator also recursively
 rejects non-test Go source in that directory, preventing this exception from
-hiding production statements. All production packages and their raw coverage profile
-remain in the gate. A separate exact calculation over that profile requires
+hiding production statements. The same package list supplies `-coverpkg`, so
+integration tests exercise and measure DAO implementations in their own packages.
+Imported `testdata` fixtures do not enter the profile. All production packages
+and their raw coverage profile remain in the gate. A separate exact calculation over that profile requires
 overall statement coverage **strictly greater than 90%**. Exactly 90% fails. The
 check also tests that calculation's boundary and malformed-profile behavior.
 Coverage mode retains the authentication package's installed-CLI assertions and
@@ -593,8 +682,7 @@ The full check performs this preparation automatically. The real wire-loss test 
 consumes a successful upstream result, closes the actual SDK-side TCP connection,
 and verifies upstream 410, callback replay 401, zero failed-login sessions and
 fresh-login recovery. Product, proxy and gateway cleanup is part of the test.
-The [combined authentication decision](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
-owns that proof and the separate native/container browser-plus-installed-CLI
+The [combined authentication decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md) records the rationale for that proof and the separate native/container browser-plus-installed-CLI
 journeys. Focused results retain their recorded source scope; controlled-provider
 proof is separate from an actual upstream human login.
 
@@ -845,7 +933,7 @@ independent projects and cancellation. Index-definition assertions resolve the
 fixture's schema-qualified object before deparsing it; predicates on a global
 catalog view can evaluate a deparser before namespace filtering. Correct,
 wrong-order and missing-index cases retain a same-named fallback-schema index to
-verify isolation. The [index assertion decision](../../.agents/notes/implemented/testing/2026-10-24-schema-owned-index-assertions.md)
+verify isolation. The [index assertion decision](../../.agents/notes/archived/testing/2026-10-24-schema-owned-index-assertions.md)
 records the query-ordering rationale. Rollback and advisory unlock use
 independent bounded contexts and preserve original causes.
 
@@ -1411,7 +1499,7 @@ tests can be run from this module:
 source scripts/env.sh
 export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test ./internal/core/store ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/... ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
@@ -1727,10 +1815,8 @@ so selecting that package does not invoke the E2E binary build, source checks or
 receipt initialization. Its integration tests still require PostgreSQL and the
 UniAuth fixture. With `scripts/env.sh` sourced and those inputs prepared, run
 `go test -race -timeout 10m ./cmd/daynight-server` without an installed CLI receipt.
-The [E2E package decision](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)
-owns this package separation, and the
-[CI split decision](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)
-owns independent coverage/E2E execution; the
+The [E2E package decision](../../.agents/notes/archived/testing/2026-11-03-server-e2e-package.md) records the rationale for this package separation, and the
+[CI split decision](../../.agents/notes/archived/testing/2026-11-04-server-e2e-ci-jobs.md) records the rationale for independent coverage/E2E execution; the
 [CI efficiency decision](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 records the validation-cost trade-offs.
 
@@ -1870,8 +1956,7 @@ request ID, method PATCH and status 200; an HTTP response or unrelated record
 count does not establish that the test process has consumed those logs. After
 the CLI exits, the existing mutation-log wait precedes the strict assertion of
 exactly one additional request, status 409 and the matching stderr request ID.
-The [request-log synchronization decision](../../.agents/notes/implemented/testing/2026-11-03-cli-request-log-synchronization.md)
-owns this ordering rationale and its regression boundaries.
+The [request-log synchronization decision](../../.agents/notes/archived/testing/2026-11-03-cli-request-log-synchronization.md) records the ordering rationale and regression boundaries.
 
 The independent [platform/status scenario](cmd/e2e_tests/acceptance_platform_cli_test.go),
 `TestInstalledCLIPlatformAcceptance` / `installed_cli_platform_status_workflow`,
@@ -1928,8 +2013,7 @@ Settings acceptance retains real saves, no-ops, conflicts, project isolation and
 nested exact-int64 CLI readback. Optional lifecycle receipts record source, migration,
 snapshot, request/process and restart evidence without treating fixture preparation
 or a mocked client as runtime proof.
-The [cross-layer decision](../../.agents/notes/implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
-owns these methods and their relationship to production browser journeys.
+The [cross-layer decision](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md) records the rationale for these methods and their relationship to production browser journeys.
 
 The Node orchestrator reuses that installation for two deadline probes after
 the Go coverage gate. They load a test-only preload with 1-second request and
@@ -1947,10 +2031,10 @@ repository-root command of the same name forward to this entrypoint. Successful 
 coverage and actual process results are separate evidence: binary HTTP tests
 supplement the store/service/server package tests.
 The owning store/service tests retain deterministic snapshot and lock proofs:
-`TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/query_test.go),
+`TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/postgres/query_test.go),
 `TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent` in
 [service failure tests](internal/service/task/task_failure_test.go), and
-`TestMigrationsSessionLockSpansCommits` in [migration tests](internal/core/store/migrate_test.go).
+`TestMigrationsSessionLockSpansCommits` in [migration tests](internal/core/store/postgres/migrate_test.go).
 
 CI uploads `daynight-server-acceptance` after validation, including the JSON
 receipt and raw `.tmp/coverage.out`, even when validation fails. Artifacts are

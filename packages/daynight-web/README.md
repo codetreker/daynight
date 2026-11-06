@@ -35,10 +35,8 @@ resources also require current membership, while Worker resources belong to the
 current account and filter their saved task observations by current project access. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
 and keyboard behavior remain unchanged.
-The [Web workspace decision](../../.agents/notes/implemented/feature/2026-10-22-web-auth-workspace.md)
-owns the frontend lifecycle choices; the
-[activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
-owns production composition and credential-private acceptance.
+The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md) records the rationale for the frontend lifecycle choices; the
+[activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for production composition and credential-private acceptance.
 
 ## Assistants
 
@@ -79,10 +77,11 @@ Styles are scoped beneath `.landing-page`. The production page contains no
 prototype controls or simulated account state. Default HTML share metadata and
 locale-aware page metadata use the existing Vite-to-Go asset pipeline.
 
-The [requirements](../../docs/spec/daynight-landing.md),
-[design](../../docs/design/daynight-landing.md) and
-[decision](../../.agents/notes/implemented/architecture/2026-10-26-public-product-entry.md)
-own the complete visitor journey and public/private ownership.
+The [requirements](../../docs/spec/daynight-landing.md) and
+[design](../../docs/design/daynight-landing.md) own the complete visitor journey
+and public/private ownership. The
+[decision](../../.agents/notes/archived/architecture/2026-10-26-public-product-entry.md)
+records the original trade-offs.
 
 ## Daily setup guide
 
@@ -112,10 +111,11 @@ changes invalidate old results; switching language does not repeat a copy.
 The public reading layout supports the header at desktop, 390px and 320px widths.
 Go serves direct GET/HEAD requests and reloads through the normal no-store HTML
 handler; `/setup` and its descendants are reserved from authentication callbacks.
-The [requirements](../../docs/spec/daynight-web.md#日常使用引导),
-[design](../../docs/design/daynight-web.md#日常使用引导页) and
-[decision](../../.agents/notes/implemented/architecture/2026-10-26-public-setup-guide.md)
-own the behavior, mechanisms and trade-offs.
+The [requirements](../../docs/spec/daynight-web.md#日常使用引导) and
+[design](../../docs/design/daynight-web.md#日常使用引导页) own the behavior and
+mechanisms. The
+[decision](../../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md)
+records the original trade-offs.
 
 ## Authenticated workspace
 
@@ -162,8 +162,7 @@ regardless of their names. Direct Personal member and settings URLs remain
 available under their existing access rules. The
 [personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
 records this visibility choice. The
-[browser Team preference decision](../../.agents/notes/implemented/feature/2026-11-04-browser-team-preference.md)
-owns storage, identity and recovery behavior. Shared projects stay outside the
+[browser Team preference decision](../../.agents/notes/archived/feature/2026-11-04-browser-team-preference.md) records the rationale for storage, identity and recovery behavior. Shared projects stay outside the
 Team's indented list. Project, member and settings routes select
 the corresponding project; both Worker routes select My Workers. Links preserve native
 modified clicks, expose full names through accessible text and titles, and
@@ -198,10 +197,8 @@ identity verification keeps the overlay open with its focus containment and
 scroll lock; blocking recovery releases it before the recovery dialog takes focus.
 Sidebar changes preserve the mounted project, cache, detail and graph
 viewport without another request or synchronization loop. The
-[sidebar preference decision](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
-owns these state boundaries; the
-[account menu decision](../../.agents/notes/implemented/feature/2026-11-04-topbar-account-menu.md)
-owns account entry placement. Cross-tab live updates and server or cross-device
+[sidebar preference decision](../../.agents/notes/archived/feature/2026-10-25-sidebar-preference.md) records the rationale for these state boundaries; the
+[account menu decision](../../.agents/notes/archived/feature/2026-11-04-topbar-account-menu.md) records the rationale for account entry placement. Cross-tab live updates and server or cross-device
 synchronization are outside the local persistence guarantee.
 
 Task details expose the versioned automatic-execution permission: one bilingual
@@ -284,7 +281,7 @@ Confirmed one-time invitation receipts remain bound to the original identity and
 available until closed even if resource access changes. Invitation directories
 and new management operations still require current authorization. Actual failures
 and access loss retain their existing handling.
-A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
+A failed check keeps requests waiting through recovery. The [foreground verification decision](../../.agents/notes/archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 records this presentation policy. Ordinary same-origin
 iframe focus changes do not count as top-level returns. Requests
 use same-origin browser credentials and preserve request IDs, cancellation and
@@ -469,16 +466,18 @@ configuration and drafts stay in page memory, outside project storage and
 IndexedDB.
 
 The [Web requirements](../../docs/spec/daynight-web.md#我的-worker),
-[Web design](../../docs/design/daynight-web.md#我的-worker-列表与详情) and
-[observation decision](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)
-own the page behavior and its rationale. The
+[Web design](../../docs/design/daynight-web.md#我的-worker-列表与详情) own the page
+behavior. The
+[observation decision](../../.agents/notes/archived/architecture/2026-10-29-web-worker-observations.md)
+records the original rationale. The
 [snapshot protocol](../../docs/spec/daynight-worker-snapshots.md) owns the exact
 DTOs and permission filtering; the
 [client reporting contract](../../docs/spec/daynight-worker-reporting.md) owns
 collection, reporting and version age. The
-[configuration contract](../../docs/spec/daynight-worker-configuration.md) and
-[editor decision](../../.agents/notes/implemented/architecture/2026-11-04-web-worker-configuration-editor.md)
-own target/application semantics and form ownership. Component or controlled-browser results
+[configuration contract](../../docs/spec/daynight-worker-configuration.md) owns
+target/application semantics and form ownership; the
+[editor decision](../../.agents/notes/archived/architecture/2026-11-04-web-worker-configuration-editor.md)
+records those choices. Component or controlled-browser results
 prove their stated frontend scope; combined Server, CLI and Web acceptance must
 separately establish real reporting, resources, permissions and recovery.
 
@@ -787,8 +786,7 @@ old content. All reads, writes and publication check the current generation. Log
 session loss and project access withdrawal clear the corresponding profiles.
 Failures stay visible and retryable. Trusted same-user project 404 responses
 withdraw admission even after presentation changes; stale histories cannot
-withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)
-owns the versioning, HTTP cache and scan-cost trade-offs.
+withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md) records the rationale for the versioning, HTTP cache and scan-cost trade-offs.
 
 The task lists share assignee and status filters. Assignee supports All, Assigned
 to me, Unassigned and a person; status supports all, todo, in progress and done.
@@ -954,9 +952,10 @@ outcomes preserve draft content, and refresh never repeats a POST. Equal body
 text is not a submission identity. Validated parent access errors clear the
 scope; a missing reply or pagination message is a local error that retains data.
 
-The [design](../../docs/design/task-thread-web.md) and
-[decision](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-web.md)
-own the full decoder, capacity, lifecycle, keyboard and verification rules.
+The [design](../../docs/design/task-thread-web.md) owns the full decoder,
+capacity, lifecycle, keyboard and verification rules. The
+[decision](../../.agents/notes/archived/architecture/2026-11-03-task-thread-web.md)
+records the original trade-offs.
 
 ## Task execution time and possible stalls
 
@@ -1016,10 +1015,8 @@ While membership loads, the project heading reserves complete action geometry,
 including localized links and the wider administrator badge. Its inaccessible
 placeholder is replaced by authorized actions without narrowing the title or
 moving the restored page position. The
-[header-layout decision](../../.agents/notes/implemented/bug-fix/2026-10-23-project-header-layout-shift.md)
-owns that geometry; the existing
-[shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-03-shared-task-list-scroll.md)
-owns one task-list page offset per project, independently from Overview and graph viewports.
+[header-layout decision](../../.agents/notes/archived/bug-fix/2026-10-23-project-header-layout-shift.md) records the rationale for that geometry; the existing
+[shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.
 
 ## Languages
 
@@ -1096,7 +1093,7 @@ and navigates away only after authoritative withdrawal. Inherited access retains
 the Project page; network, protocol or server failures keep a visible read retry
 and never repeat the write. Creating a project or confirmed loss of one's own
 access refreshes the shared directory; a new authenticated identity starts
-with a new directory. The [project navigation decision](../../.agents/notes/implemented/feature/2026-10-27-sidebar-project-navigation.md)
+with a new directory. The [project navigation decision](../../.agents/notes/archived/feature/2026-10-27-sidebar-project-navigation.md)
 records ownership and pagination choices.
 
 The application implements public `/`, explicit `/login`, the `/projects` index,
@@ -1146,8 +1143,7 @@ Clicking a progress row selects Task list and the matching category, switches to
 the destination Goal's page, then scrolls, focuses and briefly highlights it.
 The standalone aggregate selects its list's first page. Explicit positioning wins
 over saved task-list scroll for that activation; ordinary category switches
-keep the current page position. The [recent browsing decision](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)
-owns the shared window and paging policy; the [progress decision](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)
+keep the current page position. The [recent browsing decision](../../.agents/notes/archived/feature/2026-10-27-recent-task-pages.md) records the rationale for the shared window and paging policy; the [progress decision](../../.agents/notes/archived/feature/2026-10-26-project-overview-progress.md)
 retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
 left of the selected content; narrow screens use horizontal tabs with matching
@@ -1224,8 +1220,8 @@ and framing without remounting a same-representative canvas or active Details.
 A representative change initializes the newly represented graph within the
 current dialog. Ordinary status and clock refreshes retain visible S, viewport
 and inspection under normal reconciliation.
-The [task view decision](../../.agents/notes/implemented/feature/2026-10-22-project-task-views.md)
-and [chain status decision](../../.agents/notes/implemented/bug-fix/2026-10-22-task-chain-status.md)
+The [task view decision](../../.agents/notes/archived/feature/2026-10-22-project-task-views.md)
+and [chain status decision](../../.agents/notes/archived/bug-fix/2026-10-22-task-chain-status.md)
 record their current rules and original rationale.
 
 The runtime accepts todo, in_progress and done. The graph summary has six
@@ -1324,8 +1320,7 @@ members. Inactive inner categories unmount their rows, and filtering or
 representative replacement can also remove a row; remounting starts collapsed.
 Outer Overview switching retains the visited task subtree and its disclosure
 choices. No disclosure state is stored in browser preferences. The [Goal-list
-decision](../../.agents/notes/implemented/feature/2026-10-26-goal-task-lists.md)
-owns this interaction.
+decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) records the rationale for this interaction.
 
 In-progress Goal children can open their current accessible Session directly.
 Small working, notice and warning text annotations share a bounded current-session
@@ -1388,7 +1383,7 @@ same open dialog. Reset computes a new baseline. Ordinary failure retains old
 content only in the same identity/project/auth scope; current401 and resource
 invalidation still unmount private content. Local S and inspection do not
 persist. Locale translates controls without adding business reads. The
-[progressive decision](../../.agents/notes/implemented/feature/2026-10-22-progressive-task-graph.md)
+[progressive decision](../../.agents/notes/archived/feature/2026-10-22-progressive-task-graph.md)
 separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
@@ -1420,8 +1415,7 @@ either departure and open only after a new dependency-graph action. Section/cate
 switching, filtering and scroll restoration make no API requests and do not
 alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)
 records the original persistence rules; the
-[shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-03-shared-task-list-scroll.md)
-owns the shared offset and category-switch behavior.
+[shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for the shared offset and category-switch behavior.
 
 The generic task and summary decoders require nullable assignedTo and a properties
 object, preserving all property keys. Graph decoders also require assignedTo.
@@ -1457,8 +1451,7 @@ receipt and online-admission signal, not a task version or durable commit counte
 task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
-[automatic refresh decision](../../.agents/notes/implemented/feature/2026-10-22-project-task-auto-refresh.md)
-owns the scheduling and scope. Production verification uses the real-service
+[automatic refresh decision](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md) records the rationale for the scheduling and scope. Production verification uses the real-service
 journeys.
 
 Same-resource, same-generation graph and detail refresh retain successful data
@@ -1478,10 +1471,8 @@ preview frame. Ordinary background reads add no heading progress paragraph,
 so unchanged responses keep the heading, tabs and active reading panel bounds
 stable before, during and after the request. Read errors, required freshness
 and stale-snapshot feedback remain explicit through timed floating bubbles. The
-[detail refresh decision](../../.agents/notes/implemented/bug-fix/2026-10-23-quiet-task-detail-refresh.md)
-owns quiet polling; the
-[notification decision](../../.agents/notes/implemented/bug-fix/2026-10-24-task-detail-notifications.md)
-owns layout-independent feedback and recovery. Project and task changes release
+[detail refresh decision](../../.agents/notes/archived/bug-fix/2026-10-23-quiet-task-detail-refresh.md) records the rationale for quiet polling; the
+[notification decision](../../.agents/notes/archived/bug-fix/2026-10-24-task-detail-notifications.md) records the rationale for layout-independent feedback and recovery. Project and task changes release
 the old resource state.
 Project listing and attachment metadata/content keep their independent refresh actions.
 Live detail never changes graph counters;
@@ -1504,9 +1495,8 @@ confirmation, detail fullscreen, details, graph fullscreen, then the graph
 dialog. Graph and detail dialogs share a counted body scroll lock so either
 unmount order restores the original scrolling state. Neither dialog opening nor
 fullscreen is saved as a browsing preference. The [graph-dialog
-decision](../../.agents/notes/implemented/feature/2026-10-26-task-chain-graph-dialog.md)
-owns graph presentation and preserves the original [fullscreen
-rationale](../../.agents/notes/implemented/feature/2026-10-22-task-graph-fullscreen.md).
+decision](../../.agents/notes/archived/feature/2026-10-26-task-chain-graph-dialog.md) records the rationale for graph presentation and preserves the original [fullscreen
+rationale](../../.agents/notes/archived/feature/2026-10-22-task-graph-fullscreen.md).
 Each node has sibling native inspection, Details and direction controls. A long
 graph starts with its root visible at readable zoom; keyboard focus brings
 offscreen nodes into view. In normal mode, the centered body-portal dialog has
@@ -1547,7 +1537,7 @@ The claimed body heading additionally retains its bounded scroll region in both
 normal and fullscreen modes, including long identity and machine text. The
 combined sizing leaves readable nonzero Overview and preview bodies at 320×240. Verification observes body/frame dimensions, actual content paint
 and scrolling; visible controls alone do not establish reading access. The
-[fullscreen-reading decision](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
+[fullscreen-reading decision](../../.agents/notes/archived/feature/2026-10-25-task-detail-fullscreen.md)
 records mode, scroll and keyboard ownership.
 
 ## Markdown task descriptions
@@ -1624,8 +1614,7 @@ value, and the ID button to its complete ID; unmount invalidates late results.
 The separate Attachments tab places the path-addressed file tree, refresh and upload on the
 left and the selected file's preview on the right. A vertical divider separates independently
 scrollable panes; narrow layouts retain this left/right placement. The
-[split-view decision](../../.agents/notes/implemented/architecture/2026-10-22-task-attachment-split-view.md)
-owns this composition and its scroll rules.
+[split-view decision](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-split-view.md) records the rationale for this composition and its scroll rules.
 
 `TaskDetailPanels` keeps both panels mounted with stable tab relationships. The
 active tab is the sole roving tab stop; arrows and Home/End activate its neighbor
@@ -1645,8 +1634,7 @@ collapse the selected file's directory afterward; refresh and tab changes do not
 reopen it. Repeating the same description link reveals its ancestors again.
 Tree selection and successful uploads do not request directory expansion, including
 when they update the standalone address. A project/task change resets disclosure.
-The [directory-disclosure decision](../../.agents/notes/implemented/feature/2026-10-25-attachment-directory-disclosure.md)
-owns the separation between selection and navigation reveal.
+The [directory-disclosure decision](../../.agents/notes/archived/feature/2026-10-25-attachment-directory-disclosure.md) records the rationale for the separation between selection and navigation reveal.
 
 The upload section starts collapsed. Activate Upload with a click or the
 keyboard to expand it, then select one local file, accept its name as the initial
@@ -1765,9 +1753,10 @@ changes preserve the existing cancellation and state-isolation rules.
 The page opens its complete Task through a direct live observation. A separate local task-chain graph supplies available relation titles and ordinary successors; graph failure does not block the rest of the detail. External successors may lie outside that projection. Each window reads its own resources and opening, with no Task objects or confirmations transferred from the opener. Visible direct details refresh every fifteen seconds and pause while hidden. A successful write remains confirmed but cannot enable another write until a fresh Task observation reaches its committed version; failed refreshes remain visible and retryable without replay. Same-identity foreground verification retains existing page interaction, while history or access retirement unmounts the reading resources.
 
 The [inspection requirements](../../docs/spec/daynight-task-inspection.md#独立完整任务详情),
-[design](../../docs/design/daynight-task-inspection.md#独立完整任务详情) and
-[standalone-detail decision](../../.agents/notes/implemented/architecture/2026-10-24-standalone-task-detail.md)
-own complete-page behavior and composition.
+[design](../../docs/design/daynight-task-inspection.md#独立完整任务详情) own
+complete-page behavior and composition. The
+[standalone-detail decision](../../.agents/notes/archived/architecture/2026-10-24-standalone-task-detail.md)
+records the original trade-offs.
 
 ### Standalone attachment reader
 
@@ -1794,11 +1783,11 @@ tabs. Shared attachment panes stay adjacent at narrow widths and own their scrol
 independently. Markdown/text/images use the preview body; fitted HTML/PDF frames
 use their documents' scrolling, without another vertical wrapper. No fixed
 heading-height subtraction, extra renderer, metadata API or preview credential
-is introduced. The [full-reader decision](../../.agents/notes/implemented/architecture/2026-10-22-task-attachment-full-reader.md)
+is introduced. The [full-reader decision](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-full-reader.md)
 retains routing/rendering foundations and the
-[shared-page decision](../../.agents/notes/implemented/architecture/2026-10-24-shared-attachment-page.md)
-retains full attachment-panel reuse rationale; complete Task Detail composition
-now belongs to the standalone-detail decision. The production `task-detail-page`
+[shared-page decision](../../.agents/notes/archived/architecture/2026-10-24-shared-attachment-page.md)
+retains full attachment-panel reuse rationale. The standalone-detail decision
+records the original complete Task Detail composition choices. The production `task-detail-page`
 and `task-attachments` journeys use actual services on both runtime targets with
 source-qualified receipts.
 
@@ -1856,7 +1845,7 @@ The platform, pause, status and assignment controller session tests use
 `tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
 Testing Library with a 5ms default polling interval, preserving immediate
 checks, timeouts, errors and explicit options. DOM tests keep their existing
-waits. The [state polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-controller-state-polling.md)
+waits. The [state polling decision](../../.agents/notes/archived/testing/2026-11-04-web-controller-state-polling.md)
 records the cadence and its limits.
 
 Step panel DOM tests retain the full pagination fixtures and resolve visible
@@ -1926,11 +1915,10 @@ Vitest/V8 collection and `scripts/coverage.mts` serially. Harness has a 180-seco
 deadline, collection has a 300-second deadline, and final source-inventory and
 strict coverage verification has its own 60-second deadline. Completed collection
 cannot consume the final checker's budget. The
-[stage budget decision](../../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
-owns that separation. Only the Vitest/V8 child receives a copied environment with
+[stage budget decision](../../.agents/notes/archived/testing/2026-11-04-web-coverage-finalization-budget.md) records the rationale for that separation. Only the Vitest/V8 child receives a copied environment with
 `VITEST_MAX_WORKERS=4`, retaining its `forks` pool, per-file isolation, full product
 manifest and strict statement gate. The
-[worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+[worker capacity decision](../../.agents/notes/archived/testing/2026-10-28-web-quality-worker-capacity.md)
 calibrates that resource setting for the dedicated public standard Linux runner's
 four CPUs. Scale workloads use the separate local stress configuration.
 
@@ -1953,6 +1941,22 @@ unknown/duplicate/missing scenarios or a mismatched selection fail validation.
 The pure `scripts/acceptance/inventory.mts` owns canonical functional and
 combined-authentication check names.
 
+After Chromium installation, CI requests navigation checks through its existing
+source/run-bound acceptance receipt. The container callback waits for permission
+and installed-CLI validation, then overlaps the serial navigation branch with
+container functional validation. Both branches drain before combined
+authentication can restart a target and before callback exit allows dev-ci network
+cleanup. Navigation hosts use separate ports, build/cache directories and routed
+API fixtures. A branch failure cancels their shared controller and preserves
+operation and cleanup failures. Navigation commands receive an environment copy
+without the production browser-ownership marker, preserving explicit browser
+channel and tool settings. Navigation command cancellation escalates after
+one second, within dev-ci's callback termination grace, while its verification
+deadlines remain unchanged. Direct acceptance callers and shard 1 keep their
+existing paths. The
+[browser job scheduling decision](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
+owns this isolation and resource trade-off.
+
 Shard 2 owns the complete 28-case navigation-contract suite, dev-ci lifecycle
 fixtures, both eleven-check combined-authentication journeys, and the real
 attachment persistence/paired-backup-restoration check. Ownership derives from
@@ -1970,10 +1974,8 @@ native/container phases overlap against independent service, database,
 authentication and storage resources. The container permission wait remains
 900 seconds. Run-wide CLI recovery waits until both targets drain; combined CLI
 commands receive cancellation without terminating commands in the other target.
-The [functional target decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
-owns those isolation constraints; the
-[quality isolation decision](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
-owns the separate quality workload and command budgets.
+The [functional target decision](../../.agents/notes/archived/testing/2026-11-04-web-functional-target-overlap.md) records the rationale for those isolation constraints; the
+[quality isolation decision](../../.agents/notes/archived/testing/2026-10-26-web-quality-job-isolation.md) records the rationale for the separate quality workload and command budgets.
 
 Quality uploads `coverage-final.json` and `summary.json` as
 `daynight-web-coverage`. Browser entries upload full evidence as
@@ -1992,7 +1994,7 @@ cleanup, matching selected inventories, disjoint canonical unions and both
 complete combined-authentication receipts owned only by shard 2. Missing or
 inconsistent evidence fails the same required gate. No executable, image or
 resource ownership is transferred between runners. The
-[two-shard decision](../../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
+[two-shard decision](../../.agents/notes/archived/testing/2026-11-04-web-ci-case-shards.md)
 records duplication costs and performance-model limits.
 
 Default local `pnpm web:acceptance` retains complete unsharded functional and
@@ -2046,11 +2048,9 @@ unit tests verify those defaults and the shorter schedules. Browser tests change
 only their owned polling periods, preserving request deadlines, freshness,
 execution clocks and real warning-threshold crossing. Cases with controlled
 browser clocks and local capacity measurements retain their own timing setup.
-The [polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-polling.md)
-owns this separation and its validation limits. The isolated dev-ci stack probes
+The [polling decision](../../.agents/notes/archived/testing/2026-11-04-web-functional-polling.md) records the rationale for this separation and its validation limits. The isolated dev-ci stack probes
 startup readiness every 250ms while preserving its normal health cadence and real
-readiness gates; the [startup probe decision](../../.agents/notes/implemented/testing/2026-11-04-dev-ci-startup-probes.md)
-owns that deployment timing.
+readiness gates; the [startup probe decision](../../.agents/notes/archived/testing/2026-11-04-dev-ci-startup-probes.md) records the rationale for that deployment timing.
 
 Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
 its normal runtime libraries on Linux; CI installs them with Playwright's
@@ -2101,8 +2101,7 @@ additional combined authentication checks, with native filesystem coverage
 qualified by its recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
 macOS. A local pass does not establish
-macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
-owns this distinction. For networks requiring an npm mirror, use
+macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/archived/testing/2026-10-23-native-development-filesystem-coverage.md) records the rationale for this distinction. For networks requiring an npm mirror, use
 `pnpm install --frozen-lockfile --registry=https://mirrors.cloud.tencent.com/npm/`
 for the workspace. Export `pnpm_config_registry=https://mirrors.cloud.tencent.com/npm/` for the
 acceptance CLI installation, and `DAYNIGHT_NPM_REGISTRY` for Docker builds. Both Compose stacks default to the official
@@ -2188,7 +2187,7 @@ task-sync endpoint before reading the authoritative graph and selecting the
 detail UI. An initial read cancelled by manual refresh cannot satisfy that
 completion event; the replacement can. Existing status, version, material and
 rendered-state assertions remain independent of this network barrier. The
-[completion decision](../../.agents/notes/implemented/testing/2026-11-04-web-status-sync-completion.md)
+[completion decision](../../.agents/notes/archived/testing/2026-11-04-web-status-sync-completion.md)
 records the response-lifecycle distinction.
 
 The automatic-permission, platform and assignment journeys share only a project
@@ -2198,7 +2197,7 @@ journeys retain fresh browser contexts, pages, storage and normal browser logins
 each creates its own mutable tasks and retains its exact write/fault assertions.
 A common worker-fixture registration and test-scoped family option preserve
 worker-pool reuse. Restarted workers prepare new resources. The
-[shared preparation decision](../../.agents/notes/implemented/testing/2026-11-04-web-scenario-preparation.md)
+[shared preparation decision](../../.agents/notes/archived/testing/2026-11-04-web-scenario-preparation.md)
 records ownership and measurement limits.
 
 Origin, method, headers and body pass through the redacting authenticated wrapper
@@ -2221,11 +2220,13 @@ Late responses remain with the original resource across navigation. Large int64
 version cases retain exact GET/PUT/database digits. Real graph failures preserve
 the confirmed detail and restore the owned fixture table afterward. Timing barriers
 control response delivery without fabricating status-changing responses. The
-[cross-layer decision](../../.agents/notes/implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
+[cross-layer decision](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 distinguishes installed-process races, production journeys and offline fixtures.
 The status journeys retain their annotations, target topology, coverage and
-cleanup checks. Capacity selection is owned separately by the
-[local stress decision](../../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md).
+cleanup checks. Capacity workloads run separately under the existing local
+stress selection rules; the
+[local stress decision](../../.agents/notes/archived/testing/2026-11-03-local-stress-suites.md)
+records that separation and its rationale.
 
 One packed/installed CLI is shared by the whole web run. On each target,
 `task-attachments` uploads through that CLI and consumes the same task/files in
@@ -2254,8 +2255,7 @@ checks retained pending input and one-time reveal; screenshots follow secret
 closure or masking. The runner supplies service-only restart callbacks and the
 explicit validated installed-package receipt. Actual staging bytes and metadata
 are observed independently of client write completion. The
-[authentication acceptance decision](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
-owns these mechanisms, failure/cleanup rules and the separate actual-upstream
+[authentication acceptance decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md) records the rationale for these mechanisms, failure/cleanup rules and the separate actual-upstream
 human login requirement. Implemented checks and source-bound run results remain
 distinct; a focused pass or historical baseline does not establish full current
 acceptance.
@@ -2295,7 +2295,7 @@ its earlier version, including the merge limit probe and the external sink befor
 its dependency classification. Shared-root construction retains its direct API
 writes. Complete snapshots compare every node and dependency with the fixture;
 the actual API order remains the overview oracle's input. The [fixture
-construction decision](../../.agents/notes/implemented/testing/2026-10-28-web-capacity-fixture-construction.md)
+construction decision](../../.agents/notes/archived/testing/2026-10-28-web-capacity-fixture-construction.md)
 records the additional API-write cost and the retained acceptance boundaries.
 
 Capacity keeps four exact complete API inputs: 1,000 tasks each, a 999-edge chain
@@ -2471,7 +2471,7 @@ fixture/authentication setup, unwrapped actions, screenshots outside the named
 blocks and teardown; it is not pure fixture time. The pinned JSON reporter omits
 steps nested under fixture hooks. These wall-time observations do not alter
 assertions, deadlines or acceptance thresholds and do not establish CPU or I/O
-causality. The [journey timing decision](../../.agents/notes/implemented/testing/2026-11-04-web-journey-timing.md)
+causality. The [journey timing decision](../../.agents/notes/archived/testing/2026-11-04-web-journey-timing.md)
 records the reporting and privacy limits.
 
 Capacity receipts also retain per-interaction `feedbackDiagnostics`: input,
@@ -2483,8 +2483,7 @@ total timing/readiness gates; they do not subtract queue/frame time or turn a
 failed measurement into success. Scenario PNG evidence remains independent.
 All production browser tests disable Playwright action/network traces to keep
 session Cookies, PATs and invitation contents out of published artifacts. The
-[activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
-owns that privacy requirement. The custom streamed CDP traces, scenario PNGs and
+[activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for that privacy requirement. The custom streamed CDP traces, scenario PNGs and
 complete graph/geometry checks remain. Controller-side
 `controllerDurations` records fixture creation, graph snapshot validation and
 per-repetition interaction/total durations. These diagnostics locate harness
@@ -2627,8 +2626,7 @@ arrowheads, external-context dashes and accessibility semantics. It shares the v
 transform, so selection/pan/zoom reuse geometry without per-edge reactive state.
 Canonical routes retain native arrow markers and the full planned geometry.
 Passages use cubic Bézier curves entirely within empty rank gaps, with controls on the gap midpoint at the respective endpoint cross-axis coordinates. Tangents follow the selected direction and join free passages through intermediate ranks, which retain sixteen units of clearance from cards. The
-[Bézier routing decision](../../.agents/notes/implemented/architecture/2026-10-25-bezier-task-dependency-routing.md)
-owns the shape and avoidance mechanism. Dashed body paint uses `routes.ts` to
+[Bézier routing decision](../../.agents/notes/archived/architecture/2026-10-25-bezier-task-dependency-routing.md) records the rationale for the shape and avoidance mechanism. Dashed body paint uses `routes.ts` to
 derive locally rotated lines and exact cubic subcurves, with the
 original 5/4 pattern and continuous positive arc-length phase. Every paint piece
 has at most 8,192 graph units of arc length; internal cuts fall at global dash-gap
@@ -2638,8 +2636,7 @@ Pieces are noninteractive and hidden from the accessibility tree; canonical edge
 keep their existing identity/semantics. The
 [paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
 owns the pinned raster evidence and local-line rationale; the
-[bounded-line extension](../../.agents/notes/implemented/bug-fix/2026-10-22-bounded-dashed-dependency-lines.md)
-owns the original GPU stroke bound and its added DOM cost.
+[bounded-line extension](../../.agents/notes/archived/bug-fix/2026-10-22-bounded-dashed-dependency-lines.md) records the rationale for the original GPU stroke bound and its added DOM cost.
 Initial placement uses current visible layout bounds after the viewport and positive
 measured canvas dimensions are ready, fitting within 0.8–1 zoom or anchoring the
 leftmost rank at 0.8 zoom. The root remains vertically centered when already

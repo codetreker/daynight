@@ -33,9 +33,9 @@ existing isolation and recovery behavior. The [UI principles](../../../../docs/u
 [authentication requirements](../../../../docs/spec/daynight-auth.md#web-交互与状态)
 and [design](../../../../docs/design/daynight-auth.md) own the current contracts.
 
-This replaces the checking-time drawer closure in the [sidebar preference](../feature/2026-10-25-sidebar-preference.md)
-and [foreground verification](2026-10-23-silent-foreground-identity-checks.md)
-decisions, and extends the [authenticated workspace](../feature/2026-10-22-web-auth-workspace.md)
+This replaces the checking-time drawer closure in the [sidebar preference](../../archived/feature/2026-10-25-sidebar-preference.md)
+and [foreground verification](../../archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
+decisions, and extends the [authenticated workspace](../../archived/feature/2026-10-22-web-auth-workspace.md)
 presentation policy.
 
 ## Alternatives

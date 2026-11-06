@@ -10,6 +10,7 @@ import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import { openStore } from "../../../src/commands/review/store.js";
 import type { PreparedReviewSkill } from "../../../src/commands/review/skill.js";
 import type { Store } from "../../../src/commands/review/store.js";
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 
 const fixtures = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-tests");
 const directories: string[] = [];
@@ -98,7 +99,7 @@ const fixture = () => {
       stopProcess: input.stopProcess === undefined ? supervisor.stop : input.stopProcess,
       excludeProcess: input.excludeProcess === undefined ? supervisor.exclude : input.excludeProcess };
   };
-  const store = openStore(paths.databaseFile);
+  const store = openStore(createMemoryDatabase());
   stores.add(store);
   const repository = { host: "github.com", githubId: "42" };
   const pr = { ...repository, number: 101 };

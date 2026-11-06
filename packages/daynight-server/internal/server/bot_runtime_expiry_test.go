@@ -13,7 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
@@ -130,7 +130,7 @@ func TestBotRuntimeHTTPChecksCredentialAfterUnchangedBotLockWait(t *testing.T) {
 	}
 }
 
-func botRuntimeStoredState(t *testing.T, ctx context.Context, db *store.Store, id string) string {
+func botRuntimeStoredState(t *testing.T, ctx context.Context, db *postgres.Store, id string) string {
 	t.Helper()
 	var state string
 	if err := db.Pool.QueryRow(ctx, `SELECT jsonb_build_object('bot',to_jsonb(b),'sessions',(SELECT COALESCE(jsonb_agg(to_jsonb(s) ORDER BY s.id),'[]'::jsonb) FROM task_sessions s WHERE s.bot_id=b.id),'workerPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(p)),'[]'::jsonb) FROM bot_worker_preferences p WHERE p.user_id=b.owner_user_id),'configurationPreferences',(SELECT COALESCE(jsonb_agg(to_jsonb(p) ORDER BY p.worker_id),'[]'::jsonb) FROM bot_configuration_preferences p WHERE p.user_id=b.owner_user_id))::text FROM bots b WHERE b.id=$1`, id).Scan(&state); err != nil {

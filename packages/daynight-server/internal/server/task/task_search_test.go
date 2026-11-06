@@ -17,6 +17,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -112,7 +113,7 @@ func (r *blockingPostgresReader) ReadTaskSearch(ctx context.Context, _ func(stor
 	if r.finished != nil {
 		defer close(r.finished)
 	}
-	return store.ReadOnlySnapshot(ctx, r.pool, func(tx pgx.Tx) error {
+	return postgres.ReadOnlySnapshot(ctx, r.pool, func(tx pgx.Tx) error {
 		var pid int32
 		if err := tx.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
 			return err

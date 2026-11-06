@@ -66,6 +66,12 @@ func (s *Projects) CreateWithAccess(ctx context.Context, p model.Principal, inpu
 	if err := core.ValidateCreate(p, input); err != nil {
 		return model.Project{}, model.ProjectAccess{}, err
 	}
+	return s.createValidated(ctx, p, input)
+}
+
+// createValidated requires the caller to validate identity, authorization inputs,
+// name and repository syntax before allocating an ID or starting a transaction.
+func (s *Projects) createValidated(ctx context.Context, p model.Principal, input core.CreateProject) (model.Project, model.ProjectAccess, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
 		return model.Project{}, model.ProjectAccess{}, fmt.Errorf("generate project ID: %w", err)
@@ -113,13 +119,25 @@ func (s *Projects) List(ctx context.Context, p model.Principal, request model.Pa
 	return s.ListScoped(ctx, p, core.ProjectListRequest{Page: request})
 }
 func (s *Projects) ListScoped(ctx context.Context, p model.Principal, request core.ProjectListRequest) (core.ProjectPage, error) {
+	return s.listScoped(ctx, p, request, 0)
+}
+
+// ListScopedBounded limits the materialized text of each Project in the page.
+func (s *Projects) ListScopedBounded(ctx context.Context, p model.Principal, request core.ProjectListRequest, maxItemBytes int) (core.ProjectPage, error) {
+	if maxItemBytes < 1 || maxItemBytes > 128<<20 {
+		return core.ProjectPage{}, &model.Fault{Code: "invalid_input", Message: "Invalid Project item budget."}
+	}
+	return s.listScoped(ctx, p, request, maxItemBytes)
+}
+
+func (s *Projects) listScoped(ctx context.Context, p model.Principal, request core.ProjectListRequest, maxItemBytes int) (core.ProjectPage, error) {
 	if err := core.ValidateList(p, request); err != nil {
 		return core.ProjectPage{}, err
 	}
 	var result store.ProjectPage
 	err := read(ctx, s.store, func(dao store.ProjectReader) error {
 		var err error
-		result, err = core.ReadList(ctx, dao, p, request)
+		result, err = core.ReadListBounded(ctx, dao, p, request, maxItemBytes)
 		return err
 	})
 	if err != nil {

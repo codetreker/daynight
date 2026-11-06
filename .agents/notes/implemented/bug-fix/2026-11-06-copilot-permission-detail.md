@@ -25,8 +25,9 @@ filtered. The existing interaction codec rejects oversized or invalid content;
 permission details are not silently shortened to fit a display budget.
 
 Title selection, actions, authorization results, interaction identity and native
-completion remain owned by the existing
-[Copilot interaction mechanism](../architecture/2026-10-28-copilot-web-sdk-runtime.md).
+completion retain the existing Copilot interaction mechanisms. The
+[Copilot interaction mechanism](../../archived/architecture/2026-10-28-copilot-web-sdk-runtime.md)
+records the original choices.
 The browser consumes the same plain-text detail field.
 
 ## Alternatives

@@ -43,7 +43,7 @@ flowchart LR
 | `internal/core/model/task_steps.go` | Step、状态、父任务头和有序集合领域值；不包含 HTTP 处理。 |
 | `internal/core/task/codec/` | 纯字段校验、ID 规范化、公开资源类型与精确编码。 |
 | `internal/core/task/steps/` | 不可变候选与顺序变更规则。 |
-| `internal/core/store/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
+| `internal/core/store/postgres/task/` 与 `internal/core/store/postgres/internal/task_steps.go` | 父任务头锁定、快照读取、步骤差异写入、只更新父版本和时间。 |
 | `internal/service/task/task_steps*.go` 与 `task_write_admission.go` | 项目准入、版本、操作顺序、容量、事务结果和用例错误。 |
 | `api/task_steps.go`、`internal/server/task/task_steps*.go` | 严格输入 DTO、路由、HTTP 方法与公共结果；输出复用中性 codec 的资源类型。 |
 | CLI `api/task-steps.ts`、`commands/task/step*.ts` | 已交付 list/show/Add/Update/Set-status/Move/Delete 的严格解析、版本分支、完整确认、同操作事实核对、输出与诊断。 |
@@ -262,7 +262,7 @@ Steps workspace 按 Task 身份保存一个新增或编辑表单、草稿、预�
 
 已交付 CLI list/show 各读取一次完整资源。Steps 正文的有效单响应上限取配置预算与 64 MiB 资源上限的较小值，恰好达到上限允许；共享 transport 的单响应 128 MiB/操作总量 256 MiB 默认值与更严格的配置限制保持。CLI Add/Update/Set-status/Move/Delete 的显式 project/version 为一次对应写入，默认版本为一次 GET 加一次写入；unknown 仅在同一仍有效操作内额外读取至多一次，全部消耗共享期限和累计字节。Web Steps 写后还需父详情/同步准入，代价在交互上以 busy/freshness 表达，不以旧数据冒充当前基线。
 
-本功能没有新增 MCP/模型工具定义，工具 schema/token 预算不适用。命令调用和输出预算由上述具体资源形状拥有；本文未给出吞吐、耗时或 token 节省基准，不作相应收益结论。
+MCP 提供七项 Steps 读取与写入工具。列表使用有界 DAO 投影及绑定父版本的游标；summary 不读取完整描述，显式 full 可读取完整内容。写入复用上述原子用例，即使返回 summary 也在物化完整集合前取得大对象许可。工具发现与容量策略见服务端 [README](../../packages/daynight-server/README.md#mcp-http-entry)。
 
 ## 迁移与部署
 

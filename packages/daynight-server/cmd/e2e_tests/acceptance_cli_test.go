@@ -178,7 +178,7 @@ func (c *acceptanceCLI) environment() []string {
 		key, _, _ := strings.Cut(entry, "=")
 		upper := strings.ToUpper(key)
 		_, replaced := values[upper]
-		if !replaced && !strings.HasPrefix(upper, "GIT_") && !strings.HasPrefix(upper, "DAYNIGHT_") && !strings.HasPrefix(upper, "GH_") && !strings.HasPrefix(upper, "GITHUB_") && !strings.HasPrefix(upper, "COPILOT_") && upper != "NODE_OPTIONS" {
+		if !replaced && upper != "DN_CONFIG_DIR" && !strings.HasPrefix(upper, "GIT_") && !strings.HasPrefix(upper, "DAYNIGHT_") && !strings.HasPrefix(upper, "GH_") && !strings.HasPrefix(upper, "GITHUB_") && !strings.HasPrefix(upper, "COPILOT_") && upper != "NODE_OPTIONS" {
 			environment = append(environment, entry)
 		}
 	}

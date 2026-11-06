@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func moveHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task, string) {
+func moveHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task, string) {
 	t.Helper()
 	database, handler, task := stepsHTTPFixture(t, logs)
 	for index, id := range []string{"00000000", "abcdef01", "12345678", "fedcba98"} {
@@ -21,7 +21,7 @@ func moveHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestH
 	return database, handler, task, taskPath(task) + "/steps"
 }
 
-func stepsHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task) {
+func stepsHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task) {
 	t.Helper()
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, logs)
@@ -30,7 +30,7 @@ func stepsHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTest
 	return database, handler, task
 }
 
-func seedHTTPStep(t *testing.T, database *store.Store, taskID, id string, position int, title, description string) {
+func seedHTTPStep(t *testing.T, database *postgres.Store, taskID, id string, position int, title, description string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
  VALUES($1,$2,$3,$4,$5,'done','2026-11-03T10:11:12.123456Z','2026-11-03T11:12:13.654321Z')`, taskID, id, position, title, description); err != nil {

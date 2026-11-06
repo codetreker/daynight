@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -26,7 +27,7 @@ const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ id: t
 const fixture = (local = true) => {
   mkdirSync(root, { recursive: true });
   const directory = mkdtempSync(path.join(root, "control-"));
-  const store = openWorkerStore(path.join(directory, "state.sqlite"));
+  const store = openWorkerStore(createMemoryDatabase());
   resources.push({ directory, store });
   const project = store.registerProject({ projectId, repoUrl: "https://github.com/example/repo.git", localPath: path.join(directory, "repository") });
   const identity = { projectId, taskId, claimId };

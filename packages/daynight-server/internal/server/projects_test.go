@@ -24,15 +24,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 )
 
-func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
+func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
 
-func projectTestHandler(t *testing.T, database *store.Store, output io.Writer) *resourceTestHandler {
+func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	return resourceTestServer(t, database, attachmentTestFiles(t), output)
 }
@@ -141,7 +142,7 @@ func TestProjectHTTPRejectsInvalidBodies(t *testing.T) {
 	}
 }
 
-func createPrivateProjectFixture(database *store.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
+func createPrivateProjectFixture(database *postgres.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
 	var project model.Project
 	completion, err := database.WriteProjectCreation(ctx, principal.UserID, func(dao store.ProjectCreationDAO) error {
 		var err error

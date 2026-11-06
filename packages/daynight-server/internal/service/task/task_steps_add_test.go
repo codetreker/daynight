@@ -16,10 +16,11 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
-func stepsStoredState(t *testing.T, database *store.Store, taskID string, excludeParentRevision bool) string {
+func stepsStoredState(t *testing.T, database *postgres.Store, taskID string, excludeParentRevision bool) string {
 	t.Helper()
 	var state string
 	err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object(

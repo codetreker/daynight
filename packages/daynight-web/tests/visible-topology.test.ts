@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { expectedBatch, expectedChainMembers, expectedDependencyTopology, expectedNodeHeights, expectedOverview, inducedTopology } from './e2e/visible-topology';
-import type { DependencyTopology } from './e2e/visible-topology';
+import { expectedBatch, expectedChainMembers, expectedDependencyTopology, expectedNodeHeights, expectedOverview, inducedTopology } from './helpers/visible-topology';
+import type { DependencyTopology } from './helpers/visible-topology';
 const graph = (count: number): DependencyTopology => ({ nodes: Array.from({ length: count }, (_, index) => ({ id: String(index) })), edges: Array.from({ length: count - 1 }, (_, index) => ({ id: `0->${index + 1}`, source: '0', target: String(index + 1), external: false })) });
 describe('independent visible API topology expectations', () => {
   it('derives ordinary members and complete ancestors without adding external sibling branches', () => {

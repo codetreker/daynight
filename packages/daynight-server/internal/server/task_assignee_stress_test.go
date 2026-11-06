@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -98,7 +98,7 @@ func TestStressTaskAssigneeProductionQuerySample(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	database := &store.Store{Pool: pool}
+	database := &postgres.Store{Pool: pool}
 	handler := projectTestHandler(t, database, io.Discard)
 	project := taskProject(t, handler)
 	ids := []string{handler.principal.UserID}
