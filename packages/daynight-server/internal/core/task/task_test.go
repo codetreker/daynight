@@ -78,13 +78,36 @@ func TestStatusCandidateHonorsNoopAndReopenProtection(t *testing.T) {
 }
 
 func TestAssignmentTransition(t *testing.T) {
-	id := "00000000-0000-4000-8000-000000000001"
-	current := model.Task{Status: model.TaskInProgress, AssignedTo: &id}
-	changed, err := AssignmentChanged(current, store.TaskWrite{AssignedTo: &id})
-	if changed || err != nil {
-		t.Fatalf("same assignee: changed=%v err=%v", changed, err)
+	alice, bob := "alice", "bob"
+	for _, tc := range []struct {
+		name     string
+		from, to *string
+		status   model.TaskStatus
+		changed  bool
+	}{
+		{"unassigned to person", nil, &alice, model.TaskTodo, true},
+		{"person to person", &alice, &bob, model.TaskDone, true},
+		{"person to unassigned", &alice, nil, model.TaskTodo, true},
+		{"same person while in progress", &alice, &alice, model.TaskInProgress, false},
+		{"same unassigned", nil, nil, model.TaskTodo, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := model.Task{Status: tc.status, AssignedTo: tc.from}
+			input := store.TaskWrite{AssignedTo: tc.to, AllowAgents: true, Title: "other change"}
+			got, changed, err := AssignmentCandidate(current, input)
+			if err != nil || changed != tc.changed {
+				t.Fatalf("changed=%v err=%v", changed, err)
+			}
+			want := input
+			if tc.changed {
+				want.AllowAgents = false
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("candidate=%#v want=%#v", got, want)
+			}
+		})
 	}
-	_, err = AssignmentChanged(current, store.TaskWrite{})
+	_, _, err := AssignmentCandidate(model.Task{Status: model.TaskInProgress, AssignedTo: &alice}, store.TaskWrite{AssignedTo: &bob, AllowAgents: true})
 	faultCode(t, err, "invalid_transition")
 }
 
