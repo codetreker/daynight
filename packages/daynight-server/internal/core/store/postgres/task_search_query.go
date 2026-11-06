@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 )
 
 type atomKey struct {
-	field query.Field
+	field tasksearch.Field
 	term  string
 }
 type sqlCompiler struct {
@@ -21,13 +21,13 @@ type sqlCompiler struct {
 	title, description bool
 }
 
-func (c *sqlCompiler) collect(n *query.Node) error {
+func (c *sqlCompiler) collect(n *tasksearch.Node) error {
 	if n == nil {
 		return fmt.Errorf("missing search expression")
 	}
 	switch n.Kind {
-	case query.Leaf:
-		if n.Atom.Term == "" || n.Atom.Field > query.DescriptionField {
+	case tasksearch.Leaf:
+		if n.Atom.Term == "" || n.Atom.Field > tasksearch.DescriptionField {
 			return fmt.Errorf("invalid search atom")
 		}
 		key := atomKey{n.Atom.Field, n.Atom.Term}
@@ -35,10 +35,10 @@ func (c *sqlCompiler) collect(n *query.Node) error {
 			c.atoms[key] = len(c.ordered)
 			c.ordered = append(c.ordered, key)
 		}
-		c.title = c.title || n.Atom.Field != query.DescriptionField
-		c.description = c.description || n.Atom.Field != query.TitleField
+		c.title = c.title || n.Atom.Field != tasksearch.DescriptionField
+		c.description = c.description || n.Atom.Field != tasksearch.TitleField
 		return nil
-	case query.And, query.Or:
+	case tasksearch.And, tasksearch.Or:
 		if err := c.collect(n.Left); err != nil {
 			return err
 		}
@@ -49,27 +49,27 @@ func (c *sqlCompiler) collect(n *query.Node) error {
 }
 
 // expression returns truth and positive title evidence, both over materialized hits.
-func (c *sqlCompiler) expression(n *query.Node) (string, string) {
-	if n.Kind == query.Leaf {
+func (c *sqlCompiler) expression(n *tasksearch.Node) (string, string) {
+	if n.Kind == tasksearch.Leaf {
 		index := c.atoms[atomKey{n.Atom.Field, n.Atom.Term}]
 		t, d := fmt.Sprintf("h.t%d", index), fmt.Sprintf("h.d%d", index)
 		match := t
-		if n.Atom.Field == query.DescriptionField {
+		if n.Atom.Field == tasksearch.DescriptionField {
 			match = d
-		} else if n.Atom.Field == query.AnyField {
+		} else if n.Atom.Field == tasksearch.AnyField {
 			match = "(" + t + " OR " + d + ")"
 		}
 		if n.Negated {
 			return "(NOT " + match + ")", "false"
 		}
-		if n.Atom.Field == query.DescriptionField {
+		if n.Atom.Field == tasksearch.DescriptionField {
 			return match, "false"
 		}
 		return match, t
 	}
 	lm, lp := c.expression(n.Left)
 	rm, rp := c.expression(n.Right)
-	if n.Kind == query.And {
+	if n.Kind == tasksearch.And {
 		match := "(" + lm + " AND " + rm + ")"
 		return match, "(" + match + " AND (" + lp + " OR " + rp + "))"
 	}
@@ -113,10 +113,10 @@ func (s *taskSearchSnapshot) Matches(ctx context.Context, projectID string, inpu
 			titleHit = fmt.Sprintf("(strpos(f.title_folded, %s)>0)", placeholder)
 			descriptionHit = fmt.Sprintf("(strpos(f.description_folded, %s)>0)", placeholder)
 		}
-		if atom.field != query.DescriptionField {
+		if atom.field != tasksearch.DescriptionField {
 			hits = append(hits, fmt.Sprintf("%s AS t%d", titleHit, i))
 		}
-		if atom.field != query.TitleField {
+		if atom.field != tasksearch.TitleField {
 			hits = append(hits, fmt.Sprintf("%s AS d%d", descriptionHit, i))
 		}
 	}

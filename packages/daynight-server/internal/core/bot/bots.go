@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -245,22 +244,20 @@ func Delete(ctx context.Context, tx store.BotWriteDAO, principal model.Principal
 	if err := botOwner(current, principal); err != nil {
 		return model.Bot{}, err
 	}
-	if current.Deletion != nil {
-		if current.Deletion.DeletionID != input.DeletionID || current.Deletion.RequestedVersion != input.Version {
-			return model.Bot{}, botConflict("Bot deletion belongs to a different request.")
-		}
-		return current, botCredentialError(tx.Credential(ctx, principal))
+	change, err := PrepareDeletion(current, input)
+	if err != nil {
+		return model.Bot{}, err
 	}
-	if current.Version != input.Version {
-		return model.Bot{}, &model.Fault{Code: "version_conflict", Message: "Bot version has changed."}
+	if !change {
+		return current, botCredentialError(tx.Credential(ctx, principal))
 	}
 	if current.SessionID != nil {
 		return model.Bot{}, botConflict("A bound Bot requires the Session deletion barrier.")
 	}
-	if current.Version == math.MaxInt64 {
-		return model.Bot{}, &model.Fault{Code: "version_exhausted", Message: "Bot version cannot advance."}
+	if err := deletionVersion(current); err != nil {
+		return model.Bot{}, err
 	}
-	result, err := tx.DeleteBot(ctx, id, input.Version, model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}})
+	result, err := tx.DeleteBot(ctx, id, input.Version, *NewDeletion(input))
 	if err != nil {
 		return model.Bot{}, err
 	}

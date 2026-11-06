@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -61,8 +61,8 @@ func TestTaskSearchProjectAccessUsesSnapshot(t *testing.T) {
 }
 
 func TestTaskSearchRejectsInvalidDAOInputs(t *testing.T) {
-	valid := &query.Node{Kind: query.Leaf, Atom: query.Atom{Field: query.AnyField, Term: "word"}}
-	invalid := []*query.Node{nil, {Kind: query.Leaf}, {Kind: query.Leaf, Atom: query.Atom{Field: query.Field(255), Term: "word"}}, {Kind: query.Kind(255)}, {Kind: query.And, Left: nil, Right: valid}, {Kind: query.Or, Left: valid, Right: nil}}
+	valid := &tasksearch.Node{Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: tasksearch.AnyField, Term: "word"}}
+	invalid := []*tasksearch.Node{nil, {Kind: tasksearch.Leaf}, {Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: tasksearch.Field(255), Term: "word"}}, {Kind: tasksearch.Kind(255)}, {Kind: tasksearch.And, Left: nil, Right: valid}, {Kind: tasksearch.Or, Left: valid, Right: nil}}
 	for _, node := range invalid {
 		c := sqlCompiler{atoms: make(map[atomKey]int)}
 		if c.collect(node) == nil {
