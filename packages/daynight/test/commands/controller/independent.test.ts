@@ -21,7 +21,7 @@ vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readCont
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
-import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
+import { prepareControllerIpcEndpoint, resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { runIndependentController } from "../../../src/commands/controller/independent.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { SESSION_PROTOCOL } from "../../../src/session/protocol.js";
@@ -70,7 +70,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
     if (url.endsWith("capabilities")) return Response.json({ protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, providers: ["codex", "claude", "copilot"] });
     if (url.endsWith("/test-sessions")) {
       registration = body;
-      session = { protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, sessionId: id, testExecutionId: body.testExecutionId, executionGeneration: "1", connectionEpoch: "0", identity: { ownerUserId: id, controllerId: body.controllerId, controllerInstanceId: body.controllerInstanceId, agentControlMode: "web", provider: "codex", nativeSessionId: null }, sessionRevision: "1", historyEpoch: id, lastEventSeq: "0", lastTimelineSeq: "0", initialInputState: prompt === null ? "not_required" : "not_submitted", synchronized: false, lifecycle: "active", connectionState: "disconnected", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, operations: { canSend: false, canCancel: false, canRespond: false } };
+      session = { protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, sessionId: id, testExecutionId: body.testExecutionId, executionGeneration: "1", connectionEpoch: "0", identity: { ownerUserId: id, controllerId: body.controllerId, controllerInstanceId: body.controllerInstanceId, agentControlMode: "web", provider: body.provider, nativeSessionId: null }, sessionRevision: "1", historyEpoch: id, lastEventSeq: "0", lastTimelineSeq: "0", initialInputState: prompt === null ? "not_required" : "not_submitted", synchronized: false, lifecycle: "active", connectionState: "disconnected", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, operations: { canSend: false, canCancel: false, canRespond: false } };
       return Response.json({ session });
     }
     if (url.endsWith("controller-grant")) return Response.json({ token: "controller-private-token", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: id, testExecutionId: registration.testExecutionId, executionGeneration: "1", controllerId: registration.controllerId, controllerInstanceId: registration.controllerInstanceId });
@@ -111,6 +111,85 @@ test.each([null, "hello 中文"])("foreground Test lifecycle preserves registrat
   for (const field of ["taskId", "claimId", "projectId", "workerId", "worktreeId"]) expect(ticket).not.toHaveProperty(field);
   expect(v.out.join("")).toContain("stopped and archived");
 });
+test.each(["codex", "claude", "copilot"] as const)("%s startup retries IPC quietly until its first observation", async provider => {
+  const v = await setup(null), original = f.request.getMockImplementation()!;
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  let observations = 0;
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "observe" && ++observations <= 2) throw new ControllerIpcOutcomeUnknownError("Controller IPC endpoint is not ready.");
+    return original(ticket, action, options);
+  });
+  await runIndependentController({ provider, model: null, args: [], prompt: null }, v.context);
+  expect(observations).toBe(3);
+  expect(v.err).toEqual([]);
+  expect(v.out.join("")).toContain(`Provider ready: ${provider}`);
+  expect(v.out.join("")).toContain("stopped and archived");
+  expect(f.spawn).toHaveBeenCalledOnce();
+  expect(f.stop).toHaveBeenCalledOnce();
+});
+
+test.each(["starting", "ready"])("IPC loss after a successful %s observation warns once and reports recovery", async lifecycle => {
+  const v = await setup(null), original = f.request.getMockImplementation()!;
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  let observations = 0;
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "observe") {
+      observations++;
+      if (observations === 1) return { snapshot: { lifecycle, nativeSessionId: "same-native" } };
+      if (observations <= 3) throw new ControllerIpcOutcomeUnknownError("Controller IPC response was lost.");
+      expect(f.stop).not.toHaveBeenCalled();
+    }
+    return original(ticket, action, options);
+  });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(observations).toBe(4);
+  expect(v.err).toEqual([
+    "Controller IPC observation is temporarily unavailable; the original native execution remains supervised.\n",
+    "Controller IPC observation recovered for the original native execution.\n",
+  ]);
+  expect(v.out.join("").match(/Provider ready:/g)).toHaveLength(1);
+  expect(f.spawn).toHaveBeenCalledOnce();
+  expect(f.stop).toHaveBeenCalledOnce();
+});
+
+test.each([false, true])("startup still fails at its deadline when IPC was observed: %s", async observed => {
+  const v = await setup(null), original = f.request.getMockImplementation()!;
+  const { ControllerIpcOutcomeUnknownError } = await import("../../../src/commands/controller/local-client.js");
+  const failure = new ControllerIpcOutcomeUnknownError("Controller IPC outcome is unknown after its deadline.");
+  let clock = Date.now(), observations = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => clock);
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "observe") {
+      observations++; clock += 30_000;
+      if (!observed) throw failure;
+      return { snapshot: { lifecycle: "starting", nativeSessionId: null } };
+    }
+    return original(ticket, action, options);
+  });
+  const running = runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  if (observed) await expect(running).rejects.toThrow("Test controller startup timed out; its original execution is retained.");
+  else await expect(running).rejects.toBe(failure);
+  expect(observations).toBe(2);
+  expect(v.err).toEqual([]);
+  expect(v.out.join("")).not.toContain("Provider ready:");
+  expect(f.spawn).toHaveBeenCalledOnce();
+  expect(f.stop).toHaveBeenCalledOnce();
+  expect(f.record).toHaveBeenCalledOnce();
+});
+
+test("an explicit first observation rejection still fails immediately", async () => {
+  const v = await setup(null), original = f.request.getMockImplementation()!;
+  const failure = new Error("Controller IPC authentication or identity mismatch.");
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "observe") throw failure;
+    return original(ticket, action, options);
+  });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toBe(failure);
+  expect(v.err).toEqual([]);
+  expect(f.request.mock.calls.filter(([, action]) => action.kind === "observe")).toHaveLength(1);
+  expect(f.stop).toHaveBeenCalledOnce();
+});
+
 test("revoked archival credentials cannot prevent local process stop", async () => {
   const v = await setup(null, true);
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
@@ -294,7 +373,7 @@ test.each(["confirmed", "failed"] as const)("an initial IPC transport loss recon
   const v = await setup("initial exactly once");
   const { requestController: realRequest } = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
   const { createServer } = await import("node:net");
-  const endpoint = process.platform === "win32" ? String.raw`\\.\pipe\daynight-loss-test-${randomUUID()}` : path.join(v.home, "loss.sock");
+  const endpoint = await prepareControllerIpcEndpoint(v.home, randomUUID());
   const sockets = new Set<import("node:net").Socket>();
   const server = createServer(socket => {
     sockets.add(socket); socket.once("close", () => sockets.delete(socket));
