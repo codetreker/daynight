@@ -14,9 +14,9 @@ import (
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
-	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
@@ -30,15 +30,13 @@ import (
 	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
 )
 
-func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Handler, error) {
-	if err := config.Validate(); err != nil {
-		return nil, err
-	}
-	client, err := config.identityClient()
-	if err != nil {
-		return nil, err
-	}
-	app := application.New(dependencies.Store, dependencies.Files, client, config.UniAuthCallbackURL, config.TaskSyncOverlap)
+type Handler interface {
+	http.Handler
+	BeginShutdown()
+	Shutdown(context.Context) error
+}
+
+func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handler, error) {
 	auth, err := authhttp.NewAuthentication(app.Identity, configpkg.AuthSettings{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, logger)
 	if err != nil {
 		return nil, err
@@ -47,7 +45,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	if err != nil {
 		return nil, err
 	}
-	if err := registerMCPTools(app, endpoint, config.PublicOrigin); err != nil {
+	if err := registerMCPTools(app.Application, endpoint, config.PublicOrigin); err != nil {
 		endpoint.BeginShutdown()
 		return nil, err
 	}
@@ -64,21 +62,20 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
 	taskhttp.TaskSyncRoutes(mux, app.TaskSync, auth, logger, config.TaskSyncOverlap)
 	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
-	engine := app.Engine
 	sessions := app.Sessions
 	deletions := app.BotDeletions
 	relay := sessionhttp.NewRoutes(sessions, auth, logger)
 	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
 	relay.RegisterRoutes(mux)
-	healthRoutes(mux, dependencies.Ready, logger)
-	web := webhttp.New(webresources.New())
+	healthRoutes(mux, app.Ready, logger)
+	web := webhttp.New(app.Web)
 	web.RegisterRoutes(mux, logger)
 	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: engine, mcp: endpoint}, nil
+	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint}, nil
 }
 
 type sessionApplication struct {
@@ -94,13 +91,14 @@ func (a *sessionApplication) BeginShutdown() {
 		a.mcp.BeginShutdown()
 	}
 }
+
 func (a *sessionApplication) Shutdown(ctx context.Context) error {
 	if a.mcp != nil {
 		if err := a.mcp.Shutdown(ctx); err != nil {
 			return err
 		}
 	}
-	return errors.Join(a.relay.Shutdown(ctx), a.engine.Stop(ctx))
+	return a.relay.Shutdown(ctx)
 }
 
 func healthRoutes(mux *http.ServeMux, readiness func(context.Context) error, logger *slog.Logger) {
@@ -144,6 +142,7 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error {
 			return mcphttp.RegisterInvitationTools(entry, app.Identity, app.Teams, app.Memberships, origin)
 		},
+		func() error { return mcphttp.RegisterThreadTools(entry, app.TaskThreads) },
 		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks) },
 		func() error { return mcphttp.RegisterStepReadTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },

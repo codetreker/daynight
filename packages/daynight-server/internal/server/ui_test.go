@@ -17,7 +17,7 @@ import (
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := New(Dependencies{}, configuredTestConfig(), logger)
+	handler, err := newTestHandler(Dependencies{}, configuredTestConfig(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
