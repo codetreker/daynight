@@ -123,12 +123,12 @@ describe('composer provider controls', () => {
     expect(screen.getByRole('combobox', { name: 'Approval policy' })).toHaveValue('ask');
     expect(props.onSend).not.toHaveBeenCalled();
   });
-  it('shows target and confirmed native value separately while a setting is pending', () => {
+  it('keeps the confirmed native value visible without progress text while a setting is pending', () => {
     const s = state(), op = { protocol: s.snapshot!.protocol, sessionId: s.snapshot!.sessionId, claimId: '00000002-1111-4111-8111-111111111111', executionGeneration: '1', operationId: 'pending', kind: 'update_setting', state: 'accepted', providerResult: null, error: null } as SessionOperation;
     const intents = new Map([['model', { operationId: op.operationId, settingId: 'model', value: 'native-b', confirmedValue: 'native-a' }]]);
     render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[op.operationId, op]]) }} intents={intents} operationProgress={new Map([[op.operationId, 'sending']])} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
-    expect(screen.getByRole('combobox')).toHaveValue('native-b');
-    expect(screen.getByText('Pending provider confirmation. Current: Native A')).toBeVisible();
+    expect(screen.getByRole('combobox')).toHaveValue('native-a');
+    expect(screen.queryByText(/Pending provider confirmation/)).toBeNull();
   });
   it('filters commands, completes arguments, and invokes the catalog ID instead of sending slash text', async () => {
     const props = base(); render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
@@ -559,8 +559,8 @@ it.each(['revision', 'description', 'availability', 'id', 'error'] as const)('re
 
 
 it.each([
-  ['unknown', 'sending', 'Pending provider confirmation. Current: Native A'],
-  ['dispatching', 'waiting', 'Still awaiting acceptance… Current: Native A'],
+  ['unknown', 'sending', null],
+  ['dispatching', 'waiting', null],
   ['accepted', undefined, 'Change outcome is unknown. Check the original operation. Current: Native A'],
   ['unknown', undefined, 'Change outcome is unknown. Check the original operation. Current: Native A'],
 ] as const)('distinguishes setting %s with %s page progress from an uncertain restored change', (phase, progress, label) => {
@@ -569,8 +569,9 @@ it.each([
   const intents = new Map([['model', { operationId: operation.operationId, settingId: 'model', value: 'native-b', confirmedValue: 'native-a' }]]);
   render(<SessionControlsPanel controls={controls} state={{ ...s, operations: new Map([[operation.operationId, operation]]) }} intents={intents} operationProgress={progress ? new Map([[operation.operationId, progress]]) : new Map()} view="model" disabled onClose={() => {}} onSelect={undefined} onRefresh={undefined} />);
   expect(screen.getByRole('combobox')).toBeDisabled();
-  expect(screen.getByRole('combobox')).toHaveValue('native-b');
-  expect(screen.getByText(label)).toBeVisible();
+  expect(screen.getByRole('combobox')).toHaveValue('native-a');
+  if (label) expect(screen.getByText(label)).toBeVisible();
+  else expect(screen.queryByRole('status')).toBeNull();
 });
 
 it.each(['send_message', 'execute_command', 'update_setting', 'refresh_controls'] as const)('keeps %s pending without a warning or a fallback read-only notice', kind => {
