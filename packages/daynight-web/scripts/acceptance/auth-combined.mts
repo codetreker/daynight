@@ -1,4 +1,4 @@
-import { authCombinedChecks as requiredChecks } from './inventory.mts';
+import { authCombinedChecks as requiredChecks, validAdmittedRemoval } from './inventory.mts';
 import type { ProjectParticipant } from "../../src/api/auth-types";
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
@@ -138,6 +138,7 @@ export const validateAuthCombinedReceipt = (value: unknown, target: CombinedTarg
     && receipt.cleanup === 'passed' && receipt.browserCleanup === 'passed' && receipt.target === target.target
     && receipt.origin === target.baseUrl && receipt.sourceGitSha === target.sourceGitSha, 'Combined receipt identity or cleanup differs.');
   check(receipt.checks.length === requiredChecks.length && requiredChecks.every((name) => receipt.checks.filter((entry) => entry.name === name && entry.result === 'passed').length === 1), 'Combined receipt does not contain every required result exactly once.');
+  check(validAdmittedRemoval(receipt.checks.find(entry => entry.name === 'admitted-member-removal')), 'Combined receipt does not contain the observed grant lock and upload outcome.');
   check(receipt.restart?.origin === target.baseUrl && receipt.restart.before.pid !== receipt.restart.after.pid
     && receipt.restart.before.start !== receipt.restart.after.start, 'Combined restart did not replace the owned process.');
   check(receipt.browser?.name === 'chromium' && /^\d+\.\d+\.\d+\.\d+$/.test(receipt.browser.version)
@@ -411,6 +412,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   const clients: Cli[] = [];
   const tokenClients: AuthenticatedAPI[] = [];
   const uploads: PausedUpload[] = [];
+  const pendingRemovals: Promise<unknown>[] = [];
   const secrets = new Set<string>();
   const screenshots = async (page: Page, name: string): Promise<void> => {
     const path = join(options.directory, `${name}.png`);
@@ -603,17 +605,26 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     check(!admitted.completed && admitted.sentBytes === prefixBytes, 'Admitted upload body was not incomplete.');
     const currentMembers = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
     const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined && currentMember.directGrant !== null, 'Current direct grant is missing before removal.');
-    const removalStarted = performance.now();
-    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.directGrant.version, expectedUserId: aliceUser.id });
-    const removalMs = performance.now() - removalStarted;
-    check(removalMs < 5_000 && !admitted.completed && admitted.sentBytes === prefixBytes, 'Member removal waited for the held upload IO.');
-    const removedDuringIO = await controls.observeUpload(probe(admittedPath));
-    check(incomplete(removedDuringIO, 0), 'Member removal did not commit while real file IO remained incomplete.');
+    let removalSettled = false;
+    const removal = request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.directGrant.version, expectedUserId: aliceUser.id })
+      .then(() => { removalSettled = true; return null; }, error => { removalSettled = true; return error; });
+    pendingRemovals.push(removal);
+    let lock: Awaited<ReturnType<typeof controls.observeGrantLock>> = null;
+    await waitFor(async () => {
+      check(!removalSettled, 'Member removal completed before the grant lock wait was observed.');
+      lock = await controls.observeGrantLock({ projectId: shared.id, userId: bobUser.id });
+      return lock !== null;
+    }, signal, 'member removal grant lock');
+    const heldDuringWait = await controls.observeUpload(probe(admittedPath));
+    check(incomplete(heldDuringWait, 1) && !removalSettled && !admitted.completed && admitted.sentBytes === prefixBytes,
+      'Member removal did not wait for the admitted upload.');
     const completed = await admitted.complete();
     check(completed.status === 201 && /^application\/json(?:;|$)/i.test(completed.contentType) && completed.requestId === admissionRequestId,
       'Previously admitted upload failed or lost its JSON/request correlation after member removal.');
     check(decode<{ sizeBytes: number }>(completed.body.toString()).sizeBytes === body.length, 'Admitted response metadata has an unexpected byte size.');
     await admitted.socketClosed;
+    const removalError = await removal;
+    if (removalError !== null) throw removalError;
     await waitFor(async () => { const observed = await controls.observeUpload(probe(admittedPath)); return observed.temporaryFiles === 0 && observed.finalExists && observed.metadataRows === 1 && observed.memberRows === 0; }, signal, 'admitted upload publication');
     const final = await alice.get(`${origin}${fileUrl(shared.id, task.id, admittedPath)}`); check(final.status() === 200 && (await final.body()).equals(body), 'Admitted bytes differ after publication.');
     for (const path of [...protectedPaths, fileUrl(shared.id, task.id, admittedPath)]) await request(replacementApi, origin, 'GET', path, 404);
@@ -628,7 +639,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await screenshots(bobPage, 'shared-membership-removed');
     await record('admitted-member-removal', { projectId: shared.id, taskId: task.id, path: admittedPath, requestId: completed.requestId,
       responseContentType: completed.contentType, bytes: body.length, sha256: hash(body), prefixBytes, prefixSha256,
-      removalMs, observedWhileBodyIncomplete: removedDuringIO, status: completed.status, newResourceStatus: 404, privateProjectStatus: 200 });
+      grantLock: lock, observedWhileBodyIncomplete: heldDuringWait, status: completed.status, removalStatus: 204, newResourceStatus: 404, privateProjectStatus: 200 });
     const expired = await controls.expirePAT({ id: replacement.id, userId: bobUser.id });
     await cliDenied(replacementCli, privateArgs, 'unauthenticated');
     await request(replacementApi, origin, 'GET', privateResource, 401);
@@ -661,6 +672,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     signal.removeEventListener('abort', closeOnAbort);
     const cleanupErrors: string[] = [];
     for (const upload of uploads) { try { await upload.close(); } catch { cleanupErrors.push('HTTP transfer cleanup failed.'); } }
+    await Promise.all(pendingRemovals);
     for (const client of tokenClients) { try { await client.dispose(); } catch { cleanupErrors.push('API context cleanup failed.'); } }
     for (const context of contexts) { try { await context.close(); } catch { cleanupErrors.push('Browser context cleanup failed.'); } }
     try { await browser?.close(); } catch { cleanupErrors.push('Browser close failed.'); }

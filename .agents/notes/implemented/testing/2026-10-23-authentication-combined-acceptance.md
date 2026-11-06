@@ -73,13 +73,16 @@ Browser and installed CLI then observe the same task and original binary bytes.
 Original Cookie, PAT, membership, invitation and file state must survive the
 service-only restart. Logout invalidates its session while PAT authority stays;
 PAT revocation denies the real CLI. A real PUT pauses after 64 KiB is observed in
-staging with no final file or attachment-index row. Removal then changes current
-membership while the request body remains open. Completing the suffix can return
-201 under the existing admission rule, while new CLI/raw P requests fail 404 and
-Q remains 200. Another real socket is disconnected while uploading and its staging
-and index must disappear. A normally minted PAT is then expired and rejected by
-the installed CLI with 401. These tests preserve K1 and do not add post-IO
-membership rechecks or serialize credential revocation with business commits.
+staging with no final file or attachment-index row. Membership removal waits on
+the admitted upload's grant lock; the harness observes the exact PostgreSQL
+waiter and blocker, completes the body, and requires upload 201 followed by
+removal 204. New CLI/raw P requests fail 404 and Q remains 200. Another real
+socket is disconnected while uploading and its staging and index must
+disappear. A normally minted PAT is then expired and rejected by the installed
+CLI with 401. These tests preserve K1 and do not add post-IO membership
+rechecks or serialize credential revocation with business commits. The
+[grant-lock acceptance decision](2026-11-06-authentication-grant-lock-acceptance.md)
+records why this ordering supersedes the earlier snapshot-based observation.
 
 The production token UI holds a real creation response while switching languages,
 then verifies the same pending input, single submission and same revealed token
