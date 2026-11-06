@@ -303,15 +303,49 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.facade.lifecycle!.isStopped(other)).toBe(true);
   });
 
+  it.each(["shutdown", "terminal"] as const)("attempts owned process stopping while shared probe cleanup is pending during %s", async reason => {
+    let rejectCleanup!: (error: Error) => void;
+    const cleanup = new Error("another task probe cleanup is unconfirmed");
+    const settle = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectCleanup = reject; }));
+    const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} });
+    f.register(); const binding = await f.prepare(); await f.start(binding);
+    const stopping = f.facade.lifecycle!.stop(f.context, reason, operation());
+    const rejected = expect(stopping).rejects.toBe(cleanup);
+    try { await vi.waitFor(() => expect(f.events).toContain("stop")); }
+    finally { rejectCleanup(cleanup); await rejected; }
+    expect(f.read().runs[0]!.phase).toBe("stopped_confirmed");
+    expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    expect(f.read().segments[0]!.endedAt).toBeNull();
+  });
+
+  it("retains both native stop and probe cleanup failures after attempting owned stopping", async () => {
+    const cleanup = new Error("another task probe cleanup is unconfirmed");
+    const f = fixture(false, false, { verify: async () => {}, settle: async () => { throw cleanup; }, close: async () => {} });
+    f.register(); const binding = await f.prepare(); await f.start(binding);
+    f.observed.set(f.read().runs[0]!.processes.find(proof => proof.role === "agent")!.pid, "changed");
+    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toMatchObject({ errors: [cleanup, expect.objectContaining({ message: expect.stringContaining("stop_unknown") })] });
+    expect(f.events).toContain("stop");
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    expect(f.read().runs[0]!.run.stopProof).toBeNull();
+  });
+
   it.each(["never-started", "prepared", "unconfirmed-preparation"])("retains %s resources until native selection probes have confirmed cleanup", async phase => {
     const settle = vi.fn().mockRejectedValue(new Error("selection cleanup unconfirmed"));
     const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} }); f.register();
     if (phase === "prepared") await f.prepare();
     if (phase === "unconfirmed-preparation") { f.shellSettings.managed = true; f.shellSettings.captureFailure = true; await expect(f.prepare()).rejects.toThrow("Unconfirmed final shell image"); }
     const original = f.read();
-    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("selection cleanup unconfirmed");
+    const stopping = f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    if (phase === "unconfirmed-preparation") await expect(stopping).rejects.toMatchObject({ errors: [expect.objectContaining({ message: "selection cleanup unconfirmed" }), expect.any(Error)] });
+    else await expect(stopping).rejects.toThrow("selection cleanup unconfirmed");
     expect(settle).toHaveBeenCalledOnce(); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
-    expect(f.read().runs).toEqual(original.runs); expect(f.read().preparation).toEqual(original.preparation); expect(f.events).not.toContain("stop");
+    expect(f.read().preparation).toEqual(original.preparation);
+    if (phase === "prepared") {
+      expect(f.events).toContain("stop");
+      expect(f.read().runs[0]!.phase).toBe("stopped_confirmed");
+      expect(f.read().runs[0]!.run.stopProof).toMatchObject({ nativeLaunch: "not_submitted" });
+    } else { expect(f.read().runs).toEqual(original.runs); expect(f.events).not.toContain("stop"); }
     settle.mockResolvedValue(undefined);
     if (phase !== "unconfirmed-preparation") {
       await f.facade.lifecycle!.stop(f.context, "shutdown", operation());

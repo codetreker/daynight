@@ -11,6 +11,7 @@ export class CodexControls {
   private native: Record<string, unknown> = {};
   private sandboxPolicies = new Map<string, Record<string, unknown>>();
   private models: Record<string, unknown>[] = [];
+  private capabilityModels: Record<string, unknown>[] = [];
   private requirements: Record<string, unknown> | null = null;
   private commands = new Map<string, Command>();
   private pending = new Map<string, { patch: Record<string, unknown>; resolve(): void; reject(error: Error): void }>();
@@ -34,22 +35,23 @@ export class CodexControls {
     this.store.update({ settings, settingsError: error });
   }
   validateSelection(requested: NativeModelSelection): void {
-    assertNativeModelSelection("Codex", requested, { model: string(this.native.model) || null, ...(typeof this.native.effort === "string" ? { effort: this.native.effort } : {}), models: this.models.map(item => ({ id: string(item.model), efforts: Array.isArray(item.supportedReasoningEfforts) ? item.supportedReasoningEfforts.map(value => string(record(value).reasoningEffort)).filter(Boolean) : null })) });
+    assertNativeModelSelection("Codex", requested, { model: string(this.native.model) || null, ...(typeof this.native.effort === "string" ? { effort: this.native.effort } : {}), models: this.capabilityModels.map(item => ({ id: string(item.model), efforts: Array.isArray(item.supportedReasoningEfforts) ? item.supportedReasoningEfforts.map(value => string(record(value).reasoningEffort)).filter(Boolean) : null })) });
   }
   async refresh() {
     try {
       const models: Record<string, unknown>[] = [], cursors = new Set<string>(); let cursor: string | undefined;
       do {
-        const result = record(await controlDeadline(this.rpc.request("model/list", { ...(cursor ? { cursor } : {}) }), "Codex model discovery"));
+        const result = record(await controlDeadline(this.rpc.request("model/list", { includeHidden: true, ...(cursor ? { cursor } : {}) }), "Codex model discovery"));
         if (!Array.isArray(result.data)) throw new Error("Invalid native model catalog.");
-        models.push(...result.data.map(record).filter(item => item.hidden !== true && string(item.model)));
+        models.push(...result.data.map(record));
         cursor = string(result.nextCursor) || undefined; if (models.length > 500 || cursor && cursors.has(cursor)) throw new Error("Native model catalog exceeded its bound."); if (cursor) cursors.add(cursor);
       } while (cursor);
-      this.models = models;
+      this.capabilityModels = models.filter(item => string(item.model));
+      this.models = this.capabilityModels.filter(item => item.hidden !== true);
       try { const result = record(await this.rpc.request("configRequirements/read", {})); this.requirements = result.requirements === null ? {} : result.requirements && typeof result.requirements === "object" && !Array.isArray(result.requirements) ? record(result.requirements) : null; }
       catch { this.requirements = null; }
       this.describe(null);
-    } catch (error) { this.models = []; this.requirements = null; this.describe(controlError(error)); }
+    } catch (error) { this.models = []; this.capabilityModels = []; this.requirements = null; this.describe(controlError(error)); }
     try {
       const next = new Map<string, Command>([["compact", { kind: "compact" }]]);
       const commands = [{ id: "compact", name: "compact", description: "Compact the current Codex thread", argumentHint: null as string | null, available: true }];

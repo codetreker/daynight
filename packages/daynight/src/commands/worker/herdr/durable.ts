@@ -524,9 +524,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       bridgeRegistrations.delete(before.sessionId);
     };
     try { await serialize(owner, async () => {
-    await settleSelection();
+    // Probe cleanup gates resource release, but cannot delay or suppress an
+    // independent attempt to stop this claim's original native processes.
+    const results = await Promise.allSettled([settleSelection(), (async () => {
     let record = need(owner);
-    if (record.runs.length === 0 && record.preparation === null) return;
+    if (record.runs.length === 0 && record.preparation === null) return false;
     let run = current(record);
     if (run.phase !== "stopped_confirmed") {
       if (run.stopOperationId === null && run.daemon !== null && await native.observe(run.daemon) !== "same" && await native.bootIdentity() === run.daemon.bootId) {
@@ -578,6 +580,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         r.run.stopProof = preparedStop ? { ...proof, nativeLaunch: "not_submitted", daemon: { pid: daemon.pid, birthToken: daemon.birthToken, bootId: daemon.bootId }, processes: [{ role: "shell", pid: shell.pid, birthToken: shell.birthToken, bootId: shell.bootId }] } : proof;
       });
     }
+    return true;
+    })()]);
+    const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Herdr native stopping and probe cleanup both failed.");
+    if (results[1].status !== "fulfilled" || !results[1].value) return;
     // Segment closure is a separate recoverable boundary after the stop proof commits.
     await finishStop(owner, operation);
     if (reason === "terminal" && input && !inputJournalError) input.close();

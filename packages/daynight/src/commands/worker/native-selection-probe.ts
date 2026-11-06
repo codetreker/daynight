@@ -24,16 +24,21 @@ export const inspectNativeSelection = async (native: WorkerCloudNative): Promise
     try {
       observation = await withCodexConfigurationRpc({ args: [...normalized.native.args, ...(requested.model === null ? [] : ["-c", `model=${JSON.stringify(requested.model)}`])], cwd: process.cwd(), environment: process.env, detached: false }, operation, async rpc => {
         const config = record(record(await rpc.request("config/read", { cwd: process.cwd(), includeLayers: false })).config);
-        const models: NativeModelObservation["models"][number][] = [], cursors = new Set<string>(); let cursor: string | undefined;
+        const catalog: Record<string, unknown>[] = [], cursors = new Set<string>(); let cursor: string | undefined;
         do {
-          const page = record(await rpc.request("model/list", { ...(cursor === undefined ? {} : { cursor }) }));
+          const page = record(await rpc.request("model/list", { includeHidden: true, ...(cursor === undefined ? {} : { cursor }) }));
           if (!Array.isArray(page.data)) throw new Error("Codex native model catalog is unavailable.");
-          for (const value of page.data) { const model = record(value); models.push({ id: string(model.model), efforts: Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts.map(value => string(record(value).reasoningEffort)).filter(Boolean) : null }); }
+          catalog.push(...page.data.map(record));
           cursor = string(page.nextCursor) || undefined;
-          if (models.length > 500 || cursor !== undefined && cursors.has(cursor)) throw new Error("Codex native model catalog exceeds its bound.");
+          if (catalog.length > 500 || cursor !== undefined && cursors.has(cursor)) throw new Error("Codex native model catalog exceeds its bound.");
           if (cursor !== undefined) cursors.add(cursor);
         } while (cursor !== undefined);
-        return { models, model: string(config.model) || null, ...(typeof config.model_reasoning_effort === "string" ? { effort: config.model_reasoning_effort } : {}) };
+        // The complete catalog preserves native order. Codex chooses its first
+        // isDefault entry, then its first available entry when none is marked.
+        // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/models-manager/src/manager.rs#L868-L875
+        const selected = string(config.model) || string((catalog.find(model => model.isDefault === true) ?? catalog[0])?.model) || null;
+        const models = catalog.map(model => ({ id: string(model.model), efforts: Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts.map(value => string(record(value).reasoningEffort)).filter(Boolean) : null }));
+        return { models, model: selected, ...(typeof config.model_reasoning_effort === "string" ? { effort: config.model_reasoning_effort } : {}) };
       }) as NativeModelObservation;
     } finally { operation.dispose(); }
   } else if (native.agent === "claude") {

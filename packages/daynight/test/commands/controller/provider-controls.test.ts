@@ -35,6 +35,29 @@ test("Codex startup rejects incompatible effort and a failed native catalog read
   f.request.mockRejectedValue(new Error("catalog unavailable")); await f.controls.refresh();
   expect(() => f.controls.validateSelection({ model: "model-a" })).toThrow("catalog");
 });
+test("Codex validates hidden models across catalog pages while keeping them out of the picker", async () => {
+  const f = codex();
+  f.controls.seed({ model: "hidden-model", reasoningEffort: "high" });
+  f.request.mockImplementation(async (method, params) => {
+    if (method !== "model/list") return { data: [] };
+    const { cursor, includeHidden } = params as { cursor?: string; includeHidden?: boolean };
+    return cursor === undefined ? { data: [{ model: "visible-model", supportedReasoningEfforts: [{ reasoningEffort: "low" }] }], nextCursor: "second" }
+      : { data: includeHidden ? [{ model: "hidden-model", hidden: true, supportedReasoningEfforts: [{ reasoningEffort: "high" }] }] : [], nextCursor: null };
+  });
+  await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: "hidden-model", effort: "high" })).not.toThrow();
+  expect(f.controls.store.value.settings.find(setting => setting.id === "model")?.options.map(option => option.value)).toEqual(["visible-model"]);
+  expect(f.request.mock.calls.filter(([method]) => method === "model/list").every(([, params]) => (params as { includeHidden?: boolean }).includeHidden === true)).toBe(true);
+  f.request.mockRejectedValue(new Error("catalog unavailable")); await f.controls.refresh();
+  expect(() => f.controls.validateSelection({ model: "hidden-model", effort: "high" })).toThrow("catalog");
+});
+test("Codex counts hidden catalog entries toward its bound", async () => {
+  const f = codex(); await f.controls.refresh();
+  f.request.mockImplementation(async method => method === "model/list" ? { data: Array.from({ length: 501 }, (_, index) => ({ model: `hidden-${index}`, hidden: true })), nextCursor: null } : { data: [] });
+  await f.controls.refresh();
+  expect(f.controls.store.value.settingsError).toContain("bound");
+  expect(() => f.controls.validateSelection({ model: "model-a" })).toThrow("catalog");
+});
 test("Codex settings remain unconfirmed until matching native notification, including live model updates", async () => {
   const f = codex(); await f.controls.refresh(); f.setTurn("turn"); const id = randomUUID();
   let done = false; const setting = f.controls.set("model", "model-b", id, f.controls.store.value.revision).then(() => { done = true; });
