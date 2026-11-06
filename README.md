@@ -441,8 +441,11 @@ full application validation. See the
 installed package. CLI tests use private home and configuration environments
 and guard real Daynight state (`~/.daynight` and the inherited `DN_CONFIG_DIR`)
 against filesystem and SQLite writes or cleanup. The [CLI test isolation guide](docs/development.md#cli-test-isolation)
-owns child-process propagation, symbolic-link checks and protection limits. Server and Web checks have
-separate commands and require statement coverage strictly greater than 90%.
+owns child-process propagation, symbolic-link checks and protection limits.
+SQLite unit tests use native memory connections; file and process integration
+suites remain part of ordinary `pnpm test`, as described in the
+[CLI development guide](docs/development.md#cli-development). Server and Web checks
+have separate commands and require statement coverage strictly greater than 90%.
 Routine CI suites exclude stress workloads. Run the corresponding explicit local
 command when full-scale evidence is required:
 

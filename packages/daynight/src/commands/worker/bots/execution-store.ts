@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { closeSqliteDatabase, openSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { parseStartupObservation, type StartupObservation } from "../../../session/startup.js";
 import { controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
@@ -92,7 +92,7 @@ const check = (record: BotRecord, value: BotExecution): BotExecution => {
 };
 
 /** The caller retains the Worker instance lock; these rows never enter Task capacity or cleanup inventory. */
-export const openBotExecutionStore = (file: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
+export const openBotExecutionStore = (file: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
   const db = openSqliteDatabase({ file, format: workerStoreFormat, allowCreate: true,
     ...(options.busyTimeoutMs === undefined ? {} : { timeoutMs: options.busyTimeoutMs }),
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });

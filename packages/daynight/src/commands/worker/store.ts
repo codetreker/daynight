@@ -1,5 +1,5 @@
 import path from "node:path";
-import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { workerStoreFormat } from "./store-format.js";
 import { canonicalId } from "../../api/parse.js";
@@ -46,8 +46,8 @@ const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
   return { ...claimKey(row), status: row.status, agent: agent(row.agent), agentControlMode: mode(row.agentControlMode), sessionId: row.sessionId === null ? null : id(row.sessionId, "Native session ID") };
 };
-export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
-  absolutePath(databaseFile, "The SQLite database path");
+export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
+  if (typeof databaseFile === "string") absolutePath(databaseFile, "The SQLite database path");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > 60_000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
   const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowCreate: true, timeoutMs: busyTimeoutMs,
@@ -87,7 +87,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     return task;
   };
   return {
-    close: (): void => { closeSqliteDatabase(db, { file: databaseFile, format: workerStoreFormat }); },
+    close: (): void => { closeSqliteDatabase(db, { file: typeof databaseFile === "string" ? databaseFile : databaseFile.name, format: workerStoreFormat }); },
     getProject,
     listProjects: (): WorkerProject[] => read(() => (db.prepare(`SELECT ${projectColumns} FROM projects ORDER BY project_id`).all() as WorkerProject[]).map(asProject)),
     registerProject: (input: WorkerProject): WorkerProject => atomic(() => {
