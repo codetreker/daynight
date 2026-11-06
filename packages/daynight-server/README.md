@@ -327,9 +327,12 @@ validates its own credential; browser cookies are not accepted. Requests carryin
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
 The endpoint advertises Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, and inspection and acceptance
-of Team or Project invitations. A tool is discoverable only after its complete
-business adapter is registered. Invitation links are returned only by creation;
-listing returns metadata without secrets.
+of Team or Project invitations, and Bot listing, inspection, creation and
+deletion. A tool is discoverable only after its complete business adapter is
+registered. Invitation links are returned only by creation; listing returns
+metadata without secrets. Bot creation resolves omitted settings from available
+Worker defaults and does not imply startup readiness. Bot deletion requires an
+explicit version and reports the separate Worker and server cleanup states.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control

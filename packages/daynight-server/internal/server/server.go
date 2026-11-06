@@ -139,12 +139,15 @@ func healthRoutes(mux *http.ServeMux, readiness func(context.Context) error, log
 
 // registerMCPTools is the composition point for complete domain adapters.
 func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin string) error {
-	return registerMCPAdapters(
+	if err := registerMCPAdapters(
 		func() error { return mcphttp.RegisterProjectTools(entry, app.Projects, app.Identity, origin) },
 		func() error {
 			return mcphttp.RegisterInvitationTools(entry, app.Identity, app.Teams, app.Memberships, origin)
 		},
-	)
+	); err != nil {
+		return err
+	}
+	return mcphttp.RegisterBotTools(entry, app.Bots, app.BotDeletions)
 }
 
 func registerMCPAdapters(projects, invitations func() error) error {
