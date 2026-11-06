@@ -128,8 +128,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [openChainWitness, openChainId, section, activeView]);
   const onOpenChain = useCallback((id: string) => { setOpenChainWitness(id); }, []);
   const onCloseChain = useCallback(() => { setOpenChainWitness(null); }, []);
-  const detailTaskId = detailSelection !== null && snapshot !== null &&
-    (detailSelection.revision === snapshot.revision || snapshot.index.nodes.has(detailSelection.id)) ? detailSelection.id : null;
+  const detailTaskId = detailSelection?.id ?? null;
 
   useEffect(() => {
     if (snapshot === null) return;
@@ -304,7 +303,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           </section>
         </div>
       </div>
-      {snapshot !== null && detailTaskId !== null && <TaskDetailDialog projectId={projectId} taskId={detailTaskId} snapshot={snapshot} onSelectTask={onSelectRelation}
+      {detailTaskId !== null && <TaskDetailDialog projectId={projectId} taskId={detailTaskId} snapshot={snapshot} observation={{ kind: 'project-summary', revision: snapshot?.revision ?? 0, task: snapshot?.index.nodes.get(detailTaskId) }} onSelectTask={onSelectRelation}
         onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} />}
     </>
   );

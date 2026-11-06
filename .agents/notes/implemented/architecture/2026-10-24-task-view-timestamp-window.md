@@ -22,8 +22,7 @@ and mutation responses cannot advance this coverage watermark. The
 preserves why transactional counters were considered before task-time windows
 were selected.
 
-The existing TaskDetailSessions uses that same authenticated cache scope and
-details store. It persists intrinsic complete task content, including exact
+Summary-backed TaskDetailSessions uses that same authenticated cache scope and details store. The [direct observation decision](2026-11-06-task-direct-observation.md) adds an opening-local live source alongside it. It persists intrinsic complete task content, including exact
 version and all current properties, while materializing ready and blockedBy from
 the current complete projection. Opening a detail can display a matching durable
 body after this mount's online project admission while the scope still authorizes

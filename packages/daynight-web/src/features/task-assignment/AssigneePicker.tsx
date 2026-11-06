@@ -4,13 +4,16 @@ import type { ProjectPerson } from '../../api/auth-types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useProjectAssigneeCatalogue } from '../task-assignees/TaskAssignees';
 import { AssigneeAvatar, personName } from './TaskAssigneeIdentity';
+import type { AssigneePeopleSnapshot } from '../task-assignees/TaskAssignees';
 
 type Choice = { readonly value: string; readonly label: string; readonly person?: ProjectPerson };
-export const AssigneePicker = ({ projectId, label, children, value, choices, disabled = false, resetKey, owner, triggerLabel, includeFormer = false, onSelect }: {
+export const AssigneePicker = ({ projectId, label, children, value, choices, disabled = false, resetKey, owner, triggerLabel, includeFormer = false, directCatalogue, onSelect }: {
   readonly projectId: string;
+  readonly taskId?: string;
   readonly label: string;
   readonly triggerLabel?: string;
   readonly includeFormer?: boolean;
+  readonly directCatalogue?: AssigneePeopleSnapshot & { readonly open: () => void; readonly retry: () => void };
   readonly children: ReactNode;
   readonly value: string;
   readonly choices: readonly Choice[];
@@ -20,7 +23,8 @@ export const AssigneePicker = ({ projectId, label, children, value, choices, dis
   readonly onSelect: (value: string) => void;
 }) => {
   const { messages: { assignment: m } } = useI18n();
-  const catalogue = useProjectAssigneeCatalogue(projectId);
+  const projectCatalogue = useProjectAssigneeCatalogue(projectId);
+  const catalogue = directCatalogue ?? projectCatalogue;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const trigger = useRef<HTMLButtonElement>(null);

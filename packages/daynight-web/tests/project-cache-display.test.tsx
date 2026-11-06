@@ -97,8 +97,10 @@ it("displays a cached empty project before sync and atomically replaces history 
   const { result } = mount();
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   expect(result.current.snapshot!.graph.summary.total).toBe(0);
-  await act(async () => { pending.resolve(sync(graph(), 1n, "30000000-0000-4000-8000-000000000002")); });
-  await waitFor(() => expect(result.current.snapshot!.revision).toBeGreaterThan(0));
+  const epoch = "30000000-0000-4000-8000-000000000002";
+  vi.mocked(getTaskSync).mockResolvedValue(taskSyncFromGraph(graph(), { epoch, versionForTask: () => 1n }));
+  await act(async () => { pending.resolve(sync(graph(), 1n, epoch)); });
+  await waitFor(() => expect(result.current.snapshot?.revision).toBeGreaterThan(0));
   expect(result.current.snapshot!.graph.summary.total).toBe(1);
 });
 
@@ -198,7 +200,8 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
     await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null }));
   }
   const ticket = await peer.beginSync(projectId, new AbortController().signal);
-  await act(async () => { await peer.applySync(ticket, taskSyncFromGraph(replacement, { epoch: replacementEpoch, versionForTask: () => 2n }), new AbortController().signal); });
+  let replacementGeneration = "";
+  await act(async () => { replacementGeneration = (await peer.applySync(ticket, taskSyncFromGraph(replacement, { epoch: replacementEpoch, versionForTask: () => 2n }), new AbortController().signal)).project.manifest.cacheGeneration; });
   if (withdrawal === "response") {
     expect(view.result.current.snapshot!.graph.tasks[0]!.titlePreview).not.toBe("Replacement history");
     await act(async () => { initial.reject(new ApiError("server", 404, "not_found")); });
@@ -209,11 +212,11 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   try {
     expect(await database.get("projects", [TEST_VIEWER_ID, projectId])).toMatchObject({ state: "active", epoch: replacementEpoch,
-      cacheGeneration: peer.getAuthorizedProject(projectId)!.manifest.cacheGeneration });
+      cacheGeneration: replacementGeneration });
     expect(await database.countFromIndex("summaries", "by-project", [TEST_VIEWER_ID, projectId])).toBe(1);
   } finally { database.close(); }
 
-  const retry = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(retry.promise);
+  const retry = deferred<TaskSync>(); void retry.promise.catch(() => {}); vi.mocked(getTaskSync).mockReturnValueOnce(retry.promise);
   act(() => { view.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
   expect(view.result.current.snapshot).toBeNull();
@@ -221,7 +224,7 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   await act(async () => { retry.reject(offline); });
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: offline }));
 
-  const automatic = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(automatic.promise);
+  const automatic = deferred<TaskSync>(); void automatic.promise.catch(() => {}); vi.mocked(getTaskSync).mockReturnValueOnce(automatic.promise);
   const poll = intervals.mock.calls.find(([, delay]) => delay === 15_000)![0] as () => void;
   act(() => { poll(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(3));

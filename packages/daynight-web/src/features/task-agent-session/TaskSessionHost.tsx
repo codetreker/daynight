@@ -13,12 +13,14 @@ import { emptySessionState } from './state';
 import { useTerminalHostMessages } from './terminal-host-messages';
 import { useSessionMessages } from './messages';
 import { useSessionFullscreen } from './useSessionFullscreen';
+import { useDirectSessionRecords } from './useDirectSessionRecords';
 import './terminal-session.css';
 import './terminal-host.css';
 
 import type { AttachmentRecordSlots } from '../task-detail/attachments/TaskAttachments';
 
-type ScopeProps = { readonly projectId: string; readonly taskId: string; readonly active: boolean };
+type ScopeProps = { readonly projectId: string; readonly taskId: string; readonly active: boolean; readonly direct?: boolean };
+type Records = ReturnType<typeof useRecords>;
 type RecordsPage = { items: SessionHistoryItem[]; cursor: string | null };
 type RecordsState = { owner: object; api: TerminalSessionApi; page: RecordsPage | null; first: RecordsPage | null; error: unknown; loading: boolean; checking: boolean; denied: boolean };
 const samePage = (a: RecordsPage | null, b: RecordsPage): boolean => a !== null && JSON.stringify(a) === JSON.stringify(b);
@@ -408,21 +410,32 @@ function useRecords(projectId: string, taskId: string, active: boolean) {
 function recordLabel(item: SessionHistoryItem): string {
   return `${item.createdAt.replace('T', ' ').replace(/\.\d+Z$/, 'Z')} · ${item.agentControlMode === 'herdr' ? 'Herdr' : 'Web'}`;
 }
-export function TaskSessionHost({ projectId, taskId, claimId, mode, active, current }: ScopeProps & {
-  readonly claimId: string; readonly mode: 'web' | 'herdr'; readonly current: boolean;
-}) {
-  const m = useTerminalHostMessages(); const history = useRecords(projectId, taskId, active && current);
+type SessionHostProps = ScopeProps & { readonly claimId: string; readonly mode: 'web' | 'herdr'; readonly current: boolean };
+export function TaskSessionHost(props: SessionHostProps) {
+  return props.direct ? <DirectSessionHost {...props} /> : <SummarySessionHost {...props} />;
+}
+function DirectSessionHost(props: SessionHostProps) {
+  const history = useDirectSessionRecords(props.projectId, props.taskId, props.active && props.current);
+  return <SessionHostContent {...props} history={history} />;
+}
+function SummarySessionHost(props: SessionHostProps) {
+  const history = useRecords(props.projectId, props.taskId, props.active && props.current);
+  return <SessionHostContent {...props} history={history} />;
+}
+function SessionHostContent({ projectId, taskId, claimId, mode, active, current, direct, history }: SessionHostProps & { readonly history: Records }) {
+  const m = useTerminalHostMessages();
   // Retain the selected immutable reference even when a refresh discovers a new claim.
   const selectionKey = `daynight:recording:${history.scope.userId}:${projectId}:${taskId}`;
   const readSelection = (): SessionHistoryItem | null => {
+    if (direct) return null;
     try { const raw = sessionStorage.getItem(selectionKey); return raw === null ? null : parseSessionHistory({ items: [JSON.parse(raw)], nextCursor: null }).items[0] ?? null; } catch { return null; }
   };
   const [selection, setSelection] = useState(() => ({ key: selectionKey, scope: history.scope, item: readSelection() }));
   const selected = selection.key === selectionKey && selection.scope === history.scope && !history.denied ? selection.item : null;
   useLayoutEffect(() => { setSelection({ key: selectionKey, scope: history.scope, item: readSelection() }); }, [selectionKey, history.scope]);
-  useLayoutEffect(() => { if (history.denied) { setSelection({ key: selectionKey, scope: history.scope, item: null }); try { sessionStorage.removeItem(selectionKey); } catch { /* Storage is optional. */ } } }, [history.denied, selectionKey, history.scope]);
+  useLayoutEffect(() => { if (history.denied) { setSelection({ key: selectionKey, scope: history.scope, item: null }); try { if (!direct) sessionStorage.removeItem(selectionKey); } catch { /* Storage is optional. */ } } }, [history.denied, selectionKey, history.scope, direct]);
   const select = (item: SessionHistoryItem | null) => {
-    setSelection({ key: selectionKey, scope: history.scope, item }); try { if (item === null) sessionStorage.removeItem(selectionKey); else sessionStorage.setItem(selectionKey, JSON.stringify(item)); } catch { /* Reading remains available without browser storage. */ }
+    setSelection({ key: selectionKey, scope: history.scope, item }); if (direct) return; try { if (item === null) sessionStorage.removeItem(selectionKey); else sessionStorage.setItem(selectionKey, JSON.stringify(item)); } catch { /* Reading remains available without browser storage. */ }
   };
   return <div className="task-session-host">
     <div className="terminal-host-toolbar"><label>{m.record}<select aria-label={m.record} value={selected?.sessionId ?? ''} onChange={event => select(history.items.find(item => item.sessionId === event.target.value) ?? null)}>
@@ -437,8 +450,20 @@ export function TaskSessionHost({ projectId, taskId, claimId, mode, active, curr
     {selected && !history.denied ? <FixedSessionRecording key={`${selected.sessionId}/${selected.archive.sha256}`} api={history.api} item={selected} active={active && current} /> : null}
   </div>;
 }
-export function ManagedSessionRecords({ projectId, taskId, active, resetSelection, children }: ScopeProps & { readonly resetSelection?: object; readonly children: (records: AttachmentRecordSlots) => ReactNode }) {
-  const m = useTerminalHostMessages(); const history = useRecords(projectId, taskId, active);
+type ManagedRecordsProps = ScopeProps & { readonly resetSelection?: object; readonly children: (records: AttachmentRecordSlots) => ReactNode };
+export function ManagedSessionRecords(props: ManagedRecordsProps) {
+  return props.direct ? <DirectManagedRecords {...props} /> : <SummaryManagedRecords {...props} />;
+}
+function DirectManagedRecords(props: ManagedRecordsProps) {
+  const history = useDirectSessionRecords(props.projectId, props.taskId, props.active);
+  return <ManagedRecordsContent {...props} history={history} />;
+}
+function SummaryManagedRecords(props: ManagedRecordsProps) {
+  const history = useRecords(props.projectId, props.taskId, props.active);
+  return <ManagedRecordsContent {...props} history={history} />;
+}
+function ManagedRecordsContent({ projectId, taskId, active, resetSelection, children, history }: ManagedRecordsProps & { readonly history: Records }) {
+  const m = useTerminalHostMessages();
   const [selection, setSelection] = useState<{ scope: typeof history.scope; projectId: string; taskId: string; item: SessionHistoryItem | null }>(() => ({ scope: history.scope, projectId, taskId, item: null }));
   const selected = selection.scope === history.scope && selection.projectId === projectId && selection.taskId === taskId && !history.denied ? selection.item : null;
   const setSelected = (item: SessionHistoryItem | null) => setSelection({ scope: history.scope, projectId, taskId, item });

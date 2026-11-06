@@ -5,7 +5,7 @@ import { ApiError, setTaskStatus, getTask, setTaskAgentPermission, setTaskRequir
 import type { TaskDetail } from '../src/api/types';
 import { canSetStatus, canSetAgentPermission, canSetRequiredPlatform, TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const id = '20000000-0000-4000-8000-000000000001';
 const initial: TaskDetail = { assignedTo: null, id, projectId: project, title: 'Task', description: '', status: 'todo', version: 9007199254740993n,

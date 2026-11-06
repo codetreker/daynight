@@ -30,8 +30,7 @@ restores online authorization while retaining old-generation fences.
 
 Local summary publication has revision zero, null server observation and null
 successful receipt time. It does not add the project to the scope's online
-authorization set. Detail bodies and task writes continue to require this
-mount's successful project sync and their existing live detail read rules.
+authorization set. Summary-backed detail bodies and task writes continue to require this mount's successful project sync and their live detail read rules. The [direct observation decision](2026-11-06-task-direct-observation.md) admits a separate live source without a graph.
 A local-only detail mount leaves shared session observation unchanged: its
 visibility gate cannot cancel an already accepted operation still preparing in
 the same authorized history. Its own first live receipt still requires an

@@ -1,5 +1,6 @@
 import type { IDBPObjectStore, IDBPTransaction } from "idb";
 import { ApiError, authRequestsPaused, isAbortError, requestId, waitForAuthRequests } from "../../api/client";
+import { getProjectAccess } from "../../api/auth";
 import { canonicalId, record, string } from "../../api/parse";
 import { parseProfileVersion } from "../../api/profile-version";
 import type { ProjectPersonVersion } from "../../api/auth-types";
@@ -16,6 +17,10 @@ export type SyncTicket = {
   readonly cacheGeneration: string; readonly epoch: string | null; readonly maxUpdatedAt: string | null;
   readonly scopeRevision: number;
 };
+export type TaskReadFence = {
+  readonly userId: string; readonly userFence: string; readonly projectId: string; readonly taskId: string;
+  readonly scopeRevision: number; readonly historyGeneration: number; readonly openingSequence: number; readonly requestGeneration: number;
+};
 export type CachedProject = TaskProjection & {
   readonly manifest: ProjectRecord;
   readonly summaries: ReadonlyMap<string, TaskSummary>;
@@ -25,8 +30,8 @@ export type DetailStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE
 export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "sessionHistory", "readwrite">;
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
 type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true };
-export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly cacheGenerationChanged?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
-type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
+export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
+type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true } };
 export class TaskCacheLifecycleChanged extends DOMException {
   constructor() { super("The task cache lifecycle changed.", "AbortError"); }
 }
@@ -61,6 +66,14 @@ export class TaskCacheScope {
   private uncertaintyRevision = 0;
   private readonly suspendedProjects = new Set<string>();
   private readonly projectRevisions = new Map<string, number>();
+  private readonly directRevisions = new Map<string, number>();
+  private readonly histories = new Map<string, { epoch: string | null; generation: number }>();
+  private readonly retiredEpochs = new Map<string, Set<string>>();
+  private readonly historyOrders = new Map<string, number>();
+  private readonly ticketOrders = new WeakMap<object, number>();
+  private nextHistoryOrder = 0;
+  private readonly historyPurges = new Map<string, Promise<void>>();
+  private readonly historyPurgeEpochs = new Map<string, string>();
   private readonly pending = new Set<Transaction>();
   // Retired generations also fence results whose transactions committed before access withdrawal.
   private readonly revokedGenerations = new Map<string, Set<string>>();
@@ -90,6 +103,16 @@ export class TaskCacheScope {
       const hint = event.data;
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;
       if (hint.projectId !== null && typeof hint.projectId !== "string") return;
+      if ("directSessionDenied" in hint) {
+        const denied = hint.directSessionDenied;
+        if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
+          !("userFence" in hint) || typeof hint.userFence !== "string" || canonicalId(hint.userFence) !== hint.userFence ||
+          typeof denied !== "object" || denied === null || !("taskId" in denied) || typeof denied.taskId !== "string" || canonicalId(denied.taskId) !== denied.taskId ||
+          !("epoch" in denied) || typeof denied.epoch !== "string" || canonicalId(denied.epoch) !== denied.epoch ||
+          "manifestAbsent" in denied && denied.manifestAbsent !== true) return;
+        void this.receiveDirectSessionDenied(hint.projectId, hint.userFence, denied.taskId, denied.epoch, "manifestAbsent" in denied).catch(() => {});
+        return;
+      }
       if ("sessionHistoryUncertain" in hint) {
         const marker = hint.sessionHistoryUncertain;
         if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
@@ -172,15 +195,75 @@ export class TaskCacheScope {
     return () => { this.listeners.delete(listener); };
   };
   private emit(event: CacheEvent): void {
-    if (this.invalidated || this.disposed || authRequestsPaused() && event.accessRevoked !== true) return;
+    if (this.invalidated || this.disposed || authRequestsPaused() && event.accessRevoked !== true && event.sessionHistoryUncertain?.unbound !== true) return;
     for (const listener of this.listeners) listener(event);
+  }
+  reportTaskNotFound(projectId: string): void {
+    projectId = requestId(projectId);
+    if (authRequestsPaused()) {
+      void this.ready(this.signal).then(() => { this.emit({ projectId, taskNotFound: true }); }).catch(() => {});
+    } else this.emit({ projectId, taskNotFound: true });
+  }
+  reportDirectSessionDenied(fence: TaskReadFence, epoch: string, manifestAbsent = false): boolean {
+    if (!this.isTaskReadCurrent(fence, true) || this.histories.get(fence.projectId)?.epoch !== epoch) return false;
+    this.channel?.postMessage({ userId: this.userId, projectId: fence.projectId, userFence: fence.userFence,
+      directSessionDenied: { taskId: fence.taskId, epoch, ...(manifestAbsent ? { manifestAbsent: true } : {}) } } satisfies Hint);
+    void this.receiveDirectSessionDenied(fence.projectId, fence.userFence, fence.taskId, epoch, manifestAbsent).catch(() => {});
+    return true;
+  }
+  private async receiveDirectSessionDenied(projectId: string, userFence: string, taskId: string, epoch: string, manifestAbsent = false): Promise<void> {
+    const history = this.histories.get(projectId); const revision = this.getDirectRevision(projectId);
+    if (this.isInvalidated || this.userFence !== userFence || history?.epoch !== epoch || this.suspendedProjects.has(projectId)) return;
+    if (manifestAbsent) {
+      try {
+        // Negative receipts can be checked during the identity gate without
+        // admitting positive data or changing the stored scope.
+        const manifest = await this.transaction(async (transaction) => {
+          const current = validateUserScope(await transaction.objectStore("userScopes").get(this.userId), this.userId);
+          if (current.userFence !== userFence) return null;
+          return this.manifest(transaction, projectId, current.userFence);
+        }, this.signal, true);
+        if (manifest === null || this.isInvalidated || this.userFence !== userFence || revision !== this.getDirectRevision(projectId) ||
+          this.histories.get(projectId)?.generation !== history.generation || manifest?.state === "active") return;
+        this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true } });
+      } catch {
+        if (!this.isInvalidated && this.userFence === userFence && revision === this.getDirectRevision(projectId) &&
+          this.histories.get(projectId)?.generation === history.generation) this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true } });
+      }
+      return;
+    }
+    if (!manifestAbsent) this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true } });
+    try {
+      await this.ready(this.signal);
+      if (revision !== this.getDirectRevision(projectId) || this.histories.get(projectId)?.generation !== history.generation) return;
+      const manifest = await this.userTransaction(async (transaction, currentFence) => {
+        if (currentFence !== userFence) return undefined;
+        return this.manifest(transaction, projectId, currentFence);
+      }, this.signal);
+      if (revision !== this.getDirectRevision(projectId) || this.histories.get(projectId)?.generation !== history.generation ||
+        this.userFence !== userFence) return;
+      if (manifest?.state !== "active" || manifest.epoch !== epoch) return;
+      const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch,
+        maxUpdatedAt: manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
+      await this.observeHistoryUncertain(ticket, taskId, null, this.signal, true);
+    } catch (error) { if (isAbortError(error)) throw error; }
+  }
+  async revalidateProjectAccess(projectId: string): Promise<void> {
+    const ticket = await this.beginSync(projectId, this.signal);
+    try { await getProjectAccess(projectId, this.signal, { userId: this.userId, onPrincipalMismatch: this.principalMismatch }); }
+    catch (error) {
+      if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+        await this.revokeProject(ticket, this.signal, true, error); return;
+      }
+      throw error;
+    }
   }
   private hint(projectId: string | null): void {
     this.channel?.postMessage({ userId: this.userId, projectId } satisfies Hint);
   }
   private async receiveHint(hint: Hint): Promise<void> {
     await this.ready(this.lifetime.signal);
-    const observed = new Set([...this.authorizedProjects, ...this.historyPreviews.keys()]);
+    const observed = new Set([...this.authorizedProjects, ...this.historyPreviews.keys(), ...this.histories.keys()]);
     const projects = hint.projectId === null ? [...observed] : observed.has(hint.projectId) ? [hint.projectId] : [];
     for (const projectId of projects) {
       // A hint carries no content or access grant; receivers read the committed stores.
@@ -195,24 +278,43 @@ export class TaskCacheScope {
         continue;
       }
       this.assertLive();
+      const history = this.histories.get(projectId);
+      const epoch = project?.manifest.epoch ?? null;
+      const historyChanged = history !== undefined && history.epoch !== null && epoch !== null && history.epoch !== epoch;
       const changed = previous !== undefined && (project === null || previous.userFence !== project.manifest.userFence || previous.cacheGeneration !== project.manifest.cacheGeneration);
-      if (changed) {
+      if (changed || historyChanged) {
         this.historyPreviews.delete(projectId);
         this.clearProjectHistoryUncertainty(projectId);
         this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
       }
-      this.emit(changed ? { projectId, cacheGenerationChanged: true } : { projectId });
+      if (historyChanged) {
+        this.directRevisions.set(projectId, this.getDirectRevision(projectId) + 1);
+        let retired = this.retiredEpochs.get(projectId);
+        if (retired === undefined) { retired = new Set(); this.retiredEpochs.set(projectId, retired); }
+        retired.add(history.epoch!);
+        this.histories.set(projectId, { epoch, generation: history.generation + 1 });
+        this.projections.delete(projectId); this.authorizedProjects.delete(projectId);
+      }
+      this.emit(historyChanged ? { projectId, historyChanged: true, cacheGenerationChanged: true } : changed ? { projectId, cacheGenerationChanged: true } : { projectId });
     }
   }
   private async receiveHistoryClear(projectId: string, userFence: string, cacheGeneration: string, taskId: string, token: string): Promise<void> {
     await this.ready(this.lifetime.signal);
-    if (!this.authorizedProjects.has(projectId) && !this.historyPreviews.has(projectId)) return;
-    const observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
-    if (observed === undefined || observed.userFence !== userFence || observed.cacheGeneration !== cacheGeneration) return;
-    const project = await this.readProject(projectId, this.lifetime.signal);
-    if (project === null || project.manifest.userFence !== userFence || project.manifest.cacheGeneration !== cacheGeneration) return;
-    const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: project.manifest.epoch,
-      maxUpdatedAt: project.manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
+    let observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
+    if (observed === undefined) {
+      const history = this.histories.get(projectId); const revision = this.getProjectRevision(projectId);
+      if (history?.epoch == null || this.userFence !== userFence) return;
+      const manifest = await this.userTransaction(async (transaction, currentFence) => {
+        if (currentFence !== userFence) return undefined;
+        return this.manifest(transaction, projectId, currentFence);
+      }, this.lifetime.signal);
+      if (revision !== this.getProjectRevision(projectId) || this.histories.get(projectId)?.generation !== history.generation ||
+        manifest?.state !== "active" || manifest.epoch !== history.epoch) return;
+      observed = manifest;
+    }
+    if (observed.userFence !== userFence || observed.cacheGeneration !== cacheGeneration) return;
+    const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: observed.epoch,
+      maxUpdatedAt: observed.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
     const matches = await this.sessionHistoryTransaction(ticket, this.lifetime.signal, async store => {
       const row = await store.get([this.userId, projectId, taskId]);
       return row !== undefined && row.userId === this.userId && row.projectId === projectId && row.taskId === taskId &&
@@ -346,8 +448,18 @@ export class TaskCacheScope {
   }
   private async receiveHistoryUncertain(projectId: string, userFence: string, cacheGeneration: string, taskId: string, expectedToken: string | null, unbound: boolean, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<void> {
     await this.ready(this.lifetime.signal);
-    if (!this.authorizedProjects.has(projectId) && !this.historyPreviews.has(projectId)) return;
-    const observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
+    let observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
+    if (observed === undefined) {
+      const history = this.histories.get(projectId); const revision = this.getProjectRevision(projectId);
+      if (history?.epoch == null || this.userFence !== userFence) return;
+      const manifest = await this.userTransaction(async (transaction, currentFence) => {
+        if (currentFence !== userFence) return undefined;
+        return this.manifest(transaction, projectId, currentFence);
+      }, this.lifetime.signal);
+      if (revision !== this.getProjectRevision(projectId) || this.histories.get(projectId)?.generation !== history.generation ||
+        manifest?.state !== "active" || manifest.epoch !== history.epoch) return;
+      observed = manifest;
+    }
     if (observed === undefined || observed.userFence !== userFence || observed.cacheGeneration !== cacheGeneration || this.userFence !== userFence) return;
     const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: observed.epoch,
       maxUpdatedAt: observed.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
@@ -494,6 +606,7 @@ export class TaskCacheScope {
     if (this.isInvalidated) return Promise.reject(new TaskCacheLifecycleChanged());
     if (ticket.userId !== this.userId || ticket.userFence !== this.userFence) return Promise.reject(new ApiError("protocol"));
     if (!this.canRevokeProject(ticket)) return Promise.resolve(false);
+    this.directRevisions.set(ticket.projectId, this.getDirectRevision(ticket.projectId) + 1);
     const denied = this.deniedProjects.get(ticket.projectId);
     let revoked = this.revokedGenerations.get(ticket.projectId);
     if (revoked === undefined) { revoked = new Set(); this.revokedGenerations.set(ticket.projectId, revoked); }
@@ -506,11 +619,13 @@ export class TaskCacheScope {
   }
   async beginSync(projectId: string, signal: AbortSignal): Promise<SyncTicket> {
     projectId = requestId(projectId);
-    const scopeRevision = this.projectRevisions.get(projectId) ?? 0;
+    const order = ++this.nextHistoryOrder;
     await this.ready(signal);
+    await this.ensureHistoryPurged(projectId);
+    const scopeRevision = this.projectRevisions.get(projectId) ?? 0;
     await this.clearDeniedProject(projectId);
     try {
-      return await this.userTransaction(async (transaction, userFence) => {
+      const ticket = await this.userTransaction(async (transaction, userFence) => {
         let manifest = await this.manifest(transaction, projectId, userFence);
         if (manifest === undefined) {
           manifest = invalidated(this.userId, projectId, userFence);
@@ -519,12 +634,124 @@ export class TaskCacheScope {
         if (manifest.state === "active") await this.stored(transaction, manifest);
         return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt, scopeRevision };
       }, signal);
+      if (scopeRevision !== this.getProjectRevision(projectId)) return released();
+      if (!this.histories.has(projectId)) this.histories.set(projectId, { epoch: ticket.epoch, generation: 0 });
+      this.ticketOrders.set(ticket, order);
+      return ticket;
     } catch (error) {
       if (!(error instanceof TaskCacheError) || error.category !== "corrupt") throw error;
       console.warn("Task cache rebuild", { projectId, error_category: "corrupt" });
       await this.invalidateProject(projectId, signal, "corrupt");
       return this.beginSync(projectId, signal);
     }
+  }
+  async beginTaskRead(projectId: string, taskId: string, openingSequence: number, requestGeneration: number, signal: AbortSignal): Promise<TaskReadFence> {
+    projectId = requestId(projectId); taskId = requestId(taskId);
+    const order = ++this.nextHistoryOrder;
+    await this.ready(signal);
+    await this.ensureHistoryPurged(projectId);
+    const scopeRevision = this.getDirectRevision(projectId);
+    if (this.suspendedProjects.has(projectId)) return released();
+    let observed: { userFence: string; manifest: ProjectRecord | undefined };
+    if (this.userFence !== null && this.histories.has(projectId)) observed = { userFence: this.userFence, manifest: undefined };
+    else {
+      try {
+        observed = await this.userTransaction(async (transaction, userFence) => {
+          try { return { userFence, manifest: await this.manifest(transaction, projectId, userFence) }; }
+          catch (error) {
+            // A malformed optional manifest cannot provide history evidence. The
+            // normal cache path retains its strict validation and recovery rules.
+            if (error instanceof TaskCacheError && error.category === "corrupt") return { userFence, manifest: undefined };
+            throw error;
+          }
+        }, signal);
+      } catch (error) {
+        if (!(error instanceof TaskCacheError) || error.category !== "storage" || this.userFence === null) throw error;
+        observed = { userFence: this.userFence, manifest: undefined };
+      }
+    }
+    if (scopeRevision !== this.getDirectRevision(projectId)) return released();
+    if (!this.histories.has(projectId)) this.histories.set(projectId, { epoch: observed.manifest?.epoch ?? null, generation: 0 });
+    const fence = { userId: this.userId, userFence: observed.userFence, projectId, taskId, scopeRevision,
+      historyGeneration: this.histories.get(projectId)!.generation, openingSequence, requestGeneration };
+    this.ticketOrders.set(fence, order);
+    return fence;
+  }
+  isTaskReadCurrent(fence: TaskReadFence, allowAuthPaused = false): boolean {
+    return !this.isInvalidated && (allowAuthPaused || !authRequestsPaused()) && !this.suspendedProjects.has(fence.projectId) && fence.userId === this.userId &&
+      fence.userFence === this.userFence && fence.scopeRevision === this.getDirectRevision(fence.projectId) &&
+      fence.historyGeneration === (this.histories.get(fence.projectId)?.generation ?? 0);
+  }
+  async verifyTaskRead(fence: TaskReadFence, signal: AbortSignal): Promise<boolean> {
+    await this.ready(signal);
+    if (!this.isTaskReadCurrent(fence)) return false;
+    await this.userTransaction(async (_transaction, userFence) => { if (userFence !== fence.userFence) return released(); }, signal);
+    return this.isTaskReadCurrent(fence);
+  }
+  getHistoryGeneration(projectId: string): number { return this.histories.get(projectId)?.generation ?? 0; }
+  captureTaskHistoryFence(projectId: string, taskId: string, openingSequence: number, requestGeneration: number): TaskReadFence | null {
+    if (this.isInvalidated || this.userFence === null || this.suspendedProjects.has(projectId)) return null;
+    return { userId: this.userId, userFence: this.userFence, projectId, taskId, scopeRevision: this.getDirectRevision(projectId),
+      historyGeneration: this.getHistoryGeneration(projectId), openingSequence, requestGeneration };
+  }
+  async getDirectHistoryTicket(fence: TaskReadFence, epoch: string, signal: AbortSignal): Promise<SyncTicket | null> {
+    await this.ready(signal);
+    if (!this.isTaskReadCurrent(fence) || canonicalId(epoch) !== epoch) return released();
+    const cacheRevision = this.getProjectRevision(fence.projectId);
+    const manifest = await this.userTransaction(async (transaction, userFence) => {
+      if (userFence !== fence.userFence) return released();
+      return this.manifest(transaction, fence.projectId, userFence);
+    }, signal);
+    if (!this.isTaskReadCurrent(fence) || cacheRevision !== this.getProjectRevision(fence.projectId)) return released();
+    if (manifest === undefined || manifest.state !== "active" || manifest.epoch !== epoch) return null;
+    return { userId: fence.userId, projectId: fence.projectId, userFence: fence.userFence, scopeRevision: cacheRevision,
+      cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt };
+  }
+  async observeHistory(ticket: SyncTicket | TaskReadFence, epoch: string, signal: AbortSignal): Promise<"current" | "retired"> {
+    if (canonicalId(epoch) !== epoch) return protocol();
+    await this.ready(signal);
+    if ("historyGeneration" in ticket && !await this.verifyTaskRead(ticket, signal)) return released();
+    if (ticket.userId !== this.userId || ticket.userFence !== this.userFence || this.suspendedProjects.has(ticket.projectId) ||
+      ("historyGeneration" in ticket ? !this.isTaskReadCurrent(ticket) : ticket.scopeRevision !== this.getProjectRevision(ticket.projectId))) return released();
+    const old = this.histories.get(ticket.projectId) ?? { epoch: null, generation: 0 };
+    const order = this.ticketOrders.get(ticket);
+    if (order === undefined || this.retiredEpochs.get(ticket.projectId)?.has(epoch) === true || old.epoch !== epoch && order < (this.historyOrders.get(ticket.projectId) ?? 0)) return released();
+    if (old.epoch === null || old.epoch === epoch) {
+      this.histories.set(ticket.projectId, { ...old, epoch });
+      this.historyOrders.set(ticket.projectId, Math.max(order, this.historyOrders.get(ticket.projectId) ?? 0));
+      return "current";
+    }
+    const projectId = ticket.projectId;
+    let retired = this.retiredEpochs.get(projectId);
+    if (retired === undefined) { retired = new Set(); this.retiredEpochs.set(projectId, retired); }
+    retired.add(old.epoch);
+    this.historyOrders.set(projectId, order);
+    this.histories.set(projectId, { epoch, generation: old.generation + 1 });
+    this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
+    this.directRevisions.set(projectId, this.getDirectRevision(projectId) + 1);
+    this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
+    this.historyPurgeEpochs.set(projectId, old.epoch);
+    const purge = this.ensureHistoryPurged(projectId);
+    this.emit({ projectId, historyChanged: true, cacheGenerationChanged: true });
+    await purge;
+    return "retired";
+  }
+  private ensureHistoryPurged(projectId: string): Promise<void> {
+    const active = this.historyPurges.get(projectId);
+    if (active !== undefined) return active;
+    const oldEpoch = this.historyPurgeEpochs.get(projectId);
+    if (oldEpoch === undefined) return Promise.resolve();
+    const purge = this.userTransaction(async (transaction, userFence) => {
+      const manifest = await this.manifest(transaction, projectId, userFence);
+      if (manifest !== undefined && manifest.epoch !== null && manifest.epoch !== oldEpoch) return;
+      await this.clearProjectRows(transaction, projectId);
+      await transaction.objectStore("projects").put(invalidated(this.userId, projectId, userFence));
+    }, this.signal).then(() => {
+      if (this.historyPurgeEpochs.get(projectId) === oldEpoch) this.historyPurgeEpochs.delete(projectId);
+      this.hint(projectId);
+    }).finally(() => { if (this.historyPurges.get(projectId) === purge) this.historyPurges.delete(projectId); });
+    this.historyPurges.set(projectId, purge);
+    return purge;
   }
   async applySync(ticket: SyncTicket, response: TaskSync, signal: AbortSignal): Promise<{ readonly project: CachedProject; readonly changed: boolean; readonly changedTaskIds: readonly string[] }> {
     await this.ready(signal);
@@ -732,6 +959,7 @@ export class TaskCacheScope {
     return result;
   }
   getProjectRevision(projectId: string): number { return this.projectRevisions.get(projectId) ?? 0; }
+  private getDirectRevision(projectId: string): number { return this.directRevisions.get(projectId) ?? 0; }
   getObservedHistoryTicket(projectId: string): SyncTicket | null {
     projectId = requestId(projectId);
     if (this.isInvalidated || authRequestsPaused() || !this.canPreviewProject(projectId)) return null;
@@ -747,6 +975,7 @@ export class TaskCacheScope {
     projectId = requestId(projectId);
     if (this.isInvalidated) return;
     this.projectRevisions.set(projectId, (this.projectRevisions.get(projectId) ?? 0) + 1);
+    this.directRevisions.set(projectId, this.getDirectRevision(projectId) + 1);
     this.suspendedProjects.add(projectId);
     if (!this.revokedGenerations.has(projectId)) this.revokedGenerations.set(projectId, new Set());
     this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
@@ -755,6 +984,7 @@ export class TaskCacheScope {
   resumeProject(projectId: string): void {
     if (!this.suspendedProjects.delete(projectId)) return;
     this.projectRevisions.set(projectId, (this.projectRevisions.get(projectId) ?? 0) + 1);
+    this.directRevisions.set(projectId, this.getDirectRevision(projectId) + 1);
     this.emit({ projectId, accessRestored: true });
   }
   getSummaryVersion(projectId: string, taskId: string): bigint | null {

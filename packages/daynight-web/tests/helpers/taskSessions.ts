@@ -2,15 +2,19 @@ import type { GraphTask, TaskDetail, TaskGraph, TaskProperties } from '../../src
 import { createTaskCacheScope, type TaskCacheScope } from '../../src/features/task-cache/TaskCacheProvider';
 import type { CachedProject } from '../../src/features/task-cache/project-cache';
 import { graphFixture } from './taskDetail';
-import { taskSyncEpoch, taskSyncFromGraph, TEST_VIEWER_ID } from './taskSync';
+import { taskSyncEpoch, taskSyncFromGraph, TEST_VIEWER_ID, beginFixtureWorld } from './taskSync';
 
 export const admitTaskGraph = async (scope: TaskCacheScope, graph: TaskGraph, { versionForTask, propertiesForTask, epoch = taskSyncEpoch(graph.project.id) }: {
   readonly versionForTask: (task: GraphTask) => bigint;
   readonly propertiesForTask?: (task: GraphTask) => TaskProperties;
   readonly epoch?: string;
 }): Promise<CachedProject> => {
-  const ticket = await scope.beginSync(graph.project.id, scope.signal);
-  const sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
+  let ticket = await scope.beginSync(graph.project.id, scope.signal);
+  let sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
+  if (await scope.observeHistory(ticket, sync.epoch, scope.signal) === 'retired') {
+    ticket = await scope.beginSync(graph.project.id, scope.signal);
+    sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
+  }
   return (await scope.applySync(ticket, sync, scope.signal)).project;
 };
 
@@ -18,6 +22,8 @@ export const createTaskSessionWorld = ({ viewerId = TEST_VIEWER_ID, onIdentityMi
   readonly viewerId?: string;
   readonly onIdentityMismatch?: () => void;
 } = {}) => {
+  const epoch = crypto.randomUUID();
+  beginFixtureWorld(epoch);
   const scope = createTaskCacheScope({ userId: viewerId, onIdentityMismatch });
   const projects = new Map<string, { readonly epoch: string; readonly details: Map<string, TaskDetail> }>();
   return {
@@ -26,7 +32,7 @@ export const createTaskSessionWorld = ({ viewerId = TEST_VIEWER_ID, onIdentityMi
       const changedProjects = new Set<string>();
       for (const detail of details) {
         let project = projects.get(detail.projectId);
-        if (project === undefined) { project = { epoch: crypto.randomUUID(), details: new Map() }; projects.set(detail.projectId, project); }
+        if (project === undefined) { project = { epoch, details: new Map() }; projects.set(detail.projectId, project); }
         project.details.set(detail.id, detail);
         changedProjects.add(detail.projectId);
       }

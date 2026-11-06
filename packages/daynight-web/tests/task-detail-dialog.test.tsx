@@ -10,7 +10,7 @@ import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/task-detail/TaskDetailDialog';
 import { dialogFocusables } from '../src/features/task-detail/focus';
 import { buildGraphIndex } from '../src/features/task-graph/model';
-import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { TEST_VIEWER_ID, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
 import { createTaskSessionWorld } from './helpers/taskSessions';
 
 let world: ReturnType<typeof createTaskSessionWorld>;
@@ -48,7 +48,7 @@ const snapshot = (tasks = [detail()], revision = 1): GraphSnapshot => {
   snapshotDetails.set(value, tasks);
   return value;
 };
-const response = (task: TaskDetail) => new Response(stringifyApiJson(task), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+const response = (task: TaskDetail) => new Response(stringifyApiJson(task), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json', 'Daynight-Task-Epoch': fixtureTaskEpoch(task.projectId) }) });
 const failure = (code = 'internal_error') => new Response(JSON.stringify({ error: {
   code, message: 'private database password', requestId: 'task-detail-request-123',
 } }), { status: code === 'not_found' ? 404 : 500, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
@@ -67,10 +67,10 @@ const props = (changes: Partial<TaskDetailDialogProps> = {}): TaskDetailDialogPr
   onRestoreFocus: () => trigger.focus(), onRefreshGraph: vi.fn(), ...changes,
 });
 const open = async (options = props(), locale: 'en' | 'zh-CN' = 'zh-CN') => {
-  await world.sync(snapshotDetails.get(options.snapshot)!);
+  await world.sync(snapshotDetails.get(options.snapshot!)!);
   const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale, container: host, taskCache: { scope: world.scope } });
   return { ...view, rerender: async (ui: ReactElement<TaskDetailDialogProps>) => {
-    await world.sync(snapshotDetails.get(ui.props.snapshot)!);
+    await world.sync(snapshotDetails.get(ui.props.snapshot!)!);
     view.rerender(ui);
   } };
 };

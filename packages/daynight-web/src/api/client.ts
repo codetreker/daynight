@@ -224,6 +224,23 @@ export type TaskResponseAdmission = {
   readonly onWriteConfirmed?: () => void;
 };
 
+export type TaskObservation = { readonly epoch: string; readonly detail: TaskDetail };
+
+// The epoch and body are one server snapshot; neither a cached epoch nor a
+// search result can substitute for this receipt.
+export const getTaskObservation = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission, correlationId?: string): Promise<TaskObservation> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json", ...(correlationId === undefined ? {} : { "X-Request-ID": correlationId }) } });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
+  if (response.status !== 200) throw new ApiError("protocol", response.status);
+  const header = response.headers.get("Daynight-Task-Epoch");
+  if (header === null || canonicalId(header) !== header) throw new ApiError("protocol", response.status);
+  const detail = await json(response, signal, (data) => parseTaskDetail(data, project, task));
+  return { epoch: header, detail };
+};
+
 export const getTask = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission, correlationId?: string): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);

@@ -7,7 +7,7 @@ import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), setTaskAssignedTo: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn(), withdrawWorkerClaim: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskAssignedTo: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn(), withdrawWorkerClaim: vi.fn() }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const task = '20000000-0000-4000-8000-000000000001';
 const person = '30000000-0000-4000-8000-000000000001';
@@ -131,13 +131,14 @@ describe('assignment admission through authentication and project histories', ()
     if (submitted) await waitFor(() => expect(writes).toHaveBeenCalledOnce()); const world = worlds.get(sessions)!; void world.scope.invalidateScope(); resume?.(); pending.resolve(assigned()); await flush();
     expect(world.scope.isInvalidated).toBe(true); expect(writes).toHaveBeenCalledTimes(submitted ? 1 : 0); expect(reads).toHaveBeenCalledOnce(); expect(sessions.snapshot(project, task).detail?.assignedTo).not.toBe(person);
   });
-  it('revokes project access for a trusted assignment 404 before paused identity admission resumes', async () => {
+  it('withdraws the assignment detail immediately and requests access revalidation after admission resumes', async () => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const result = deferred<Response>(); const actual = await vi.importActual<typeof import('../src/api/client')>('../src/api/client');
+    sessions.subscribe(project, task, () => {}); const notices: string[] = []; world.scope.subscribe((event) => { if (event.taskNotFound) notices.push(event.projectId); });
     vi.stubGlobal('fetch', vi.fn().mockReturnValueOnce(result.promise)); writes.mockImplementationOnce(actual.setTaskAssignedTo); sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     const resume = pause(); const revoke = vi.spyOn(world.scope, 'revokeProject');
     result.resolve(new Response(JSON.stringify({ error: { code: 'not_found', message: 'Project access withdrawn', requestId: 'assignment-denied' } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }));
-    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(revoke).toHaveBeenCalledOnce(); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'assignment-denied' }); expect(reads).toHaveBeenCalledOnce();
-    resume(); expect(world.scope.getAuthorizedProject(project)).toBeNull(); expect(writes).toHaveBeenCalledOnce();
+    await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull()); expect(revoke).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).error).toMatchObject({ status: 404, code: 'not_found', requestId: 'assignment-denied' }); expect(reads).toHaveBeenCalledOnce();
+    expect(notices).toEqual([]); resume(); await waitFor(() => expect(notices).toEqual([project])); expect(world.scope.getAuthorizedProject(project)).not.toBeNull(); expect(writes).toHaveBeenCalledOnce();
   });
   it('does not let an old history assignment 404 revoke its replacement project', async () => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise); sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce());

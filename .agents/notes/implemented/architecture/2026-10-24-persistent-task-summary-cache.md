@@ -73,15 +73,13 @@ every mounted project view to complete its own authenticated sync before private
 cache publication, using that response as both access confirmation and a clock
 receipt. The [local summary display decision](2026-10-27-project-cache-display.md)
 separates validated summary visibility from online detail admission; detail
-bodies and writes retain the successful mount-local sync requirement.
+bodies and writes from summaries retain the successful mount-local sync requirement. The [direct observation decision](2026-11-06-task-direct-observation.md) separately admits an opening from a live Task GET.
 The foreground identity gate also covers durable reads and positive content
 publication. Trusted negative access withdrawal immediately removes admission
 even while the gate is paused; its persistence still waits for the gate. A valid
 different response principal invalidates the scope and immediately releases the
 old authenticated UI. An absent or malformed principal is a protocol error;
-only verified same-user not_found responses can revoke project content. Task
-reads revoke the project when their task was known at launch; unknown IDs remain
-local errors. Captured user fence/generation checks reject stale revocation before
+only verified same-user not_found responses can revoke project content. Task not_found withdraws that detail and revalidates project access; only an established project denial revokes the project. Captured user fence/generation checks reject stale revocation before
 clearing content. Access withdrawal synchronously retires memory admission, then
 scope-owned CAS cleanup invalidates the matching durable generation. Cleanup
 failure keeps the denial until Retry and fresh online project admission. Logout
@@ -136,8 +134,7 @@ separate content, freshness and eviction policy to the same scope.
 ## Consequences
 
 Navigation retains a durable summary base. After identity verification, validated
-summaries can render during background synchronization; online project admission
-remains mandatory for detail bodies and task writes. Each apply can read and
+summaries can render during background synchronization; online project admission remains mandatory for summary-backed detail bodies and writes; direct observations use the separate live admission. Each apply can read and
 validate the full bounded local set; its local work is not guaranteed proportional
 to the changed rows.
 The original summary format omitted properties to reduce repeated graph/list

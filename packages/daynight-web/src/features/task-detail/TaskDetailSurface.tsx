@@ -18,6 +18,8 @@ import type { GraphSnapshot } from '../projects/useTaskGraph';
 import { isTaskStale } from './freshness';
 import { dialogFocusables } from './focus';
 import { useTaskDetail } from './useTaskDetail';
+import { useTaskRelations } from './useTaskRelations';
+import type { TaskObservationInput } from './TaskDetailSession';
 import { TaskStatusFeedback, TaskStatusMenu } from './TaskStatus';
 import { matchesAgentPermissionReview, TaskAgentPermissionConfirmation, TaskAgentPermissionFeedback, TaskAgentPermissionSwitch, type AgentPermissionConfirmation } from './TaskAgentPermission';
 import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } from './TaskStatusConfirmation';
@@ -53,7 +55,8 @@ type TaskDetailCommonProps = {
   readonly detailUrl?: (taskId: string, navigation: TaskDetailNavigation) => string;
   readonly projectId: string;
   readonly taskId: string;
-  readonly snapshot: GraphSnapshot;
+  readonly snapshot?: GraphSnapshot | null;
+  readonly observation?: TaskObservationInput;
   readonly graphError?: unknown;
   readonly onSelectTask: (id: string) => void;
   readonly onRefreshGraph: () => void;
@@ -95,7 +98,7 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
   </>;
 };
 
-const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
+const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
   const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
   const requestClose = () => { if (onClose !== undefined) browserNavigation().requestAction(onClose); };
@@ -107,10 +110,18 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
   const Surface = modal ? 'section' : 'main';
   const { messages, format } = useI18n();
   const m = messages.inspection.detail;
-  const task = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
+  const input: TaskObservationInput = observation ?? (snapshot === null ? { kind: 'direct' } : { kind: 'project-summary', revision: snapshot.revision, task: snapshot.index.nodes.get(taskId) });
+  const task = useTaskDetail(projectId, taskId, input);
+  const direct = input.kind === 'direct';
+  const relations = useTaskRelations(projectId, taskId, task.historyGeneration, direct && task.detail !== null && !task.requiresFreshRead);
+  const nodes = direct ? relations.relations?.nodes : snapshot?.index.nodes;
+  const refreshRelations = direct ? relations.refresh : onRefreshGraph;
   const { detail, status, error, retry } = task;
   const readingScope = useRef<string | null>(null);
-  if (detail !== null) readingScope.current = scope;
+  const readingIdentity = `${scope}/${task.historyGeneration}`;
+  if (readingScope.current !== null && readingScope.current !== readingIdentity) readingScope.current = null;
+  if (detail !== null) readingScope.current = readingIdentity;
+  if (error instanceof ApiError && (error.code === 'not_found' || error.code === 'task_deleted')) readingScope.current = null;
   const worker = detail === null ? undefined : readWorkerClaim(detail.properties);
   const hasWebSession = useRef(false);
   if (detail !== null) hasWebSession.current = worker !== null && worker !== undefined;
@@ -241,16 +252,16 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
 
   useLayoutEffect(() => {
     if (modal && !confirmationOpen && !threadDetailsOccupied.current && sessionFullscreenRef.current === null && !dialogRef.current!.contains(document.activeElement)) closeRef.current!.focus();
-  }, [taskId, status, error, snapshot.revision, confirmationOpen]);
+  }, [taskId, status, error, snapshot?.revision, confirmationOpen]);
 
-  const snapshotNode = snapshot.index.nodes.get(taskId);
+  const snapshotNode = snapshot?.index.nodes.get(taskId);
   const retainedDetail = detail !== null && (error !== null || task.requiresFreshRead);
-  const stale = task.graphMismatch || detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail);
+  const stale = !direct && (task.graphMismatch || detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail));
   const readNoticeEvent = useMemo(() => ({}), [error, retainedDetail]);
   const staleNoticeEvent = useMemo(() => ({}), [stale]);
-  const successors = snapshot.index.successors.get(taskId);
+  const successors = direct ? relations.relations?.successors : snapshot?.index.successors.get(taskId);
   const relation = (id: string, external: boolean) => {
-    const node = snapshot.index.nodes.get(id);
+    const node = nodes?.get(id);
     const title = node === undefined ? id : `${node.titlePreview}${node.titleTruncated ? '…' : ''}`;
     const kind = external ? m.externalDependency : m.ordinaryDependency;
     return (
@@ -304,7 +315,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
                     <div className="task-detail-state-controls">
                       <div className="task-detail-status-assignee">
                         <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />
-                        <TaskAssigneeSelect projectId={projectId} detail={detail} disabled={!task.canSetAssignedTo} owner={dialogRef} resetKey={`${taskId}/${fullscreen.active}`} onSelect={(assignedTo) => task.setAssignedTo(assignedTo, detail.version)} />
+                        <TaskAssigneeSelect direct={direct} projectId={projectId} detail={detail} disabled={!task.canSetAssignedTo} owner={dialogRef} resetKey={`${taskId}/${task.historyGeneration}/${fullscreen.active}`} onSelect={(assignedTo) => task.setAssignedTo(assignedTo, detail.version)} />
                       </div>
                       <TaskPlatformSelect detail={detail} disabled={!task.canSetRequiredPlatform} describedBy={platformFeedbackId}
                         onReview={(requiredPlatform) => requestConfirmation({ kind: 'requiredPlatform', detail, requiredPlatform })} />
@@ -322,7 +333,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
               </div>
             </>
           )}
-          {readingScope.current === scope && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} available={detail !== null} description={detail?.description ?? ''} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} available={detail !== null} renderMarkdown={renderMarkdown} confirmationOwner={dialogRef} confirmationFallback={titleRef} onConfirmationChange={setStepConfirmationOpen} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(worker !== null && worker !== undefined ? { session: (active: boolean) => <TaskSessionHost mode={worker.agentControlMode} projectId={projectId} taskId={taskId} claimId={worker.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : detail === null && hasWebSession.current ? { session: () => null } : {})} sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection}>{render}</ManagedSessionRecords>} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
+          {readingScope.current === readingIdentity && status !== 'deleted' && access.status !== 'unavailable' && !viewer.isInvalidated && <TaskDetailReading key={`${readingIdentity}`} projectId={projectId} taskId={taskId} available={detail !== null} description={detail?.description ?? ''} steps={(active, renderMarkdown) => <TaskStepsPanel projectId={projectId} taskId={taskId} active={active} available={detail !== null} renderMarkdown={renderMarkdown} confirmationOwner={dialogRef} confirmationFallback={titleRef} onConfirmationChange={setStepConfirmationOpen} />} discussion={(active: boolean) => <TaskDiscussion projectId={projectId} taskId={taskId} active={active} parentUnavailable={isThreadScopeLoss(error)} owner={dialogRef} onDetailsOpenChange={(open) => { threadDetailsOccupied.current = open; }} />} {...(worker !== null && worker !== undefined ? { session: (active: boolean) => <TaskSessionHost direct={direct} mode={worker.agentControlMode} projectId={projectId} taskId={taskId} claimId={worker.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : detail === null && hasWebSession.current ? { session: () => null } : {})} sessionRecords={(active, render, resetSelection) => <ManagedSessionRecords direct={direct} projectId={projectId} taskId={taskId} active={active} resetSelection={resetSelection}>{render}</ManagedSessionRecords>} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => detail === null ? null : <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className="task-detail-section" aria-label={m.description}>
@@ -332,6 +343,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
                     <TaskPullRequests pullRequests={readPullRequests(detail.properties)} />
                   </div>
                   <aside className="task-detail-aside" aria-label={m.relationsMetadata}>
+                    {direct && relations.error !== null && <div role="alert"><ProjectGraphErrorDetail error={relations.error} /><button className="button" type="button" onClick={refreshRelations}>{m.retry}</button></div>}
                     <section className="task-detail-section" aria-label={m.dependencies}>
                       <h4>{m.countedHeading({ label: m.dependencies, count: format.number(detail.dependsOn.length) })}</h4>
                       {detail.dependsOn.length === 0 ? <p className="task-detail-description">{m.noDependencies}</p> : <ul className="task-detail-relations">{detail.dependsOn.map((id) => relation(id, detail.externalDependsOn.includes(id)))}</ul>}
@@ -341,10 +353,11 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
                       {detail.blockedBy.length === 0 ? <p className="task-detail-description">{m.noBlockers}</p> : <ul className="task-detail-relations">{detail.blockedBy.map((id) => relation(id, detail.externalDependsOn.includes(id)))}</ul>}
                     </section>
                     <section className="task-detail-section" aria-label={m.successors}>
-                      <h4>{successors === undefined ? m.successors : m.countedHeading({ label: m.successors, count: format.number(successors.length) })}</h4>
+                      <h4>{direct || successors === undefined ? m.successors : m.countedHeading({ label: m.successors, count: format.number(successors.length) })}</h4>
+                      {direct && successors !== undefined && <p className="task-detail-description">{m.successorsPartial}</p>}
                       {successors === undefined
                         ? <p className="task-detail-description">{m.successorsMissing}</p>
-                        : successors.length === 0 ? <p className="task-detail-description">{m.noSuccessors}</p> : <ul className="task-detail-relations">{successors.map((id) => relation(id, snapshot.index.nodes.get(id)!.externalDependsOn.includes(taskId)))}</ul>}
+                        : successors.length === 0 ? direct ? null : <p className="task-detail-description">{m.noSuccessors}</p> : <ul className="task-detail-relations">{successors.map((id) => relation(id, nodes?.get(id)?.externalDependsOn.includes(taskId) ?? false))}</ul>}
                     </section>
                     <dl className="task-detail-section task-detail-metadata">
                       <div><dt>{m.created}</dt><dd><time dateTime={detail.createdAt}>{format.dateTime(detail.createdAt)}</time></dd></div>
@@ -375,7 +388,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose,
             <button className="button" type="button" onClick={onRefreshGraph}>{m.refreshGraph}</button>
           </div>
         </TaskDetailNotice>
-        <TaskDetailNotice key={`${scope}/graph`} active={graphError !== null} event={graphError} tone="error" recoverable>
+        <TaskDetailNotice key={`${scope}/graph`} active={!direct && graphError !== null} event={graphError} tone="error" recoverable>
           <div className="task-detail-graph-error" role="alert"><h2>{messages.workspace.project.refreshFailed}</h2><p>{messages.workspace.project.showingSnapshot}</p><ProjectGraphErrorDetail error={graphError} /><button className="button" type="button" onClick={onRefreshGraph}>{messages.workspace.project.retryRefresh}</button></div>
         </TaskDetailNotice>
         </TaskDetailNotifications>

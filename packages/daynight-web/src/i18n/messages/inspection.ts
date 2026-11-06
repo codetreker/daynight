@@ -188,6 +188,7 @@ export type InspectionMessages = {
     readonly noBlockers: string;
     readonly successors: string;
     readonly successorsMissing: string;
+    readonly successorsPartial: string;
     readonly noSuccessors: string;
     readonly created: string;
     readonly updated: string;
