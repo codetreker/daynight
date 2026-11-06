@@ -301,11 +301,20 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 	if class != BudgetControl && class != BudgetLarge {
 		return errors.New("invalid MCP tool registration")
 	}
-	return e.registerTool(tool, func(json.RawMessage) BudgetClass { return class }, handler, true)
+	return e.registerTool(tool, func(json.RawMessage) BudgetClass { return class }, handler)
 }
 
-// registerTool selects admission after schema validation and before materialization.
-func (e *Entry) registerTool(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, write bool) error {
+// registerTool selects admission after validation and preserves write completion facts.
+func (e *Entry) registerTool(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler) error {
+	return e.registerToolFor(tool, budget, handler, true)
+}
+
+// registerReadTool never classifies read-only snapshot completion as a write.
+func (e *Entry) registerReadTool(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler) error {
+	return e.registerToolFor(tool, budget, handler, false)
+}
+
+func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, write bool) error {
 	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || budget == nil {
 		return errors.New("invalid MCP tool registration")
 	}

@@ -112,7 +112,7 @@ func RegisterStepReadTools(e *Entry, steps stepReadOperations) error {
 	}
 	for _, tool := range tools {
 		name := tool.Name
-		err := e.registerTool(tool, func(raw json.RawMessage) BudgetClass {
+		err := e.registerReadTool(tool, func(raw json.RawMessage) BudgetClass {
 			var in stepReadInput
 			_ = json.Unmarshal(raw, &in)
 			if in.View == "full" {
@@ -131,7 +131,7 @@ func RegisterStepReadTools(e *Entry, steps stepReadOperations) error {
 				return listSteps(ctx, actor, steps, in)
 			}
 			return showStep(ctx, actor, steps, in)
-		}, false)
+		})
 		if err != nil {
 			return err
 		}
