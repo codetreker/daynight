@@ -761,36 +761,19 @@ Go 的 `installed_cli_task_attachment_workflow` 使用既有安装回执与实�
 任务资源。回执保存附件 path/size/SHA-256 与分页数量，所有 fixture 的清理 gate
 必须确认 `storageRootRemoved`。
 
-Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上让同一次安装的 CLI
-与页面操作同一批数据；图功能场景属于常规 CI，完整原生容量/超限矩阵由显式本地压力验收保留。
-完整上下文交付另加入 `capacity-external`，原生容量/超限共五个场景；机制与统计
-由[看板设计](daynight-web.md#验证与-ci)拥有。
-另有 `project-view-tabs` 验证项目内任务视图；[双语界面](daynight-web-i18n.md)增加三个功能场景，
-[三状态架构](daynight-task-status.md)拥有当前状态设置。状态、冲突、恢复与组合场景只允许
-登记资源和精确次数的 PUT status；附件写入保持自己的 fixture-scoped allowlist。
-当前常规严格 inventory 为原生、容器各 29 个功能场景，共 58 个；显式本地压力模式另加五项原生容量/超限，共 63 个结果。任务描述阅读、鉴权、设置、
-许可和计时场景仍保有独立的写入边界。
+Web 模块通过组件、状态和 API 测试验证附件交互；独立浏览器 fixture 的受控响应不
+证明真实服务或安装 CLI 的组合行为。Go built-binary E2E 的
+`TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation` 使用真实
+认证 HTTP 与隔离 PostgreSQL：1 MiB 上传正文未完成时成员撤销先返回 204、新访问
+返回 404，已准入上传再以 201 完成，并核对字节和资源清理。
 
-附件场景与
-`language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE，后者分别验证
-语言切换时的浏览状态保持及挂起写入的状态和次数；组件测试以受控语言变化验证在途
-操作的状态和唯一请求。`refresh-staleness` 仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态与几何保留。描述阅读、其他图场景、任务视图及其他语言场景继续 GET/HEAD。
-完整 Chromium channel `chromium` 对 PDF 的证明来自 iframe 实际
-compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通区域分组，独立计算
-各个实心色块的像素数、边界和密度，并在延伸到 frame 右半区的页面候选中检查
-最大的色块。此位置规则基于 fixture 与固定查看器布局，排除仅缩略图已绘制的情形；
-独立边界也使单独绘制的缩略图不会稀释页面色块的密度。成功 PNG 与区域指标保留在绘制回执中，
-匹配阈值的选择依据记录在[组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。成功状态、load 和固定等待均不能代替绘制。独立阅读验收另以真实滚轮、
-键盘及多页 PDF 的末页专用绘制标记证明内容可读至末尾；私有查看器 DOM 只提供
-只读偏移诊断，不能替代真实输入和绘制。实际故障来自隔离数据库与存储文件，
-请求屏障仅控制时序，不伪造服务响应。判定与环境限制见
-[Web 验证说明](../../packages/daynight-web/README.md#production-browser-acceptance)。
-
-运行回执校验 Git SHA/dirty 标记及实际 tarball/entry 摘要；dirty 标记不是脏源码内容
-指纹。CI 继续要求干净 checkout 等于 `GITHUB_SHA`。浏览器、CLI 和辅助子进程/组均
-归本次 run 管理，失败或取消也必须清理。Web CI 完成功能生产浏览器及恢复后，
-再运行一次既有真实部署附件检查，保留配套备份恢复回执。所有通过结论须绑定
-对应实际运行的源码、产物及环境回执。
+原 native/container 浏览器 runner 及其附件、语言和容量场景已移除；此前相同 task
+文件的 CLI/Web 交叉字节比较、PDF compositor 色块、真实滚轮与键盘阅读及故障结果
+只属于其实际源码和环境，不能作为当前源码的自动检查或成功结论。验证 PDF 内容绘制
+仍需实际画面而非仅依据 MIME、load 或固定等待；验证真实服务、安装 CLI 和浏览器的
+完整路径需要各自来源、范围与清理证据。原组合验收的选择理由见
+[历史决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。
+当前 Web 命令和独立浏览器范围见[Web 验证说明](../../packages/daynight-web/README.md#independent-browser-checks)。
 
 本方案没有新增 MCP 或模型工具定义，模型工具 schema 与 token 预算不适用。
 

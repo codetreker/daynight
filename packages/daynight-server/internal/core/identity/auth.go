@@ -149,6 +149,10 @@ func (s *Identity) User(ctx context.Context, dao store.IdentityDAO, p model.Prin
 	u, facts, err := dao.IdentityUser(ctx, p.UserID)
 	return u, facts, authLookupError(err)
 }
+func (s *Identity) PersonalTeam(ctx context.Context, dao store.IdentityDAO, p model.Principal) (store.PersonalTeamFacts, error) {
+	facts, err := dao.IdentityPersonalTeam(ctx, p.UserID)
+	return facts, authLookupError(err)
+}
 func ValidateSession(p model.Principal) error {
 	if p.Kind != model.SessionCredential {
 		return forbidden()

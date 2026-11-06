@@ -652,9 +652,9 @@ Web validation runs typecheck, production build, controlled-fetch UI tests,
 isolated deployment lifecycle fixtures and an exact statement gate strictly
 above 90%. Quality independently enumerates all product TypeScript/TSX files and
 publishes raw counters plus a relative source manifest. When
-[CI selection](#ci-selection) selects Web, quality and both browser shards
-contribute their required results to the final `checks` job; existing root CLI
-commands retain their scope.
+[CI selection](#ci-selection) selects Web, the quality job contributes its
+required result to the final `checks` job; existing root CLI commands retain
+their scope.
 
 For a disposable full-stack HTTP target, run a command through
 `bash deployment/dev-ci/run.sh <command> [args...]`; it receives
@@ -662,16 +662,13 @@ For a disposable full-stack HTTP target, run a command through
 containers, volume, network and image tag after completion, failure or cancellation,
 and records cleanup failures.
 
-`pnpm web:acceptance` builds production UI and a native Go executable, creates an
-owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. After shared CLI preparation, it overlaps forty-two native functional
-workflows with the same container workflows, then requires complete target and
-shared CLI cleanup. The explicit local
-`pnpm web:acceptance:stress` command adds the fixed native capacity cases after
-those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
-Playwright Chromium. The
-[web README](../packages/daynight-web/README.md#production-browser-acceptance) owns
-browser setup, required gates and receipt interpretation.
+Independent Playwright suites under `packages/daynight-web/tests/navigation/`
+can be run with their own configuration after installing Chromium. For example,
+`pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/project-transfer-playwright.config.ts`
+checks the production UI against controlled API responses. The
+[Web guide](../packages/daynight-web/README.md#independent-browser-checks) lists
+the relevant checks and their limits. These fixtures do not establish a real
+server, installed-CLI or hosted-CI result.
 
 ## Local stress validation
 
@@ -685,12 +682,11 @@ archive, rendering and decoded-byte workloads use explicit local entrypoints:
 | Installed CLI production byte budgets | `pnpm test:stress:budgets` | Requires the server validation prerequisites and isolated `DAYNIGHT_TEST_DATABASE_URL`; writes `.tmp/project-task-stress-evidence.json` |
 | Go query, archive and repeated-write checks | `pnpm server:test:stress` | Requires isolated PostgreSQL and the server test environment; invokes the explicit stress-tagged packages with race detection |
 | Web graph/model/geometry scale checks | `pnpm web:test:stress` | Selects Web `.stress.ts` files with `vitest.stress.config.ts` |
-| Production browser capacity matrix | `pnpm web:acceptance:stress` | Uses the production browser prerequisites and adds five native capacity/limit scenarios with their original measurements and budgets |
 
 The stress configs, raw workload entrypoints and Go stress tests reject a
 nonempty `CI` environment before creating stress fixtures. Ordinary Go discovery
 omits files with the `stress` build tag; ordinary Vitest discovery omits
-`.stress.ts` files, and ordinary Playwright discovery excludes the capacity spec.
+`.stress.ts` files. Independent browser configurations select their own fixtures.
 The package-local commands are documented by their owners. From the server
 module, `bash scripts/stress.sh` runs its query, archive and repeated-write
 workloads; `bash scripts/check.sh --stress-budgets` selects the installed CLI's
@@ -699,16 +695,9 @@ four full-byte probes in coverage validation and then runs the complete E2E suit
 Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
-claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-local functional mode requires forty-two scenarios per target (84 total);
-CI partitions that inventory into disjoint twenty-one-case selections per
-target. Shard receipts additionally identify `shard` and `selection`, and the
-final gate requires their complete canonical union. Stress mode remains local
-and unsharded, adds five native capacity scenarios (47 native / 42 container,
-89 total) and `native/capacity/performance.json`. Both local modes retain strict
-source/browser identity, combined authentication and owned-resource cleanup;
-CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
-they do not establish hosted PR latency.
+claiming CI execution. Web graph stress remains local and does not provide a
+production browser capacity result. Local measurements prove only their recorded
+source and host; they do not establish hosted PR latency.
 
 The [local stress decision](../.agents/notes/archived/testing/2026-11-03-local-stress-suites.md)
 records the workload split and retained correctness guarantees.
@@ -845,8 +834,7 @@ their `definition.ts` files remain server inputs because the registry imports
 definitions at startup. Other CLI source conservatively selects both Go jobs,
 including the shared startup code and project/task/authentication commands used
 by installed-CLI acceptance. The browser-consumed `src/api/` and `src/session/`
-trees and exact `src/platform/text.ts` path additionally select Web quality and
-browser validation. Changes to these command-loading or shared-code relationships
+trees and exact `src/platform/text.ts` path additionally select Web quality. Changes to these command-loading or shared-code relationships
 must keep the selector's ownership rules aligned with the actual imports.
 
 For a modified CLI `package.json`, detection reads the committed merge-base and
@@ -883,26 +871,18 @@ modules and unclassified patches select all jobs until their consumers are
 explicitly assigned. The [server input decision](../.agents/notes/archived/testing/2026-11-04-server-ci-input-selection.md)
 records the dependency boundary and its maintenance cost.
 
-Selected jobs keep their ordinary functional checks, coverage thresholds,
-timeouts and cleanup requirements. Stress workloads have explicit local-only
-entrypoints and are excluded from routine CI selection. The Go coverage and E2E
-jobs each build real Web assets and install the CLI; each Web browser shard
-builds and exercises its own Go service and production deployment. Both server jobs use the
-same server selector and prepare independent PostgreSQL and UniAuth resources.
-The same Web selector enables quality and both browser matrix entries; all are required by the final gate. The Ubuntu shell-completion and Web
-browser jobs select the
-official HTTPS Ubuntu archive and security services before package preparation.
-Their shared command changes only the runner's referenced mirror list; signed
-source stanzas and package indices remain intact. An unexpected source layout
-fails explicitly. The [mirror decision](../.agents/notes/archived/testing/2026-10-22-ubuntu-package-mirrors.md)
-records the provisioning failure and the retained acceptance limits.
-Each native phase builds current source for its own validation. Linux/Windows
-ordinary and installed phases use independent jobs; macOS shares checkout and
-dependency setup, then retains a separate build for each serial phase. The
-separate runtime compatibility matrix checks
-the packed CLI installation across the supported Node.js range. The Web selector
-enables `verify-web-quality` and two `verify-web` matrix entries, each with a
-20-minute bound. Shared workflow changes retain all-module selection.
+Selected jobs retain their functional checks, coverage thresholds, timeouts and
+cleanup requirements. Stress workloads use explicit local-only entrypoints.
+The Go coverage and E2E jobs each build real Web assets and install the CLI,
+using independent PostgreSQL and UniAuth resources. The Web selector enables
+`verify-web-quality`; independent Playwright fixtures are not a selected CI
+browser matrix. The Ubuntu shell-completion job selects the official HTTPS
+Ubuntu archive and security services before package preparation. The
+[mirror decision](../.agents/notes/archived/testing/2026-10-22-ubuntu-package-mirrors.md)
+records the provisioning failure and retained limits. Linux/Windows ordinary
+and installed CLI phases use independent jobs; macOS shares checkout and
+setup, then retains a separate build for each serial phase. The runtime matrix
+checks packed CLI compatibility across supported Node.js versions.
 
 The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness,
 the ordinary Vitest/V8 suite and the strict statement checker serially. Harness
@@ -916,100 +896,23 @@ The [worker capacity decision](../.agents/notes/archived/testing/2026-10-28-web-
 calibrates that setting for the dedicated public standard Linux runner's four
 CPUs; it does not change inputs, assertions or coverage gates.
 
-Each browser entry invokes `browser --shard=1/2` or `browser --shard=2/2`, installs
-pinned Chromium/Linux dependencies under the existing 600-second bound, and
-builds its own real native and container deployments. Case selection uses
-`--fully-parallel --workers=1 --retries=0 --shard=i/2`; every database still runs
-one worker serially. Complete and selected discovery use the same functional
-arguments as execution and the canonical scenario inventory. Current selections
-contain twenty-one cases each and jointly cover all forty-two scenarios per target. The selected IDs and shard identity remain in the existing run evidence.
-The container callback reads its validated source/run-bound parent selection.
+The Go server E2E suite owns
+`TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation`.
+Its built-binary fixture uses real authenticated HTTP and isolated PostgreSQL to
+verify that member removal and new-access refusal occur while an admitted 1 MiB
+upload remains incomplete, followed by its successful completion and cleanup.
+Standalone Web Playwright fixtures exercise UI behavior against controlled API
+responses and retain their own cleanup; they do not replace that service proof.
+The previous native/container Web combined runner and browser CI matrix were
+removed. Their results remain evidence only for their recorded sources and do not
+prove the current revision.
 
-Within each entry, native and container preparation overlap. Once native
-preparation has installed the shared CLI, an atomic source/run-bound permission
-releases the container functional browser alongside the native functional
-browser. Its permission wait remains 900 seconds. Each phase has a separate
-private profile root outside uploaded artifacts. Command wrappers require
-owned groups to stop after settlement; failures and cancellation still fail.
-Both targets drain before run-wide CLI recovery, preserving active commands and
-credentials in the other target. The
-[functional target decision](../.agents/notes/archived/testing/2026-11-04-web-functional-target-overlap.md) records the rationale for those isolation constraints.
-
-Chromium installation completes before CI starts acceptance. A validated optional
-navigation request in the existing source/run receipt makes the container callback
-run serial navigation alongside its functional browser, after permission and
-installed-CLI validation. Both branches drain before combined-authentication
-restart and callback exit, keeping network teardown outside navigation. Their
-hosts, output directories, profiles and API fixtures remain separate. Navigation
-command environments omit the production browser-ownership marker while retaining
-browser-channel and tool settings. Navigation
-command cancellation uses a one-second escalation grace inside the callback's
-outer termination grace, preserving verification deadlines. The
-[browser job scheduling decision](../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
-owns cancellation, concurrency and measurement limits.
-
-Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
-ten-check combined-authentication journeys and the existing real attachment
-persistence/paired-backup-restoration check. That ownership derives from the
-shard identity. Browser authentication retains normal member removal, revoked
-resource/UI access, PAT lifecycle, restart and completed shared binary data.
-The paused-upload authorization race belongs to
-`TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation` in the Go server
-E2E suite, using its built-binary fixture, authenticated HTTP and isolated PostgreSQL.
-It verifies that member removal returns 204 and new access returns 404 before the
-1 MiB upload body is released, then the admitted upload returns 201 with matching bytes. The Web
-combined journey no longer runs paused upload IO, attachment database observation
-or the separate socket-disconnection scenario. Both entries retain functional,
-image identity, process, browser and resource cleanup requirements. Matrix `fail-fast` is false so the
-other entry can finish its diagnostics and cleanup after a failure.
-Local ordinary acceptance remains complete and unsharded; local stress adds
-capacity only after the same functional/container/browser/CLI barriers and
-rejects a shard combination before preparation.
-
-The existing final `checks` job first applies its general preceding-job gate.
-For selected Web validation it also requires quality and the browser matrix to
-succeed, checks out current source, sets up Node 24, and downloads exactly
-`daynight-web-summary-1` and `daynight-web-summary-2`. Each contains only the
-existing `runID/evidence.json`. The install-free report CLI validates two distinct
-run IDs, shard identities 1/2 and 2/2, clean passing receipts at `GITHUB_SHA` and
-the checkout tree, exact native/container inventories and cleanup, disjoint
-canonical coverage and both combined receipts only on shard 2. Missing,
-inconsistent or incomplete summaries fail the same required job. Full browser
-artifacts are `daynight-web-acceptance-1` and `daynight-web-acceptance-2`; coverage
-remains separate. Artifacts retain 30 days. The
-[two-shard decision](../.agents/notes/archived/testing/2026-11-04-web-ci-case-shards.md)
-records duplication costs and the limits of the estimated critical path.
-
-Quality checks retain their independent responsibility and command budgets;
-the [quality isolation decision](../.agents/notes/archived/testing/2026-10-26-web-quality-job-isolation.md)
-records that separation and its rationale. Standard
-Playwright JSON reports expose named phases for the largest journeys. Selected
-status journeys share worker-owned API/CLI credentials and a project while
-retaining fresh per-case API contexts, browser login and artifact validation;
-permission, platform and assignment share only a project. Worker restart or a
-different service origin cannot reuse another worker's prepared resources. The
-[shared preparation decision](../.agents/notes/archived/testing/2026-11-04-web-scenario-preparation.md) records the rationale for those resource lifetimes. The
-[Web validation guide](../packages/daynight-web/README.md#production-browser-acceptance)
-owns detailed receipt and wall-time interpretation rules.
-The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
-keyed by the server `go.sum`. Coverage validation expires Go test results before
-database and coverage checks; E2E uses `-count=1` to require fresh observations.
-Race instrumentation follows the PR/main/local policy described above.
-The web pipeline retains the full production build and unique image identity check. One packed/installed CLI is reused by the native
-and container browser attachment journeys. After the web pipeline and recorded
-resource recovery, Ubuntu browser shard 2 runs the existing real-container
-attachment persistence and paired-backup check once; its `.tmp/attachment-deployment-*/`
-evidence is archived with the browser/deployment evidence. The
-[acceptance pipeline decision](../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
-records the scheduling and phase-evidence choices; the
-[CI efficiency decision](../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
-retains the other workload optimizations and their limits.
-
-The final `checks` job uses `always()` to run after routing and application jobs,
-including failed or cancelled validation. Its general gate accepts only
-`success` or `skipped` from every preceding job. For selected Web validation,
-quality and the browser matrix must specifically succeed and both summaries
-must validate; a skipped selected job cannot establish complete Web acceptance.
+The Go coverage and E2E jobs restore module and compiler caches keyed by the
+server `go.sum`. Coverage invalidates Go test-result caches; E2E uses `-count=1`.
+Race instrumentation follows the PR/main/local policy described above. The
+final `checks` job uses `always()` and accepts only `success` or `skipped` from
+preceding jobs; selected Web quality must succeed. Missing or failed selected
+checks remain failures.
 
 Workflow concurrency groups runs by workflow and ref. A newer PR run cancels an
 older run for that PR. For `refs/heads/main`, `cancel-in-progress` is false: new
@@ -1046,8 +949,7 @@ job uploads `.tmp/validation-environment.json`, `.tmp/e2e-evidence.json`,
 tested source and platform, scenario outcomes and owned-resource cleanup. Shell
 completion has a separate `.tmp/completion-evidence.json` receipt. Match each
 receipt to its tested revision and execution scope; local or controlled receipts
-do not establish a successful current-source hosted run. Shared packed-CLI and
-Web source records require `source.gitTreeSha` from actual
+do not establish a successful current-source hosted run. Packed-CLI source records require `source.gitTreeSha` from actual
 `git rev-parse HEAD^{tree}`; Go acceptance records the same tree as root
 `gitTreeSha` and verifies it against the installed CLI. Commit, tree, dirty state,
 package and artifact identities must agree at handoff and recovery. Missing or
@@ -1056,11 +958,12 @@ it does not fingerprint dirty changes or prove an executed gate, platform result
 or reviewer decision. A failed scenario or cleanup remains a failure even when
 other results pass.
 
-The [lifecycle cross-layer acceptance decision](../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md) records the rationale for the same-data packed-CLI/production-Web journey, real installed-process
-competition and genuine historical-SQL startup/restart proof. These extend the
-existing service and browser fixtures, with their normal source, fault and cleanup
-ownership. Native project/task HTTP fixtures remain controlled client evidence;
-actual Go/PostgreSQL and native/container browser receipts remain separate.
+The [lifecycle cross-layer acceptance decision](../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
+records the historical same-data packed-CLI/production-Web journey, installed-process
+competition and historical-SQL startup/restart proof. Those results remain tied to
+their tested source. The removed native/container browser runner is not a current
+validation command. Native project/task HTTP fixtures remain controlled client
+evidence; Go built-binary/PostgreSQL results retain their own source and scope.
 Installed skill checks validate the six shipped resources, metadata, contained
 references and bounded cross-resource instruction contracts on actual package and
 target copies. Simulated launchers and instruction artifacts do not establish

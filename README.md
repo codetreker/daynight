@@ -353,7 +353,7 @@ Web checks use `pnpm web:typecheck`,
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,
-browser acceptance and complete validation commands.
+independent browser checks and complete validation commands.
 
 ## Package versions
 
@@ -378,8 +378,8 @@ from all changed paths, including deletions and both sides of renames:
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/test/fixtures/installed-cli.ts` | Every module |
-| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E, Web quality and Web browser acceptance |
+| `packages/daynight/test/fixtures/installed-cli.ts` | CLI and Go server coverage/E2E |
+| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E and Web quality |
 | Implementation and resources under CLI `commands/worker/`, `controller/`, `review/`, `skill/`, `update/` or `completion/`, except `definition.ts` | CLI |
 | Other `packages/daynight/src/` paths, including command definitions | CLI and Go server coverage/E2E |
 | A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
@@ -387,8 +387,8 @@ from all changed paths, including deletions and both sides of renames:
 | Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
 | Other `packages/daynight/` paths | Complete ordinary and installed CLI phases on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
 | `packages/daynight-server/` | Go server coverage and E2E |
-| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E, Web quality and Web browser acceptance |
-| Runtime files under `deployment/` | Web quality and Web browser acceptance |
+| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E and Web quality |
+| Runtime files under `deployment/` | Web quality |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
 | Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
 | CI routing/workflow changes and other unclassified paths | Every module |
@@ -419,17 +419,12 @@ records its own environment, outcome and artifacts. The ordinary Ubuntu entry su
 the runtime package; runtime jobs depend only on the Linux/Windows ordinary
 producer matrix, while final `checks` still requires macOS. The
 [single-allocation decision](.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
-owns macOS failure, evidence and budget handling. The Web selector enables a quality job and two
-browser matrix entries, each with a 20-minute bound. The two browser shards
-jointly cover the complete native/container inventory; shard 2 owns the shared
-navigation, deployment, combined-authentication and persistence checks. The
-server selector enables parallel coverage and E2E jobs, also bounded to 20 minutes
-each. All selected jobs are required by `checks` and retain their complete
-integration and coverage gates.
-The final `checks` job uses `always()` and accepts only `success` or `skipped`
-from preceding jobs. Selected Web quality and browser matrix results must be
-`success`; the same gate validates both current-source shard summaries and their
-complete inventory before passing. A newer PR run cancels the older run for that PR.
+owns macOS failure, evidence and budget handling. The Web selector enables the
+Web quality job. The server selector enables parallel coverage and E2E jobs,
+each bounded to 20 minutes. The final `checks` job uses `always()` and accepts
+only `success` or `skipped` from preceding jobs; selected Web quality must
+succeed. Standalone Web browser checks are available locally with controlled
+fixtures; they do not establish full-stack or hosted-CI acceptance. A newer PR run cancels the older run for that PR.
 New `main` pushes queue behind an active `main` run without cancelling it.
 Documentation-only PRs run routing tests and that gate; every `main` push selects
 full application validation. See the
@@ -455,7 +450,6 @@ command when full-scale evidence is required:
 | Installed CLI production decoded-byte budgets | `pnpm test:stress:budgets` |
 | Go query, archive and repeated-write workloads | `pnpm server:test:stress` |
 | Web graph and geometry workloads | `pnpm web:test:stress` |
-| Production browser capacity and timing matrix | `pnpm web:acceptance:stress` |
 
 These stress entrypoints refuse a CI environment. The
 [development guide](docs/development.md#local-stress-validation) owns their

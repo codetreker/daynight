@@ -329,7 +329,8 @@ accepts MCP OAuth access credentials for its exact resource and `daynight:mcp`
 scope. OAuth authorization and token endpoints are not yet exposed. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The endpoint advertises Project creation, transfer, listing and inspection,
+The endpoint advertises Team lifecycle, membership and scoped Project tools,
+Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
@@ -346,8 +347,10 @@ A lost post response does not establish a receipt: read the thread before
 deciding whether to send again. Bot creation resolves omitted settings from
 available Worker defaults and does not imply startup readiness. Bot deletion
 requires an explicit version and reports the separate Worker and server cleanup
-states. A tool is discoverable only after its complete business adapter is
-registered.
+states. Team and membership versions are decimal strings, and list results use
+scoped cursors. An item in a Team, Team member or scoped Project list that
+exceeds its response budget produces an explicit error; complete MCP retrieval
+and continuation past that item are not yet available.
 
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and

@@ -69,6 +69,42 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 	if _, err = productionClient.ListTools(ctx, nil); err != nil {
 		t.Fatalf("production MCP OAuth: %v", err)
 	}
+	otherUser, privateTeam := assignmentHTTPUser(t, db), uuid.NewString()
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'Private')`, privateTeam); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, privateTeam, otherUser); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		team      string
+		wantError bool
+	}{{"personal", false}, {privateTeam, true}} {
+		result, err := productionClient.CallTool(ctx, &sdk.CallToolParams{Name: "team_show", Arguments: map[string]any{"team": tc.team}})
+		if err != nil || result.IsError != tc.wantError {
+			t.Fatalf("OAuth Team read %s: %#v %v", tc.team, result, err)
+		}
+		raw, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Data struct {
+				Membership struct {
+					UserID string `json:"userId"`
+				} `json:"membership"`
+			} `json:"data"`
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if (!tc.wantError && envelope.Data.Membership.UserID != p.UserID) || (tc.wantError && envelope.Error.Code != "not_found") {
+			t.Fatalf("OAuth Team read: %s", raw)
+		}
+	}
 	entry, err := mcphttp.New(identityservice.New(db, nil, ""), "https://daynight.test", nil, logger, auth)
 	if err != nil {
 		t.Fatal(err)

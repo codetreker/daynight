@@ -661,17 +661,15 @@ URL query、body、Cookie、Authorization、code、App Secret 或身份 origin p
 docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_id == "REQUEST_ID") | {request_id,user_id,team_id,project_id,component,phase,error_code,cause}'
 ```
 
-验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
-生产浏览器、原生/容器和现有资源/容量预算。[组合验收历史](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
-记录了实际领取结果后 TCP 断连的取舍。原生/容器各自验证浏览器与安装 CLI 同数据、
-原凭据重启、成员撤销后的可见权限及 PAT 独立性。两目标各有一份十项检查的额外必需回执。
-Go 服务的 `TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation` 使用
-`cmd/e2e_tests` built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB 上传正文未完成时
-成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对字节与清理。
-浏览器 combined 不运行暂停上传、专用 transport 或数据库锁观察，也不声称覆盖原先的
-附件 socket 中断场景；[附件验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
-记录当前分工。常规验收保留原生和容器各 42 项功能场景，显式本地压力验收另有 5 项
-原生容量场景；项目设置旅程单独拥有阈值读写与未知结果核对。
+验证按 AU-V1–AU-V12 映射。Web 模块使用 typecheck、组件测试和严格覆盖率；独立
+浏览器 fixture 可验证受控响应下的界面交互，不能代替真实服务或安装 CLI 授权证据。
+Go 服务的 `TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation`
+使用 `cmd/e2e_tests` built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB
+上传正文未完成时成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对
+字节与清理。[附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
+记录服务与 Web 的验证边界。原 native/container 浏览器 combined runner 已移除；其
+[组合验收历史](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
+记录原有跨组件及 TCP 断连取舍，旧源码结果不能证明当前源码。
 
 统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合
 结果核对当前源码、安装包、进程/镜像与清理；真实上游人工联调单独留证，缺少时

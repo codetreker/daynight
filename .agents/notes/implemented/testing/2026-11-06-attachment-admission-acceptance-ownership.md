@@ -6,10 +6,10 @@ Status: implemented
 
 An admitted attachment write and a concurrent project membership removal need
 an observable ordering across authorization, file IO and subsequent access. A
-browser authentication journey also needs to prove its visible authority and
-installed CLI behavior. Keeping the database observer and paused upload in the
-browser harness couples those separate proofs to the same PostgreSQL and process
-lifecycle, making their ownership and failures harder to assess.
+browser and CLI have their own authority and presentation boundaries. Keeping
+the database observer and paused upload in the browser harness coupled those
+proofs to the same PostgreSQL and process lifecycle, making their ownership and
+failures harder to assess.
 
 ## Decision
 
@@ -20,11 +20,11 @@ the admitted attachment mutation and direct grant removal race. It admits a real
 completes with 204. A new access returns 404 before the body is released; the
 already admitted upload then returns 201.
 The test verifies the uploaded bytes and owned-resource cleanup against isolated
-PostgreSQL and the real service. The Web combined authentication journey retains
-its normal browser and installed CLI authentication, completed upload, membership
-withdrawal and visible resource checks. It does not pause an upload or inspect
-attachment database locks. Each native and container target requires ten combined
-checks.
+PostgreSQL and the real service. Web module tests and independent browser
+fixtures exercise presentation and local behavior with controlled responses;
+they do not establish installed-CLI or live-service integration. The former
+Web combined runner, including its ten-check native/container receipts, was
+removed. Its results remain historical evidence for their tested source.
 
 The [original combined acceptance decision](../../archived/testing/2026-10-23-authentication-combined-acceptance.md)
 records why the installed client, real browser, transport and restart were tested
@@ -38,16 +38,16 @@ The current E2E therefore proves that grant removal completes while the admitted
 upload is still open, rather than expecting a grant-lock waiter.
 
 The [server guide](../../../../packages/daynight-server/README.md) and
-[Web guide](../../../../packages/daynight-web/README.md#production-browser-acceptance)
-own the current validation commands and inventories.
+[Web guide](../../../../packages/daynight-web/README.md#independent-browser-checks)
+own the current validation commands and their limits.
 
 ## Alternatives
 
 **Keep the database observer in the Web journey.** It could observe the same
 race alongside the browser, but would keep server transaction evidence coupled to
-browser process, container and page timing. The Go built-binary fixture can prove
-the HTTP and database ordering directly while the Web journey retains its own
-visible behavior.
+browser process, container and page timing. The Go built-binary fixture proves
+the HTTP ordering against PostgreSQL; Web's independent checks retain their own
+controlled-fixture scope.
 
 **Replace the historical lock wait with a mocked or timed delay.** A delay cannot
 establish which transaction waits for the intended grant or that the upload holds
@@ -57,7 +57,8 @@ body remains incomplete.
 
 ## Consequences
 
-Server ordering and browser/CLI behavior now have separate evidence and failure
-ownership. The Web journey no longer claims the original paused-upload or socket
-interruption proof. Both suites remain required for their respective outcomes;
-a focused dirty overlay run cannot substitute for the clean combined CI result.
+Server ordering and Web presentation have separate evidence and failure
+ownership. The removed Web runner no longer provides current-source combined
+browser/CLI, paused-upload or socket interruption proof. A focused dirty
+overlay run cannot substitute for clean built-binary CI evidence, and controlled
+Web fixtures cannot establish full-stack behavior.

@@ -20,7 +20,8 @@ family and transaction boundaries. The official SDK supports the two declared
 protocol versions.
 Registered tools use one low-level wrapper with precompiled input and output
 schemas, safe structured errors, and explicit completion facts. The production
-registry exposes only complete business adapters.
+registry exposes registered business adapters. The [Team adapter decision](2026-11-06-mcp-team-management.md)
+records its oversized-item limitation.
 
 Separate control and large-object permits are selected by internal materialization,
 not the returned view. Permits remain held through handler and response delivery.
@@ -49,7 +50,6 @@ has not stopped.
 
 ## Consequences
 
-Domain adapters register complete tools and select their worst-case materialization
-class. OAuth protocol endpoints and other business tools require their separately
-owned implementations. Clients and proxies handling full resources must support the
-declared result capacity.
+Domain adapters select their worst-case materialization class. OAuth protocol
+endpoints and other business tools require their separately owned implementations.
+Clients and proxies handling full resources must support the declared result capacity.
