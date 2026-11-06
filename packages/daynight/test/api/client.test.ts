@@ -455,7 +455,9 @@ describe("operation-scoped API access", () => {
   });
 
   it.each(["headers", "body"])("enforces the real HTTP request timeout while waiting for %s", async (waitingFor) => {
+    let requests = 0;
     const url = await server((_request, response) => {
+      requests++;
       if (waitingFor === "body") {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.write('{"items":');
@@ -463,6 +465,7 @@ describe("operation-scoped API access", () => {
     });
     const api = createApiClient({ serverUrl: url, operation: operation({ limits: { requestMs: 50 } }) });
     await expect(api.listProjects()).rejects.toMatchObject({ phase: waitingFor === "headers" ? "request" : "response", cause: { kind: "request_timeout" } });
+    expect(requests).toBe(1);
   });
 
   it("cancels a custom response stream even when fetch ignores its signal", async () => {
@@ -536,6 +539,37 @@ describe("operation-scoped API access", () => {
     await expect(api.getProject(projectId)).rejects.toMatchObject({ cause: { kind: "response_limit" } });
   });
 
+  it.each([false, true])("applies the decoded response limit at exact bytes and one byte over (over=%s)", async (over) => {
+    const body = stringifyApiJson({ ...project, name: "Project 中文" });
+    const bytes = Buffer.byteLength(body);
+    const compressed = gzipSync(body + (over ? " " : ""));
+    expect(compressed.length).toBeLessThan(bytes);
+    let requests = 0;
+    const url = await server((_request, response) => {
+      requests++;
+      response.writeHead(200, { "Content-Type": "application/json", "Content-Encoding": "gzip", "Content-Length": compressed.length });
+      response.end(compressed);
+    });
+    const api = createApiClient({ serverUrl: url, operation: operation({ limits: { responseBytes: bytes } }) });
+    if (over) await expect(api.getProject(projectId)).rejects.toMatchObject({ cause: { kind: "response_limit" } });
+    else await expect(api.getProject(projectId)).resolves.toEqual({ ...project, name: "Project 中文" });
+    expect(requests).toBe(1);
+  });
+
+  it.each([false, true])("applies the cumulative byte limit over complete pages at exact bytes and one byte over (over=%s)", async (over) => {
+    const projects = [project, { ...project, id: otherId }, { ...project, id: normalId }];
+    const pages = projects.map((value, index) => stringifyApiJson({ items: [value], nextCursor: index < 2 ? `cursor-${index + 1}` : null }));
+    const totalBytes = pages.reduce((sum, page) => sum + Buffer.byteLength(page), 0);
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+      const index = fetch.mock.calls.length - 1;
+      return new Response(pages[index]! + (index === 2 && over ? " " : ""), { headers: { "Content-Type": "application/json" } });
+    });
+    const api = client(fetch, operation({ limits: { totalBytes, responseBytes: Math.max(...pages.map((page) => Buffer.byteLength(page))) + 1 } }));
+    if (over) await expect(api.listProjects()).rejects.toMatchObject({ cause: { kind: "total_limit" } });
+    else await expect(api.listProjects()).resolves.toEqual(projects);
+    expect(fetch.mock.calls.map(([url]) => new URL(String(url)).searchParams.get("cursor"))).toEqual([null, "cursor-1", "cursor-2"]);
+  });
+
   it("accumulates success and error bodies within a shared operation", async () => {
     const first = stringifyApiJson(project);
     const fetch = vi.fn<typeof globalThis.fetch>()
@@ -548,7 +582,9 @@ describe("operation-scoped API access", () => {
 
   it("exhausts one total deadline across continuously advancing cursors", async () => {
     let page = 0;
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+    const cursors: (string | null)[] = [];
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => {
+      cursors.push(new URL(String(url)).searchParams.get("cursor"));
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
       page++;
       const suffix = page.toString(16).padStart(12, "0");
@@ -556,6 +592,8 @@ describe("operation-scoped API access", () => {
     });
     await expect(client(fetch, operation({ limits: { totalMs: 35, requestMs: 100 } })).listProjects()).rejects.toMatchObject({ cause: { kind: "deadline" } });
     expect(page).toBeGreaterThan(1);
+    expect(new Set(cursors).size).toBe(cursors.length);
+    expect(cursors.length - page).toBeLessThanOrEqual(1);
   });
 
   it.each([

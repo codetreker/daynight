@@ -17,8 +17,10 @@ launchers and a representative npm update. Runtime checks exercise supported
 Node versions and the installed dependency graph. Real shell checks verify
 completion loading and Tab integration on Bash 4.2, modern Bash and zsh.
 Client behavior and local process, Git and SQLite rules belong to CLI module
-verification rather than the artifact matrix. Ordinary CLI tests remain in their
-existing entrypoint. Static response fixtures used by CLI tests are local to the
+verification rather than the artifact matrix. Ordinary CLI tests include the
+real-shell behavior matrix on the host shell; completion CI also checks it on
+Bash 4.2, modern Bash and zsh. Ordinary CLI tests remain in their existing
+entrypoint. Static response fixtures used by CLI tests are local to the
 CLI, and the CI selector retains shared Web consumers of CLI source and fixtures.
 This replaces the installed business-matrix ownership in the [Steps launcher
 decision](2026-11-06-steps-installed-acceptance-ownership.md), while retaining a

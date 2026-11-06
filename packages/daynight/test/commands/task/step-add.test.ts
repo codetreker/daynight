@@ -60,6 +60,13 @@ describe("Step Add input and exact request budgets", () => {
     expect(f.context.stdout.mock.calls[0]![0]).toContain("--if-version"); expect(f.context.stdout.mock.calls[0]![0]).toContain("skipped");
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled(); expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
   });
+  it("rejects a missing title at the application boundary before configuration or requests", async () => {
+    const f = fixture(); const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+    expect(await runCli(["task", "step", "add", taskId], f.context, registry)).toBe(2);
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
+    expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
+  });
   it.each([
     ["--title="], ["--title= \u0085"], ["--title=\0"], ["--title=\ud800"], ["--description=\0"], ["--description=\ud800"],
     ["--id=bad"], ["--id=000000000"], ["--before=bad"], ["--after=bad"], ["--before=00000000", "--after=00000000"],
@@ -79,6 +86,17 @@ describe("Step Add input and exact request budgets", () => {
     expect(f.calls[0]!.body).toMatchObject({ version: 9_007_199_254_740_993n, id: "00abcdef", title: "  title-secret\n\uFEFF  ", description, status: "skipped", before: "00000000" });
     const output = f.context.stdout.mock.calls[0]![0]; expect(parseApiJson(output)).toEqual(resource(f.calls[0]!.body!)); expect(output).not.toContain("Step added.");
     expect(f.context.workingDirectory).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+  });
+  it("passes separately supplied Unicode and markup arguments through to the complete receipt", async () => {
+    const f = fixture(); const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+    const title = "  <packed&> 中文😀  ", description = "# Packed [Plan](plan.md) <&> 😀";
+    expect(await runCli(["task", "step", "add", taskId.toUpperCase(), "--id=00ABCDEF", "--title", title, "--description", description, "--status=skipped", "--json", "--project", projectId.toUpperCase(), "--if-version", "9007199254740993"], f.context, registry)).toBe(0);
+    expect(f.calls).toHaveLength(1); expect(f.calls[0]!.method).toBe("POST");
+    expect(f.calls[0]!.body).toEqual({ version: previous.version, id: "00abcdef", title, description, status: "skipped" });
+    const output = f.context.stdout.mock.calls[0]![0];
+    expect(parseApiJson(output)).toEqual(resource(f.calls[0]!.body!)); expect(output).toContain('"version":9007199254740994');
+    expect(f.context.stderr).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
   });
   it("uses exactly GET Steps then POST by default, generates one stable short ID, and retains server defaults", async () => {
     const f = fixture(); await runTaskCommand(f.args(["--after=00000000"]).filter((arg) => !arg.startsWith("--id=")), f.context, f.dependencies);

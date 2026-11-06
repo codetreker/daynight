@@ -52,6 +52,8 @@ describe("minimal worker SQLite schema", () => {
     expect(database.pragma("foreign_key_list(tasks)")).toEqual([]);
     expect(store.listProjects()).toEqual([]);
     expect(store.listTasks()).toEqual([]);
+    expect(database.prepare("SELECT count(*) AS count FROM bots").get()).toEqual({ count: 0 });
+    expect(database.prepare("SELECT count(*) AS count FROM bot_executions").get()).toEqual({ count: 0 });
   });
 
   it("initializes an empty database created by the instance lock", () => {

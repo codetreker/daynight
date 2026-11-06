@@ -58,6 +58,13 @@ describe("Team membership commands", () => {
     expect(f.calls[2]!.body).toContain(`"expectedUserId":"${userId}"`);
     expect(Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString()).toContain('"actorRole":"member"');
   });
+  it("removes another member with the observed exact version and confirmed receipt", async () => {
+    const f = await fixture();
+    await runTeamCommand(["member", "remove", otherId, "--team", teamId, "--if-version", String(version), "--confirm", "--json"], f.context, f.dependencies);
+    expect(f.calls.map(x => `${x.method} ${x.path}`)).toEqual([`GET /api/v1/me`, `GET /api/v1/teams/${teamId}/members`, `DELETE /api/v1/teams/${teamId}/members/${otherId}`]);
+    expect(f.calls[2]!.body).toBe(`{"version":${version},"expectedUserId":"${userId}"}`);
+    expect(JSON.parse(Buffer.from(f.stdoutBytes.mock.calls[0]![0]).toString())).toEqual({ teamId, userId: otherId, removed: true, actorRole: "admin" });
+  });
   it("leaves using the current membership and does not read after success", async () => {
     const f = await fixture();
     await runTeamCommand(["leave", "--team", teamId, "--confirm", "--json"], f.context, f.dependencies);

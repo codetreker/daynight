@@ -181,3 +181,21 @@ it("preserves an unconfirmed mutation when local cleanup also fails", async () =
   expect(JSON.parse(result.err).error).toMatchObject({ outcomeUnconfirmed: true, phase: "request", requestId: JSON.parse(requests[0]!.init.body as string).id });
   expect(result.err).not.toContain("SECRET-PAT");
 });
+
+it("retains deletion identity and exact version across pending and completed receipts", async () => {
+  let count = 0;
+  const { run, requests } = await fixture(() => json(deleted(++count === 1 ? "pending" : "completed", count === 1 ? "pending" : "completed")));
+  const first = await run(["delete", id, "--if-version", bot.version, "--request-id", requestId, "--json"]);
+  expect(first.exit).toBe(0);
+  expect(JSON.parse(first.out)).toEqual(deleted());
+  const second = await run(["delete", id, "--if-version", bot.version, "--request-id", requestId, "--json"]);
+  expect(second.exit).toBe(0);
+  expect(JSON.parse(second.out.slice(first.out.length))).toEqual(deleted("completed", "completed"));
+  expect(requests.map(({ init }) => init.method)).toEqual(["DELETE", "DELETE"]);
+  for (const { url, init } of requests) {
+    expect(url.pathname).toBe(`/api/v1/me/bots/${id}`);
+    expect(JSON.parse(String(init.body))).toEqual({ ifVersion: bot.version, deletionId: requestId });
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer SECRET-PAT");
+  }
+  expect(first.out + first.err + second.out + second.err).not.toContain("SECRET-PAT");
+});

@@ -99,9 +99,18 @@ describe("Steps read command", () => {
     expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledOnce();
   });
 
-  it.each([401, 404, 405, 410, 500])("never replaces HTTP%s with an empty resource or a replay", async (status) => {
-    const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code: status === 410 ? "task_deleted" : "not_found", message: "Resource is unavailable.", requestId: "steps-error" } }, status));
-    await expect(runTaskCommand(["step", "list", taskId, `--project=${projectId}`, "--json"], f.context, f.dependencies)).rejects.toMatchObject({ exitCode: 1 });
+  it.each([401, 404, 405, 410, 500, 501])("never replaces HTTP%s with an empty resource or a replay", async (status) => {
+    const f = fixture(); const code = status === 410 ? "task_deleted" : status === 501 ? "not_implemented" : "not_found";
+    f.fetch.mockResolvedValue(json({ error: { code, message: "Resource is unavailable.", requestId: "steps-error" } }, status));
+    const error = await runTaskCommand(["step", "list", taskId, `--project=${projectId}`, "--json"], f.context, f.dependencies).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ exitCode: 1 }); expect(formatError(error)).toContain(code); expect(formatError(error)).toContain("steps-error");
+    expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([{ ...resource, projectId: taskId }, { ...resource, version: "1" }])("reports an invalid collection as a protocol failure without output or replay %#", async (value) => {
+    const f = fixture(); f.fetch.mockResolvedValue(json(value));
+    const error = await runTaskCommand(["step", "list", taskId, `--project=${projectId}`, "--json"], f.context, f.dependencies).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ exitCode: 1 }); expect(formatError(error)).toContain("phase=protocol");
     expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledOnce();
   });
 
