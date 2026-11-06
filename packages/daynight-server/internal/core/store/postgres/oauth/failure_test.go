@@ -95,6 +95,17 @@ func TestDAOFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 		{"authorization cleanup second quota", []databaseStep{ok, {values: []any{0}}, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
 		{"authorization cleanup first spare", []databaseStep{ok, {values: []any{0}}, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
 		{"authorization cleanup second spare", []databaseStep{ok, {values: []any{0}}, ok, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 10); return err }},
+		{"refresh lookup", []databaseStep{fail}, func(d *DAO) error { _, err := d.Refresh(ctx, nil, false); return err }},
+		{"access grant lookup", []databaseStep{fail}, func(d *DAO) error { _, err := d.AccessGrant(ctx, nil); return err }},
+		{"owner grants query", []databaseStep{fail}, func(d *DAO) error { _, err := d.OwnerGrants(ctx, "user"); return err }},
+		{"credential cleanup cursor read", []databaseStep{fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
+		{"credential cleanup cursor write", []databaseStep{{values: []any{0}}, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
+		{"credential cleanup first quota", []databaseStep{{values: []any{0}}, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
+		{"credential cleanup second quota", []databaseStep{{values: []any{0}}, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
+		{"credential cleanup third quota", []databaseStep{{values: []any{0}}, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
+		{"credential cleanup first spare", []databaseStep{{values: []any{0}}, ok, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
+		{"credential cleanup second spare", []databaseStep{{values: []any{0}}, ok, ok, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
+		{"credential cleanup third spare", []databaseStep{{values: []any{0}}, ok, ok, ok, ok, ok, ok, fail}, func(d *DAO) error { _, err := d.PruneCredentials(ctx, now, 10); return err }},
 		{"rotation consume", []databaseStep{fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
 		{"rotation access", []databaseStep{ok, fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
 		{"rotation refresh", []databaseStep{ok, ok, fail}, func(d *DAO) error { return d.RotateRefresh(ctx, store.OAuthRotation{}) }},
@@ -150,8 +161,8 @@ func TestAuthorizationFailuresPreserveDriverCauseAndSQLState(t *testing.T) {
 		{"code read", []databaseStep{fail}, func(d *DAO) error { _, err := d.AuthorizationByCode(ctx, nil, true); return err }},
 		{"update", []databaseStep{fail}, func(d *DAO) error { return d.UpdateAuthorization(ctx, record) }},
 		{"prune lock", []databaseStep{fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
-		{"prune expire", []databaseStep{ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
-		{"prune delete", []databaseStep{ok, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
+		{"prune expire", []databaseStep{ok, zero, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
+		{"prune delete", []databaseStep{ok, {values: []any{1}}, ok, fail}, func(d *DAO) error { _, err := d.PruneAuthorizations(ctx, now, 1); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := &failingTx{steps: append([]databaseStep(nil), tc.steps...)}
