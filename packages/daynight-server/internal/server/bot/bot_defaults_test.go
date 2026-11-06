@@ -59,9 +59,14 @@ func TestBotDefaultsHTTPStrictCreateAndDefaultsInputs(t *testing.T) {
 		`{` + valid + `,"resolvedConfiguration":{}}`, `{` + valid + `,"overrides":null}`, `{` + valid + `,"overrides":[]}`,
 		`{` + valid + `,"overrides":{"workerId":null}}`, `{` + valid + `,"overrides":{"cwd":null}}`, `{` + valid + `,"overrides":{"provider":null}}`,
 		`{` + valid + `,"overrides":{"workerId":42}}`, `{` + valid + `,"overrides":{"cwd":false}}`, `{` + valid + `,"overrides":{"provider":{}}}`,
-		`{` + valid + `,"overrides":{"model":"ignored"}}`, `{` + valid + `,"overrides":{"cwd":"/one","cwd":"/two"}}`,
+		`{` + valid + `,"overrides":{"unknown":"ignored"}}`,
+		`{` + valid + `,"overrides":{"model":null}}`, `{` + valid + `,"overrides":{"model":" "}}`, `{` + valid + `,"overrides":{"reasoningEffort":null}}`, `{` + valid + `,"overrides":{"reasoningEffort":42}}`, `{` + valid + `,"overrides":{"cwd":"/one","cwd":"/two"}}`,
 	} {
 		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", body), 400, "invalid_input")
+	}
+	for _, overrides := range []string{`{"model":"model-a"}`, `{"reasoningEffort":"high"}`, `{"model":"model-a","reasoningEffort":"high"}`} {
+		// Valid native fields reach configuration resolution; this owner has no Worker.
+		assertProjectError(t, projectRequest(handler, "POST", "/api/v1/me/bots", `{`+valid+`,"overrides":`+overrides+`}`), 409, "resource_conflict")
 	}
 	for _, query := range []string{"?x=1", "?workerId=", "?workerId=bad", "?workerId=" + id + "&workerId=" + id, "?workerId=%zz"} {
 		assertProjectError(t, projectRequest(handler, "GET", "/api/v1/me/bots/defaults"+query, ""), 400, "invalid_input")

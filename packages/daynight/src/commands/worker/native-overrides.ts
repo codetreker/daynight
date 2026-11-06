@@ -15,8 +15,8 @@ const text = (value: unknown, field: string): string => {
 };
 const source = (local: string | undefined, cloud: string | null): WorkerConfigurationValue => local !== undefined ? { value: local, source: "local" } : cloud !== null ? { value: cloud, source: "cloud" } : { value: null, source: "native" };
 
-/** Canonicalize only model and effort; leave permissions and other native options with their existing validators. */
-export const normalizeWorkerNative = (native: WorkerCloudNative, mode: AgentControlMode, overrides: WorkerLocalNativeOverrides = {}, validateOtherArguments = true): EffectiveWorkerNative => {
+/** Canonicalize model and effort; dynamic effort values require native selection validation before use. */
+export const normalizeWorkerNative = (native: WorkerCloudNative, mode: AgentControlMode, overrides: WorkerLocalNativeOverrides = {}, validateOtherArguments = true, validateNativeSelection = false): EffectiveWorkerNative => {
   const args: string[] = [];
   let argumentModel: string | null = null, argumentEffort: string | null = null;
   for (let index = 0; index < native.args.length; index++) {
@@ -46,14 +46,15 @@ export const normalizeWorkerNative = (native: WorkerCloudNative, mode: AgentCont
   const reasoningEffort = source(overrides.agentReasoningEffort, argumentEffort);
   if (model.value !== null) text(model.value, "model");
   if (reasoningEffort.value !== null) {
-    const levels = native.agent === "codex" ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] : native.agent === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max"];
-    if (!levels.includes(reasoningEffort.value)) throw new TypeError(`Unsupported ${native.agent} reasoning effort: ${reasoningEffort.value}.`);
+    const levels = native.agent === "codex" ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] : native.agent === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["none", "low", "medium", "high", "xhigh", "max"];
+    text(reasoningEffort.value, "reasoning effort");
+    if (Buffer.byteLength(reasoningEffort.value) > 64 || !validateNativeSelection && !levels.includes(reasoningEffort.value)) throw new TypeError(`Unsupported ${native.agent} reasoning effort: ${reasoningEffort.value}.`);
     if (mode === "web" || native.agent === "claude") args.push("--effort", reasoningEffort.value);
     else if (native.agent === "copilot") args.push("--reasoning-effort", reasoningEffort.value);
     else args.push("-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort.value)}`);
   }
   if (validateOtherArguments) {
-    if (mode === "web") parseProviderArguments(native.agent, args); else validateHerdrAgentArguments(native.agent, args);
+    if (mode === "web") parseProviderArguments(native.agent, args, validateNativeSelection); else validateHerdrAgentArguments(native.agent, args);
   }
   return { native: { agent: native.agent, model: model.value, args }, report: { agent: native.agent, model, reasoningEffort } };
 };

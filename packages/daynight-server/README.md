@@ -601,6 +601,38 @@ while internal-only assertions remain in the root package. The
 [HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
 records the distinction and preservation requirements.
 
+### Schema snapshot maintenance
+
+`internal/core/store/postgres/schema/current.sql` records the final PostgreSQL
+format produced by the complete embedded migration history. It includes the
+migration-ledger table definition, required initial rows and sequence state;
+it does not freeze migration-ledger rows or their application timestamps.
+Runtime startup continues to apply the historical migrations.
+
+The ordinary module check compares a fresh historical database with a fresh
+snapshot database through PostgreSQL catalogs and initial table data. It checks
+visible column order, types, defaults, nullability, constraints, indexes,
+sequence definitions, ownership and state, and the routines, views and triggers
+present in the format. Only instance identifiers and schema qualification are
+normalized. The snapshot version must match the latest migration, so every
+migration change requires refreshing and verifying the snapshot.
+
+Regenerate from a fresh historical schema with a PostgreSQL 18 `pg_dump` client:
+
+```bash
+source scripts/env.sh
+export DAYNIGHT_TEST_DATABASE_URL='postgres://daynight:daynight-test@127.0.0.1:PORT/daynight?sslmode=disable'
+go test -count=1 ./internal/core/store/postgres \
+  -run '^TestSchemaSnapshotMatchesMigrations$' \
+  -args -update-schema-snapshot -schema-snapshot-pg-dump /path/to/pg_dump
+```
+
+The update flags belong to this package's test binary. Regeneration captures
+final definitions and initial data, rather than concatenating historical SQL.
+Routine validation needs only the configured PostgreSQL service; it does not
+invoke `pg_dump`. The [snapshot decision](../../.agents/notes/implemented/testing/2026-11-06-postgres-schema-snapshot.md)
+records the equivalence and maintenance requirements.
+
 ### Task Graph boundary fixtures
 
 The TaskGraph boundary regression keeps a 1000-node backbone with 5000 dependency

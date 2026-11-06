@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonunicode"
@@ -46,7 +47,7 @@ func botRegisterInput(raw []byte) (sessioncore.BotRegistration, error) {
 	if _, err = sp.DecodeTestRegistration(fields["registration"]); err != nil {
 		return input, httpx.InvalidInput("Invalid Bot session registration.")
 	}
-	configuration, err := botRuntimeObject(fields["configuration"], "workerId", "cwd", "provider", "model", "args")
+	configuration, err := botConfigurationInput(fields["configuration"])
 	if err != nil {
 		return input, err
 	}
@@ -68,6 +69,9 @@ func botRegisterInput(raw []byte) (sessioncore.BotRegistration, error) {
 	}
 	if err = json.Unmarshal(raw, &input); err != nil {
 		return input, httpx.InvalidInput("Invalid Bot registration values.")
+	}
+	if err := botcore.ValidateFrozenSelection(input.Configuration); err != nil {
+		return input, err
 	}
 	return input, nil
 }
@@ -143,4 +147,38 @@ func botDeletionReceiptInput(raw []byte) (botservice.BotDeletionReceipt, error) 
 		return input, httpx.InvalidInput("Invalid Bot deletion receipt values.")
 	}
 	return input, nil
+}
+
+func botConfigurationInput(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	fields, err := jsonobject.Decode(raw, "Bot configuration", "workerId", "cwd", "provider", "model", "args", "reasoningEffort", "selection")
+	if err != nil || !jsonunicode.Valid(raw) {
+		return nil, httpx.InvalidInput("Bot configuration must be a valid object.")
+	}
+	for _, key := range []string{"workerId", "cwd", "provider", "model", "args"} {
+		if _, ok := fields[key]; !ok {
+			return nil, httpx.InvalidInput("Bot configuration is incomplete.")
+		}
+	}
+	selection, selected := fields["selection"]
+	_, effort := fields["reasoningEffort"]
+	if selected != effort {
+		return nil, httpx.InvalidInput("Bot native selection requires both selection and reasoningEffort.")
+	}
+	if selected {
+		values, err := jsonobject.Decode(selection, "Bot selection", "schemaVersion", "modelSource", "reasoningEffortSource", "configurationGeneration", "catalogGeneration")
+		if err != nil {
+			return nil, httpx.InvalidInput("Bot selection must be a valid object.")
+		}
+		for _, key := range []string{"schemaVersion", "modelSource", "reasoningEffortSource"} {
+			if value, ok := values[key]; !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return nil, httpx.InvalidInput("Bot selection is incomplete.")
+			}
+		}
+		for _, key := range []string{"configurationGeneration", "catalogGeneration"} {
+			if value, ok := values[key]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return nil, httpx.InvalidInput("Bot selection generation cannot be null.")
+			}
+		}
+	}
+	return fields, nil
 }

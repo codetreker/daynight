@@ -41,6 +41,7 @@ describe("assistant host observations", () => {
   it("reports the global default independently of task mode and isolates other provider settings", async () => {
     const { assistantHost } = await collect();
     expect(assistantHost.defaultProvider).toBe("copilot");
+    expect(assistantHost.creationConfigurationVersion).toBe(1);
     expect(assistantHost.defaultCwd).toBe(await realpath(root));
     expect(assistantHost.providers).toEqual([
       { provider: "codex", available: true, reason: null, model: null, args: [] },

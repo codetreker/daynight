@@ -68,6 +68,9 @@ func readBotDefaultsInput(ctx context.Context, tx pgx.Tx, ownerID string) (model
 	if err := rows.Err(); err != nil {
 		return model.BotDefaultsInput{}, pg.QueryError("read bot configuration preferences", err)
 	}
+	if err := readNativePreferences(ctx, tx, ownerID, result.WorkerPreferences); err != nil {
+		return model.BotDefaultsInput{}, err
+	}
 	// This clock evaluates freshness after the observed data is read. In a
 	// ReadCommitted creation transaction, a heartbeat may commit between queries;
 	// a clock sampled first would incorrectly classify that heartbeat as future.
@@ -120,5 +123,5 @@ func (b *Writer) CommitBotPreferences(ctx context.Context, botID string) error {
 			return pg.QueryError("commit bot provider preference", err)
 		}
 	}
-	return nil
+	return commitNativePreferences(ctx, tx, bot)
 }

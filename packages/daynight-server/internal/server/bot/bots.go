@@ -72,11 +72,11 @@ func botCreateInput(fields map[string]json.RawMessage) (botcore.CreateBot, error
 		return input, err
 	}
 	if raw, exists := fields["overrides"]; exists {
-		overrides, err := jsonobject.Decode(raw, "overrides", "workerId", "cwd", "provider")
+		overrides, err := jsonobject.Decode(raw, "overrides", "workerId", "cwd", "provider", "model", "reasoningEffort")
 		if err != nil {
 			return input, httpx.InvalidInput(err.Error())
 		}
-		for key, target := range map[string]**string{"workerId": &input.Overrides.WorkerID, "cwd": &input.Overrides.Cwd, "provider": &input.Overrides.Provider} {
+		for key, target := range map[string]**string{"workerId": &input.Overrides.WorkerID, "cwd": &input.Overrides.Cwd, "provider": &input.Overrides.Provider, "model": &input.Overrides.Model, "reasoningEffort": &input.Overrides.ReasoningEffort} {
 			*target, err = httpx.OptionalString(overrides, key)
 			if err != nil {
 				return input, err
@@ -112,14 +112,24 @@ func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, princ
 
 func (h *botsHandler) defaults(w http.ResponseWriter, request *http.Request, principal model.Principal) {
 	logger := h.logger.With("user_id", principal.UserID)
-	values, err := httpx.QueryValues(request, "workerId")
+	values, err := httpx.QueryValues(request, "workerId", "cwd", "provider", "model", "reasoningEffort")
 	var result botcore.BotDefaults
 	if err == nil {
-		var workerID *string
-		if value, exists := values["workerId"]; exists {
-			workerID = &value[0]
+		overrides := model.BotOverrides{}
+		for key, destination := range map[string]**string{"workerId": &overrides.WorkerID, "cwd": &overrides.Cwd, "provider": &overrides.Provider, "model": &overrides.Model, "reasoningEffort": &overrides.ReasoningEffort} {
+			if value, exists := values[key]; exists {
+				*destination = &value[0]
+			}
 		}
-		result, err = h.bots.Defaults(request.Context(), principal, workerID)
+		if resolver, ok := h.bots.(interface {
+			DefaultsFor(context.Context, model.Principal, model.BotOverrides) (botcore.BotDefaults, error)
+		}); ok {
+			result, err = resolver.DefaultsFor(request.Context(), principal, overrides)
+		} else if overrides.Cwd != nil || overrides.Provider != nil || overrides.Model != nil || overrides.ReasoningEffort != nil {
+			err = httpx.InvalidInput("Bot defaults do not support these overrides.")
+		} else {
+			result, err = h.bots.Defaults(request.Context(), principal, overrides.WorkerID)
+		}
 	}
 	if err != nil {
 		httpx.WriteError(w, request, logger, "bot", "defaults", err)
@@ -147,8 +157,11 @@ func botConfigurationResponse(value *model.BotConfiguration) *api.BotConfigurati
 	if value == nil {
 		return nil
 	}
-	result := api.BotConfiguration(*value)
-	result.Args = append([]string{}, value.Args...)
+	result := api.BotConfiguration{WorkerID: value.WorkerID, Cwd: value.Cwd, Provider: value.Provider, Model: value.Model, Args: append([]string{}, value.Args...), ReasoningEffort: value.ReasoningEffort}
+	if value.Selection != nil {
+		selection := api.BotSelection(*value.Selection)
+		result.Selection = &selection
+	}
 	return &result
 }
 
@@ -240,7 +253,7 @@ func Response(bot model.Bot) api.Bot {
 		return result
 	}
 	result.BotDefinition = &api.BotDefinition{OwnerUserID: bot.OwnerUserID, Name: bot.Name, CreationOrder: bot.CreationOrder,
-		RequestedOverrides: api.BotOverrides(bot.RequestedOverrides), ResolvedConfiguration: api.BotConfiguration(bot.ResolvedConfiguration),
+		RequestedOverrides: api.BotOverrides(bot.RequestedOverrides), ResolvedConfiguration: *botConfigurationResponse(&bot.ResolvedConfiguration),
 		SessionID: bot.SessionID, TestExecutionID: bot.TestExecutionID, StartupResult: api.BotResult(bot.StartupResult), CreatedAt: bot.CreatedAt.UTC(), UpdatedAt: bot.UpdatedAt.UTC()}
 	if bot.RoleConfiguration != nil {
 		role := api.BotRoleConfiguration(*bot.RoleConfiguration)

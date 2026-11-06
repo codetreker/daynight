@@ -30,13 +30,13 @@ Worker 在实例锁保护下打开任务和 Bot stores，将 Bot 清单、执行
 
 首次读取前取得按规范化 Bot ID 命名的事务 advisory lock，串行化同一 ID 的查回与默认解析；否则两个初次读取都为空时，后到的环境失败可能掩盖另一请求已经提交的结果。锁也覆盖已解析内部创建入口，与后续 Bot 行锁保持一致顺序。哈希碰撞只会增加等待，不改变归属或请求身份。插入仍使用 `ON CONFLICT(id) DO NOTHING`。冲突后用独立 SQL 语句读取并锁定原行，才能观察另一个事务刚提交的结果；不能用同一语句的快照兜底假定一定可见。相同 owner/指纹返回原行；不同请求冲突，删除中的行不恢复。数据库错误保留 `store.Error` 和事务结果信息，不将未知提交解释成回滚。
 
-默认解析在事务确认 ID 尚不存在后执行；原请求重放直接返回冻结结果，不依赖当前 Worker 可用性。冻结配置的格式和组合归属在插入前再次校验。HTTP 创建只接受名字与显式覆盖，不开放已解析配置内核；内部已解析入口只检查格式和归属。
+原 ID 的持久结果优先于当前默认解析和能力请求。需要原生选择时，先在事务外读取默认与偏好并查询绑定 Worker，再在短创建事务内重读同一基线；Worker、Provider、cwd、有效配置或偏好改变时拒绝过期结果。原请求并发提交后，事务内仍先按原 ID 返回其冻结结果。网络等待不持有创建事务的凭据、Worker 或 Bot 锁。冻结配置的格式和组合归属在插入前再次校验。HTTP 创建只接受名字与显式覆盖，不开放已解析配置内核；内部已解析入口只检查格式和归属。
 
 ## 默认解析与偏好事务
 
 `core/bot` 统一 defaults 预览与首次创建的解析规则，`service/bot` 选择读取快照或创建事务。快照的 `BotReader.BotDefaults` 提供服务端时间、Owner Worker 列表与偏好；写入作用域的 `BotWriteDAO.BotDefaults` 在原创建事务中读取同样的数据。默认解析的时效判断时间在 Worker 与偏好读取后由数据库取得，避免 ReadCommitted 的新心跳晚于先前时间而被误判为未来；该时间只用于时效判断，不代表跨多次 SQL 的快照边界。列表按 `(created_at,worker_id)` 排序，不套用普通 Worker 列表的 72 小时隐藏或 Task 库存投影，因此过期的显式 Worker 仍能返回具体不可用原因。
 
-解析先处理显式 Worker；没有显式 Worker 时尝试成功 Worker 偏好，再按稳定顺序选择可用配置。每个候选先经过 `WorkerAssistantHostState` 的托管版本、在线及观测时效检查，再为该机器选择目录与 Provider。每项使用显式值、该 Worker 偏好、报告默认的顺序。只读取目标 Provider 的 model/args。失败目标保留原因，不在同一 Worker 上另猜一个 Provider。目录按 Worker 平台验证；真实文件系统与启动预检由绑定 Worker 负责。
+解析先处理显式 Worker；没有显式 Worker 时尝试成功 Worker 偏好，再按稳定顺序选择可用配置。每个候选先经过 `WorkerAssistantHostState` 的托管版本、在线及观测时效检查，再为该机器选择目录与 Provider。每项使用显式值、该 Worker 偏好、报告默认的顺序。模型与 effort 使用单助手显式值和按 Worker/Provider/模型绑定的成功偏好，其后读取目标 Provider 的有效默认。基础 args 只读取目标 Provider 的报告。失败目标保留原因，不在同一 Worker 上另猜一个 Provider。目录按 Worker 平台验证；真实文件系统与启动预检由绑定 Worker 负责。
 
 Worker 的历史清理超时只能在原探测可靠确认后解除阻塞，并经下一轮只读预检成功生成新的可用报告；具体责任由[Worker 采集设计](daynight-worker-reporting.md#助手托管预检接入)拥有。默认解析不读取本机清理句柄，不以其它 Provider 的成功、已有 Bot 的持久 ready 或网页刷新代替当前目标的有效观测。预检成功仍不保证后续认证、模型访问或原生 Session 启动成功。
 
@@ -44,7 +44,21 @@ Worker 的历史清理超时只能在原探测可靠确认后解除阻塞，并�
 
 `store.BotWriteDAO.CommitBotPreferences` 加入调用方已有事务，不自行开启或提交。它重新读取持久 Bot，要求未删除、已绑定 Session 且 startupResult 为 ready，只提交持久显式项对应的冻结值。生命周期调用方必须先按 Bot → Session 锁序验证凭据、绑定 Worker、当前 native fence 与同步事实，再同事务持久化 ready 并调用该方法。Session 的 `ReportBot` 用例 在验证当前 live 同步后调用它；该内部方法的 ready 检查不替代 native 同步验证。数据库故障回滚整个事务，不留部分偏好。重放以原 creation_order 为条件，无额外写入效果。
 
-默认查询无写入副作用；创建只写 pending Bot。report 将偏好提交留在同一生命周期事务中，无需独立的客户端确认请求，也不能在 spawn 回执或表单提交后提前调用成功方法。
+默认查询无写入副作用；创建只写 pending Bot。迁移 `045_bot_native_preferences.sql` 增加独立模型和 effort 偏好表。model 偏好按 owner/Worker/Provider 保存，reasoningEffort 偏好再按有效模型隔离，各自使用 creation_order 水位。只有显式选择的字段在 ready 事务内提交；未知模型不能生成 effort 偏好。report 将偏好提交留在同一生命周期事务中，无需独立的客户端确认请求，也不能在 spawn 回执或表单提交后提前调用成功方法。
+
+## 原生选择与冻结
+
+`BotOverrides` 的 model/reasoningEffort 保留省略状态，不包含预览结果。`BotConfiguration` 保留原 model/args，并以可选 reasoningEffort 和 selection 表达新冻结合同。selection.schemaVersion 固定为 1，modelSource/reasoningEffortSource 分别标识 explicit、preference、local、cloud、native 或 unknown；经原生发现的配置保存 configurationGeneration 与 catalogGeneration。旧记录没有 selection 时维持原 JSON 形状。
+
+Worker 的 assistantHost.creationConfigurationVersion=1 是支持新冻结格式的能力声明；单独支持 model.list 不足以证明能够消费新配置。旧 Worker 仍能按原合同进行名字创建，新增明确 model/effort 则拒绝。
+
+`service/bot` 使用共享 workerreadonly broker 获取绑定 Worker 的 model.list。能力响应按 Provider、配置和目录代次聚合有界分页，隐藏模型仍参与支持性校验。无 model/effort 覆写和成功偏好的名字创建沿用报告，不增加全量探测。失效模型偏好回到有效 Worker 默认；失效 effort 偏好回到当前有效 effort。没有单助手 effort 覆写时，当前明确 Worker effort 不兼容必须保留错误，不能以旧成功偏好掩盖。
+
+发现位于创建事务外；结果保存偏好解析后的配置、该 Worker/Provider 的原生偏好集合及移除原生偏好后的 Worker 基线。事务先核对原 ID，再重算并比较这三项输入，以识别被退役模型偏好遮住的 Worker 默认变化。发现与入库使用同一发现条件：明确或偏好来源需要发现，新格式下非空的模型维度 effort 历史也需要发现，即使当前报告没有可见模型。缺少所需发现结果或输入变化时返回 `resource_conflict`，不在事务中探测或自动重放创建。
+
+Worker 保存完整冻结配置并使用它核对登记请求与执行身份。执行配置通过统一原生参数适配器生成，单助手值覆盖、去重原 args 中的 model/effort，保留其它已准入参数。首次原生启动复核最终组合；恢复沿用原 Session 和冻结意图，不借当前默认重配置，也不重写原生文件。Session 内临时切模型不进入 Bot 成功偏好写入路径。
+
+字段及失败语义由[助手规格](../spec/assistant.md)拥有；[原生选择决策](../../.agents/notes/implemented/architecture/2026-11-06-bot-native-selection.md)记录隔离能力查询与创建事务的原因。
 
 ## 登记与恢复事务
 
