@@ -25,7 +25,7 @@ publication workflow retain their exclusions. Bundled CLI source Markdown
 retains CLI selection. The strict version-only CLI manifest exception remains.
 CI workflow, routing and unknown paths select every module. Complete merge-base
 diffs retain deletions and both sides of renames; every main push runs all
-modules and final gates retain their existing requirements.
+modules. Final checks require every selected module job to succeed.
 
 The [README routing table](../../../../README.md#ci-selection) owns the directory
 map, and the [development guide](../../../../docs/development.md#ci-selection)
