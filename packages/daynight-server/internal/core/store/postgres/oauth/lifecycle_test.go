@@ -4,9 +4,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
+
+func TestLockOwnerSession(t *testing.T) {
+	tx, dao := transaction(t)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	user, session := uuid.NewString(), uuid.NewString()
+	_, err := tx.Exec(ctx, `INSERT INTO users (id,uniauth_id,created_at,updated_at) VALUES ($1,$2,$3,$3)`, user, uuid.NewString(), now)
+	check(t, err)
+	_, err = tx.Exec(ctx, `INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)`, session, user, digest("session"), now, now.Add(time.Hour))
+	check(t, err)
+	principal := model.Principal{Kind: model.SessionCredential, UserID: user, CredentialID: session}
+	check(t, dao.LockOwnerSession(ctx, principal, now))
+	missing(t, dao.LockOwnerSession(ctx, principal, now.Add(time.Hour)))
+	principal.UserID = uuid.NewString()
+	missing(t, dao.LockOwnerSession(ctx, principal, now))
+}
 
 func TestLifecyclePersistenceAndBoundedFairCleanup(t *testing.T) {
 	tx, dao := transaction(t)

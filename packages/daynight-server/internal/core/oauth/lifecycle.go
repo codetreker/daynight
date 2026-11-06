@@ -207,17 +207,82 @@ func validID(id string) bool {
 // ListOwnerGrants and RevokeOwnerGrant accept the authenticated account ID;
 // the caller owns the authentication boundary for that account.
 func (s *GrantLifecycle) ListOwnerGrants(ctx context.Context, userID string) ([]store.OAuthGrant, error) {
+	grants, _, err := s.listOwnerGrants(ctx, userID, nil)
+	return grants, err
+}
+
+// ListSessionGrants validates the browser session in the same transaction as
+// the read, including after any wait for its credential lock.
+func (s *GrantLifecycle) ListSessionGrants(ctx context.Context, principal model.Principal) ([]store.OAuthGrant, time.Time, error) {
+	if !validOwnerSession(principal) {
+		return nil, time.Time{}, model.Unauthenticated(nil)
+	}
+	return s.listOwnerGrants(ctx, principal.UserID, &principal)
+}
+
+func validOwnerSession(p model.Principal) bool {
+	return p.Kind == model.SessionCredential && validID(p.UserID) && validID(p.CredentialID)
+}
+
+func (s *GrantLifecycle) checkOwnerSession(ctx context.Context, d store.GrantLifecycleDAO, p model.Principal) error {
+	_, err := s.checkOwnerSessionAt(ctx, d, p)
+	return err
+}
+
+func (s *GrantLifecycle) checkOwnerSessionAt(ctx context.Context, d store.GrantLifecycleDAO, p model.Principal) (time.Time, error) {
+	now, err := d.FreshTime(ctx, s.clock())
+	if err != nil {
+		return time.Time{}, err
+	}
+	if err := d.LockOwnerSession(ctx, p, now); errors.Is(err, model.ErrNotFound) {
+		return time.Time{}, model.Unauthenticated(nil)
+	} else {
+		return now, err
+	}
+}
+
+func (s *GrantLifecycle) listOwnerGrants(ctx context.Context, userID string, principal *model.Principal) ([]store.OAuthGrant, time.Time, error) {
 	if !validID(userID) {
-		return nil, invalidInput()
+		return nil, time.Time{}, invalidInput()
 	}
 	var out []store.OAuthGrant
-	c, err := s.writer.WriteGrantLifecycle(ctx, func(d store.GrantLifecycleDAO) error { var e error; out, e = d.OwnerGrants(ctx, userID); return e })
+	var observedAt time.Time
+	c, err := s.writer.WriteGrantLifecycle(ctx, func(d store.GrantLifecycleDAO) error {
+		if principal != nil {
+			if err := s.checkOwnerSession(ctx, d, *principal); err != nil {
+				return err
+			}
+		}
+		var err error
+		out, err = d.OwnerGrants(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if principal != nil {
+			observedAt, err = s.checkOwnerSessionAt(ctx, d, *principal)
+			return err
+		}
+		return nil
+	})
 	if e := lifecycleCompletion(c, err); e != nil {
-		return nil, e
+		return nil, time.Time{}, e
 	}
-	return out, nil
+	return out, observedAt, nil
 }
 func (s *GrantLifecycle) RevokeOwnerGrant(ctx context.Context, userID, grantID string) (bool, error) {
+	return s.revokeOwnerGrant(ctx, userID, grantID, nil)
+}
+
+// RevokeSessionGrant rechecks the browser session after grant and access lock
+// waits. Grant is locked first, preserving the family lock order.
+func (s *GrantLifecycle) RevokeSessionGrant(ctx context.Context, principal model.Principal, grantID string) (bool, error) {
+	if !validOwnerSession(principal) {
+		return false, model.Unauthenticated(nil)
+	}
+	return s.revokeOwnerGrant(ctx, principal.UserID, grantID, &principal)
+}
+
+func (s *GrantLifecycle) revokeOwnerGrant(ctx context.Context, userID, grantID string, principal *model.Principal) (bool, error) {
 	if !validID(userID) || !validID(grantID) {
 		return false, invalidInput()
 	}
@@ -230,12 +295,23 @@ func (s *GrantLifecycle) RevokeOwnerGrant(ctx context.Context, userID, grantID s
 		if g.UserID != userID {
 			return model.ErrNotFound
 		}
+		if principal != nil {
+			if err := s.checkOwnerSession(ctx, d, *principal); err != nil {
+				return err
+			}
+		}
 		now, e := d.FreshTime(ctx, s.clock())
 		if e != nil {
 			return e
 		}
 		changed, e = d.RevokeFamily(ctx, grantID, now)
-		return e
+		if e != nil {
+			return e
+		}
+		if principal != nil {
+			return s.checkOwnerSession(ctx, d, *principal)
+		}
+		return nil
 	})
 	if e := lifecycleCompletion(c, err); e != nil {
 		return false, e
