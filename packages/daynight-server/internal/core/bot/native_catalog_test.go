@@ -83,7 +83,7 @@ func TestPreparedSelectionRechecksDefaultsAndKeepsOriginalID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.Resolution = &CreationResolution{Expected: *resolved.Configuration, Configuration: *resolved.Configuration}
+	in.Resolution = &CreationResolution{Expected: *resolved.Configuration, ExpectedBaseline: *resolved.Configuration, Configuration: *resolved.Configuration}
 	in.Resolution.Configuration.ReasoningEffort = ptr("low")
 	in.Resolution.Configuration.Selection = &model.BotSelection{SchemaVersion: 1, ModelSource: "explicit", ReasoningEffortSource: "native"}
 	dao := &botDAO{defaults: defaults, fail: map[string]error{}}
@@ -129,5 +129,34 @@ func TestSelectionValidationAndLegacyStoredRecords(t *testing.T) {
 		c.ReasoningEffort = ptr("high")
 		change(&c)
 		assertFault(t, validateSelection(c), "invalid_input")
+	}
+}
+
+func TestCreationResolutionRechecksWorkerBaselineAndEffortHistory(t *testing.T) {
+	baseline := model.BotConfiguration{Model: ptr("model-a"), Selection: &model.BotSelection{SchemaVersion: 1, ModelSource: "cloud", ReasoningEffortSource: "native"}}
+	configuration := model.BotConfiguration{Model: ptr("retired"), Selection: &model.BotSelection{SchemaVersion: 1, ModelSource: "preference", ReasoningEffortSource: "native"}}
+	preference := model.BotNativePreference{Model: ptr("retired")}
+	resolution := &CreationResolution{Expected: configuration, ExpectedBaseline: baseline, ExpectedPreference: preference, Configuration: baseline}
+	resolved, err := ApplyCreationResolution(configuration, baseline, preference, resolution)
+	if err != nil || resolved.Model == nil || *resolved.Model != "model-a" {
+		t.Fatalf("unchanged baseline lost its discovered fallback: %+v %v", resolved, err)
+	}
+	changed := baseline
+	changed.Model = ptr("model-b")
+	_, err = ApplyCreationResolution(configuration, changed, preference, resolution)
+	assertFault(t, err, "resource_conflict")
+	_, err = ApplyCreationResolution(configuration, baseline, model.BotNativePreference{Model: ptr("retired"), Efforts: map[string]string{"model-a": "low"}}, resolution)
+	assertFault(t, err, "resource_conflict")
+	native := model.BotConfiguration{Selection: &model.BotSelection{SchemaVersion: 1, ModelSource: "native", ReasoningEffortSource: "native"}}
+	_, err = ApplyCreationResolution(native, model.BotConfiguration{}, model.BotNativePreference{Efforts: map[string]string{"model-a": "low"}}, nil)
+	assertFault(t, err, "resource_conflict")
+	_, err = ApplyCreationResolution(native, model.BotConfiguration{}, model.BotNativePreference{}, nil)
+	if err != nil {
+		t.Fatalf("name-only creation without history requires discovery: %v", err)
+	}
+	legacy := model.BotConfiguration{}
+	_, err = ApplyCreationResolution(legacy, model.BotConfiguration{}, model.BotNativePreference{Efforts: map[string]string{"model-a": "low"}}, nil)
+	if err != nil {
+		t.Fatalf("legacy Worker cannot consume native history: %v", err)
 	}
 }

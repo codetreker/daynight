@@ -138,7 +138,7 @@ func (s *Bots) DefaultsFor(ctx context.Context, principal model.Principal, overr
 	}
 	base := *result.Configuration
 	preference := defaults.WorkerPreferences[base.WorkerID].Native[base.Provider]
-	if botcore.RequiresNativeDiscovery(base) || base.Selection != nil && len(preference.Efforts) > 0 {
+	if botcore.RequiresNativeDiscovery(base, preference) {
 		baseline, err := botcore.WorkerNativeDefaults(defaults, overrides, base.WorkerID)
 		if err != nil {
 			return botcore.BotDefaults{}, err

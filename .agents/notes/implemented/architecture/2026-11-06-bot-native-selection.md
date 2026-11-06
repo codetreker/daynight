@@ -20,7 +20,11 @@ model discovery.
 
 Native discovery runs before the short creation transaction. The transaction
 first reconciles the original ID, then checks that the resolution inputs still
-match before freezing the new definition. Holding credential locks across the
+match before freezing the new definition. These inputs include both the
+preference-applied configuration and the underlying Worker native baseline:
+a retired preference can otherwise hide a changed fallback model. Admission
+also rechecks whether model-bound effort history now requires discovery, even
+when the reported model is still unknown. Holding credential locks across the
 read-only broker request would conflict with the broker's independent credential
 validation and would make native latency a database lock duration.
 

@@ -137,7 +137,15 @@ func resolveBotCreation(ctx context.Context, tx store.BotWriteDAO, principal mod
 	if resolved.Configuration == nil {
 		return model.BotConfiguration{}, botConflict(fmt.Sprintf("Bot configuration is unavailable: %s. Read current defaults before submitting a new request.", *resolved.Reason))
 	}
-	return ApplyCreationResolution(*resolved.Configuration, defaults.WorkerPreferences[resolved.Configuration.WorkerID].Native[resolved.Configuration.Provider], input.Resolution)
+	var baseline model.BotConfiguration
+	if input.Resolution != nil {
+		// A preference can hide a changed Worker value that discovery used as its fallback.
+		baseline, err = WorkerNativeDefaults(defaults, input.Overrides, resolved.Configuration.WorkerID)
+		if err != nil {
+			return model.BotConfiguration{}, err
+		}
+	}
+	return ApplyCreationResolution(*resolved.Configuration, baseline, defaults.WorkerPreferences[resolved.Configuration.WorkerID].Native[resolved.Configuration.Provider], input.Resolution)
 }
 
 // Defaults reads current owner-scoped choices without recording a preference.

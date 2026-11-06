@@ -15,6 +15,7 @@ import (
 // exact default inputs checked again in the insertion transaction.
 type CreationResolution struct {
 	Expected           model.BotConfiguration
+	ExpectedBaseline   model.BotConfiguration
 	ExpectedPreference model.BotNativePreference
 	Configuration      model.BotConfiguration
 }
@@ -118,18 +119,18 @@ func nativeConfiguration(worker model.WorkerSnapshot, provider model.WorkerAssis
 	return base
 }
 
-func RequiresNativeDiscovery(configuration model.BotConfiguration) bool {
+func RequiresNativeDiscovery(configuration model.BotConfiguration, preference model.BotNativePreference) bool {
 	selection := configuration.Selection
-	return selection != nil && (slices.Contains([]string{"explicit", "preference"}, selection.ModelSource) || slices.Contains([]string{"explicit", "preference"}, selection.ReasoningEffortSource))
+	return selection != nil && (len(preference.Efforts) > 0 || slices.Contains([]string{"explicit", "preference"}, selection.ModelSource) || slices.Contains([]string{"explicit", "preference"}, selection.ReasoningEffortSource))
 }
-func ApplyCreationResolution(configuration model.BotConfiguration, preference model.BotNativePreference, resolution *CreationResolution) (model.BotConfiguration, error) {
+func ApplyCreationResolution(configuration, baseline model.BotConfiguration, preference model.BotNativePreference, resolution *CreationResolution) (model.BotConfiguration, error) {
 	if resolution == nil {
-		if RequiresNativeDiscovery(configuration) {
+		if RequiresNativeDiscovery(configuration, preference) {
 			return model.BotConfiguration{}, botConflict("Native selection requires a current Worker capability observation.")
 		}
 		return configuration, nil
 	}
-	if !reflect.DeepEqual(configuration, resolution.Expected) || !reflect.DeepEqual(preference, resolution.ExpectedPreference) {
+	if !reflect.DeepEqual(configuration, resolution.Expected) || !reflect.DeepEqual(baseline, resolution.ExpectedBaseline) || !reflect.DeepEqual(preference, resolution.ExpectedPreference) {
 		return model.BotConfiguration{}, botConflict("Bot defaults changed during native discovery. Read current defaults before submitting the original request again.")
 	}
 	return resolution.Configuration, nil

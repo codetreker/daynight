@@ -54,6 +54,8 @@ Worker 的 assistantHost.creationConfigurationVersion=1 是支持新冻结格式
 
 `service/bot` 使用共享 workerreadonly broker 获取绑定 Worker 的 model.list。能力响应按 Provider、配置和目录代次聚合有界分页，隐藏模型仍参与支持性校验。无 model/effort 覆写和成功偏好的名字创建沿用报告，不增加全量探测。失效模型偏好回到有效 Worker 默认；失效 effort 偏好回到当前有效 effort。没有单助手 effort 覆写时，当前明确 Worker effort 不兼容必须保留错误，不能以旧成功偏好掩盖。
 
+发现位于创建事务外；结果保存偏好解析后的配置、该 Worker/Provider 的原生偏好集合及移除原生偏好后的 Worker 基线。事务先核对原 ID，再重算并比较这三项输入，以识别被退役模型偏好遮住的 Worker 默认变化。发现与入库使用同一发现条件：明确或偏好来源需要发现，新格式下非空的模型维度 effort 历史也需要发现，即使当前报告没有可见模型。缺少所需发现结果或输入变化时返回 `resource_conflict`，不在事务中探测或自动重放创建。
+
 Worker 保存完整冻结配置并使用它核对登记请求与执行身份。执行配置通过统一原生参数适配器生成，单助手值覆盖、去重原 args 中的 model/effort，保留其它已准入参数。首次原生启动复核最终组合；恢复沿用原 Session 和冻结意图，不借当前默认重配置，也不重写原生文件。Session 内临时切模型不进入 Bot 成功偏好写入路径。
 
 字段及失败语义由[助手规格](../spec/assistant.md)拥有；[原生选择决策](../../.agents/notes/implemented/architecture/2026-11-06-bot-native-selection.md)记录隔离能力查询与创建事务的原因。

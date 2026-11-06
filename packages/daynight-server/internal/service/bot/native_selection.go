@@ -53,7 +53,7 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 	}
 	base := *resolved.Configuration
 	preference := defaults.WorkerPreferences[base.WorkerID].Native[base.Provider]
-	if !botcore.RequiresNativeDiscovery(base) && (base.Selection == nil || len(preference.Efforts) == 0) {
+	if !botcore.RequiresNativeDiscovery(base, preference) {
 		return nil, nil
 	}
 	baseline, err := botcore.WorkerNativeDefaults(defaults, input.Overrides, base.WorkerID)
@@ -64,7 +64,7 @@ func (s *Bots) prepareCreation(ctx context.Context, principal model.Principal, i
 	if err != nil {
 		return nil, err
 	}
-	return &botcore.CreationResolution{Expected: base, ExpectedPreference: preference, Configuration: final}, nil
+	return &botcore.CreationResolution{Expected: base, ExpectedBaseline: baseline, ExpectedPreference: preference, Configuration: final}, nil
 }
 
 func (s *Bots) readModels(ctx context.Context, principal model.Principal, base model.BotConfiguration, selected *string) (ro.ModelResult, error) {
