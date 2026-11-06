@@ -132,7 +132,10 @@ var oauthAuthorizationsSQL string
 //go:embed migrations/041_private_transfers.sql
 var privateTransfersSQL string
 
-//go:embed migrations/042_upload_chunks.sql
+//go:embed migrations/042_oauth_cleanup_cursor.sql
+var oauthCleanupCursorSQL string
+
+//go:embed migrations/043_upload_chunks.sql
 var uploadChunksSQL string
 
 type migration struct {
@@ -184,7 +187,8 @@ var schemaMigrations = []migration{
 	{version: 39, sql: oauthClientsSQL},
 	{version: 40, sql: oauthAuthorizationsSQL},
 	{version: 41, sql: privateTransfersSQL},
-	{version: 42, sql: uploadChunksSQL},
+	{version: 42, sql: oauthCleanupCursorSQL},
+	{version: 43, sql: uploadChunksSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

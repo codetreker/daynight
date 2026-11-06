@@ -28,9 +28,8 @@ DCR allocation and cleanup share a capacity lock. Cleanup locks each candidate
 and checks its current expiry and active grant references after the lock wait.
 Initial issuance must use the provided pin operation to hold the DCR row through
 the transaction that creates its grant; configured and CIMD clients have no DCR row. The [credential family decision](2026-11-06-mcp-oauth-credentials.md)
-owns grant and secret lifecycle semantics. Scheduling cleanup and mounting the
-production OAuth profile belong to the authorization lifecycle and browser
-integration respectively.
+owns grant and secret lifecycle semantics. The [authorization lifecycle](2026-11-06-mcp-oauth-grant-lifecycle.md)
+schedules cleanup; browser integration mounts the production OAuth profile.
 
 ## Alternatives
 
