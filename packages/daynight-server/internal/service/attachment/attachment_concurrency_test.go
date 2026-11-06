@@ -15,7 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/jackc/pgx/v5"
@@ -65,7 +65,7 @@ func attachmentMutation(ctx context.Context, attachments *Attachments, principal
 	return err
 }
 
-func waitAttachmentBlocked(t *testing.T, ctx context.Context, database *store.Store, blocker int32) int32 {
+func waitAttachmentBlocked(t *testing.T, ctx context.Context, database *postgres.Store, blocker int32) int32 {
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -98,7 +98,7 @@ func attachmentWaitResult(t *testing.T, ctx context.Context, result <-chan error
 	}
 }
 
-func assertAttachmentState(t *testing.T, ctx context.Context, database *store.Store, files filestorage.Storage, task model.Task, exists bool, content string) {
+func assertAttachmentState(t *testing.T, ctx context.Context, database *postgres.Store, files filestorage.Storage, task model.Task, exists bool, content string) {
 	t.Helper()
 	var size int64
 	var contentType string

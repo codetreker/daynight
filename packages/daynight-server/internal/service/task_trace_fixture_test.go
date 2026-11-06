@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -37,7 +37,7 @@ func (action taskQueryAction) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ 
 
 type tracedTaskService struct {
 	*taskservice.Tasks
-	store *store.Store
+	store *postgres.Store
 }
 
 func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *tracedTaskService {
@@ -52,7 +52,7 @@ func tracedTasks(t *testing.T, databaseURL string, action taskQueryAction) *trac
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	db := &store.Store{Pool: pool}
+	db := &postgres.Store{Pool: pool}
 	return &tracedTaskService{Tasks: taskservice.NewTasks(db), store: db}
 }
 

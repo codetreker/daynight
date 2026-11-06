@@ -21,7 +21,7 @@ Keep the confirmed preference ready while its same target is checked by exact
 GET. Confirmed Team and membership versions are reconciled independently so a
 late read or receipt cannot regress either. Identity, scope, navigation and
 storage arbitration still govern publication and trusted 404 fallback; guarded
-operations retain their outcomes while confirmed denial isolates private content. This extends the [browser preference decision](../feature/2026-11-04-browser-team-preference.md)
+operations retain their outcomes while confirmed denial isolates private content. This extends the [browser preference decision](../../archived/feature/2026-11-04-browser-team-preference.md)
 without treating an incomplete directory as proof of access or revocation.
 
 ## Alternatives

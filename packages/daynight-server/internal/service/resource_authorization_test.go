@@ -1,7 +1,6 @@
 package service
 
 import (
-	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -21,6 +20,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -85,7 +85,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 		}
 	})
 	probe := &authorizationStorage{Storage: files}
-	attachments := attachmentservice.NewAttachments(f.database, attachmentpostgres.New(f.database.Pool), probe)
+	attachments := attachmentservice.NewAttachments(f.database, f.database, probe)
 	putAttachment(t, attachments, admin, task, "secret.html", "<h1>same-origin</h1>")
 	ctx := context.Background()
 	readAndWrite := func(principal model.Principal) []func() error {
@@ -215,7 +215,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 		}
 	})
 	probe := &authorizationStorage{Storage: files, admitted: make(chan struct{}), release: make(chan struct{})}
-	attachments := attachmentservice.NewAttachments(f.database, attachmentpostgres.New(f.database.Pool), probe)
+	attachments := attachmentservice.NewAttachments(f.database, f.database, probe)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
@@ -269,7 +269,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	if probe.count() != 1 {
 		t.Fatal("later write reached filesystem")
 	}
-	read := attachmentservice.NewAttachments(f.database, attachmentpostgres.New(f.database.Pool), files)
+	read := attachmentservice.NewAttachments(f.database, f.database, files)
 	_, object, err := read.Open(context.Background(), admin, project.ID, task.ID, "admitted.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +316,7 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	database := &store.Store{Pool: pool}
+	database := &postgres.Store{Pool: pool}
 	admin, member := f.user(t), f.user(t)
 	project := f.project(t, admin, "Membership write ordering")
 	f.join(t, admin, member, project.ID)

@@ -18,8 +18,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestTaskHTTPLifecycleDefaultsAndUpdateSemantics(t *testing.T) {
@@ -399,7 +399,7 @@ func TestTaskHTTPKnownFaultsPreserveOperationalPrecedence(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	for _, err := range []error{
 		&model.Fault{Code: "unknown", Message: "unknown-secret"},
-		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, &pgconn.PgError{Message: "driver-secret"}),
+		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("driver-secret")}),
 		errors.Join(&model.Fault{Code: "not_found", Message: "domain-secret"}, context.Canceled),
 	} {
 		response := httptest.NewRecorder()

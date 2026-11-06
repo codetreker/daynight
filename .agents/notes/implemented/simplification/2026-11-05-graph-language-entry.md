@@ -21,9 +21,9 @@ focus containment, layered Escape and restoration behavior.
 
 The [global language entry decision](2026-11-05-global-language-entry.md)
 assigns the entry to the page. This partially supersedes the selector placement in the
-[bilingual interface decision](../feature/2026-10-22-web-bilingual-interface.md)
+[bilingual interface decision](../../archived/feature/2026-10-22-web-bilingual-interface.md)
 and the notice geometry in the
-[progressive graph decision](../feature/2026-10-22-progressive-task-graph.md).
+[progressive graph decision](../../archived/feature/2026-10-22-progressive-task-graph.md).
 The [inspection requirements](../../../../docs/spec/daynight-task-inspection.md)
 and [design](../../../../docs/design/daynight-task-inspection.md) own graph
 behavior and composition.

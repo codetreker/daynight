@@ -13,8 +13,8 @@ long localized choices need room to remain separate from the arrow.
 Worker configuration selects retain native controls inside a scoped wrapper that
 draws a noninteractive chevron at a fixed inset. The select reserves space for
 the chevron and truncates choices that do not fit. The wrapper also reflects the
-disabled state in its arrow color. The [configuration editor decision](../architecture/2026-11-04-web-worker-configuration-editor.md)
-continues to own configuration and draft behavior.
+disabled state in its arrow color. The [configuration editor decision](../../archived/architecture/2026-11-04-web-worker-configuration-editor.md)
+records the rationale for the existing configuration and draft behavior.
 
 ## Alternatives
 

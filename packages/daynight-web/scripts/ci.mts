@@ -1,7 +1,6 @@
-import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { requireGroupStopped } from './acceptance/identity.mts';
-import { command, type CommandOptions } from './acceptance/process.mts';
+import type { CommandOptions } from './acceptance/process.mts';
+import { runCiCommand } from './acceptance/navigation.mts';
 import { runAcceptance } from './acceptance/runner.mts';
 import { ownsSharedChecks, parseShard, requireShard, type FunctionalShard } from './acceptance/shard.mts';
 
@@ -15,23 +14,7 @@ export const parseCiArguments = (args: readonly string[]): { mode: 'quality' | '
   return { mode, ...(option === undefined ? {} : { shard: parseShard(option.slice('--shard='.length)) }) };
 };
 
-export const runCiCommand = async (file: string, args: readonly string[], options: CommandOptions): Promise<string> => {
-  let child: ChildProcess | undefined;
-  let output = '';
-  let failure: unknown;
-  try {
-    output = await command(file, args, { ...options, onSpawn: async (spawned) => {
-      child = spawned;
-      await options.onSpawn?.(spawned);
-    } });
-  } catch (error) { failure = error; }
-  if (child?.pid !== undefined) {
-    try { requireGroupStopped(child.pid); }
-    catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], 'CI command and process-group cleanup failed.', { cause: failure }); }
-  }
-  if (failure !== undefined) throw failure;
-  return output;
-};
+export { runCiCommand } from './acceptance/navigation.mts';
 
 type CiOperations = { command: typeof runCiCommand; acceptance: typeof runAcceptance };
 export const runCi = async (mode: string, cancellation: AbortController,
@@ -52,13 +35,10 @@ export const runCi = async (mode: string, cancellation: AbortController,
     return;
   }
   await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium'], { timeoutMs: 600_000 });
-  if (ownsSharedChecks(shard)) {
-    await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/playwright.config.ts'], { timeoutMs: 180_000 });
-    await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-playwright.config.ts'], { timeoutMs: 540_000 });
-    await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/bots-viewport-playwright.config.ts'], { timeoutMs: 180_000 });
-  }
   cancellation.signal.throwIfAborted();
-  await operations.acceptance(cancellation, shard === undefined ? undefined : { shard });
+  await operations.acceptance(cancellation, ownsSharedChecks(shard)
+    ? { ...(shard === undefined ? {} : { shard }), navigationChecks: true }
+    : shard === undefined ? undefined : { shard });
 };
 
 const main = async (): Promise<void> => {

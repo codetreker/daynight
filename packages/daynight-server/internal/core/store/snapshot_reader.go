@@ -21,6 +21,3 @@ type SnapshotScope interface {
 	AttachmentDAO() AttachmentReader
 	ObservedAt(context.Context) (time.Time, error)
 }
-
-var _ SnapshotReader = (*Store)(nil)
-var _ SnapshotScope = (*Snapshot)(nil)

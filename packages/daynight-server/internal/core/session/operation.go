@@ -119,15 +119,30 @@ func (s *Engine) endOperation() {
 	}
 }
 
+// CancelWork signals existing operations without preventing already-admitted
+// transport handlers from completing their disconnect transactions.
+func (s *Engine) CancelWork() {
+	s.admissionMutex.Lock()
+	defer s.admissionMutex.Unlock()
+	s.cancelWorkLocked()
+}
+
+func (s *Engine) cancelWorkLocked() {
+	if s.stopping == nil {
+		s.stopping = make(chan struct{})
+	}
+	if !s.workCanceled {
+		s.workCanceled = true
+		close(s.stopping)
+	}
+}
+
 // Stop closes admission and waits for admitted operations and their hooks.
 func (s *Engine) Stop(ctx context.Context) error {
 	s.admissionMutex.Lock()
 	if !s.closing {
 		s.closing = true
-		if s.stopping == nil {
-			s.stopping = make(chan struct{})
-		}
-		close(s.stopping)
+		s.cancelWorkLocked()
 	}
 	if s.activeOperations == 0 {
 		s.admissionMutex.Unlock()

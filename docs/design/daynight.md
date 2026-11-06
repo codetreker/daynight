@@ -396,10 +396,8 @@ SQLite 或审查运行时。引导完成后以原参数调用原操作一次，�
 服务命令从配置读取开始共享五分钟业务期限，设备登录拥有独立十分钟期限。
 [客户端 C6](../spec/daynight.md#c6-按需配置引导)拥有行为，
 [配置引导决策](../../.agents/notes/archived/feature/2026-10-21-guided-configuration-setup.md)
-保留配置事务理由，[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
-拥有默认服务、登录和退出的生命周期；
-[顶层 setup 移除决策](../../.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
-拥有配置入口收敛。
+保留配置事务理由，[设备登录决策](../../.agents/notes/archived/architecture/2026-10-25-cli-device-login.md)记录了默认服务、登录和退出的生命周期的历史取舍；
+[顶层 setup 移除决策](../../.agents/notes/archived/simplification/2026-10-25-remove-top-level-setup.md)记录了配置入口收敛的历史取舍。
 
 ## 配置与持久化
 
@@ -514,7 +512,7 @@ PR 的 Linux CLI 任务还检查包版本；main push 保留全量应用门禁�
 发布在验证 CLI 与安装项目依赖前检查精确版本的 tag 和 npm 记录；任一存在则成功跳过。
 新版本在冻结的源码提交上独立执行 `@codetreker/daynight` 的类型检查、测试、安装验收和
 发布包安装检查。发布不依赖全仓 `checks.yml` 的结果，Go server 与 Web 检查不会阻止
-npm 发布；[CLI 发布验证决策](../../.agents/notes/implemented/process/2026-10-22-cli-publication-validation.md)
+npm 发布；[CLI 发布验证决策](../../.agents/notes/archived/process/2026-10-22-cli-publication-validation.md)
 维护验证范围。
 npm 元数据统一由固定版本的 npm 12.2.0 执行 `npm view <package>@<version> --json`
 读取完整包记录并选择版本，仅 JSON `E404` 表示版本不存在。鉴权、网络、超时和格式
@@ -526,18 +524,18 @@ npm 元数据统一由固定版本的 npm 12.2.0 执行 `npm view <package>@<ver
 开发、构建、CI 与 Docker 统一使用 pnpm 11.28.6；`pnpm-workspace.yaml` 维护
 `engineStrict`、`storeDir` 和依赖构建权限。npm 12.2.0 继续负责元数据查询。`setup-node` 配置 npmjs
 registry，发布子进程继承其配置与 GitHub OIDC 环境。公开仓库保留 provenance。
-[pnpm OIDC 发布决策](../../.agents/notes/implemented/process/2026-10-22-pnpm-oidc-publication.md)
+[pnpm OIDC 发布决策](../../.agents/notes/archived/process/2026-10-22-pnpm-oidc-publication.md)
 维护客户端选择与配置职责。
 新上传仍要求同一份产物、源码和公共字节验证成功后才创建不可变 tag，元数据与 tarball
 共用十分钟验证期限。npm 查询限制三十秒，GitHub 与 tarball HTTP 请求限制二十秒，
 并受剩余总期限约束。
-[npm CLI 发布检查决策](../../.agents/notes/implemented/process/2026-10-22-npm-cli-publication-checks.md)
+[npm CLI 发布检查决策](../../.agents/notes/archived/process/2026-10-22-npm-cli-publication-checks.md)
 维护查询、跳过与重复发布规则；发布授权、npm OIDC、产物身份及公共验证的选择依据
 记录在[发布决策](../../.agents/notes/archived/process/2026-10-20-npm-trusted-publishing.md)。
 
 ## 验证与交付
 
-使用手册验收对实际 npm pack 与安装后的 `daynight`、`dn` 比较原始字节，覆盖仓库外、无配置、无 launcher 与非交互终端，确认额外参数先于文件读取拒绝，以及缺失、读取错误和非法 UTF-8 的原因链。手册 frontmatter、独立内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/implemented/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
+使用手册验收对实际 npm pack 与安装后的 `daynight`、`dn` 比较原始字节，覆盖仓库外、无配置、无 launcher 与非交互终端，确认额外参数先于文件读取拒绝，以及缺失、读取错误和非法 UTF-8 的原因链。手册 frontmatter、独立内容和实际命令用法需要核验；字节一致不代表模型遵循指令。[使用手册决策](../../.agents/notes/archived/feature/2026-11-03-cli-skill-reading.md)拥有单文件输出的选择与代价。
 
 根入口与每个命令的参数验证需覆盖正常调用、裸组、帮助、版本、使用手册输出和错误结果；构建后入口
 必须保留 shebang、bin 路径和版本输出。依赖隔离验证通过不可用的 SQLite 加载、缺失的

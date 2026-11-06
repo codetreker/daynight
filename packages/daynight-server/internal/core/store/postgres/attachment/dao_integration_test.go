@@ -1,4 +1,4 @@
-package attachment
+package attachment_test
 
 import (
 	"context"
@@ -8,12 +8,13 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func attachmentFixture(t *testing.T) (*store.Store, string, string, model.Principal) {
+func attachmentFixture(t *testing.T) (*postgres.Store, string, string, model.Principal) {
 	t.Helper()
 	db := testsupport.TestStore(t)
 	ctx := t.Context()
@@ -39,7 +40,7 @@ func attachmentFixture(t *testing.T) (*store.Store, string, string, model.Princi
 func TestMutationDAOLifecycleAndRollback(t *testing.T) {
 	db, projectID, taskID, principal := attachmentFixture(t)
 	ctx := t.Context()
-	writer := New(db.Pool)
+	writer := db
 	result, err := writer.WriteAttachmentMutation(ctx, func(tx store.AttachmentMutationScope) error {
 		presence, err := tx.LockTaskPresence(ctx, projectID, taskID)
 		if err != nil || !presence.Found || presence.DeletedAt != nil {
@@ -66,6 +67,8 @@ func TestMutationDAOLifecycleAndRollback(t *testing.T) {
 		}
 		if _, err := dao.Attachment(ctx, projectID, taskID, "missing"); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("missing read: %v", err)
+		} else if failed, _ := store.DatabaseErrorFacts(err); failed {
+			t.Fatalf("missing attachment became database failure: %v", err)
 		}
 		first, err := dao.Attachments(ctx, projectID, taskID, store.AttachmentQuery{Limit: 2})
 		if err != nil || len(first.Items) != 2 || !first.HasMore || first.Items[0].Path != "a" || first.Items[1].Path != "dir/b" {
@@ -127,7 +130,7 @@ func TestMutationTaskLockAndFreshAuthorization(t *testing.T) {
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'other')`, other, projectID); err != nil {
 		t.Fatal(err)
 	}
-	writer := New(db.Pool)
+	writer := db
 	completion, err := writer.WriteAttachmentMutation(ctx, func(tx store.AttachmentMutationScope) error {
 		presence, err := tx.LockTaskPresence(ctx, projectID, taskID)
 		if err != nil || !presence.Found {
@@ -182,7 +185,7 @@ func TestMutationTaskLockAndFreshAuthorization(t *testing.T) {
 func TestMutationDatabaseFailures(t *testing.T) {
 	db, projectID, taskID, _ := attachmentFixture(t)
 	ctx := t.Context()
-	writer := New(db.Pool)
+	writer := db
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	completion, err := writer.WriteAttachmentMutation(canceled, func(store.AttachmentMutationScope) error { t.Fatal("canceled begin reached callback"); return nil })
@@ -218,17 +221,21 @@ func TestMutationDatabaseFailures(t *testing.T) {
 		}},
 	} {
 		t.Run(operation.name, func(t *testing.T) {
-			completion, err := writer.WriteAttachmentMutation(ctx, func(tx store.AttachmentMutationScope) error {
-				if operation.name != "task" {
-					if _, err := tx.(*scope).tx.Exec(ctx, `ALTER TABLE task_attachments RENAME TO inaccessible_attachments`); err != nil {
-						return err
-					}
+			if operation.name != "task" {
+				if _, err := db.Pool.Exec(ctx, `ALTER TABLE task_attachments RENAME TO inaccessible_attachments`); err != nil {
+					t.Fatal(err)
 				}
-				return operation.run(tx)
-			})
+				defer func() {
+					if _, err := db.Pool.Exec(ctx, `ALTER TABLE inaccessible_attachments RENAME TO task_attachments`); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
+			completion, err := writer.WriteAttachmentMutation(ctx, operation.run)
 			var dbErr *store.Error
 			var pgErr *pgconn.PgError
-			if completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &dbErr) || !errors.As(err, &pgErr) {
+			failed, _ := store.DatabaseErrorFacts(err)
+			if completion.Outcome != store.TransactionNotCommitted || !failed || !errors.As(err, &dbErr) || !errors.As(err, &pgErr) {
 				t.Fatalf("failure chain: %+v %v", completion, err)
 			}
 		})

@@ -1,0 +1,294 @@
+[
+  {
+    "name": "task_step_list",
+    "description": "Read ordered Steps summaries or full content at one exact parent version; continue with a version-bound cursor.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "taskId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "view": {
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "default": "summary"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "taskId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "projection": {
+              "enum": [
+                "summary",
+                "full"
+              ]
+            },
+            "steps": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "required": [
+            "items"
+          ]
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "task_step_show",
+    "description": "Read one full eight-hex Step ID and the exact shared parent version. Summary is default; full content is explicit and may be large.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "taskId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "stepId": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}$"
+        },
+        "view": {
+          "enum": [
+            "summary",
+            "full"
+          ],
+          "default": "summary"
+        }
+      },
+      "required": [
+        "projectId",
+        "taskId",
+        "stepId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "step": {
+              "type": "object"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "steps": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  }
+]

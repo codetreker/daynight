@@ -66,6 +66,12 @@ func (s *Projects) CreateWithAccess(ctx context.Context, p model.Principal, inpu
 	if err := core.ValidateCreate(p, input); err != nil {
 		return model.Project{}, model.ProjectAccess{}, err
 	}
+	return s.createValidated(ctx, p, input)
+}
+
+// createValidated requires the caller to validate identity, authorization inputs,
+// name and repository syntax before allocating an ID or starting a transaction.
+func (s *Projects) createValidated(ctx context.Context, p model.Principal, input core.CreateProject) (model.Project, model.ProjectAccess, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
 		return model.Project{}, model.ProjectAccess{}, fmt.Errorf("generate project ID: %w", err)

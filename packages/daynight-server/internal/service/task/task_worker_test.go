@@ -13,6 +13,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
@@ -20,7 +21,7 @@ func workerDescriptor() taskcore.WorkerDescriptor {
 	return taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Build machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, WorktreeID: uuid.NewString()}
 }
 
-func workerMember(t *testing.T, database *store.Store, projectID string) model.Principal {
+func workerMember(t *testing.T, database *postgres.Store, projectID string) model.Principal {
 	t.Helper()
 	principal := servicePrincipal(t, database)
 	if err := writeProjectForTest(database, context.Background(), projectID, func(tx store.ProjectWriteScope) error {

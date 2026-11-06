@@ -36,5 +36,5 @@ existing lock order and serializes unrelated messages and Project writes.
 
 Transaction-bound capabilities remain valid only inside their callback. Domain
 refusals cannot mask completion failures. Thread messages preserve the Task
-version and do not wake Workers. SQL stays in the existing store implementation
-until its separately owned physical migration.
+version and do not wake Workers. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns SQL and
+transaction-bound Task DAOs.

@@ -16,10 +16,10 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
@@ -32,17 +32,17 @@ type resourceTestHandler struct {
 	principal model.Principal
 }
 
-func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
-func resourceTestServer(t *testing.T, database *store.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
+func resourceTestServer(t *testing.T, database *postgres.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	instance := httptest.NewUnstartedServer(nil)
 	t.Cleanup(instance.Close)
 	origin := "http://" + instance.Listener.Addr().String()
 	callback := origin + "/api/v1/auth/callback"
 	gateway := testauth.StartGateway(t, callback)
-	config := server.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: origin, UniAuthURL: gateway.Origin, UniAuthAppID: gateway.AppID, UniAuthAppSecret: gateway.AppSecret, UniAuthCallbackURL: callback, AllowHTTPTestOrigin: true, AllowLoopbackHTTP: true}
+	config := configpkg.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: origin, UniAuthURL: gateway.Origin, UniAuthAppID: gateway.AppID, UniAuthAppSecret: gateway.AppSecret, UniAuthCallbackURL: callback, AllowHTTPTestOrigin: true, AllowLoopbackHTTP: true}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := server.New(server.Dependencies{Store: database, Files: files}, config, logger)
+	handler, err := appsupport.NewHandler(config, database, database.Ready, files, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func assertProjectError(t *testing.T, response *httptest.ResponseRecorder, statu
 }
 func jsonBody(t *testing.T, input any) string { return testsupport.JSONBody(t, input) }
 
-func projectTestHandler(t *testing.T, database *store.Store, output io.Writer) *resourceTestHandler {
+func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	files, err := local.New(t.TempDir())
 	if err != nil {
