@@ -510,6 +510,18 @@ to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
 
+### HTTP scenario ownership
+
+Domain packages own their HTTP integration scenarios, including those that
+construct the production application and use real PostgreSQL and UniAuth
+fixtures. The root `internal/server` package retains tests that need internal
+composition access, shared startup/channel fixtures and runtime shutdown
+ordering. A second package calling the same production application does not
+provide another HTTP boundary: shared scenarios run once in their domain owner,
+while internal-only assertions remain in the root package. The
+[HTTP test ownership decision](../../.agents/notes/implemented/testing/2026-11-06-server-http-proof-owners.md)
+records the distinction and preservation requirements.
+
 ### Task Graph boundary fixtures
 
 The TaskGraph boundary regression keeps a 1000-node backbone with 5000 dependency
