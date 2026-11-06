@@ -52,6 +52,36 @@ const failPurge = () => {
 beforeEach(() => { Channel.channels = []; Channel.messages = []; vi.stubGlobal('BroadcastChannel', Channel); });
 afterEach(() => { vi.restoreAllMocks(); scopes.splice(0).forEach(cache => cache.dispose()); connections.splice(0).forEach(connection => connection.close()); vi.unstubAllGlobals(); });
 
+it('does not echo hint-triggered access denials between direct scopes, but broadcasts a new local denial', async () => {
+  const owner = scope(), first = scope(), second = scope();
+  await apply(owner); await apply(first); await apply(second);
+  await first.beginTaskRead(projectId, taskId, 1, 1, signal());
+  await second.beginTaskRead(projectId, taskId, 1, 1, signal());
+  const ticket = await owner.beginSync(projectId, signal());
+  let denials = 0, deliveries = 0;
+  const post = Channel.prototype.postMessage;
+  vi.spyOn(Channel.prototype, 'postMessage').mockImplementation(function (this: Channel, value: unknown) {
+    post.call(this, value);
+    if (typeof value !== 'object' || value === null || !('revokedGeneration' in value)) return;
+    denials++;
+    // Bound a broken implementation so a feedback loop fails the assertion.
+    if (denials > 10) return;
+    for (const target of Channel.channels) if (target !== this && target.name === this.name) queueMicrotask(() => {
+      deliveries++; target.onmessage?.({ data: value } as MessageEvent<unknown>);
+    });
+  });
+  const fetcher = vi.fn(async () => wireResponse({ error: { code: 'not_found', message: 'not found', requestId: 'missing' } }, { status: 404, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  vi.stubGlobal('fetch', fetcher);
+  const settled = () => [first, second].every(cache => (cache as unknown as { directRecheckWorks: Map<string, unknown> }).directRecheckWorks.size === 0);
+  await owner.revokeProject(ticket, signal());
+  await vi.waitFor(() => { expect(fetcher).toHaveBeenCalledTimes(2); expect(settled()).toBe(true); });
+  expect(denials).toBe(1); expect(deliveries).toBe(2);
+  expect(first.getAuthorizedProject(projectId)).toBeNull(); expect(second.getAuthorizedProject(projectId)).toBeNull();
+  expect(await owner.revalidateProjectAccess(projectId)).toBe(false);
+  await vi.waitFor(() => { expect(fetcher).toHaveBeenCalledTimes(5); expect(settled()).toBe(true); });
+  expect(denials).toBe(2); expect(deliveries).toBe(4);
+});
+
 it('ignores a delayed incomparable negative hint after fresh access has been admitted', async () => {
   const owner = scope(), peer = scope(); await apply(owner); await apply(peer);
   const db = await database(); await corruptHistory(db);

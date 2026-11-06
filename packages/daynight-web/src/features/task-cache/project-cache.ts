@@ -489,7 +489,7 @@ export class TaskCacheScope {
       await this.observeHistoryUncertain(ticket, taskId, null, this.signal, true, undefined, undefined, origin);
     } catch (error) { if (isAbortError(error)) throw error; }
   }
-  async revalidateProjectAccess(projectId: string): Promise<boolean> {
+  async revalidateProjectAccess(projectId: string, broadcast = true): Promise<boolean> {
     const revision = this.getDirectRevision(projectId);
     const ticket = await this.beginSync(projectId, this.signal);
     try {
@@ -499,7 +499,7 @@ export class TaskCacheScope {
     catch (error) {
       if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
         if (revision !== this.getDirectRevision(projectId)) return released();
-        if (!await this.revokeProject(ticket, this.signal, true, error)) return released();
+        if (!await this.revokeProject(ticket, this.signal, broadcast, error)) return released();
         return false;
       }
       throw error;
@@ -514,7 +514,9 @@ export class TaskCacheScope {
           const pauseRevision = authRequestsPauseRevision();
           try {
             const revision = this.getDirectRevision(projectId);
-            const accessible = await this.revalidateProjectAccess(projectId);
+            // This check follows a peer's negative hint. Its result still
+            // withdraws local data, but must not echo the same hint back.
+            const accessible = await this.revalidateProjectAccess(projectId, false);
             if (accessible && (revision !== this.getDirectRevision(projectId) || this.directHintCounts.has(projectId) || this.isProjectAccessBlocked(projectId) || this.directRecheckPending.has(projectId))) {
               if (this.directHintCounts.has(projectId) || this.isProjectAccessBlocked(projectId) || this.directRecheckPending.has(projectId)) this.directRecheckPending.add(projectId);
               else {
