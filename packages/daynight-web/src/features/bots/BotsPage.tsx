@@ -77,10 +77,16 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
     const bookmark = handle?.captureBookmark();
     return handle && bookmark ? { handle, bookmark } : null;
   }, [binding, cache]);
-  const changeDetails = (open: boolean) => { pendingReading.current = captureReading(); setDetailsOpen(open); };
+  const restoreDetailsFocus = useRef(false);
+  const changeDetails = (open: boolean) => { pendingReading.current = captureReading(); restoreDetailsFocus.current = !open; setDetailsOpen(open); };
   useLayoutEffect(() => {
     const saved = pendingReading.current; pendingReading.current = null;
     if (saved && captureReading()?.handle === saved.handle) saved.handle.restoreBookmark(saved.bookmark);
+    if (!detailsOpen && restoreDetailsFocus.current) {
+      restoreDetailsFocus.current = false;
+      const opener = detailsOpener.current;
+      if (opener?.isConnected && !opener.disabled && !opener.closest('[hidden], [inert]')) opener.focus({ preventScroll: true });
+    }
   }, [detailsOpen, captureReading]);
   useLayoutEffect(() => {
     // Fullscreen updates this boundary in place. Restore its retained text
@@ -118,7 +124,11 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
       <ul className="bot-list">{items.map(item => <BotListItem key={item.id} bot={item} selected={botId === item.id} disabled={scope.isInvalidated} worker={worker(item.workerId)} stale={defaults.stale} follow={follow} onDelete={(bot, opener) => setDeleteTarget({ scope, bot, opener })} />)}</ul>
       <div className="bot-deletions">{deletions.filter(record => record.id !== botId).map(record => <BotDeletionStatus key={record.id} record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} />)}</div>
     </aside>
-    <div className="bot-conversation" ref={conversation} tabIndex={-1}>
+    <div className="bot-conversation" ref={conversation} tabIndex={-1} onKeyDown={event => {
+      if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented && showDetails && !deleteDialog) {
+        event.preventDefault(); event.stopPropagation(); changeDetails(false);
+      }
+    }}>
       {binding === null ? <header className="bot-conversation-heading">{botId !== null ? <BotConversationHeader target={headerTarget} /> : <h2>{m.select}</h2>}</header> : null}
       <div className="bot-conversation-body"><div className="bot-conversation-content">
       {botId !== null && detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
