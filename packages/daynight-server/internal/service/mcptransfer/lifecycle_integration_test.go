@@ -290,6 +290,9 @@ func TestLifecycleShutdownCancelsAndWaitsForPermit(t *testing.T) {
 	if err := f.lifecycle.Close(ctx2); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.lifecycle.LookupBound(t.Context(), f.actor, r.ID); err == nil || !strings.Contains(err.Error(), "lifecycle stopped") {
+		t.Fatalf("lookup after shutdown: %v", err)
+	}
 	if _, err := f.lifecycle.AcquirePermit(t.Context(), f.actor, r.ID); err == nil {
 		t.Fatal("admitted after shutdown")
 	}
