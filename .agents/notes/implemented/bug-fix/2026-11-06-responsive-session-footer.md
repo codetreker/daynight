@@ -44,7 +44,7 @@ The custom `renderFooter` presentation receives the original settings, combined
 activity and submit slots, preserving that contract.
 
 This replaces only the wrapping and interruption placement from the
-[unified Chatbox decision](2026-11-04-unified-session-chatbox.md). Its common
+[unified Chatbox decision](../../archived/bug-fix/2026-11-04-unified-session-chatbox.md). Its common
 border, form ownership and panel lifecycle remain applicable. The
 [Session design](../../../../docs/design/task-session-protocol.md) owns the
 component and CSS mechanisms.

@@ -24,14 +24,14 @@ planner transposes card rectangles and coordinates to reuse the horizontal
 channel planner, then transposes results back; text and cards remain upright.
 Horizontal routes use right and left centers, vertical routes use bottom and top
 centers. Free passages, smooth tangents, bounded dashed paint, native markers
-and clearance apply in both directions. The original [Bézier decision](../architecture/2026-10-25-bezier-task-dependency-routing.md)
-and [uniform routing decision](../architecture/2026-10-22-uniform-task-dependency-routing.md)
+and clearance apply in both directions. The original [Bézier decision](../../archived/architecture/2026-10-25-bezier-task-dependency-routing.md)
+and [uniform routing decision](../../archived/architecture/2026-10-22-uniform-task-dependency-routing.md)
 record the rationale for separating placement from routing and retaining free
 channels across intermediate ranks.
 
 Changing direction keeps the mounted canvas, visible tasks, explicit expansions
 and inspection choice, while reframing the new geometry using the initial
-viewport policy. The [complete prerequisite context decision](2026-10-22-complete-prerequisite-context.md)
+viewport policy. The [complete prerequisite context decision](../../archived/feature/2026-10-22-complete-prerequisite-context.md)
 records why framing exposes the upstream rank. Fullscreen remains a presentation
 of the same graph. The [requirements](../../../../docs/spec/daynight-web.md) and
 [inspection design](../../../../docs/design/daynight-task-inspection.md) own the

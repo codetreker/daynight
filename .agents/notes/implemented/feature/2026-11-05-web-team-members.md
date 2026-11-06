@@ -23,8 +23,7 @@ fallback discards only the departed Team's pending selection and writes Personal
 only when the stored choice still names that Team. The existing save retry retains
 this condition after a storage read or write failure, so a subsequent choice is
 preserved. Unknown writes stay unknown and offer a read without replay. The
-[Team membership decision](../architecture/2026-11-04-team-membership-management.md)
-owns the server's authorization and transactional rules.
+[Team membership decision](../../archived/architecture/2026-11-04-team-membership-management.md) records the rationale for the server's authorization and transactional rules.
 The [role alignment decision](../bug-fix/2026-11-05-team-member-role-alignment.md)
 owns roster layout and select spacing.
 

@@ -21,8 +21,8 @@ its transaction-bound Project, Task and Session capabilities.
 Creation locks the user and Team before atomically inserting the Project,
 ownership and creator's admin grant. Existing writes lock the Project before the
 callback reads current facts. Transfer retains Project, ownership, then ordered
-Team locks. The [Team creation decision](2026-11-04-team-project-creation.md) and
-[transfer decision](2026-11-04-project-transfer.md) retain their concurrency
+Team locks. The [Team creation decision](../../archived/architecture/2026-11-04-team-project-creation.md) and
+[transfer decision](../../archived/architecture/2026-11-04-project-transfer.md) retain their concurrency
 rationale. `ProjectScope` remains a query value for scoped project pagination.
 
 ## Alternatives

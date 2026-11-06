@@ -23,8 +23,7 @@ execution replacement or completion removes this observation and its timers.
 Restored and externally observed unresolved operations have no local progress
 evidence and render unknown. Queries and late receipts cannot restart progress.
 Message and command acceptance remains silent; control and interaction operations
-continue until confirmation. The [quiet receipts decision](2026-11-03-quiet-session-receipts.md)
-still owns success filtering. The [Session design](../../../../docs/design/task-session-protocol.md#session-view-的阅读与输入状态)
+continue until confirmation. The [quiet receipts decision](../../archived/bug-fix/2026-11-03-quiet-session-receipts.md) records the rationale for success filtering. The [Session design](../../../../docs/design/task-session-protocol.md#session-view-的阅读与输入状态)
 owns the mechanism and [requirements](../../../../docs/spec/task-sessions.md#基础会话交互)
 own observable behavior.
 

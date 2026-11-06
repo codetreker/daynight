@@ -29,8 +29,9 @@ service references and browser draft storage. Preview lives inside the actual
 Session presentation root, with explicit coordination for higher authentication
 and deletion dialogs.
 
-The existing [Bot cache decision](2026-11-04-bot-session-cache.md) retains ownership
-of pane lifetime. The image design adds persistent Blob ownership outside that
+Pane lifetime retains its existing cache ownership; the
+[Bot cache decision](../../archived/architecture/2026-11-04-bot-session-cache.md)
+records that choice. The image design adds persistent Blob ownership outside that
 cache; evicting a pane does not authorize deleting a draft. It does not change
 current text behavior or claim that image support has shipped.
 

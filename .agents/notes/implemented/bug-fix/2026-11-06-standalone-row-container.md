@@ -22,7 +22,7 @@ window. Long English badges, including Paused, still squeeze its title below
 200px. The 650px threshold covers this case and the collapsed 900px layout while
 keeping the expanded 1100px layout horizontal.
 
-The [compact list decision](../simplification/2026-10-28-compact-task-list.md)
+The [compact list decision](../../archived/simplification/2026-10-28-compact-task-list.md)
 records the analogous chain-row container layout. Standalone rows have their own
 container so this change does not alter chain rows or navigation breakpoints.
 The [Web specification](../../../../docs/spec/daynight-web.md) owns required

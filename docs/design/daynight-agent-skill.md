@@ -1,9 +1,8 @@
 # using-daynight 项目任务 Skill 设计
 
 [需求](../spec/daynight-agent-skill.md)拥有公开行为，
-[入口隔离决策](../../.agents/notes/implemented/architecture/2026-10-26-managed-task-skill.md)
-拥有普通与 managed 执行的分工；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
-保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/implemented/process/2026-10-25-task-content-handoff.md)
+[入口隔离决策](../../.agents/notes/archived/architecture/2026-10-26-managed-task-skill.md)记录普通与 managed 执行分工的历史取舍；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
+保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/archived/process/2026-10-25-task-content-handoff.md)
 拥有内容单一所有权和审查后启用许可的取舍；[原分发决策](../../.agents/notes/archived/architecture/2026-10-21-public-agent-skill-design.md)
 保留安装机制的原始理由。[Project/Task CLI](daynight-project-task.md)与
 [附件设计](daynight-task-attachments.md)继续拥有服务访问、版本、依赖和文件操作。
@@ -475,7 +474,7 @@ Windows 子进程保留调用者的控制台连接，使继承的标准输入、
 祖先冲突，预检完成后才使用完整替换器。每个结果保留相关 Agent、scope、物理路径、
 包版本和重载说明。失败停止后续目标并报告部分结果；父进程另外说明 npm 包已更新
 或保留，再以非零退出。重试 `update` 能从当前已安装包重新同步。
-[自动同步决策](../../.agents/notes/implemented/feature/2026-10-24-update-installed-agent-skills.md)
+[自动同步决策](../../.agents/notes/archived/feature/2026-10-24-update-installed-agent-skills.md)
 记录范围和失败边界。
 
 ## 调用成本
@@ -510,7 +509,7 @@ sibling 与另一 scope。迁移增加旧名称存在、leaf 链接、清理失�
 parent/leaf 链接、安装/清理路径嵌套、部分失败、监听清理和 completion 回归。Windows
 必须有原生结果；Linux 投影不能替代 `.cmd`、ConPTY 或平台链接证据。
 
-静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/implemented/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
+静态打包检查验证入口 frontmatter、资源清单、打包 allowlist，以及全部实际本地链接的存在和 bundle 内归属，不对指令规则、章节或措辞作断言。验证边界见 [skill 打包验证决策](../../.agents/notes/archived/testing/2026-10-30-skill-packaging-validation.md)。围栏代码中的任务 Markdown 示例属于写作示例，不
 作为 bundle 资源链接；打包产物和安装副本保留这些内容，并与源码完整字节比较。既有
 project/task/attachment 套件验证命令语义，创建、更新和 JSON 读取包含中英文、CRLF、
 围栏代码、GFM 与链接的描述，确认原始字符串及精确版本完整替换。独立情境演练另外核对

@@ -7,7 +7,7 @@
 [内置 skill 决策](../../.agents/notes/archived/architecture/2026-10-20-bundled-review-skill.md)和
 [PR 质量门槛决策](../../.agents/notes/archived/process/2026-10-21-review-pr-quality-gates.md)及
 [conversation 轮次决策](../../.agents/notes/archived/architecture/2026-10-21-review-conversation-cycle.md)。
-[多角度审查决策](../../.agents/notes/implemented/process/2026-10-22-pr-specific-review-perspectives.md)
+[多角度审查决策](../../.agents/notes/archived/process/2026-10-22-pr-specific-review-perspectives.md)
 记录独立委派与汇总的选择依据。
 
 ## 目标与边界

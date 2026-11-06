@@ -119,4 +119,4 @@ Go embed；元数据不引入 `src`/`href` 资产引用，也不改变这些引�
 
 服务器渲染、CMS、转化分析、计费和常驻 Worker 不属于公开介绍的必要机制。页面、演示
 与认证各有独立职责，保持以后增加这些能力时可重新设计的边界。决策及实际替代方案见
-[公开产品入口决策](../../.agents/notes/implemented/architecture/2026-10-26-public-product-entry.md)。
+[公开产品入口决策](../../.agents/notes/archived/architecture/2026-10-26-public-product-entry.md)。
