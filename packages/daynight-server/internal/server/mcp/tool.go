@@ -362,7 +362,11 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		if err := validateJSON(input, raw); err != nil {
 			return e.errorResult(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
 		}
-		release, err := actor.Budget.Acquire(ctx, budget(raw))
+		class := budget(raw)
+		if class != BudgetControl && class != BudgetLarge {
+			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
+		}
+		release, err := actor.Budget.Acquire(ctx, class)
 		if err != nil {
 			return e.errorResult(output, actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
 		}

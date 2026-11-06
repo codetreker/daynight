@@ -7,6 +7,7 @@ type Transactions interface {
 	ProjectCreationWriter
 	TeamWriter
 	IdentityWriter
+	CredentialFamilyWriter
 	WorkerWriter
 	BotWriter
 	SessionWriter

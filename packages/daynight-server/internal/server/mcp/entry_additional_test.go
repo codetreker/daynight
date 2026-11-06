@@ -20,7 +20,7 @@ import (
 
 func additionalEntry(t *testing.T, logger *slog.Logger) *Entry {
 	t.Helper()
-	e, err := New(testAuthenticator{}, "https://daynight.test", []string{"https://client.test"}, logger)
+	e, err := New(testAuthenticator{}, "https://daynight.test", []string{"https://client.test"}, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
