@@ -31,7 +31,7 @@ status, preserving the distinction between a wire 304 and the browser's normaliz
 The journey's profile/cache attachment is saved on both success and failure.
 Attachment failure still runs the existing listener, CDP session, clock and
 fixture cleanup. The
-[profile reuse decision](../bug-fix/2026-11-04-task-view-request-reuse.md) continues
+[profile reuse decision](../../archived/bug-fix/2026-11-04-task-view-request-reuse.md) continues
 to own caching, authentication and freshness behavior.
 
 ## Alternatives

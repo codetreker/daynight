@@ -28,15 +28,15 @@ arrow with the same symmetric SVG shape used by the adjacent assignee picker.
 The icon does not intercept pointer input and the select reserves space for it.
 
 The full index continues to own chain progress, readiness, dependencies,
-statistics and graph context. The [recent browsing decision](2026-10-27-recent-task-pages.md)
+statistics and graph context. The [recent browsing decision](../../archived/feature/2026-10-27-recent-task-pages.md)
 retains the seven-local-day Overview projection and pagination rationale, but
 its former task-list window and independent Show all preferences are replaced.
-The [assignee foundation](../architecture/2026-11-03-task-assignment-foundation.md)
-continues to own identity and profile semantics. The [task view](2026-10-22-project-task-views.md),
-[Goal list](2026-10-26-goal-task-lists.md), [project sections](2026-10-25-project-overview-task-sections.md),
-[chain status](../bug-fix/2026-10-22-task-chain-status.md), [Overview progress](2026-10-26-project-overview-progress.md),
-[status ordering](../bug-fix/2026-10-28-project-status-order.md), and
-[shared scroll](../bug-fix/2026-11-03-shared-task-list-scroll.md) decisions
+The [assignee foundation](../../archived/architecture/2026-11-03-task-assignment-foundation.md)
+continues to own identity and profile semantics. The [task view](../../archived/feature/2026-10-22-project-task-views.md),
+[Goal list](../../archived/feature/2026-10-26-goal-task-lists.md), [project sections](../../archived/feature/2026-10-25-project-overview-task-sections.md),
+[chain status](../../archived/bug-fix/2026-10-22-task-chain-status.md), [Overview progress](../../archived/feature/2026-10-26-project-overview-progress.md),
+[status ordering](../../archived/bug-fix/2026-10-28-project-status-order.md), and
+[shared scroll](../../archived/bug-fix/2026-11-03-shared-task-list-scroll.md) decisions
 retain their other responsibilities. The [Web specification](../../../../docs/spec/daynight-web.md)
 owns observable behavior and the [Web design](../../../../docs/design/daynight-web.md)
 owns current composition.

@@ -13,7 +13,7 @@ another owner for the rules governing task handoff.
 The repository provides [handoff-task](../../../skills/handoff-task/SKILL.md)
 for one user-specified task and [handoff-goal](../../../skills/handoff-goal/SKILL.md)
 for every unfinished task in a user-specified group. Each uses `using-daynight`
-directly. The [content-sufficient handoff decision](2026-10-25-task-content-handoff.md)
+directly. The [content-sufficient handoff decision](../../archived/process/2026-10-25-task-content-handoff.md)
 and its skill remain the owners of the handoff workflow and its safeguards.
 
 ## Alternatives

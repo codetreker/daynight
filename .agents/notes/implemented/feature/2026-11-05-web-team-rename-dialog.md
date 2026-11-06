@@ -15,7 +15,7 @@ admin opens a `ManagementDialog` to edit the name; members and Personal Team
 users remain read-only. The dialog initializes from the saved name, and its
 cancel and close actions do not submit. The existing identity, version, conflict
 and unknown-write protections remain owned by
-[Team management](2026-11-04-web-team-management.md).
+[Team management](../../archived/feature/2026-11-04-web-team-management.md).
 
 The name row centers its flex items vertically and allows wrapping. The name
 preserves whitespace and can break long words; the action retains its size.

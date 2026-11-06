@@ -60,7 +60,7 @@ review:
 已知根字段包括 `serverUrl`、`serverToken`、`workerId`、`worker` 和 `review`。
 review 投影校验 `review` mapping 及已知字段值；server 和 worker 投影不校验 `review` 内部值。
 根节点、review 及其仓库条目的未知字段在运行时忽略，配置写入编辑原 YAML 节点并保留未知字段。
-旧顶层 review 字段也被忽略；已有设置须移入 `review` 才生效，不自动迁移。节点归属的决策见[review 配置分区](../../.agents/notes/implemented/architecture/2026-10-27-review-configuration-section.md)。
+旧顶层 review 字段也被忽略；已有设置须移入 `review` 才生效，不自动迁移。节点归属的决策见[review 配置分区](../../.agents/notes/archived/architecture/2026-10-27-review-configuration-section.md)。
 同一文件的 `serverUrl` 由独立 server 投影拥有；review 保留它且不校验其值。
 所有 review 数值必须是正的安全整数；毫秒计时字段还必须不超过
 `2147483647`。运行和列表的 `repositories` 必须是非空列表，每项读取 `remote`
@@ -78,7 +78,7 @@ Copilot 自动选择模型。两个字段均可省略，或只设置一项，或
 值，适用于全部仓库，文件修改在下次启动生效。共享 YAML 文档解析器读取 `review`，server
 投影仍只校验自己的字段；交互引导和仓库登记通过既有文档节点写入机制保留字段与注释。
 验证、默认语义和参数归属由
-[模型选项决策](../../.agents/notes/implemented/feature/2026-10-22-review-copilot-model.md)记录。
+[模型选项决策](../../.agents/notes/archived/feature/2026-10-22-review-copilot-model.md)记录。
 
 `review.repositoryRoot` 默认是 `~/daynights`，仅属于添加命令的路径选择。根目录接受本机
 绝对路径、配置目录相对路径，以及 `~` 或 `~/...` 形式的当前用户主目录展开；不支持
@@ -590,7 +590,7 @@ subagents，宜并行执行。每个委派显式传递固定 head/base/merge-bas
 不成立，在 attempt 输出汇总角度依据、覆盖、限制、处置及确认阻断项，再由自己使用
 `gh` 发布。subagents 不修改源码或 Git 状态，不管理 worktree、不发布或修改远端 review
 和 thread，也不输出完成标记。完整委派和资源规则归属[skill 设计](daynight-review-skill.md#多角度审查与汇总)，
-选择依据见[多角度审查决策](../../.agents/notes/implemented/process/2026-10-22-pr-specific-review-perspectives.md)。
+选择依据见[多角度审查决策](../../.agents/notes/archived/process/2026-10-22-pr-specific-review-perspectives.md)。
 
 批准条件包括独立的 description 与范围两项质量门槛，以及没有 Critical/Major 代码
 问题。一个 PR 必须解决一个明确问题且能够有效审查；扩大 description 不能单独为

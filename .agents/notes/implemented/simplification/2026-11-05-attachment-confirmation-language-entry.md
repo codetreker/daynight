@@ -17,7 +17,7 @@ entries and their preference feedback remain in place. Locale updates still
 translate the confirmation and its errors without changing the target, restarting
 or duplicating an operation, or replacing attachment and preview state. Modal
 isolation, focus containment, layered Escape and focus restoration continue to
-follow the [attachment confirmation decision](../feature/2026-10-23-attachment-delete-confirmation.md).
+follow the [attachment confirmation decision](../../archived/feature/2026-10-23-attachment-delete-confirmation.md).
 
 This partially supersedes that decision's original selector placement. The
 selector had allowed switching while the modal made the underlying page inert;

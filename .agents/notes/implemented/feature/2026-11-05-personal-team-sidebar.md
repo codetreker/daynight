@@ -22,7 +22,7 @@ the omitted entries. Links still require a ready selection, so recovery cannot
 navigate to the initial Personal ID. Direct Personal member and settings routes
 and their access rules remain available.
 
-The [browser Team preference decision](2026-11-04-browser-team-preference.md)
+The [browser Team preference decision](../../archived/feature/2026-11-04-browser-team-preference.md)
 continues to own selection restoration, account isolation and retry behavior.
 
 ## Alternatives

@@ -16,8 +16,8 @@ retains its own entry and feedback. The native modal continues to isolate the
 background, prevent Escape dismissal and attempt to restore focus to the connected
 original element after recovery. Initial
 identity loading and other independent authentication pages keep their entries.
-This narrows the modal selector policy in the [authenticated workspace decision](../feature/2026-10-22-web-auth-workspace.md);
-the [foreground identity decision](2026-10-23-silent-foreground-identity-checks.md)
+This narrows the modal selector policy in the [authenticated workspace decision](../../archived/feature/2026-10-22-web-auth-workspace.md);
+the [foreground identity decision](../../archived/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 continues to own recovery and request admission.
 
 ## Alternatives

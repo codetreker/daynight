@@ -537,9 +537,8 @@ review state initialization belong to the business operation.
 
 The [configuration decision](../../.agents/notes/archived/feature/2026-10-21-guided-configuration-setup.md)
 records the review-guidance and persistence choices; the
-[device-login decision](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
-owns the default service, explicit login/logout and credential lifecycle. The
-[top-level setup removal decision](../../.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
+[device-login decision](../../.agents/notes/archived/architecture/2026-10-25-cli-device-login.md) records the rationale for the default service, explicit login/logout and credential lifecycle. The
+[top-level setup removal decision](../../.agents/notes/archived/simplification/2026-10-25-remove-top-level-setup.md)
 records the command removal and configuration-file provisioning boundary.
 
 ## Project management
@@ -908,7 +907,7 @@ editor or Save action. The control stays available on either detail tab, is
 locked during in_progress, and retains shared pending/unknown reconciliation
 across navigation. Rows and graph nodes remain read-only and show each task's
 own requirement; root values do not define chain-wide platform requirements.
-The [confirmed platform control decision](../../.agents/notes/implemented/simplification/2026-10-24-task-platform-confirmation-control.md)
+The [confirmed platform control decision](../../.agents/notes/archived/simplification/2026-10-24-task-platform-confirmation-control.md)
 records its allocation and focus behavior.
 
 The permission switch has confirmation in both directions, remains false by
@@ -918,7 +917,7 @@ nodes display each task's own permission. Permission does not control worker
 ownership; ordinary status setting cannot release active execution or resume
 released resources. Claim-bound done validates ownership. None of these
 operations stops a remote process or replaces PR review and delivery authority.
-The [status decision](../../.agents/notes/implemented/architecture/2026-10-24-task-status-assignment.md)
+The [status decision](../../.agents/notes/archived/architecture/2026-10-24-task-status-assignment.md)
 records migration and shared-session trade-offs.
 
 `task ready` selects up to 10 actionable tasks by
@@ -948,8 +947,7 @@ preserved across every page. `task ready` has no assignee option; use
 requires the task to be assigned to the worker's authenticated account, in addition
 to permission and other eligibility checks. Existing claim inventory and manual
 control remain execution-based; the
-[self-assigned acquisition decision](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)
-owns the runtime rule.
+[self-assigned acquisition decision](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md) records the rationale for the runtime rule.
 
 For `me`, each successful task-page response must carry one canonical
 Daynight-User-ID, even when its items array is empty. A complete list traversal
@@ -1866,7 +1864,7 @@ work retains its original revision until its adapter completes. A recovered
 failure remains reportable until
 accepted, and an acknowledgment cannot clear failures that arose during the
 request. The [Worker requirements](../../docs/spec/daynight-worker.md) and
-[configuration decision](../../.agents/notes/implemented/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
+[configuration decision](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
 define the state and failure guarantees.
 
 The existing coordinator reads current successful concurrency, polling,
@@ -2945,7 +2943,7 @@ PR revisions use the same construction. Skill discovery receives neither overrid
 Values pass through the existing `shell: false` execution path; unsupported or
 unavailable models, effort levels or combinations retain Copilot's normal failure
 result and the existing attempt/error handling. The
-[model options decision](../../.agents/notes/implemented/feature/2026-10-22-review-copilot-model.md)
+[model options decision](../../.agents/notes/archived/feature/2026-10-22-review-copilot-model.md)
 records the validation and default-selection choices.
 
 Prompts travel through stdin in noninteractive mode. `cross-spawn` handles native
@@ -3030,7 +3028,7 @@ The [execution decision](../../.agents/notes/archived/architecture/2026-10-17-co
 records process and publication boundaries; the
 [PR-quality decision](../../.agents/notes/archived/process/2026-10-21-review-pr-quality-gates.md)
 records the approval policy, and the
-[multi-perspective decision](../../.agents/notes/implemented/process/2026-10-22-pr-specific-review-perspectives.md)
+[multi-perspective decision](../../.agents/notes/archived/process/2026-10-22-pr-specific-review-perspectives.md)
 records delegation and synthesis. The
 [conversation-cycle decision](../../.agents/notes/archived/architecture/2026-10-21-review-conversation-cycle.md)
 records durable follow-ups and publication verification. The

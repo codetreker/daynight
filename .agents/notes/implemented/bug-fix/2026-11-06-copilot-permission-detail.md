@@ -26,7 +26,7 @@ permission details are not silently shortened to fit a display budget.
 
 Title selection, actions, authorization results, interaction identity and native
 completion remain owned by the existing
-[Copilot interaction mechanism](../architecture/2026-10-28-copilot-web-sdk-runtime.md).
+[Copilot interaction mechanism](../../archived/architecture/2026-10-28-copilot-web-sdk-runtime.md).
 The browser consumes the same plain-text detail field.
 
 ## Alternatives

@@ -63,7 +63,7 @@ The existing startup report describes native startup and recovery, while the
 Worker waiting phase describes orchestration. No wire field or UI layout is
 added. Healthy history and native input retain their existing independent
 connection, permission and identity checks. The previous
-[recovery pause decision](2026-11-04-web-recovery-pause.md) remains authoritative
+[recovery pause decision](../../archived/bug-fix/2026-11-04-web-recovery-pause.md) remains authoritative
 for actual native failures; its ordinary-failure classification is superseded.
 The [startup observation decision](2026-11-05-session-startup-observations.md)
 continues to own report identity and ordering.
