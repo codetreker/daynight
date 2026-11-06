@@ -68,11 +68,15 @@ list filters.
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity
 handoff, local users, browser sessions, personal access tokens and project
-membership. The [identity foundation](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
-implements persistent users, browser-bound login transactions, sessions, PATs and
-callable HTTP handlers. NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The [membership foundation](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
-adds NewMemberships/NewMembershipRoutes, transaction-scoped access checks, private
-project creation, filtered project lists, administrator changes and invitations.
+membership. The identity module implements persistent users, browser-bound login
+transactions, sessions, PATs and callable HTTP handlers;
+NewIdentity/NewAuthentication/RegisterRoutes are composed by the runtime. The
+membership module provides NewMemberships/NewMembershipRoutes, transaction-scoped
+access checks, private project creation, filtered project lists, administrator
+changes and invitations. The
+[identity foundation](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
+and [membership foundation](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
+record the original separation and its rationale.
 GET/HEAD `/api/v1/me` authenticates and reads the current user before comparing a
 strong ETag over the complete identity-bound JSON representation. Successful
 responses use `Cache-Control: private, no-cache`; an unchanged validator receives
@@ -136,8 +140,7 @@ admin. Every Project has a real ownership row; existing projects migrate to the
 Personal Team of the earliest-joined current administrator. A missing current
 admin or invalid reference stops migration. Trusted executable
 HTML retains its application origin, relative resources and keyboard behavior.
-The [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
-owns composition and credential-private validation; current delivery results
+The [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for composition and credential-private validation; current delivery results
 require receipts bound to the tested source.
 
 The [project Task search requirements](../../docs/spec/daynight-task-search.md)
@@ -325,17 +328,33 @@ ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
 The endpoint advertises Project creation, transfer, listing and inspection,
-Team invitation creation, listing and revocation, and inspection and acceptance
-of Team or Project invitations. A tool is discoverable only after its complete
-business adapter is registered. Invitation links are returned only by creation;
-listing returns metadata without secrets.
+Team invitation creation, listing and revocation, inspection and acceptance of
+Team or Project invitations, Task creation, reading, updating, status, deletion
+and property tools, and ordered Task Steps reads and writes. Invitation links
+are returned only by creation; listing returns metadata without secrets. Task
+mutation inputs use the existing 1 MiB business JSON limit; versions are
+decimal strings and property values use `valueText`. Task and Step reads default
+to marked, bounded summaries; request `full` for complete content. Step page
+cursors bind the parent version and reject continuation after a change. Step
+writes return confirmed version and change facts and preserve the original
+collection capacity. A tool is discoverable only after its complete business
+adapter is registered.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
 operations have a separate 16-slot budget. A saturated budget returns
 `resource_busy`. Permits remain held until the handler and response delivery
-finish. The application rejects and cancels MCP requests during shutdown before
-stopping the shared relay. A drain timeout cancels active requests, but the
+finish. The opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
+the 64 MiB Step collection and concurrent summary write admission with sampled
+Go heap. After preparing the isolated database and UniAuth fixture, run it
+separately from CI:
+
+```bash
+go test -race -tags=stress ./internal/server -run '^TestStressMCPStepsCapacityAndConcurrentSummaryHeap$' -count=1 -timeout=10m
+```
+
+The application rejects and cancels MCP requests during shutdown before stopping
+the shared relay. A drain timeout cancels active requests, but the
 runtime waits for handlers, the relay and database cleanup before closing shared
 storage and returning the timeout error.
 
@@ -548,7 +567,7 @@ The check passes explicit `--race=<value>` to the pinned `go-cov`; the checked-i
 ambient `-race`. Enabled coverage lets the tool's explicit child flag choose
 instrumentation. Build, vet, functional and concurrency cases and all coverage
 thresholds retain the same responsibilities in either mode. The
-[Go validation timing decision](../../.agents/notes/implemented/testing/2026-11-04-go-validation-timing.md)
+[Go validation timing decision](../../.agents/notes/archived/testing/2026-11-04-go-validation-timing.md)
 records the event policy and its original cross-process context.
 
 ### Go module coverage
@@ -611,8 +630,7 @@ The full check performs this preparation automatically. The real wire-loss test 
 consumes a successful upstream result, closes the actual SDK-side TCP connection,
 and verifies upstream 410, callback replay 401, zero failed-login sessions and
 fresh-login recovery. Product, proxy and gateway cleanup is part of the test.
-The [combined authentication decision](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
-owns that proof and the separate native/container browser-plus-installed-CLI
+The [combined authentication decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md) records the rationale for that proof and the separate native/container browser-plus-installed-CLI
 journeys. Focused results retain their recorded source scope; controlled-provider
 proof is separate from an actual upstream human login.
 
@@ -863,7 +881,7 @@ independent projects and cancellation. Index-definition assertions resolve the
 fixture's schema-qualified object before deparsing it; predicates on a global
 catalog view can evaluate a deparser before namespace filtering. Correct,
 wrong-order and missing-index cases retain a same-named fallback-schema index to
-verify isolation. The [index assertion decision](../../.agents/notes/implemented/testing/2026-10-24-schema-owned-index-assertions.md)
+verify isolation. The [index assertion decision](../../.agents/notes/archived/testing/2026-10-24-schema-owned-index-assertions.md)
 records the query-ordering rationale. Rollback and advisory unlock use
 independent bounded contexts and preserve original causes.
 

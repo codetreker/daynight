@@ -162,7 +162,7 @@ PublicDiagnosticError 保留内部 cause 和安全 publicText/exitCode；最终 
 本地失败。CLI 模块测试负责请求、响应校验、呈现和未知结果；Go 模块测试负责
 真实持久化、认证授权、快照和提交语义。两端正常连接的产品 E2E 有独立证明责任，
 不复用 Go 模块作为安装客户端的编排器。历史联调源码由
-[Thread 决策](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-cli.md)保留其证据范围。
+[Thread 决策](../../.agents/notes/archived/architecture/2026-11-03-task-thread-cli.md)保留其证据范围。
 CLI 使用仓库现有 typecheck/test/build 和安装包检查，安装包 help 与
 `daynight --skill` 必须能发现 Thread。
 

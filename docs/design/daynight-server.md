@@ -17,14 +17,14 @@
 
 [鉴权架构](daynight-auth.md)定义已接入运行时的 UniAuth 身份交接、本地用户、会话、
 访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
-[身份基础模块](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
-提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
+[身份基础模块](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
+提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
 提供事务内授权、私有创建和邀请。`server.New(Dependencies, Config, logger)`
 返回 `(http.Handler, error)`，验证配置并统一注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表
-别名。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
+别名。[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)
 记录组合、凭据隐私与验证边界。
 
 现有 `packages/daynight/` TypeScript CLI、YAML 配置和 SQLite review 状态继续独立
@@ -67,7 +67,7 @@ Project、目标、选择集合、计数、依赖及 ready 都来自同一次 `R
 HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requestId、GET/HEAD
 和结构化错误机制。具体响应与拒绝由
 [服务端需求](../spec/daynight-server.md#任务链图查询)拥有；决策取舍见
-[任务链查询记录](../../.agents/notes/implemented/architecture/2026-10-29-chain-scoped-task-graph.md)。
+[任务链查询记录](../../.agents/notes/archived/architecture/2026-10-29-chain-scoped-task-graph.md)。
 
 浏览器从 task-sync 摘要物化完整项目图，其完整上游闭包由
 [看板设计](daynight-web.md#图投影与统计)拥有。CLI 的一层外部前置查询不改变浏览器的

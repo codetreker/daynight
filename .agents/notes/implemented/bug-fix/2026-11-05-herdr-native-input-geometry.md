@@ -14,7 +14,7 @@ error did not establish its child signal or exact failure cause.
 ## Decision
 
 Replace the external-command implementation of the
-[input arbitration decision](../architecture/2026-11-04-herdr-input-arbitration.md)
+[input arbitration decision](../../archived/architecture/2026-11-04-herdr-input-arbitration.md)
 with a dedicated macOS helper using the existing Koffi dependency and system
 library. The helper reads the original PID's controlling terminal device from
 `PROC_PIDTBSDINFO`, resolves it with `devname_r`, and accepts only the supported

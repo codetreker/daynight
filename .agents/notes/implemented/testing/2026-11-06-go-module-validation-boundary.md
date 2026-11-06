@@ -36,11 +36,11 @@ belong to Go module tests. Product E2E has a separate responsibility: a small
 normal-data journey through installed CLI, production Web and the real service.
 It does not own boundary, conflict, fault or competing-writer matrices.
 
-The [package extraction](2026-11-03-server-e2e-package.md) and
-[CI split](2026-11-04-server-e2e-ci-jobs.md) records retain the earlier rationale.
+The [package extraction](../../archived/testing/2026-11-03-server-e2e-package.md) and
+[CI split](../../archived/testing/2026-11-04-server-e2e-ci-jobs.md) records retain the earlier rationale.
 They separated process fixtures and runner lifetimes while preserving the mixed
 assertion set. This decision replaces that assertion and resource ownership;
-[the input-selection record](2026-11-04-server-ci-input-selection.md) preserves
+[the input-selection record](../../archived/testing/2026-11-04-server-ci-input-selection.md) preserves
 the conservative routing choices independently of actual Go test execution.
 
 ## Alternatives

@@ -55,8 +55,9 @@ inside dev-ci's five-second callback termination grace. The navigation
 verification deadlines remain 180, 540 and 180 seconds; this cleanup ordering
 does not relax those checks. A real TERM-ignoring subprocess regression verifies
 that callback cleanup joins the forced group before the outer grace expires.
-The [functional target decision](2026-11-04-web-functional-target-overlap.md)
-continues to own the production runner's independent target resources.
+The [functional target decision](../../archived/testing/2026-11-04-web-functional-target-overlap.md)
+records the rationale for the production runner's existing independent target
+resources.
 
 The [Web validation guide](../../../../packages/daynight-web/README.md)
 owns commands and receipts. Validation measures the complete browser job and

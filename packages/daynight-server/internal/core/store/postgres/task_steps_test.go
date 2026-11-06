@@ -85,6 +85,14 @@ func TestTaskStepsParentAndRowsShareSnapshot(t *testing.T) {
 		if err != nil || len(steps) != 1 || steps[0].Title != "Coding" || steps[0].CreatedAt.Location() != time.UTC || steps[0].CreatedAt.Nanosecond() != 123456000 {
 			t.Fatalf("mixed snapshot: %+v %v", steps, err)
 		}
+		page, err := snapshot.TaskDAO().TaskStepPage(ctx, task.ID, -1, 1, true)
+		if err != nil || len(page) != 1 || page[0].Step.Title != "Coding" || page[0].Step.Description != "" {
+			t.Fatalf("mixed page snapshot: %+v %v", page, err)
+		}
+		summary, err := snapshot.TaskDAO().TaskStepSummary(ctx, task.ID, "00abcdef")
+		if err != nil || !reflect.DeepEqual(summary, page[0]) {
+			t.Fatalf("mixed summary snapshot: %+v %v", summary, err)
+		}
 		single, err := snapshot.TaskDAO().TaskStep(ctx, task.ID, "00abcdef")
 		if err != nil || !reflect.DeepEqual(single, steps[0]) {
 			t.Fatalf("single: %+v %v", single, err)
