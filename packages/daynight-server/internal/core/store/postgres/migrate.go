@@ -129,6 +129,9 @@ var oauthClientsSQL string
 //go:embed migrations/040_oauth_authorizations.sql
 var oauthAuthorizationsSQL string
 
+//go:embed migrations/041_oauth_cleanup_cursor.sql
+var oauthCleanupCursorSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -177,6 +180,7 @@ var schemaMigrations = []migration{
 	{version: 38, sql: oauthFamilySQL},
 	{version: 39, sql: oauthClientsSQL},
 	{version: 40, sql: oauthAuthorizationsSQL},
+	{version: 41, sql: oauthCleanupCursorSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
