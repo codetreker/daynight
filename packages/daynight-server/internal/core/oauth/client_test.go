@@ -95,6 +95,30 @@ func TestStoredMetadataRequiresIdentity(t *testing.T) {
 	}
 }
 
+func TestStoredMetadataRetainsValidatedIdentity(t *testing.T) {
+	raw := []byte(`{"client_id":"registered","client_name":"Desktop","redirect_uris":["https://client.example/cb"]}`)
+	metadata, err := ParseStoredClientMetadata(raw, "registered")
+	if err != nil || metadata.ClientID != "registered" || metadata.ClientName != "Desktop" || metadata.TokenEndpointAuthMethod != "none" || len(metadata.RedirectURIs) != 1 || metadata.RedirectURIs[0] != "https://client.example/cb" {
+		t.Fatalf("stored metadata = %+v, %v", metadata, err)
+	}
+	if _, err := ParseStoredClientMetadata(raw, "other"); err != ErrInvalidClientMetadata {
+		t.Fatalf("mismatched stored identity = %v", err)
+	}
+}
+
+func TestFreezeClientRejectsInvalidIdentityAndRedirect(t *testing.T) {
+	metadata := ClientMetadata{ClientID: "registered", RedirectURIs: []string{"https://client.example/cb"}}
+	for _, tc := range []struct{ id, provenance, redirect string }{
+		{"", "dcr", "https://client.example/cb"},
+		{"registered", "unknown", "https://client.example/cb"},
+		{"registered", "dcr", "https://other.example/cb"},
+	} {
+		if _, err := FreezeClient(tc.id, tc.provenance, metadata, time.Now(), tc.redirect); err != ErrInvalidClient {
+			t.Fatalf("FreezeClient(%+v) = %v", tc, err)
+		}
+	}
+}
+
 func TestLoopbackRedirectWithoutPath(t *testing.T) {
 	if !MatchRedirect("http://127.0.0.1:123", "http://127.0.0.1:456") {
 		t.Fatal("literal loopback port should be permitted with empty path")

@@ -36,7 +36,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	}
 	startup, cancelStartup := context.WithTimeout(ctx, cfg.StartupTimeout)
 	defer cancelStartup()
-	app, err := service.OpenApp(startup, cfg)
+	app, err := service.OpenAppWithLogger(startup, cfg, logger)
 	if err != nil {
 		httpx.LogFailure(logger, ctx, "server", "startup", err)
 		return 1

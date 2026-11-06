@@ -1,0 +1,1130 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"math"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/google/uuid"
+)
+
+func transferRecord(user string, now time.Time) model.PrivateTransfer {
+	return model.PrivateTransfer{ID: uuid.NewString(), UserID: user, AuthorityKind: "pat", AuthorityID: uuid.NewString(), Direction: "upload", ProjectID: uuid.NewString(), TaskID: uuid.NewString(), Path: "file", ContentType: "text/plain", Binding: []byte(`{}`), Data: []byte(`{}`), State: "receiving", CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour), HardExpiresAt: now.Add(24 * time.Hour)}
+}
+func TestPrivateTransferLedgerLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	user := uuid.NewString()
+	var records []model.PrivateTransfer
+	for i := 0; i < 4; i++ {
+		input := transferRecord(user, now)
+		c, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			var created bool
+			var err error
+			input, created, err = d.Create(ctx, input)
+			if err != nil {
+				return err
+			}
+			if !created {
+				t.Fatal("first create not created")
+			}
+			records = append(records, input)
+			return nil
+		})
+		if e != nil || c.Outcome != store.TransactionCommitted {
+			t.Fatalf("create %v %v", c, e)
+		}
+	}
+	c, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		r, created, err := d.Create(ctx, records[0])
+		if err != nil {
+			return err
+		}
+		if created || r.ID != records[0].ID {
+			t.Fatal("retry consumed slot")
+		}
+		return nil
+	})
+	if e != nil || c.Outcome != store.TransactionCommitted {
+		t.Fatal(c, e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, _, err := d.Create(ctx, transferRecord(user, now))
+		return err
+	})
+	var fault *model.Fault
+	if !errors.As(e, &fault) || fault.Code != "capacity_unavailable" {
+		t.Fatalf("fifth slot %v", e)
+	}
+	var first model.PrivateTransfer
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var err error
+		first, err = d.Reserve(ctx, records[0].ID, 60, 100)
+		return err
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, err := d.Reserve(ctx, records[1].ID, 41, 100); return err })
+	if !errors.As(e, &fault) || fault.Code != "capacity_unavailable" {
+		t.Fatalf("budget %v", e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var err error
+		first.State = "cleanup_pending"
+		first, err = d.Update(ctx, first, first.Version)
+		return err
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		total, err := d.ReservedTotal(ctx)
+		if err != nil {
+			return err
+		}
+		if total != 60 {
+			t.Fatalf("pending bytes %d", total)
+		}
+		_, _, err = d.Create(ctx, transferRecord(user, now))
+		return err
+	})
+	if !errors.As(e, &fault) || fault.Code != "capacity_unavailable" {
+		t.Fatalf("pending slot %v", e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var err error
+		first, err = d.Close(ctx, first.ID, first.Version, now.Add(24*time.Hour))
+		return err
+	})
+	if e != nil || first.ReservedBytes != 0 || first.State != "closed" {
+		t.Fatalf("close %+v %v", first, e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		total, err := d.ReservedTotal(ctx)
+		if err != nil {
+			return err
+		}
+		if total != 0 {
+			t.Fatalf("released bytes %d", total)
+		}
+		_, _, err = d.Create(ctx, transferRecord(user, now))
+		return err
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, err := d.Update(ctx, records[0], records[0].Version)
+		return err
+	})
+	if !errors.Is(e, model.ErrNotFound) {
+		t.Fatalf("stale update %v", e)
+	}
+	_, e = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		n, err := d.Prune(ctx, now.Add(23*time.Hour), 100)
+		if err != nil {
+			return err
+		}
+		if n != 0 {
+			t.Fatal("pruned early")
+		}
+		n, err = d.Prune(ctx, now.Add(25*time.Hour), 100)
+		if n != 1 {
+			t.Fatalf("prune %d", n)
+		}
+		return err
+	})
+	if e != nil {
+		t.Fatal(e)
+	}
+}
+
+func TestPrivateTransferConcurrentCapacity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC()
+	var records []model.PrivateTransfer
+	for i := 0; i < 2; i++ {
+		r := transferRecord(uuid.NewString(), now)
+		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, _, err := d.Create(ctx, r); return err })
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, r)
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for _, r := range records {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, id, 70, 100); return e })
+			results <- err
+		}(r.ID)
+	}
+	wg.Wait()
+	close(results)
+	success := 0
+	fail := 0
+	for err := range results {
+		if err == nil {
+			success++
+		} else {
+			var fault *model.Fault
+			if !errors.As(err, &fault) || fault.Code != "capacity_unavailable" {
+				t.Fatal(err)
+			}
+			fail++
+		}
+	}
+	if success != 1 || fail != 1 {
+		t.Fatalf("success %d failure %d", success, fail)
+	}
+}
+
+func TestPrivateTransferAuthorityAdmission(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	projectID, taskID := uuid.NewString(), uuid.NewString()
+	if _, err := db.CreateProject(ctx, projectID, "private transfer", "https://example.test/repo"); err != nil {
+		t.Fatal(err)
+	}
+	var user string
+	if err := db.Pool.QueryRow(ctx, `SELECT m.user_id::text FROM project_ownership o JOIN team_members m ON m.team_id=o.team_id WHERE o.project_id=$1`, projectID).Scan(&user); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'test')`, taskID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	grant, access, otherGrant, otherAccess := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	for _, x := range []struct {
+		g, a string
+		n    byte
+	}{{grant, access, 1}, {otherGrant, otherAccess, 2}} {
+		hash := make([]byte, 32)
+		hash[0] = x.n
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_grants(id,user_id,client_id,client_snapshot,resource,scope,created_at,expires_at) VALUES($1,$2,'client','{}','https://example.test/mcp','daynight:mcp',$3,$4)`, x.g, user, now, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, x.a, x.g, user, hash, now, now.Add(30*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	principal := model.Principal{Kind: model.OAuthCredential, UserID: user, CredentialID: access}
+	authorize := func(p model.Principal, kind, id string) error {
+		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { return d.Authorize(ctx, p, kind, id, projectID, taskID) })
+		return err
+	}
+	if err := authorize(principal, "oauth", grant); err != nil {
+		t.Fatal(err)
+	}
+	// Hold authorization after the access lock until that access expires. The
+	// final clock check must reject it even though it was valid at admission.
+	shortAccess := uuid.NewString()
+	hash := make([]byte, 32)
+	hash[0] = 3
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, shortAccess, grant, user, hash, now, time.Now().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(ctx)
+	var pid int32
+	if err := blocker.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.Exec(ctx, `SELECT 1 FROM project_ownership WHERE project_id=$1 FOR UPDATE`, projectID); err != nil {
+		t.Fatal(err)
+	}
+	shortPrincipal := principal
+	shortPrincipal.CredentialID = shortAccess
+	result := make(chan error, 1)
+	go func() { result <- authorize(shortPrincipal, "oauth", grant) }()
+	for {
+		var waiting bool
+		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("authorization finished without waiting: %v", err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(2100 * time.Millisecond)
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err == nil {
+		t.Fatal("credential expired while waiting but was admitted")
+	}
+	// The ledger can be contended after authorization. Expiry while waiting
+	// must roll back a reservation instead of accepting an expired credential.
+	ledgerAccess := uuid.NewString()
+	hash[0] = 4
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO oauth_access_tokens(id,grant_id,user_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, ledgerAccess, grant, user, hash, now, time.Now().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	transfer := transferRecord(user, now)
+	transfer.ProjectID = projectID
+	transfer.TaskID = taskID
+	transfer.AuthorityKind = "oauth"
+	transfer.AuthorityID = grant
+	if _, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		transfer, _, e = d.Create(ctx, transfer)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ledgerBlocker, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerBlocker.Rollback(ctx)
+	if err := ledgerBlocker.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledgerBlocker.Exec(ctx, `SELECT 1 FROM private_transfer_ledger WHERE singleton FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	ledgerPrincipal := principal
+	ledgerPrincipal.CredentialID = ledgerAccess
+	go func() {
+		_, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			if _, e := d.Get(ctx, transfer.ID); e != nil {
+				return e
+			}
+			if e := d.Authorize(ctx, ledgerPrincipal, "oauth", grant, projectID, taskID); e != nil {
+				return e
+			}
+			_, e := d.Reserve(ctx, transfer.ID, 10, 100)
+			return e
+		})
+		result <- e
+	}()
+	for {
+		var waiting bool
+		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case e := <-result:
+			t.Fatalf("reservation finished without waiting: %v", e)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(2100 * time.Millisecond)
+	if err := ledgerBlocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err == nil {
+		t.Fatal("expired credential reserved after waiting for ledger")
+	}
+	if _, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		r, e := d.Get(ctx, transfer.ID)
+		if e != nil {
+			return e
+		}
+		if r.ReservedBytes != 0 {
+			t.Fatal("expired credential reservation committed")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", otherGrant); err == nil {
+		t.Fatal("wrong grant admitted")
+	}
+	swapped := principal
+	swapped.UserID = uuid.NewString()
+	if err := authorize(swapped, "oauth", grant); err == nil {
+		t.Fatal("wrong user admitted")
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE oauth_grants SET revoked_at=now() WHERE id=$1`, grant); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", grant); err == nil {
+		t.Fatal("revoked grant admitted")
+	}
+	principal.CredentialID = otherAccess
+	if err := authorize(principal, "oauth", otherGrant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=now() WHERE id=$1`, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := authorize(principal, "oauth", otherGrant); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("deleted task: %v", err)
+	}
+}
+
+func TestPrivateTransferMaterializationAndRollback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC()
+	r := transferRecord(uuid.NewString(), now)
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, _, e = d.Create(ctx, r)
+		if e != nil {
+			return e
+		}
+		r, e = d.Reserve(ctx, r.ID, 100, 100)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	abort := errors.New("receipt did not commit")
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, e := d.ConsumeReservation(ctx, r.ID, 60, r.Version)
+		if e != nil {
+			return e
+		}
+		return abort
+	})
+	if !errors.Is(err, abort) {
+		t.Fatal(err)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		current, e := d.Get(ctx, r.ID)
+		if e != nil {
+			return e
+		}
+		total, e := d.OutstandingTotal(ctx)
+		if e != nil {
+			return e
+		}
+		if total != 100 || current.OutstandingBytes != 100 {
+			t.Fatal("rollback lost unmaterialized reservation", total, current)
+		}
+		r, e = d.ConsumeReservation(ctx, r.ID, 60, r.Version)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.OutstandingBytes != 40 || r.ReservedBytes != 100 {
+		t.Fatalf("materialization %+v", r)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, e := d.ConsumeReservation(ctx, r.ID, 41, r.Version)
+		return e
+	})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("overconsume %v", err)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		_, e := d.ConsumeReservation(ctx, r.ID, 40, r.Version-1)
+		return e
+	})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("stale consumption %v", err)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		total, e := d.ReservedTotal(ctx)
+		if e != nil {
+			return e
+		}
+		outstanding, e := d.OutstandingTotal(ctx)
+		if e != nil {
+			return e
+		}
+		if total != 100 || outstanding != 40 {
+			t.Fatalf("ledger %d/%d", total, outstanding)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateTransferDueFairnessAndLeases(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var ids []string
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		for i := 0; i < 101; i++ {
+			r := transferRecord(uuid.NewString(), now.Add(-2*time.Hour))
+			r.ExpiresAt = now.Add(-time.Hour)
+			r.HardExpiresAt = now.Add(time.Hour)
+			var e error
+			r, _, e = d.Create(ctx, r)
+			if e != nil {
+				return e
+			}
+			ids = append(ids, r.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool)
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		due, e := d.Due(ctx, now, 100)
+		if e != nil {
+			return e
+		}
+		if len(due) != 100 {
+			t.Fatalf("first batch %d", len(due))
+		}
+		for _, r := range due {
+			seen[r.ID] = true
+			if r.LastCleanupAttempt == nil || r.Version != 2 {
+				t.Fatalf("attempt %+v", r)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		due, e := d.Due(ctx, now.Add(time.Second), 1)
+		if e != nil {
+			return e
+		}
+		if len(due) != 1 || seen[due[0].ID] {
+			t.Fatal("failed records starved later record", due)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// In a fresh set, expired committing leases are due before idle expiry,
+	// while a still valid lease protects even an idle-expired operation.
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		for _, active := range []bool{false, true} {
+			r := transferRecord(uuid.NewString(), now)
+			r.State = "committing"
+			lease := now.Add(-time.Second)
+			if active {
+				lease = now.Add(time.Hour)
+				r.ExpiresAt = now.Add(-time.Second)
+			}
+			r.LeaseUntil = &lease
+			var e error
+			r, _, e = d.Create(ctx, r)
+			if e != nil {
+				return e
+			}
+			ids = append(ids, r.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for round := 2; round <= 3; round++ {
+		_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			due, e := d.Due(ctx, now.Add(time.Duration(round)*time.Second), 100)
+			if e != nil {
+				return e
+			}
+			for _, r := range due {
+				if r.ID == ids[101] {
+					found = true
+				}
+				if r.ID == ids[102] {
+					t.Fatal("unexpired lease included")
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !found {
+		t.Fatal("expired commit lease not scheduled")
+	}
+}
+
+func TestPrivateTransferReservationOverflow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	r := transferRecord(uuid.NewString(), time.Now().UTC())
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, _, e = d.Create(ctx, r)
+		if e != nil {
+			return e
+		}
+		r, e = d.Reserve(ctx, r.ID, math.MaxInt64, math.MaxInt64)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, r.ID, 1, math.MaxInt64); return e })
+	var f *model.Fault
+	if !errors.As(err, &f) || f.Code != "capacity_unavailable" {
+		t.Fatalf("overflow %v", err)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		total, e := d.ReservedTotal(ctx)
+		if e != nil {
+			return e
+		}
+		outstanding, e := d.OutstandingTotal(ctx)
+		if e != nil {
+			return e
+		}
+		if total != math.MaxInt64 || outstanding != total {
+			t.Fatalf("overflow mutated ledger %d %d", total, outstanding)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateTransferStats(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		stats, e := d.Stats(ctx)
+		if e != nil {
+			return e
+		}
+		if stats.ReservedBytes != 0 || stats.CleanupPending != 0 || stats.OldestPendingCreatedAt != nil {
+			t.Fatalf("empty stats %+v", stats)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		for i := 0; i < 2; i++ {
+			r := transferRecord(uuid.NewString(), now.Add(time.Duration(i)*time.Minute))
+			var e error
+			r, _, e = d.Create(ctx, r)
+			if e != nil {
+				return e
+			}
+			r, e = d.Reserve(ctx, r.ID, int64((i+1)*5), 100)
+			if e != nil {
+				return e
+			}
+			r.State = "cleanup_pending"
+			if _, e = d.Update(ctx, r, r.Version); e != nil {
+				return e
+			}
+		}
+		stats, e := d.Stats(ctx)
+		if e != nil {
+			return e
+		}
+		if stats.ReservedBytes != 15 || stats.CleanupPending != 2 || stats.OldestPendingCreatedAt == nil || !stats.OldestPendingCreatedAt.Equal(now) {
+			t.Fatalf("pending stats %+v", stats)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateTransferAuthorizationWaitDoesNotBlockOtherUsers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC()
+	type fixture struct {
+		r model.PrivateTransfer
+		p model.Principal
+	}
+	makeFixture := func(n byte) fixture {
+		project, task := uuid.NewString(), uuid.NewString()
+		if _, err := db.CreateProject(ctx, project, "private transfer", "https://example.test/repo"); err != nil {
+			t.Fatal(err)
+		}
+		var user string
+		if err := db.Pool.QueryRow(ctx, `SELECT m.user_id::text FROM project_ownership o JOIN team_members m ON m.team_id=o.team_id WHERE o.project_id=$1`, project).Scan(&user); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'test')`, task, project); err != nil {
+			t.Fatal(err)
+		}
+		pat := uuid.NewString()
+		hash := make([]byte, 32)
+		hash[0] = n
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'test',$4,$5)`, pat, user, hash, now, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		r := transferRecord(user, now)
+		r.ProjectID = project
+		r.TaskID = task
+		r.AuthorityID = pat
+		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { var e error; r, _, e = d.Create(ctx, r); return e })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fixture{r, model.Principal{Kind: model.PATCredential, UserID: user, CredentialID: pat}}
+	}
+	a, b := makeFixture(31), makeFixture(32)
+	blocker, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback(ctx)
+	var pid int32
+	if err := blocker.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.Exec(ctx, `SELECT 1 FROM project_ownership WHERE project_id=$1 FOR UPDATE`, a.r.ProjectID); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+			if _, e := d.Get(ctx, a.r.ID); e != nil {
+				return e
+			}
+			return d.Authorize(ctx, a.p, "pat", a.r.AuthorityID, a.r.ProjectID, a.r.TaskID)
+		})
+		result <- e
+	}()
+	for {
+		var waiting bool
+		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, pid).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case e := <-result:
+			t.Fatalf("did not wait: %v", e)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	quick, stop := context.WithTimeout(ctx, 2*time.Second)
+	defer stop()
+	_, err = db.WritePrivateTransfer(quick, func(d store.PrivateTransferDAO) error {
+		r, e := d.Get(quick, b.r.ID)
+		if e != nil {
+			return e
+		}
+		if e = d.Authorize(quick, b.p, "pat", b.r.AuthorityID, b.r.ProjectID, b.r.TaskID); e != nil {
+			return e
+		}
+		r.State = "cleanup_pending"
+		_, e = d.Update(quick, r, r.Version)
+		return e
+	})
+	if err != nil {
+		t.Fatalf("other user status/abort blocked: %v", err)
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPrivateTransferConcurrentCreateSlots(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC()
+	user := uuid.NewString()
+	var wg sync.WaitGroup
+	results := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		r := transferRecord(user, now)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { _, _, e := d.Create(ctx, r); return e })
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	success := 0
+	rejected := 0
+	for e := range results {
+		if e == nil {
+			success++
+			continue
+		}
+		var f *model.Fault
+		if !errors.As(e, &f) || f.Code != "capacity_unavailable" {
+			t.Fatal(e)
+		}
+		rejected++
+	}
+	if success != 4 || rejected != 4 {
+		t.Fatalf("slot race successes=%d rejected=%d", success, rejected)
+	}
+}
+
+func TestPrivateTransferConcurrentCreateReserveClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC()
+	user := uuid.NewString()
+	pending := transferRecord(user, now)
+	reserved := transferRecord(user, now)
+	for _, r := range []*model.PrivateTransfer{&pending, &reserved} {
+		_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { var e error; *r, _, e = d.Create(ctx, *r); return e })
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		pending, e = d.Reserve(ctx, pending.ID, 20, 100)
+		if e != nil {
+			return e
+		}
+		pending.State = "cleanup_pending"
+		pending, e = d.Update(ctx, pending, pending.Version)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 3)
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, e := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+				switch i {
+				case 0:
+					_, _, e := d.Create(ctx, transferRecord(user, now))
+					return e
+				case 1:
+					_, e := d.Reserve(ctx, reserved.ID, 30, 100)
+					return e
+				default:
+					_, e := d.Close(ctx, pending.ID, pending.Version, now.Add(24*time.Hour))
+					return e
+				}
+			})
+			results <- e
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+	for e := range results {
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+}
+
+func TestPrivateTransferRejectsInvalidOperations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC()
+	r := transferRecord(uuid.NewString(), now)
+	reject := func(op func(store.PrivateTransferDAO) error) {
+		t.Helper()
+		completion, err := db.WritePrivateTransfer(ctx, op)
+		if err == nil || completion.Outcome != store.TransactionNotCommitted {
+			t.Fatalf("invalid operation committed: %+v %v", completion, err)
+		}
+	}
+	bad := r
+	bad.ReservedBytes = 1
+	reject(func(d store.PrivateTransferDAO) error { _, _, e := d.Create(ctx, bad); return e })
+	bad = r
+	bad.Direction = "invalid"
+	reject(func(d store.PrivateTransferDAO) error { _, _, e := d.Create(ctx, bad); return e })
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { var e error; r, _, e = d.Create(ctx, r); return e })
+	if err != nil {
+		t.Fatal(err)
+	}
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, r.ID, -1, 100); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, uuid.NewString(), 1, 100); return e })
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		got, e := d.Reserve(ctx, r.ID, 0, 100)
+		if e == nil && (got.Version != r.Version || got.ReservedBytes != 0) {
+			t.Fatal("zero reservation changed record")
+		}
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reject(func(d store.PrivateTransferDAO) error {
+		_, e := d.ConsumeReservation(ctx, r.ID, -1, r.Version)
+		return e
+	})
+	reject(func(d store.PrivateTransferDAO) error {
+		_, e := d.ConsumeReservation(ctx, uuid.NewString(), 1, 1)
+		return e
+	})
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		got, e := d.ConsumeReservation(ctx, r.ID, 0, r.Version)
+		if e == nil && got.Version != r.Version {
+			t.Fatal("zero materialization changed record")
+		}
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad = r
+	bad.State = "closed"
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Update(ctx, bad, r.Version); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.UpdatePending(ctx, r, r.Version); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Close(ctx, uuid.NewString(), 1, now); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Close(ctx, r.ID, r.Version, now); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Due(ctx, now, 0); return e })
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Prune(ctx, now, 101); return e })
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, e = d.Reserve(ctx, r.ID, 10, 100)
+		if e != nil {
+			return e
+		}
+		r.State = "cleanup_pending"
+		r, e = d.Update(ctx, r, r.Version)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.Reserve(ctx, r.ID, 1, 100); return e })
+	state := "committed"
+	r.CleanupFromState = &state
+	r.Data = []byte(`{"operationId":"result"}`)
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, e = d.UpdatePending(ctx, r, r.Version)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.State != "cleanup_pending" || r.CleanupFromState == nil || *r.CleanupFromState != "committed" || r.ReservedBytes != 10 {
+		t.Fatalf("late result lost cleanup obligation: %+v", r)
+	}
+	reject(func(d store.PrivateTransferDAO) error { _, e := d.UpdatePending(ctx, r, r.Version-1); return e })
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, e = d.Close(ctx, r.ID, r.Version, now.Add(time.Hour))
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.CleanupFromState == nil || *r.CleanupFromState != "committed" || string(r.Data) != `{"operationId": "result"}` {
+		t.Fatalf("close lost receipt: %+v", r)
+	}
+}
+
+func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC()
+	r := transferRecord(uuid.NewString(), now)
+	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, _, e = d.Create(ctx, r)
+		if e != nil {
+			return e
+		}
+		r, e = d.Reserve(ctx, r.ID, 10, 100)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail := func(op func(*privateTransferDAO) error) {
+		t.Helper()
+		completion, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error { return op(d.(*privateTransferDAO)) })
+		if err == nil || completion.Outcome != store.TransactionNotCommitted {
+			t.Fatalf("failure did not roll back: %+v %v", completion, err)
+		}
+	}
+	deleteLedger := func(d *privateTransferDAO) error {
+		_, e := d.tx.Exec(ctx, `DELETE FROM private_transfer_ledger`)
+		return e
+	}
+	for _, total := range []func(*privateTransferDAO) (int64, error){func(d *privateTransferDAO) (int64, error) { return d.ReservedTotal(ctx) }, func(d *privateTransferDAO) (int64, error) { return d.OutstandingTotal(ctx) }} {
+		fail(func(d *privateTransferDAO) error {
+			if e := deleteLedger(d); e != nil {
+				return e
+			}
+			_, e := total(d)
+			return e
+		})
+		fail(func(d *privateTransferDAO) error {
+			if e := d.LockLedger(ctx); e != nil {
+				return e
+			}
+			if e := deleteLedger(d); e != nil {
+				return e
+			}
+			_, e := total(d)
+			return e
+		})
+	}
+	fail(func(d *privateTransferDAO) error {
+		if e := deleteLedger(d); e != nil {
+			return e
+		}
+		_, _, e := d.Create(ctx, transferRecord(uuid.NewString(), now))
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if e := deleteLedger(d); e != nil {
+			return e
+		}
+		_, e := d.Reserve(ctx, r.ID, 1, 100)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if e := d.LockLedger(ctx); e != nil {
+			return e
+		}
+		if e := deleteLedger(d); e != nil {
+			return e
+		}
+		_, e := d.Reserve(ctx, r.ID, 1, 100)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if e := deleteLedger(d); e != nil {
+			return e
+		}
+		_, e := d.ConsumeReservation(ctx, r.ID, 1, r.Version)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET outstanding_bytes=0`); e != nil {
+			return e
+		}
+		_, e := d.ConsumeReservation(ctx, r.ID, 1, r.Version)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if e := d.LockLedger(ctx); e != nil {
+			return e
+		}
+		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfer_ledger`); e != nil {
+			return e
+		}
+		_, e := d.ConsumeReservation(ctx, r.ID, 1, r.Version)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfer_ledger`); e != nil {
+			return e
+		}
+		_, e := d.Stats(ctx)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfers`); e != nil {
+			return e
+		}
+		_, e := d.Due(ctx, now, 10)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfers`); e != nil {
+			return e
+		}
+		_, e := d.Prune(ctx, now, 10)
+		return e
+	})
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r.State = "cleanup_pending"
+		r, e = d.Update(ctx, r, r.Version)
+		return e
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail(func(d *privateTransferDAO) error {
+		if e := deleteLedger(d); e != nil {
+			return e
+		}
+		_, e := d.Close(ctx, r.ID, r.Version, now)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `UPDATE private_transfer_ledger SET reserved_bytes=0,outstanding_bytes=0`); e != nil {
+			return e
+		}
+		_, e := d.Close(ctx, r.ID, r.Version, now)
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if e := d.LockLedger(ctx); e != nil {
+			return e
+		}
+		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfer_ledger`); e != nil {
+			return e
+		}
+		_, e := d.Close(ctx, r.ID, r.Version, now)
+		return e
+	})
+	_, err = db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
+		got, e := d.Get(ctx, r.ID)
+		if e != nil {
+			return e
+		}
+		total, e := d.ReservedTotal(ctx)
+		if e != nil {
+			return e
+		}
+		if got.State != "cleanup_pending" || got.ReservedBytes != 10 || total != 10 {
+			t.Fatalf("failed operations altered record or ledger: %+v total=%d", got, total)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
