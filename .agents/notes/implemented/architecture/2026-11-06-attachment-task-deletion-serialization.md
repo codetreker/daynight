@@ -11,7 +11,7 @@ check and the physical change.
 
 ## Decision
 
-An attachment mutation holds a Task SHARE lock through fresh project
+Ordinary attachment Put and Delete hold a Task SHARE lock through fresh project
 authorization, the Task deletion check, path validation, file I/O, and the
 transaction-bound metadata write and completion. Authorization precedes the
 Task absence or deletion response. The transaction does not take a Project lock
@@ -27,7 +27,9 @@ retaining this Task deletion boundary and its lock-order rationale.
 
 The [Task deletion decision](../../archived/feature/2026-10-25-task-soft-deletion.md)
 retains the data and the distinct authorized deletion response. This decision
-extends its guarantee to attachment mutations already in flight.
+extends its guarantee to ordinary attachment mutations already in flight. The
+[resumable upload decision](2026-11-06-resumable-mcp-upload.md) defines a
+separate admission boundary for MCP upload commits.
 
 ## Alternatives
 

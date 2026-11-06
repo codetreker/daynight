@@ -117,7 +117,7 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
   assert.equal(new Set(names).size, names.length);
   assert.deepEqual(artifactPaths(ordinaryUploads[1]!), [".tmp/validation-environment.json"]);
-  assert.deepEqual(artifactPaths(installedUploads[0]!), [".tmp/validation-environment.json", ".tmp/e2e-evidence.json", ".tmp/update-evidence.json", ".tmp/project-task-evidence.json", ".tmp/skill-install-evidence.json", ".tmp/installed-cli-preparation.json"]);
+  assert.deepEqual(artifactPaths(installedUploads[0]!), [".tmp/validation-environment.json", ".tmp/installed-cli-preparation.json"]);
   for (const probe of [ordinaryUploads[2]!, installedUploads[1]!]) {
     assert.match(probe, /^        if: \$\{\{ always\(\) && steps.environment.outcome != 'skipped' \}\}$/m);
     assert.deepEqual(artifactPaths(probe), [".tmp/validation-probes.json"]);
@@ -280,6 +280,27 @@ test("the macOS evidence handoff removes only the two recorder paths", () => {
 
 const selectedWebStep = gate.match(/      - name: Require selected Web quality to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
 const selectedWebCommand = selectedWebStep.match(/^        run: (.+)$/m)![1]!;
+
+test("Web quality requires frontend Playwright regressions and retains their evidence", () => {
+  const web = jobs.get("verify-web-quality")!;
+  const steps = [...web.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
+  const install = steps.find((step) => step.includes("playwright install"))!;
+  const browser = steps.find((step) => step.includes("id: web-browser"))!;
+  const upload = uploadSteps(web).find((step) => artifactName(step) === "daynight-web-assistant-browser")!;
+  assert.ok(install); assert.ok(browser); assert.ok(upload);
+  assert.match(web, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
+  assert.match(web, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
+  assert.match(install, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright install --with-deps chromium$/m);
+  assert.match(browser, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright test --config tests\/navigation\/bots-viewport-playwright.config.ts --reporter=line,junit$/m);
+  assert.match(browser, /PLAYWRIGHT_JUNIT_OUTPUT_FILE: \$\{\{ github.workspace \}\}\/packages\/daynight-web\/\.tmp\/acceptance\/bots-viewport-results.xml/);
+  assert.ok(web.indexOf(install) < web.indexOf(browser));
+  assert.ok(web.indexOf(browser) < web.indexOf(upload));
+  assert.doesNotMatch(browser, /continue-on-error|passWithNoTests|--grep|--shard|--update-snapshots|if:/);
+  assert.match(upload, /^        if: \$\{\{ always\(\) && steps.web-browser.outcome != 'skipped' \}\}$/m);
+  assert.deepEqual(artifactPaths(upload), ["packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml", "packages/daynight-web/.tmp/acceptance/bots-viewport/"]);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+  assert.match(upload, /^          if-no-files-found: error$/m);
+});
 
 test("selected Web validation requires actual quality success", () => {
   assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
