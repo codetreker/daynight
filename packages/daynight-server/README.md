@@ -333,7 +333,9 @@ Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, Task discussion reads and posts, and attachment listing and removal.
+and writes, Task discussion reads and posts, and attachment listing, removal and
+inline or resumable upload. The [attachment design](../../docs/design/daynight-task-attachments.md)
+owns upload admission and transfer behavior.
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and

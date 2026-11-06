@@ -734,7 +734,8 @@ ordinary Ubuntu job supplies the runtime package. macOS runs its ordinary and
 installed phases in sequence with separate builds, outcomes and artifacts. Go
 and Web each run their module validation in separate jobs. The Web `quality`
 mode runs its harness, Vitest coverage and source-inventory checker with bounded
-stages; it uploads coverage counters and source manifest. Server validation uses
+stages, then the controlled Assistant browser suite; it uploads coverage and
+browser evidence. Server validation uses
 its own PostgreSQL service and uploads the raw coverage profile. The final gate
 accepts only successful or skipped preceding jobs and requires selected Web
 quality to succeed. Stress workloads remain local-only.

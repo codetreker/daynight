@@ -2003,9 +2003,9 @@ fixtures and cleanup belong to each suite. These checks cover
 browser interaction under controlled responses; they do not prove live service,
 PostgreSQL, installed-CLI or native/container integration. The Go module test
 [`TestAttachmentGrantRevocationWithFreshProcess`](../daynight-server/cmd/daynight-server/attachment_grant_revocation_test.go)
-separately verifies that member removal and new-access refusal complete while an
-admitted 1 MiB upload is incomplete, followed by its successful completion,
-byte verification and cleanup. The
+separately verifies that member removal and new Project-access refusal complete
+while an admitted 1 MiB upload is incomplete, followed by its successful
+completion, attachment refusal, byte verification and cleanup. The
 [acceptance ownership decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 records the division.
 
