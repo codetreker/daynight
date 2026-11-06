@@ -325,8 +325,11 @@ The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The endpoint currently advertises no business tools. A tool is discoverable only
-after its complete business adapter is registered.
+The endpoint advertises Team lifecycle, membership, and scoped project tools.
+Team and membership versions are decimal strings, and list results use scoped
+cursors. A list item exceeding the response budget produces an explicit error;
+complete MCP retrieval and continuation past that item are not yet available.
+Other tools become discoverable when their adapters are registered.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control

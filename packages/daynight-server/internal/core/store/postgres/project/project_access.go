@@ -7,6 +7,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
+	"github.com/jackc/pgx/v5"
 )
 
 func (tx *thread) LockProjectAuthorization(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
@@ -25,7 +26,19 @@ func (s *reader) AccessibleProjects(ctx context.Context, principal model.Princip
 	return s.ScopedProjects(ctx, principal, store.ProjectScope{Kind: store.ProjectScopeAll}, page)
 }
 
+type boundedProjectRow struct {
+	row       pgx.Row
+	oversized bool
+}
+
+func (r *boundedProjectRow) Scan(dest ...any) error {
+	return r.row.Scan(append(dest, &r.oversized)...)
+}
+
 func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, scope store.ProjectScope, page store.Page) (store.ProjectPage, error) {
+	if scope.MaxItemBytes < 0 || scope.MaxItemBytes > 128<<20 {
+		return store.ProjectPage{}, &model.Fault{Code: "invalid_input", Message: "Invalid Project item budget."}
+	}
 	condition := ""
 	var arguments []any
 	switch scope.Kind {
@@ -56,7 +69,16 @@ func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, 
 	}
 	afterTime, afterID := pg.PageValues(page)
 	arguments = append([]any{principal.UserID, afterTime, afterID, page.Limit + 1}, arguments...)
-	rows, err := s.tx.Query(ctx, `SELECT `+pg.ProjectProjection+` FROM `+pg.ProjectRelation+`
+	projection := pg.ProjectProjection
+	if scope.MaxItemBytes > 0 {
+		arguments = append(arguments, scope.MaxItemBytes)
+		limit := fmt.Sprintf("$%d", len(arguments))
+		oversized := `(octet_length(p.name)::bigint + octet_length(p.repo_url)::bigint > ` + limit + `)`
+		projection = `p.id::text, CASE WHEN ` + oversized + ` THEN '' ELSE p.name END,
+			CASE WHEN ` + oversized + ` THEN '' ELSE p.repo_url END, p.created_at, p.updated_at,
+			p.settings_version, p.execution_warning_minutes, owner_team.id::text, o.version, o.updated_at, ` + oversized
+	}
+	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM `+pg.ProjectRelation+`
         WHERE EXISTS (SELECT 1 FROM (`+pg.ProjectAccessRelation+`) a WHERE a.project_id=p.id AND a.user_id=$1)
         AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))`+condition+`
 		ORDER BY p.created_at,p.id LIMIT $4`, arguments...)
@@ -65,8 +87,23 @@ func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, 
 	}
 	defer rows.Close()
 	items := []model.Project{}
+	stoppedAtOversized := false
 	for rows.Next() {
-		project, err := pg.ScanProject(rows)
+		var project model.Project
+		var err error
+		if scope.MaxItemBytes > 0 {
+			row := &boundedProjectRow{row: rows}
+			project, err = pg.ScanProject(row)
+			if err == nil && row.oversized {
+				if len(items) == 0 {
+					return store.ProjectPage{}, &model.Fault{Code: "payload_too_large", Message: "Project " + project.ID + " exceeds the list item budget."}
+				}
+				stoppedAtOversized = true
+				break
+			}
+		} else {
+			project, err = pg.ScanProject(rows)
+		}
 		if err != nil {
 			return store.ProjectPage{}, pg.QueryError("list accessible projects", err)
 		}
@@ -75,8 +112,8 @@ func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, 
 	if err := rows.Err(); err != nil {
 		return store.ProjectPage{}, pg.QueryError("list accessible projects", err)
 	}
-	more := len(items) > page.Limit
-	if more {
+	more := stoppedAtOversized || len(items) > page.Limit
+	if len(items) > page.Limit {
 		items = items[:page.Limit]
 	}
 	return store.ProjectPage{Items: items, HasMore: more}, nil

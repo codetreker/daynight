@@ -17,7 +17,8 @@ Origin against an exact allowlist, and carries its principal and credential ID
 into tool handlers. The official SDK supports the two declared protocol versions.
 Registered tools use one low-level wrapper with precompiled input and output
 schemas, safe structured errors, and explicit completion facts. The production
-registry is empty until complete business adapters are registered.
+registry exposes registered business adapters. The [Team adapter decision](2026-11-06-mcp-team-management.md)
+records its oversized-item limitation.
 
 Separate control and large-object permits are selected by internal materialization,
 not the returned view. Permits remain held through handler and response delivery.
@@ -44,7 +45,6 @@ outcome and shared-resource lifetime at the cost of a potentially delayed exit.
 
 ## Consequences
 
-The entry has no business capabilities by itself; domain adapters must register
-only complete tools and select their worst-case materialization class. OAuth and
+Domain adapters select their worst-case materialization class. OAuth and other
 business tools require their separately owned implementations. Clients and
-proxies handling future full resources must support the declared result capacity.
+proxies handling full resources must support the declared result capacity.

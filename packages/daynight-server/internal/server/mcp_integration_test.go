@@ -99,9 +99,11 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil || len(list.Tools) != 10 {
 		t.Fatalf("production tools: %#v, %v", list, err)
 	}
+
+	exerciseMCPTeams(t, database, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
 
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
@@ -190,7 +192,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	list, err = bobProduction.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil || len(list.Tools) != 10 {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
 	}
 }

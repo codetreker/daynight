@@ -47,11 +47,11 @@ func ResolveTeamID(ctx context.Context, identity *identity.Identity, principal c
 	if selection != "personal" {
 		return core.CanonicalID(selection)
 	}
-	user, err := identity.User(ctx, principal)
+	id, err := identity.PersonalTeamID(ctx, principal)
 	if err != nil {
 		return "", err
 	}
-	return core.CanonicalID(user.PersonalTeam.ID)
+	return core.CanonicalID(id)
 }
 
 type TeamRef struct {

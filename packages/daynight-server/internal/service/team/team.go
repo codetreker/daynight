@@ -43,6 +43,17 @@ func (s *Teams) write(ctx context.Context, id string, op func(store.TeamWriteDAO
 	})
 	return completed(c, err, refusal)
 }
+
+// CreationError retains only the allocated identifier when transaction
+// completion fails; it does not establish that the Team exists.
+type CreationError struct {
+	TeamID string
+	Cause  error
+}
+
+func (e *CreationError) Error() string { return e.Cause.Error() }
+func (e *CreationError) Unwrap() error { return e.Cause }
+
 func (s *Teams) Create(ctx context.Context, p model.Principal, input core.CreateTeam) (model.Team, error) {
 	if err := core.ValidateCreate(p, input); err != nil {
 		return model.Team{}, err
@@ -53,6 +64,9 @@ func (s *Teams) Create(ctx context.Context, p model.Principal, input core.Create
 		return completion.Capture(func() error { var err error; result, err = core.Create(ctx, dao, input); return err }, &refusal)
 	})
 	if err := completed(c, err, refusal); err != nil {
+		if result.ID != "" {
+			return model.Team{}, &CreationError{TeamID: result.ID, Cause: err}
+		}
 		return model.Team{}, err
 	}
 	return result, nil
@@ -93,6 +107,113 @@ func (s *Teams) List(ctx context.Context, p model.Principal, request model.PageR
 	}
 	return result, nil
 }
+
+// GetBounded and ListBounded constrain protocol-side materialization while
+// leaving the ordinary REST projections intact.
+func (s *Teams) GetBounded(ctx context.Context, p model.Principal, id string, limit int) (model.Team, error) {
+	id, err := core.ValidateRead(p, id)
+	if err != nil {
+		return model.Team{}, err
+	}
+	var result model.Team
+	var refusal *model.Fault
+	err = s.reader.ReadSnapshot(ctx, func(sc store.SnapshotScope) error {
+		return completion.Capture(func() error { var e error; result, e = core.GetBounded(ctx, sc.TeamDAO(), p, id, limit); return e }, &refusal)
+	})
+	if err != nil {
+		return model.Team{}, err
+	}
+	if refusal != nil {
+		return model.Team{}, refusal
+	}
+	return result, nil
+}
+func (s *Teams) ListBounded(ctx context.Context, p model.Principal, request model.PageRequest, limit int) (core.TeamPage, error) {
+	if err := model.RequirePrincipal(p); err != nil {
+		return core.TeamPage{}, err
+	}
+	if _, err := query.ListPage(request, query.ListScope{Kind: "teams", UserID: p.UserID}); err != nil {
+		return core.TeamPage{}, err
+	}
+	var result core.TeamPage
+	var refusal *model.Fault
+	err := s.reader.ReadSnapshot(ctx, func(sc store.SnapshotScope) error {
+		return completion.Capture(func() error {
+			var e error
+			result, e = core.ListBounded(ctx, sc.TeamDAO(), p, request, limit)
+			return e
+		}, &refusal)
+	})
+	if err != nil {
+		return core.TeamPage{}, err
+	}
+	if refusal != nil {
+		return core.TeamPage{}, refusal
+	}
+	return result, nil
+}
+
+type boundedTeamWriter struct {
+	store.TeamWriteDAO
+	limit int
+}
+
+func (d boundedTeamWriter) Team(ctx context.Context, userID string) (model.Team, error) {
+	t, oversized, err := d.TeamWriteDAO.TeamBounded(ctx, userID, d.limit)
+	if err != nil {
+		return model.Team{}, err
+	}
+	if oversized {
+		return model.Team{}, &model.Fault{Code: "payload_too_large", Message: "Team exceeds the write read budget."}
+	}
+	return t, nil
+}
+func (s *Teams) RenameBounded(ctx context.Context, p model.Principal, id string, input core.ChangeTeam, limit int) (model.Team, error) {
+	id, err := core.ValidateChange(p, id, input)
+	if err != nil {
+		return model.Team{}, err
+	}
+	var result model.Team
+	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+		var e error
+		result, e = core.Rename(ctx, boundedTeamWriter{dao, limit}, p, input)
+		return e
+	})
+	if err != nil {
+		return model.Team{}, err
+	}
+	return result, nil
+}
+func (s *Teams) DeleteBounded(ctx context.Context, p model.Principal, id string, input core.ChangeTeam, limit int) error {
+	id, err := core.ValidateChange(p, id, input)
+	if err != nil {
+		return err
+	}
+	return s.write(ctx, id, func(dao store.TeamWriteDAO) error { return core.Delete(ctx, boundedTeamWriter{dao, limit}, p, input) })
+}
+func (s *Teams) changeMemberBounded(ctx context.Context, p model.Principal, id, user string, input core.ChangeTeamMember, remove bool, limit int) (core.TeamMemberResult, error) {
+	id, target, err := core.ValidateMemberChange(p, id, user, input, remove)
+	if err != nil {
+		return core.TeamMemberResult{}, err
+	}
+	var result core.TeamMemberResult
+	err = s.write(ctx, id, func(dao store.TeamWriteDAO) error {
+		var e error
+		result, e = core.ChangeMember(ctx, boundedTeamWriter{dao, limit}, p, target, input, remove)
+		return e
+	})
+	if err != nil {
+		return core.TeamMemberResult{}, err
+	}
+	return result, nil
+}
+func (s *Teams) SetMemberRoleBounded(ctx context.Context, p model.Principal, id, user string, input core.ChangeTeamMember, limit int) (core.TeamMemberResult, error) {
+	return s.changeMemberBounded(ctx, p, id, user, input, false, limit)
+}
+func (s *Teams) RemoveMemberBounded(ctx context.Context, p model.Principal, id, user string, input core.ChangeTeamMember, limit int) (core.TeamMemberResult, error) {
+	return s.changeMemberBounded(ctx, p, id, user, input, true, limit)
+}
+
 func (s *Teams) Rename(ctx context.Context, p model.Principal, id string, input core.ChangeTeam) (model.Team, error) {
 	id, err := core.ValidateChange(p, id, input)
 	if err != nil {
@@ -131,6 +252,54 @@ func (s *Teams) Members(ctx context.Context, p model.Principal, id string) ([]mo
 	}
 	if refusal != nil {
 		return nil, refusal
+	}
+	return result, nil
+}
+func (s *Teams) MembersPage(ctx context.Context, p model.Principal, id string, request model.PageRequest) (core.MemberPage, error) {
+	id, err := core.ValidateRead(p, id)
+	if err != nil {
+		return core.MemberPage{}, err
+	}
+	if _, err := query.ListPage(request, query.ListScope{Kind: "team_members", UserID: p.UserID, TeamID: id}); err != nil {
+		return core.MemberPage{}, err
+	}
+	var result core.MemberPage
+	var refusal *model.Fault
+	err = s.reader.ReadSnapshot(ctx, func(sc store.SnapshotScope) error {
+		return completion.Capture(func() error {
+			var err error
+			result, err = core.MembersPage(ctx, sc.TeamDAO(), p, id, request)
+			return err
+		}, &refusal)
+	})
+	if err != nil {
+		return core.MemberPage{}, err
+	}
+	if refusal != nil {
+		return core.MemberPage{}, refusal
+	}
+	return result, nil
+}
+
+func (s *Teams) Member(ctx context.Context, p model.Principal, id, userID string) (model.TeamMember, error) {
+	id, err := core.ValidateRead(p, id)
+	if err != nil {
+		return model.TeamMember{}, err
+	}
+	canonical, err := model.CanonicalID(userID)
+	if err != nil || canonical != userID {
+		return model.TeamMember{}, &model.Fault{Code: "invalid_input", Message: "User ID must be a canonical UUID."}
+	}
+	var result model.TeamMember
+	var refusal *model.Fault
+	err = s.reader.ReadSnapshot(ctx, func(sc store.SnapshotScope) error {
+		return completion.Capture(func() error { var err error; result, err = core.Member(ctx, sc.TeamDAO(), p, id, userID); return err }, &refusal)
+	})
+	if err != nil {
+		return model.TeamMember{}, err
+	}
+	if refusal != nil {
+		return model.TeamMember{}, refusal
 	}
 	return result, nil
 }
