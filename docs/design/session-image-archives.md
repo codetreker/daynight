@@ -209,7 +209,7 @@ PUT body 是原始文件块，使用下节统一文件 headers、偏移、持久
 
 回执是 ImageHistorySyncReceipt 原对象，不加外层 envelope。acceptedOffset 为 0..byteLength 的非负 Decimal，各状态 byteLength/sha256 都是原绑定身份。receiving 的 timelineRevision/error 均 null；complete 要求 acceptedOffset=byteLength、非 null 正 timelineRevision、error=null；failed 的 timelineRevision=null、error 非 null，并保留原 syncId/身份/最后确认偏移。complete 必须经过完整长度/hash、strict JSON、全部 entry 集合/顺序、源连续性、权限/停止条件和 gap 校验，随后原子替换预算元数据，不能用长度相等代替内容一致。暂时 IO 故障保持 receiving；确定失败固定 failed；查询未知不换 syncId。
 
-每 Session 最多一个活跃完整同步轮次。最终准备 sealed 或已有 manifest 提交后不再接纳新最终同步。settling 中只有原同步已确认 complete/failed、原 writer 实际停止且采集结算确实改变绑定时，才能显式创建新 syncId；新轮次 complete 前保留旧账本与全部 pin，旧迟到请求不能覆盖新轮次。活动账本同样保留 epoch/source 截止屏障及持久 outbox，确认完整同步前暂停新图片准入，不让并发文字消耗已预留容量。正文仅进入受 lease 保护的有界临时文件，计量后清理；数据库只保存元数据。
+每 Session 最多一个活跃完整同步轮次。最终准备 sealed 或已有 manifest 提交后不再接纳新最终同步。settling 中只有原同步已确认 complete/failed、原 writer 实际停止，且采集结算改变绑定或对已持久正文的有界投影恢复成功改变投影时，才能显式创建新 syncId。清除 imageProjectionError 并形成完整空绑定也是有效增量，不要求存在图片或 capture 终态变化。新轮次沿同一 prepare/stopped 身份、historyEpoch 与 sourceThrough，只推进发生变化的 entry/片段 revision，不产生新原生消息或新的来源 IO；新轮次 complete 前保留旧账本与全部 pin，旧迟到请求不能覆盖新轮次。活动账本同样保留 epoch/source 截止屏障及持久 outbox，确认完整同步前暂停新图片准入，不让并发文字消耗已预留容量。正文仅进入受 lease 保护的有界临时文件，计量后清理；数据库只保存元数据。
 
 ### timeline 文件块与共同传输规则
 
@@ -273,7 +273,7 @@ blobId 仅用于内部对象解析，不是对外下载能力；manifest 包含 
 
 1. 在原owner/原Session归档权限与停止证明下建立settling准备，停止新原生执行和新的任意来源读取，但先允许原stopped writer补送本地已发生的最终正文、来源映射和连续source截止证据。归档重试不依赖原WebSocket重新上线：新增有界history同步profile接收原pending-content的完整最终投影，重建仅hash/长度/引用的服务预算账本，从有界临时文件逐项校验后清理正文。只有完整同步确认才固定候选occurrence集合；不能用尚未同步的服务视图seal。
 2. 最多等待60秒完成当前已有本地来源/解码尝试和服务 query/复制。尚未开始或确定只有未提交 partial staging 的采集在确认 writer 停止后，原 capture 原子转 failed并释放预留，保留明确缺图原因。已 committed 的必须纳入原图。validated/copying/提交未知先查服务，不能以60秒到期宣称未采集。
-3. 最终正文同步后，已登记采集的终态/retained结算仍是允许的确定增量；完成这些增量并再次确认最终预算账本后才seal，禁止一切正文和出现变更。服务锁内对原 capture 做终结 CAS：commit 已获胜则只能纳入 committed；confirmed failed 获胜后旧 attempt 的 validated/复制完成不可再次提交。还有未知服务结果、活跃 writer 或未决原生消息关联时归档保持 pending或明确失败，持有 pin；之后只协调原准备，不生成竞争 manifest。prepared bytes 丢失但服务已 committed 仍可归档；服务明确从未提交才记缺失。
+3. 最终正文同步后，已登记采集的终态/retained结算，以及对同一已持久正文的有界投影恢复，仍是允许的确定增量；解析成功即使得到零图片，也须将清除错误、完整绑定及修订通过新的最终同步轮次送达服务。保持原 stopped 身份和 source 截止点，不启动新的来源 IO；恢复发现的真实出现按已有停止后登记/结算规则处理，不放宽采集权限。完成这些增量并再次确认最终预算账本后才seal，禁止一切正文和出现变更。服务锁内对原 capture 做终结 CAS：commit 已获胜则只能纳入 committed；confirmed failed 获胜后旧 attempt 的 validated/复制完成不可再次提交。还有未知服务结果、活跃 writer 或未决原生消息关联时归档保持 pending或明确失败，持有 pin；之后只协调原准备，不生成竞争 manifest。prepared bytes 丢失但服务已 committed 仍可归档；服务明确从未提交才记缺失。
 4. 结算全部出现后取得冻结完整投影，包含当前/retained/撤回容器；共享 codec 验证闭包、新旧两种容量和原投影 gap，并要求全部 imageProjectionError=null 和完整有效的 Markdown/reasoning bindings；首次解析失败且 retained 为空也不能通过空集合检查。未解决图片投影错误时不进入 sealed，不创建可发布 manifest。gap 表示未知文本内容时整个归档失败，不把图片 partial当作文本缺页通行证。
 5. 服务建立暂时归档 pin，返回仅此记录引用的 descriptor/blobId 映射。Controller据其本地完整正文与冻结账本写timeline及manifest，服务从上传timeline生成确定兼容表示；没有资源的未发送草稿不进入它们。发送 unknown 的独立 operation pin 保留，不能捏造已接受用户消息；未决关联若可能改变最终历史则不封存不可变完整归档。
 
@@ -283,7 +283,7 @@ settling下的最终同步使用独立的有界原字节文件传输，避免一
 
 每块1..1048576原bytes，完整文件长度/hash和块hash使用下节相同三个Daynight-* header，offset连续或精确同边界重传；syncId由Controller为一次冻结本地源分配，首次offset=0绑定不可变完整文件身份。成功与`GET .../history/{syncId}/status`返回`{syncId,state,acceptedOffset,byteLength,sha256,timelineRevision,error}`；state=receiving/complete/failed，Decimal/UUID/SHA沿公共协议，timelineRevision仅complete非null，error仅failed非null。最后完整文件经长度/hash、strict JSON、全集合、原停止证明、source完整性及pending-content gap校验后，原子替换全部预算元数据并返回complete及持久revision。确定失败保留原syncId与原因，暂时IO故障保持receiving可协调；查询未知不换ID。最多一个活跃同步轮次，原sealed/manifest提交后不能新建同步。
 
-本地采集终态结算改变了绑定时，只有先确认原同步complete或failed、实际writer已停且prepare仍settling，才能显式以新syncId开启新完整轮次；旧metadata账本和pin在新轮次complete前保留，旧轮次迟到请求不能覆盖新事实。服务计算并保存逐entry/hash/长度/引用元数据，legacy内嵌bytes的编码长度按其已登记长度和规范Base64计算，最终归档文件再验实际bytes。同步临时正文文件仅为校验使用，完成并写入元数据后删除；失败/未知按writer lease与准备引用协调清理。整个合法entry可跨任意文件块，不拆文字part、不改entryId；解析在有界执行单元完成，测量最坏64MiB文件而非假设单entry小于传输块。此同步 DTO 由本文定义并由公共 codec 统一实现，与图片upload和正式timeline file区分。
+本地采集终态结算改变绑定，或对已持久正文的有界解析恢复成功改变图片投影时，只有先确认原同步complete或failed、实际writer已停且prepare仍settling，才能显式以新syncId开启新完整轮次。解析成功清除imageProjectionError并输出完整空bindings也适用，不依赖capture结算或WebSocket重连。新轮次保持同一prepare/stopped身份、historyEpoch和sourceThrough，以推进的entry/片段revision提交修正投影；旧syncId的文件/hash不得改变，禁止新原生执行和新的来源IO。旧metadata账本和pin在新轮次complete前保留，旧轮次迟到请求不能覆盖新事实。服务计算并保存逐entry/hash/长度/引用元数据，legacy内嵌bytes的编码长度按其已登记长度和规范Base64计算，最终归档文件再验实际bytes。同步临时正文文件仅为校验使用，完成并写入元数据后删除；失败/未知按writer lease与准备引用协调清理。整个合法entry可跨任意文件块，不拆文字part、不改entryId；解析在有界执行单元完成，测量最坏64MiB文件而非假设单entry小于传输块。此同步 DTO 由本文定义并由公共 codec 统一实现，与图片upload和正式timeline file区分。
 
 服务不能验证本地全部native事件是否真实存在，但只接受原Controller已验证的最终本地库存与连续序列/完整性声明，并保持现有archive_incomplete拒绝；已知仅需full resynchronization的gap允许此完整同步修复。原生停止后未上报的最后条目有不启动Provider的前进路径。同步不启动图源IO；尚未在服务register的本地图片出现只能以原已发生来源及其本地结果登记元数据，不在停机后重新抓路径/URL。已有validated本地文件在原归档权限profile内复制结算，缺本地字节者明确未采集。
 
@@ -354,7 +354,7 @@ Controller图片表迁移由Controller 媒体存储 journal-format唯一owner完
 
 故障验证覆盖 prepare、完整历史同步、最后文件块、文件 fsync、manifest、DB commit 和响应丢失；原身份协调且不启动 Provider。特别验证停止前未上报的最后条目、单条 entry 大于普通历史页、source gap、commit/failed 竞争、晚到 retained 以及未决消息关联。ready 必须具有三类文件和原件引用的耐久证据。
 
-原件 A 保存后将源替换为 B 或删除、关闭 Controller、重启服务，再从 Task、Test、Bot、全屏、历史选择器和附件入口预览/下载，必须仍得到 A 的原 SHA。从未采集的失败可构成 partial；known available 丢失、摘要错误、文本 gap、提交 unknown 或未解决的图片投影错误不得构成 partial。必须覆盖首次 Markdown 解析超时/节点预算失败且 retained=[]、无任何图片 part，以及 reasoning bindings=null 两种反例：完整文字与连续 source 序号仍不得 sealed/ready，也不能伪造 unavailable 出现；只有有界恢复得到完整绑定并结算真实出现后才重新判断完整性。ready 后损坏只能报告读失败，不改写封存 manifest。
+原件 A 保存后将源替换为 B 或删除、关闭 Controller、重启服务，再从 Task、Test、Bot、全屏、历史选择器和附件入口预览/下载，必须仍得到 A 的原 SHA。从未采集的失败可构成 partial；known available 丢失、摘要错误、文本 gap、提交 unknown 或未解决的图片投影错误不得构成 partial。必须覆盖首次 Markdown 解析超时/节点预算失败且 retained=[]、无任何图片 part，以及 reasoning bindings=null 两种反例：完整文字与连续 source 序号仍不得 sealed/ready，也不能伪造 unavailable 出现；只有有界恢复得到完整绑定并结算真实出现后才重新判断完整性。另须验证原最终同步已 complete 后，暂时解析超时恢复成功且确认零图片、无 capture 结算的情形：在同一 stopped/source 截止点以新 syncId 完整同步清除错误后的投影，服务确认新 revision 后才允许 sealed/ready。覆盖恢复发现真实图片的已有停止后结算路径，以及原同步 receiving/未知、旧 ID 换文件、source 截止点变化、pin 过早释放、迟到旧轮次覆盖和新的来源 IO 均被拒绝。ready 后损坏只能报告读失败，不改写封存 manifest。
 
 显式 Test resume 覆盖源关系与 native 身份、完整目标预算预留、一次复制的稳定映射、连续 resume、源删除/撤权、复制失败及源损坏。导入完成的目标副本不随源删除；无可信键不按文字、摘要或数组下标猜配。
 

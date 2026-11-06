@@ -59,7 +59,7 @@ content/output 内的失败片段用原 `TextPart {type:"text",text}` 保留当�
 
 reasoning 的失败分支保留同一外层字段集合、完整 text 和非 null imageProjectionError；其 markdown 仍严格包含 `{partId,revision,textSha256,complete,truncated,bindings,retainedImages}`，但 `bindings` 必须为 null，明确表示未得到完整 AST 绑定结果。其他元数据对应当前外层 text，retainedImages 保留旧出现，旧 bindings 向 retained 的转换与上述内容片段相同。仅该失败分支允许 null bindings；正常分支必须是完整数组且 imageProjectionError=null。这样无需另存一份 reasoning 正文，也不把空数组误当失败正文没有图片的证明。
 
-所有失败分支关闭当前失败正文的图片读取，已有 retained 图片仍按原身份和权限读取；恢复解析成功时重建完整绑定并将 imageProjectionError 置 null，不能重新分配未改变的出现。空正文保留容器恢复成实际正文时须推进片段 revision，不能在同 revision 下换 textSha256；entry revision 同时推进。解析按同 revision 缓存，在独立有界任务中处理，单任务最多 2 秒，输入/节点数受既有正文及元数据容量约束；不得缩小原文本可读容量。重复失败只更新同条目错误，不无限追加 error 项。无法容纳失败分支和旧引用的完整新投影时保留上一可读快照并报告既有 timeline 容量失败，不删除旧图片引用。
+所有失败分支关闭当前失败正文的图片读取，已有 retained 图片仍按原身份和权限读取；恢复解析成功时重建完整绑定并将 imageProjectionError 置 null，不能重新分配未改变的出现。空正文保留容器恢复成实际正文时须推进片段 revision，不能在同 revision 下换 textSha256；entry revision 同时推进。若原 writer 已停止且归档仍 settling，成功恢复是[归档最终同步](session-image-archives.md#归档准备与结算屏障)允许的确定增量，完整绑定为空也必须同步清除错误后的投影；原同步确认终态后才使用新 syncId，沿原 stopped 身份与 source 截止点，不启动新来源 IO。解析按同 revision 缓存，在独立有界任务中处理，单任务最多 2 秒，输入/节点数受既有正文及元数据容量约束；不得缩小原文本可读容量。重复失败只更新同条目错误，不无限追加 error 项。无法容纳失败分支和旧引用的完整新投影时保留上一可读快照并报告既有 timeline 容量失败，不删除旧图片引用。
 
 ## 本地来源上下文与策略
 

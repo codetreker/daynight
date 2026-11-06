@@ -74,6 +74,12 @@ even when the full text and source sequence are present. It blocks archive
 sealing and both complete and partial publication; an empty retained container
 is not proof of an image-free document. The original text and references remain
 available, and no synthetic occurrence may be invented to qualify as partial.
+Successful bounded parsing of the same persisted text is a settling increment even when it proves there are no images.
+After the prior sync reaches a confirmed terminal state, a new immutable sync
+round carries the corrected projection under the same stopped identity and source
+cutoff. The old ledger and pins remain until that round completes; recovery does
+not require a WebSocket or permit new source IO. Without this increment, a cleared
+local error could leave the service permanently unable to seal the archive.
 
 The design requires reference and intent ledgers, exact dual representation
 accounting, staged file transfer and recovery across file/database boundaries.
