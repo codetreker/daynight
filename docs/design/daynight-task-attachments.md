@@ -8,13 +8,13 @@
 行为要求由[附件需求](../spec/daynight-task-attachments.md)拥有；本文解释通用存储接口、
 附件元数据及各端集成机制。
 [附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
-[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
+[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)与
+[附件变更与 Task 删除串行决策](../../.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)
 保存选择依据、已接受的限制及重新评估条件。
 
 [鉴权架构](daynight-auth.md)通过当前会话或 PAT 与项目成员权限保护所有附件
 请求；行为见[鉴权需求](../spec/daynight-auth.md)。`Attachments` 方法显式接收 principal，在
-文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属；快照完成后执行存储
-及元数据操作，允许已准入操作完成，I/O 后不重新检查成员。凭据在 HTTP 准入
+读取在文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属。上传、覆盖和删除使用持有 Task SHARE 锁的事务，在获取锁后重新检查项目授权和 Task 删除状态，然后检查路径、执行文件操作并通过同一事务写入元数据，直至事务完成才释放锁。授权来源也保持锁定直至事务完成；权限检查先于暴露 Task 删除状态，此顺序不在 Task 锁之后获取 Project 锁。凭据在 HTTP 准入
 时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
 相对资源、键盘机制和单 gateway 部署继续保留；单文件操作和 K1 边界继续有效。
 
@@ -111,7 +111,7 @@ task ID，校验原始附件相对路径，再精确拼接地址。规范化后�
 拒绝绝对路径、空路径段、`.`、`..`、反斜杠及控制字符。
 
 Put/Open/Delete 共用业务地址值中的规范化 ID、原始相对路径和派生存储路径。principal 与原始输入校验后，
-既有快照检查项目成员、task 归属和逻辑冲突或元数据；通过准入后才执行文件 I/O。List 仅查询元数据，
+读取快照或变更事务检查项目成员、task 归属和逻辑冲突或元数据；通过准入后才执行文件 I/O。List 仅查询元数据，
 元数据和公开 URL 继续使用原有 task 内路径，浏览器与 CLI 无需计算、传入或感知分片。
 
 已有文件 `docs` 时不能创建 `docs/design.md`；已有 `docs/design.md` 时不能创建
@@ -213,7 +213,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 | `created_at`、`updated_at` | PG 生成的创建与更新时间 |
 
 以 `(task_id, path)` 作为主键，path 使用 `COLLATE "C"` 保持排序与唯一性区分大小写。业务服务在读写前检查 project/task
-归属及任务未删除状态，不新增 foreign key。[Task 软删除](daynight-task-deletion.md)不改附件元数据或字节；标记后的新操作返回授权的 `410 task_deleted`。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
+归属及任务未删除状态，不新增 foreign key。[Task 软删除](daynight-task-deletion.md)不改附件元数据或字节；附件变更的 Task 锁与软删除的写锁串行，删除先提交时等待中的变更返回授权的 `410 task_deleted` 且不修改文件。文件操作与数据库提交仍不具备跨存储原子性；文件成功后数据库失败或提交结果未知时，保留实际错误和提交状态，不猜测补偿文件。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
 推导，表中不保存分片、`storage_key` 或物理根目录。布局转换不需要新增表、列、索引或修改历史 SQL 迁移。
 
 覆盖保留 `created_at`，更新 MIME、大小和 `updated_at`。删除后重新上传同一路径

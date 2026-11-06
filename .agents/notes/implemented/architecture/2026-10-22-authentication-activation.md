@@ -71,16 +71,18 @@ allowed loopback HTTP gateway. The Go listener still binds numeric loopback.
 `/healthz` and `/readyz` are public and expose no business data; readiness checks
 the database rather than the project list or the upstream identity provider.
 
-### Admission and unchanged attachment behavior
+### Admission and attachment behavior
 
 HTTP authentication looks up the current session/PAT for each request and forms
 its Principal. Resource services check current membership inside their existing
 Snapshot or project write lock. These are distinct admission points; this change
 does not serialize credential revocation with every business transaction.
-Attachment membership, task and path checks finish in a short snapshot before
-file IO. An admitted operation may finish after membership or credentials change;
-new requests authenticate and authorize again. No post-IO membership recheck is
-added, and filesystem/PostgreSQL non-atomicity remains K1.
+Attachment reads check membership and task state in a short snapshot before
+file IO. Attachment mutations now lock Task and authorization sources through
+file IO and metadata completion, as described by the [serialization decision](2026-11-06-attachment-task-deletion-serialization.md).
+An admitted operation may finish after credentials change; new requests
+authenticate and authorize again. No post-IO membership recheck is added, and
+filesystem/PostgreSQL non-atomicity remains K1.
 
 Trusted executable HTML stays at the application origin with the viewer's
 ordinary session authority, relative resources and existing keyboard bridge.
