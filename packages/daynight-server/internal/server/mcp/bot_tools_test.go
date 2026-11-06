@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -351,5 +352,57 @@ func TestBotDeleteCleanupFailureRetainsBarrier(t *testing.T) {
 	refs := object(t, failure["refs"])
 	if failure["writeOutcome"] != "confirmed" || failure["phase"] != "cleanup" || refs["botId"] != botTestID || refs["deletionId"] != deletionTestID || relay.calls != 1 {
 		t.Fatalf("cleanup facts: %+v", failure)
+	}
+}
+
+func TestBotRegistrationRejectsInvalidDefinitions(t *testing.T) {
+	original := botToolsJSON
+	t.Cleanup(func() { botToolsJSON = original })
+	botToolsJSON = []byte("[")
+	fixture := newEntryFixture(t)
+	if err := RegisterBotTools(fixture.entry, &fakeBotOperations{}, &fakeBotDeletion{}); err == nil {
+		t.Fatal("malformed definitions accepted")
+	}
+	var definitions []map[string]any
+	if err := json.Unmarshal(original, &definitions); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bot_list", "bot_show", "bot_create", "bot_delete"} {
+		t.Run(name, func(t *testing.T) {
+			var remaining []map[string]any
+			for _, definition := range definitions {
+				if definition["name"] != name {
+					remaining = append(remaining, definition)
+				}
+			}
+			var err error
+			botToolsJSON, err = json.Marshal(remaining)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture := newEntryFixture(t)
+			if err := RegisterBotTools(fixture.entry, &fakeBotOperations{}, &fakeBotDeletion{}); err == nil {
+				t.Fatalf("missing %s definition accepted", name)
+			}
+		})
+	}
+}
+
+func TestBotShowPreservesBusinessRefusal(t *testing.T) {
+	fixture := newEntryFixture(t)
+	ops := &fakeBotOperations{err: &model.Fault{Code: "forbidden", Message: "Bot access denied."}}
+	if err := RegisterBotTools(fixture.entry, ops, &fakeBotDeletion{}); err != nil {
+		t.Fatal(err)
+	}
+	client := fixture.client(t, "2026-07-28", "alice")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := client.CallTool(ctx, &sdk.CallToolParams{Name: "bot_show", Arguments: map[string]any{"botId": botTestID}})
+	if err != nil || !result.IsError {
+		t.Fatalf("show refusal: %+v %v", result, err)
+	}
+	failure := object(t, structured(t, result)["error"])
+	if failure["code"] != "forbidden" || failure["message"] != "Bot access denied." || failure["requestId"] != "test-request" || ops.readCalls != 1 || ops.readID != botTestID {
+		t.Fatalf("show refusal: %+v calls=%d id=%s", failure, ops.readCalls, ops.readID)
 	}
 }

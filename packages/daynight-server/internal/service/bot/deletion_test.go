@@ -133,4 +133,7 @@ func TestDeletionCleanupFailureRetainsCommittedBarrier(t *testing.T) {
 	if !errors.As(err, &failure) || !errors.Is(err, cause) || writer.calls != 2 {
 		t.Fatalf("cleanup failure lost barrier or cause: %v, calls=%d", err, writer.calls)
 	}
+	if got, want := failure.Error(), "bot deletion cleanup: "+cause.Error(); got != want {
+		t.Fatalf("cleanup error message: got %q, want %q", got, want)
+	}
 }
