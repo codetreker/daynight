@@ -645,6 +645,14 @@ missing-row mapping and Bot deletion/revocation barriers retain PostgreSQL. The
 [load-state decision](../../.agents/notes/implemented/testing/2026-11-06-session-load-state-isolation.md)
 records the error and invalidation expectations.
 
+Bot registration preflight tests use valid frozen-role, configuration and
+registration facts with the existing runner boundary. Invalid inputs must never
+enter the runner, and a valid-input sentinel proves the fixture can reach it.
+The PG frozen-configuration test first verifies an invalid registration created
+no Session or binding changes, then retains its real authority and version
+checks. The [Bot preflight decision](../../.agents/notes/implemented/testing/2026-11-06-bot-registration-preflight-isolation.md)
+records the shared-fixture and no-partial-write guarantees.
+
 Project request validation uses a valid synthetic principal and a fail-on-access
 store for UUID, creation input, pagination and entropy refusals that precede
 storage. Real creation, readback, keyset paging and operational-error tests keep
