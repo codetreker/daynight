@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -12,6 +13,7 @@ import { record, string } from "../controller/providers/native-rpc.js";
 import { withCodexConfigurationRpc } from "./herdr/codex-config.js";
 import { normalizeWorkerNative } from "./native-overrides.js";
 import { createNativeSelectionFs } from "./native-selection-fs.js";
+import { buildHerdrAgentArguments } from "./herdr/arguments.js";
 
 /** Runs only inside the owned probe supervisor; no user input or persistent session is created. */
 export const inspectNativeSelection = async (native: WorkerCloudNative): Promise<NativeModelObservation> => {
@@ -20,10 +22,14 @@ export const inspectNativeSelection = async (native: WorkerCloudNative): Promise
   let observation: NativeModelObservation;
   if (native.agent === "codex") {
     if (native.args.some(argument => argument === "--oss" || argument === "--local-provider" || argument.startsWith("--local-provider="))) throw new Error("Codex local-provider model capabilities cannot be validated by the native configuration probe.");
+    const cwd = path.normalize(await realpath(process.cwd()));
+    // Reuse launch-owned trust and configuration layers; app-server receives
+    // the explicit model through a config override instead of the launch flag.
+    const launchArguments = buildHerdrAgentArguments(normalized.native, cwd);
     const operation = createOperation({ limits: { totalMs: 15_000, requestMs: 10_000 } });
     try {
-      observation = await withCodexConfigurationRpc({ args: [...normalized.native.args, ...(requested.model === null ? [] : ["-c", `model=${JSON.stringify(requested.model)}`])], cwd: process.cwd(), environment: process.env, detached: false }, operation, async rpc => {
-        const config = record(record(await rpc.request("config/read", { cwd: process.cwd(), includeLayers: false })).config);
+      observation = await withCodexConfigurationRpc({ args: [...launchArguments, ...(requested.model === null ? [] : ["-c", `model=${JSON.stringify(requested.model)}`])], cwd, environment: process.env, detached: false }, operation, async rpc => {
+        const config = record(record(await rpc.request("config/read", { cwd, includeLayers: false })).config);
         const catalog: Record<string, unknown>[] = [], cursors = new Set<string>(); let cursor: string | undefined;
         do {
           const page = record(await rpc.request("model/list", { includeHidden: true, ...(cursor === undefined ? {} : { cursor }) }));

@@ -1,6 +1,9 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import path from "node:path";
 import { inspectNativeSelection } from "../../../src/commands/worker/native-selection-probe.js";
 import { withCodexConfigurationRpc } from "../../../src/commands/worker/herdr/codex-config.js";
+import { buildHerdrAgentArguments, codexConfigurationArguments, codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 
 vi.mock("../../../src/commands/worker/herdr/codex-config.js", () => ({ withCodexConfigurationRpc: vi.fn() }));
 
@@ -47,6 +50,40 @@ it("does not validate Codex local providers against a different catalog", async 
   await expect(inspectNativeSelection({ agent: "codex", model: "local", args: ["--oss"] })).rejects.toThrow("local-provider");
 });
 
+it("uses the trusted project model and complete launch configuration when only effort is overridden", async () => {
+  const cwd = path.normalize(await realpath(process.cwd()));
+  const native = { agent: "codex" as const, model: null, args: ["--profile", "work", "-c", 'model_reasoning_effort="max"'] };
+  vi.mocked(withCodexConfigurationRpc).mockImplementation(async (options, _operation, read) => {
+    const trusted = options.args.includes(codexProjectTrustArguments(cwd).at(-1)!);
+    const request = vi.fn(async (method: string) => method === "config/read" ? { config: { model: trusted ? "project-model" : "user-model", model_reasoning_effort: "max" } }
+      : { data: [{ model: "user-model", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }, { model: "project-model", supportedReasoningEfforts: [{ reasoningEffort: "max" }] }], nextCursor: null });
+    return read({ request } as never);
+  });
+  expect(await inspectNativeSelection(native)).toMatchObject({ model: "project-model", effort: "max" });
+  const inspected = vi.mocked(withCodexConfigurationRpc).mock.calls[0]![0];
+  expect(inspected.cwd).toBe(cwd);
+  expect(codexConfigurationArguments(inspected.args)).toEqual(codexConfigurationArguments(buildHerdrAgentArguments(native, cwd)));
+  expect(inspected.args).not.toContain("--model");
+});
+
+it("uses the canonical launch directory for project trust and configuration inspection", async () => {
+  const original = process.cwd(), canonical = path.normalize(await realpath(original));
+  const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp");
+  await mkdir(scratch, { recursive: true });
+  const temporary = await mkdtemp(path.join(scratch, "selection-cwd-")), alias = path.join(temporary, "alias");
+  await symlink(original, alias, process.platform === "win32" ? "junction" : "dir");
+  const cwd = vi.spyOn(process, "cwd").mockReturnValue(alias);
+  const request = vi.fn(async (method: string) => method === "config/read" ? { config: { model: "native-model" } } : { data: [{ model: "native-model", supportedReasoningEfforts: [] }], nextCursor: null });
+  vi.mocked(withCodexConfigurationRpc).mockImplementation(async (_options, _operation, read) => read({ request } as never));
+  try {
+    await inspectNativeSelection({ agent: "codex", model: null, args: [] });
+    const inspected = vi.mocked(withCodexConfigurationRpc).mock.calls[0]![0];
+    expect(inspected.cwd).toBe(canonical);
+    expect(inspected.args).toContain(codexProjectTrustArguments(canonical).at(-1));
+    expect(request).toHaveBeenCalledWith("config/read", { cwd: canonical, includeLayers: false });
+  } finally { cwd.mockRestore(); await rm(temporary, { recursive: true, force: true }); }
+});
+
 it("resolves Codex's omitted model from its native default without adding a launch model", async () => {
   const request = vi.fn(async (method: string, parameters: unknown) => {
     if (method === "config/read") return { config: { model: null, model_reasoning_effort: "high" } };
@@ -55,7 +92,7 @@ it("resolves Codex's omitted model from its native default without adding a laun
   });
   vi.mocked(withCodexConfigurationRpc).mockImplementation(async (_options, _operation, read) => read({ request } as never));
   expect(await inspectNativeSelection({ agent: "codex", model: null, args: ["-c", 'model_reasoning_effort="high"'] })).toMatchObject({ model: "native-default", effort: "high" });
-  expect(vi.mocked(withCodexConfigurationRpc).mock.calls[0]![0].args).toEqual(["-c", 'model_reasoning_effort="high"']);
+  expect(vi.mocked(withCodexConfigurationRpc).mock.calls[0]![0].args).toEqual(buildHerdrAgentArguments({ agent: "codex", model: null, args: ["-c", 'model_reasoning_effort="high"'] }, path.normalize(await realpath(process.cwd()))));
   expect(request.mock.calls.every(([method]) => method === "config/read" || method === "model/list")).toBe(true);
 });
 
@@ -68,6 +105,7 @@ it("validates a configured hidden Codex model using the complete native catalog"
   });
   vi.mocked(withCodexConfigurationRpc).mockImplementation(async (_options, _operation, read) => read({ request } as never));
   expect(await inspectNativeSelection({ agent: "codex", model: "hidden-model", args: ["-c", 'model_reasoning_effort="high"'] })).toMatchObject({ model: "hidden-model", effort: "high" });
+  expect(codexConfigurationArguments(vi.mocked(withCodexConfigurationRpc).mock.calls[0]![0].args).arguments).toContain('model="hidden-model"');
   expect(request.mock.calls.filter(([method]) => method === "model/list").map(([, parameters]) => parameters)).toEqual([{ includeHidden: true }, { includeHidden: true, cursor: "second" }]);
 });
 

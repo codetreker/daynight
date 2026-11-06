@@ -87,7 +87,7 @@ Setup 在终端内汇总只读环境报告、单选 Copilot/Codex/Claude、选�
 
 Worker SQLite `claim_native_configurations` 以 project/task/claim 关联不可变原生元组。新登记与冻结在同一事务中，旧无会话记录在首次启动前冻结；有会话而缺少旧快照的记录保持未知。原 Session 恢复不追加当前 model/effort，避免覆盖会话内原生设置。已有助手沿用自己的持久冻结记录。
 
-本地新字段使新执行携带 `validateNativeSelection`，随 claim 配置和 Web launch ticket 冻结。Web 首次启动使用 Provider 原生目录校验；Herdr 在实际 task cwd 运行无业务输入探测。Codex 读取 app-server 配置与完整目录；配置未指定模型时，按原生目录的默认标记与顺序解析有效默认值，启动模型参数仍保持省略。能力验证包含隐藏模型，UI 选择器仍按 hidden 过滤。Claude 不持久保存探测 Session，Copilot SessionFs 读穿原生文件而全部写入仅在内存。Copilot 未解析默认模型而缺少 modelId、Codex OSS/local-provider 无法等效取得能力时明确失败，不猜测模型。恢复原 Session 不重新注入选择。
+本地新字段使新执行携带 `validateNativeSelection`，随 claim 配置和 Web launch ticket 冻结。Web 首次启动使用 Provider 原生目录校验；Herdr 在实际 task cwd 运行无业务输入探测。Codex 探测与实际 Herdr 启动共用规范化后的真实 cwd 和启动配置层，包括临时项目信任覆盖；它读取 app-server 配置与完整目录；配置未指定模型时，按原生目录的默认标记与顺序解析有效默认值，启动模型参数仍保持省略。能力验证包含隐藏模型，UI 选择器仍按 hidden 过滤。Claude 不持久保存探测 Session，Copilot SessionFs 读穿原生文件而全部写入仅在内存。Copilot 未解析默认模型而缺少 modelId、Codex OSS/local-provider 无法等效取得能力时明确失败，不猜测模型。恢复原 Session 不重新注入选择。
 
 Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力；新探测前、Herdr 资源释放前与 Worker 退出时等待清理。单个 Herdr adapter 仅等待共享清理，不关闭其它执行的探测准入。探测清理与已归属业务进程停止独立尝试并汇总错误；探测失败或等待不能阻止调用原进程停止。原停止证据可保存，探测清理未确认时仍禁止封段和资源释放。清理成功不证明业务 Agent 未启动，持久化 Herdr 原有启动与停止证明仍独立成立。
 
