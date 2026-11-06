@@ -56,10 +56,14 @@
   .bot-session-pane .session-presentation-assistant .session-composer textarea { min-height: 56px; max-height: 120px; }
   .bot-session-pane .session-presentation-assistant .session-control-trigger,
   .bot-session-pane .session-presentation-assistant .session-interrupt,
-  .bot-session-pane .session-presentation-assistant .session-actions .button { min-height: 44px; }
+  .bot-session-pane .session-presentation-assistant .session-actions .button { min-width: 44px; min-height: 44px; }
   .bot-session-pane .session-presentation-assistant .session-command-trigger { min-width: 44px; }
   .bot-session-pane .session-presentation-assistant .session-controls-panel :is(button, select),
   .bot-session-pane .session-presentation-assistant .session-command-menu button { min-height: 44px; }
+  .bot-session-pane .session-presentation-assistant .session-command-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+  .bot-session-pane .session-presentation-assistant .session-command-heading > strong { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+  .bot-session-pane .session-presentation-assistant .session-command-actions { gap: 4px; }
+  .bot-session-pane .session-presentation-assistant .session-command-actions > button:first-child { max-width: 84px; white-space: normal; }
 }
 @media (max-height: 500px) {
   .bot-session-pane .session-presentation-assistant .session-composer { padding-block: 6px; }
