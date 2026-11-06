@@ -43,7 +43,8 @@ type OAuthAccessIdentity struct {
 // CredentialFamilyDAO is transaction-bound. IssueFamily never commits. The
 // caller must lock any client row before issuing a DCR grant. For an existing
 // family, callers lock the grant before refresh/code rows and access changes.
-// RevokeFamily takes the grant lock and deletes access rows before returning.
+// RevokeFamily takes the grant lock and deletes access rows before returning;
+// its boolean reports whether the grant changed from unrevoked to revoked.
 // InspectGrant with lock=true obtains that lock for composed operations.
 // DCR cleanup must lock the client row first, then call ActiveClientReferences
 // with a fresh READ COMMITTED statement snapshot or an equivalent fresh read;

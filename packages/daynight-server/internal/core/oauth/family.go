@@ -85,21 +85,3 @@ func AuthenticateAccess(ctx context.Context, dao store.CredentialFamilyDAO, toke
 	}
 	return identity, nil
 }
-
-// RevokeFamily invalidates the family and its access tokens within the caller's
-// transaction. A false result means the grant was already revoked.
-func RevokeFamily(ctx context.Context, dao store.CredentialFamilyDAO, grantID string, now time.Time) (bool, error) {
-	return dao.RevokeFamily(ctx, grantID, now)
-}
-
-// InspectGrant returns the persisted client snapshot and family status. With
-// lock set, the grant remains locked for the enclosing transaction.
-func InspectGrant(ctx context.Context, dao store.CredentialFamilyDAO, grantID string, lock bool) (store.OAuthGrant, error) {
-	return dao.InspectGrant(ctx, grantID, lock)
-}
-
-// ActiveClientReferences reports whether any unexpired, unrevoked grant refers
-// to the client within the enclosing transaction's consistency scope.
-func ActiveClientReferences(ctx context.Context, dao store.CredentialFamilyDAO, clientID string, now time.Time) (bool, error) {
-	return dao.ActiveClientReferences(ctx, clientID, now)
-}
