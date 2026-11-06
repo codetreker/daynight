@@ -144,6 +144,18 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 }
 
 func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (model.Attachment, filestorage.Object, error) {
+	return s.open(ctx, principal, projectID, taskID, path, 0)
+}
+
+// OpenBounded checks the metadata limit in the same target gate as the stable file open.
+func (s *Attachments) OpenBounded(ctx context.Context, principal model.Principal, projectID, taskID, path string, maxContentTypeBytes int) (model.Attachment, filestorage.Object, error) {
+	if maxContentTypeBytes < 1 {
+		return model.Attachment{}, filestorage.Object{}, &model.Fault{Code: "invalid_input", Message: "Metadata limit must be positive."}
+	}
+	return s.open(ctx, principal, projectID, taskID, path, maxContentTypeBytes)
+}
+
+func (s *Attachments) open(ctx context.Context, principal model.Principal, projectID, taskID, path string, maxContentTypeBytes int) (model.Attachment, filestorage.Object, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return model.Attachment{}, filestorage.Object{}, err
 	}
@@ -159,7 +171,11 @@ func (s *Attachments) Open(ctx context.Context, principal model.Principal, proje
 	var attachment model.Attachment
 	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
 		var err error
-		attachment, err = attachmentcore.Metadata(ctx, reader, address)
+		if maxContentTypeBytes > 0 {
+			attachment, err = attachmentcore.MetadataBounded(ctx, reader, address, maxContentTypeBytes)
+		} else {
+			attachment, err = attachmentcore.Metadata(ctx, reader, address)
+		}
 		return err
 	})
 	if err != nil {

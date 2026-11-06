@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,12 +77,16 @@ type heldSource struct {
 	Opener
 	opened  chan struct{}
 	release chan struct{}
+	calls   atomic.Int32
 }
 
-func (h *heldSource) Open(ctx context.Context, p model.Principal, project, task, path string) (model.Attachment, filestorage.Object, error) {
-	a, object, err := h.Opener.Open(ctx, p, project, task, path)
+func (h *heldSource) OpenBounded(ctx context.Context, p model.Principal, project, task, path string, limit int) (model.Attachment, filestorage.Object, error) {
+	a, object, err := h.Opener.OpenBounded(ctx, p, project, task, path, limit)
 	if err != nil {
 		return a, object, err
+	}
+	if h.calls.Add(1) == 1 {
+		return a, object, nil
 	}
 	close(h.opened)
 	select {

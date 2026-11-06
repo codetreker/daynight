@@ -95,6 +95,23 @@ func Metadata(ctx context.Context, reader store.AttachmentReader, address Addres
 	return result, err
 }
 
+func MetadataBounded(ctx context.Context, reader store.AttachmentReader, address Address, maxBytes int) (model.Attachment, error) {
+	if maxBytes < 1 {
+		return model.Attachment{}, &model.Fault{Code: "invalid_input", Message: "Metadata limit must be positive."}
+	}
+	result, oversized, err := reader.AttachmentBounded(ctx, address.ProjectID, address.TaskID, address.RelativePath, maxBytes)
+	if errors.Is(err, model.ErrNotFound) {
+		return model.Attachment{}, NotFound(err)
+	}
+	if err != nil {
+		return model.Attachment{}, err
+	}
+	if oversized {
+		return model.Attachment{}, &model.Fault{Code: "resource_conflict", Message: "Attachment content type exceeds the supported metadata limit."}
+	}
+	return result, nil
+}
+
 func PutMetadata(ctx context.Context, writer store.AttachmentWriter, address Address, contentType string, size int64) (model.Attachment, bool, error) {
 	return writer.PutAttachment(ctx, model.Attachment{ProjectID: address.ProjectID, TaskID: address.TaskID,
 		Path: address.RelativePath, ContentType: contentType, SizeBytes: size})

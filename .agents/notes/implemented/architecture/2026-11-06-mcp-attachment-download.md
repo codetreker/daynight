@@ -20,6 +20,11 @@ shared lifecycle and never deletes the source attachment.
 
 Inspection returns metadata by default; bounded explicit reads default to 8 KiB.
 Text ranges stop at UTF-8 boundaries and binary data requires explicit base64.
+Metadata is projected with a MIME byte limit before it is materialized; default
+results also have an encoded byte budget. Oversized MIME or paths return an
+explicit error instead of being silently truncated. The original attachment is
+not altered, but MCP does not provide complete reads for those exceptional
+metadata values.
 The [attachment design](../../../../docs/design/daynight-task-attachments.md#mcp-私有传输内容)
 owns the current interface and lifecycle.
 
@@ -30,6 +35,11 @@ versions even if each individual read is authorized and internally consistent.
 
 **Keep an open file handle in memory.** It cannot survive a server restart or
 route later requests to another instance, and has no durable capacity owner.
+
+**Add a separate MIME streaming protocol.** It would retrieve exceptionally
+large legacy metadata, but requires another durable snapshot and expanded tool
+inputs. Bounded MIME values are returned without an additional protocol;
+exceptional values receive a clear refusal without changing the stored attachment.
 
 ## Consequences
 

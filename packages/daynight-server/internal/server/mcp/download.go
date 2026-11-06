@@ -49,6 +49,9 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 		if err := json.Unmarshal(raw, &input); err != nil {
 			return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 		}
+		if len(input.Path) > 4096 {
+			return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Attachment path exceeds the MCP read limit."}
+		}
 		result, err := downloads.Read(ctx, mcptransfer.Actor{Principal: actor.Principal, AuthorityKind: actor.AuthorityRef.Kind, AuthorityID: actor.AuthorityRef.ID}, input)
 		if err != nil {
 			refs := map[string]any{"projectId": input.ProjectID, "taskId": input.TaskID}
@@ -56,6 +59,19 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 				refs["transferId"] = input.TransferID
 			}
 			return ToolResult{Refs: refs}, err
+		}
+		if input.Action == "" || input.Action == "inspect" || input.Action == "open" {
+			encoded, err := json.Marshal(envelope{Data: result, Meta: &envelopeMeta{RequestID: actor.RequestID}})
+			if err != nil {
+				return ToolResult{}, err
+			}
+			if len(encoded) > 16<<10 {
+				refs := map[string]any{"projectId": input.ProjectID, "taskId": input.TaskID}
+				if input.TransferID != "" {
+					refs["transferId"] = input.TransferID
+				}
+				return ToolResult{Refs: refs}, &model.Fault{Code: "payload_too_large", Message: "Attachment metadata exceeds the MCP response limit."}
+			}
 		}
 		return ToolResult{Data: result}, nil
 	})

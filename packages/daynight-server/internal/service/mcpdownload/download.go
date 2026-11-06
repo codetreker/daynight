@@ -21,9 +21,11 @@ import (
 
 const MaxChunkBytes = 512 << 10
 const DefaultBytes = 8 << 10
+const MaxContentTypeBytes = 2048
+const MaxPathBytes = 4096
 
 type Opener interface {
-	Open(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
+	OpenBounded(context.Context, model.Principal, string, string, string, int) (model.Attachment, filestorage.Object, error)
 }
 
 type Input struct {
@@ -100,6 +102,9 @@ func (s *Service) Read(ctx context.Context, actor mcptransfer.Actor, in Input) (
 		if _, err := attachmentcore.NewAddress(in.ProjectID, in.TaskID, in.Path); err != nil {
 			return nil, err
 		}
+		if len(in.Path) > MaxPathBytes {
+			return nil, &model.Fault{Code: "resource_conflict", Message: "Attachment path exceeds the supported read limit."}
+		}
 	case "chunk", "close":
 		if _, err := model.CanonicalID(in.TransferID); err != nil {
 			return nil, err
@@ -121,7 +126,7 @@ func (s *Service) Read(ctx context.Context, actor mcptransfer.Actor, in Input) (
 	}
 }
 func (s *Service) inspect(ctx context.Context, a mcptransfer.Actor, in Input) (map[string]any, error) {
-	metadata, obj, err := s.attachments.Open(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path)
+	metadata, obj, err := s.source(ctx, a, in)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +139,7 @@ func (s *Service) inspect(ctx context.Context, a mcptransfer.Actor, in Input) (m
 	return map[string]any{"attachment": wireAttachment(metadata), "sizeBytes": strconv.FormatInt(obj.Info.Size, 10), "contentRef": reference(in), "contentIncluded": false}, nil
 }
 func (s *Service) inline(ctx context.Context, a mcptransfer.Actor, in Input) (map[string]any, error) {
-	metadata, obj, err := s.attachments.Open(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path)
+	metadata, obj, err := s.source(ctx, a, in)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +164,25 @@ func (s *Service) inline(ctx context.Context, a mcptransfer.Actor, in Input) (ma
 	return encode(data, in, b, true)
 }
 func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input) (result map[string]any, resultErr error) {
+	_, lookupErr := s.lifecycle.LookupBound(ctx, a, in.TransferID)
+	if lookupErr != nil {
+		if !errors.Is(lookupErr, model.ErrNotFound) {
+			return nil, lookupErr
+		}
+		_, source, err := s.source(ctx, a, in)
+		if err == nil {
+			err = source.Body.Close()
+		}
+		if err != nil {
+			_, recheckErr := s.lifecycle.LookupBound(ctx, a, in.TransferID)
+			if errors.Is(recheckErr, model.ErrNotFound) {
+				return nil, err
+			}
+			if recheckErr != nil {
+				return nil, recheckErr
+			}
+		}
+	}
 	record, created, err := s.lifecycle.OpenRecord(ctx, a, mcptransfer.Binding{ID: in.TransferID, Direction: "download", ProjectID: in.ProjectID, TaskID: in.TaskID, Path: in.Path})
 	if err != nil {
 		return nil, err
@@ -196,7 +220,7 @@ func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input) (resu
 		return nil, err
 	}
 	copyCtx := permit.Context
-	metadata, obj, err := s.attachments.Open(copyCtx, a.Principal, in.ProjectID, in.TaskID, in.Path)
+	metadata, obj, err := s.source(copyCtx, a, in)
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +262,19 @@ func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input) (resu
 		return nil, err
 	}
 	return openResult(record)
+}
+
+// source rechecks the credential and authority even when opening fails, so a
+// revoked caller cannot learn whether a path or oversized metadata exists.
+func (s *Service) source(ctx context.Context, a mcptransfer.Actor, in Input) (model.Attachment, filestorage.Object, error) {
+	metadata, obj, openErr := s.attachments.OpenBounded(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path, MaxContentTypeBytes)
+	if err := s.lifecycle.Authorize(ctx, a, in.ProjectID, in.TaskID); err != nil {
+		if obj.Body != nil {
+			_ = obj.Body.Close()
+		}
+		return model.Attachment{}, filestorage.Object{}, err
+	}
+	return metadata, obj, openErr
 }
 func openResult(r model.PrivateTransfer) (map[string]any, error) {
 	result := map[string]any{"transferId": r.ID, "direction": "download", "state": r.State, "maxChunkBytes": MaxChunkBytes, "expiresAt": r.ExpiresAt.UTC()}

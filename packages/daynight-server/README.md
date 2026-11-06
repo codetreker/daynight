@@ -338,7 +338,8 @@ and writes, Task discussion reads and posts, and attachment listing, removal and
 bounded reads. Attachment open creates a private immutable snapshot for ranged
 reads; each request rechecks access. Inspection returns metadata by default,
 explicit reads default to 8 KiB, and binary content requires base64 selection.
-Close and expiry reclaim only the private snapshot.
+Inspect and open results are limited to 16 KiB; exceptionally oversized MIME or
+paths are rejected explicitly. Close and expiry reclaim only the private snapshot.
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
