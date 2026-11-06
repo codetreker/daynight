@@ -215,3 +215,150 @@ func TestStartPreservesEmptyAndAbsentState(t *testing.T) {
 		t.Fatalf("state inputs: %+v", svc.starts)
 	}
 }
+
+type invalidStartService struct{ authorizationsStub }
+
+func (*invalidStartService) Start(context.Context, service.StartInput) (service.StartResult, error) {
+	return service.StartResult{RequestID: "invalid", Binding: "secret"}, nil
+}
+
+func TestStartRejectsInvalidMethodAndUnconfirmedResult(t *testing.T) {
+	svc := &authorizationsStub{}
+	h := NewAuthorizationHTTP(svc, browserAuth{})
+	w := httptest.NewRecorder()
+	h.Start(w, httptest.NewRequest(http.MethodPost, "/oauth/authorize", nil))
+	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET" || len(svc.starts) != 0 {
+		t.Fatalf("method: %d %v", w.Code, w.Header())
+	}
+	w = httptest.NewRecorder()
+	h.Start(w, httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id="+strings.Repeat("a", core.MetadataLimit), nil))
+	if w.Code != http.StatusBadRequest || len(svc.starts) != 0 {
+		t.Fatalf("oversized query: %d", w.Code)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=a", nil)
+	r.RemoteAddr = "192.0.2.1"
+	w = httptest.NewRecorder()
+	h.Start(w, r)
+	if w.Code != http.StatusSeeOther || svc.starts[0].Source != "192.0.2.1" {
+		t.Fatalf("remote address: %d %+v", w.Code, svc.starts)
+	}
+	h.service = &invalidStartService{}
+	w = httptest.NewRecorder()
+	h.Start(w, r)
+	if w.Code != http.StatusInternalServerError || w.Header().Get("Location") != "" || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("invalid result: %d %v", w.Code, w.Header())
+	}
+}
+
+func TestBrowserAuthorizationRejections(t *testing.T) {
+	svc := &authorizationsStub{}
+	auth := browserAuth{principal: model.Principal{Kind: model.SessionCredential, UserID: testUserID, CredentialID: testRequestID}}
+	h := NewAuthorizationHTTP(svc, auth)
+	cookie := &http.Cookie{Name: h.cookieName(testRequestID), Value: "binding-secret"}
+	request := func(method, path, body string, binding bool) *http.Request {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.SetPathValue("id", testRequestID)
+		r.Header.Set("Origin", auth.Origin())
+		r.Header.Set("Content-Type", "application/json")
+		if binding {
+			r.AddCookie(cookie)
+		}
+		return r
+	}
+	for _, tc := range []struct {
+		method, path string
+		binding      bool
+		status       int
+	}{
+		{"POST", "/api/v1/oauth/requests/x", true, http.StatusMethodNotAllowed},
+		{"GET", "/api/v1/oauth/requests/x?unexpected=1", true, http.StatusBadRequest},
+		{"GET", "/api/v1/oauth/requests/x", false, http.StatusNotFound},
+	} {
+		w := httptest.NewRecorder()
+		h.Inspect(w, request(tc.method, tc.path, "", tc.binding))
+		if w.Code != tc.status || svc.inspections != 0 {
+			t.Fatalf("inspect %+v: %d", tc, w.Code)
+		}
+	}
+	svc.err = core.ErrAuthorizationUnknown
+	w := httptest.NewRecorder()
+	h.Inspect(w, request("GET", "/api/v1/oauth/requests/x", "", true))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "outcome_unknown") {
+		t.Fatalf("inspect failure: %d %s", w.Code, w.Body)
+	}
+	svc.err = nil
+	for _, tc := range []struct {
+		method, path, body string
+		status             int
+	}{
+		{"GET", "/api/v1/oauth/requests/x/decision", "", http.StatusMethodNotAllowed},
+		{"POST", "/api/v1/oauth/requests/x/decision?unexpected=1", "{}", http.StatusBadRequest},
+		{"POST", "/api/v1/oauth/requests/x/decision", `{"decision":"approve"}`, http.StatusBadRequest},
+		{"POST", "/api/v1/oauth/requests/x/decision", `{"expectedUserId":"` + testUserID + `"}`, http.StatusBadRequest},
+		{"POST", "/api/v1/oauth/requests/x/decision", `{"expectedUserId":"` + testUserID + `","decision":"other"}`, http.StatusBadRequest},
+	} {
+		w := httptest.NewRecorder()
+		h.Decide(w, request(tc.method, tc.path, tc.body, true))
+		if w.Code != tc.status || len(svc.decisions) != 0 {
+			t.Fatalf("decide %+v: %d", tc, w.Code)
+		}
+	}
+	svc.err = core.ErrInvalidAuthorization
+	w = httptest.NewRecorder()
+	h.Decide(w, request("POST", "/api/v1/oauth/requests/x/decision", `{"expectedUserId":"`+testUserID+`","decision":"deny"}`, true))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_request") || len(svc.decisions) != 1 {
+		t.Fatalf("decision failure: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestRedeemHTTPRejectionsAndPreflight(t *testing.T) {
+	svc := &authorizationsStub{}
+	h := NewAuthorizationHTTP(svc, browserAuth{})
+	for _, tc := range []struct {
+		method, target, media, body string
+		status                      int
+	}{
+		{"OPTIONS", "/oauth/token", "", "", http.StatusNoContent},
+		{"GET", "/oauth/token", "", "", http.StatusMethodNotAllowed},
+		{"POST", "/oauth/token?code=secret", "application/x-www-form-urlencoded", "", http.StatusBadRequest},
+		{"POST", "/oauth/token", "application/json", "{}", http.StatusBadRequest},
+		{"POST", "/oauth/token", "application/x-www-form-urlencoded; charset=ascii", "grant_type=authorization_code", http.StatusBadRequest},
+		{"POST", "/oauth/token", "application/x-www-form-urlencoded", strings.Repeat("a", core.MetadataLimit+1), http.StatusBadRequest},
+	} {
+		r := httptest.NewRequest(tc.method, tc.target, strings.NewReader(tc.body))
+		r.Header.Set("Content-Type", tc.media)
+		w := httptest.NewRecorder()
+		h.RedeemCode(w, r)
+		if w.Code != tc.status || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Access-Control-Allow-Origin") != "*" || len(svc.redeems) != 0 {
+			t.Fatalf("token %+v: %d", tc, w.Code)
+		}
+		if tc.method == "OPTIONS" && (w.Header().Get("Access-Control-Allow-Methods") != "POST, OPTIONS" || w.Header().Get("Access-Control-Allow-Headers") != "Content-Type") {
+			t.Fatalf("preflight: %v", w.Header())
+		}
+	}
+	for _, tc := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{model.Unauthenticated(nil), http.StatusUnauthorized, "unauthorized"},
+		{core.ErrInvalidClient, http.StatusBadRequest, "invalid_client"},
+		{core.ErrInvalidAuthorization, http.StatusBadRequest, "invalid_request"},
+		{core.ErrInvalidGrant, http.StatusBadRequest, "invalid_grant"},
+		{core.ErrAuthorizationCapacity, http.StatusServiceUnavailable, "temporarily_unavailable"},
+		{core.ErrAuthorizationUnknown, http.StatusServiceUnavailable, "outcome_unknown"},
+	} {
+		svc.err = tc.err
+		r := httptest.NewRequest("POST", "/oauth/token", strings.NewReader("grant_type=authorization_code&code=secret"))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		h.RedeemCode(w, r)
+		var result map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != tc.status || result["error"] != tc.code || strings.Contains(w.Body.String(), "secret") {
+			t.Fatalf("%v: %d %s", tc.err, w.Code, w.Body)
+		}
+	}
+}

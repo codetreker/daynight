@@ -16,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
 )
 
@@ -383,5 +384,304 @@ func assertUnauthenticated(t *testing.T, err error) {
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "unauthenticated" {
 		t.Fatalf("expected unauthenticated, got %v", err)
+	}
+}
+
+func TestAuthorizationInvalidInputsAndInspection(t *testing.T) {
+	ctx, db, svc, p, in := authorizationFixture(t)
+	if _, err := NewAuthorizations(nil, svc.clients, svc.admission, "https://server.example"); !errors.Is(err, core.ErrInvalidAuthorization) {
+		t.Fatalf("nil writer: %v", err)
+	}
+	for _, issuer := range []string{"", "https://server.example/path", "https://server.example?x=1", "ftp://server.example", "https://u@server.example"} {
+		if _, err := NewAuthorizations(db, svc.clients, svc.admission, issuer); !errors.Is(err, core.ErrInvalidAuthorization) {
+			t.Fatalf("issuer %q: %v", issuer, err)
+		}
+	}
+	bad := in
+	bad.Source = ""
+	if _, err := svc.Start(ctx, bad); err == nil {
+		t.Fatal("missing admission source accepted")
+	}
+	for _, change := range []func(*StartInput){func(v *StartInput) { v.ResponseType = "token" }, func(v *StartInput) { v.CodeChallengeMethod = "plain" }, func(v *StartInput) { v.Resource = "https://other/mcp" }, func(v *StartInput) { v.ClientID = "missing" }} {
+		bad = in
+		change(&bad)
+		if _, err := svc.Start(ctx, bad); err == nil {
+			t.Fatal("invalid start accepted")
+		}
+	}
+	started, err := svc.Start(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Inspect(ctx, started.RequestID, started.Binding, model.Principal{}); err == nil {
+		t.Fatal("invalid principal accepted")
+	}
+	for _, v := range []struct{ id, binding string }{{"bad", started.Binding}, {uuid.NewString(), started.Binding}, {started.RequestID, secret.Random(core.BindingPrefix)}} {
+		if _, err = svc.Inspect(ctx, v.id, v.binding, p); !errors.Is(err, core.ErrInvalidAuthorization) {
+			t.Fatalf("invalid inspection: %v", err)
+		}
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE oauth_authorizations SET client_snapshot='[]'::jsonb WHERE id=$1`, started.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Inspect(ctx, started.RequestID, started.Binding, p); !errors.Is(err, core.ErrInvalidAuthorization) {
+		t.Fatalf("invalid snapshot: %v", err)
+	}
+}
+
+type failureWriter struct {
+	err     error
+	outcome store.TransactionOutcome
+}
+
+func (w failureWriter) WriteAuthorizations(context.Context, func(store.AuthorizationScope) error) (store.Completion, error) {
+	return store.Completion{Outcome: w.outcome}, w.err
+}
+
+type capacityWriter struct{ store.AuthorizationWriter }
+type capacityScope struct{ store.AuthorizationScope }
+type capacityDAO struct{ store.AuthorizationDAO }
+
+func (d capacityDAO) InsertAuthorization(context.Context, store.OAuthAuthorization, int, time.Time) (bool, error) {
+	return false, nil
+}
+func (s capacityScope) AuthorizationDAO() store.AuthorizationDAO {
+	return capacityDAO{s.AuthorizationScope.AuthorizationDAO()}
+}
+func (w capacityWriter) WriteAuthorizations(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error) {
+	return w.AuthorizationWriter.WriteAuthorizations(ctx, func(s store.AuthorizationScope) error { return fn(capacityScope{s}) })
+}
+func TestAuthorizationStorageFailuresAndCapacity(t *testing.T) {
+	ctx, db, svc, p, in := authorizationFixture(t)
+	started, redeem := approvedCode(t, ctx, svc, p, in)
+	svc.writer = capacityWriter{db}
+	if result, err := svc.Start(ctx, in); !errors.Is(err, core.ErrAuthorizationCapacity) || result.RequestID != "" {
+		t.Fatalf("capacity: %+v %v", result, err)
+	}
+	fail := errors.New("storage unavailable")
+	svc.writer = failureWriter{err: fail, outcome: store.TransactionNotCommitted}
+	if _, err := svc.Start(ctx, in); !errors.Is(err, fail) {
+		t.Fatalf("start failure: %v", err)
+	}
+	if _, err := svc.Inspect(ctx, started.RequestID, started.Binding, p); !errors.Is(err, fail) {
+		t.Fatalf("inspect failure: %v", err)
+	}
+	if _, err := svc.RedeemCode(ctx, redeem); !errors.Is(err, fail) {
+		t.Fatalf("redeem failure: %v", err)
+	}
+	if _, err := svc.PruneAuthorizations(ctx, 1); !errors.Is(err, fail) {
+		t.Fatalf("prune failure: %v", err)
+	}
+	svc.writer = unknownWriter{db}
+	if result, err := svc.RedeemCode(ctx, redeem); !errors.Is(err, core.ErrAuthorizationUnknown) || result.AccessToken != "" || result.RefreshToken != "" {
+		t.Fatalf("unknown token response: %+v %v", result, err)
+	}
+	svc.writer = db
+	if view, err := svc.Inspect(ctx, started.RequestID, started.Binding, p); err != nil || view.Status != "consumed" {
+		t.Fatalf("unknown token status: %+v %v", view, err)
+	}
+}
+func TestAuthorizationDCRMissingAndCodeReplay(t *testing.T) {
+	ctx, db, svc, p, in := authorizationFixture(t)
+	m, err := svc.clients.Register(ctx, "registration", []byte(`{"redirect_uris":["https://client.example/cb"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.ClientID = m.ClientID
+	_, redeem := approvedCode(t, ctx, svc, p, in)
+	if _, err = db.Pool.Exec(ctx, `DELETE FROM oauth_clients WHERE id=$1`, m.ClientID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.RedeemCode(ctx, redeem); !errors.Is(err, core.ErrInvalidGrant) {
+		t.Fatalf("missing DCR client: %v", err)
+	}
+	in.ClientID = "client"
+	_, redeem = approvedCode(t, ctx, svc, p, in)
+	if _, err = svc.RedeemCode(ctx, redeem); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Pool.Exec(ctx, `UPDATE oauth_grants SET created_at=now()-interval '31 days',expires_at=now()-interval '1 day' WHERE client_id='client'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.RedeemCode(ctx, redeem); !errors.Is(err, core.ErrInvalidGrant) {
+		t.Fatalf("expired grant replay: %v", err)
+	}
+	redeem.Code = secret.Random(core.CodePrefix)
+	if _, err = svc.RedeemCode(ctx, redeem); !errors.Is(err, core.ErrInvalidGrant) {
+		t.Fatalf("unknown code: %v", err)
+	}
+}
+
+type injectedWriter struct {
+	store.AuthorizationWriter
+	mode    string
+	failure error
+}
+type injectedScope struct {
+	store.AuthorizationScope
+	mode    string
+	failure error
+}
+type injectedAuthorizationDAO struct {
+	store.AuthorizationDAO
+	mode    string
+	failure error
+	calls   int
+}
+type injectedFamilyDAO struct {
+	store.CredentialFamilyDAO
+	mode    string
+	failure error
+}
+type injectedClientDAO struct {
+	store.OAuthClientDAO
+	mode    string
+	failure error
+}
+
+func (w injectedWriter) WriteAuthorizations(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error) {
+	return w.AuthorizationWriter.WriteAuthorizations(ctx, func(s store.AuthorizationScope) error { return fn(injectedScope{s, w.mode, w.failure}) })
+}
+func (s injectedScope) AuthorizationDAO() store.AuthorizationDAO {
+	return &injectedAuthorizationDAO{AuthorizationDAO: s.AuthorizationScope.AuthorizationDAO(), mode: s.mode, failure: s.failure}
+}
+func (s injectedScope) CredentialFamilyDAO() store.CredentialFamilyDAO {
+	return injectedFamilyDAO{s.AuthorizationScope.CredentialFamilyDAO(), s.mode, s.failure}
+}
+func (s injectedScope) OAuthClientDAO() store.OAuthClientDAO {
+	return injectedClientDAO{s.AuthorizationScope.OAuthClientDAO(), s.mode, s.failure}
+}
+func (d *injectedAuthorizationDAO) AuthorizationByCode(ctx context.Context, hash []byte, lock bool) (store.OAuthAuthorization, error) {
+	if lock && d.mode == "lock-code" {
+		return store.OAuthAuthorization{}, d.failure
+	}
+	return d.AuthorizationDAO.AuthorizationByCode(ctx, hash, lock)
+}
+func (d *injectedAuthorizationDAO) FreshTime(ctx context.Context, now time.Time) (time.Time, error) {
+	d.calls++
+	if d.mode == "fresh" || (d.mode == "fresh-after-pin" && d.calls == 2) {
+		return time.Time{}, d.failure
+	}
+	return d.AuthorizationDAO.FreshTime(ctx, now)
+}
+func (d *injectedAuthorizationDAO) UpdateAuthorization(ctx context.Context, a store.OAuthAuthorization) error {
+	if d.mode == "update" {
+		return d.failure
+	}
+	return d.AuthorizationDAO.UpdateAuthorization(ctx, a)
+}
+func (d injectedFamilyDAO) IssueFamily(ctx context.Context, v store.OAuthFamilyIssue) error {
+	if d.mode == "issue" {
+		return d.failure
+	}
+	return d.CredentialFamilyDAO.IssueFamily(ctx, v)
+}
+func (d injectedFamilyDAO) InspectGrant(ctx context.Context, id string, lock bool) (store.OAuthGrant, error) {
+	if (lock && d.mode == "lock-grant") || (!lock && d.mode == "read-grant") {
+		return store.OAuthGrant{}, d.failure
+	}
+	return d.CredentialFamilyDAO.InspectGrant(ctx, id, lock)
+}
+func (d injectedFamilyDAO) RevokeFamily(ctx context.Context, id string, now time.Time) (bool, error) {
+	if d.mode == "revoke" {
+		changed, err := d.CredentialFamilyDAO.RevokeFamily(ctx, id, now)
+		if err != nil {
+			return false, err
+		}
+		return changed, d.failure
+	}
+	return d.CredentialFamilyDAO.RevokeFamily(ctx, id, now)
+}
+func (d injectedClientDAO) PinClient(ctx context.Context, id string, now time.Time) (store.OAuthClient, error) {
+	if d.mode == "pin" {
+		return store.OAuthClient{}, d.failure
+	}
+	return d.OAuthClientDAO.PinClient(ctx, id, now)
+}
+func TestAuthorizationRedeemStorageFailuresRollBack(t *testing.T) {
+	ctx, db, svc, p, in := authorizationFixture(t)
+	failure := errors.New("injected storage failure")
+	registered, err := svc.clients.Register(ctx, "registration", []byte(`{"redirect_uris":["https://client.example/cb"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"lock-code", "fresh", "issue", "update", "pin", "fresh-after-pin", "lock-grant", "read-grant", "revoke"} {
+		t.Run(mode, func(t *testing.T) {
+			svc.writer = db
+			request := in
+			if mode == "pin" || mode == "fresh-after-pin" {
+				request.ClientID = registered.ClientID
+			}
+			if mode == "update" {
+				request.ClientID = "update-failure-client"
+				svc.clients.preregistered[request.ClientID] = core.ClientMetadata{ClientID: request.ClientID, RedirectURIs: []string{request.RedirectURI}, TokenEndpointAuthMethod: "none"}
+			}
+			started, redeem := approvedCode(t, ctx, svc, p, request)
+			replay := mode == "lock-grant" || mode == "read-grant" || mode == "revoke"
+			var access string
+			if replay {
+				tokens, e := svc.RedeemCode(ctx, redeem)
+				if e != nil {
+					t.Fatal(e)
+				}
+				access = tokens.AccessToken
+			}
+			counts := func() [3]int {
+				t.Helper()
+				var values [3]int
+				err := db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants), (SELECT count(*) FROM oauth_access_tokens), (SELECT count(*) FROM oauth_refresh_tokens)`).Scan(&values[0], &values[1], &values[2])
+				if err != nil {
+					t.Fatal(err)
+				}
+				return values
+			}
+			before := counts()
+			svc.writer = injectedWriter{db, mode, failure}
+			if _, e := svc.RedeemCode(ctx, redeem); !errors.Is(e, failure) {
+				t.Fatalf("%s: %v", mode, e)
+			}
+			svc.writer = db
+			view, e := svc.Inspect(ctx, started.RequestID, started.Binding, p)
+			if e != nil {
+				t.Fatal(e)
+			}
+			want := "approved"
+			if replay {
+				want = "consumed"
+			}
+			if view.Status != want {
+				t.Fatalf("failed transaction changed status: %+v", view)
+			}
+			if after := counts(); after != before {
+				t.Fatalf("failed transaction changed family records: before %v after %v", before, after)
+			}
+			if mode == "update" {
+				var grants, accesses, refreshes int
+				err := db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants WHERE client_id=$1), (SELECT count(*) FROM oauth_access_tokens a JOIN oauth_grants g ON g.id=a.grant_id WHERE g.client_id=$1), (SELECT count(*) FROM oauth_refresh_tokens r JOIN oauth_grants g ON g.id=r.grant_id WHERE g.client_id=$1)`, request.ClientID).Scan(&grants, &accesses, &refreshes)
+				if err != nil || grants != 0 || accesses != 0 || refreshes != 0 {
+					t.Fatalf("failed issue left family records: grants=%d access=%d refresh=%d: %v", grants, accesses, refreshes, err)
+				}
+			}
+			if mode == "revoke" {
+				_, e := db.WriteCredentialFamily(ctx, func(scope store.CredentialFamilyScope) error {
+					identity, err := core.AuthenticateAccess(ctx, scope.CredentialFamilyDAO(), access, in.Resource, time.Now())
+					if err != nil {
+						return err
+					}
+					if identity.Principal.UserID != p.UserID {
+						return errors.New("access authenticated as the wrong user")
+					}
+					return nil
+				})
+				if e != nil {
+					t.Fatalf("rolled-back revocation invalidated access: %v", e)
+				}
+			}
+			if !replay {
+				if _, e = svc.RedeemCode(ctx, redeem); e != nil {
+					t.Fatalf("retry after confirmed rollback: %v", e)
+				}
+			}
+		})
 	}
 }
