@@ -674,6 +674,21 @@ queries and process crash recovery retain their PostgreSQL boundaries. The
 [record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
 records which storage facts are mocked and which durable operations remain real.
 
+### TaskSync lock and time windows
+
+TaskSync lock-wait regressions use a named 20-millisecond test overlap with real
+PostgreSQL transactions. After observing the blocked writer, they poll the
+database clock with a bounded deadline until that overlap has elapsed before
+releasing the Project lock. The old snapshot must retain committed versions
+while its observation time crosses the uncommitted write's window; subsequent
+delta reads must include both committed writes in timestamp order. Initial
+fixture rows share a database timestamp so setup latency cannot exclude either
+row from the short baseline window.
+
+The production overlap and the independent 10-second, 30-second and nanosecond
+window cases remain separate. The [timing decision](../../.agents/notes/implemented/testing/2026-11-06-task-sync-lock-window.md)
+records why database clocks and lock observations are required together.
+
 ### HTTP scenario ownership
 
 Domain packages own their HTTP integration scenarios, including those that
