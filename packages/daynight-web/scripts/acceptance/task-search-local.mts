@@ -1,0 +1,81 @@
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { reserveLoopbackPort, startAuthFixture, type AuthFixture } from '../../../daynight-server/scripts/auth-fixture.mts';
+
+const repository = fileURLToPath(new URL('../../../..', import.meta.url));
+const serverRoot = path.join(repository, 'packages/daynight-server');
+const runId = randomUUID();
+const directory = path.join(repository, '.tmp', `task-search-runtime-${runId}`);
+const container = `daynight-search-${runId}`;
+const cancellation = new AbortController();
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => cancellation.abort(new Error(`Interrupted by ${signal}`)));
+const command = (program: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number; quiet?: boolean; signal?: AbortSignal } = {}) => new Promise<void>((resolve, reject) => {
+  const child = spawn(program, args, { cwd: options.cwd ?? repository, env: options.env ?? process.env, stdio: options.quiet ? 'ignore' : 'inherit', timeout: options.timeout ?? 300_000, ...(options.signal === undefined ? {} : { signal: options.signal }) });
+  child.once('error', reject);
+  child.once('close', (code, signal) => code === 0 ? resolve() : reject(new Error(`${program} exited with ${code ?? signal}`)));
+});
+const delay = () => new Promise(resolve => setTimeout(resolve, 200));
+let fixture: AuthFixture | undefined;
+let server: ChildProcess | undefined;
+let serverClosed: Promise<void> | undefined;
+let databaseStarted = false;
+let originalFailure: unknown;
+try {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await command('pnpm', ['web:build'], { signal: cancellation.signal });
+  const binary = path.join(directory, 'daynight-server');
+  await command('go', ['build', '-trimpath', '-o', binary, './cmd/daynight-server'], { cwd: serverRoot, signal: cancellation.signal });
+  const binaryHash = createHash('sha256').update(await readFile(binary)).digest('hex');
+  const fixtureBinary = path.join(serverRoot, '.tmp/uniauth-fixture');
+  await command('node', ['scripts/prepare-uniauth-fixture.mts'], { cwd: serverRoot, timeout: 600_000, signal: cancellation.signal });
+  const databasePort = await reserveLoopbackPort();
+  databaseStarted = true;
+  await command('docker', ['run', '--detach', '--rm', '--name', container, '--network', 'host', '-e', 'POSTGRES_USER=daynight', '-e', 'POSTGRES_PASSWORD=daynight-search-local', '-e', 'POSTGRES_DB=daynight', 'postgres:18.6-bookworm', 'postgres', '-c', `port=${databasePort}`, '-c', 'listen_addresses=127.0.0.1'], { signal: cancellation.signal, timeout: 60_000 });
+  let databaseReady = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    cancellation.signal.throwIfAborted();
+    try { await command('docker', ['exec', container, 'pg_isready', '-h', '127.0.0.1', '-p', String(databasePort), '-U', 'daynight', '-d', 'daynight'], { quiet: true, timeout: 5_000 }); databaseReady = true; break; } catch { await delay(); }
+  }
+  if (!databaseReady) throw new Error('Isolated PostgreSQL did not become ready.');
+  const port = await reserveLoopbackPort();
+  const origin = `http://127.0.0.1:${port}`;
+  fixture = await startAuthFixture({ binary: fixtureBinary, directory: path.join(directory, 'auth'), callbackURL: `${origin}/auth/callback`, signal: cancellation.signal });
+  server = spawn(binary, [], { cwd: serverRoot, stdio: ['ignore', 'inherit', 'inherit'], env: { ...process.env,
+    DAYNIGHT_LISTEN_ADDR: `127.0.0.1:${port}`, DAYNIGHT_PUBLIC_ORIGIN: origin,
+    DAYNIGHT_DATABASE_URL: `postgres://daynight:daynight-search-local@127.0.0.1:${databasePort}/daynight?sslmode=disable`,
+    DAYNIGHT_STORAGE_ROOT: path.join(directory, 'storage'), DAYNIGHT_UNIAUTH_URL: fixture.origin,
+    DAYNIGHT_UNIAUTH_APP_ID: fixture.appId, DAYNIGHT_UNIAUTH_APP_SECRET: fixture.appSecret,
+    DAYNIGHT_UNIAUTH_CALLBACK_URL: `${origin}/auth/callback`, DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN: '1', DAYNIGHT_ALLOW_LOOPBACK_HTTP: '1',
+  } });
+  let serverExit: string | null = null;
+  serverClosed = new Promise(resolve => { server!.once('error', error => { serverExit = String(error); }); server!.once('close', (code, signal) => { serverExit ??= String(code ?? signal); resolve(); }); });
+  let ready = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    cancellation.signal.throwIfAborted();
+    if (serverExit !== null) throw new Error(`Server exited before readiness: ${serverExit}`);
+    try { if ((await fetch(`${origin}/readyz`, { signal: AbortSignal.timeout(1000) })).ok) { ready = true; break; } } catch { /* Wait for the loopback listener. */ }
+    await delay();
+  }
+  if (!ready) throw new Error('Server did not become ready.');
+  await command('node', ['packages/daynight-web/scripts/acceptance/task-search.mts'], { env: { ...process.env, DAYNIGHT_BASE_URL: origin, DAYNIGHT_SEARCH_BINARY_SHA: binaryHash, DAYNIGHT_SEARCH_RUN_ID: runId }, timeout: 300_000, signal: cancellation.signal });
+} catch (error) { originalFailure = error; throw error; } finally {
+  const failures: unknown[] = [];
+  if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+    server.kill('SIGTERM');
+    const exited = await Promise.race([serverClosed!.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 10_000))]);
+    if (!exited) { server.kill('SIGKILL'); await serverClosed; failures.push(new Error('Server exceeded its shutdown deadline.')); }
+  }
+  if (fixture !== undefined) try { await fixture.close(); } catch (error) { failures.push(error); }
+  if (databaseStarted) {
+    try {
+      const existing = execFileSync('docker', ['ps', '-a', '--filter', `name=^/${container}$`, '--format', '{{.Names}}'], { encoding: 'utf8', timeout: 10_000 }).trim();
+      if (existing === container) await command('docker', ['rm', '-f', container], { timeout: 30_000 });
+      else if (existing !== '') throw new Error('Unexpected database container identity during cleanup.');
+    } catch (error) { failures.push(error); }
+  }
+  try { await rm(directory, { recursive: true, force: true }); } catch (error) { failures.push(error); }
+  if (failures.length > 0) throw new AggregateError(originalFailure === undefined ? failures : [originalFailure, ...failures], 'Acceptance execution or cleanup failed.');
+}
