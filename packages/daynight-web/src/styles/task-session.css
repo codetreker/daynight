@@ -12,7 +12,8 @@
 .session-status { display: inline-flex; align-items: center; gap: 6px; color: #68758a; font-size: 11px; }
 .session-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #8e98a8; }
 .session-status.online::before { background: #428260; }
-.session-timeline-shell { flex: 1; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
+/* Share shrinking space with expanded composer panels without a hard minimum. */
+.session-timeline-shell { flex: 1 1 100px; min-height: 0; min-width: 0; position: relative; overflow: hidden; }
 .session-timeline { height: 100%; min-width: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; padding: 22px 26px; }
 .session-timeline-content { max-width: 960px; margin: auto; min-width: 0; }
 .session-entry { margin: 0 0 18px; min-width: 0; overflow-wrap: anywhere; }

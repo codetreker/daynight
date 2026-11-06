@@ -106,10 +106,12 @@ test runners retain ownership of test counts and coverage.
 The initial wiring also passed the combined commit to the Web browser runner
 and its shard report to preserve their clean-source assertions. The independent
 [Web validation change](https://github.com/codetreker/daynight/commit/6a85f84cc7777e8a849618e533d11224284bc176)
-removed that runner and both shards from main. Pair validation follows the
-remaining jobs, including Web quality and its original coverage threshold;
-it does not restore the removed cross-product framework. The final gate expects
-14 pairing receipts when all modules are selected.
+removed that runner and both shards from main. The subsequent
+[Go validation change](https://github.com/codetreker/daynight/commit/093e82b2126f580ad8f8a8c43b3d08bf6ee7d407)
+removed the separate Go E2E job. Pair validation follows the remaining module jobs,
+including Go and Web quality with their current coverage gates; it does not
+restore either removed cross-product runner. The final gate expects 13 pairing
+receipts when all modules are selected.
 
 ## Alternatives
 

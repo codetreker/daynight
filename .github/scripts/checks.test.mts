@@ -13,12 +13,11 @@ const command = gate.match(/^        run: (.+)$/m)![1]!;
 test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
-  for (const [name, mode] of [["verify-server", "coverage"], ["verify-server-e2e", "e2e"]]) {
+  for (const [name, mode] of [["verify-server", "coverage"]]) {
     const job = jobs.get(name!)!;
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
     assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
-    assert.ok(job.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
   }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
@@ -36,11 +35,11 @@ const runGate = (results: Record<string, string>): number | null => {
 
 const success = Object.fromEntries(required.map((name) => [name, "success"]));
 
-test("both successful server jobs pass the actual workflow gate", () => {
+test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-macos", "verify-server", "verify-server-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-macos", "verify-server"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -364,8 +363,8 @@ test("the final gate checks complete pairing evidence independently of Web selec
   assert.ok(!step.includes("if:"));
   assert.ok(!gate.includes("pattern:"));
   const downloads = workflowSteps(gate).filter((entry) => entry.includes("uses: actions/download-artifact@") && entry.includes("name: daynight-image-test-pairs-"));
-  assert.equal(downloads.length, 14);
-  assert.equal(new Set(downloads.map(artifactName)).size, 14);
+  assert.equal(downloads.length, 13);
+  assert.equal(new Set(downloads.map(artifactName)).size, 13);
   assert.ok(step.includes("IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}"));
   assert.ok(step.includes("IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}"));
 });
@@ -408,7 +407,7 @@ const executePairingGate = (directory: string, environment: Record<string, strin
 test("the actual pairing gate accepts documentation-only and all-module evidence sets", () => withPairingEvidence((directory) => {
   writePairingReceipt(directory, "detect-changes");
   assert.equal(executePairingGate(directory), 0);
-  const names = ["verify-ubuntu-latest", "verify-windows-latest", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-macos", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion", "verify-server", "verify-server-e2e", "verify-web-quality"];
+  const names = ["verify-ubuntu-latest", "verify-windows-latest", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-macos", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion", "verify-server", "verify-web-quality"];
   for (const name of names) writePairingReceipt(directory, name);
   assert.equal(executePairingGate(directory, { IMAGE_PAIR_CLI: "true", IMAGE_PAIR_SERVER: "true", IMAGE_PAIR_WEB: "true" }), 0);
   assert.notEqual(executePairingGate(directory), 0, "Unselected or stale receipts must not be accepted.");
@@ -451,4 +450,16 @@ test("main-pinned combinations validate the remaining Web quality job without re
   assert.ok(quality.indexOf(pairStep(quality)!) < quality.indexOf(step));
   assert.doesNotMatch(workflow, /verify-web:|verify-web-[12]|WEB_SHARD_RESULT|daynight-web-summary|scripts\/acceptance|ci\.mts browser/);
   assert.doesNotMatch(workflow, /GITHUB_SHA=.*GITHUB_ENV|^\s+GITHUB_SHA:/m);
+});
+
+test("main-pinned combinations retain Go module coverage and its current artifact", () => {
+  const server = jobs.get("verify-server")!;
+  const validation = workflowSteps(server).find((entry) => entry.includes("id: server-validation\n"));
+  assert.ok(validation);
+  assert.ok(validation.includes("run: bash scripts/check.sh --coverage\n"));
+  assert.ok(server.indexOf(pairStep(server)!) < server.indexOf(validation));
+  const coverage = uploadSteps(server).find((entry) => artifactName(entry) === "daynight-server-acceptance");
+  assert.ok(coverage);
+  assert.deepEqual(artifactPaths(coverage), ["packages/daynight-server/coverage.out"]);
+  assert.doesNotMatch(workflow, /verify-server-e2e|check\.sh --e2e|project-task-service-evidence|project-task-e2e-evidence|DAYNIGHT_TEST_RACE/);
 });
