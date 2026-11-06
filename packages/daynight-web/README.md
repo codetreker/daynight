@@ -1346,7 +1346,7 @@ with actions use eight seconds. Hover or focus pauses expiry. Close and expiry
 change only presentation; unresolved recovery remains accessible from a compact
 floating trigger, without changing write locks or replaying writes. Status does
 not stop a process or provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
-owns server rules, migration and timing. Actual service acceptance proves HTTP,
+owns server rules, migration and timing. Server module tests cover HTTP,
 database and persistence behavior.
 
 Task details share claim display and force withdrawal across the dialog,
@@ -1531,8 +1531,8 @@ receipt and online-admission signal, not a task version or durable commit counte
 task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
-[automatic refresh decision](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md) records the rationale for the scheduling and scope. Production verification uses the real-service
-journeys.
+[automatic refresh decision](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md)
+records the rationale for the scheduling and scope.
 
 Same-resource, same-generation graph and detail refresh retain successful data
 while loading and on recoverable failure. Errors remain in state during automatic retries until a
@@ -1743,9 +1743,6 @@ independently, exposes the complete path and keeps Download and Open in new tab 
 Left-pane scrolling does not move right-side content or its reading position.
 The standalone complete details reuse this panel, rendering and sizing; their
 outer composition integrates task, tab and file navigation with URL and history.
-Earlier real-service runtime acceptance of the attachment-reading group remains
-evidence for its recorded source, build, browser and cleanup, not current-source
-acceptance. A local browser override does not establish hosted-CI browser behavior.
 
 Markdown uses `react-markdown` 10.1.0 with `remark-gfm` 4.0.1 for CommonMark and GFM
 including tables, plus the shared static Mermaid diagrams described above.
@@ -1881,9 +1878,7 @@ is introduced. The [full-reader decision](../../.agents/notes/archived/architect
 retains routing/rendering foundations and the
 [shared-page decision](../../.agents/notes/archived/architecture/2026-10-24-shared-attachment-page.md)
 retains full attachment-panel reuse rationale. The standalone-detail decision
-records the original complete Task Detail composition choices. Earlier production
-`task-detail-page` and `task-attachments` journeys used actual services on both
-runtime targets; their receipts apply to their recorded source.
+records the original complete Task Detail composition choices.
 
 ## Validation and build
 
@@ -1900,23 +1895,21 @@ and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed val
 or publication fails the build; a failed swap attempts to restore previous assets
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored
-by Git, and clean server builds require this explicit build first. The Go
-`scripts/check.sh` instead uses the server module's fixed test-resource overlay for
-build, vet and go-cov. Go race instrumentation follows the
-[server validation policy](../daynight-server/README.md#race-instrumentation).
+by Git, and clean production server builds require this explicit build first.
+The Go module check uses its own unit-test Web resource overlay; see the
+[server validation guide](../daynight-server/README.md#validate).
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
-the Node tooling tests for CI execution, coverage checking, graph dependencies
-and asset publication. `test:coverage` runs the ordinary
-Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
+its Node tooling tests, including the coverage checker and asset publication.
+`test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
 model and geometry workloads live in `.stress.ts` files and run only through
 `pnpm test:stress` from this package (`pnpm web:test:stress` from the repository
 root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
 excludes those files while retaining compact correctness and boundary cases. Either command can be
 run directly with `pnpm --filter @codetreker/daynight-web test:harness` or
 `pnpm --filter @codetreker/daynight-web test:coverage`; `pnpm web:test` remains the
-complete local gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
+complete local test gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
 to the product manifest, including the browser entry. Tests live outside `src`.
 The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
@@ -1949,10 +1942,38 @@ pagination or confirmation dialog. Whole-page counts retain document-wide scope.
 The [query ownership decision](../../.agents/notes/implemented/testing/2026-11-05-step-panel-query-owners.md)
 records the retained accessibility, draft and focus proof and its cost boundary.
 
+The focused navigation browser suite builds a minimal editor host from the
+production router, admitted-location owner and task confirmation. It checks draft
+admission independently of Steps forms and HTTP writes, including indexed
+history traversal, retirement, beforeunload, keyboard focus and both languages at
+320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
+tests/navigation/playwright.config.ts` after installing Chromium. Results and
+failure captures are written to
+`packages/daynight-web/.tmp/acceptance/navigation-contract/`.
+
+The Team navigation browser suite builds one production application preview for
+four Playwright projects: `team-preference` covers Team selection and Worker
+configuration identity, `team-management` covers settings and rename interactions,
+`team-members` covers membership and self-exit, and `session-record-layout` covers
+responsive execution-record selection, keyboard and touch input, history loading,
+errors and pagination. Each case owns its browser
+context and controlled API responses; the preview serves only static assets.
+Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
+tests/navigation/team-playwright.config.ts`; add `--project team-management` to
+focus on settings geometry, wrapping, text selection and rename interactions.
+These module browser fixtures use one worker and zero retries. Preference and
+Session layout cases use 45-second deadlines, management and members use 30
+seconds, and preview startup uses 90 seconds. Their results are kept in the
+corresponding `.tmp/` directories. The
+[shared preview decision](../../.agents/notes/implemented/testing/2026-11-05-shared-team-navigation-preview.md)
+owns preparation sharing, isolation and deadline handling.
+
 The required coverage comparison is `covered * 10 > total * 9` using BigInt.
 Exactly 90% fails independently of display rounding. Pure-type declarations
 contribute zero statements only after the pinned TypeScript compiler confirms
-there is no runtime body. Typechecking remains a separate mandatory check.
+there is no runtime body. Temporary compiler inputs and outputs stay under this
+package's `.tmp/` and are removed after classification. Typechecking remains a
+separate mandatory check.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
 The Web selector enables `verify-web-quality`; the final `checks` job requires
@@ -2037,6 +2058,12 @@ acceptance requires an isolated authorized account/Bot and the actual HTTP,
 Worker and Provider path; record each layer's observations and unverified items
 separately, following the [management](../../docs/design/bot-management-web.md)
 and [Session](../../docs/design/bot-session-view.md) validation responsibilities.
+
+## Production browser acceptance
+
+The Web quality command does not run a cross-product acceptance suite. Controlled
+browser fixtures establish only their stated frontend scope. A real-service result
+requires its own source-bound execution and cleanup evidence.
 
 ## Dependency declarations
 

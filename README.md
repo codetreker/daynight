@@ -353,7 +353,7 @@ Web checks use `pnpm web:typecheck`,
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,
-independent browser checks and complete validation commands.
+module and complete validation commands.
 
 ## Package versions
 
@@ -373,62 +373,33 @@ release validation, existing-version skips and artifact verification.
 
 ## CI selection
 
-The [`checks` workflow](.github/workflows/checks.yml) selects PR application jobs
-from all changed paths, including deletions and both sides of renames:
+The [`checks` workflow](.github/workflows/checks.yml) selects PR jobs from all
+changed paths, including deletions and both sides of renames. Shared inputs select
+the union of their consumers. The [selector](.github/scripts/ci-modules.mts) owns
+the precise path rules; [the development guide](docs/development.md#ci-selection)
+explains the jobs and version-only exception. Main pushes select every module.
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/test/fixtures/installed-cli.ts` | CLI and Go server validation |
-| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server validation and Web quality |
-| Implementation and resources under CLI `commands/worker/`, `controller/`, `review/`, `skill/`, `update/` or `completion/`, except `definition.ts` | CLI |
-| Other `packages/daynight/src/` paths, including command definitions | CLI and Go server validation |
-| A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
-| Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
-| Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server validation |
-| Other `packages/daynight/` paths | Complete ordinary and installed CLI phases on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
-| `packages/daynight-server/` | Go server validation |
-| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server validation and Web quality |
-| Runtime files under `deployment/` | Web quality |
-| Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
-| Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
-| CI routing/workflow changes and other unclassified paths | Every module |
+| CLI `src/api/`, `src/session/`, `src/platform/text.ts` | CLI, Web and Go |
+| CLI Controller `providers/projection.ts`, `providers/codex-errors.ts`, `providers/native-rpc.ts`, `providers/types.ts`, `provider-display.ts`, and `test/session/fixtures/` | CLI and Web |
+| Other CLI files and development installer | CLI |
+| Go server files | Go |
+| Web files and its selected patches | Web and Go |
+| Deployment files | Web |
+| Root package, lockfile, workspace and npm configuration | All modules |
+| Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
+| CI workflow, routing and unclassified paths | All modules |
 
-Every path under `packages/daynight/src/` selects CLI checks, including SQL
-resources and bundled Markdown. The CLI loads the six independent commands above
-only when selected; their implementations and resources do not select Go jobs.
-Their `definition.ts` files are loaded at startup and retain server selection.
-Other CLI source remains a conservative server input. The manifest comparison
-uses committed merge-base and head contents, ignoring only the top-level
-`version` field. Manifest additions, deletions and file-type changes select both
-the server job; malformed modified manifests fail detection. A PR with exactly one
-modified path skips application jobs only when that path is the CLI manifest,
-its regular-file mode is unchanged, its version string changes, and all other
-parsed fields are equal. Formatting-only changes and any additional changed
-path retain ordinary selection. Version-only PRs run the existing routing
-checks and final gate; version and artifact validation remain in the publication
-workflow. Exact preparation inputs are listed in
-[the selector](.github/scripts/ci-modules.mts).
+CLI source paths take precedence over documentation exclusions. A PR containing
+only a CLI manifest version change may skip application jobs as described in
+the [development guide](docs/development.md#ci-selection).
 
-Documentation exclusions apply after CLI source ownership; changes selecting
-several modules run their union. CLI selection enables independent ordinary-test
-and installed-acceptance matrices on Linux and Windows, each with a 10-minute
-bound per job. A required `verify-macos` job uses one macOS ARM64 allocation for
-complete ordinary and installed phases in sequence, with a 20-minute outer bound
-and 10-minute validation-command bounds. Each phase builds current source and
-records its own environment, outcome and artifacts. The ordinary Ubuntu entry supplies
-the runtime package; runtime jobs depend only on the Linux/Windows ordinary
-producer matrix, while final `checks` still requires macOS. The
-[single-allocation decision](.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
-owns macOS failure, evidence and budget handling. The Web selector enables the
-Web quality job. The server selector enables one Go validation job with a
-20-minute bound. The final `checks` job uses `always()` and accepts
-only `success` or `skipped` from preceding jobs; selected Web quality must
-succeed. Standalone Web browser checks are available locally with controlled
-fixtures; they do not establish full-stack or hosted-CI acceptance. A newer PR run cancels the older run for that PR.
-New `main` pushes queue behind an active `main` run without cancelling it.
-Documentation-only PRs run routing tests and that gate; every `main` push selects
-full application validation. See the
-[CI guide](docs/development.md#ci-selection) for routing and execution details.
+CLI validation includes ordinary and installed phases on Linux, Windows and
+macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go and Web
+have separate module jobs. The final gate rejects failed or cancelled jobs and
+requires a selected Web quality job to succeed. A newer PR run cancels its older
+run; main runs queue without cancelling an active run.
 
 ## Validation
 
@@ -460,7 +431,7 @@ execution scope. Controlled process fixtures do not prove live Copilot/GitHub
 behavior, and a local browser run does not prove hosted-CI results. A failed
 scenario or cleanup remains a failure. The
 [validation guide](docs/development.md#validation) owns detailed prerequisites,
-receipt identity checks and evidence limits.
+result scope and evidence limits.
 
 ## Working in the repository
 

@@ -204,6 +204,36 @@ func (d *privateTransferDAO) SubtractOutstanding(ctx context.Context, id string,
 	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET outstanding_bytes=outstanding_bytes-$2,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 RETURNING `+transferColumns, id, amount))
 }
 
+func scanUploadChunk(row pgx.Row) (model.UploadChunk, error) {
+	var c model.UploadChunk
+	err := row.Scan(&c.TransferID, &c.ChunkID, &c.ObjectID, &c.Offset, &c.Size, &c.SHA256)
+	if err != nil {
+		return model.UploadChunk{}, pg.QueryError("read upload chunk receipt", err)
+	}
+	return c, nil
+}
+
+const uploadChunkColumns = `transfer_id::text,chunk_id::text,object_id::text,byte_offset,byte_size,sha256`
+
+func (d *privateTransferDAO) UploadChunk(ctx context.Context, transferID, chunkID string) (model.UploadChunk, error) {
+	return scanUploadChunk(d.tx.QueryRow(ctx, `SELECT `+uploadChunkColumns+` FROM private_upload_chunks WHERE transfer_id=$1 AND chunk_id=$2`, transferID, chunkID))
+}
+
+func (d *privateTransferDAO) UploadChunkAt(ctx context.Context, transferID string, offset int64) (model.UploadChunk, error) {
+	return scanUploadChunk(d.tx.QueryRow(ctx, `SELECT `+uploadChunkColumns+` FROM private_upload_chunks WHERE transfer_id=$1 AND byte_offset=$2`, transferID, offset))
+}
+
+func (d *privateTransferDAO) InsertUploadChunk(ctx context.Context, c model.UploadChunk) error {
+	result, err := d.tx.Exec(ctx, `INSERT INTO private_upload_chunks (transfer_id,chunk_id,object_id,byte_offset,byte_size,sha256) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, c.TransferID, c.ChunkID, c.ObjectID, c.Offset, c.Size, c.SHA256)
+	if err != nil {
+		return pg.QueryError("insert upload chunk receipt", err)
+	}
+	if result.RowsAffected() != 1 {
+		return &model.Fault{Code: "transfer_conflict", Message: "Upload chunk receipt conflicts with an existing receipt."}
+	}
+	return nil
+}
+
 func (d *privateTransferDAO) Put(ctx context.Context, t model.PrivateTransfer, expected int64) (model.PrivateTransfer, error) {
 	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET cleanup_from_state=$7,state=$3,data=$4,expires_at=$5,lease_until=$6,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 AND version=$2 RETURNING `+transferColumns, t.ID, expected, t.State, t.Data, t.ExpiresAt, t.LeaseUntil, t.CleanupFromState))
 }

@@ -4,7 +4,7 @@ The Go service owns PostgreSQL-backed project and task management. Its runtime
 foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
-project/task APIs and built-process acceptance are implemented. The current
+project/task APIs are implemented. The current
 executable serves Team lifecycle, project, task, task-chain graph, task-summary synchronization
 and account-owned Worker snapshot/configuration routes together with the embedded task dashboard.
 Generic bucket/path local storage, task attachment
@@ -502,8 +502,7 @@ an error; if cleanup is incomplete, ownership is retained for another close
 attempt. Database operations must
 use the request context and release acquired connections.
 The runtime also closes an acquired file root on later startup failure. Local
-files remain on disk when the handle closes. Startup fixtures supply isolated
-roots; built-process restart tests reuse their fixture root.
+files remain on disk when the handle closes. Tests use isolated storage roots.
 
 Logs use JSON `slog` records with type, component, phase, and request ID. HTTP
 records include method, route template, status, and duration. A supplied
@@ -562,12 +561,10 @@ bash scripts/check.sh
 docker rm --force --volumes daynight-server-tests
 ```
 
-The module check runs the shared root `pnpm web:build`, builds the Go binary,
-runs vet, prepares the pinned real-UniAuth fixture and runs module tests with
-coverage. `bash scripts/check.sh` and `bash scripts/check.sh --coverage` use the
-same module-owned validation. Both require the isolated
-`DAYNIGHT_TEST_DATABASE_URL`; neither installs the CLI or invokes the removed
-cross-product E2E suite.
+The check builds and vets the Go module using its unit-test Web resource overlay,
+prepares the pinned UniAuth fixture, and runs module tests and coverage. The
+optional `--coverage` argument selects the same check. A production build uses
+the real Web assets described under [Build and run](#build-and-run).
 
 ### HTTP scenario ownership
 
@@ -594,88 +591,52 @@ owns the rationale and proof boundary.
 
 ### Race instrumentation
 
-The checked-in `.go-cov.toml` sets `test.race = false`; the default module check
-and current server CI do not establish race coverage. Repository rules requiring
-local/main race validation still apply: run the applicable module tests separately
-with `go test -race` after preparing Web assets, isolated PostgreSQL and the
-UniAuth fixture. `TestAttachmentGrantRevocationWithFreshProcess` selects the
-child build's `-race` value from the test's race build tag and verifies the
-binary's build information. Do not infer the same child instrumentation for
-other process tests. Record actual test and child-build settings; a default
-coverage pass cannot substitute for a race result.
+The checked-in `.go-cov.toml` sets `test.race = false`; the default check does
+not enable race instrumentation. PR and main CI run without it. Repository
+validation requires race instrumentation locally, but the default check does
+not enforce that requirement. `bash scripts/stress.sh` uses `-race` for its
+local-only stress tests. With the isolated database and UniAuth fixture prepared,
+run `GOFLAGS='-overlay=scripts/unit-overlay.json' go test -race -count=1 -timeout=10m ./...`
+and `go test -race -count=1 -timeout=30s ./testdata/testauth` separately. The
+fresh-process attachment test uses the test's race setting for its child build and
+verifies that setting in the binary; other process tests may differ.
 
-```bash
-go test -race -count=1 -timeout=10m ./...
-go test -race -count=1 -timeout=30s ./testdata/testauth
-```
+### Coverage
 
-### Coverage responsibilities
+`scripts/check.sh` builds the executable, runs `go vet`, clears cached Go test
+results and invokes `go-cov` v0.1.4 with the checked-in configuration. Its
+package and function thresholds are 85% and 80%; production packages, files and
+functions are not excluded. Repository validation requires critical-block checks;
+`critical_blocks.fail` is currently false, so this check does not enforce them. The raw
+`coverage.out` profile also passes an exact statement comparison strictly greater
+than 90%; exactly 90% fails. The check does not set `-coverpkg`; a package test does not attribute coverage
+to production code in other packages. Tests and their database state require the
+isolated PostgreSQL instance; preparation failures fail validation.
 
-The module check clears Go test-result caches, sets `-coverpkg` to all listed
-module packages, and runs `go-cov` v0.1.4 with the checked-in configuration.
-The configuration retains 85% package and 80% function thresholds; critical
-blocks are not configured to fail. The raw `coverage.out` profile also passes
-`scripts/coverage.mts`, which requires the unrounded total statement coverage to
-be strictly greater than 90%. Exactly 90%, a malformed profile or an empty
-profile fails. Go module tests include the fresh-process attachment admission
-case described below; coverage and process results retain distinct evidence
-boundaries. The removed `cmd/e2e_tests` package and its installed-CLI
-orchestration are not part of this check.
+`scripts/env.sh` places Go tools, caches and temporary outputs under this
+module's `.tmp/`. The `verify-server` CI job uses its own PostgreSQL service,
+runs the same check and uploads `coverage.out` as `daynight-server-acceptance`.
+Inspect the result for the tested revision; a local result does not establish a
+hosted result.
 
-`scripts/env.sh` places Go caches, tools and temporary outputs under this
-module's `.tmp/`. The selected `verify-server` job has a 20-minute bound and
-publishes the raw `coverage.out` as `daynight-server-acceptance`; the final gate
-requires its selected result. An actual failed check or cleanup remains a failure.
+Ordinary discovery excludes stress-tagged files. With an isolated database,
+`bash scripts/stress.sh` runs the explicit stress-tagged workloads with race
+detection and refuses a nonempty `CI` environment.
 
-Ordinary Go discovery excludes stress-tagged files. With an isolated test
-database configured, run `bash scripts/stress.sh` explicitly for the
-10,000-task/100-person query sample, full-scale Session-v2 archives and repeated
-concurrent overwrite workload. It uses race detection and selects only
-`TestStress*` in the owning packages. The script and raw tagged test
-entrypoints refuse a nonempty `CI` environment. CI retains compact archive
-boundary checks and a deterministic two-writer publication test. The query sample
-remains source-bound local evidence, rather than a production capacity limit.
-The tests cover real database connection/query cancellation, HTTP cancellation,
-graceful and forced drain, listener/pool reuse, process configuration/exit status
-and log redaction.
-
-Authentication integration prepares the exact UniAuth gateway source at
-`0978963813fcefd9d553f6cb9bcc319084c764b3` with
-`scripts/prepare-uniauth-fixture.mts`, using Git/module registry access. Its checked-in
-`testdata/uniauth-fixture` command is built inside that source module; the real
-gateway, App registry and GitHub adapter run on loopback, with only external
-provider HTTP responses controlled. Private App credentials cross a task-local
-0600 IPC file and are removed after reading. Current server integration and
-process tests obtain normal Daynight sessions and PATs through this gateway;
-private fixture metadata stays outside public artifacts. The fixture process, SQLite files,
-checkout and executable remain under the module `.tmp/`; tests close their own
-process and file resources. Gateway cleanup waits five seconds after SIGTERM,
-then two seconds after forced termination; forced termination reports the missed
-graceful deadline. An unconfirmed exit fails cleanup and retains the owned
-fixture directory. The fresh-process test guards its gateway with the service's
-cleanup state: if a started service has not been reaped or its database sessions
-have not been removed, the gateway and its directory are retained and the failure
-reports their identity.
-`scripts/check.sh` explicitly runs the
-`testdata/testauth` fixture tests, which ordinary `./...` discovery omits. No
-application module replacement or global tool installation is required. For
-focused authentication integration tests after
-`scripts/env.sh`, keep `DAYNIGHT_TEST_DATABASE_URL` set and prepare the fixture:
-
-```bash
-DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-export DAYNIGHT_TEST_UNIAUTH_FIXTURE
-```
-
-The full check performs this preparation automatically. The real wire-loss test in
+Authentication integration prepares the pinned UniAuth gateway with
+`scripts/prepare-uniauth-fixture.mts`. The fixture runs on loopback with
+controlled external provider responses and owns its temporary resources. For
+focused integration tests, source `scripts/env.sh`, set
+`DAYNIGHT_TEST_DATABASE_URL`, then set `DAYNIGHT_TEST_UNIAUTH_FIXTURE` to the
+output of that preparation script. The full check performs preparation itself.
+The shared fixture cleanup waits for process exit and reports forced termination;
+an unconfirmed service, database-session or gateway exit retains dependent owned
+resources. `scripts/check.sh` explicitly tests `testdata/testauth`, which `./...`
+does not discover.
+The real wire-loss test in
 [`auth_transport_acceptance_test.go`](internal/server/auth_transport_acceptance_test.go)
-consumes a successful upstream result, closes the actual SDK-side TCP connection,
-and verifies upstream 410, callback replay 401, zero failed-login sessions and
-fresh-login recovery. Product, proxy and gateway cleanup is part of the test.
-The [combined authentication decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
-records the rationale for that proof and the former native/container browser-plus-installed-CLI
-journeys. Those removed journeys retain only their historical source-bound results;
-controlled-provider proof remains separate from an actual upstream human login.
+checks the SDK-side connection and subsequent login recovery; controlled-provider
+evidence does not establish a live human login.
 
 ## File storage
 
@@ -1474,29 +1435,21 @@ concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
-`TestStepsHTTPDelete*`. Installed CLI deletion and a lost response after a real commit are covered by
-`TestInstalledCLITaskStepsDeleteAcceptance` and
-`TestInstalledCLITaskStepsDeleteUnknownAfterRealCommit`; they verify request
-budgets, complete surviving rows, parent and referenced attachment preservation,
-refusals and current-facts-only recovery. Actual binary read restart persistence is covered by
-`TestBuiltBinaryStepsReadPersistence`. Installed Step list/show and its separate
-maximum-resource CLI check are mapped in
-[built-process acceptance](#built-process-acceptance-and-ci-evidence). After
-preparing the normal auth fixture and an isolated PostgreSQL database, focused
+`TestStepsHTTPDelete*`. After preparing the normal auth fixture and an isolated PostgreSQL database, focused
 tests can be run from this module:
 
 ```bash
 source scripts/env.sh
 export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test ./internal/core/store/postgres/... ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/... ./internal/service/task ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:
 
 ```bash
-go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity|DeleteCapacity)Stress$' -count=1 -timeout=5m
+go test -tags=stress ./internal/server/task -run '^TestStressStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity|DeleteCapacity)Stress$' -count=1 -timeout=5m
 ```
 
 The read case seeds legitimate bounded individual records, observes complete
@@ -1782,19 +1735,20 @@ member removal 204 and new project access 404 before releasing the body, then
 verifies upload 201, exact bytes, revoked attachment access and owned-resource
 cleanup. A read of the same attachment path waits for the upload's target gate,
 so the attachment denial is checked after the upload finishes. Its logged
-evidence identifies the source, tree, dirty state, binary, authentication fixture and PostgreSQL
-version and the test and binary race settings. The fresh child uses the test's
+evidence identifies the source, tree, dirty state, binary, authentication fixture,
+PostgreSQL version and the test and binary race settings. The fresh child uses the test's
 race mode and verifies it from the binary build information. It inherits
 `GOFLAGS` and runs the child build from the module root, preserving module-relative
 overlay paths. Supply an explicit source overlay through `GOFLAGS` so both the
 test and its child build use it. A `go test -overlay` argument alone is not
 inherited by the child build.
 
-After building Web assets, setting `DAYNIGHT_TEST_DATABASE_URL` and sourcing
-`scripts/env.sh`, a focused run can prepare the fixture and invoke the test:
+After setting `DAYNIGHT_TEST_DATABASE_URL` and sourcing `scripts/env.sh`, a
+focused run can prepare the fixture and use the module's test-resource overlay:
 
 ```bash
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
+export GOFLAGS='-overlay=scripts/unit-overlay.json'
 go test -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
 # Explicit race evidence for both the test and its freshly built child:
 go test -race -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
