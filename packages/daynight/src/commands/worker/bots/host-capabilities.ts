@@ -132,7 +132,7 @@ export const createAssistantHostCollector = (options: {
           if (cleanupFailures.size > 0) throw new AggregateError([error, ...cleanupFailures.values()], "Assistant host observation was cancelled with unconfirmed process cleanup.", { cause: error });
           throw error;
         }
-        return { assistantHost: { protocolVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configured.agent, providers: entries }, issues };
+        return { assistantHost: { protocolVersion: 1, creationConfigurationVersion: 1, observedAt, defaultCwd: cwd, defaultProvider: configured.agent, providers: entries }, issues };
       } finally { collection.dispose(); }
     },
   };

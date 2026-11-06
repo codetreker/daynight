@@ -184,7 +184,7 @@ func workerAssistantHostResponse(host *model.WorkerAssistantHost) *api.WorkerAss
 	if host == nil {
 		return nil
 	}
-	response := &api.WorkerAssistantHost{ProtocolVersion: host.ProtocolVersion, ObservedAt: host.ObservedAt.UTC(), DefaultCwd: host.DefaultCwd, DefaultProvider: string(host.DefaultProvider), Providers: make([]api.WorkerAssistantProvider, 0, len(host.Providers))}
+	response := &api.WorkerAssistantHost{CreationConfigurationVersion: host.CreationConfigurationVersion, ProtocolVersion: host.ProtocolVersion, ObservedAt: host.ObservedAt.UTC(), DefaultCwd: host.DefaultCwd, DefaultProvider: string(host.DefaultProvider), Providers: make([]api.WorkerAssistantProvider, 0, len(host.Providers))}
 	for _, provider := range host.Providers {
 		response.Providers = append(response.Providers, api.WorkerAssistantProvider{Provider: string(provider.Provider), Available: provider.Available, Reason: provider.Reason, Model: provider.Model, Args: provider.Args})
 	}

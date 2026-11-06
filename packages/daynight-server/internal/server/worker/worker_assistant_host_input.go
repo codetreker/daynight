@@ -6,14 +6,27 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 )
 
 func workerAssistantHostInput(raw json.RawMessage) (*model.WorkerAssistantHost, error) {
-	fields, err := workerObject(raw, "assistantHost", "protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers")
+	fields, err := jsonobject.Decode(raw, "assistantHost", "protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers", "creationConfigurationVersion")
 	if err != nil {
-		return nil, err
+		return nil, httpx.InvalidInput(err.Error())
+	}
+	for _, key := range []string{"protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers"} {
+		if _, exists := fields[key]; !exists {
+			return nil, httpx.InvalidInput("assistantHost." + key + " is required")
+		}
 	}
 	host := &model.WorkerAssistantHost{}
+	if raw, exists := fields["creationConfigurationVersion"]; exists {
+		value, err := workerIntegerInput(raw)
+		if err != nil || value != 1 {
+			return nil, httpx.InvalidInput("assistantHost.creationConfigurationVersion must be 1")
+		}
+		host.CreationConfigurationVersion = 1
+	}
 	host.ProtocolVersion, err = workerIntegerInput(fields["protocolVersion"])
 	if err != nil {
 		return nil, err

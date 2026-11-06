@@ -48,11 +48,12 @@ type WorkerAssistantProvider struct {
 }
 
 type WorkerAssistantHost struct {
-	ProtocolVersion int64                     `json:"protocolVersion"`
-	ObservedAt      time.Time                 `json:"observedAt"`
-	DefaultCwd      string                    `json:"defaultCwd"`
-	DefaultProvider string                    `json:"defaultProvider"`
-	Providers       []WorkerAssistantProvider `json:"providers"`
+	CreationConfigurationVersion int                       `json:"creationConfigurationVersion,omitempty"`
+	ProtocolVersion              int64                     `json:"protocolVersion"`
+	ObservedAt                   time.Time                 `json:"observedAt"`
+	DefaultCwd                   string                    `json:"defaultCwd"`
+	DefaultProvider              string                    `json:"defaultProvider"`
+	Providers                    []WorkerAssistantProvider `json:"providers"`
 }
 
 type WorkerTelemetry struct {

@@ -32,6 +32,11 @@ describe('Worker response contracts', () => {
     expect(parse(value)).toEqual(value);
     expect(parse(workerDetail())).toEqual(workerDetail());
   });
+  it('preserves the versioned native creation capability and rejects unknown versions', () => {
+    const value = changed(['worker', 'telemetry', 'assistantHost'], { ...assistantHost(), creationConfigurationVersion: 1 });
+    expect(parse(value)).toEqual(value);
+    for (const version of [null, 0, 2, '1']) expect(() => parse(changed(['worker', 'telemetry', 'assistantHost'], { ...assistantHost(), creationConfigurationVersion: version }))).toThrow();
+  });
   it('accepts remote Windows absolute paths independently of the browser platform', () => {
     for (const defaultCwd of ['C:\\Users\\person', '\\\\host\\share', '//host/share']) {
       const value = workerDetail();

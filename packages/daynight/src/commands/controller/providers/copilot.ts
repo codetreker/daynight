@@ -20,7 +20,7 @@ const { ResponseError, ErrorCodes } = createRequire(createRequire(import.meta.ur
 const transportErrors = new Set([ErrorCodes.MessageWriteError, ErrorCodes.MessageReadError, ErrorCodes.PendingResponseRejected, ErrorCodes.ConnectionInactive]);
 
 export const openCopilotProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
-  const args = parseProviderArguments("copilot", options.args), cwd = await realpath(options.cwd);
+  const args = parseProviderArguments("copilot", options.args, options.validateNativeSelection), cwd = await realpath(options.cwd);
   if (!(await stat(cwd)).isDirectory()) throw new Error("Copilot working directory is not a directory.");
   const nativeId = options.resumeNativeSessionId ?? randomUUID(), turns = new NativeTurns();
   let controls: CopilotControls | undefined, turnStartedAt: string | null = null;

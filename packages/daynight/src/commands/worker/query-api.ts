@@ -62,7 +62,7 @@ const software = <T extends "not_installed" | "not_running">(value: unknown, abs
   return { state: absent, checkedAt: timestamp(data.checkedAt) };
 };
 const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantHost => {
-  const data = fields(value, ["protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers"]);
+  const data = fields(value, ["protocolVersion", "observedAt", "defaultCwd", "defaultProvider", "providers", ...["creationConfigurationVersion"].filter(key => Object.hasOwn(record(value), key))]);
   const boundedText = (value: unknown, maxBytes: number): string => {
     const parsed = text(value);
     if (/\p{Cc}/u.test(parsed) || Buffer.byteLength(parsed, "utf8") > maxBytes) return malformed();
@@ -74,6 +74,7 @@ const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantH
   if (data.protocolVersion !== 1 || !(platform === "windows"
     ? /^[a-z]:\//i.test(windowsPath) || unc.length >= 2 && !!unc[0] && unc[0] !== "." && unc[0] !== "?" && !!unc[1]
     : defaultCwd.startsWith("/"))) return malformed();
+  if (Object.hasOwn(data, "creationConfigurationVersion") && data.creationConfigurationVersion !== 1) return malformed();
   const providerNames = ["codex", "claude", "copilot"] as const;
   const providers = array(data.providers, value => {
     const entry = fields(value, ["provider", "available", "reason", "model", "args"]);
@@ -86,7 +87,7 @@ const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantH
     return { provider: choice(entry.provider, providerNames), available: entry.available, reason, model, args };
   });
   if (providers.length !== 3 || new Set(providers.map(entry => entry.provider)).size !== 3) return malformed();
-  return { protocolVersion: 1, observedAt: timestamp(data.observedAt), defaultCwd,
+  return { protocolVersion: 1, ...(data.creationConfigurationVersion === undefined ? {} : { creationConfigurationVersion: 1 }), observedAt: timestamp(data.observedAt), defaultCwd,
     defaultProvider: choice(data.defaultProvider, providerNames), providers };
 };
 const telemetry = (value: unknown): WorkerTelemetry => {

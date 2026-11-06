@@ -23,6 +23,8 @@ type CreateBot struct {
 	ID, Name              string
 	Overrides             model.BotOverrides
 	ResolvedConfiguration model.BotConfiguration
+	Resolution            *CreationResolution
+	ResolutionError       error
 }
 
 type BotPage struct {
@@ -85,6 +87,9 @@ func NormalizeBotRequest(input CreateBot) (CreateBot, string, error) {
 	if input.Overrides.Provider != nil && !model.WorkerAgent(*input.Overrides.Provider).Valid() {
 		return input, "", invalidInput("Bot provider must be codex, claude, or copilot.")
 	}
+	if err := NormalizeOverrides(input.Overrides); err != nil {
+		return input, "", err
+	}
 	data, err := json.Marshal(struct {
 		Name      string             `json:"name"`
 		Overrides model.BotOverrides `json:"overrides"`
@@ -129,6 +134,9 @@ func normalizeBotConfiguration(input CreateBot) (model.BotConfiguration, error) 
 	if configuration.Model != nil && (!utf8.ValidString(*configuration.Model) || strings.TrimSpace(*configuration.Model) == "" || strings.ContainsRune(*configuration.Model, 0)) {
 		return configuration, invalidInput("Resolved Bot model must be nonempty Unicode without NUL.")
 	}
+	if err := validateSelection(configuration); err != nil {
+		return configuration, err
+	}
 	if configuration.Args == nil {
 		configuration.Args = []string{}
 	}
@@ -139,7 +147,9 @@ func normalizeBotConfiguration(input CreateBot) (model.BotConfiguration, error) 
 	}
 	if (input.Overrides.WorkerID != nil && *input.Overrides.WorkerID != id) ||
 		(input.Overrides.Cwd != nil && *input.Overrides.Cwd != configuration.Cwd) ||
-		(input.Overrides.Provider != nil && *input.Overrides.Provider != configuration.Provider) {
+		(input.Overrides.Provider != nil && *input.Overrides.Provider != configuration.Provider) ||
+		(input.Overrides.Model != nil && (configuration.Model == nil || *input.Overrides.Model != *configuration.Model)) ||
+		(input.Overrides.ReasoningEffort != nil && (configuration.ReasoningEffort == nil || *input.Overrides.ReasoningEffort != *configuration.ReasoningEffort)) {
 		return configuration, invalidInput("Resolved Bot configuration must preserve explicit overrides.")
 	}
 	return configuration, nil
@@ -155,6 +165,9 @@ func Create(ctx context.Context, tx store.BotWriteDAO, principal model.Principal
 	}
 	current, err := tx.Bot(ctx, input.ID)
 	if errors.Is(err, model.ErrNotFound) {
+		if input.ResolutionError != nil {
+			return model.Bot{}, input.ResolutionError
+		}
 		if resolve {
 			input.ResolvedConfiguration, err = resolveBotCreation(ctx, tx, principal, input)
 			if err != nil {

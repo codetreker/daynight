@@ -13,6 +13,7 @@ export type WorkerMachine = { readonly id: string; readonly name: string };
 export type WorkerAssistantHostReason = 'unsupported_arguments' | 'invalid_cwd' | 'not_found' | 'permission_denied' | 'timeout' | 'command_failed' | 'invalid_output' | 'unavailable';
 export type WorkerAssistantHost = {
   readonly protocolVersion: 1;
+  readonly creationConfigurationVersion?: 1;
   readonly observedAt: string;
   readonly defaultCwd: string;
   readonly defaultProvider: WorkerAgent;
@@ -103,7 +104,8 @@ const software = <T extends 'not_installed' | 'not_running'>(value: unknown, abs
   return { state: absent, checkedAt: timestamp(data.checkedAt) };
 };
 const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssistantHost => {
-  const data = fields(value, ['protocolVersion', 'observedAt', 'defaultCwd', 'defaultProvider', 'providers']);
+  const data = fields(value, ['protocolVersion', 'observedAt', 'defaultCwd', 'defaultProvider', 'providers', ...(Object.hasOwn(record(value), 'creationConfigurationVersion') ? ['creationConfigurationVersion'] : [])]);
+  if (Object.hasOwn(data, 'creationConfigurationVersion') && data.creationConfigurationVersion !== 1) return malformed();
   const boundedText = (value: unknown, maxBytes: number): string => {
     const parsed = text(value);
     if (/\p{Cc}/u.test(parsed) || new TextEncoder().encode(parsed).length > maxBytes) return malformed();
@@ -127,7 +129,7 @@ const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssis
     return { provider: choice(entry.provider, providerNames), available: entry.available, reason, model, args };
   });
   if (providers.length !== 3 || new Set(providers.map(entry => entry.provider)).size !== 3) return malformed();
-  return { protocolVersion: 1, observedAt: timestamp(data.observedAt), defaultCwd,
+  return { protocolVersion: 1, ...(data.creationConfigurationVersion === 1 ? { creationConfigurationVersion: 1 as const } : {}), observedAt: timestamp(data.observedAt), defaultCwd,
     defaultProvider: choice(data.defaultProvider, providerNames), providers };
 };
 const telemetry = (value: unknown): WorkerTelemetry => {
