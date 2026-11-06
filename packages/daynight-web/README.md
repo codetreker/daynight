@@ -882,10 +882,26 @@ Actual disconnections and errors remain visible.
 Unknown initial submission disposition and resuming automatic input require
 separate decisions. Unknown manual input is never automatically resent.
 
-The Session selector and the managed Session recordings section in the attachment
-sidebar open fixed original executions in the shared reading area. These entries
-have no attachment mutation actions. Ordinary file previews and upload drafts
-retain their state while a recording is selected.
+The main Session tab automatically follows the task's actual claim and lifecycle,
+without an execution-record selector or catalogue refresh row. Active claims keep
+their existing Web or Herdr reader; a claim waiting for registration never borrows
+an older Session. Completed and released claims resolve their original Session through a
+read-only current request and display fixed history without input or control
+operations. Task completion does not imply archive readiness: pending, failed and
+unavailable archives retain their status and recovery action. Opening, refreshing
+or reconnecting the page does not launch a native conversation or resend input.
+
+With no claim, the tab may show the latest actual Session as read-only history.
+Only a confirmed complete empty inventory hides the tab; initial reads and
+failures remain distinguishable and recoverable. The former per-user/project/task
+recording selection is discarded without clearing unrelated storage. Background
+checks preserve eligible content, drafts, display preferences and reading position;
+identity changes and access revocation still withdraw the affected content.
+
+Older executions remain available through Session recordings in the attachment
+sidebar. Each record opens its fixed original execution in the shared reading
+area and has no attachment mutation actions. Ordinary file previews and upload
+drafts retain their state while a recording is selected.
 The shared cache stores successful first pages and confirmed empty catalogues per
 authenticated user, project and task. Opening or reactivating the view refreshes
 the first page even when cached: confirmed empty stays hidden during refresh and
@@ -911,7 +927,8 @@ identity, verification, control and playback behavior.
 ## Task discussions
 
 Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
-by Session when native execution content is available. Discussion works before
+by Session while its existence is being resolved or actual execution history is
+available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
 It reads and posts directly to the task Thread resource; ordinary browser posts
 use the current authenticated account without a claimId and do not change Task
