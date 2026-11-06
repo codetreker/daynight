@@ -28,8 +28,9 @@ retaining this Task deletion boundary and its lock-order rationale.
 The [Task deletion decision](../../archived/feature/2026-10-25-task-soft-deletion.md)
 retains the data and the distinct authorized deletion response. This decision
 extends its guarantee to ordinary attachment mutations already in flight. The
-[resumable upload decision](2026-11-06-resumable-mcp-upload.md) defines a
-separate admission boundary for MCP upload commits.
+[upload deletion barrier](2026-11-06-upload-deletion-barrier.md) applies
+this lifecycle ordering to MCP upload commits while preserving their admitted
+identity semantics.
 
 ## Alternatives
 

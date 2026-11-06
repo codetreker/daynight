@@ -66,6 +66,9 @@ func (op *Operation) LockCredential(ctx context.Context, scope store.SessionScop
 
 func (op *Operation) ProjectAdmin(ctx context.Context, scope store.SessionScope, p model.Principal, project string) (bool, error) {
 	access, err := scope.SessionDAO().ProjectAccess(ctx, p.UserID, project)
+	if errors.Is(err, store.ErrSessionProjectNotFound) {
+		return false, fault("not_found", "Session is not available.")
+	}
 	if errors.Is(err, model.ErrNotFound) {
 		return false, denied()
 	}

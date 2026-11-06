@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
 	"github.com/google/uuid"
@@ -18,13 +19,22 @@ type database interface {
 	store.ProjectWriter
 	store.ProjectCreationWriter
 }
-type Projects struct{ store database }
+type Projects struct {
+	store  database
+	engine *session.Engine
+}
 type Memberships struct {
 	store database
 	now   func() time.Time
 }
 
-func NewProjects(db database) *Projects       { return &Projects{store: db} }
+func NewProjects(db database, engines ...*session.Engine) *Projects {
+	engine := session.NewEngine(nil)
+	if len(engines) > 0 {
+		engine = engines[0]
+	}
+	return &Projects{store: db, engine: engine}
+}
 func NewMemberships(db database) *Memberships { return &Memberships{store: db, now: time.Now} }
 func completed(c store.Completion, err error, refusal *model.Fault) error {
 	if err != nil {

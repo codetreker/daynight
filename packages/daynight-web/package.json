@@ -14,6 +14,7 @@
     "test:harness": "node --test scripts/ci.test.mts scripts/coverage.test.mts scripts/dagre.test.mts scripts/publish-assets.test.mts",
     "test:coverage": "vitest run --coverage && node scripts/coverage.mts",
     "test:unit": "vitest run",
+    "test:browser": "node --test scripts/browser.test.mts && node scripts/browser.mts",
     "preview": "vite preview --host 127.0.0.1",
     "test:stress": "vitest run --config vitest.stress.config.ts"
   },

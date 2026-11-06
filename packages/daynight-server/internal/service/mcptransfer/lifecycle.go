@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -92,7 +93,7 @@ func authorize(ctx context.Context, d store.PrivateTransferDAO, a transfer.Actor
 	if !transfer.OwnedBy(r, a) {
 		return transfer.ErrConflict
 	}
-	return d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, r.ProjectID, r.TaskID)
+	return projectcore.LookupError(d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, r.ProjectID, r.TaskID))
 }
 
 // OpenRecord commits the namespace owner before any private object can exist.
@@ -125,7 +126,7 @@ func (s *Lifecycle) OpenRecord(ctx context.Context, a transfer.Actor, b transfer
 			return lookupErr
 		}
 		if err := d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, b.ProjectID, b.TaskID); err != nil {
-			return err
+			return projectcore.LookupError(err)
 		}
 		var e error
 		result, created, e = transfer.Create(ctx, d, input)
@@ -156,7 +157,7 @@ func (s *Lifecycle) LookupBound(ctx context.Context, a transfer.Actor, id string
 		var e error
 		r, e = d.Get(ctx, id)
 		if e != nil {
-			return e
+			return projectcore.LookupError(e)
 		}
 		return authorize(ctx, d, a, r)
 	})
@@ -176,7 +177,7 @@ func (s *Lifecycle) Authorize(ctx context.Context, a Actor, projectID, taskID st
 		return ErrConflict
 	}
 	return s.transaction(ctx, func(d store.PrivateTransferDAO) error {
-		return d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, projectID, taskID)
+		return projectcore.LookupError(d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, projectID, taskID))
 	})
 }
 
@@ -231,7 +232,7 @@ func (s *Lifecycle) Reserve(ctx context.Context, a transfer.Actor, id string, ad
 		var e error
 		r, e = d.Get(ctx, id)
 		if e != nil {
-			return e
+			return projectcore.LookupError(e)
 		}
 		if e = authorize(ctx, d, a, r); e != nil {
 			return e
@@ -314,7 +315,7 @@ func (s *Lifecycle) transition(ctx context.Context, a Actor, id string, version 
 		var e error
 		r, e = d.Get(ctx, id)
 		if e != nil {
-			return e
+			return projectcore.LookupError(e)
 		}
 		if e = authorize(ctx, d, a, r); e != nil {
 			return e
@@ -501,7 +502,7 @@ func (s *Lifecycle) AcquirePermit(ctx context.Context, a transfer.Actor, id stri
 	err = s.transaction(opCtx, func(d store.PrivateTransferDAO) error {
 		r, err := d.Get(opCtx, id)
 		if err != nil {
-			return err
+			return projectcore.LookupError(err)
 		}
 		if err = authorize(opCtx, d, a, r); err != nil {
 			return err
@@ -531,7 +532,7 @@ func (s *Lifecycle) RequestCleanup(ctx context.Context, a transfer.Actor, id str
 		var e error
 		r, e = d.Get(ctx, id)
 		if e != nil {
-			return e
+			return projectcore.LookupError(e)
 		}
 		if e = authorize(ctx, d, a, r); e != nil {
 			return e

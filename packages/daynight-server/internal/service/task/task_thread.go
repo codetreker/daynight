@@ -82,6 +82,9 @@ func threadScope(principal model.Principal, projectID, taskID string) (string, s
 }
 
 func threadAccessError(err error) error {
+	if errors.Is(err, store.ErrProjectDeleted) {
+		return &model.Fault{Code: "not_found", Message: "Project was not found.", Cause: err}
+	}
 	if errors.Is(err, model.ErrNotFound) {
 		return &model.Fault{Code: "forbidden", Message: "Project access is required.", Cause: err}
 	}

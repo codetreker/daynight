@@ -17,6 +17,11 @@ type AttachmentMutationScope interface {
 	// ProjectAuthorization observes current access after the Task lock, without
 	// retaining authorization source locks across the admitted file operation.
 	ProjectAuthorization(context.Context, model.Principal, string) (model.ProjectAccess, error)
+	// ProjectLive rechecks lifecycle after LockTaskPresence without revalidating an admitted identity.
+	ProjectLive(context.Context, string) error
+	// UploadChunkAt reads an immutable confirmed receipt without taking a
+	// transfer row lock. The caller must retain its private namespace permit.
+	UploadChunkAt(context.Context, string, int64) (model.UploadChunk, error)
 	AttachmentDAO() AttachmentMutationDAO
 }
 

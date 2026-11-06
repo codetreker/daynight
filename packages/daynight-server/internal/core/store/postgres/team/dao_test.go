@@ -152,7 +152,9 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 	if err != nil || has {
 		t.Fatalf("empty ownership: %v %v", has, err)
 	}
-	execute(t, tx, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, uuid.NewString(), first.ID)
+	projectID := uuid.NewString()
+	execute(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Project','host:repo')`, projectID)
+	execute(t, tx, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, projectID, first.ID)
 	has, err = writer.HasProjects(ctx)
 	if err != nil || !has {
 		t.Fatalf("ownership: %v %v", has, err)

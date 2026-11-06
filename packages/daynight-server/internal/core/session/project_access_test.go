@@ -31,7 +31,10 @@ func TestProjectAdmissionRequiresCanonicalProjectAndUser(t *testing.T) {
 					t.Fatal("missing canonical access profile was hidden as a refusal", err)
 				}
 			} else {
-				assertAdmissionDenied(t, err)
+				var refusal *model.Fault
+				if !errors.As(err, &refusal) || refusal.Code != "not_found" {
+					t.Fatal("missing Project was not hidden as not found", err)
+				}
 			}
 		})
 	}

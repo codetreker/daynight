@@ -109,8 +109,9 @@ flowchart LR
 
 [`completion/bash.ts`](../../packages/daynight/src/commands/completion/bash.ts) 在检查
 版本下限后，通过 `complete -F` 为根命令名称及其 `aliases` 注册同一函数。函数维护 `COMPREPLY` 数组，利用 Bash
-≥4.2 的 `compopt` 按当前语义启用文件名处理、目录后缀和引号。命令候选不沿用
-目录补全选项，避免同名本地目录改变命令补全的结果。
+≥4.2 的 `compopt` 按当前语义选择文件名处理和目录后缀。双引号内的目录候选由
+生成器显式转义反斜杠、双引号、美元符号和反引号，避免不同 Readline 版本将路径
+解释为 shell 展开或命令替换。命令候选不沿用目录补全选项，避免同名本地目录改变命令补全的结果。
 
 `COMP_WORDS` 的边界受 `COMP_WORDBREAKS` 影响，与 CLI 最终收到的 argv 不同。
 状态机从光标前的有效输入还原参数，处理 repo 地址中的 `:`；光标位于行中时，
