@@ -1,6 +1,7 @@
 package service
 
 import (
+	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -86,7 +87,7 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	attachments := attachmentservice.NewAttachments(f.database, files)
+	attachments := attachmentservice.NewAttachments(f.database, attachmentpostgres.New(f.database.Pool), files)
 	putAttachment(t, attachments, owner, task, "inherited.txt", "Inherited attachment")
 	if page, err := attachments.List(ctx, owner, project.ID, task.ID, model.PageRequest{Limit: 10}); err != nil || len(page.Items) != 1 {
 		t.Fatalf("inherited attachment metadata: %#v %v", page, err)

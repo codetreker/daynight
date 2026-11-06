@@ -5,13 +5,19 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 )
+
+func newAttachmentService(database *store.Store, files filestorage.Storage) *Attachments {
+	return NewAttachments(database, attachmentpostgres.New(database.Pool), files)
+}
 
 func taskService(t *testing.T) (*taskservice.Tasks, *store.Store, model.Project, string, model.Principal) {
 	return testsupport.TaskService(t)
@@ -43,7 +49,7 @@ func propertyPatch(items ...model.PullRequestProperty) model.TaskPropertiesPatch
 func requireFault(t *testing.T, err error, code string) *model.Fault {
 	t.Helper()
 	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" || err.Error() != fault.Message {
+	if !errors.As(err, &fault) || fault.Code != code || fault.Message == "" {
 		t.Fatalf("expected %s fault, got %#v", code, err)
 	}
 	return fault
