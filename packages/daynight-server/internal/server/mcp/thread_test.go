@@ -212,4 +212,10 @@ func TestThreadReadLogsSafeScopeAndPreservesFailure(t *testing.T) {
 	if text := logs.String(); !strings.Contains(text, `"project_id":"`+testProjectID+`"`) || !strings.Contains(text, `"task_id":"`+testTeamID+`"`) {
 		t.Fatalf("missing failure scope: %s", text)
 	}
+	threads.err = &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: &model.Fault{Code: "forbidden", Message: "Project access is required."}}
+	result = call()
+	failure = object(t, structured(t, result)["error"])
+	if !result.IsError || failure["code"] != "forbidden" || failure["writeOutcome"] != nil {
+		t.Fatalf("snapshot completion reported as a write: %+v", failure)
+	}
 }

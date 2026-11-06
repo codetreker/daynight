@@ -438,7 +438,21 @@ func RegisterTypedTool[T any](e *Entry, tool *sdk.Tool, class BudgetClass, handl
 	if handler == nil {
 		return errors.New("MCP tool handler is required")
 	}
-	return e.RegisterTool(tool, class, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+	return e.RegisterTool(tool, class, typedToolHandler(handler, unicodeFields...))
+}
+
+func registerTypedReadTool[T any](e *Entry, tool *sdk.Tool, class BudgetClass, handler func(context.Context, RequestActor, T) (ToolResult, error), unicodeFields ...string) error {
+	if handler == nil {
+		return errors.New("MCP tool handler is required")
+	}
+	if class != BudgetControl && class != BudgetLarge {
+		return errors.New("invalid MCP tool registration")
+	}
+	return e.registerReadTool(tool, func(json.RawMessage) BudgetClass { return class }, typedToolHandler(handler, unicodeFields...))
+}
+
+func typedToolHandler[T any](handler func(context.Context, RequestActor, T) (ToolResult, error), unicodeFields ...string) ToolHandler {
+	return func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
 		if err := ValidateUnicodeFields(raw, unicodeFields...); err != nil {
 			return ToolResult{}, err
 		}
@@ -447,7 +461,7 @@ func RegisterTypedTool[T any](e *Entry, tool *sdk.Tool, class BudgetClass, handl
 			return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 		}
 		return handler(ctx, actor, input)
-	})
+	}
 }
 
 // ValidateUnicodeFields checks selected original JSON fields before decoding can

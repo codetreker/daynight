@@ -51,7 +51,7 @@ func RegisterThreadTools(e *Entry, threads threadOperations) error {
 		byName[tool.Name] = tool
 	}
 	h := &threadTools{threads: threads}
-	if err := RegisterTypedTool(e, byName["task_thread_read"], BudgetControl, h.read, "projectId", "taskId", "beforeId", "afterId"); err != nil {
+	if err := registerTypedReadTool(e, byName["task_thread_read"], BudgetControl, h.read, "projectId", "taskId", "beforeId", "afterId"); err != nil {
 		return err
 	}
 	return RegisterTypedTool(e, byName["task_thread_post"], BudgetControl, h.post, "projectId", "taskId", "body", "replyTo", "claimId")
