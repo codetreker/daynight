@@ -83,6 +83,26 @@ const physicalPath = (target: string | Buffer, followLeaf = true, links = new Se
   const prepared = namespaced.toUpperCase().startsWith("\\\\?\\UNC\\")
     ? `\\\\${namespaced.slice(8)}`
     : namespaced.startsWith("\\\\?\\") && /^[a-z]:\\/i.test(namespaced.slice(4)) ? namespaced.slice(4) : namespaced;
+  const leaf = path.basename(prepared);
+  const normalLeaf = leaf !== "" && leaf !== "." && leaf !== ".." && !/[\\/]$/.test(prepared);
+  try {
+    if (!followLeaf && normalLeaf) return path.join(original.realpath(path.dirname(prepared)), leaf);
+    return original.realpath(prepared);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+  }
+  if (normalLeaf) {
+    let missing = false;
+    try { original.lstat(prepared); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      missing = true;
+    }
+    if (missing) {
+      try { return path.join(original.realpath(path.dirname(prepared)), leaf); }
+      catch (error) { if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error; }
+    }
+  }
   const root = path.parse(prepared).root;
   const components = prepared.slice(root.length).split(/[\\/]+/).filter(component => component !== "");
   let cursor = original.realpath(root);
