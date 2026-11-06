@@ -381,15 +381,21 @@ explains the jobs and version-only exception. Main pushes select every module.
 
 | Changed paths | PR application jobs |
 |---|---|
-| CLI `src/api/`, `src/session/`, `src/platform/text.ts` | CLI, Web and Go |
-| CLI Controller `providers/projection.ts`, `providers/codex-errors.ts`, `providers/native-rpc.ts`, `providers/types.ts`, `provider-display.ts`, and `test/session/fixtures/` | CLI and Web |
+| CLI `src/api/`, `src/session/`, `src/platform/text.ts`, and Controller `providers/projection.ts`, `providers/codex-errors.ts`, `providers/native-rpc.ts`, `providers/types.ts`, `provider-display.ts` | CLI and Web |
+| CLI `test/session/fixtures/` | CLI, Web and Go |
 | Other CLI files and development installer | CLI |
 | Go server files | Go |
-| Web files and its selected patches | Web and Go |
+| Web files and its selected patches | Web |
 | Deployment files | Web |
 | Root package, lockfile, workspace and npm configuration | All modules |
 | Root `.gitignore`, documentation, repository instructions and manual publication workflow | None |
 | CI workflow, routing and unclassified paths | All modules |
+
+Go module validation embeds fixed module-local test resources. Production Web
+embedding does not make Web source or its imported CLI implementation a Go-job
+input. The shared Session fixture directory remains an input to all three modules.
+The [module routing decision](.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
+records these consumer boundaries.
 
 CLI source paths take precedence over documentation exclusions. A PR containing
 only a CLI manifest version change may skip application jobs as described in

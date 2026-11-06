@@ -12,16 +12,16 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 
 for (const [path, expected] of [
   ["packages/daynight/src/main.ts", { ...none, cli: true }],
-  ["packages/daynight/src/api/thread.ts", { ...none, cli: true, server: true, web: true }],
-  ["packages/daynight/src/api/json.ts", { ...none, cli: true, server: true, web: true }],
-  ["packages/daynight/src/api/json-source.ts", { ...none, cli: true, server: true, web: true }],
-  ["packages/daynight/src/api/validation.ts", { ...none, cli: true, server: true, web: true }],
-  ["packages/daynight/src/api/types.ts", { ...none, cli: true, server: true, web: true }],
-  ["packages/daynight/src/platform/text.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/api/thread.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/json.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/json-source.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/validation.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/types.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/platform/text.ts", { ...none, cli: true, web: true }],
   ["packages/daynight/src/platform/files.ts", { ...none, cli: true }],
-  ["packages/daynight/src/session/protocol.ts", { ...none, cli: true, server: true, web: true }],
-  ["packages/daynight/src/session/controls.ts", { ...none, cli: true, server: true, web: true }],
-  ["packages/daynight/src/session/v2/protocol.ts", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight/src/session/protocol.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/session/controls.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/session/v2/protocol.ts", { ...none, cli: true, web: true }],
   ["scripts/dev-install.mjs", { ...none, cli: true }],
   ["scripts/dev-install.test.mjs", { ...none, cli: true }],
   ["packages/daynight/src/.gitignore", { ...none, cli: true }],
@@ -36,18 +36,28 @@ for (const [path, expected] of [
   ["packages/daynight/scripts/clean-dist.ts", { ...none, cli: true }],
   ["packages/daynight/scripts/copy-resources.ts", { ...none, cli: true }],
   ["packages/daynight/scripts/check-runtime.mjs", { ...none, cli: true }],
-  ["packages/daynight-web/scripts/publish-assets.mts", { ...none, server: true, web: true }],
-  ["packages/daynight-web/package.json", { ...none, server: true, web: true }],
+  ["packages/daynight-web/scripts/publish-assets.mts", { ...none, web: true }],
+  ["packages/daynight-web/scripts/ci.mts", { ...none, web: true }],
+  ["packages/daynight-web/vite.config.ts", { ...none, web: true }],
+  ["packages/daynight-web/public/favicon.svg", { ...none, web: true }],
+  ["packages/daynight-web/package.json", { ...none, web: true }],
+  ["packages/daynight/test/session/fixtures/v2/valid-archive.json", all],
+  ["packages/daynight/test/session/fixtures/v2/valid-partial-archive.json", all],
+  ["packages/daynight/test/session/fixtures/v2/valid-registration.json", all],
+  ["packages/daynight/test/session/fixtures/v2/invalid-archive.json", all],
+  ["packages/daynight/test/session/fixtures/v2/manifest.json", all],
+  ["packages/daynight/test/session/fixtures/v2/new-contract-case.json", all],
+  ["packages/daynight/test/session/fixtures/snapshot.json", all],
   ["packages/daynight/test/tooling/copy-resources.test.ts", { ...none, cli: true }],
   ["packages/daynight/test/fixtures/installed-cli.ts", { ...none, cli: true }],
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true }],
   ["packages/daynight-server/.gitignore", { ...none, server: true }],
-  ["packages/daynight-web/src/App.vue", { ...none, server: true, web: true }],
-  ["packages/daynight-web/.gitignore", { ...none, server: true, web: true }],
+  ["packages/daynight-web/src/App.vue", { ...none, web: true }],
+  ["packages/daynight-web/.gitignore", { ...none, web: true }],
   ["deployment/localhost/Dockerfile", { ...none, web: true }],
   ["deployment/dev-ci/tests/run.sh", { ...none, web: true }],
-  ["patches/@dagrejs__dagre@3.1.1.patch", { ...none, server: true, web: true }],
-  ["patches/@xyflow__system@0.0.83.patch", { ...none, server: true, web: true }],
+  ["patches/@dagrejs__dagre@3.1.1.patch", { ...none, web: true }],
+  ["patches/@xyflow__system@0.0.83.patch", { ...none, web: true }],
   ["README.md", none],
   [".gitignore", none],
   ["packages/daynight/README.md", none],
@@ -80,15 +90,16 @@ test("CLI implementations select only their consumers", () => {
     assert.deepEqual(selectModules([`packages/daynight/src/commands/${command}/runtime.ts`]), { ...none, cli: true });
     assert.deepEqual(selectModules([`packages/daynight/src/commands/${command}/definition.ts`]), { ...none, cli: true });
   }
-  assert.deepEqual(selectModules(["packages/daynight/src/api/worker.ts"]), all);
-  assert.deepEqual(selectModules(["packages/daynight/test/session/fixtures/snapshot.json"]), { ...none, cli: true, web: true });
+  assert.deepEqual(selectModules(["packages/daynight/src/api/worker.ts"]), { ...none, cli: true, web: true });
+  assert.deepEqual(selectModules(["packages/daynight/test/session/fixtures/snapshot.json"]), all);
   for (const file of ["providers/projection.ts", "providers/codex-errors.ts", "providers/native-rpc.ts", "providers/types.ts", "provider-display.ts"]) {
     assert.deepEqual(selectModules([`packages/daynight/src/commands/controller/${file}`]), { ...none, cli: true, web: true });
   }
 });
 
 test("combines module ownership without making documentation select a module", () => {
-  assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), all);
+  assert.deepEqual(selectModules(["docs/spec/daynight-web.md", "packages/daynight/src/main.ts", "packages/daynight-web/package.json"]), { ...none, cli: true, web: true });
+  assert.deepEqual(selectModules(["packages/daynight-server/internal/server/tasks.go", "packages/daynight-web/src/App.tsx"]), { ...none, server: true, web: true });
   assert.deepEqual(selectModules([]), none);
 });
 
@@ -97,7 +108,7 @@ test("the installed CLI fixture selects its CLI consumer", () => {
     ["packages/daynight/test/fixtures/installed-cli.ts"],
     ["docs/spec/daynight-task-attachments.md", "packages/daynight/test/fixtures/installed-cli.ts"],
   ]) assert.deepEqual(selectModules(paths), { ...none, cli: true });
-  assert.deepEqual(selectModules(["packages/daynight-web/tests/task-steps-recovery.test.tsx", "packages/daynight/test/fixtures/installed-cli.ts"]), all);
+  assert.deepEqual(selectModules(["packages/daynight-web/tests/task-steps-recovery.test.tsx", "packages/daynight/test/fixtures/installed-cli.ts"]), { ...none, cli: true, web: true });
 });
 
 test("root ignore rules do not change other paths' module selection", () => {
@@ -131,6 +142,37 @@ const repository = (t: TestContext) => {
   const base = commit();
   return { cwd, git, write, commit, base };
 };
+
+test("a Web quality-only PR selects Web without CLI or Go", async (t) => {
+  const repo = repository(t);
+  const paths = [
+    ".agents/notes/implemented/testing/2026-11-06-web-quality-validation.md",
+    "packages/daynight-web/README.md",
+    "packages/daynight-web/scripts/ci.mts",
+    "packages/daynight-web/scripts/ci.test.mts",
+    "packages/daynight-web/vitest.config.ts",
+  ];
+  for (const path of paths) repo.write(path, "before\n");
+  const base = repo.commit();
+  for (const path of paths) repo.write(path, "after\n");
+  const head = repo.commit();
+  assert.deepEqual(await pullRequestPaths(repo.cwd, base, head), paths);
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), { ...none, web: true });
+});
+
+for (const name of ["valid-archive.json", "valid-partial-archive.json"]) {
+  test(`retains every consumer when shared ${name} moves into documentation`, async (t) => {
+    const repo = repository(t);
+    const path = `packages/daynight/test/session/fixtures/v2/${name}`;
+    repo.write(path);
+    const base = repo.commit();
+    mkdirSync(join(repo.cwd, "docs"), { recursive: true });
+    renameSync(join(repo.cwd, path), join(repo.cwd, "docs", name));
+    const head = repo.commit();
+    assert.deepEqual(new Set(await pullRequestPaths(repo.cwd, base, head)), new Set([path, `docs/${name}`]));
+    assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base, head }), all);
+  });
+}
 
 test("a PR changing only root ignore rules selects no application jobs", async (t) => {
   const repo = repository(t);
@@ -186,7 +228,7 @@ test("retains whitespace, newlines, unicode, and leading dashes in Git paths", a
   for (const path of paths) repo.write(path);
   const head = repo.commit();
   assert.deepEqual(new Set(await pullRequestPaths(repo.cwd, repo.base, head)), new Set(paths));
-  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, server: true, web: true });
+  assert.deepEqual(await detectModules({ event: "pull_request", cwd: repo.cwd, base: repo.base, head }), { ...none, web: true });
 });
 
 test("reads the complete change list beyond API file limits", async (t) => {
@@ -223,7 +265,7 @@ for (const [path, expected] of [
   ["packages/daynight/README.md", { ...none, cli: true }],
   ["packages/daynight/src/commands/worker/runtime.ts", { ...none, cli: true }],
   ["packages/daynight/src/main.ts", { ...none, cli: true }],
-  ["packages/daynight-web/src/App.vue", { ...none, cli: true, server: true, web: true }],
+  ["packages/daynight-web/src/App.vue", { ...none, cli: true, web: true }],
   ["pnpm-lock.yaml", all],
   [".github/workflows/checks.yml", all],
 ] as const) {

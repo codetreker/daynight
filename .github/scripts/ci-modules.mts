@@ -19,11 +19,10 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
     if (sharedInputs.has(path)) return { ...allModules };
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
-      // Web imports these production modules; the service embeds the Web build.
+      // Web imports these production modules.
       if (path.startsWith("packages/daynight/src/api/") || path.startsWith("packages/daynight/src/session/") ||
         path === "packages/daynight/src/platform/text.ts") {
         selected.web = true;
-        selected.server = true;
       }
       if (path === "packages/daynight/src/commands/controller/providers/projection.ts" ||
         path === "packages/daynight/src/commands/controller/providers/codex-errors.ts" ||
@@ -35,6 +34,7 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
     if (path.startsWith("packages/daynight/test/session/fixtures/")) {
       selected.cli = true;
       selected.web = true;
+      selected.server = true;
       continue;
     }
     if (
@@ -44,10 +44,8 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
     ) continue;
     if (path.startsWith("packages/daynight/") || path === "scripts/dev-install.mjs" || path === "scripts/dev-install.test.mjs") selected.cli = true;
     else if (path.startsWith("packages/daynight-server/")) selected.server = true;
-    else if (path.startsWith("packages/daynight-web/") || webPatches.has(path)) {
-      selected.web = true;
-      selected.server = true;
-    } else if (path.startsWith("deployment/")) selected.web = true;
+    else if (path.startsWith("packages/daynight-web/") || webPatches.has(path)) selected.web = true;
+    else if (path.startsWith("deployment/")) selected.web = true;
     else return { ...allModules };
   }
   return selected;

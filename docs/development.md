@@ -715,9 +715,17 @@ The [`checks` workflow](../.github/workflows/checks.yml) compares the explicit P
 head with its merge base using the complete Git history and NUL-delimited paths.
 Deletions and both sides of renames count. Shared inputs select the union of
 consumers; unclassified paths select all modules. The
-[selector](../.github/scripts/ci-modules.mts) owns exact path rules, including
-Web's CLI source and fixture dependencies. The root README describes the job
-selection and main-run policy.
+[selector](../.github/scripts/ci-modules.mts) owns exact path rules, and the
+[root routing table](../README.md#ci-selection) describes each input family.
+
+Web source, build tooling and selected JavaScript patches select Web validation.
+CLI modules imported by Web select both CLI and Web. Go module validation uses
+`scripts/unit-overlay.json` to embed fixed module-local Web test resources, so
+production Web embedding adds no Go selection to those inputs. The entire CLI
+`test/session/fixtures/` directory selects CLI, Web and Go: Go protocol tests
+read both individual command fixtures and manifest-selected Session cases.
+The [module routing decision](../.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
+records the dependency evidence and maintenance boundary.
 
 For a CLI `package.json` modification, a PR containing only a regular-file
 version change and no other semantic change selects no application jobs. The
