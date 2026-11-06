@@ -92,7 +92,7 @@ func TestBotNativePreferencesRollbackAndLegacyRecords(t *testing.T) {
 		t.Fatalf("legacy snapshot changed: %s %v", after, err)
 	}
 	var version int
-	if err := database.Pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version < 44 {
+	if err := database.Pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil || version < 45 {
 		t.Fatalf("missing native preference migration: %d %v", version, err)
 	}
 }
