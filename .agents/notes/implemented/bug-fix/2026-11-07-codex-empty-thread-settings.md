@@ -33,8 +33,27 @@ It compares explicit fields against the already validated effective model
 (or the explicit request when startup selection validation is disabled) and
 requested effort. It never writes history or promotes a display fallback.
 
-The reader uses one file handle, checks replacement and truncation, and bounds
-bytes and elapsed time. Partial records cannot confirm readiness. Native
+The initial rollout observation established that the settings event survived a
+process crash, but native metadata synchronization occurs after that append.
+Another native client can read the empty thread and establish an older SQLite
+row first. Killing the writer after the JSONL event but before metadata commit
+then lets cold resume use the stale row. The same initialization decision
+therefore requires both the new rollout record and committed resume metadata.
+
+The metadata reader resolves managed `sqliteHome`, effective `sqlite_home`,
+the actual child's `CODEX_SQLITE_HOME`, and native home in priority order. It
+supports the verified `state_5.sqlite` layout rather than scanning for a likely
+database. Each observation opens a read-only, file-must-exist connection with
+zero busy timeout, selects the original ID, path, cwd and both settings in one
+row, then closes the connection. Only explicit fields constrain settings.
+WAL remains visible; no transaction spans polls and no native database is
+created, migrated, checkpointed or written. Missing files, rows and unmatched
+values wait within the shared deadline; unsupported schemas, corruption and
+identity changes fail. JSONL is checked again after metadata confirmation.
+
+The rollout reader uses one file handle, checks replacement and truncation,
+and bounds bytes. Configuration reads, the single update and both persistence
+observations share one deadline. Partial records cannot confirm readiness. Native
 errors, disconnect, invalid records, unconfirmed persistence and timeouts
 close the owned process. No update, input or new thread is automatically
 retried. The already observed native identity remains available to the
@@ -46,8 +65,10 @@ The protocol rationale is pinned to Codex commit
 acknowledges the queued operation before core processing;
 [notification deduplication](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/bespoke_event_handling.rs#L1300)
 suppresses unchanged settings; and
-[cold resume](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs#L105)
-uses the latest persisted settings owned by that thread. The
+[cold resume](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/request_processors/thread_processor.rs#L4593)
+also reads SQLite metadata for model and effort. The
+[live append](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/thread-store/src/live_thread.rs#L229)
+finishes the rollout write before updating that metadata. The
 [settings operation handler](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/session/handlers.rs#L626)
 produces the applied event; fresh startup does not independently submit this
 operation. The initializer owns the only settings write before returning the
@@ -81,18 +102,23 @@ would therefore falsely confirm durable explicit settings.
 **Treat RPC acknowledgement or another live read as durable completion.**
 The native update is queued before the acknowledgement; a subsequent read can
 still return live configuration while the persisted settings event is absent.
-Waiting for the original rollout's new record establishes the evidence used by
-cold recovery without another write or a production restart.
+Neither another live read nor the original rollout's new record proves that
+SQLite has committed: live reads overlay runtime settings, and JSONL precedes
+metadata synchronization. Direct read-only observation confirms the stored row
+without adding another native mutation or restarting the production thread.
 
 **Persist resolved defaults too.** That would freeze values the caller omitted
 and turn display fallbacks into user intent.
 
 ## Consequences
 
-Explicit fresh choices add one native RPC and a bounded read of the original
-rollout before readiness. Native versions that reject the operation or expose
+Explicit fresh choices add one settings RPC, two configuration reads and
+bounded observations of the original rollout and SQLite row before readiness. Native versions that reject the operation or expose
 an unsupported persistence format fail visibly instead of claiming durable
-settings. The record barrier supports process-crash recovery, not a guarantee
+settings. A missing or unavailable SQLite database no longer permits explicit
+fresh choices to report ready solely from JSONL, even if a particular native
+recovery could rebuild it. Resume and omitted initial choices gain no such
+dependency. The dual barrier supports process-crash recovery, not a guarantee
 of durability across power loss.
 Fixture tests cover request ordering, omission, unchanged resume and failure
 cleanup; native-version evidence is still required to establish actual cold

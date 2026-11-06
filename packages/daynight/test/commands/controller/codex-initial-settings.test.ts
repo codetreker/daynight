@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import Database from "better-sqlite3";
 import { appendFile, mkdir, mkdtemp, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import fs from "node:fs";
@@ -8,9 +9,10 @@ import { persistCodexInitialSettings } from "../../../src/commands/controller/pr
 let home: string, path: string, abort: AbortController;
 const metadata = (id = "thread", cwd = process.cwd()) => JSON.stringify({ type: "session_meta", payload: { id, cwd } }) + "\n";
 const event = (id = "thread", model = "chosen", effort = "high") => JSON.stringify({ type: "event_msg", payload: { type: "thread_settings_applied", thread_id: id, thread_settings: { model, collaboration_mode: { settings: { reasoning_effort: effort } } } } }) + "\n";
-beforeEach(async () => { const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true }); home = await mkdtemp(join(base, "codex-rollout-")); await mkdir(join(home, "sessions")); path = join(home, "sessions", "native.jsonl"); await writeFile(path, metadata()); abort = new AbortController(); });
+beforeEach(async () => { const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true }); home = await mkdtemp(join(base, "codex-rollout-")); await mkdir(join(home, "sessions")); path = join(home, "sessions", "native.jsonl"); await writeFile(path, metadata());
+  const db = new Database(join(home, "state_5.sqlite")); db.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, model TEXT, reasoning_effort TEXT)"); db.prepare("INSERT INTO threads VALUES (?, ?, ?, ?, ?)").run("thread", path, process.cwd(), "chosen", "high"); db.close(); abort = new AbortController(); });
 afterEach(async () => { abort.abort(); await rm(home, { recursive: true, force: true }); });
-const observe = (update: () => Promise<unknown>, overrides: Partial<Parameters<typeof persistCodexInitialSettings>[0]> = {}) => persistCodexInitialSettings({ path, home, cwd: process.cwd(), threadId: "thread", expected: { model: "chosen", effort: "high" }, signal: abort.signal, timeoutMs: 200, update, ...overrides });
+const observe = (update: () => Promise<unknown>, overrides: Partial<Parameters<typeof persistCodexInitialSettings>[0]> = {}) => persistCodexInitialSettings({ path, home, cwd: process.cwd(), threadId: "thread", expected: { model: "chosen", effort: "high" }, signal: abort.signal, timeoutMs: 200, env: {}, readConfiguration: async () => ({ config: { config: {} }, requirements: { requirements: null } }), update, ...overrides });
 
 test.each([
   { model: "chosen", effort: "high" }, { model: "chosen" }, { effort: "high" },
@@ -100,4 +102,38 @@ test.each(["append-during-verification", "abort-during-close"])("%s cannot race 
     await expect(observe(async () => { dispatched = true; await appendFile(path, event()); return {}; }, { timeoutMs: 60 })).rejects.toBeInstanceOf(Error);
     expect(intercepted).toBe(true);
   } finally { mock.mockRestore(); syncBuiltinESMExports(); }
+});
+
+
+test("a new JSONL settings record cannot confirm stale SQLite metadata", async () => {
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.prepare("UPDATE threads SET model = NULL, reasoning_effort = NULL").run();
+  let dispatched!: () => void;
+  const updated = new Promise<void>(resolve => { dispatched = resolve; });
+  let ready = false;
+  const pending = observe(async () => { await appendFile(path, event()); dispatched(); return {}; }, { timeoutMs: 1000 }).then(() => { ready = true; });
+  try {
+    await updated;
+    await new Promise(resolve => setTimeout(resolve, 70));
+    expect(ready).toBe(false);
+    db.prepare("UPDATE threads SET model = ?, reasoning_effort = ? WHERE id = ?").run("chosen", "high", "thread");
+    await pending;
+    expect(ready).toBe(true);
+  } finally { db.close(); await pending.catch(() => {}); }
+});
+
+test.each(["missing-database", "missing-row", "wrong-model", "wrong-effort"])("%s never falls back to JSONL-only readiness", async mode => {
+  if (mode === "missing-database") await rm(join(home, "state_5.sqlite"));
+  else {
+    const db = new Database(join(home, "state_5.sqlite"));
+    if (mode === "missing-row") db.exec("DELETE FROM threads");
+    if (mode === "wrong-model") db.exec("UPDATE threads SET model = 'wrong'");
+    if (mode === "wrong-effort") db.exec("UPDATE threads SET reasoning_effort = 'low'");
+    db.close();
+  }
+  await expect(observe(async () => { await appendFile(path, event()); return {}; }, { timeoutMs: 65 })).rejects.toMatchObject({ name: "NativeRpcTimeoutError" });
+});
+test.each(["configuration", "update"])("the total deadline bounds a stalled %s RPC", async mode => {
+  const stalled = () => new Promise<never>(() => {});
+  await expect(observe(mode === "update" ? stalled : async () => ({}), { timeoutMs: 40, ...(mode === "configuration" ? { readConfiguration: stalled } : {}) })).rejects.toMatchObject({ name: "NativeRpcTimeoutError" });
 });

@@ -137,13 +137,17 @@ runtime 从已读回 ticket 条件构造 `ProviderOptions.instructions`，新建
 
 同值更新可能返回合法空对象而不发送 `thread/settings/updated`，而成功 RPC 回执只证明更新已排队。因此 `codex-initial-settings.ts` 在派发前打开 `thread/start` 返回的 `thread.path`，要求普通文件位于本次 native home 的真实 `sessions` 路径内，核对唯一 `session_meta` 的 id 与真实 cwd，并保存当前字节位置。只使用原生给出的路径，不扫描历史、不推算文件名、不写原生记录。路径缺失、越界、符号链接逃逸或身份无法核实均拒绝初始化。
 
-派发一次更新并核对对象回执后，屏障只读观察该文件的追加内容。只有基线之后完整换行记录中的 `event_msg/thread_settings_applied` 属于原 thread，且明确字段匹配，才允许 idle 并返回 Provider handle。启用启动选择校验时，model 使用通过既有校验的启动回执有效值；未启用时使用明确请求值，不接受未经校验的错误启动值。effort 读取 `thread_settings.collaboration_mode.settings.reasoning_effort`，省略字段不参与匹配，目录默认与 controls 显示回退不作为持久证据。基线之前的同值记录及基线已开始的半行均不能确认本次更新。
+派发一次更新并核对对象回执后，屏障只读观察该文件的追加内容。基线之后完整换行记录中的 `event_msg/thread_settings_applied` 必须属于原 thread，且明确字段匹配；这只是历史文件确认，尚不足以允许 idle 或返回 Provider handle。启用启动选择校验时，model 使用通过既有校验的启动回执有效值；未启用时使用明确请求值，不接受未经校验的错误启动值。effort 读取 `thread_settings.collaboration_mode.settings.reasoning_effort`，省略字段不参与匹配，目录默认与 controls 显示回退不作为持久证据。基线之前的同值记录及基线已开始的半行均不能确认本次更新。
 
-屏障先以 `lstat` 拒绝非普通文件，打开后以 `fstat` 再核对同一文件身份；可用的 `O_NOFOLLOW` / `O_NONBLOCK` 进一步防止检查后被替换为链接或 FIFO，但不替代前后身份校验。屏障持有同一只读文件句柄，以 64 KiB 块读取并保留未完成尾行，每 20 ms 至多读取一次新增内容。总文件预算为 16 MiB，总观察期限为 30 秒；不支持的持久化格式、损坏完整记录、文件身份替换、截断、路径消失或预算超限均失败。错误 owner 或值不能满足屏障，后续完整正确事件仍可确认；超时保留持久化结果未知。原生异步 error、退出及关闭会取消观察，所有出口释放文件和计时器。拒绝、畸形回执及断流同样沿初始化异常路径关闭拥有的进程并传播错误，不重试或抹掉已观察的 native ID。此屏障证明原生冷恢复所用记录已经可读，不承诺断电耐久性。
+原生先追加 JSONL，再更新 SQLite metadata；另一个原生客户端正常读取空线程即可提前建立缺少 model/effort 的旧行。若只观察 JSONL 就就绪，在 SQLite 提交前进程退出，冷恢复仍可能用旧 metadata 覆盖历史设置。因此 `codex-settings-metadata.ts` 还须确认 SQLite 的已提交行。派发更新前读取 `config/read` 和 `configRequirements/read`，按 managed `requirements.sqliteHome` 的本地文件 URI、有效 `config.sqlite_home` 的绝对路径、实际子进程环境 `CODEX_SQLITE_HOME`、native home 的顺序确定 SQLite 目录；环境相对路径按本次 cwd 解析。只支持已核实的 `state_5.sqlite` 布局，不扫描目录选择数据库，不把父进程未传入的环境值补给子进程。
+
+历史记录满足条件后，每次用现有 `better-sqlite3` 打开只读、必须存在、busy timeout 为 0 的连接，以一次 SELECT 读取原 ID 的 `rollout_path`、`cwd`、model 和 reasoning_effort，随后立即关闭连接。必须核对同一原生路径和真实 cwd，且同一已提交行中的明确字段匹配。查询前后校验普通文件、真实路径与文件身份；替换或归属不符立即失败。读锁冲突、缺文件、缺行或字段尚未匹配在总期限内重查；未知 schema、损坏或未知路径配置失败，不允许仅凭 JSONL 成功。不保持跨轮询事务，不使用 `immutable` 跳过 WAL，不迁移、checkpoint 或直接修改原生数据库。metadata 确认后再次核对历史文件没有新增未处理内容，再允许就绪。
+
+屏障先以 `lstat` 拒绝非普通文件，打开后以 `fstat` 再核对同一文件身份；可用的 `O_NOFOLLOW` / `O_NONBLOCK` 进一步防止检查后被替换为链接或 FIFO，但不替代前后身份校验。屏障持有同一只读文件句柄，以 64 KiB 块读取并保留未完成尾行，每 20 ms 至多读取一次新增内容。总文件预算为 16 MiB，配置读取、唯一设置更新与双层观察共享 30 秒总期限；不支持的持久化格式、损坏完整记录、文件身份替换、截断、路径消失或预算超限均失败。错误 owner 或值不能满足屏障，后续完整正确事件仍可确认；超时保留持久化结果未知。原生异步 error、退出及关闭会取消观察，所有出口释放文件和计时器。拒绝、畸形回执及断流同样沿初始化异常路径关闭拥有的进程并传播错误，不重试或抹掉已观察的 native ID。此屏障证明原生冷恢复所用历史与 metadata 已可读，不承诺断电耐久性或排除其他客户端后续修改。
 
 此确认依赖 fresh 初始化阶段只有一个设置 writer：Provider handle 返回之前不能接收交互 controls，原生 fresh 启动也不自发提交 `ThreadSettings` 操作，因此基线后的匹配设置记录可归属于本次唯一更新，而不需要伪造 operationId。若原生事件来源或初始化 writer 数量改变，必须重新验证这项归属条件。
 
-`thread/resume` 和双省略不进入文件屏障。恢复不重写初始选择，用户会话内变更继续由原生持久设置拥有。取舍与固定原生源码依据见[空线程初始设置决策](../../.agents/notes/implemented/bug-fix/2026-11-07-codex-empty-thread-settings.md)。
+`thread/resume` 和双省略不新增配置读取或进入双层屏障。恢复不重写初始选择，用户会话内变更继续由原生持久设置拥有。取舍与固定原生源码依据见[空线程初始设置决策](../../.agents/notes/implemented/bug-fix/2026-11-07-codex-empty-thread-settings.md)。
 
 ### Codex 原生角色映射
 

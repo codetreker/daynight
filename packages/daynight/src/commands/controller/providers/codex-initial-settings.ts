@@ -4,21 +4,37 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { NativeRpcTimeoutError, record } from "./native-rpc.js";
 
+import { codexMetadataPath, observeCodexMetadata, type CodexPersistenceConfiguration } from "./codex-settings-metadata.js";
+
 type Selection = { model?: string; effort?: string };
 type Options = {
   path: unknown; home: string; cwd: string; threadId: string; expected: Selection;
+  readConfiguration(): Promise<CodexPersistenceConfiguration>; env: NodeJS.ProcessEnv;
   update(): Promise<unknown>; signal: AbortSignal; timeoutMs?: number;
 };
 const maxBytes = 16 * 1024 * 1024;
 const inside = (root: string, file: string): boolean => { const part = relative(root, file); return !!part && !isAbsolute(part) && part !== ".." && !part.startsWith(`..${sep}`); };
 const invalid = (): Error => new Error("Native Codex initial settings persistence is unconfirmed.");
 
-/** Observe the original native rollout; a settings RPC acknowledgement only queues the update. */
+/** Confirm the owned rollout and committed resume metadata; the RPC only queues an update. */
 export const persistCodexInitialSettings = async (options: Options): Promise<void> => {
   const deadline = performance.now() + (options.timeoutMs ?? 30_000);
   let file: FileHandle | undefined;
   let confirmed = false;
   const check = () => { options.signal.throwIfAborted(); if (performance.now() >= deadline) throw new NativeRpcTimeoutError("Codex initial settings persistence"); };
+  const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
+    check();
+    let timer: NodeJS.Timeout | undefined;
+    let aborted = () => {};
+    try {
+      return await Promise.race([operation(), new Promise<never>((_, reject) => {
+        aborted = () => reject(options.signal.reason);
+        options.signal.addEventListener("abort", aborted, { once: true });
+        timer = setTimeout(() => reject(new NativeRpcTimeoutError("Codex initial settings persistence")), Math.max(1, deadline - performance.now()));
+        if (options.signal.aborted) aborted();
+      })]);
+    } finally { clearTimeout(timer); options.signal.removeEventListener("abort", aborted); }
+  };
   try {
     check();
     if (typeof options.path !== "string" || !isAbsolute(options.path)) throw invalid();
@@ -58,10 +74,12 @@ export const persistCodexInitialSettings = async (options: Options): Promise<voi
     if (metadata.length !== 1) throw invalid();
     const owner = record(record(metadata[0]).payload);
     if (owner.id !== options.threadId || typeof owner.cwd !== "string" || await realpath(owner.cwd) !== cwd) throw invalid();
+    const configuration = await bounded(options.readConfiguration);
+    const observeMetadata = observeCodexMetadata(codexMetadataPath(configuration, options.env, home, cwd), { threadId: options.threadId, path, cwd }, options.expected);
     // A record that began before dispatch cannot acknowledge this update.
     let discardPartial = pending.length > 0; pending = Buffer.alloc(0);
     check();
-    const receipt = await options.update();
+    const receipt = await bounded(options.update);
     check();
     if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) throw invalid();
     let matched = false;
@@ -85,8 +103,9 @@ export const persistCodexInitialSettings = async (options: Options): Promise<voi
       }
       check();
       if (matched && pending.length === 0) {
-        if (await verify() !== position) continue;
-        confirmed = true; return;
+        if (await observeMetadata() && await verify() === position) {
+          confirmed = true; return;
+        }
       }
       await delay(Math.min(20, Math.max(1, deadline - performance.now())), undefined, { signal: options.signal });
     }

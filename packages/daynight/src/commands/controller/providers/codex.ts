@@ -1,6 +1,5 @@
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { codexNativeHome } from "./codex-settings-metadata.js";
 import { CodexInterruptions } from "./codex-interruptions.js";
 import { CodexControls } from "./controls-codex.js";
 import { persistCodexInitialSettings } from "./codex-initial-settings.js";
@@ -20,7 +19,9 @@ type Pending = { nativeId: unknown; interaction: SessionInteraction; result(resp
 export const openCodexProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
   const config = parseProviderArguments("codex", options.args, options.validateNativeSelection);
   const executable = options.executable ?? "codex";
-  const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: options.env ?? process.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
+  const childEnvironment = { ...(options.env ?? process.env) };
+  const nativeHome = codexNativeHome(childEnvironment, options.cwd);
+  const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
   let projection: CodexProjection;
@@ -135,7 +136,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     if (method === "error") { errors.notification(p, nativeId, currentTurnId); if (awaitingInitialSettings) initialSettingsAbort.abort(new Error("Native Codex rejected initial settings asynchronously.")); }
     if (method === "turn/plan/updated") options.onTimeline({ entryId: nativeEntryId(nativeId, `plan:${string(p.turnId)}`), revision: "1", kind: "todo", items: (Array.isArray(p.plan) ? p.plan : []).map((raw, index) => { const item = record(raw); return { id: String(index), text: string(item.step), status: item.status === "completed" ? "completed" as const : item.status === "inProgress" ? "in_progress" as const : "pending" as const }; }) });
   });
-  controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, options.env?.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"), state, options.onControlConfirmed, options.controlsRevisionFloor);
+  controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor);
   child.once("close", () => {
     initialSettingsAbort.abort(new Error("Native Codex closed before initial settings persistence was confirmed."));
     closed = true;
@@ -197,7 +198,9 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       if (hasInitialSettings) {
         awaitingInitialSettings = true;
         try {
-          await persistCodexInitialSettings({ path: thread.path, home: options.env?.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"), cwd: options.cwd, threadId: nativeId,
+          await persistCodexInitialSettings({ path: thread.path, home: nativeHome, cwd: options.cwd, threadId: nativeId,
+            env: childEnvironment,
+            readConfiguration: async () => { const [config, requirements] = await Promise.all([rpc.request("config/read", { cwd: options.cwd, includeLayers: false }), rpc.request("configRequirements/read", {})]); return { config, requirements }; },
             expected: { ...(options.model ? { model: options.validateNativeSelection ? string(response.model) : options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }, signal: initialSettingsAbort.signal,
             update: () => rpc.request("thread/settings/update", { threadId: nativeId, ...(options.model ? { model: options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }) });
         } finally { awaitingInitialSettings = false; }

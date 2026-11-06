@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 let waiting = null, holdResponse = false, interruptUser = null, pendingSteer = null;
 const interruptCase = process.env.CODEX_TEST_INTERRUPT;
@@ -62,7 +63,8 @@ for await (const line of createInterface({input:process.stdin})) {
   } else out({id:m.id,result:{data:interruptCase?[{...turn,items:interruptCase==='missing-user'?[]:[user]}]:[],nextCursor:null,backwardsCursor:null}});
  }
  if(m.method==='thread/read') {
-  if(rollout){mkdirSync(join(process.env.CODEX_HOME,'sessions'),{recursive:true});writeFileSync(rollout,JSON.stringify({type:'session_meta',payload:{id:'native-thread',cwd:process.cwd()}})+'\n');}
+  if(rollout){mkdirSync(join(process.env.CODEX_HOME,'sessions'),{recursive:true});writeFileSync(rollout,JSON.stringify({type:'session_meta',payload:{id:'native-thread',cwd:process.cwd()}})+'\n');
+   const db=new Database(join(process.env.CODEX_HOME,'state_5.sqlite'));db.exec('CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT, model TEXT, reasoning_effort TEXT)');db.prepare('INSERT OR REPLACE INTO threads VALUES (?, ?, ?, ?, ?)').run('native-thread',rollout,process.cwd(),null,null);db.close();}
   if(process.env.CODEX_TEST_READ_ERROR)out({id:m.id,error:JSON.parse(process.env.CODEX_TEST_READ_ERROR)});
   else if(process.env.CODEX_TEST_EMPTY_READ_ERROR)out({id:m.id,error:{code:-32601,message:'list_turns is not supported yet'}});
   else out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});
@@ -73,7 +75,7 @@ for await (const line of createInterface({input:process.stdin})) {
   else if(mode==='disconnect')process.exit(0);
   else if(mode==='async-error'){out({id:m.id,result:{}});out({method:'error',params:{threadId:'native-thread',error:{message:'Initial settings rejected asynchronously'}}});}
   else if(mode==='missing')out({id:m.id});
-  else {out({id:m.id,result:mode?JSON.parse(mode):{}});if(rollout&&!mode&&process.env.CODEX_TEST_ROLLOUT_MODE!=='deferred')appendFileSync(rollout,JSON.stringify({type:'event_msg',payload:{type:'thread_settings_applied',thread_id:'native-thread',thread_settings:{model:m.params.model??'default-model',collaboration_mode:{settings:{reasoning_effort:m.params.effort??'medium'}}}}})+'\n');}
+  else {out({id:m.id,result:mode?JSON.parse(mode):{}});if(rollout&&!mode){const db=new Database(join(process.env.CODEX_HOME,'state_5.sqlite'));db.prepare('UPDATE threads SET model = ?, reasoning_effort = ? WHERE id = ?').run(m.params.model??'default-model',m.params.effort??'medium','native-thread');db.close();}if(rollout&&!mode&&process.env.CODEX_TEST_ROLLOUT_MODE!=='deferred')appendFileSync(rollout,JSON.stringify({type:'event_msg',payload:{type:'thread_settings_applied',thread_id:'native-thread',thread_settings:{model:m.params.model??'default-model',collaboration_mode:{settings:{reasoning_effort:m.params.effort??'medium'}}}}})+'\n');}
  }
  if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});

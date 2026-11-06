@@ -61,6 +61,8 @@ test.each(initialSelectionCases)("fresh Codex persists $name after materializing
     const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const updates = requests.filter(request => request.method === "thread/settings/update");
     expect(updates.map(request => request.params)).toEqual(patch ? [{ threadId: "native-thread", ...patch }] : []);
+    expect(requests.filter(request => request.method === "config/read")).toHaveLength(patch ? 1 : 0);
+    expect(requests.filter(request => request.method === "configRequirements/read")).toHaveLength(patch ? 2 : 1);
     if (patch) {
       const readIndex = requests.findIndex(request => request.method === "thread/read" && request.params.includeTurns === true);
       expect(readIndex).toBeGreaterThan(-1);
@@ -110,6 +112,8 @@ test("Codex resume preserves native settings without replaying frozen initial ch
     } finally { await provider.close(); }
     const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(requests.filter(request => ["thread/start", "thread/settings/update", "turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+    expect(requests.filter(request => request.method === "config/read")).toHaveLength(0);
+    expect(requests.filter(request => request.method === "configRequirements/read")).toHaveLength(1);
     const resume = requests.find(request => request.method === "thread/resume");
     expect(resume.params).not.toHaveProperty("model");
     expect(resume.params.config).not.toHaveProperty("model_reasoning_effort");
@@ -263,5 +267,13 @@ test.skipIf(process.platform === "win32").each([null, "native-thread"])("preserv
   const expected = { ...agentCliEnvironment, PATH: "/private/aliases:/native/toolchain:/usr/bin:/bin" };
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId, agentCliEnvironment,
     env: { ...process.env, CODEX_TEST_EFFECTIVE_CONFIG: JSON.stringify({ shell_environment_policy: { inherit: "none", set: { PATH: "/native/toolchain:/usr/bin:/bin" }, include_only: ["PATH", "DN_CONFIG_DIR"] } }), EXPECT_AGENT_CLI_ENV: JSON.stringify(expected) }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  await provider.close();
+});
+
+test("initial persistence uses the same environment snapshot passed to the native child", async () => {
+  const env = { ...process.env, CODEX_HOME: nativeHome };
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: "selected-model", args: [], resumeNativeSessionId: null,
+    env, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {},
+    onSpawn: () => { env.CODEX_HOME = join(nativeHome, "not-the-child-home"); } });
   await provider.close();
 });
