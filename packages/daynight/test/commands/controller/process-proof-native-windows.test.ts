@@ -19,8 +19,17 @@ const decodeCimOracle = (stdout: string): CimProcess => {
 // Transport explicit UTF-8 JSON in an ASCII Base64 envelope so the oracle keeps
 // the complete command line independently of its console encoding.
 const cimOracle = (pid: number): Promise<CimProcess> => new Promise((resolve, reject) => {
-  execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$value=Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ParentProcessId,@{Name='Birth';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},CommandLine; $json=ConvertTo-Json -InputObject $value -Compress; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))`], { encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
-    if (error !== null) { reject(error); return; }
+  const started = performance.now();
+  execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$value=Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' | Select-Object ProcessId,ParentProcessId,@{Name='Birth';Expression={$_.CreationDate.ToUniversalTime().ToString('o')}},CommandLine; $json=ConvertTo-Json -InputObject $value -Compress; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))`], { encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    if (error !== null) {
+      try {
+        console.error(JSON.stringify({ fixture: "windows-process-proof", stage: "cim-oracle-command", pid,
+          elapsedMs: Math.round(performance.now() - started), code: error.code ?? null, signal: error.signal ?? null, killed: error.killed ?? null,
+          stdout: stdout.slice(0, 2048), stdoutBytes: Buffer.byteLength(stdout), stdoutTruncated: stdout.length > 2048,
+          stderr: stderr.slice(0, 2048), stderrBytes: Buffer.byteLength(stderr), stderrTruncated: stderr.length > 2048 }));
+      } catch { /* Reporting must not replace the oracle command failure. */ }
+      reject(error); return;
+    }
     try { resolve(decodeCimOracle(stdout)); } catch (error) { reject(error); }
   });
 });
