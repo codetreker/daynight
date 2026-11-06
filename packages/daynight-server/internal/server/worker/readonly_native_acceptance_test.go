@@ -205,3 +205,27 @@ func TestReadOnlyNativeWorkerDirectoryAcceptance(t *testing.T) {
 	}
 	t.Logf("native directory acceptance: platform=%s workers=2 owners=2 pages=6; target paths matched; cross-owner requests denied; file SHA-256 unchanged", runtime.GOOS)
 }
+
+func TestReadOnlyNativeWorkerEncodingAcceptance(t *testing.T) {
+	f := newReadOnlyFixture(t)
+	repository, err := filepath.Abs("../../../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	fixture := filepath.Join(repository, "packages", "daynight", "test", "fixtures", "worker-readonly-encoding.mjs")
+	cmd := exec.CommandContext(ctx, "node", fixture)
+	cmd.Dir = repository
+	cmd.WaitDelay = 2 * time.Second
+	configuration, err := json.Marshal(map[string]string{"serverOrigin": f.server.URL, "serverToken": f.token, "ownerUserId": f.owner.UserID, "workerId": f.worker, "defaultCwd": t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdin = bytes.NewReader(append(configuration, '\n'))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("native Worker/Web encoding acceptance: %v\n%s", err, output)
+	}
+	t.Logf("native Worker/Web encoding acceptance: %s", output)
+}

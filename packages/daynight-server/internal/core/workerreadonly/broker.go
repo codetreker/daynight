@@ -266,7 +266,8 @@ func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {
 	delete(c.pending, m.RequestID)
 	b.count--
 	work.answer <- outcome{message: m, err: authErr}
-	return authErr
+	// Caller authorization belongs to this request, not the shared Worker channel.
+	return nil
 }
 func (b *Broker) Close() {
 	b.mu.Lock()

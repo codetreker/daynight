@@ -26,7 +26,11 @@ native completion and directory closure because Node cannot cancel those calls.
 Keep the operation deadline separate from the HTTP response context so an expired
 operation can still return its timeout error. Caller cancellation during credential
 checks is not evidence that the shared Worker connection lost authorization; it
-ends only that query and leaves unrelated pending queries intact.
+ends only that query and leaves unrelated pending queries intact. Caller credential
+revocation also belongs to the affected query; Worker authorization and
+protocol failures retain their channel-wide effect. Response encoding preserves the
+admitted directory payload budget instead of expanding filesystem names through
+HTML escaping.
 
 ## Alternatives
 

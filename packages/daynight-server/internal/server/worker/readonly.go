@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -138,9 +139,36 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 		return
 	}
 	if r.Context().Err() == nil {
-		httpx.WriteJSON(w, r, h.logger, http.StatusOK, result)
+		raw, err := readOnlyResultJSON(result)
+		if err != nil {
+			h.failure(w, r, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err = w.Write(raw); err != nil {
+			httpx.LogFailure(h.logger, r.Context(), "worker_readonly", "response", err)
+		}
 	}
 }
+
+func readOnlyResultJSON(result ro.Message) ([]byte, error) {
+	if err := ro.ValidateResult(result); err != nil {
+		return nil, err
+	}
+	var raw bytes.Buffer
+	encoder := json.NewEncoder(&raw)
+	// HTML escaping can expand an admitted directory beyond the HTTP wire budget.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(result); err != nil {
+		return nil, err
+	}
+	if raw.Len() > ro.MaxWireBytes {
+		return nil, httpx.InvalidInput("Worker read-only response exceeds its wire byte limit.")
+	}
+	return raw.Bytes(), nil
+}
+
 func readOnlyWrite(ctx context.Context, c *websocket.Conn, m ro.Message) error {
 	raw, err := json.Marshal(m)
 	if err != nil {

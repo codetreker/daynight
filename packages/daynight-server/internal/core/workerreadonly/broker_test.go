@@ -186,7 +186,7 @@ func TestBrokerCredentialRevocationPreventsDispatchAndDelivery(t *testing.T) {
 	mu.Lock()
 	revoked = caller.CredentialID
 	mu.Unlock()
-	if err = b.Deliver(context.Background(), c, Message{Fence: m.Fence, Type: "result", RequestID: m.RequestID, Error: &Error{Code: "not_found", Message: "not found"}}); ErrorCode(err) != "unauthenticated" {
+	if err = b.Deliver(context.Background(), c, Message{Fence: m.Fence, Type: "result", RequestID: m.RequestID, Error: &Error{Code: "not_found", Message: "not found"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err = <-answer; ErrorCode(err) != "unauthenticated" {

@@ -24,7 +24,7 @@ HTTP 请求包含 UUID `requestId`、`operation:"directory.list"`、`input`。�
 - `result:{path,parentPath,entries:[{name,path}],nextCursor}`；父目录与游标可以为 `null`。
 - `error:{code,message}`；错误码见需求，消息不包含原生异常或凭证。
 
-业务结果和 Worker 错误均由 HTTP 200 返回完整结果信封；认证、输入及路由失败使用既有 API 错误响应。取消帧为 `type:"cancel"` 和原身份、请求 ID。HTTP 取消使服务端撤销待处理请求并通知 Worker；旧响应不得重新创建请求。
+业务结果和 Worker 错误均由 HTTP 200 返回完整结果信封；认证、输入及路由失败使用既有 API 错误响应。取消帧为 `type:"cancel"` 和原身份、请求 ID。HTTP 取消使服务端撤销待处理请求并通知 Worker；旧响应不得重新创建请求。响应交付时的调用方凭证错误只结束对应 HTTP 查询；Worker 凭证或协议错误仍会使共享通道失效。目录结果使用保留已准入 JSON 字节预算的响应编码，避免 HTML 字符转义放大合法页面。
 
 ## 生命周期与限额
 
@@ -54,7 +54,7 @@ CLI 目录与连接回归位于 `packages/daynight/test/commands/worker/read-onl
 source scripts/env.sh
 # DAYNIGHT_TEST_DATABASE_URL must identify an isolated PostgreSQL database.
 go test -race -tags worker_readonly_acceptance ./internal/server/worker \
-  -run '^TestReadOnlyNativeWorkerDirectoryAcceptance$' -count=1 -timeout=90s -v
+  -run '^TestReadOnlyNativeWorker(Directory|Encoding)Acceptance$' -count=1 -timeout=90s -v
 ```
 
-该显式验收启动两个独立 Node 只读通道进程，使用真实目录、HTTP/WebSocket、身份存储和文件摘要比较。它不启动任务调度或原生 Agent，不代替生产部署、完整 Worker runtime 或模型发现验收。普通 Go 门禁不依赖 CLI 构建产物，因此该跨语言场景使用单独 build tag。
+目录隔离验收启动两个独立 Node 只读通道进程，使用真实目录、HTTP/WebSocket、身份存储和文件摘要比较。编码验收通过真实 Worker 和 HTTP 响应流调用生产 Web typed client，检查包含 HTML 字符及 Unicode 分隔符的目录页、字段完整性和实际字节上限。它不启动任务调度或原生 Agent，不代替生产部署、完整 Worker runtime 或模型发现验收。普通 Go 门禁不依赖 CLI 构建产物，因此该跨语言场景使用单独 build tag。
