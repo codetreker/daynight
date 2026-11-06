@@ -170,7 +170,3 @@ type SessionDAO interface {
 	QueuedTerminalOperation(context.Context, string) ([]string, error)
 	TerminalViewerOperationPending(context.Context, string, string, string) (bool, error)
 }
-
-var _ SessionWriter = (*Store)(nil)
-var _ SessionScope = (*sessionTx)(nil)
-var _ SessionDAO = (*sessionTx)(nil)

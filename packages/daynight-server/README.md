@@ -283,7 +283,8 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/service/webui/` | Embedded production HTML/assets and resource reads |
 | `internal/server/webui/` | Static routes and HTTP response policy |
-| `internal/core/store/` | PostgreSQL migrations, transactions, scoped writes and consistent reads |
+| `internal/core/store/` | Database-neutral DAO, scope and transaction contracts |
+| `internal/core/store/postgres/` | PostgreSQL implementation, migrations, scoped writes and consistent reads |
 | `internal/core/filestorage/` | Generic bucket/path byte operations and address validation |
 | `internal/core/filestorage/local/` | Root-confined local files, complete-file replacement and root lifecycle |
 | `api/` | Project/task/attachment, identity and membership DTOs; common HTTP error envelopes |
@@ -527,8 +528,10 @@ that test-only package from coverage execution. Because the tool uses substring
 matching, `go list ./...` must confirm that the full-path match selects exactly
 that package; extended or nested matches fail. The orchestrator also recursively
 rejects non-test Go source in that directory, preventing this exception from
-hiding production statements. All production packages and their raw coverage profile
-remain in the gate. A separate exact calculation over that profile requires
+hiding production statements. The same package list supplies `-coverpkg`, so
+integration tests exercise and measure DAO implementations in their own packages.
+Imported `testdata` fixtures do not enter the profile. All production packages
+and their raw coverage profile remain in the gate. A separate exact calculation over that profile requires
 overall statement coverage **strictly greater than 90%**. Exactly 90% fails. The
 check also tests that calculation's boundary and malformed-profile behavior.
 Coverage mode retains the authentication package's installed-CLI assertions and
@@ -1407,7 +1410,7 @@ tests can be run from this module:
 source scripts/env.sh
 export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test ./internal/core/store ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/... ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
@@ -1943,10 +1946,10 @@ repository-root command of the same name forward to this entrypoint. Successful 
 coverage and actual process results are separate evidence: binary HTTP tests
 supplement the store/service/server package tests.
 The owning store/service tests retain deterministic snapshot and lock proofs:
-`TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/query_test.go),
+`TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/postgres/query_test.go),
 `TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent` in
 [service failure tests](internal/service/task/task_failure_test.go), and
-`TestMigrationsSessionLockSpansCommits` in [migration tests](internal/core/store/migrate_test.go).
+`TestMigrationsSessionLockSpansCommits` in [migration tests](internal/core/store/postgres/migrate_test.go).
 
 CI uploads `daynight-server-acceptance` after validation, including the JSON
 receipt and raw `.tmp/coverage.out`, even when validation fails. Artifacts are

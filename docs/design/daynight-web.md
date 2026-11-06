@@ -41,7 +41,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 |---|---|
 | Go 服务已有项目与任务 JSON API | `packages/daynight-server/api/projects.go` 的 `ProjectPage` 返回项目及 `nextCursor`；`api/tasks.go` 的 `Task` 包含 `dependsOn`、`externalDependsOn`、`blockedBy`、`ready`、`allowAgents`、`requiredPlatform`。 |
 | 页面与 API 同源 | `internal/server/webui` 在同一 mux 注册精确页面和静态资源路由，`internal/server` 注册 API 路由；`internal/service/webui` 内嵌真实构建产物，未知 API 保留 JSON 404。 |
-| 已有一致读取机制 | `packages/daynight-server/internal/core/store/snapshot.go` 的 `ReadSnapshot` 使用只读 `REPEATABLE READ`。 |
+| 已有一致读取机制 | `packages/daynight-server/internal/core/store/postgres/snapshot.go` 的 `ReadSnapshot` 使用只读 `REPEATABLE READ`。 |
 | 分页之间没有共同快照 | [服务端分页约定](../spec/daynight-server.md)明确这一边界；不能用多次 task list 拼成准确的项目全图。 |
 | web 与 CLI 工作区独立 | 私有 React/TypeScript/Vite 包使用显式 `web:*` 命令；根 build/typecheck/test 继续只覆盖 CLI，web 使用按[CI 路由](../../README.md#ci-selection)选择的独立 job。 |
 
@@ -617,7 +617,7 @@ packages/daynight-web/
 packages/daynight-server/
   api/task_graph.go                 HTTP 图 DTO
   internal/core/model/task_graph.go 无传输依赖的读取模型
-  internal/core/store/task_graph.go PostgreSQL 快照查询
+  internal/core/store/postgres/task/graph.go PostgreSQL 快照查询
   internal/service/task/task_graph.go 图读取编排
   internal/core/task/projection/   图限制与统计规则
   internal/server/task/task_graph.go  图 HTTP handler 与 DTO 转换
@@ -646,8 +646,8 @@ packages/daynight-server/
 | 附件 hook/model | 当前 project/task 的分页、写状态、选择、预览状态及目录树 | 调用 api；不修改详情或图快照 |
 | 详情主体、TaskDetailPage 与附件预览 | 两种容器共享完整详情；独立页持有图快照和任务/页签/文件导航，附件共享完整清单与渲染 | 使用原有详情、图和文件接口；仅实际任务对话框中的 frame 复用 focus helper 安装键盘桥 |
 | Go server | HTTP 解析、响应、路由与方法语义 | 调用 service 或 webui |
-| Go service | 具体 store 的读取事务、领域拒绝、图摘要 | 调用 core/store，返回 core 模型 |
-| core/store | 同一快照内的具体 SQL 查询与扫描 | 使用 pgx，不依赖 HTTP、React 或 API DTO |
+| Go service | 读取事务、领域拒绝、图摘要 | 调用 core/store 合同，返回 core 模型 |
+| core/store 与 PostgreSQL 后端 | 同一快照的数据访问合同及其 SQL 查询与扫描实现 | 合同不依赖驱动；后端使用 pgx，不依赖 HTTP、React 或 API DTO |
 | service/webui | 内嵌资源及文件读取 | 不访问业务 store |
 | server/webui | 页面与资源路由、Content-Type 和缓存策略 | 读取资源，不另包日志中间件 |
 

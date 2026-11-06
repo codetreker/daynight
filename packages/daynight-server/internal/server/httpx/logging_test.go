@@ -17,10 +17,10 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestRequestLoggingAndRedaction(t *testing.T) {
@@ -155,7 +155,7 @@ func TestErrorKind(t *testing.T) {
 	}{
 		{fmt.Errorf("wrapped: %w", context.Canceled), "canceled"},
 		{context.DeadlineExceeded, "deadline"},
-		{&pgconn.PgError{Message: "secret", Code: "42501"}, "database"},
+		{&store.Error{Phase: "query", DatabaseFailure: true, SQLState: "42501", Cause: errors.New("secret")}, "database"},
 		{&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("secret")}, "network"},
 		{fmt.Errorf("wrapped private address: %w", &net.OpError{Op: "listen", Net: "tcp", Err: fmt.Errorf("bind private address: %w", syscall.EADDRINUSE)}), "address_in_use"},
 		{errors.New("secret"), "internal"},
@@ -211,7 +211,10 @@ func TestPropertyValidationHTTPErrorClassification(t *testing.T) {
 		{"direct", validation, http.StatusBadRequest, "invalid_input"},
 		{"wrapped", fmt.Errorf("private-wrapper-secret: %w", validation), http.StatusBadRequest, "invalid_input"},
 		{"stored", &store.Error{Phase: "read properties", Cause: validation}, http.StatusBadRequest, "invalid_input"},
-		{"joined database failure", errors.Join(validation, &pgconn.PgError{Code: "08006", Message: "private-database-secret"}), http.StatusInternalServerError, "internal_error"},
+		{"joined database failure", errors.Join(validation, &store.Error{Phase: "query", DatabaseFailure: true, SQLState: "08006", Cause: errors.New("private-database-secret")}), http.StatusInternalServerError, "internal_error"},
+		{"fault with database failure", &model.Fault{Code: "not_found", Message: "not found", Cause: &store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("private-database-secret")}}, http.StatusInternalServerError, "internal_error"},
+		{"thread rollback with fault", &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true, Cause: &model.Fault{Code: "not_found", Message: "not found"}}, http.StatusInternalServerError, "internal_error"},
+		{"thread unknown with fault", &store.ThreadTransactionError{Phase: "commit", CommitAttempted: true, OutcomeUnknown: true, Cause: &model.Fault{Code: "not_found", Message: "not found"}}, http.StatusInternalServerError, "internal_error"},
 		{"joined cleanup failure", errors.Join(validation, errors.New("private-cleanup-secret")), http.StatusInternalServerError, "internal_error"},
 		{"wrapped joined failure", &store.Error{Phase: "rollback", Cause: errors.Join(validation, errors.New("private-rollback-secret"))}, http.StatusInternalServerError, "internal_error"},
 	} {

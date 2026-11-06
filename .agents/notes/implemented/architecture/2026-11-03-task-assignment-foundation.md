@@ -27,7 +27,7 @@ reset and does not revalidate a retained former assignee; other supplied fields
 retain their ordinary mutation rules.
 
 New target eligibility consumes ProjectAccess in that project transaction.
-The canonical projectAccessRelation in store/project_access.go also owns the
+The canonical ProjectAccessRelation in store/postgres/internal/project_access.go also owns the
 access candidates and hasProjectAccess calculation for both people-read modes.
 It represents the maximum of owner Team and direct-grant roles, with one
 effective role per project/user and raw identities retained independently of

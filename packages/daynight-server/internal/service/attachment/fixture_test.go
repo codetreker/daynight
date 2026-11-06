@@ -7,22 +7,21 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 )
 
-func newAttachmentService(database *store.Store, files filestorage.Storage) *Attachments {
-	return NewAttachments(database, attachmentpostgres.New(database.Pool), files)
+func newAttachmentService(database *postgres.Store, files filestorage.Storage) *Attachments {
+	return NewAttachments(database, database, files)
 }
 
-func taskService(t *testing.T) (*taskservice.Tasks, *store.Store, model.Project, string, model.Principal) {
+func taskService(t *testing.T) (*taskservice.Tasks, *postgres.Store, model.Project, string, model.Principal) {
 	return testsupport.TaskService(t)
 }
-func projectService(t *testing.T) (*projectservice.Projects, *store.Store, string, model.Principal) {
+func projectService(t *testing.T) (*projectservice.Projects, *postgres.Store, string, model.Principal) {
 	return testsupport.ProjectService(t)
 }
 func createTask(t *testing.T, tasks *taskservice.Tasks, principal model.Principal, projectID, title string, dependencies ...string) model.Task {

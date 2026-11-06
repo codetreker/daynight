@@ -15,6 +15,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
 type taskResult struct {
@@ -22,7 +23,7 @@ type taskResult struct {
 	err  error
 }
 
-func waitForTaskWriters(t *testing.T, ctx context.Context, database *store.Store, count int) {
+func waitForTaskWriters(t *testing.T, ctx context.Context, database *postgres.Store, count int) {
 	t.Helper()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
@@ -56,7 +57,7 @@ func receiveTaskResult(t *testing.T, ctx context.Context, result <-chan taskResu
 	}
 }
 
-func competeTaskWrites(t *testing.T, database *store.Store, projectID string, operations ...func(context.Context) (model.Task, error)) []taskResult {
+func competeTaskWrites(t *testing.T, database *postgres.Store, projectID string, operations ...func(context.Context) (model.Task, error)) []taskResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

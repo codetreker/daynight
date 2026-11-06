@@ -39,5 +39,6 @@ implementation and obscures their shared transaction lifetime.
 The scope capabilities cannot outlive their callback. Completion and cleanup
 failures take precedence over staged refusals, and uncertain commits remain
 unknown. The [Task boundary](2026-11-05-server-task-boundaries.md) owns Task business
-rules; the physical PostgreSQL move retains its own owner. Task and Session
+rules; the [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns
+their database implementations. Task and Session
 effects continue to share the Project transaction.

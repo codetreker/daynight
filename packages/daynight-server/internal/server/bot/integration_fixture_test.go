@@ -16,7 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -32,8 +32,8 @@ type resourceTestHandler struct {
 	principal model.Principal
 }
 
-func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
-func resourceTestServer(t *testing.T, database *store.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
+func resourceTestServer(t *testing.T, database *postgres.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	instance := httptest.NewUnstartedServer(nil)
 	t.Cleanup(instance.Close)
@@ -80,7 +80,7 @@ func assertProjectError(t *testing.T, response *httptest.ResponseRecorder, statu
 }
 func jsonBody(t *testing.T, input any) string { return testsupport.JSONBody(t, input) }
 
-func projectTestHandler(t *testing.T, database *store.Store, output io.Writer) *resourceTestHandler {
+func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	files, err := local.New(t.TempDir())
 	if err != nil {

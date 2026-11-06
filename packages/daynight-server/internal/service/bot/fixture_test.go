@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/google/uuid"
 )
 
 func serviceDatabaseURL(t *testing.T) string { return testsupport.ServiceDatabaseURL(t) }
-func servicePrincipal(t *testing.T, db *store.Store) model.Principal {
+func servicePrincipal(t *testing.T, db *postgres.Store) model.Principal {
 	return testsupport.ServicePrincipal(t, db)
 }
 func pointer[T any](value T) *T { return &value }
@@ -49,7 +49,7 @@ func threadWait(t *testing.T, ctx context.Context, condition func() (bool, error
 	}
 }
 
-func stepsStoredState(t *testing.T, database *store.Store, taskID string, excludeParentRevision bool) string {
+func stepsStoredState(t *testing.T, database *postgres.Store, taskID string, excludeParentRevision bool) string {
 	t.Helper()
 	var state string
 	err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object(

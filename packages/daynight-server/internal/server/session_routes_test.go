@@ -18,7 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
@@ -64,7 +64,7 @@ func TestSessionRoutesCapabilitiesRequireAuthentication(t *testing.T) {
 }
 
 type sessionHTTPFixture struct {
-	db           *store.Store
+	db           *postgres.Store
 	handler      *resourceTestHandler
 	server       *httptest.Server
 	application  *sessionApplication
@@ -616,7 +616,7 @@ func TestSessionRuntimeShutsRelayBeforeDependencies(t *testing.T) {
 			runtime, err := Start(context.Background(), config, testLogger(), func(dependencies Dependencies) (http.Handler, error) {
 				return sessionShutdownHandler{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }), shutdown: func(ctx context.Context) error {
 					called = true
-					if err := dependencies.Store.Pool.Ping(ctx); err != nil {
+					if err := dependencies.Ready(ctx); err != nil {
 						t.Errorf("database closed before relay: %v", err)
 					}
 					if _, err := dependencies.Files.Put(ctx, uuid.NewString(), "shutdown.txt", strings.NewReader("relay still owns resources")); err != nil {

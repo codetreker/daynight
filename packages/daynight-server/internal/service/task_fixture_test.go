@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
-func taskService(t *testing.T) (*taskservice.Tasks, *store.Store, model.Project, string, model.Principal) {
+func taskService(t *testing.T) (*taskservice.Tasks, *postgres.Store, model.Project, string, model.Principal) {
 	return testsupport.TaskService(t)
 }
 

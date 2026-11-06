@@ -10,17 +10,18 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
 func serviceDatabaseURL(t *testing.T) string {
 	return testsupport.ServiceDatabaseURL(t)
 }
 
-func projectService(t *testing.T) (*projectservice.Projects, *store.Store, string, model.Principal) {
+func projectService(t *testing.T) (*projectservice.Projects, *postgres.Store, string, model.Principal) {
 	return testsupport.ProjectService(t)
 }
 
-func servicePrincipal(t *testing.T, database *store.Store) model.Principal {
+func servicePrincipal(t *testing.T, database *postgres.Store) model.Principal {
 	return testsupport.ServicePrincipal(t, database)
 }
 
@@ -33,6 +34,6 @@ func requireIdentityOperationalError(t *testing.T, err error) {
 	}
 }
 
-func fixtureIdentitySession(t *testing.T, database *store.Store, user model.User, session model.Session) model.Principal {
+func fixtureIdentitySession(t *testing.T, database *postgres.Store, user model.User, session model.Session) model.Principal {
 	return testsupport.FixtureIdentitySession(t, database, user, session)
 }
