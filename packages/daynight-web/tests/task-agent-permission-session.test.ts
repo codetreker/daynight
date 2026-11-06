@@ -60,6 +60,7 @@ describe('shared task mutation ownership', () => {
     sessions.setStatus(project, id, 'in_progress', initial.version); sessions.setAgentPermission(project, id, true, initial.version);
     expect(writes).not.toHaveBeenCalled();
     const running: TaskDetail = { ...initial, status: 'in_progress', ready: false, startedAt: '2026-10-24T00:01:00Z', version: initial.version + 1n };
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledOnce());
     await synchronize(sessions, running); pending.resolve(running);
     await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
     expect(canSetAgentPermission(sessions.snapshot(project, id))).toBe(false);
@@ -85,12 +86,14 @@ describe('shared task mutation ownership', () => {
     expect(sessions.snapshot(project, id).detail?.allowAgents).toBe(false);
     expect(writes).toHaveBeenCalledTimes(1);
     sessions.setAgentPermission(project, id, true, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledTimes(2));
     await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
   });
   it.each([new ApiError('network'), new ApiError('server', 409, 'version_conflict')])('reconciles uncertain/conflicted outcomes without resubmitting %#', async (failure) => {
     const sessions = createSessions(); reads.mockResolvedValueOnce(initial).mockResolvedValueOnce(changed); await open(sessions);
     writes.mockRejectedValueOnce(failure); sessions.setAgentPermission(project, id, true, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, id).detail?.allowAgents).toBe(true));
     expect(writes).toHaveBeenCalledTimes(1);
@@ -111,6 +114,7 @@ describe('shared task mutation ownership', () => {
   it.each([{ ...changed, status: 'done' as const }, { ...changed, allowAgents: false }, { ...changed, version: initial.version }])('treats a contradictory confirmed result as unknown and checks actual state %#', async (result) => {
     const sessions = createSessions(); reads.mockResolvedValueOnce(initial).mockResolvedValueOnce(changed); await open(sessions);
     writes.mockResolvedValueOnce(result); sessions.setAgentPermission(project, id, true, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(project, id).mutation.error).toMatchObject({ kind: 'protocol' });

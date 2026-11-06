@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { useState, type ReactNode } from 'react';
 import { pauseAuthRequests } from '../src/api/client';
 import { CurrentAccountProvider } from '../src/app/CurrentAccountContext';
@@ -169,8 +170,9 @@ function mountIdentityCheck(fetcher: ReturnType<typeof vi.fn>) {
   let setChecking!: (value: boolean) => void;
   function Harness() {
     const [checking, set] = useState(false); setChecking = set;
+    const [navigation, setNavigation] = useState<{ tab: 'overview' | 'attachments' | 'steps' | 'discussion' | 'session'; path: string | null }>({ tab: 'overview', path: null });
     return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: null }} admissionBlocked={checking}>
-      <TaskDetailSessionProvider><Capture /><TaskDetailSurface presentation="page" projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} navigation={{ tab: 'overview', path: null }} onNavigate={vi.fn()} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} fullscreen={{ active: false, onChange: vi.fn() }} /></TaskDetailSessionProvider>
+      <TaskDetailSessionProvider><Capture /><TaskDetailSurface presentation="page" projectId={projectId} taskId={taskId} observation={{ kind: 'direct' }} navigation={navigation} onNavigate={setNavigation} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} fullscreen={{ active: false, onChange: vi.fn() }} /></TaskDetailSessionProvider>
     </CurrentAccountProvider>;
   }
   const view = renderWithLocale(<Harness />, { locale: 'en', taskCache: { scope } });
@@ -193,18 +195,19 @@ it('retains the direct relations, open assignee menu and search during an identi
     const option = await screen.findByRole('option', { name: 'Alice' });
     const search = screen.getByRole('textbox', { name: 'Search people' });
     fireEvent.change(search, { target: { value: 'Ali' } });
+    fireEvent.keyDown(search, { key: 'ArrowDown' }); expect(option).toHaveFocus();
     const count = fetcher.mock.calls.length;
     act(() => { resume = pauseAuthRequests(); setChecking(true); });
     expect(screen.getByRole('button', { name: /Successor/ })).toBeVisible();
     expect(screen.getByRole('dialog', { name: 'Assignee' })).toBeVisible();
-    expect(search).toHaveValue('Ali'); expect(option).toBeDisabled();
+    expect(search).toHaveValue('Ali'); expect(option).toHaveFocus(); expect(option).toHaveAttribute('aria-disabled', 'true');
     expect(document.querySelector('.task-detail-retained')).toBeNull();
-    fireEvent.click(option); expect(screen.getByRole('dialog', { name: 'Assignee' })).toBeVisible();
+    fireEvent.click(option); await userEvent.setup().keyboard('{Enter}'); expect(option).toHaveFocus(); expect(screen.getByRole('dialog', { name: 'Assignee' })).toBeVisible();
     act(() => sessions.load(projectId, taskId, 1, 'automatic'));
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
     expect(fetcher.mock.calls).toHaveLength(count);
     act(() => { resume?.(); resume = undefined; setChecking(false); });
-    expect(search).toHaveValue('Ali'); await waitFor(() => expect(option).toBeEnabled());
+    expect(search).toHaveValue('Ali'); await waitFor(() => expect(option).toHaveAttribute('aria-disabled', 'false')); expect(option).toHaveFocus();
     expect(fetcher.mock.calls.every(([, options]) => options?.method !== 'PATCH')).toBe(true);
   } finally { resume?.(); view.unmount(); scope.dispose(); }
 });
@@ -233,5 +236,172 @@ it('withdraws the retained menu and relations when the task history changes', as
     await act(async () => { expect(await scope.observeHistory(fence, '40000000-0000-4000-8000-000000000001', signal)).toBe('retired'); });
     expect(screen.queryByRole('button', { name: /Successor/ })).toBeNull();
     expect(screen.queryByRole('dialog', { name: 'Assignee' })).toBeNull();
+  } finally { view.unmount(); scope.dispose(); }
+});
+
+const openTaskReview = (kind: 'status' | 'delete' | 'platform' | 'agents') => {
+  if (kind === 'status') { fireEvent.click(document.querySelector('.task-status-trigger')!); fireEvent.click(screen.getByRole('menuitemradio', { name: 'Done' })); }
+  else if (kind === 'delete') { fireEvent.click(screen.getByRole('button', { name: 'More task actions' })); fireEvent.click(screen.getByRole('menuitem', { name: 'Delete task' })); }
+  else if (kind === 'platform') fireEvent.change(screen.getByRole('combobox', { name: 'Execution platform' }), { target: { value: 'linux' } });
+  else fireEvent.click(screen.getByRole('switch', { name: 'Automatic execution' }));
+  return screen.getByRole('alertdialog');
+};
+it.each(['status', 'delete', 'platform', 'agents'] as const)('retains the %s confirmation across same-account verification and forbids submission until it finishes', async kind => {
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('button', { name: /Successor/ }); const confirmation = openTaskReview(kind);
+    const submit = confirmation.querySelector<HTMLButtonElement>('.dialog-footer button:last-child')!; expect(submit).toHaveAttribute('aria-disabled', 'false');
+    act(() => submit.focus()); expect(submit).toHaveFocus();
+    const count = fetcher.mock.calls.length;
+    act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    expect(screen.getByRole('alertdialog')).toBe(confirmation); expect(submit).toHaveAttribute('aria-disabled', 'true'); expect(submit).toHaveFocus(); fireEvent.click(submit); await userEvent.setup().keyboard('{Enter}'); expect(submit).toHaveFocus();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(fetcher.mock.calls).toHaveLength(count); expect(screen.getByRole('alertdialog')).toBe(confirmation);
+    act(() => { resume?.(); resume = undefined; setChecking(false); });
+    expect(screen.getByRole('alertdialog')).toBe(confirmation); await waitFor(() => expect(submit).toHaveAttribute('aria-disabled', 'false'));
+    fireEvent.click(submit); await waitFor(() => expect(fetcher.mock.calls.some(([, options]) => options?.method === 'PUT' || options?.method === 'PATCH' || options?.method === 'DELETE')).toBe(true));
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it('retains an open task status menu during identity verification', async () => {
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('button', { name: /Successor/ }); fireEvent.click(document.querySelector('.task-status-trigger')!);
+    const menu = screen.getByRole('menu'); act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    expect(screen.getByRole('menu')).toBe(menu); expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    act(() => { resume?.(); resume = undefined; setChecking(false); }); expect(screen.getByRole('menu')).toBe(menu);
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it.each(['access', 'identity'] as const)('withdraws an open task confirmation when %s retires during verification', async retirement => {
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('button', { name: /Successor/ }); openTaskReview('status');
+    act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    if (retirement === 'access') act(() => scope.suspendProject(projectId));
+    else await act(async () => { await scope.invalidateScope(); });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it('retains Step status and actions menus and deletion confirmation across identity verification without writes', async () => {
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  const pause = () => act(() => { resume = pauseAuthRequests(); setChecking(true); });
+  const unpause = () => act(() => { resume?.(); resume = undefined; setChecking(false); });
+  try {
+    await screen.findByRole('button', { name: /Successor/ }); fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
+    const trigger = await screen.findByRole('button', { name: /Status for Step/ });
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-disabled', 'false'));
+    fireEvent.click(trigger); const menu = screen.getByRole('menu', { name: 'Status for Step' });
+    const done = screen.getByRole('menuitemradio', { name: 'Done' }); act(() => done.focus()); expect(done).toHaveFocus();
+    const statusBlur = vi.fn(); done.addEventListener('focusout', statusBlur);
+    pause(); expect(screen.getByRole('menu', { name: 'Status for Step' })).toBe(menu);
+    expect(done).toHaveFocus(); expect(done).toBeEnabled(); expect(done).toHaveAttribute('aria-disabled', 'true'); expect(statusBlur).not.toHaveBeenCalled();
+    fireEvent.click(done);
+    expect(screen.getByRole('menu', { name: 'Status for Step' })).toBe(menu);
+    unpause(); expect(screen.getByRole('menu', { name: 'Status for Step' })).toBe(menu);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'More actions for Step' }));
+    const more = screen.getByRole('menu', { name: 'More actions for Step' });
+    const deletion = screen.getByRole('menuitem', { name: 'Delete step' }); act(() => deletion.focus()); expect(deletion).toHaveFocus();
+    const moveBlur = vi.fn(); deletion.addEventListener('focusout', moveBlur);
+    pause(); expect(screen.getByRole('menu', { name: 'More actions for Step' })).toBe(more);
+    expect(deletion).toHaveFocus(); expect(deletion).toBeEnabled(); expect(deletion).toHaveAttribute('aria-disabled', 'true'); expect(moveBlur).not.toHaveBeenCalled();
+    expect(screen.getByRole('menuitem', { name: 'Move up' })).toBeDisabled();
+    fireEvent.click(deletion); expect(screen.queryByRole('alertdialog')).toBeNull();
+    fireEvent.keyDown(more, { key: 'Home' }); expect(screen.getByRole('menuitem', { name: 'Add before' })).toHaveFocus();
+    unpause(); expect(screen.getByRole('menu', { name: 'More actions for Step' })).toBe(more);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete step' }));
+    const confirmation = screen.getByRole('alertdialog'); const submit = confirmation.querySelector<HTMLButtonElement>('.dialog-footer button:last-child')!;
+    pause(); expect(screen.getByRole('alertdialog')).toBe(confirmation); expect(submit).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(submit);
+    expect(screen.getByRole('alertdialog')).toBe(confirmation);
+    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    unpause(); await waitFor(() => expect(submit).toHaveAttribute('aria-disabled', 'false')); expect(screen.getByRole('alertdialog')).toBe(confirmation);
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it.each(['access', 'identity'] as const)('withdraws an open Step deletion confirmation on %s retirement', async retirement => {
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('button', { name: /Successor/ }); fireEvent.click(screen.getByRole('tab', { name: 'Steps' }));
+    const trigger = await screen.findByRole('button', { name: 'More actions for Step' });
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-disabled', 'false'));
+    await waitFor(() => expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true));
+    fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Delete step' }));
+    act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    if (retirement === 'access') act(() => scope.suspendProject(projectId));
+    else await act(async () => { await scope.invalidateScope(); });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it('retains a withdrawal review while access is being rechecked and submits only after both gates recover', async () => {
+  const heldAccess = deferred<Response>(); let hold = false; let accessReads = 0;
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+    if (url.endsWith('/access')) { accessReads++; return hold ? heldAccess.promise : Promise.resolve(resources(url)); }
+    return Promise.resolve(resources(url));
+  });
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('heading', { name: 'Parent' });
+    const withdraw = await screen.findByRole('button', { name: 'Force withdraw' }); await waitFor(() => expect(withdraw).toBeEnabled());
+    fireEvent.click(withdraw); const confirmation = await screen.findByRole('alertdialog', { name: 'Force withdraw this task?' });
+    const submit = confirmation.querySelector<HTMLButtonElement>('.dialog-footer button:last-child')!; expect(submit).toHaveAttribute('aria-disabled', 'false');
+    hold = true; const before = accessReads; act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(accessReads).toBeGreaterThan(before));
+    expect(screen.getByRole('alertdialog')).toBe(confirmation); expect(submit).toHaveAttribute('aria-disabled', 'true');
+    act(() => { resume = pauseAuthRequests(); setChecking(true); }); fireEvent.click(submit);
+    expect(screen.getByRole('alertdialog')).toBe(confirmation); expect(submit).toHaveAttribute('aria-disabled', 'true');
+    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    act(() => { resume?.(); resume = undefined; setChecking(false); }); expect(submit).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => heldAccess.resolve(resources(`/api/v1/projects/${projectId}/access`)));
+    await waitFor(() => expect(submit).toHaveAttribute('aria-disabled', 'false')); expect(screen.getByRole('alertdialog')).toBe(confirmation);
+    fireEvent.click(submit); await waitFor(() => expect(fetcher.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(true));
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+
+it.each(['access', 'identity'] as const)('withdraws an open Claim review on %s retirement', async retirement => {
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(resources(url)));
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('heading', { name: 'Parent' }); const button = await screen.findByRole('button', { name: 'Force withdraw' });
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    await screen.findByRole('alertdialog', { name: 'Force withdraw this task?' });
+    act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    if (retirement === 'access') act(() => scope.suspendProject(projectId));
+    else await act(async () => { await scope.invalidateScope(); });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it('retains the open task actions menu during identity verification', async () => {
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => Promise.resolve(identityResources(url)));
+  const { scope, setChecking, view } = mountIdentityCheck(fetcher); let resume: (() => void) | undefined;
+  try {
+    await screen.findByRole('button', { name: /Successor/ }); fireEvent.click(screen.getByRole('button', { name: 'More task actions' }));
+    const menu = screen.getByRole('menu', { name: 'More task actions' });
+    act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    expect(screen.getByRole('menu', { name: 'More task actions' })).toBe(menu);
+    expect(fetcher.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    act(() => { resume?.(); resume = undefined; setChecking(false); }); expect(screen.getByRole('menu', { name: 'More task actions' })).toBe(menu);
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it('does not expose a new withdrawal action while project access is being rechecked', async () => {
+  const heldAccess = deferred<Response>(); let hold = false; let accessReads = 0;
+  const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+    if (url.endsWith('/access')) { accessReads++; return hold ? heldAccess.promise : Promise.resolve(resources(url)); }
+    return Promise.resolve(resources(url));
+  });
+  const { scope, view } = mountIdentityCheck(fetcher);
+  try {
+    await screen.findByRole('heading', { name: 'Parent' });
+    const withdraw = await screen.findByRole('button', { name: 'Force withdraw' }); await waitFor(() => expect(withdraw).toBeEnabled());
+    hold = true; const before = accessReads; act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(accessReads).toBeGreaterThan(before));
+    expect(screen.queryByRole('button', { name: 'Force withdraw' })).toBeNull();
+    await act(async () => heldAccess.resolve(resources(`/api/v1/projects/${projectId}/access`)));
+    expect(await screen.findByRole('button', { name: 'Force withdraw' })).toBeEnabled();
   } finally { view.unmount(); scope.dispose(); }
 });

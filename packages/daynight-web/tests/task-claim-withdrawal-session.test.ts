@@ -130,6 +130,7 @@ describe('worker claim withdrawal mutation ownership', () => {
     reads.mockResolvedValueOnce(reset);
     writes.mockRejectedValueOnce(failure);
     sessions.withdrawClaim(projectId, taskId, claimId, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, reset);
     await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.properties.worker).toBeUndefined());
     expect(reads).toHaveBeenCalledTimes(2);
@@ -170,6 +171,7 @@ describe('worker claim withdrawal mutation ownership', () => {
     reads.mockResolvedValueOnce(reset);
     writes.mockResolvedValueOnce(contradiction);
     sessions.withdrawClaim(projectId, taskId, claimId, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, reset);
     await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(projectId, taskId).mutation.error).toMatchObject({ kind: 'protocol' });

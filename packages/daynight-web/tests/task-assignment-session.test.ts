@@ -31,8 +31,8 @@ afterEach(() => { for (const [sessions, world] of worlds) { sessions.dispose(); 
 
 describe('assignment mutation ownership', () => {
   it.each([{ previous: initial, target: person }, { previous: { ...initial, assignedTo: person }, target: null }, { previous: initial, target: null }, { previous: { ...initial, assignedTo: person }, target: person }])('confirms exact changed or equal assignment %#', async ({ previous, target }) => {
-    const sessions = createSessions(); await open(sessions, previous); const saved = assigned(previous, target); writes.mockResolvedValueOnce(saved);
-    sessions.setAssignedTo(project, task, target, previous.version); await synchronize(sessions, saved);
+    const sessions = createSessions(); await open(sessions, previous); const saved = assigned(previous, target); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise);
+    sessions.setAssignedTo(project, task, target, previous.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, saved); pending.resolve(saved);
     await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
     expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, target, previous.version, expect.any(AbortSignal), expect.objectContaining({ userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
     expect(sessions.snapshot(project, task).detail).toEqual(saved); expect(saved.version - previous.version).toBe(previous.assignedTo === target ? 0n : 1n);
@@ -63,7 +63,7 @@ describe('assignment mutation ownership', () => {
     { dependsOn: [task] }, { externalDependsOn: [task] }, { properties: { pullRequests: [] } }, { properties: { ...initial.properties, future: { enabled: false } } },
   ])('rejects a response that cannot prove the one assignment change %#', async (fields) => {
     const sessions = createSessions(); await open(sessions); const saved = assigned(); reads.mockResolvedValueOnce(saved); writes.mockResolvedValueOnce({ ...saved, ...fields });
-    sessions.setAssignedTo(project, task, person, initial.version); await synchronize(sessions, saved); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'));
+    sessions.setAssignedTo(project, task, person, initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); await synchronize(sessions, saved); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(project, task).mutation.error).toMatchObject({ kind: 'protocol' }); expect(sessions.snapshot(project, task).detail).toEqual(saved); expect(writes).toHaveBeenCalledOnce();
   });
   it.each([{ version: initial.version + 1n }, { updatedAt: nextStamp }, { allowAgents: false }])('rejects a same-assignment response that changes persisted values %#', async (fields) => {
@@ -107,6 +107,8 @@ describe('assignment mutation ownership', () => {
     else if (action === 'permission') { vi.mocked(setTaskAgentPermission).mockResolvedValueOnce(result); sessions.setAgentPermission(project, task, false, previous.version); }
     else if (action === 'platform') { vi.mocked(setTaskRequiredPlatform).mockResolvedValueOnce(result); sessions.setRequiredPlatform(project, task, 'macos', previous.version); }
     else { vi.mocked(withdrawWorkerClaim).mockResolvedValueOnce(result); sessions.withdrawClaim(project, task, worker.claimId, previous.version); }
+    const dispatched = action === 'status' ? setTaskStatus : action === 'permission' ? setTaskAgentPermission : action === 'platform' ? setTaskRequiredPlatform : withdrawWorkerClaim;
+    await waitFor(() => expect(dispatched).toHaveBeenCalledOnce());
     await synchronize(sessions, saved); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled')); expect(sessions.snapshot(project, task).mutation.error).toMatchObject({ kind: 'protocol' }); expect(sessions.snapshot(project, task).detail?.assignedTo).toBe(person);
   });
 });

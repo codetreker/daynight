@@ -49,6 +49,25 @@ it("admits a direct opening without a manifest and uses its parent version for S
   expect(sessions.canSetStepStatus(project, task)).toBe(true);
 });
 
+it("keeps Step controls displayable during identity checking without admitting writes or revoked history", async () => {
+  const { sessions, scope } = world(); let writes = 0;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "PUT") writes++;
+    return Promise.resolve(response(url.endsWith("/steps") ? { projectId: project, taskId: task, version: 1n, steps: [step] } : body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const unsubscribe = sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task);
+  await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  const resume = pauseAuthRequests();
+  try {
+    expect(sessions.canDisplayStepStatus(project, task)).toBe(true);
+    expect(sessions.canSetStepStatus(project, task)).toBe(false);
+    sessions.setStepStatus(project, task, step.id, "done", 1n); expect(writes).toBe(0);
+    scope.suspendProject(project); expect(sessions.canDisplayStepStatus(project, task)).toBe(false);
+  } finally { resume(); unsubscribe(); }
+});
+
 it("preserves a confirmed write when the required refresh fails and never replays it", async () => {
   const { sessions } = world(); let writes = 0; let reads = 0;
   vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
@@ -187,6 +206,471 @@ it("settles a submitted old write without publishing it into a reopened detail",
   await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ detail: { title: "Reopened", version: 2n }, mutation: { phase: "idle" } }));
   expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
   expect(writes).toBe(1);
+});
+
+it.each(["confirmed", "refused", "unknown"] as const)("does not re-register a %s write settled while its direct opening is closed", async outcome => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const write = deferred<Response>(); let writes = 0; let parent = body();
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") {
+      writes++;
+      return writes === 1 ? write.promise : Promise.resolve(response({ error: { code: "forbidden", message: "Denied", requestId: "next" } }, null, 403));
+    }
+    return Promise.resolve(response(parent));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {});
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(writes).toBe(1));
+  unsubscribe(); sessions.releaseRead(project, task);
+  if (outcome === "confirmed") {
+    parent = { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" };
+    write.resolve(response(parent));
+  } else write.resolve(response({ error: { code: outcome === "refused" ? "forbidden" : "internal_error", message: "Failed", requestId: "old" } }, null, outcome === "refused" ? 403 : 500));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0));
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", mutation: { phase: "idle" } }));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
+  sessions.setStatus(project, task, outcome === "confirmed" ? "done" : "in_progress", parent.version);
+  await waitFor(() => expect(writes).toBe(2));
+  reopen();
+});
+
+it("does not re-register a closed old-history write after a replacement settles", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const write = deferred<Response>(); let writes = 0; let currentEpoch = epoch;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return write.promise; }
+    return Promise.resolve(response(body(1n, currentEpoch === epoch ? "Original" : "Replacement"), currentEpoch));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {});
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(writes).toBe(1));
+  unsubscribe(); currentEpoch = replacement;
+  const fence = await scope.beginTaskRead(project, task, 0, 0, signal());
+  expect(await scope.observeHistory(fence, replacement, signal())).toBe("retired");
+  write.resolve(response({ ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" }));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0));
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", detail: { title: "Replacement" }, mutation: { phase: "idle" } }));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false); reopen();
+});
+
+it("keeps an unresolved closed write locked on reopen and releases it after read-only retry", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const write = deferred<Response>(); const retry = deferred<Response>(); let writes = 0; let rejectReads = false; let reopenedReads = 0; let reopening = false;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return writes === 1 ? write.promise : Promise.resolve(response({ error: { code: "forbidden", message: "Denied", requestId: "next" } }, null, 403)); }
+    if (rejectReads) return Promise.reject(new Error("offline"));
+    return reopening && ++reopenedReads > 1 ? retry.promise : Promise.resolve(response(body()));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {});
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(writes).toBe(1));
+  unsubscribe(); rejectReads = true;
+  write.resolve(response({ error: { code: "internal_error", message: "Unknown", requestId: "old" } }, null, 500));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, { phase: string; reconciling: boolean }> }).retiredMutations;
+  await waitFor(() => expect([...retired.values()]).toMatchObject([{ phase: "unknown", reconciling: false }]));
+  rejectReads = false; reopening = true;
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  sessions.setStatus(project, task, "in_progress", 1n); expect(writes).toBe(1);
+  await waitFor(() => expect(reopenedReads).toBeGreaterThan(1));
+  reopening = false; retry.resolve(response(body()));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(writes).toBe(2));
+  reopen();
+});
+
+it.each(["task", "step"] as const)("dispatches the original accepted %s review after closure during preparation", async kind => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); const write = deferred<Response>(); let writes = 0; let parent = body(); let stepVersion = 1n;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return write.promise; }
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: stepVersion, steps: [{ ...step, status: stepVersion === 1n ? "todo" : "done" }] }));
+    return Promise.resolve(response(parent));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {});
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const unsubscribeSteps = kind === "step" ? sessions.subscribeSteps(project, task, () => {}) : () => {};
+  if (kind === "step") { sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true)); }
+  const verify = scope.verifyTaskRead.bind(scope); let entered = false;
+  vi.spyOn(scope, "verifyTaskRead").mockImplementationOnce(async (ticket, signal) => { entered = true; await preparation.promise; return verify(ticket, signal); });
+  if (kind === "step") sessions.setStepStatus(project, task, step.id, "done", 1n);
+  else sessions.setStatus(project, task, "in_progress", 1n);
+  await waitFor(() => expect(entered).toBe(true));
+  unsubscribeSteps(); unsubscribe(); expect(writes).toBe(0);
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  preparation.resolve(); await waitFor(() => expect(writes).toBe(1));
+  if (kind === "step") {
+    parent = body(2n); stepVersion = 2n;
+    write.resolve(response({ projectId: project, taskId: task, version: 2n, steps: [{ ...step, status: "done" }] }));
+  } else {
+    parent = { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" };
+    write.resolve(response(parent));
+  }
+  await waitFor(() => expect(sessions.snapshot(project, task).detail?.version).toBe(2n));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(sessions.snapshot(project, task).mutation.phase).toBe("idle"); expect(writes).toBe(1); reopen();
+});
+
+it("keeps the original review when closure occurs at the final send fence", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let entered = false; let checks = 0; let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response({ error: { code: "forbidden", message: "Denied", requestId: "old" } }, null, 403)); }
+    return Promise.resolve(response(body()));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, signal) => {
+    if (++checks === 2) { entered = true; await preparation.promise; }
+    return verify(ticket, signal);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  unsubscribe(); expect(writes).toBe(0); preparation.resolve();
+  await waitFor(() => expect(writes).toBe(1));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0));
+});
+
+it("dispatches and reconciles an accepted direct review while no view is subscribed", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let entered = false; let writes = 0; let parent = body();
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; parent = { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" }; }
+    return Promise.resolve(response(parent));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementationOnce(async (ticket, signal) => { entered = true; await preparation.promise; return verify(ticket, signal); });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  unsubscribe(); preparation.resolve();
+  await waitFor(() => expect(writes).toBe(1));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0));
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", detail: { version: 2n }, mutation: { phase: "idle" } }));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false); expect(writes).toBe(1); reopen();
+});
+
+it.each(["history", "access"] as const)("does not dispatch a closed direct review after %s retirement", async reason => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let writes = 0; let currentEpoch = epoch; let entered = false;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response(body())); }
+    return Promise.resolve(response(body(), currentEpoch));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementationOnce(async (ticket, signal) => { entered = true; await preparation.promise; return verify(ticket, signal); });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  unsubscribe();
+  if (reason === "history") {
+    currentEpoch = replacement; const fence = await scope.beginTaskRead(project, task, 0, 0, signal());
+    expect(await scope.observeHistory(fence, replacement, signal())).toBe("retired");
+  } else scope.suspendProject(project);
+  preparation.resolve();
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0)); expect(writes).toBe(0);
+});
+
+it("does not dispatch a closed review after the reopened task advances in the same history", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let parent = body(); let writes = 0; let entered = false;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") writes++;
+    return Promise.resolve(response(parent));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementationOnce(async (ticket, signal) => { entered = true; await preparation.promise; return verify(ticket, signal); });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  unsubscribe(); parent = body(2n);
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).detail?.version).toBe(2n));
+  preparation.resolve();
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0)); expect(writes).toBe(0);
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false)); reopen();
+});
+
+it("does not dispatch a closed direct review after a summary opening observes a newer version", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let parent = body(); let writes = 0; let entered = false;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") writes++;
+    return Promise.resolve(response(parent));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementationOnce(async (ticket, signal) => { entered = true; await preparation.promise; return verify(ticket, signal); });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  unsubscribe(); parent = body(2n);
+  const graphTicket = await scope.beginSync(project, signal());
+  expect(await scope.observeHistory(graphTicket, epoch, signal())).toBe("current");
+  const graph = (await scope.applySync(graphTicket, taskSyncFromGraph(graphFixture([parent]), { epoch, versionForTask: () => 2n }), signal())).project;
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.requireOpeningRead(project, task);
+  sessions.observe(project, task, graph.index.nodes.get(task), true);
+  expect(scope.getSummaryVersion(project, task)).toBe(2n);
+  preparation.resolve();
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0)); expect(writes).toBe(0);
+  expect(scope.getSummaryVersion(project, task)).toBe(2n); reopen();
+});
+
+it("does not dispatch a direct review after a summary opening receives a newer pending parent", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let entered = false; let parent = body(); let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") writes++;
+    return Promise.resolve(response(parent));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const ticket = await scope.beginSync(project, signal());
+  expect(await scope.observeHistory(ticket, epoch, signal())).toBe("current");
+  const graph = (await scope.applySync(ticket, taskSyncFromGraph(graphFixture([body()]), { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties }), signal())).project;
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementationOnce(async (fence, abortSignal) => { entered = true; await preparation.promise; return verify(fence, abortSignal); });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  parent = body(2n); sessions.requireOpeningRead(project, task); sessions.observe(project, task, graph.index.nodes.get(task), true); sessions.load(project, task, 1, "open");
+  const entries = (sessions as unknown as { entries: Map<string, { pending: { detail: { version: bigint } } | null }> }).entries;
+  await waitFor(() => expect(entries.get(`${project}/${task}`)?.pending?.detail.version).toBe(2n));
+  expect(scope.getSummaryVersion(project, task)).toBe(1n); preparation.resolve();
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0)); expect(writes).toBe(0); unsubscribe();
+});
+
+it("does not dispatch a retired review after newer Steps precede the parent", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); const parentRefresh = deferred<Response>(); let entered = false; let writes = 0; let parents = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response(body())); }
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: 2n, steps: [] }));
+    if (++parents > 2) return parentRefresh.promise;
+    return Promise.resolve(response(body()));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementationOnce(async (fence, abortSignal) => { entered = true; await preparation.promise; return verify(fence, abortSignal); });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const unsubscribeSteps = sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task);
+  await waitFor(() => expect(sessions.stepsSnapshot(project, task).status).toBe("waiting"));
+  expect(sessions.snapshot(project, task).detail?.version).toBe(1n); preparation.resolve();
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0)); expect(writes).toBe(0);
+  parentRefresh.resolve(response(body(2n))); unsubscribeSteps(); unsubscribe();
+});
+
+it.each([1, 2] as const)("keeps a valid summary review when the same Task opens direct during preparation stage %s", async stage => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let entered = false; let checks = 0; let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return Promise.resolve(response({ error: { code: "forbidden", message: "Denied", requestId: "old" } }, null, 403)); }
+    return Promise.resolve(response(body()));
+  }));
+  const graphTicket = await scope.beginSync(project, signal());
+  expect(await scope.observeHistory(graphTicket, epoch, signal())).toBe("current");
+  const graph = (await scope.applySync(graphTicket, taskSyncFromGraph(graphFixture([body()]), { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties }), signal())).project;
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.requireOpeningRead(project, task);
+  sessions.observe(project, task, graph.index.nodes.get(task), true); sessions.load(project, task, 1, "open");
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", detail: { version: 1n }, requiresFreshRead: false }));
+  const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementation(async (ticket, signal, work) => {
+    if (++checks === stage) { entered = true; await preparation.promise; }
+    return transaction(ticket, signal, work);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true); expect(writes).toBe(0);
+  preparation.resolve(); await waitFor(() => expect(writes).toBe(1));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(sessions.snapshot(project, task).mutation.phase).toBe("idle"); unsubscribe();
+});
+
+it.each(["newer direct", "history", "access"] as const)("does not dispatch a retired summary review after %s", async change => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let entered = false; let writes = 0; let parent = body();
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") writes++;
+    return Promise.resolve(response(parent));
+  }));
+  const graphTicket = await scope.beginSync(project, signal());
+  expect(await scope.observeHistory(graphTicket, epoch, signal())).toBe("current");
+  const graph = (await scope.applySync(graphTicket, taskSyncFromGraph(graphFixture([body()]), { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties }), signal())).project;
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.requireOpeningRead(project, task);
+  sessions.observe(project, task, graph.index.nodes.get(task), true); sessions.load(project, task, 1, "open");
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", requiresFreshRead: false }));
+  const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementationOnce(async (ticket, abortSignal, work) => {
+    entered = true; await preparation.promise; return transaction(ticket, abortSignal, work);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  if (change === "newer direct") parent = body(2n);
+  sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).detail?.version).toBe(parent.version));
+  if (change === "history") {
+    const fence = await scope.beginTaskRead(project, task, 0, 0, signal());
+    expect(await scope.observeHistory(fence, replacement, signal())).toBe("retired");
+  } else if (change === "access") scope.suspendProject(project);
+  preparation.resolve();
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0)); expect(writes).toBe(0); unsubscribe();
+});
+
+it("rechecks the original summary ticket before sending after a silent persisted generation change", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let entered = false; let checks = 0; let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") writes++;
+    return Promise.resolve(response(body()));
+  }));
+  const graphTicket = await scope.beginSync(project, signal());
+  expect(await scope.observeHistory(graphTicket, epoch, signal())).toBe("current");
+  const graph = (await scope.applySync(graphTicket, taskSyncFromGraph(graphFixture([body()]), { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties }), signal())).project;
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.requireOpeningRead(project, task);
+  sessions.observe(project, task, graph.index.nodes.get(task), true); sessions.load(project, task, 1, "open");
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", requiresFreshRead: false }));
+  const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementation(async (ticket, abortSignal, work) => {
+    if (++checks === 2) { entered = true; await preparation.promise; }
+    return transaction(ticket, abortSignal, work);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  const manifest = await db.get("projects", [TEST_VIEWER_ID, project]);
+  expect(manifest).toBeDefined();
+  await db.put("projects", { ...manifest, cacheGeneration: crypto.randomUUID() }); db.close();
+  preparation.resolve();
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0)); expect(writes).toBe(0); unsubscribe();
+});
+
+it("expires an active summary review when the persisted summary advances before its hint arrives", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const preparation = deferred<void>(); let entered = false; let checks = 0; let writes = 0;
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === "PUT") writes++;
+    return Promise.resolve(response(body()));
+  }));
+  const graphTicket = await scope.beginSync(project, signal());
+  expect(await scope.observeHistory(graphTicket, epoch, signal())).toBe("current");
+  const graph = (await scope.applySync(graphTicket, taskSyncFromGraph(graphFixture([body()]), { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties }), signal())).project;
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.requireOpeningRead(project, task);
+  sessions.observe(project, task, graph.index.nodes.get(task), true); sessions.load(project, task, 1, "open");
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", requiresFreshRead: false }));
+  const transaction = scope.detailTransaction.bind(scope);
+  vi.spyOn(scope, "detailTransaction").mockImplementation(async (ticket, abortSignal, work) => {
+    if (++checks === 2) { entered = true; await preparation.promise; }
+    return transaction(ticket, abortSignal, work);
+  });
+  sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+  const db = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+  const record = await db.get("summaries", [TEST_VIEWER_ID, project, task]);
+  expect(record).toBeDefined();
+  await db.put("summaries", { ...record, summary: { ...record.summary, version: 2n } }); db.close();
+  preparation.resolve();
+  await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe("conflict"));
+  expect(writes).toBe(0); expect(sessions.snapshot(project, task).requiresFreshRead).toBe(true); unsubscribe();
+});
+
+it.each([["direct", false], ["direct", true], ["summary", false], ["summary", true]] as const)("revalidates a %s review (retired: %s) when identity pauses during the final send check", async (source, retired) => {
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+    const preparation = deferred<void>(); let entered = false; let checks = 0; let writes = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      if (init.method === "PUT") { writes++; return Promise.resolve(response({ error: { code: "forbidden", message: "Denied", requestId: "old" } }, null, 403)); }
+      return Promise.resolve(response(body()));
+    }));
+    const unsubscribe = sessions.subscribe(project, task, () => {});
+    if (source === "summary") {
+      const ticket = await scope.beginSync(project, signal());
+      expect(await scope.observeHistory(ticket, epoch, signal())).toBe("current");
+      const graph = (await scope.applySync(ticket, taskSyncFromGraph(graphFixture([body()]), { epoch, versionForTask: () => 1n, propertiesForTask: () => body().properties }), signal())).project;
+      sessions.requireOpeningRead(project, task); sessions.observe(project, task, graph.index.nodes.get(task), true); sessions.load(project, task, 1, "open");
+    } else sessions.openDirect(project, task);
+    await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", requiresFreshRead: false }));
+    if (source === "direct") {
+      const verify = scope.verifyTaskRead.bind(scope);
+      vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, abortSignal) => {
+        const result = await verify(ticket, abortSignal);
+        if (++checks === 2) { entered = true; await preparation.promise; }
+        return result;
+      });
+    } else {
+      const transaction = scope.detailTransaction.bind(scope);
+      vi.spyOn(scope, "detailTransaction").mockImplementation(async (ticket, abortSignal, work) => {
+        const result = await transaction(ticket, abortSignal, work);
+        if (++checks === 2) { entered = true; await preparation.promise; }
+        return result;
+      });
+    }
+    sessions.setStatus(project, task, "in_progress", 1n); await waitFor(() => expect(entered).toBe(true));
+    if (retired) { if (source === "direct") unsubscribe(); else sessions.openDirect(project, task); }
+    const resume = pauseAuthRequests();
+    try {
+      preparation.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(writes).toBe(0);
+      if (retired) expect((sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations.size).toBe(1);
+      else expect(sessions.snapshot(project, task).mutation.phase).toBe("pending");
+    } finally { resume(); }
+    await waitFor(() => expect(writes).toBe(1));
+    if (!retired || source === "summary") unsubscribe();
+    sessions.dispose(); scope.dispose();
+});
+
+it("settles a submitted Step write while closed without locking its next opening", async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const write = deferred<Response>(); let writes = 0; let version = 1n;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  const steps = () => ({ projectId: project, taskId: task, version, steps: [{ ...step, status: version === 1n ? "todo" : "done" }] });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "PUT") { writes++; return write.promise; }
+    return Promise.resolve(response(url.endsWith("/steps") ? steps() : body(version)));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); const unsubscribeSteps = sessions.subscribeSteps(project, task, () => {});
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  sessions.setStepStatus(project, task, step.id, "done", 1n); await waitFor(() => expect(writes).toBe(1));
+  unsubscribeSteps(); unsubscribe(); version = 2n; write.resolve(response(steps()));
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, unknown> }).retiredMutations;
+  await waitFor(() => expect(retired.size).toBe(0));
+  const reopen = sessions.subscribe(project, task, () => {}); const reopenSteps = sessions.subscribeSteps(project, task, () => {});
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", detail: { version: 2n }, mutation: { phase: "idle" } }));
+  sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  expect(sessions.stepsSnapshot(project, task).resource?.steps[0]?.status).toBe("done"); expect(writes).toBe(1);
+  reopenSteps(); reopen();
 });
 
 it("does not persist or admit a same-version detail from a replacement history against the old graph", async () => {
