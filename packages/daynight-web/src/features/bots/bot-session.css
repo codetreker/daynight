@@ -32,7 +32,9 @@
 .bot-conversation-starters button:hover { color: #5555b6; }
 .bot-conversation-starters button:focus-visible { outline: 2px solid #6262ba; outline-offset: 3px; border-radius: 3px; }
 
-.bot-session-pane .session-presentation-assistant .session-composer { padding: 12px 36px max(20px, env(safe-area-inset-bottom)); background: #fdfdfe; }
+.bot-session-pane .session-presentation-assistant .session-composer { padding: 12px var(--session-column-right, 36px) max(20px, env(safe-area-inset-bottom)) var(--session-column-left, 36px); background: #fdfdfe; }
+/* Compact menus leave the remaining height to the input and its actions. */
+.bot-session-pane .session-presentation-assistant:has(> .session-composer-compact-menus) > .session-timeline-shell { flex-basis: 0; }
 .bot-session-pane .session-presentation-assistant .session-composer > * { width: 100%; max-width: 760px; margin-inline: auto; }
 .bot-session-pane .session-presentation-assistant .session-composer-surface { padding: 10px 12px 12px; border-color: #dcdfe9; border-radius: 16px; background: #fefeff; transition: border-color 150ms; }
 .bot-session-pane .session-presentation-assistant .session-composer-surface:focus-within { border-color: #6262ba; box-shadow: 0 0 0 1px #6262ba; }
@@ -51,7 +53,7 @@
   .bot-session-pane .session-presentation-assistant .session-message.user_message { padding: 11px 15px; }
   .bot-conversation-empty { padding: 35px 27px; }
   .bot-conversation-empty h3 { font-size: 25px; }
-  .bot-session-pane .session-presentation-assistant .session-composer { padding: 10px 18px max(12px, env(safe-area-inset-bottom)); }
+  .bot-session-pane .session-presentation-assistant .session-composer { padding: 10px var(--session-column-right, 18px) max(12px, env(safe-area-inset-bottom)) var(--session-column-left, 18px); }
   .bot-session-pane .session-presentation-assistant .session-composer-surface { padding: 8px 10px 10px; }
   .bot-session-pane .session-presentation-assistant .session-composer textarea { min-height: 56px; max-height: 120px; }
   .bot-session-pane .session-presentation-assistant .session-control-trigger,
