@@ -16,8 +16,12 @@ import (
 )
 
 func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
-	database := isolatedStore(t)
+	pool := emptyPool(t)
 	ctx := context.Background()
+	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		t.Fatal(err)
+	}
+	database := &Store{Pool: pool}
 	if err := migrate(ctx, database.Pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
