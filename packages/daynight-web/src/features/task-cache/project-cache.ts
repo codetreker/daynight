@@ -21,6 +21,10 @@ export type TaskReadFence = {
   readonly userId: string; readonly userFence: string; readonly projectId: string; readonly taskId: string;
   readonly scopeRevision: number; readonly historyGeneration: number; readonly openingSequence: number; readonly requestGeneration: number;
 };
+export type SessionHistoryRotationDenial = {
+  readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null;
+  readonly expectedLeaseExpiresAt?: number | null; readonly marker: string; readonly requestToken: string; readonly origin?: symbol;
+};
 export type CachedProject = TaskProjection & {
   readonly manifest: ProjectRecord;
   readonly summaries: ReadonlyMap<string, TaskSummary>;
@@ -29,8 +33,8 @@ export type CachedProject = TaskProjection & {
 export type DetailStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "details", "readwrite">;
 export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TASK_CACHE_STORES], "sessionHistory", "readwrite">;
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
-type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true };
-export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
+type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true; readonly origin?: symbol };
+export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
 type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true } };
 export class TaskCacheLifecycleChanged extends DOMException {
   constructor() { super("The task cache lifecycle changed.", "AbortError"); }
@@ -204,14 +208,14 @@ export class TaskCacheScope {
       void this.ready(this.signal).then(() => { this.emit({ projectId, taskNotFound: true }); }).catch(() => {});
     } else this.emit({ projectId, taskNotFound: true });
   }
-  reportDirectSessionDenied(fence: TaskReadFence, epoch: string, manifestAbsent = false): boolean {
+  reportDirectSessionDenied(fence: TaskReadFence, epoch: string, manifestAbsent = false, origin?: symbol): boolean {
     if (!this.isTaskReadCurrent(fence, true) || this.histories.get(fence.projectId)?.epoch !== epoch) return false;
     this.channel?.postMessage({ userId: this.userId, projectId: fence.projectId, userFence: fence.userFence,
       directSessionDenied: { taskId: fence.taskId, epoch, ...(manifestAbsent ? { manifestAbsent: true } : {}) } } satisfies Hint);
-    void this.receiveDirectSessionDenied(fence.projectId, fence.userFence, fence.taskId, epoch, manifestAbsent).catch(() => {});
+    void this.receiveDirectSessionDenied(fence.projectId, fence.userFence, fence.taskId, epoch, manifestAbsent, origin).catch(() => {});
     return true;
   }
-  private async receiveDirectSessionDenied(projectId: string, userFence: string, taskId: string, epoch: string, manifestAbsent = false): Promise<void> {
+  private async receiveDirectSessionDenied(projectId: string, userFence: string, taskId: string, epoch: string, manifestAbsent = false, origin?: symbol): Promise<void> {
     const history = this.histories.get(projectId); const revision = this.getDirectRevision(projectId);
     if (this.isInvalidated || this.userFence !== userFence || history?.epoch !== epoch || this.suspendedProjects.has(projectId)) return;
     if (manifestAbsent) {
@@ -225,14 +229,14 @@ export class TaskCacheScope {
         }, this.signal, true);
         if (manifest === null || this.isInvalidated || this.userFence !== userFence || revision !== this.getDirectRevision(projectId) ||
           this.histories.get(projectId)?.generation !== history.generation || manifest?.state === "active") return;
-        this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true } });
+        this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true, ...(origin === undefined ? {} : { origin }) } });
       } catch {
         if (!this.isInvalidated && this.userFence === userFence && revision === this.getDirectRevision(projectId) &&
-          this.histories.get(projectId)?.generation === history.generation) this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true } });
+          this.histories.get(projectId)?.generation === history.generation) this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true, ...(origin === undefined ? {} : { origin }) } });
       }
       return;
     }
-    if (!manifestAbsent) this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true } });
+    if (!manifestAbsent) this.emit({ projectId, sessionHistoryUncertain: { taskId, expectedToken: null, unbound: true, ...(origin === undefined ? {} : { origin }) } });
     try {
       await this.ready(this.signal);
       if (revision !== this.getDirectRevision(projectId) || this.histories.get(projectId)?.generation !== history.generation) return;
@@ -245,7 +249,7 @@ export class TaskCacheScope {
       if (manifest?.state !== "active" || manifest.epoch !== epoch) return;
       const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch,
         maxUpdatedAt: manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
-      await this.observeHistoryUncertain(ticket, taskId, null, this.signal, true);
+      await this.observeHistoryUncertain(ticket, taskId, null, this.signal, true, undefined, undefined, origin);
     } catch (error) { if (isAbortError(error)) throw error; }
   }
   async revalidateProjectAccess(projectId: string): Promise<void> {
@@ -300,27 +304,20 @@ export class TaskCacheScope {
   }
   private async receiveHistoryClear(projectId: string, userFence: string, cacheGeneration: string, taskId: string, token: string): Promise<void> {
     await this.ready(this.lifetime.signal);
-    let observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
-    if (observed === undefined) {
-      const history = this.histories.get(projectId); const revision = this.getProjectRevision(projectId);
-      if (history?.epoch == null || this.userFence !== userFence) return;
-      const manifest = await this.userTransaction(async (transaction, currentFence) => {
-        if (currentFence !== userFence) return undefined;
-        return this.manifest(transaction, projectId, currentFence);
-      }, this.lifetime.signal);
-      if (revision !== this.getProjectRevision(projectId) || this.histories.get(projectId)?.generation !== history.generation ||
-        manifest?.state !== "active" || manifest.epoch !== history.epoch) return;
-      observed = manifest;
-    }
-    if (observed.userFence !== userFence || observed.cacheGeneration !== cacheGeneration) return;
-    const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: observed.epoch,
-      maxUpdatedAt: observed.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
-    const matches = await this.sessionHistoryTransaction(ticket, this.lifetime.signal, async store => {
-      const row = await store.get([this.userId, projectId, taskId]);
+    const observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
+    const history = this.histories.get(projectId); const expectedEpoch = history?.epoch ?? observed?.epoch ?? null;
+    const revision = this.getDirectRevision(projectId);
+    if (expectedEpoch === null || this.userFence !== userFence || this.suspendedProjects.has(projectId)) return;
+    const matches = await this.userTransaction(async (transaction, currentFence) => {
+      if (currentFence !== userFence) return false;
+      const manifest = await this.manifest(transaction, projectId, currentFence);
+      if (manifest?.state !== "active" || manifest.epoch !== expectedEpoch || manifest.cacheGeneration !== cacheGeneration) return false;
+      const row = await transaction.objectStore("sessionHistory").get([this.userId, projectId, taskId]);
       return row !== undefined && row.userId === this.userId && row.projectId === projectId && row.taskId === taskId &&
         row.userFence === userFence && row.cacheGeneration === cacheGeneration && row.clearedToken === token && row.page === null;
-    });
-    if (matches) this.emit({ projectId, sessionHistoryCleared: { taskId, token } });
+    }, this.lifetime.signal);
+    if (matches && this.userFence === userFence && revision === this.getDirectRevision(projectId) &&
+      (history === undefined || this.histories.get(projectId)?.generation === history.generation)) this.emit({ projectId, sessionHistoryCleared: { taskId, token } });
   }
   private async receiveHistorySettlement(projectId: string, userFence: string, cacheGeneration: string, settlement: HistorySettlement): Promise<void> {
     await this.ready(this.lifetime.signal);
@@ -411,7 +408,7 @@ export class TaskCacheScope {
     if (marker !== undefined && marker.userFence === ticket.userFence && marker.cacheGeneration === ticket.cacheGeneration &&
       (marker.unbound ? marker.allowedToken === token : marker.expectedToken !== token)) this.uncertainHistory.delete(key);
   }
-  private async observeHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<boolean> {
+  private async observeHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null, origin?: symbol): Promise<boolean> {
     try {
       const current = await this.sessionHistoryTransaction(ticket, signal, async store => {
         const row = await store.get([this.userId, ticket.projectId, taskId]);
@@ -435,11 +432,11 @@ export class TaskCacheScope {
       unbound: conservative, revision: ++this.uncertaintyRevision, allowedToken: null };
     this.uncertainHistory.set(key, marker);
     this.emit({ projectId: ticket.projectId, sessionHistoryUncertain: { taskId, expectedToken: marker.expectedToken, ...('expectedPaginationToken' in marker ? { expectedPaginationToken: marker.expectedPaginationToken } : {}),
-      ...('expectedLeaseExpiresAt' in marker ? { expectedLeaseExpiresAt: marker.expectedLeaseExpiresAt } : {}), ...(marker.unbound ? { unbound: true } : {}) } });
+      ...('expectedLeaseExpiresAt' in marker ? { expectedLeaseExpiresAt: marker.expectedLeaseExpiresAt } : {}), ...(marker.unbound ? { unbound: true } : {}), ...(origin === undefined ? {} : { origin }) } });
     return true;
   }
-  async reportHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null): Promise<boolean> {
-    const marked = await this.observeHistoryUncertain(ticket, taskId, expectedToken, signal, unbound, expectedPaginationToken, expectedLeaseExpiresAt);
+  async reportHistoryUncertain(ticket: SyncTicket, taskId: string, expectedToken: string | null, signal: AbortSignal, unbound = false, expectedPaginationToken?: string | null, expectedLeaseExpiresAt?: number | null, origin?: symbol): Promise<boolean> {
+    const marked = await this.observeHistoryUncertain(ticket, taskId, expectedToken, signal, unbound, expectedPaginationToken, expectedLeaseExpiresAt, origin);
     if (marked)
       this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence, cacheGeneration: ticket.cacheGeneration,
         sessionHistoryUncertain: { taskId, expectedToken, ...(expectedPaginationToken !== undefined ? { expectedPaginationToken } : {}),
@@ -876,9 +873,13 @@ export class TaskCacheScope {
     const current = this.historyPreviews.get(ticket.projectId);
     return current !== undefined && current.userFence === ticket.userFence && current.cacheGeneration === ticket.cacheGeneration && current.scopeRevision === ticket.scopeRevision;
   }
-  async rotateSessionHistoryGeneration(ticket: SyncTicket, markerLimit: number, signal: AbortSignal): Promise<boolean> {
+  async rotateSessionHistoryGeneration(ticket: SyncTicket, markerLimit: number, signal: AbortSignal, denial?: SessionHistoryRotationDenial): Promise<boolean> {
     await this.ready(signal);
     if (ticket.userId !== this.userId) return released();
+    if (denial !== undefined && (canonicalId(denial.taskId) !== denial.taskId || canonicalId(denial.marker) !== denial.marker ||
+      canonicalId(denial.requestToken) !== denial.requestToken || denial.expectedToken !== null && canonicalId(denial.expectedToken) !== denial.expectedToken ||
+      denial.expectedPaginationToken != null && canonicalId(denial.expectedPaginationToken) !== denial.expectedPaginationToken ||
+      denial.expectedLeaseExpiresAt != null && (!Number.isSafeInteger(denial.expectedLeaseExpiresAt) || denial.expectedLeaseExpiresAt < 0))) return protocol();
     this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal, ticket.scopeRevision);
     const result = await this.userTransaction(async (transaction, userFence) => {
       const manifest = await this.manifest(transaction, ticket.projectId, userFence);
@@ -889,11 +890,21 @@ export class TaskCacheScope {
         row.userFence === ticket.userFence && row.cacheGeneration === ticket.cacheGeneration && row.clearedToken !== null &&
         typeof row.clearedToken === "string" && canonicalId(row.clearedToken) === row.clearedToken && row.page === null &&
         (row.leaseExpiresAt === null || typeof row.leaseExpiresAt === "number" && Number.isSafeInteger(row.leaseExpiresAt) && row.leaseExpiresAt <= Date.now()))) return null;
+      if (denial !== undefined) {
+        const existing = rows.find(row => row.taskId === denial.taskId);
+        if ((existing?.requestToken ?? null) !== denial.expectedToken ||
+          denial.expectedPaginationToken !== undefined && (existing?.paginationToken ?? null) !== denial.expectedPaginationToken ||
+          denial.expectedLeaseExpiresAt !== undefined && (existing?.leaseExpiresAt ?? null) !== denial.expectedLeaseExpiresAt) return null;
+      }
       const tasks = await this.stored(transaction, manifest);
       for (const name of ["details", "sessionHistory"] as const)
         for await (const cursor of transaction.objectStore(name).index("by-project").iterate([this.userId, ticket.projectId])) await cursor.delete();
       const next = { ...manifest, cacheGeneration: crypto.randomUUID() };
       await transaction.objectStore("projects").put(next);
+      if (denial !== undefined) await transaction.objectStore("sessionHistory").put({ userId: this.userId, projectId: ticket.projectId,
+        taskId: denial.taskId, userFence, cacheGeneration: next.cacheGeneration, requestToken: denial.requestToken, clearedToken: denial.marker,
+        leaseExpiresAt: null, settled: "cancelled", paginationToken: null, page: null, confirmedCompleteEmpty: false, observedNonEmpty: false,
+        byteSize: 0, lastUsedAt: Date.now() });
       return { manifest: next, tasks };
     }, signal);
     if (result === null) return false;
@@ -904,6 +915,12 @@ export class TaskCacheScope {
     this.materialize(result.manifest, result.tasks, this.projections.get(ticket.projectId)?.assigneeVersions ?? undefined);
     this.hint(ticket.projectId);
     this.emit({ projectId: ticket.projectId, cacheGenerationChanged: true });
+    if (denial !== undefined) {
+      const current: SyncTicket = { userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence,
+        cacheGeneration: result.manifest.cacheGeneration, epoch: result.manifest.epoch, maxUpdatedAt: result.manifest.maxUpdatedAt,
+        scopeRevision: this.getProjectRevision(ticket.projectId) };
+      this.sessionHistoryCleared(current, denial.taskId, denial.marker, signal, denial.origin);
+    }
     return true;
   }
   sessionHistorySettled(ticket: SyncTicket, taskId: string, token: string, outcome: "saved" | "failed" | "cancelled", signal: AbortSignal): void {
@@ -913,11 +930,11 @@ export class TaskCacheScope {
       cacheGeneration: ticket.cacheGeneration, sessionHistorySettled } satisfies Hint);
     this.emit({ projectId: ticket.projectId, sessionHistorySettled });
   }
-  sessionHistoryCleared(ticket: SyncTicket, taskId: string, token: string, signal: AbortSignal): void {
+  sessionHistoryCleared(ticket: SyncTicket, taskId: string, token: string, signal: AbortSignal, origin?: symbol): void {
     this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal, ticket.scopeRevision);
     this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence,
       cacheGeneration: ticket.cacheGeneration, sessionHistoryCleared: { taskId, token } } satisfies Hint);
-    this.emit({ projectId: ticket.projectId, sessionHistoryCleared: { taskId, token } });
+    this.emit({ projectId: ticket.projectId, sessionHistoryCleared: { taskId, token, ...(origin === undefined ? {} : { origin }) } });
   }
   async readProfiles(ticket: SyncTicket, signal: AbortSignal): Promise<readonly CachedProfile[]> {
     const outcome = await this.profileTransaction(ticket, signal, async (transaction) => {

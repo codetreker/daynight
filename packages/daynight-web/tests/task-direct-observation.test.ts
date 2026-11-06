@@ -507,3 +507,12 @@ it("withdraws a summary opening while a retired direct write's 404 revalidates a
   access.resolve(response(directAccessFixture(project), null));
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
 });
+
+it("tags same-scope direct denial events without sending the local origin as data", async () => {
+  const { scope } = world(); const fence = await scope.beginTaskRead(project, task, 1, 1, signal());
+  await scope.observeHistory(fence, epoch, signal());
+  const origin = Symbol("source"); const seen: (symbol | undefined)[] = [];
+  scope.subscribe((event) => { if (event.sessionHistoryUncertain) seen.push(event.sessionHistoryUncertain.origin); });
+  expect(scope.reportDirectSessionDenied(fence, epoch, true, origin)).toBe(true);
+  await waitFor(() => expect(seen).toEqual([origin]));
+});

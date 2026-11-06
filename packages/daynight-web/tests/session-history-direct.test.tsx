@@ -78,13 +78,15 @@ class TestChannel {
   static suspended = false;
   static holdClear = false;
   static held: unknown[] = [];
+  static holdHint = false;
+  static heldHints: unknown[] = [];
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   constructor() { TestChannel.channels.push(this); }
-  postMessage(data: unknown) { if (TestChannel.suspended) return; if (TestChannel.holdClear && typeof data === 'object' && data !== null && 'sessionHistoryCleared' in data) { TestChannel.held.push(data); return; } for (const other of TestChannel.channels) if (other !== this) queueMicrotask(() => other.onmessage?.({ data } as MessageEvent<unknown>)); }
+  postMessage(data: unknown) { if (TestChannel.suspended) return; if (TestChannel.holdHint && typeof data === 'object' && data !== null && Object.keys(data).length === 2 && 'projectId' in data && 'userId' in data) { TestChannel.heldHints.push(data); return; } if (TestChannel.holdClear && typeof data === 'object' && data !== null && 'sessionHistoryCleared' in data) { TestChannel.held.push(data); return; } for (const other of TestChannel.channels) if (other !== this) queueMicrotask(() => other.onmessage?.({ data } as MessageEvent<unknown>)); }
   close() { TestChannel.channels = TestChannel.channels.filter(channel => channel !== this); }
 }
 async function seedPeer() {
-  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; vi.stubGlobal('BroadcastChannel', TestChannel);
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = []; vi.stubGlobal('BroadcastChannel', TestChannel);
   const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(peer);
   const signal = new AbortController().signal;
   await peer.applySync(await peer.beginSync(projectId, signal), taskSyncFromGraph(graphFixture([detailFixture(projectId, taskId)]), { epoch, versionForTask: () => 1n }), signal);
@@ -148,7 +150,7 @@ it('does not clear a newer same-history refresh after an older denial', async ()
 });
 
 it('withdraws same-history direct peers without any active manifest', async () => {
-  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; vi.stubGlobal('BroadcastChannel', TestChannel);
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = []; vi.stubGlobal('BroadcastChannel', TestChannel);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
   const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const secondScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(first, secondScope);
@@ -165,7 +167,7 @@ it('withdraws same-history direct peers without any active manifest', async () =
 });
 
 it('retains a peer denial while the direct records tab is inactive', async () => {
-  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; vi.stubGlobal('BroadcastChannel', TestChannel);
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = []; vi.stubGlobal('BroadcastChannel', TestChannel);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
   const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const other = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(first, other);
@@ -212,7 +214,7 @@ it('continues a direct records read when optional cache admission changes', asyn
 });
 
 it('withdraws a direct-only peer during a same-account identity pause', async () => {
-  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; vi.stubGlobal('BroadcastChannel', TestChannel);
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = []; vi.stubGlobal('BroadcastChannel', TestChannel);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
   const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const other = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(first, other);
@@ -288,16 +290,19 @@ it('ignores a delayed durable denial after a newer direct records success', asyn
   api.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
-  const transaction = vi.spyOn(scope, 'sessionHistoryTransaction');
+  const target = scope as unknown as { transaction(...args: unknown[]): Promise<unknown> };
+  const original = target.transaction.bind(target);
+  let verified = false;
+  const transaction = vi.spyOn(target, 'transaction').mockImplementation(async (...args) => { const result = await original(...args); verified = true; return result; });
   try {
     await act(async () => { for (const channel of TestChannel.channels) channel.onmessage?.({ data: TestChannel.held[0] } as MessageEvent<unknown>); });
-    await waitFor(() => expect(transaction).toHaveBeenCalled());
+    await waitFor(() => expect(verified).toBe(true));
     expect(screen.getByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
   } finally { transaction.mockRestore(); }
 });
 
 it('does not withdraw a peer that acquired a persistent owner after a direct request started without a manifest', async () => {
-  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = [];
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = [];
   vi.stubGlobal('BroadcastChannel', TestChannel);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
   const sender = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
@@ -325,7 +330,7 @@ it('does not withdraw a peer that acquired a persistent owner after a direct req
 });
 
 it('withdraws a matching peer conservatively when its storage check fails', async () => {
-  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = [];
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = [];
   vi.stubGlobal('BroadcastChannel', TestChannel);
   vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
   const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
@@ -341,5 +346,162 @@ it('withdraws a matching peer conservatively when its storage check fails', asyn
     firstApi.history.mockRejectedValueOnce(new ApiError('server', 403));
     fireEvent.click(within(screen.getByTestId('first')).getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(within(screen.getByTestId('second')).queryByRole('button', { name: /Herdr/ })).toBeNull());
+  } finally { transaction.mockRestore(); }
+});
+
+it('does not let its delayed denial notification cancel a successful retry', async () => {
+  const { scope, api } = setup();
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+  let reject!: (error: Error) => void;
+  api.history.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const target = scope as unknown as { transaction(...args: unknown[]): Promise<unknown> };
+  const original = target.transaction.bind(target);
+  let held = false;
+  const observed = vi.fn(); scope.subscribe(observed);
+  const transaction = vi.spyOn(target, 'transaction').mockImplementation(async (...args) => {
+    if (!held && args[2] === true) { held = true; await gate; }
+    return original(...args);
+  });
+  try {
+    await act(async () => reject(new ApiError('server', 403)));
+    expect(await screen.findByRole('alert')).toHaveTextContent('You no longer have permission');
+    await waitFor(() => expect(held).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    await act(async () => { release(); await Promise.resolve(); });
+    await waitFor(() => expect(observed).toHaveBeenCalledWith(expect.objectContaining({ sessionHistoryUncertain: expect.objectContaining({ taskId }) })));
+    expect(screen.getByRole('button', { name: /Herdr/ })).toBeVisible();
+  } finally { release(); transaction.mockRestore(); }
+});
+
+it('withdraws another direct records owner in the same scope on denial', async () => {
+  vi.stubGlobal('BroadcastChannel', undefined);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const makeApi = () => ({ history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: null as string | null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() });
+  const firstApi = makeApi(), secondApi = makeApi();
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(firstApi as never).mockReturnValueOnce(secondApi as never);
+  function SharedRecords() {
+    const sessions = useTaskDetailSessions();
+    useEffect(() => { sessions.openDirect(projectId, taskId); return () => sessions.releaseRead(projectId, taskId); }, [sessions]);
+    const records = (name: string) => <div data-testid={name}><ManagedSessionRecords projectId={projectId} taskId={taskId} active direct>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords></div>;
+    return <>{records('first')}{records('second')}</>;
+  }
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><SharedRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  await waitFor(() => expect(within(screen.getByTestId('first')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+  await waitFor(() => expect(within(screen.getByTestId('second')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+  firstApi.history.mockRejectedValueOnce(new ApiError('server', 403));
+  fireEvent.click(within(screen.getByTestId('first')).getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(within(screen.getByTestId('second')).queryByRole('button', { name: /Herdr/ })).toBeNull());
+  expect(await within(screen.getByTestId('first')).findByRole('alert')).toHaveTextContent('You no longer have permission');
+});
+
+it('honors another owner denial while its own older cleanup is pending', async () => {
+  await seedPeer();
+  const { scope, api } = setup();
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+  let reject!: (error: Error) => void;
+  api.history.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(2));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const target = scope as unknown as { sessionHistoryTransaction(...args: unknown[]): Promise<unknown> };
+  const original = target.sessionHistoryTransaction.bind(target);
+  let held = false;
+  const transaction = vi.spyOn(target, 'sessionHistoryTransaction').mockImplementation(async (...args) => {
+    if (!held) { held = true; await gate; }
+    return original(...args);
+  });
+  try {
+    await act(async () => reject(new ApiError('server', 403)));
+    expect(await screen.findByRole('alert')).toHaveTextContent('You no longer have permission');
+    await waitFor(() => expect(held).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
+    const signal = new AbortController().signal;
+    const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, signal);
+    await act(async () => { expect(scope.reportDirectSessionDenied(fence, epoch, false, Symbol('other-owner'))).toBe(true); });
+    expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  } finally { release(); transaction.mockRestore(); }
+});
+
+it('persists and broadcasts a task denial when cleared-marker capacity rotates', async () => {
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = [];
+  vi.stubGlobal('BroadcastChannel', TestChannel);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(peer);
+  const signal = new AbortController().signal;
+  await peer.applySync(await peer.beginSync(projectId, signal), taskSyncFromGraph(graphFixture([detailFixture(projectId, taskId)]), { epoch, versionForTask: () => 1n }), signal);
+  const ticket = await peer.beginSync(projectId, signal);
+  for (let n = 1; n <= 32; n++) {
+    const id = `40000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    expect(await clearSessionHistory(peer, ticket, id, null, signal)).toBe(true);
+  }
+  const first = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const secondScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(first, secondScope);
+  const secondTicket = await secondScope.beginSync(projectId, signal);
+  await secondScope.applySync(secondTicket, taskSyncFromGraph(graphFixture([detailFixture(projectId, taskId)]), { epoch, query: { epoch }, versionForTask: () => 1n }), signal);
+  const makeApi = () => ({ history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: null as string | null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() });
+  const firstApi = makeApi(), secondApi = makeApi();
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(firstApi as never).mockReturnValueOnce(secondApi as never);
+  render(<><div data-testid="first"><TaskCacheProvider scope={first}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div><div data-testid="second"><TaskCacheProvider scope={secondScope}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div></>);
+  await waitFor(() => expect(within(screen.getByTestId('first')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+  await waitFor(() => expect(within(screen.getByTestId('second')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+  TestChannel.holdHint = true;
+  firstApi.history.mockRejectedValueOnce(new ApiError('server', 403));
+  fireEvent.click(within(screen.getByTestId('first')).getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(within(screen.getByTestId('second')).queryByRole('button', { name: /Herdr/ })).toBeNull());
+  expect(TestChannel.heldHints.length).toBeGreaterThan(0);
+  await act(async () => { for (const data of TestChannel.heldHints) for (const channel of TestChannel.channels) channel.onmessage?.({ data } as MessageEvent<unknown>); });
+  expect(within(screen.getByTestId('second')).queryByRole('button', { name: /Herdr/ })).toBeNull();
+  let current!: Awaited<ReturnType<typeof peer.beginSync>>;
+  await waitFor(async () => { current = await peer.beginSync(projectId, signal); expect(current.cacheGeneration).not.toBe(ticket.cacheGeneration); });
+  expect(await readSessionHistoryOwnership(peer, current, taskId, signal)).toMatchObject({ kind: 'present', cleared: true });
+  const reopened = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(reopened);
+  expect(await readCachedSessionHistory(reopened, await reopened.beginSync(projectId, signal), taskId, signal)).toBeNull();
+});
+
+it('ignores a delayed rotation marker after a newer Session success', async () => {
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = [];
+  vi.stubGlobal('BroadcastChannel', TestChannel);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(peer);
+  const signal = new AbortController().signal;
+  await peer.applySync(await peer.beginSync(projectId, signal), taskSyncFromGraph(graphFixture([detailFixture(projectId, taskId)]), { epoch, versionForTask: () => 1n }), signal);
+  const original = await peer.beginSync(projectId, signal);
+  for (let n = 1; n <= 32; n++) expect(await clearSessionHistory(peer, original, `40000000-0000-4000-8000-${String(n).padStart(12, '0')}`, null, signal)).toBe(true);
+  const sender = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const receiver = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(sender, receiver);
+  const makeApi = () => ({ history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [item], nextCursor: null as string | null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() });
+  const senderApi = makeApi(), receiverApi = makeApi();
+  vi.mocked(createTerminalSessionApi).mockReturnValueOnce(senderApi as never).mockReturnValueOnce(receiverApi as never);
+  render(<><div data-testid="first"><TaskCacheProvider scope={sender}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div><div data-testid="second"><TaskCacheProvider scope={receiver}><TaskDetailSessionProvider><DirectRecords /></TaskDetailSessionProvider></TaskCacheProvider></div></>);
+  await waitFor(() => expect(within(screen.getByTestId('first')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+  await waitFor(() => expect(within(screen.getByTestId('second')).getByRole('button', { name: /Herdr/ })).toBeVisible());
+  TestChannel.holdClear = true;
+  senderApi.history.mockRejectedValueOnce(new ApiError('server', 403));
+  fireEvent.click(within(screen.getByTestId('first')).getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(TestChannel.held).toHaveLength(1));
+  let current!: Awaited<ReturnType<typeof peer.beginSync>>;
+  await waitFor(async () => { current = await peer.beginSync(projectId, signal); expect(current.cacheGeneration).not.toBe(original.cacheGeneration); });
+  const lease = await beginSessionHistoryRefresh(peer, current, taskId, signal);
+  if (lease === null || lease.kind !== 'lease') throw new Error('Expected a session refresh lease.');
+  expect(await saveSessionHistory(peer, current, taskId, { items: [second], nextCursor: null }, lease.token, signal)).toBe(true);
+  receiverApi.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
+  fireEvent.click(within(screen.getByTestId('second')).getByRole('button', { name: 'Refresh' }));
+  expect(await within(screen.getByTestId('second')).findByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
+  const target = receiver as unknown as { transaction(...args: unknown[]): Promise<unknown> };
+  const transactionOriginal = target.transaction.bind(target);
+  let verified = false;
+  const transaction = vi.spyOn(target, 'transaction').mockImplementation(async (...args) => { const result = await transactionOriginal(...args); verified = true; return result; });
+  try {
+    await act(async () => { for (const channel of TestChannel.channels) channel.onmessage?.({ data: TestChannel.held[0] } as MessageEvent<unknown>); });
+    await waitFor(() => expect(verified).toBe(true));
+    expect(within(screen.getByTestId('second')).getByRole('button', { name: /2026-11-02.*Herdr/ })).toBeVisible();
   } finally { transaction.mockRestore(); }
 });

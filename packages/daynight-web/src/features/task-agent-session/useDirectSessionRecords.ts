@@ -28,13 +28,14 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
   const qualification = qualificationRef.current;
   const readReady = sessions.captureDirectQualification(projectId, taskId) !== null;
   const blocked = useRef(false);
-  const reportingDenial = useRef(false);
+  const denialOrigin = useRef(Symbol('direct-session-records'));
   const activeRead = useRef<AbortController | null>(null);
 
   // Remain subscribed while a tab is hidden: a peer's negative observation must
   // withdraw its retained page before the tab can be shown again.
   useEffect(() => scope.subscribe(event => {
-    if (event.projectId !== projectId || (reportingDenial.current || blocked.current) && (event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId)) return;
+    if (event.projectId !== projectId || event.sessionHistoryUncertain?.origin === denialOrigin.current || event.sessionHistoryCleared?.origin === denialOrigin.current ||
+      blocked.current && (event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId)) return;
     if (event.accessRevoked || event.scopeSuspended || event.historyChanged || event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId) {
       activeRead.current?.abort();
       blocked.current = !event.historyChanged;
@@ -92,27 +93,25 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
         if (denied) blocked.current = true;
         setState(old => ({ ...old, page: denied ? null : old.page, error, loading: false, checking: false, denied }));
         if (denied) {
-          reportingDenial.current = true;
           let broadcast = historyTicket === null || historyOwner === null;
           // Without a captured owner there is no newer token to compare; the
           // epoch-bound negative hint can retire peers even during identity checks.
           let broadcasted = false;
-          if (broadcast) broadcasted = sessions.reportDirectHistoryDenied(projectId, taskId, qualification, manifestAbsent);
+          if (broadcast) broadcasted = sessions.reportDirectHistoryDenied(projectId, taskId, qualification, manifestAbsent, denialOrigin.current);
           try {
             if (historyTicket !== null && historyOwner === null) {
-              await scope.reportHistoryUncertain(historyTicket, taskId, null, scope.signal, true);
+              await scope.reportHistoryUncertain(historyTicket, taskId, null, scope.signal, true, undefined, undefined, denialOrigin.current);
             } else if (historyTicket !== null) {
               const observed = historyOwner?.kind === 'present' ? historyOwner : null;
               await clearSessionHistory(scope, historyTicket, taskId, observed?.token ?? null, scope.signal,
-                observed?.paginationToken ?? null, observed?.leaseExpiresAt ?? null);
+                observed?.paginationToken ?? null, observed?.leaseExpiresAt ?? null, denialOrigin.current);
               // The durable marker has its own token-checked peer notification.
               broadcast = false;
             }
           } catch (failure) { broadcast = !isAbortError(failure); }
           try {
-            if (broadcast && !broadcasted) sessions.reportDirectHistoryDenied(projectId, taskId, qualification, manifestAbsent);
+            if (broadcast && !broadcasted) sessions.reportDirectHistoryDenied(projectId, taskId, qualification, manifestAbsent, denialOrigin.current);
           } catch { /* Identity retirement or a new history fences this denial. */ }
-          finally { reportingDenial.current = false; }
         }
       }
     })();

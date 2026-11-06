@@ -275,10 +275,10 @@ export class TaskDetailSessions {
     const ticket = await this.scope.getDirectHistoryTicket(receipt.fence, receipt.epoch, signal);
     return this.isDirectQualificationCurrent(projectId, taskId, qualification) ? ticket : null;
   }
-  reportDirectHistoryDenied(projectId: string, taskId: string, qualification: DirectQualification, manifestAbsent = false): boolean {
+  reportDirectHistoryDenied(projectId: string, taskId: string, qualification: DirectQualification, manifestAbsent = false, origin?: symbol): boolean {
     const receipt = qualification[directQualification];
     if (!this.isDirectQualificationHistoryCurrent(projectId, taskId, qualification)) return false;
-    return this.scope.reportDirectSessionDenied(receipt.fence, receipt.epoch, manifestAbsent);
+    return this.scope.reportDirectSessionDenied(receipt.fence, receipt.epoch, manifestAbsent, origin);
   }
   openDirect(projectId: string, taskId: string): void {
     const entry = this.entry(projectId, taskId);
