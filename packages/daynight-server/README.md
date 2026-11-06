@@ -340,7 +340,7 @@ to marked, bounded summaries; request `full` for complete content. Step page
 cursors bind the parent version and reject continuation after a change. Step
 writes return confirmed version and change facts and preserve the original
 collection capacity. Team and membership versions are decimal strings, and list
-results use scoped cursors. A Team list item exceeding the response budget
+results use scoped cursors. An item in a Team, Team member or scoped Project list that exceeds its response budget
 produces an explicit error; complete MCP retrieval and continuation past that
 item are not yet available.
 
