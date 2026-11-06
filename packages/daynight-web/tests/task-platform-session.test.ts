@@ -67,16 +67,13 @@ describe('platform mutation ownership', () => {
     await synchronize(sessions, changed); pending.resolve(changed); await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
     expect(sessions.snapshot(project, 'other').detail).toBeNull();
   });
-  it('blocks platform saves while a permission or status write owns the task', async () => {
-    for (const action of ['permission', 'status']) {
-      const sessions = createSessions(); await open(sessions); const pending = deferred<TaskDetail>();
-      if (action === 'permission') { vi.mocked(setTaskAgentPermission).mockReturnValueOnce(pending.promise); sessions.setAgentPermission(project, id, true, initial.version); }
-      else { vi.mocked(setTaskStatus).mockReturnValueOnce(pending.promise); sessions.setStatus(project, id, 'in_progress', initial.version); }
-      sessions.setRequiredPlatform(project, id, 'linux', initial.version); expect(writes).not.toHaveBeenCalled();
-      const saved: TaskDetail = { ...initial, version: initial.version + 1n, ...(action === 'permission' ? { allowAgents: true } : { status: 'in_progress' as const, ready: false, startedAt: '2026-10-24T00:01:00Z' }) };
-      await synchronize(sessions, saved); pending.resolve(saved);
-      await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed')); sessions.dispose();
-    }
+  it('blocks platform saves while a permission write owns the task', async () => {
+    const sessions = createSessions(); await open(sessions); const pending = deferred<TaskDetail>();
+    vi.mocked(setTaskAgentPermission).mockReturnValueOnce(pending.promise); sessions.setAgentPermission(project, id, true, initial.version);
+    sessions.setRequiredPlatform(project, id, 'linux', initial.version); expect(writes).not.toHaveBeenCalled();
+    const saved: TaskDetail = { ...initial, version: initial.version + 1n, allowAgents: true };
+    await synchronize(sessions, saved); pending.resolve(saved);
+    await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
   });
   it('preserves a refusal until a new explicit save', async () => {
     const failure = new ApiError('server', 403, 'forbidden', 'platform-refusal'); const sessions = createSessions(); await open(sessions);

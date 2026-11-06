@@ -111,11 +111,15 @@ describe('versioned status session', () => {
     const saved = result(initial, 'in_progress'); await synchronize(sessions, saved); pending.resolve(saved); await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(saved));
     expect(sessions.snapshot(otherProject, otherTask).detail?.status).toBe('todo');
   });
-  it('keeps status and permission mutually exclusive while one status request is pending', async () => {
+  it('serializes all task writes while a status request is pending', async () => {
     const sessions = createSessions(); const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise); await open(sessions); submit(sessions);
     submit(sessions, 'done'); sessions.setAgentPermission(project, task, true, version); sessions.setRequiredPlatform(project, task, 'macos', version);
-    expect(setTaskRequiredPlatform).not.toHaveBeenCalled(); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); expect(permissions).not.toHaveBeenCalled(); expect(canSetStatus(sessions.snapshot(project, task))).toBe(false); expect(canSetAgentPermission(sessions.snapshot(project, task))).toBe(false); expect(canSetRequiredPlatform(sessions.snapshot(project, task))).toBe(false);
+    expect(sessions.snapshot(project, task).mutation.operation).toMatchObject({ action: 'status', status: 'in_progress', version });
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
+    expect(permissions).not.toHaveBeenCalled(); expect(setTaskRequiredPlatform).not.toHaveBeenCalled();
+    expect(canSetStatus(sessions.snapshot(project, task))).toBe(false); expect(canSetAgentPermission(sessions.snapshot(project, task))).toBe(false); expect(canSetRequiredPlatform(sessions.snapshot(project, task))).toBe(false);
     await synchronize(sessions, result(initial, 'in_progress')); pending.resolve(result(initial, 'in_progress')); await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
+    expect(canSetAgentPermission(sessions.snapshot(project, task))).toBe(false);
   });
   it('retains a refusal and only retries on another deliberate operation', async () => {
     const error = new ApiError('server', 409, 'dependency_unsatisfied', 'refusal'); writes.mockRejectedValueOnce(error).mockResolvedValueOnce(result(initial, 'in_progress'));

@@ -54,16 +54,6 @@ describe('shared task mutation ownership', () => {
     await waitFor(() => expect(sessions.snapshot(project, id).detail?.allowAgents).toBe(true));
     expect(sessions.snapshot(project, 'other').detail).toBeNull();
   });
-  it('blocks permission while an status write owns the same task', async () => {
-    const sessions = createSessions(); await open(sessions);
-    const pending = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(pending.promise);
-    sessions.setStatus(project, id, 'in_progress', initial.version); sessions.setAgentPermission(project, id, true, initial.version);
-    expect(writes).not.toHaveBeenCalled();
-    const running: TaskDetail = { ...initial, status: 'in_progress', ready: false, startedAt: '2026-10-24T00:01:00Z', version: initial.version + 1n };
-    await synchronize(sessions, running); pending.resolve(running);
-    await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
-    expect(canSetAgentPermission(sessions.snapshot(project, id))).toBe(false);
-  });
   it('rejects stale, same-value and executing permission requests before dispatch', async () => {
     const sessions = createSessions(); await open(sessions);
     sessions.setAgentPermission(project, id, true, initial.version - 1n);
