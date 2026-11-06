@@ -185,7 +185,7 @@ DNS 前拒绝 localhost/子域、`.local`、单标签内部名称及元数据名
 
 浏览器核正文 hash/revision/binding，再以受控节点替换原 img，移除 src/srcset；hydrate、错误 fallback 和解析失败都不能把原路径交浏览器。组件以稳定 imageId 为 key，不拼状态/hash/revision 导致卸载。linked image 的原链接与独立预览/下载入口并列，不嵌套交互元素；href 继续白名单和 noopener/noreferrer。reasoning/工具筛选不妨碍保存，图片完成不强迫滚底或展开工具。
 
-归档闭包包含 bindings、retained、reasoning、撤回容器及迟到关联。只有确定从未采集的缺图可 partial；unknown、正文 gap、known available 丢失或摘要损坏均不能凑 partial。已保存原件在 Controller、源文件和外站离线后仍可按 Session/record 权限读取；这不承诺浏览器断网图库。
+归档闭包包含 bindings、retained、reasoning、撤回容器及迟到关联。非 null imageProjectionError 或 reasoning bindings=null 表示图片出现集合未知，必须阻止归档 sealed/ready，不能以空 retained/图片数组、完整文字或连续 source 序号认定 complete，也不能伪造 ImageUnavailablePart 凑 partial；原文字、retained 和未决引用保留，解析恢复并完整核验之前保持可协调状态，确定无法恢复则归档失败。只有确定从未采集的真实缺图可 partial；unknown、正文 gap、known available 丢失或摘要损坏均不能凑 partial。已保存原件在 Controller、源文件和外站离线后仍可按 Session/record 权限读取；这不承诺浏览器断网图库。
 
 来源每图上限和 Session 预算沿公共合同，8 图/20 MiB 只限制用户输入，不限制一个工具或 Markdown 输出的图片总数。每个出现、失败和 retained 都计 metadata/JSON 预算；不能只采前几张而称完整。原件不转码，decoder、服务复制和摘要均须真实成功才 available。
 

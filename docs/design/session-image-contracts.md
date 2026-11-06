@@ -418,7 +418,7 @@ HTTP、stream、历史及归档读取每次显式选择表示；cursor 同时绑
 
 旧投影保持 eventSeq/historyEpoch/entryId/entrySeq。每个 image_resource 事件一对一转为该序号处完整严格 v1 snapshot：lastEventSeq 为原序号，保留有效 sessionRevision；即使旧 reducer 忽略同 revision 的内容，也推进 lastEventSeq。不能删事件留缺口或发送未知 kind。媒体块不分配时间线序号。Markdown part 转原完整 TextPart，不另附当前图片；retained 旧图片保留有界说明。
 
-归档接纳同时计算新 timeline 与完整 schema1 envelope 的精确 UTF-8 编码，各不超过 67108864 bytes、100000 entries。旧兼容投影保留全部文字、工具位置/状态和 legacy resources；不能只计 entries，也不能假设旧客户端有分页 fallback。状态摘要始终对应所选表示的实际原 bytes。schema3 manifest、timeline、旧表示原文件与状态/读取接口统一见[归档设计](session-image-archives.md)。
+归档接纳同时计算新 timeline 与完整 schema1 envelope 的精确 UTF-8 编码，各不超过 67108864 bytes、100000 entries。旧兼容投影保留全部文字、工具位置/状态和 legacy resources；不能只计 entries，也不能假设旧客户端有分页 fallback。归档封存还必须确认所有 Markdown/reasoning 图片绑定完整且 imageProjectionError=null；图片出现集合未知不能由空数组判定 complete，也不能伪造缺图项变为 partial。状态摘要始终对应所选表示的实际原 bytes。schema3 manifest、timeline、旧表示原文件与状态/读取接口统一见[归档设计](session-image-archives.md)。
 
 ## 服务上传、权限与持久提交
 

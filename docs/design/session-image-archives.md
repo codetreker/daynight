@@ -136,7 +136,7 @@ manifest 原 UTF-8 JSON 为 1..4194304 bytes。timeline.byteLength 为 1..671088
 
 ImageTimelineEntry 是图片表示的完整 timeline entry，含普通用户/助手/工具、reasoning、Markdown bindings、retained 和撤回容器；不能只遍历独立 ImagePart。entries 最多 100000，entryId 唯一且 entrySeq 严格递增。resources 最多 1000，resourceId 唯一，保留旧 SessionResource 及 `{resource,data}` 精确表示：pending 不进入封存文件；available 的 data 必须为规范 Base64，解码长度等于 descriptor 且不超过 8388608 bytes，完整 SHA 匹配；failed/unavailable 的 data 为 null。新图片不放入该 legacy 数组，也不把 Base64 放入 manifest。
 
-闭包双向核验：每个 ImagePart 都有完全匹配的 images 描述符，每个描述符至少被一个实际消息出现引用；同样校验旧资源引用。未发送草稿不进入归档。`complete` 当且仅当没有 ImageUnavailablePart 且全部引用原件已经保存；`partial` 至少有一项确定从未采集的 ImageUnavailablePart，可有零项 images。known available 损坏、正文 gap 或未知提交不满足 partial。
+闭包双向核验：每个 ImagePart 都有完全匹配的 images 描述符，每个描述符至少被一个实际消息出现引用；同样校验旧资源引用。未发送草稿不进入归档。`complete` 当且仅当所有适用条目的 imageProjectionError=null、所有 Markdown/reasoning 绑定已经完整核验、没有 ImageUnavailablePart 且全部引用原件已经保存；`partial` 至少有一项确定从未采集的 ImageUnavailablePart，可有零项 images。known available 损坏、正文 gap 或未知提交不满足 partial。非 null imageProjectionError 或 reasoning 的 null bindings 表示图片引用集合尚未知，即使当前没有 ImagePart/ImageUnavailablePart 也不得封存或发布 ready（complete/partial 均不可）。它不是已定位且确定未采集的出现，不能伪造 imageId/缺图项满足 partial；应保留原正文、retained 和全部未决引用，在有界解析恢复并确认完整集合前保持 settling/pending，确定无法恢复则明确 failed。
 
 | ImageArchiveStatus.state | sha256 / byteLength | completeness | errorCode |
 | --- | --- | --- | --- |
@@ -274,7 +274,7 @@ blobId 仅用于内部对象解析，不是对外下载能力；manifest 包含 
 1. 在原owner/原Session归档权限与停止证明下建立settling准备，停止新原生执行和新的任意来源读取，但先允许原stopped writer补送本地已发生的最终正文、来源映射和连续source截止证据。归档重试不依赖原WebSocket重新上线：新增有界history同步profile接收原pending-content的完整最终投影，重建仅hash/长度/引用的服务预算账本，从有界临时文件逐项校验后清理正文。只有完整同步确认才固定候选occurrence集合；不能用尚未同步的服务视图seal。
 2. 最多等待60秒完成当前已有本地来源/解码尝试和服务 query/复制。尚未开始或确定只有未提交 partial staging 的采集在确认 writer 停止后，原 capture 原子转 failed并释放预留，保留明确缺图原因。已 committed 的必须纳入原图。validated/copying/提交未知先查服务，不能以60秒到期宣称未采集。
 3. 最终正文同步后，已登记采集的终态/retained结算仍是允许的确定增量；完成这些增量并再次确认最终预算账本后才seal，禁止一切正文和出现变更。服务锁内对原 capture 做终结 CAS：commit 已获胜则只能纳入 committed；confirmed failed 获胜后旧 attempt 的 validated/复制完成不可再次提交。还有未知服务结果、活跃 writer 或未决原生消息关联时归档保持 pending或明确失败，持有 pin；之后只协调原准备，不生成竞争 manifest。prepared bytes 丢失但服务已 committed 仍可归档；服务明确从未提交才记缺失。
-4. 结算全部出现后取得冻结完整投影，包含当前/retained/撤回容器；共享 codec 验证闭包、新旧两种容量和原投影 gap。gap 表示未知文本内容时整个归档失败，不把图片 partial当作文本缺页通行证。
+4. 结算全部出现后取得冻结完整投影，包含当前/retained/撤回容器；共享 codec 验证闭包、新旧两种容量和原投影 gap，并要求全部 imageProjectionError=null 和完整有效的 Markdown/reasoning bindings；首次解析失败且 retained 为空也不能通过空集合检查。未解决图片投影错误时不进入 sealed，不创建可发布 manifest。gap 表示未知文本内容时整个归档失败，不把图片 partial当作文本缺页通行证。
 5. 服务建立暂时归档 pin，返回仅此记录引用的 descriptor/blobId 映射。Controller据其本地完整正文与冻结账本写timeline及manifest，服务从上传timeline生成确定兼容表示；没有资源的未发送草稿不进入它们。发送 unknown 的独立 operation pin 保留，不能捏造已接受用户消息；未决关联若可能改变最终历史则不封存不可变完整归档。
 
 准备查询与驱动使用本文的归档控制合同：`POST {base}/archive/prepare` 使用严格 `{fence,controllerId,controllerInstanceId}`，原 stopped writer/归档权限；重复相同身份协调原准备。`GET {base}/archive/prepare` 使用同权限，仅观察，返回 `{recordId,phase,images,error,timelineRevision}`；phase=settling/sealed/failed，images 是 sealed 时完整 `NativeImageArchiveManifest.images`、其他为空，error 为失败时公共协议 ImageError、其他 null。sealed 表示出现终态及资源映射已冻结，不是 ready。reply不携带locator、用户凭据或对象路径。一次响应≤4 MiB，直接HTTPS响应不占2 MiB控制帧；准备账本保证 images上限。回执携带可核验的冻结 timeline 内容身份：`timelineRevision:Decimal|null`，sealed 必须非null，其他为null；Controller 提交的文件必须来自同revision，服务从账本逐项核对，不信 Controller 自报完整。
@@ -310,7 +310,7 @@ PUT `{base}/archive/content` 为原始manifest JSON（application/json、≤4 Mi
 3. 将manifest、timeline、兼容副本持久发布到记录namespace，获得后端耐久证明。数据库事务再次校验准备revision、权限/删除epoch和同一资源集合，原子插入正式record引用、记录三种文件身份、设ready/completeness、释放准备pin。文件先行产生的孤儿不是ready；SQL提交不确定先只读原提交。
 4. 返回与原manifest精确相等的status。Controller保存含完整record/fence/文件身份的本地耐久receipt，再释放仅为本次归档使用的pin；不清除native/resume/unknown pin，不删除worktree或源文件。原有worker清理仍由其生命周期负责。
 
-complete表示没有ImageUnavailablePart且所有ImagePart原件已提交；partial至少有一个从未成功采集的明确失败项，成功项仍可读。known available 的blob丢失/摘要不符、缺descriptor、未决commit、timeline gap、文件损坏均不能转换partial凑ready。尚未发布时设failed或保持可协调pending，错误定位实际对象。ready后发现存储损坏是读取完整性失败；不改写已封存manifest/completeness，UI明确“归档图片读取失败”，不沿原ready宣称当前原件都健康。只能从已验证的同摘要备份修复物理对象，不能重新抓源。
+complete 表示所有适用条目 imageProjectionError=null、Markdown/reasoning 图片绑定完整有效、没有 ImageUnavailablePart 且所有 ImagePart 原件已提交；partial至少有一个从未成功采集的明确失败项，成功项仍可读。known available 的blob丢失/摘要不符、缺descriptor、未决commit、timeline gap、文件损坏以及非 null imageProjectionError/null reasoning bindings 均不能转换 partial 凑 ready。图片解析错误使出现集合未知，服务在 manifest 发布前再次拒绝未解决错误，不能由完整文字/source 序号或空图片数组推定无图。尚未发布时设failed或保持可协调pending，错误定位实际对象。ready后发现存储损坏是读取完整性失败；不改写已封存manifest/completeness，UI明确“归档图片读取失败”，不沿原ready宣称当前原件都健康。只能从已验证的同摘要备份修复物理对象，不能重新抓源。
 
 PUT/DB提交回执未知时先GET archive与原prepare/file状态。相同manifest的ready即核对原结果；pending表示继续原工作；查询失败继续保留原文件及pin。不得无条件POST failed覆盖可能成功的结果，不换recordId、fileId或摘要逃避冲突。独立archive retry继续沿原停机证据，不能启动Provider；新generation不得冒用旧写资格。
 
@@ -354,7 +354,7 @@ Controller图片表迁移由Controller 媒体存储 journal-format唯一owner完
 
 故障验证覆盖 prepare、完整历史同步、最后文件块、文件 fsync、manifest、DB commit 和响应丢失；原身份协调且不启动 Provider。特别验证停止前未上报的最后条目、单条 entry 大于普通历史页、source gap、commit/failed 竞争、晚到 retained 以及未决消息关联。ready 必须具有三类文件和原件引用的耐久证据。
 
-原件 A 保存后将源替换为 B 或删除、关闭 Controller、重启服务，再从 Task、Test、Bot、全屏、历史选择器和附件入口预览/下载，必须仍得到 A 的原 SHA。从未采集的失败可构成 partial；known available 丢失、摘要错误、文本 gap 或提交 unknown 不得构成 partial。ready 后损坏只能报告读失败，不改写封存 manifest。
+原件 A 保存后将源替换为 B 或删除、关闭 Controller、重启服务，再从 Task、Test、Bot、全屏、历史选择器和附件入口预览/下载，必须仍得到 A 的原 SHA。从未采集的失败可构成 partial；known available 丢失、摘要错误、文本 gap、提交 unknown 或未解决的图片投影错误不得构成 partial。必须覆盖首次 Markdown 解析超时/节点预算失败且 retained=[]、无任何图片 part，以及 reasoning bindings=null 两种反例：完整文字与连续 source 序号仍不得 sealed/ready，也不能伪造 unavailable 出现；只有有界恢复得到完整绑定并结算真实出现后才重新判断完整性。ready 后损坏只能报告读失败，不改写封存 manifest。
 
 显式 Test resume 覆盖源关系与 native 身份、完整目标预算预留、一次复制的稳定映射、连续 resume、源删除/撤权、复制失败及源损坏。导入完成的目标副本不随源删除；无可信键不按文字、摘要或数组下标猜配。
 
