@@ -206,10 +206,6 @@ jobs:
           name: daynight-cli-installed-${{ matrix.os }}
           path: |
             .tmp/validation-environment.json
-            .tmp/e2e-evidence.json
-            .tmp/update-evidence.json
-            .tmp/project-task-evidence.json
-            .tmp/skill-install-evidence.json
             .tmp/installed-cli-preparation.json
           include-hidden-files: true
           if-no-files-found: error
@@ -335,10 +331,6 @@ jobs:
           name: daynight-cli-installed-macos-15
           path: |
             .tmp/validation-environment.json
-            .tmp/e2e-evidence.json
-            .tmp/update-evidence.json
-            .tmp/project-task-evidence.json
-            .tmp/skill-install-evidence.json
             .tmp/installed-cli-preparation.json
           include-hidden-files: true
           if-no-files-found: error

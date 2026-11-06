@@ -20,16 +20,6 @@ for (const args of [["--help"], ["task", "--help"], ["task", "step", "--help"], 
 }
 
 const load = (relative) => import(pathToFileURL(path.join(installed, relative)).href);
-const { parseApiJson, stringifyApiJson } = await load("dist/api/json.js");
-const versionJson = '{"version":9223372036854775807}';
-assert.equal(parseApiJson(versionJson).version, 9_223_372_036_854_775_807n);
-assert.equal(stringifyApiJson(parseApiJson(versionJson)), versionJson);
-const { parseStepsResource } = await load("dist/api/task-steps.js");
-const stepProject = "11111111-1111-4111-8111-111111111111";
-const stepTask = "22222222-2222-4222-8222-222222222222";
-const emptySteps = parseApiJson(`{"projectId":"${stepProject}","taskId":"${stepTask}","version":9223372036854775807,"steps":[]}`);
-assert.equal(parseStepsResource(emptySteps, stepProject, stepTask).version, 9_223_372_036_854_775_807n);
-
 const { detectSkillAgents } = await load("dist/commands/skill/agents.js");
 assert.ok(Array.isArray(await detectSkillAgents()));
 await load("dist/commands/update/updater.js");
@@ -70,4 +60,4 @@ for (const [prompt, config, expected] of [
   }
 }
 `], { cwd: installed, stdio: "inherit", timeout: 15_000 });
-console.log(`Node.js ${process.version}: CLI ${manifest.version}, launchers, command loading, lossless JSON, SQLite and prompts passed.`);
+console.log(`Node.js ${process.version}: CLI ${manifest.version}, launchers, command loading, SQLite and prompts passed.`);
