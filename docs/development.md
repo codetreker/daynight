@@ -953,9 +953,11 @@ ten-check combined-authentication journeys and the existing real attachment
 persistence/paired-backup-restoration check. That ownership derives from the
 shard identity. Browser authentication retains normal member removal, revoked
 resource/UI access, PAT lifecycle, restart and completed shared binary data.
-The paused-upload grant-lock race belongs to
-`TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock` in the Go server
-E2E suite, using its built-binary fixture, authenticated HTTP and isolated PostgreSQL. The Web
+The paused-upload authorization race belongs to
+`TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation` in the Go server
+E2E suite, using its built-binary fixture, authenticated HTTP and isolated PostgreSQL.
+It verifies that member removal returns 204 and new access returns 404 before the
+1 MiB upload body is released, then the admitted upload returns 201 with matching bytes. The Web
 combined journey no longer runs paused upload IO, attachment database observation
 or the separate socket-disconnection scenario. Both entries retain functional,
 image identity, process, browser and resource cleanup requirements. Matrix `fail-fast` is false so the

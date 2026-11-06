@@ -50,26 +50,26 @@ type acceptanceEvidence struct {
 }
 
 type acceptanceScenario struct {
-	Name                   string                         `json:"name"`
-	Requirements           []string                       `json:"requirements"`
-	Result                 string                         `json:"result"`
-	DurationMS             int64                          `json:"durationMs"`
-	ProcessesStarted       int                            `json:"processesStarted"`
-	ProcessesReaped        int                            `json:"processesReaped"`
-	CLIProcessesStarted    int                            `json:"cliProcessesStarted,omitempty"`
-	CLIProcessesReaped     int                            `json:"cliProcessesReaped,omitempty"`
-	CLIWorkspaceRemoved    bool                           `json:"cliWorkspaceRemoved,omitempty"`
-	CLIRefusalRequestIDs   []string                       `json:"cliRefusalRequestIds,omitempty"`
-	ConcurrentCLIRequests  []acceptanceCLIRequest         `json:"concurrentCliRequests,omitempty"`
-	SchemasRemoved         int                            `json:"schemasRemoved"`
-	SessionsRemoved        bool                           `json:"sessionsRemoved"`
-	StorageRootRemoved     bool                           `json:"storageRootRemoved"`
-	AttachmentFiles        []acceptanceAttachmentEvidence `json:"attachmentFiles,omitempty"`
-	GrantLock              *acceptanceGrantLockEvidence   `json:"grantLock,omitempty"`
-	AttachmentsListed      int                            `json:"attachmentsListed,omitempty"`
-	AttachmentPageRequests int                            `json:"attachmentPageRequests,omitempty"`
-	Cleanup                string                         `json:"cleanup"`
-	Lifecycle              *acceptanceLifecycleEvidence   `json:"lifecycle,omitempty"`
+	Name                   string                             `json:"name"`
+	Requirements           []string                           `json:"requirements"`
+	Result                 string                             `json:"result"`
+	DurationMS             int64                              `json:"durationMs"`
+	ProcessesStarted       int                                `json:"processesStarted"`
+	ProcessesReaped        int                                `json:"processesReaped"`
+	CLIProcessesStarted    int                                `json:"cliProcessesStarted,omitempty"`
+	CLIProcessesReaped     int                                `json:"cliProcessesReaped,omitempty"`
+	CLIWorkspaceRemoved    bool                               `json:"cliWorkspaceRemoved,omitempty"`
+	CLIRefusalRequestIDs   []string                           `json:"cliRefusalRequestIds,omitempty"`
+	ConcurrentCLIRequests  []acceptanceCLIRequest             `json:"concurrentCliRequests,omitempty"`
+	SchemasRemoved         int                                `json:"schemasRemoved"`
+	SessionsRemoved        bool                               `json:"sessionsRemoved"`
+	StorageRootRemoved     bool                               `json:"storageRootRemoved"`
+	AttachmentFiles        []acceptanceAttachmentEvidence     `json:"attachmentFiles,omitempty"`
+	GrantRevocation        *acceptanceGrantRevocationEvidence `json:"grantRevocation,omitempty"`
+	AttachmentsListed      int                                `json:"attachmentsListed,omitempty"`
+	AttachmentPageRequests int                                `json:"attachmentPageRequests,omitempty"`
+	Cleanup                string                             `json:"cleanup"`
+	Lifecycle              *acceptanceLifecycleEvidence       `json:"lifecycle,omitempty"`
 }
 
 var binaryAcceptance *acceptanceEvidence

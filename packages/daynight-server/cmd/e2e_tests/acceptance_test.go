@@ -655,10 +655,11 @@ func acceptanceConcurrentStartup(t *testing.T, scenario *acceptanceScenario) {
 	first = first.started(t)
 	second = second.started(t)
 	var versions []int64
-	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37}) {
+	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38}) {
 		t.Fatal("concurrent processes did not share exactly one migration ledger")
 	}
 	acceptanceBotOwnershipSchema(t, fixture)
+	acceptanceOAuthFamilySchema(t, fixture)
 	project := first.project(t, "Shared process state")
 	read := acceptanceDecode[api.Project](t, second.request(context.Background(), http.MethodGet, "/api/v1/projects/"+project.ID, nil, ""), http.StatusOK)
 	if !reflect.DeepEqual(project, read) {
@@ -775,5 +776,17 @@ func acceptanceBotOwnershipSchema(t *testing.T, fixture *acceptanceFixture) {
 		"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)",
 	}) {
 		t.Fatalf("startup did not create Bot user and composite Worker ownership constraints: %v, %v", constraints, err)
+	}
+}
+
+func acceptanceOAuthFamilySchema(t *testing.T, fixture *acceptanceFixture) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var grants, access, refresh int
+	err := fixture.admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants),
+ (SELECT count(*) FROM oauth_access_tokens), (SELECT count(*) FROM oauth_refresh_tokens)`).Scan(&grants, &access, &refresh)
+	if err != nil || grants != 0 || access != 0 || refresh != 0 {
+		t.Fatalf("startup did not create empty OAuth family tables: grants=%d access=%d refresh=%d: %v", grants, access, refresh, err)
 	}
 }

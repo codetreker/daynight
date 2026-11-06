@@ -82,7 +82,7 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	config.PublicOrigin, config.UniAuthURL = origin, ready.Origin
 	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = ready.AppID, ready.AppSecret, callback
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	handler, err := New(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

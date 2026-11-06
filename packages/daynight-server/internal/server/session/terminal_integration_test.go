@@ -15,8 +15,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
-	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
 	"github.com/google/uuid"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -39,7 +39,7 @@ func terminalRequest(h http.Handler, method, path, body, protocol string) *httpt
 func TestTerminalStateReadOnForeignLiveRelayReturnsRoutingError(t *testing.T) {
 	f := terminalHTTPSetup(t)
 	terminalMessage(t, terminalRequest(f.h, http.MethodPost, f.base, jsonBody(t, f.message), v2.Protocol))
-	a, err := server.New(server.Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
+	a, err := appsupport.NewHandler(configuredTestConfig(), f.db, f.db.Ready, attachmentTestFiles(t), testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func terminalHTTPSetup(t *testing.T) terminalHTTPFixture {
 	task = claimHTTPWorker(t, h, task, claim)
 	w := apiWorker(t, task.Properties)
 	cfg := configuredTestConfig()
-	a, e := server.New(server.Dependencies{Store: db, Files: attachmentTestFiles(t)}, cfg, testLogger())
+	a, e := appsupport.NewHandler(cfg, db, db.Ready, attachmentTestFiles(t), testLogger())
 	if e != nil {
 		t.Fatal(e)
 	}

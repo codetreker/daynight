@@ -294,13 +294,12 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | `internal/service/` | Project/task use cases, identity/credentials, project membership/invitations, state/version policy and scoped cursors |
 | `internal/core/model/` | Shared project/task, identity/member models and resource-not-found markers |
 
-HTTP startup prepares one local file-storage root and creates and verifies one
-concrete PostgreSQL store. The handler factory `server.New(Dependencies, Config, logger)` returns
-`(http.Handler, error)`, validating mandatory authentication configuration before
-assembling the mux. `Dependencies` supplies `Store` and `Files` before the listener
-accepts requests. The composition
-root assembles services without opening another pool or file root. The runtime
-owns HTTP shutdown, storage closure and pool closure. Startup applies the embedded migrations before accepting requests.
+Startup validates neutral configuration and constructs the UniAuth client before
+opening one local file root and one PostgreSQL resource. `service.App` assembles
+and owns the shared modules and resources; `server.New` registers their HTTP
+routes. The runtime stops admission and drains HTTP and WebSocket work before
+the application closes the Session engine, files and pool. A cleanup timeout
+retains resources for another close attempt. Startup applies the embedded migrations before accepting requests.
 One pinned connection holds a session advisory lock across version checks and all
 migration transactions; unknown versions, gaps and checksum mismatches stop startup.
 
@@ -325,21 +324,46 @@ writers remain stopped, with its corresponding loss of later writes.
 
 The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 `2026-07-28` and `2025-11-25`. Configure a client with the service's HTTPS URL
-ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
+ending in `/mcp` and an `Authorization: Bearer <PAT>` header. The entry also
+accepts MCP OAuth access credentials for its exact resource and `daynight:mcp`
+scope. OAuth authorization and token endpoints are not yet exposed. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
 The endpoint advertises Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
-Team or Project invitations, Task creation, reading, updating, status, deletion
-and property tools, and ordered Task Steps reads and writes. Invitation links
-are returned only by creation; listing returns metadata without secrets. Task
-mutation inputs use the existing 1 MiB business JSON limit; versions are
-decimal strings and property values use `valueText`. Task and Step reads default
-to marked, bounded summaries; request `full` for complete content. Step page
-cursors bind the parent version and reject continuation after a change. Step
-writes return confirmed version and change facts and preserve the original
-collection capacity. A tool is discoverable only after its complete business
-adapter is registered.
+Team or Project invitations, Bot management, Task creation, reading, updating,
+status, deletion, property, list, ready and graph tools, ordered Task Steps reads
+and writes, and Task discussion reads and posts. Invitation links are returned
+only by creation; listing returns metadata without secrets. Task mutation inputs
+use the existing 1 MiB business JSON limit; versions are decimal strings and
+property values use `valueText`. Task and Step reads default to marked, bounded
+summaries; request `full` for complete content. Step page cursors bind the parent
+version and reject
+continuation after a change. Step writes return confirmed version and change facts
+and preserve the original collection capacity. Discussion reads return complete
+messages in oldest-first order; an explicit claim ID supplies agent attribution.
+A lost post response does not establish a receipt: read the thread before
+deciding whether to send again. Bot creation resolves omitted settings from
+available Worker defaults and does not imply startup readiness. Bot deletion
+requires an explicit version and reports the separate Worker and server cleanup
+states. A tool is discoverable only after its complete business adapter is
+registered.
+
+Task list excludes done tasks by default and orders in-progress, ready, blocked
+and done tasks before paging. Its cursor binds the caller, project, filters and
+view to a snapshot fence; `list_changed` requires restarting traversal when
+project task versions change. Graphs retain their node and edge limits. When a
+full ready result exceeds the response budget, continuation uses `task_list`,
+whose full projection omits descriptions; use `task_show` with `view: full` to
+read those complete Tasks. The continuation identifies this difference.
+
+OAuth grant families store only hashes of access and refresh secrets. Initial
+issuance and revocation participate in the caller's transaction; access lasts at
+most one hour and the grant and refresh at most 30 days. The principal carries
+the access credential ID, while the stable authority reference carries the grant
+ID. Revocation invalidates access rows in the same transaction, and Thread and
+Bot credential checks recheck expiry after lock waits. OAuth credentials do not
+authenticate ordinary REST or private Worker endpoints.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
@@ -355,9 +379,10 @@ go test -race -tags=stress ./internal/server -run '^TestStressMCPStepsCapacityAn
 ```
 
 The application rejects and cancels MCP requests during shutdown before stopping
-the shared relay. A drain timeout cancels active requests, but the
-runtime waits for handlers, the relay and database cleanup before closing shared
-storage and returning the timeout error.
+the shared relay. A drain timeout cancels active requests, but the runtime waits
+for handlers, the relay and database cleanup within a separate five-second
+cleanup budget before closing shared storage. If cleanup times out, it retains
+resources and returns an error; a caller can retry close.
 
 ## Local Docker deployment
 
@@ -457,10 +482,11 @@ in the startup log. Invalid timeout values fail validation.
 `SIGINT` and `SIGTERM` stop accepting connections and begin draining requests.
 Active REST request contexts remain usable during the drain; MCP requests are
 canceled when shutdown begins. On deadline, the runtime cancels remaining request
-contexts and force-closes HTTP connections. It waits for active handlers, relay
-and session work, and database cancellation to finish before closing the file
-root and pool and returning the timeout error. A handler that does not finish can
-delay process exit beyond `DAYNIGHT_SHUTDOWN_TIMEOUT`. Database operations must
+contexts, signals Session operations and force-closes HTTP connections. It waits
+up to five additional seconds for active handlers, relay and session work, and
+database cancellation before closing the file root and pool. The timeout remains
+an error; if cleanup is incomplete, ownership is retained for another close
+attempt. Database operations must
 use the request context and release acquired connections.
 The runtime also closes an acquired file root on later startup failure. Local
 files remain on disk when the handle closes. Startup fixtures supply isolated

@@ -66,7 +66,7 @@ func (unknownInvitationProjects) AcceptInvitation(context.Context, model.Princip
 func TestMCPInvitationUnknownOutcomeIsNotReplayedOrDisclosed(t *testing.T) {
 	var logs safeInvitationLog
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	entry, err := New(testAuthenticator{}, "https://daynight.test", nil, logger)
+	entry, err := New(testAuthenticator{}, "https://daynight.test", nil, logger, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

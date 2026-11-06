@@ -117,19 +117,6 @@ func (b *Writer) InsertBot(ctx context.Context, bot model.Bot) error {
 	return nil
 }
 
-func (b *Writer) DeleteBot(ctx context.Context, id string, version int64, deletion model.BotDeletion) (model.Bot, error) {
-	data, err := json.Marshal(deletion)
-	if err != nil {
-		return model.Bot{}, pg.QueryError("encode bot deletion", err)
-	}
-	bot, err := scanBot(b.tx.QueryRow(ctx, `UPDATE bots SET deletion=$3,version=version+1,updated_at=statement_timestamp()
- WHERE id=$1 AND version=$2 AND deletion IS NULL RETURNING `+botProjection, id, version, data))
-	if err != nil {
-		return model.Bot{}, pg.QueryError("record bot deletion", err)
-	}
-	return bot, nil
-}
-
 // SaveBotDeletion advances the deletion state while the caller holds the Bot
 // lock, including the cleanup receipt and obligations in the caller's transaction.
 func (b *Writer) SaveBotDeletion(ctx context.Context, id string, deletion *model.BotDeletion) (model.Bot, error) {

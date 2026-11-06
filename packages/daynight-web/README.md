@@ -2287,14 +2287,14 @@ revocation uses the normal DELETE endpoint, then verifies API, preview, browser
 and installed-CLI access denial while the private project remains readable.
 
 The Go server E2E test
-[`TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock`](../daynight-server/cmd/e2e_tests/attachment_grant_lock_acceptance_test.go)
-owns the paused-upload grant-lock race using the existing built-binary fixture,
-real authenticated HTTP and isolated PostgreSQL. It verifies the target grant's
-waiter and blocker, upload 201, member removal 204, subsequent 404, matching
-uploaded bytes and resource cleanup. The browser runner does not observe
+[`TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation`](../daynight-server/cmd/e2e_tests/attachment_grant_revocation_acceptance_test.go)
+owns the paused-upload authorization race using the existing built-binary fixture,
+real authenticated HTTP and isolated PostgreSQL. It verifies member removal 204
+and new access 404 while the 1 MiB body is incomplete, then admitted upload 201,
+matching uploaded bytes and resource cleanup. The browser runner does not observe
 attachment databases or run paused upload IO or the former socket-disconnection
 scenario. The
-[attachment lock acceptance decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-lock-acceptance-ownership.md)
+[attachment admission acceptance decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 records this verification ownership. The [original authentication decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
 records its historical rationale and the separate actual-upstream human login
 requirement. Implemented checks and source-bound run results remain

@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"errors"
-	"math"
 	"strings"
 	"testing"
 	"time"
@@ -64,16 +63,6 @@ func (d *botDAO) InsertBot(_ context.Context, b model.Bot) error {
 	b.Version = 1
 	d.current = &b
 	return nil
-}
-func (d *botDAO) DeleteBot(_ context.Context, _ string, _ int64, deletion model.BotDeletion) (model.Bot, error) {
-	if e := d.fail["delete"]; e != nil {
-		return model.Bot{}, e
-	}
-	b := *d.current
-	b.Version++
-	b.Deletion = &deletion
-	d.current = &b
-	return b, nil
 }
 
 type reader struct {
@@ -189,51 +178,6 @@ func TestCreateIdentityAndFailurePaths(t *testing.T) {
 	d = &botDAO{fail: map[string]error{}, defaults: model.BotDefaultsInput{}}
 	_, err = Create(ctx, d, p, in, fp, true)
 	assertFault(t, err, "resource_conflict")
-}
-
-func TestDeleteIntentAndErrors(t *testing.T) {
-	ctx := context.Background()
-	p := model.Principal{UserID: "owner"}
-	request := store.DeleteBot{Version: 1, DeletionID: botID}
-	d := &botDAO{current: &model.Bot{ID: botID, OwnerUserID: p.UserID, Version: 1}, fail: map[string]error{}}
-	deleted, err := Delete(ctx, d, p, botID, request)
-	if err != nil || deleted.Version != 2 || deleted.Deletion.WorkerCleanup.State != "pending" {
-		t.Fatalf("delete: %+v %v", deleted, err)
-	}
-	replay, err := Delete(ctx, d, p, botID, request)
-	if err != nil || replay.Version != 2 {
-		t.Fatalf("replay: %+v %v", replay, err)
-	}
-	changed := request
-	changed.DeletionID = workerID
-	_, err = Delete(ctx, d, p, botID, changed)
-	assertFault(t, err, "resource_conflict")
-	for _, tc := range []struct {
-		name string
-		bot  *model.Bot
-		req  store.DeleteBot
-		code string
-	}{
-		{"missing", nil, request, "not_found"}, {"owner", &model.Bot{OwnerUserID: "other"}, request, "forbidden"}, {"stale", &model.Bot{OwnerUserID: "owner", Version: 2}, request, "version_conflict"}, {"bound", &model.Bot{OwnerUserID: "owner", Version: 1, SessionID: ptr(botID)}, request, "resource_conflict"}, {"exhausted", &model.Bot{OwnerUserID: "owner", Version: math.MaxInt64}, store.DeleteBot{Version: math.MaxInt64}, "version_exhausted"}} {
-		t.Run(tc.name, func(t *testing.T) {
-			d := &botDAO{current: tc.bot, fail: map[string]error{}}
-			_, err := Delete(ctx, d, p, botID, tc.req)
-			assertFault(t, err, tc.code)
-		})
-	}
-	sentinel := errors.New("failed")
-	for _, stage := range []string{"bot", "delete"} {
-		d := &botDAO{current: &model.Bot{OwnerUserID: "owner", Version: 1}, fail: map[string]error{stage: sentinel}}
-		_, err := Delete(ctx, d, p, botID, request)
-		if !errors.Is(err, sentinel) {
-			t.Fatal(err)
-		}
-	}
-	for _, at := range []int{1, 2} {
-		d := &botDAO{current: &model.Bot{OwnerUserID: "owner", Version: 1}, fail: map[string]error{"credential": model.ErrNotFound}, credentialAt: at}
-		_, err := Delete(ctx, d, p, botID, request)
-		assertFault(t, err, "unauthenticated")
-	}
 }
 
 func TestReadScopeAndCompletionErrors(t *testing.T) {

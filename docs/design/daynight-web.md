@@ -1144,11 +1144,12 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 原始字节比较；成员撤销通过正常 DELETE 后验证 API、预览、浏览器和安装 CLI 拒绝共享
 项目，私有项目继续可读。它接收 runner 的服务重启 callback 与显式安装回执路径；
 目标控制校验 run/source 与数据库归属后使正常签发的 PAT 到期，不观察附件数据库或
-暂停 IO。Go 服务的 `TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock`
-使用 `cmd/e2e_tests` built-binary fixture、真实认证 HTTP 和隔离 PostgreSQL 验证暂停上传
-的 grant 锁等待、完成后的 201/204/404、原始字节及清理。
+暂停 IO。Go 服务的 `TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation`
+使用 `cmd/e2e_tests` built-binary fixture、真实认证 HTTP 和隔离 PostgreSQL，验证 1 MiB
+上传正文未完成时成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对
+原始字节及清理。
 浏览器 combined 不再运行原先的附件 socket 中断场景，该场景不由此迁移宣称覆盖。
-[附件锁验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-lock-acceptance-ownership.md)
+[附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 记录该验证分工。
 这两份回执与常规 84 项 Playwright 场景并列；本地压力模式另有五项容量场景，
 不复制容量矩阵或改变其测量、预算和清理屏障；运行结果与真实上游人工登录分别留证。

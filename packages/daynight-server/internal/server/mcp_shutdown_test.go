@@ -15,7 +15,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
@@ -42,28 +41,25 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	controller, _ := fixture.controller(t, uuid.NewString())
 	routes := fixture.application.relay
 	engine := fixture.application.engine
-	runtime, err := Start(context.Background(), config, testLogger(), func(deps Dependencies) (http.Handler, error) {
-		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
-		if err != nil {
-			return nil, err
-		}
-		schema := map[string]any{"type": "object"}
-		if err := endpoint.RegisterTool(&sdk.Tool{Name: "wait", InputSchema: schema, OutputSchema: schema}, mcphttp.BudgetControl,
-			func(ctx context.Context, _ mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
-				close(entered)
-				<-ctx.Done()
-				close(canceled)
-				// Simulate cleanup that cannot stop immediately when its request is canceled.
-				<-release
-				return mcphttp.ToolResult{}, ctx.Err()
-			}); err != nil {
-			return nil, err
-		}
-		return &sessionApplication{Handler: endpoint, relay: routes, engine: engine, mcp: endpoint}, nil
-	})
+	endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	schema := map[string]any{"type": "object"}
+	if err := endpoint.RegisterTool(&sdk.Tool{Name: "wait", InputSchema: schema, OutputSchema: schema}, mcphttp.BudgetControl,
+		func(ctx context.Context, _ mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {
+			close(entered)
+			<-ctx.Done()
+			close(canceled)
+			<-release
+			return mcphttp.ToolResult{}, ctx.Err()
+		}); err != nil {
+		t.Fatal(err)
+	}
+	application := &sessionApplication{Handler: endpoint, relay: routes, engine: engine, mcp: endpoint}
+	runtime, deps := startRuntimeTest(t, config, func(*runtimeTestResources) http.Handler { return application })
+	runtime.shutdownHandler, runtime.cancelApp, runtime.drainApp = application.Shutdown, engine.CancelWork, engine.Stop
+	runtime.beginShutdown = application.BeginShutdown
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -106,10 +102,10 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	}
 	probe, stopProbe := context.WithTimeout(context.Background(), time.Second)
 	defer stopProbe()
-	if err := runtime.Store.(*postgres.Store).Pool.Ping(probe); err != nil {
+	if err := deps.Store.Pool.Ping(probe); err != nil {
 		t.Fatalf("database closed while MCP work remained active: %v", err)
 	}
-	if _, err := runtime.Files.Put(probe, "runtime", "shutdown.txt", strings.NewReader("active")); err != nil {
+	if _, err := deps.Files.Put(probe, "runtime", "shutdown.txt", strings.NewReader("active")); err != nil {
 		t.Fatalf("files closed while MCP work remained active: %v", err)
 	}
 	if routes.ActiveConnections() != 1 {
@@ -143,8 +139,8 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 		}
 		engineClosed := operationErr != nil
 		probe, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		databaseClosed := errors.Is(runtime.Store.(*postgres.Store).Pool.Ping(probe), puddle.ErrClosedPool)
-		object, openErr := runtime.Files.Open(probe, "runtime", "shutdown.txt")
+		databaseClosed := errors.Is(deps.Store.Pool.Ping(probe), puddle.ErrClosedPool)
+		object, openErr := deps.Files.Open(probe, "runtime", "shutdown.txt")
 		if openErr == nil {
 			_ = object.Body.Close()
 		}
@@ -168,10 +164,11 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 	config.ShutdownTimeout = 30 * time.Millisecond
 	query := "select pg_sleep(30) /* " + uuid.NewString() + " */"
 	queryDone := make(chan error, 1)
-	runtime, err := Start(context.Background(), config, testLogger(), func(deps Dependencies) (http.Handler, error) {
-		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
+	var application *sessionApplication
+	runtime, _ := startRuntimeTest(t, config, func(deps *runtimeTestResources) http.Handler {
+		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
 		if err != nil {
-			return nil, err
+			t.Fatal(err)
 		}
 		engine := sessioncore.NewEngine(deps.Files)
 		sessions := sessionservice.New(deps.Store, engine)
@@ -179,14 +176,14 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", endpoint)
 		mux.HandleFunc("/wait", func(w http.ResponseWriter, r *http.Request) {
-			_, err := deps.Store.(*postgres.Store).Pool.Exec(r.Context(), query)
+			_, err := deps.Store.Pool.Exec(r.Context(), query)
 			queryDone <- err
 		})
-		return &sessionApplication{Handler: mux, relay: relay, engine: engine, mcp: endpoint}, nil
+		application = &sessionApplication{Handler: mux, relay: relay, engine: engine, mcp: endpoint}
+		return application
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime.shutdownHandler, runtime.cancelApp, runtime.drainApp = application.Shutdown, application.engine.CancelWork, application.engine.Stop
+	runtime.beginShutdown = application.BeginShutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -226,16 +223,16 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 }
 
 func TestRequestDrainRejectsAdmissionAfterShutdown(t *testing.T) {
-	drain := newRequestDrain()
+	drain := &Runtime{drained: make(chan struct{})}
 	called := false
-	handler := drain.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
-	<-drain.stop()
+	handler := drain.admit(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	drain.stopAdmission()
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 	if response.Code != http.StatusServiceUnavailable || called {
 		t.Fatalf("shutdown admitted a new handler: status=%d called=%v", response.Code, called)
 	}
-	<-drain.stop()
+	drain.stopAdmission()
 }
 
 func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
@@ -309,9 +306,17 @@ func TestApplicationShutdownWaitsForMCPBeforeStoppingRelay(t *testing.T) {
 	if fixture.application.relay.ActiveConnections() != 0 {
 		t.Fatal("controller relay retained its connection after shutdown")
 	}
+	operation, err = fixture.application.engine.BeginOperation()
+	if err != nil {
+		t.Fatalf("transport shutdown unexpectedly stopped the session engine: %v", err)
+	}
+	operation.Close()
+	if err := fixture.application.engine.Stop(shutdown); err != nil {
+		t.Fatalf("application engine drain failed: %v", err)
+	}
 	if operation, err := fixture.application.engine.BeginOperation(); err == nil {
 		operation.Close()
-		t.Fatal("session engine admitted work after shutdown")
+		t.Fatal("session engine admitted work after application drain")
 	}
 	read, stopRead := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopRead()
