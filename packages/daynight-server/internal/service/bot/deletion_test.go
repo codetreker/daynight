@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -22,7 +23,8 @@ func (s deletionScope) BotDAO() store.BotWriteDAO    { return s.bot }
 
 type deletionDAO struct {
 	store.SessionDAO
-	calls *[]string
+	calls     *[]string
+	revokeErr error
 }
 
 func (d *deletionDAO) LockCredential(context.Context, model.Principal, time.Time) error {
@@ -35,7 +37,7 @@ func (d *deletionDAO) LockBotSessions(context.Context, string) ([]store.BotSessi
 }
 func (d *deletionDAO) RevokeBotSessions(context.Context, string) error {
 	*d.calls = append(*d.calls, "revoke")
-	return nil
+	return d.revokeErr
 }
 
 type deletionBotDAO struct {
@@ -95,6 +97,51 @@ func TestDeletionPublishesRevocationOnlyForCommittedOutcome(t *testing.T) {
 			}
 			if outcome != store.TransactionCommitted && len(live.ids) != 0 {
 				t.Fatalf("unconfirmed barrier revoked live state: %v", live.ids)
+			}
+		})
+	}
+}
+
+func TestDeletionChecksExhaustionAfterSessionRevocation(t *testing.T) {
+	var calls []string
+	cause := errors.New("revocation failed")
+	p := model.Principal{Kind: model.PATCredential, UserID: "owner"}
+	id := "5f80e445-5595-4d89-a209-0f868b8dd10c"
+	request := store.DeleteBot{Version: math.MaxInt64, DeletionID: "3469e571-cc04-45c1-9b73-796d0c85fabe"}
+	dao := &deletionDAO{calls: &calls, revokeErr: cause}
+	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Version: math.MaxInt64}}
+	s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}}, nil, &discardedSessions{})
+	_, err := s.DeleteBot(context.Background(), p, id, request)
+	if !errors.Is(err, cause) || !reflect.DeepEqual(calls, []string{"credential", "bot", "sessions", "revoke"}) {
+		t.Fatalf("revocation failure must precede exhaustion: %v, %v", err, calls)
+	}
+	calls = nil
+	dao.revokeErr = nil
+	_, err = s.DeleteBot(context.Background(), p, id, request)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "version_exhausted" || !reflect.DeepEqual(calls, []string{"credential", "bot", "sessions", "revoke"}) {
+		t.Fatalf("exhaustion must stop before saving barrier: %v, %v", err, calls)
+	}
+}
+
+func TestDeletionRequiresConfirmedCommitForResultAndRevocation(t *testing.T) {
+	for _, outcome := range []store.TransactionOutcome{store.TransactionCommitted, store.TransactionNotCommitted, store.TransactionUnknown, ""} {
+		t.Run(string(outcome), func(t *testing.T) {
+			var calls []string
+			p := model.Principal{Kind: model.PATCredential, UserID: "owner"}
+			id := "5f80e445-5595-4d89-a209-0f868b8dd10c"
+			request := store.DeleteBot{Version: 1, DeletionID: "3469e571-cc04-45c1-9b73-796d0c85fabe"}
+			dao := &deletionDAO{calls: &calls}
+			bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Version: 1}}
+			live := &discardedSessions{}
+			s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}, outcome: outcome}, nil, live)
+			result, err := s.DeleteBot(context.Background(), p, id, request)
+			if outcome == store.TransactionCommitted {
+				if err != nil || result.Deletion == nil || !reflect.DeepEqual(live.ids, []string{"session"}) {
+					t.Fatalf("committed result and revocation: %+v %v %v", result, live.ids, err)
+				}
+			} else if err == nil || !reflect.DeepEqual(result, model.Bot{}) || len(live.ids) != 0 {
+				t.Fatalf("unconfirmed result or revocation: %+v %v %v", result, live.ids, err)
 			}
 		})
 	}

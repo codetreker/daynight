@@ -159,6 +159,8 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		t.Fatalf("unauthorized project: %#v", value)
 	}
 
+	exerciseMCPTeams(t, database, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
+
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
 	instrumented := newApp()
@@ -256,6 +258,9 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 	t.Helper()
 	want := map[string]bool{
 		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
+		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true,
+		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true,
+		"team_member_set_role": true, "team_member_remove": true,
 		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
 		"invitation_inspect": true, "invitation_accept": true,
 		"bot_list": true, "bot_show": true, "bot_create": true, "bot_delete": true,

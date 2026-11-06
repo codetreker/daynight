@@ -76,6 +76,20 @@ func (s *scope) IdentityUser(ctx context.Context, userID string) (model.User, st
 	}
 	return user, facts, nil
 }
+func (s *scope) IdentityPersonalTeam(ctx context.Context, userID string) (store.PersonalTeamFacts, error) {
+	var facts store.PersonalTeamFacts
+	var id *string
+	err := s.tx.QueryRow(ctx, `SELECT t.id::text, (SELECT count(*) FROM team_members m WHERE m.team_id=t.id),
+ (SELECT count(*) FROM team_members m WHERE m.team_id=t.id AND m.user_id=u.id AND m.role='admin')
+ FROM users u LEFT JOIN teams t ON t.personal_user_id=u.id WHERE u.id=$1`, userID).Scan(&id, &facts.MemberCount, &facts.OwnerAdminCount)
+	if err != nil {
+		return store.PersonalTeamFacts{}, pg.AuthQueryError("read user", err)
+	}
+	if id != nil {
+		facts.ID = *id
+	}
+	return facts, nil
+}
 func (s *scope) DeleteSession(ctx context.Context, p model.Principal) error {
 	_, err := s.tx.Exec(ctx, `DELETE FROM sessions WHERE id=$1 AND user_id=$2`, p.CredentialID, p.UserID)
 	return pg.AuthQueryError("delete session", err)
