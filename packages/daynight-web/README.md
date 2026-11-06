@@ -1742,10 +1742,10 @@ document or native reader owns scrolling. The preview header never scrolls
 independently, exposes the complete path and keeps Download and Open in new tab reachable. File-row menus and confirmation controls remain accessible at narrow widths.
 Left-pane scrolling does not move right-side content or its reading position.
 The standalone complete details reuse this panel, rendering and sizing; their
-outer composition integrates task, tab and file navigation with URL and history. Independent
-real-service runtime acceptance of the attachment-reading group is complete.
-Its source, build, browser and cleanup receipts retain the scope of that result;
-a local browser override does not establish hosted-CI browser behavior.
+outer composition integrates task, tab and file navigation with URL and history.
+Earlier real-service runtime acceptance of the attachment-reading group remains
+evidence for its recorded source, build, browser and cleanup, not current-source
+acceptance. A local browser override does not establish hosted-CI browser behavior.
 
 Markdown uses `react-markdown` 10.1.0 with `remark-gfm` 4.0.1 for CommonMark and GFM
 including tables, plus the shared static Mermaid diagrams described above.
@@ -1881,9 +1881,9 @@ is introduced. The [full-reader decision](../../.agents/notes/archived/architect
 retains routing/rendering foundations and the
 [shared-page decision](../../.agents/notes/archived/architecture/2026-10-24-shared-attachment-page.md)
 retains full attachment-panel reuse rationale. The standalone-detail decision
-records the original complete Task Detail composition choices. The production `task-detail-page`
-and `task-attachments` journeys use actual services on both runtime targets with
-source-qualified receipts.
+records the original complete Task Detail composition choices. Earlier production
+`task-detail-page` and `task-attachments` journeys used actual services on both
+runtime targets; their receipts apply to their recorded source.
 
 ## Validation and build
 
@@ -1901,8 +1901,9 @@ or publication fails the build; a failed swap attempts to restore previous asset
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored
 by Git, and clean server builds require this explicit build first. The Go
-`scripts/check.sh` invokes the same command before build, vet and go-cov; Go race
-instrumentation follows the [server validation policy](../daynight-server/README.md#race-instrumentation).
+`scripts/check.sh` instead uses the server module's fixed test-resource overlay for
+build, vet and go-cov. Go race instrumentation follows the
+[server validation policy](../daynight-server/README.md#race-instrumentation).
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
