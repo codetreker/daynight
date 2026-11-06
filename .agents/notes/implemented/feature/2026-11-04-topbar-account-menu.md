@@ -19,6 +19,10 @@ restoration after Escape, and route-change dismissal make the menu usable across
 viewport sizes. Account identity, the account page and logout retain their
 existing ownership.
 
+The original placement retained the adjacent topbar logout action. The
+[sign-out placement decision](../bug-fix/2026-11-06-account-menu-sign-out.md)
+moves that action into this menu while preserving authentication ownership.
+
 This replaces the sidebar entry and direct topbar shortcut selected by the
 [bottom account navigation decision](2026-10-25-bottom-account-navigation.md),
 whose original rationale and layout trade-offs remain recorded there. The

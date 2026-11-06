@@ -201,3 +201,25 @@ it('exposes return to latest while a missing bookmark is pending', () => {
   act(() => { second.scroll().latest(); });
   expect(second.scroll().showLatest).toBe(false); expect(second.scroll().getRestoreStatus()).toBe('idle');
 });
+
+it('keeps an explicitly revealed row anchored when previously missing history arrives', () => {
+  const first = timeline(); first.read(350); const bookmark = first.capture(); first.view.unmount();
+  const second = timeline({ original: ['e', 'f'], visible: ['e', 'f'], complete: false });
+  second.restore(bookmark);
+  act(() => { expect(second.scroll().reveal(second.box.querySelector<HTMLElement>('[data-entry-key="e"]')!)).toBe(true); });
+  expect(second.capture().anchor?.key).toBe('e'); expect(second.scroll().getRestoreStatus()).toBe('idle');
+  second.update({ original: ['a', 'b', 'c', 'd', 'e', 'f'], visible: ['a', 'b', 'c', 'd', 'e', 'f'], complete: true });
+  expect(second.box.querySelector('[data-entry-key="e"]')!.getBoundingClientRect().top).toBe(0);
+  expect(second.scroll().isFollowing()).toBe(false);
+});
+
+it('refuses explicit navigation into an inactive or foreign viewport and after an owner change', () => {
+  const view = timeline({ active: false });
+  const target = () => view.box.querySelector<HTMLElement>('[data-entry-key="e"]')!;
+  expect(view.scroll().reveal(target())).toBe(false);
+  view.update({ active: true }); const before = view.box.scrollTop;
+  expect(view.scroll().reveal(document.createElement('div'))).toBe(false); expect(view.box.scrollTop).toBe(before);
+  const retained = view.scroll().reveal;
+  view.update({ identity: 'other-user/session/fence' });
+  expect(retained(target())).toBe(false); expect(view.scroll().isFollowing()).toBe(true);
+});

@@ -159,7 +159,7 @@ func TestSessionRoutesFrameBounds(t *testing.T) {
 
 func TestActiveConnectionsTracksWebSocketLifecycle(t *testing.T) {
 	routes := NewRoutes(nil, nil, testLogger())
-	accepted := make(chan struct{})
+	ready := make(chan struct{})
 	closed := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, ctx, cleanup, err := routes.accept(w, r)
@@ -167,7 +167,7 @@ func TestActiveConnectionsTracksWebSocketLifecycle(t *testing.T) {
 			close(closed)
 			return
 		}
-		close(accepted)
+		close(ready)
 		<-conn.CloseRead(ctx).Done()
 		cleanup()
 		close(closed)
@@ -180,9 +180,9 @@ func TestActiveConnectionsTracksWebSocketLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.CloseNow()
-	// The client handshake can finish before the server registers the connection.
+	// The client can finish the upgrade before accept registers the connection.
 	select {
-	case <-accepted:
+	case <-ready:
 	case <-ctx.Done():
 		t.Fatal("connection was not registered")
 	}

@@ -1,6 +1,7 @@
 import { clearPendingBotDeletions } from '../features/bots/deletion-coordinator';
 import { clearPendingBotCreation } from '../features/bots/pending-creation';
 import { BotsPage } from '../features/bots/BotsPage';
+import '../styles/assistant-workspace.css';
 import { useBotMessages } from '../features/bots/messages';
 import { CurrentAccountProvider } from './CurrentAccountContext';
 import { clearSessionDrafts } from '../features/task-agent-session/client';
@@ -102,7 +103,7 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
   const label = route.kind === "bots" || route.kind === "bot" ? botMessages.title : route.kind === "workers" ? m.workers : route.kind === "worker" ? m.worker : route.kind === "testSessions" ? testMessages.title : route.kind === "testSession" ? testMessages.session : (route.kind === "projects" || route.kind === "team") ? teams.detail.team?.kind === "personal" ? teamMessages.personal : teams.detail.team?.name ?? teamMessages.teamProjects : route.kind === "teamSettings" ? teamMessages.settings : route.kind === "teamMembers" ? teamMessages.members : route.kind === "sharedProjects" ? teamMessages.shared : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
   useLayoutEffect(() => { if (!blocked) content.current?.focus(); }, [route.kind, resourceId, blocked]);
   return (
-    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" || route.kind === "bots" || route.kind === "bot" ? " test-session-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
+    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" || route.kind === "bots" || route.kind === "bot" ? " test-session-shell" : ""}${route.kind === "testSession" ? " test-session-detail-shell" : ""}${route.kind === "bots" || route.kind === "bot" ? " assistant-workspace-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
       <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + (resourceId === null ? "" : `:${resourceId}`)} projectsActive={route.kind === "projects" || route.kind === "team"} sharedActive={route.kind === "sharedProjects"} teamSettingsActive={route.kind === "teamSettings"} teamMembersActive={route.kind === "teamMembers"} personalId={user.personalTeam.id} selectedTeamId={teams.detail.status === "ready" ? selectedTeamId : null} visibilityTeamId={teams.visibilityTeamId} workersActive={route.kind === "workers" || route.kind === "worker"} botsActive={route.kind === "bots" || route.kind === "bot"} activeProjectId={"projectId" in route ? route.projectId : null} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} blocked={blocked} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} onCreateTeam={onCreateTeam} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
@@ -111,8 +112,7 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
           <div className="account-actions">
             <a className="setup-guide-link" href="/setup" target="_blank" rel="noopener noreferrer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v15M3 4h5a5 5 0 0 1 4 2 5 5 0 0 1 4-2h5v15h-5a5 5 0 0 0-4 2 5 5 0 0 0-4-2H3z" /></svg>{setup.navigation}</a>
             <LanguageSelector />
-            <AccountMenu name={accountLabel(user, m.currentAccount)} />
-            <button className="inline-link" type="button" onClick={onSignOut}>{m.signOut}</button>
+            <AccountMenu name={accountLabel(user, m.currentAccount)} onSignOut={onSignOut} />
           </div>
         </header>
         <main className="content" id="main-content" ref={content} tabIndex={-1}>

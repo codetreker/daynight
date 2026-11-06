@@ -22,6 +22,35 @@ function fixture() {
   return { client, userId, snapshot, key: (user = userId, session = snapshot.sessionId) => `daynight.web.session.display.v1:${JSON.stringify([user, session])}`, update: (next: Partial<SessionViewState>) => act(() => { view = { ...view, ...next }; listeners.forEach(listener => listener()); }), get: () => view };
 }
 
+it('keeps one localized refresh action and its authorization across the compact presentation', () => {
+  const f = fixture();
+  const view = render(<SessionView client={f.client} userId={f.userId} active current />);
+  const refresh = screen.getByRole('button', { name: /^Refresh$/ });
+  expect(refresh.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+  expect(refresh.querySelector('.session-refresh-tooltip')).toHaveTextContent('Refresh');
+  fireEvent.click(refresh);
+  expect(f.client.refresh).toHaveBeenCalledOnce();
+  view.setLocale('zh-CN');
+  expect(screen.getByRole('button', { name: /^刷新$/ })).toBe(refresh);
+  expect(refresh.querySelector('.session-refresh-tooltip')).toHaveTextContent('刷新');
+  f.update({ authPaused: true });
+  expect(refresh).toBeDisabled();
+  fireEvent.click(refresh);
+  expect(f.client.refresh).toHaveBeenCalledOnce();
+});
+
+it('leaves custom header slots with their original text refresh control', () => {
+  const f = fixture();
+  render(<SessionView client={f.client} userId={f.userId} active current presentation={{ renderHeader: slots => <div data-testid="custom-header">{slots.provider}{slots.activity}{slots.refresh}</div> }} />);
+  const header = screen.getByTestId('custom-header');
+  expect(header.closest('header')).not.toHaveClass('session-header-default');
+  const refresh = screen.getByRole('button', { name: /^Refresh$/ });
+  expect(refresh.querySelector('svg')).toBeNull();
+  expect(refresh.textContent).toBe('Refresh');
+  fireEvent.click(refresh);
+  expect(f.client.refresh).toHaveBeenCalledOnce();
+});
+
 it('keeps the same view, composer and draft while fullscreen owns Escape before its parent', () => {
   const f = fixture(), outerEscape = vi.fn();
   const rendered = render(<div onKeyDown={event => { if (event.key === 'Escape') outerEscape(); }}><SessionView client={f.client} userId={f.userId} active current /></div>);
