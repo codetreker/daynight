@@ -521,6 +521,12 @@ describes the actual check. Tests require the isolated PostgreSQL instance and
 fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
+The server's checked-in PostgreSQL format snapshot is compared with the complete
+migration history during ordinary validation. Refresh it with every migration;
+the [snapshot maintenance guide](../packages/daynight-server/README.md#schema-snapshot-maintenance)
+owns the PostgreSQL 18 regeneration command and equivalence requirements.
+Runtime startup still uses the historical migration path.
+
 The Go module's [fresh-process attachment test](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 checks grant removal and new project denial while an admitted upload remains
 incomplete, then verifies the upload and cleanup against real HTTP and PostgreSQL.
