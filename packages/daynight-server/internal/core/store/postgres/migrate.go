@@ -138,6 +138,9 @@ var oauthCleanupCursorSQL string
 //go:embed migrations/043_upload_chunks.sql
 var uploadChunksSQL string
 
+//go:embed migrations/044_project_soft_delete.sql
+var projectSoftDeleteSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -189,6 +192,7 @@ var schemaMigrations = []migration{
 	{version: 41, sql: privateTransfersSQL},
 	{version: 42, sql: oauthCleanupCursorSQL},
 	{version: 43, sql: uploadChunksSQL},
+	{version: 44, sql: projectSoftDeleteSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

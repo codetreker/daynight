@@ -364,7 +364,7 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 		s := isolatedStore(t)
 		queryProject(t, s, 1)
 		mustQueryExec(t, s, `ALTER TABLE projects RENAME TO project_source;
-			CREATE VIEW projects AS SELECT id, name, repo_url, created_at, 1::bigint AS updated_at, settings_version, execution_warning_minutes FROM project_source`)
+			CREATE VIEW projects AS SELECT id, name, repo_url, created_at, 1::bigint AS updated_at, settings_version, execution_warning_minutes, deleted_at FROM project_source`)
 		err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 			_, err := snapshot.ProjectDAO().Projects(context.Background(), Page{Limit: 10})
 			return err
@@ -379,7 +379,7 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 		mustQueryExec(t, s, `CREATE FUNCTION fail_read() RETURNS text LANGUAGE plpgsql AS $$
 			BEGIN RAISE EXCEPTION USING ERRCODE = 'P1002', MESSAGE = 'private read failure'; END $$;
 			ALTER TABLE projects RENAME TO project_source;
-			CREATE VIEW projects AS SELECT id, fail_read() AS name, repo_url, created_at, updated_at, settings_version, execution_warning_minutes FROM project_source`)
+			CREATE VIEW projects AS SELECT id, fail_read() AS name, repo_url, created_at, updated_at, settings_version, execution_warning_minutes, deleted_at FROM project_source`)
 		err := s.ReadSnapshot(context.Background(), func(snapshot SnapshotScope) error {
 			_, err := snapshot.ProjectDAO().Projects(context.Background(), Page{Limit: 10})
 			return err

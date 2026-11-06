@@ -57,7 +57,18 @@ func (tx *DAO) LockCredential(ctx context.Context, principal model.Principal, no
 }
 
 func (tx *DAO) ProjectAccess(ctx context.Context, userID, projectID string) (model.ProjectAccess, error) {
-	return pginternal.ReadProjectAccess(ctx, tx.tx, userID, projectID)
+	access, err := pginternal.ReadProjectAccess(ctx, tx.tx, userID, projectID)
+	if !errors.Is(err, model.ErrNotFound) {
+		return access, err
+	}
+	var deleted bool
+	if queryErr := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND deleted_at IS NOT NULL)`, projectID).Scan(&deleted); queryErr != nil {
+		return model.ProjectAccess{}, pginternal.QueryError("check session project lifecycle", queryErr)
+	}
+	if deleted {
+		return model.ProjectAccess{}, store.ErrSessionProjectNotFound
+	}
+	return access, err
 }
 
 func (tx *DAO) LockTask(ctx context.Context, project, id string) (store.SessionTask, error) {
@@ -65,7 +76,23 @@ func (tx *DAO) LockTask(ctx context.Context, project, id string) (store.SessionT
 	if err := tx.tx.QueryRow(ctx, `SELECT status FROM tasks WHERE project_id=$1 AND id=$2 AND deleted_at IS NULL FOR SHARE`, project, id).Scan(&task.Status); err != nil {
 		return store.SessionTask{}, pginternal.QueryError("lock session task", err)
 	}
+	if err := tx.ensureLiveProject(ctx, project); err != nil {
+		return store.SessionTask{}, err
+	}
 	return tx.sessionTaskProperties(ctx, id, task)
+}
+
+// Session admission must re-read project lifecycle after the Task lock wait,
+// before decoding Task properties or applying the archive exception.
+func (tx *DAO) ensureLiveProject(ctx context.Context, project string) error {
+	var live bool
+	if err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND deleted_at IS NULL)`, project).Scan(&live); err != nil {
+		return pginternal.QueryError("check session project lifecycle", err)
+	}
+	if !live {
+		return model.ErrNotFound
+	}
+	return nil
 }
 
 func (tx *DAO) sessionTaskProperties(ctx context.Context, id string, task store.SessionTask) (store.SessionTask, error) {
@@ -467,6 +494,9 @@ func (tx *DAO) LockArchiveTask(ctx context.Context, project, id string) (store.S
 	var deleted bool
 	if err := tx.tx.QueryRow(ctx, `SELECT status,deleted_at IS NOT NULL FROM tasks WHERE project_id=$1 AND id=$2 FOR SHARE`, project, id).Scan(&task.Status, &deleted); err != nil {
 		return store.SessionTask{}, false, pginternal.QueryError("lock archive task", err)
+	}
+	if err := tx.ensureLiveProject(ctx, project); err != nil {
+		return store.SessionTask{}, false, err
 	}
 	task, err := tx.sessionTaskProperties(ctx, id, task)
 	return task, deleted, err

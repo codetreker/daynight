@@ -26,7 +26,7 @@ func (s *Store) WriteProject(ctx context.Context, projectID string, operation fu
 	}
 	err = transact(ctx, tx, func(tx pgx.Tx) error {
 		var id string
-		if err := tx.QueryRow(ctx, `SELECT id::text FROM projects WHERE id = $1 FOR UPDATE`, projectID).Scan(&id); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT id::text FROM projects WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, projectID).Scan(&id); err != nil {
 			return pg.QueryError("lock project", err)
 		}
 		return operation(&ProjectTx{tx: tx, projectID: projectID})

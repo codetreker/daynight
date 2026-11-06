@@ -27,6 +27,9 @@ func RegisterRoutes(mux *http.ServeMux, projects *projectservice.Projects, auth 
 	mux.HandleFunc("POST /api/v1/projects", auth.Require(handler.create))
 	mux.HandleFunc("GET /api/v1/projects", auth.Require(handler.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}", auth.Require(handler.get))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}", auth.Require(handler.delete))
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/deletion-preview", auth.Require(handler.deletionPreview))
+	mux.HandleFunc("/api/v1/projects/{projectId}/deletion-preview", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/access", auth.Require(handler.access))
 	mux.HandleFunc("/api/v1/projects/{projectId}/access", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/transfer-preview", auth.Require(handler.transferPreview))
@@ -36,7 +39,7 @@ func RegisterRoutes(mux *http.ServeMux, projects *projectservice.Projects, auth 
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/settings", auth.Require(handler.settings))
 	mux.HandleFunc("/api/v1/projects/{projectId}/settings", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH")))
 	mux.HandleFunc("/api/v1/projects", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/projects/{projectId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("/api/v1/projects/{projectId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, DELETE")))
 }
 
 // ProjectResponse projects a Project into its HTTP representation.

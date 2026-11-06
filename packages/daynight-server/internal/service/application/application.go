@@ -56,7 +56,7 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		OAuth:          oauth.NewAuthenticator(database),
 		OAuthGrants:    oauthcore.NewGrantLifecycle(database),
 		Memberships:    project.NewMemberships(database),
-		Projects:       project.NewProjects(database),
+		Projects:       project.NewProjects(database, engine),
 		Teams:          team.NewTeams(database),
 		Workers:        worker.NewWorkers(database),
 		WorkerReadOnly: worker.NewReadOnly(database),

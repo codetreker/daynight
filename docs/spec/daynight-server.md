@@ -69,7 +69,7 @@ SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；�
 但不得包含密码；查询参数和 fragment
 不属于仓库地址。无效地址作为输入错误拒绝，地址中 SSH 用户名不作为业务身份。
 
-接口提供创建、列表、单项读取及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
+接口提供创建、列表、单项读取、删除预览、删除及专用设置修改；创建输入的身份、目标 Team 与原子性规则由
 [鉴权需求](daynight-auth.md#项目成员与邀请)拥有。创建者在同一事务中成为项目管理员，
 列表在数据库中先按当前成员关系过滤，再进行分页。创建后 `repoUrl` 不可通过 task 或设置更新改变。
 创建、详情、列表、图内 Project 及成功设置修改均返回完整 settings。已有项目通过迁移获得 `60` 分钟、
@@ -80,6 +80,12 @@ SSH URL 和 SCP 风格 SSH 地址，地址必须包含主机和仓库路径；�
 取得项目锁后重新检查当前成员和管理员身份，再检查版本，最后才判断同值空操作。
 过期同值请求仍冲突，当前版本同值保存返回未改变 Project；实际数值变化只递增一次设置版本并更新 project.updatedAt，
 不改 createdAt 或任务时间。降权/移除、版本冲突或存储失败不能留下部分设置更新。
+
+Project 的 owner Team admin 可以读取删除预览并删除项目。预览返回当前项目身份、可见任务、未完成任务和附件计数，以及按 Task UUID 分页的全部 active Worker claim；离线、暂停或等待均不解除阻塞。Worker 连通性只依据该 claim 对应的最后报告时间：不足 120 秒为 online，有更旧报告为 offline，没有报告为 unknown。预览是当前观察，不作为删除条件。`DELETE` 不接受查询参数、正文、预览版本或名称；删除时重新检查当前权限与所有历史 Task 的 claim。存在 active claim 返回 `409 active_worker_claims`，不改数据。
+
+预览返回 `observedAt`、`project:{id,name,repoUrl,ownerTeam}`、`summary:{taskCount,unfinishedTaskCount,attachmentCount}`、`activeClaims` 和可空 `nextCursor`。每条阻塞项包含 `taskId`、`title` 及 `worker:{machineName,platform,phase,paused,connectivity}`。分页默认 50、最大 100，cursor 绑定当前用户和 Project；响应受字节预算保护，单项无法容纳时明确拒绝，不把不完整列表伪装成完整结果。
+
+成功返回 `200` 与 `{projectId, deleted:true}`，此后项目及其子资源不再可访问或接受新写入，重复删除返回 404。删除保留任务状态、版本、计时、依赖、成员关系、历史和附件文件；撤回项目 Session 的可操作状态，不声称本机进程已退出。其他项目、账号 Bot 和独立测试 Session 保持可用。Team 非空检查只计活跃项目；旧邀请不可消费，Worker 历史输出不显示已删除项目。事务结果未知返回 `503 write_outcome_unknown`，已确认未提交的内部失败返回 `500 internal_error` 和 `error.details.writeOutcome: "not_committed"`；后续读取不能恢复原操作回执。
 
 ## Task 与依赖
 
@@ -186,6 +192,8 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `POST` | `/api/v1/projects` | 创建 project，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects` | 返回 project 分页列表 |
 | `GET` | `/api/v1/projects/{projectId}` | 返回 project，缺失时 `404` |
+| `GET` | `/api/v1/projects/{projectId}/deletion-preview` | owner Team admin 读取有界分页的删除影响与 active claim |
+| `DELETE` | `/api/v1/projects/{projectId}` | 当前 owner Team admin 删除无 active claim 的项目，返回提交回执 |
 | `PATCH` | `/api/v1/projects/{projectId}/settings` | 管理员按精确设置 version 修改阈值，返回 `200` 和完整 Project |
 | `POST` | `/api/v1/projects/{projectId}/tasks` | 创建 task，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表，支持显式负责人筛选 |
@@ -367,7 +375,8 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `409` | `version_conflict` | 任务元数据、生命周期、Steps、Team 元数据或项目设置的期望版本过期；删除 Team 的名称原文不匹配 |
 | `409` | `identity_mismatch` | Team 管理或项目创建输入的 expectedUserId 与实际 principal 不符，领域行和版本零变化 |
 | `409` | `personal_team_immutable` | 变更 Personal Team |
-| `409` | `team_not_empty` | 删除仍有 Project ownership 引用的 Team |
+| `409` | `team_not_empty` | 删除仍有活跃 Project 的 Team |
+| `409` | `active_worker_claims` | 项目仍有 active Worker claim，删除未执行 |
 | `409` | `step_id_conflict` | 同一 Task 内添加的 Step ID 已存在；版本检查先于身份与锚点检查 |
 | `409` | `steps_limit_exceeded` | Steps 真实变化候选超过完整编码容量，返回 encodedBytes/maxEncodedBytes |
 | `409` | `version_exhausted` | Steps 父 Task 或 Team 真实改名所需版本已达最大正 int64；同值 no-op 仍有效 |
@@ -377,7 +386,7 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `409` | `graph_limit_exceeded` | 任务链查询的返回集合或 task-sync 的全项目集合超过节点或依赖上限，返回精确数量和支持上限 |
 | `410` | `task_deleted` | 授权成员访问已软删除任务；不表示项目访问撤回 |
 | `500` | `internal_error` | 内部、持久化或事务清理操作失败，响应不泄露数据库连接信息或 SQL |
-| `503` | `write_outcome_unknown` | 无法确认 Team 管理或项目创建 COMMIT 结果，不自动重放写入 |
+| `503` | `write_outcome_unknown` | 无法确认 Team 管理、项目创建或项目删除的提交结果，不自动重放写入 |
 
 ## 运行与范围
 

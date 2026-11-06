@@ -24,7 +24,7 @@ func scanMember(row pgx.Row) (model.ProjectMember, error) {
 func readDirectProjectMember(ctx context.Context, tx pgx.Tx, userID string, projectID string) (model.ProjectMember, error) {
 	member, err := scanMember(tx.QueryRow(ctx, `SELECT `+memberProjection+` FROM project_grants m
         JOIN users u ON u.id=m.user_id JOIN projects p ON p.id=m.project_id
-        WHERE m.project_id=$1 AND m.user_id=$2`, projectID, userID))
+        WHERE m.project_id=$1 AND m.user_id=$2 AND p.deleted_at IS NULL`, projectID, userID))
 	return member, pg.AuthQueryError("read project member", err)
 }
 
@@ -157,7 +157,8 @@ func scanInvitation(row pgx.Row) (model.ProjectInvitation, error) {
 }
 
 func (s *reader) Invitation(ctx context.Context, hash []byte) (model.ProjectInvitation, error) {
-	invite, err := scanInvitation(s.tx.QueryRow(ctx, `SELECT `+invitationProjection+` FROM project_invitations WHERE token_hash=$1`, hash))
+	invite, err := scanInvitation(s.tx.QueryRow(ctx, `SELECT `+invitationProjection+` FROM project_invitations i WHERE token_hash=$1
+        AND EXISTS (SELECT 1 FROM projects p WHERE p.id=i.project_id AND p.deleted_at IS NULL)`, hash))
 	return invite, pg.AuthQueryError("inspect invitation", err)
 }
 

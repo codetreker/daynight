@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -11,11 +12,27 @@ import (
 )
 
 func (tx *thread) LockProjectAuthorization(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
-	return pg.LockProjectAuthorization(ctx, tx.tx, principal.UserID, projectID)
+	access, err := pg.LockProjectAuthorization(ctx, tx.tx, principal.UserID, projectID)
+	return access, distinguishDeletedProject(ctx, tx.tx, projectID, err)
 }
 
 func (s *reader) ProjectAccess(ctx context.Context, principal model.Principal, projectID string) (model.ProjectAccess, error) {
-	return pg.ReadProjectAccess(ctx, s.tx, principal.UserID, projectID)
+	access, err := pg.ReadProjectAccess(ctx, s.tx, principal.UserID, projectID)
+	return access, distinguishDeletedProject(ctx, s.tx, projectID, err)
+}
+
+func distinguishDeletedProject(ctx context.Context, tx pgx.Tx, projectID string, err error) error {
+	if !errors.Is(err, model.ErrNotFound) {
+		return err
+	}
+	var deleted bool
+	if queryErr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND deleted_at IS NOT NULL)`, projectID).Scan(&deleted); queryErr != nil {
+		return pg.QueryError("check project lifecycle", queryErr)
+	}
+	if deleted {
+		return store.ErrProjectDeleted
+	}
+	return err
 }
 
 func (tx *writer) ProjectAccess(ctx context.Context, principal model.Principal) (model.ProjectAccess, error) {
@@ -79,7 +96,7 @@ func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, 
 			p.settings_version, p.execution_warning_minutes, owner_team.id::text, o.version, o.updated_at, ` + oversized
 	}
 	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM `+pg.ProjectRelation+`
-        WHERE EXISTS (SELECT 1 FROM (`+pg.ProjectAccessRelation+`) a WHERE a.project_id=p.id AND a.user_id=$1)
+        WHERE p.deleted_at IS NULL AND EXISTS (SELECT 1 FROM (`+pg.ProjectAccessRelation+`) a WHERE a.project_id=p.id AND a.user_id=$1)
         AND ($2::timestamptz IS NULL OR (p.created_at,p.id)>($2,$3::uuid))`+condition+`
 		ORDER BY p.created_at,p.id LIMIT $4`, arguments...)
 	if err != nil {
