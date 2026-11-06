@@ -3,7 +3,7 @@
 状态：UniAuth 身份交接、本地会话/PAT、Team 生命周期 API、项目成员授权、CLI 凭据和双语 Web 已接入
 正式服务入口。运行配置必填，业务请求强制认证。本文定义当前实现的行为；
 [架构设计](../design/daynight-auth.md)拥有机制，
-[启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
+[启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)
 记录组合、配置与验收隐私的取舍。验证结果及真实上游人工登录以对应源码和回执为准，代码接线不代表全部
 组合验收已经通过。
 

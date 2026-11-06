@@ -17,14 +17,14 @@
 
 [鉴权架构](daynight-auth.md)定义已接入运行时的 UniAuth 身份交接、本地用户、会话、
 访问令牌、CLI 设备授权、Team 生命周期及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
-[身份基础模块](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
-提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
+[身份基础模块](../../.agents/notes/archived/architecture/2026-10-22-identity-credentials.md)
+提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/archived/architecture/2026-10-22-project-membership.md)
 提供事务内授权、私有创建和邀请。`server.New(Dependencies, Config, logger)`
 返回 `(http.Handler, error)`，验证配置并统一注册身份、Team、成员和全部业务路由。
 Team 元数据与存在性锁由[鉴权架构](daynight-auth.md#team-元数据与生命周期事务)拥有，
 不引入 Project/Task 的反向锁依赖。
 每个资源 service 方法显式接收 `model.Principal`；不保留匿名业务入口或私有创建/列表
-别名。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
+别名。[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)
 记录组合、凭据隐私与验证边界。
 
 现有 `packages/daynight/` TypeScript CLI、YAML 配置和 SQLite review 状态继续独立
@@ -67,7 +67,7 @@ Project、目标、选择集合、计数、依赖及 ready 都来自同一次 `R
 HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requestId、GET/HEAD
 和结构化错误机制。具体响应与拒绝由
 [服务端需求](../spec/daynight-server.md#任务链图查询)拥有；决策取舍见
-[任务链查询记录](../../.agents/notes/implemented/architecture/2026-10-29-chain-scoped-task-graph.md)。
+[任务链查询记录](../../.agents/notes/archived/architecture/2026-10-29-chain-scoped-task-graph.md)。
 
 浏览器从 task-sync 摘要物化完整项目图，其完整上游闭包由
 [看板设计](daynight-web.md#图投影与统计)拥有。CLI 的一层外部前置查询不改变浏览器的
@@ -554,7 +554,7 @@ server selector，在各自 runner 与 PostgreSQL 服务上并行执行，分别
 实现及资源仅选择 CLI。CLI manifest 使用 merge-base 与 PR head 的解析内容比较，
 仅忽略顶层 `version`，打包和准备输入的其他语义变更仍选择 server。Web 构建输入
 也选择两个 Go job。具体路径与失败行为由[仓库 CI 路由](../../README.md#ci-selection)
-拥有，取舍见[服务 CI 输入决策](../../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)。
+拥有，取舍见[服务 CI 输入决策](../../.agents/notes/archived/testing/2026-11-04-server-ci-input-selection.md)。
 
 覆盖率阶段保留 build、vet、按事件选择的 race instrumentation、固定版本 `go-cov` 与 strict raw profile 检查。`DAYNIGHT_TEST_RACE` 只接受 `true`/`false`，缺席时本地默认开启；工作流对 PR 传 `false`，main push 传 `true`。编排显式传 `--race=<value>`，不改变生产覆盖率范围、atomic mode 或任何门槛。
 编排层把 `cmd/e2e_tests` 的完整 module import path 传给 `--exclude-packages`，
@@ -570,8 +570,8 @@ E2E 阶段以 `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests` 完�
 信号和进程重启执行验收。`go test ./...` 仍能发现此包。主命令包测试自行管理临时
 存储与轻量辅助函数，单独选择该包时不触发 E2E 构建、源码身份核验或证据初始化；
 其中直接运行服务的测试仍需真实 PostgreSQL 和 UniAuth。测试包归属与选择方式见
-[E2E 测试包决策](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)，
-CI 分工与代价见[独立作业决策](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)。
+[E2E 测试包决策](../../.agents/notes/archived/testing/2026-11-03-server-e2e-package.md)，
+CI 分工与代价见[独立作业决策](../../.agents/notes/archived/testing/2026-11-04-server-e2e-ci-jobs.md)。
 
 安装 CLI 验收复用 E2E 测试包的 fixture，包含
 `installed_cli_project_task_workflow` 场景，通过 `PT.V*` 要求编号对应 CLI 的真实

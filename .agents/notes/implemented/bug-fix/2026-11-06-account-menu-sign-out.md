@@ -17,7 +17,7 @@ menu item calls the existing workspace callback; the account page retains its
 own sign-out control. Opening the menu then selecting sign out provides two
 deliberate actions without changing the authentication lifecycle.
 
-The [original account menu decision](../feature/2026-11-04-topbar-account-menu.md)
+The [original account menu decision](../../archived/feature/2026-11-04-topbar-account-menu.md)
 grouped account settings under the avatar while retaining logout's original
 placement. This decision changes that placement. The
 [Web requirements](../../../../docs/spec/daynight-web.md#工作空间导航) and

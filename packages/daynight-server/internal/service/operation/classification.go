@@ -98,6 +98,10 @@ func CompletionFacts(err error) Facts {
 		}
 		var facts Facts
 		switch failure := current.(type) {
+		case interface {
+			TransactionOutcome() store.TransactionOutcome
+		}:
+			facts.Outcome = failure.TransactionOutcome()
 		case *store.TransactionError:
 			facts = Facts{Outcome: failure.Outcome, Phase: failure.Phase, CleanupFailed: failure.CleanupFailed}
 		case *store.ThreadTransactionError:

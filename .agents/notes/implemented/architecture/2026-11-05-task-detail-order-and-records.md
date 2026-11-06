@@ -15,7 +15,7 @@ The shared detail panels order Overview, Attachments, Steps, optional Discussion
 and optional Session. The same ordered collection drives panels and keyboard
 navigation. Steps retains its URL and mounted draft behavior, and attachment
 controllers retain their selection and preview state. The
-[Steps reading decision](2026-11-04-task-steps-web-reading.md) owns the shared
+[Steps reading decision](../../archived/architecture/2026-11-04-task-steps-web-reading.md) records the rationale for the shared
 reader and its resource lifecycle.
 
 The managed records section omits a successfully exhausted empty inventory;

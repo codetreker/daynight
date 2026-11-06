@@ -1,7 +1,7 @@
 # 任务执行耗时与卡住提醒架构
 
 本设计落实[需求 TT1–TT6](../spec/daynight-task-timing.md)，
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-23-task-timing-design.md)保存采用理由。
+[决策记录](../../.agents/notes/archived/architecture/2026-10-23-task-timing-design.md)保存采用理由。
 任务起止持久化、图数据库时间、项目阈值、设置页、共享时钟和实时展示构成当前机制。
 整体验收必须使用对应源码的运行证据，设计与实现代码不能替代运行结果。
 

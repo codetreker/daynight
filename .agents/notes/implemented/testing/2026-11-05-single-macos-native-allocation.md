@@ -10,7 +10,7 @@ allocations therefore left required native validation incomplete even though the
 selected image could execute one full workload. Increasing test deadlines cannot
 repair acquisition that precedes checkout.
 
-The [parallel phase decision](2026-11-04-parallel-native-cli-validation.md) chose
+The [parallel phase decision](../../archived/testing/2026-11-04-parallel-native-cli-validation.md) chose
 independent runners because installed acceptance does not consume ordinary-test
 outputs. That permits useful overlap when capacity is available, at the cost of
 two allocations and duplicated preparation for every platform.

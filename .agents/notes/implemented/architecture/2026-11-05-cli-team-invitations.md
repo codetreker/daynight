@@ -17,9 +17,8 @@ discloses a validated same-service link once on stdout; lists contain metadata
 only and revoke uses the validated receipt, including an unchanged result for an
 already revoked invitation. Secret-bearing responses are isolated from
 diagnostic causes. Unknown writes are not replayed or replaced automatically.
-The [Team invitation decision](2026-11-04-team-invitations.md) owns the service
-and receiver lifecycle, and the [CLI Team context decision](2026-11-04-cli-team-context.md)
-owns target resolution.
+The [Team invitation decision](../../archived/architecture/2026-11-04-team-invitations.md) records the rationale for the service
+and receiver lifecycle, and the [CLI Team context decision](../../archived/architecture/2026-11-04-cli-team-context.md) records the rationale for target resolution.
 
 ## Alternatives
 

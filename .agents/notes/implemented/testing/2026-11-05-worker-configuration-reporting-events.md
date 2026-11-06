@@ -26,10 +26,8 @@ for an unchanged native target. Recovery is observed at the original coordinator
 and in a subsequent configuration report. Assertion retries only inspect state;
 time advancement happens once at the relevant event boundary.
 
-The [configuration application decision](../architecture/2026-11-04-worker-cloud-runtime-configuration.md)
-owns independent item application and retry semantics. The
-[reporting decision](../architecture/2026-10-28-worker-runtime-reporting.md)
-owns independent transport scheduling. The
+The [configuration application decision](../../archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md) records the rationale for independent item application and retry semantics. The
+[reporting decision](../../archived/architecture/2026-10-28-worker-runtime-reporting.md) records the rationale for independent transport scheduling. The
 [reporting verification requirements](../../../../docs/spec/daynight-worker-reporting.md#验证)
 own these observable validation obligations.
 
