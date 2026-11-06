@@ -20,9 +20,17 @@ alone consumes no slot. Bootstrap and native control resolve the relevant
 Project independently; an explicit ID is never replaced by another Project
 with the same repository.
 
-The reporter invalidates its complete inventory when coverage fails or a Project is unavailable
-and sends the existing null inventory alongside telemetry until full coverage
-returns. A new claim cannot turn a null inventory into a complete observation.
+When a legacy local selection cannot be fully imported because a Project is
+unavailable, the Worker applies a temporary process-local view and retries the
+complete import. It does not publish a partial cloud configuration. Existing
+cloud configuration remains authoritative. Local mappings and worktree markers
+remain capacity responsibilities even after deselection; unconfirmed scans do
+not release capacity.
+
+The reporter invalidates its complete inventory when coverage fails or a
+Project is unavailable and sends the existing null inventory alongside telemetry
+until full coverage returns. A new claim cannot turn a null inventory into a
+complete observation.
 The [worker design](../../../../docs/design/daynight-worker.md) and
 [reporting design](../../../../docs/design/daynight-worker-reporting.md) own the
 runtime details.

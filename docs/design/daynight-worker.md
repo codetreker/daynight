@@ -69,6 +69,8 @@ macOS Herdr 将本地原运行停止证明和封段作为执行槽释放目标�
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
+云端尚无目标且首次候选中有明确不可用的 Project 时，runtime 保留完整本地选择，在进程内分别验证和准备可用项目；不把局部集合提交为云配置。所有项目重新可访问并完成验证后，才提交完整首次候选。身份、协议和网络错误保持原分类；已有云目标始终是配置权威。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 标记属于其他 Project 时保留责任，不按新 ID 重绑。
+
 `worker repo list` 只读本地注册。云端目标尚未建立时，setup 与 repo add/remove 仍通过现有完整 Project 清单、身份和路径计算处理本地候选。已有传输 URL、路径和兼容 native 值保留；同类型逐字段继承，切换类型清除未覆盖的 model/args，args 整体替换。repositoryRoot 与 review 独立，只为新路径展开，改变根不搬移已有仓库。
 
 项目选择只在显式 setup/repo 命令执行；选择、取消或远端失败都不能启动部分任务。`worker run` 允许空项目且不调用选择向导，仍取得实例锁、初始化报告及对账原 Task，不为 Bot 伪造任务资源。
