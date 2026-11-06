@@ -145,6 +145,7 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error { return mcphttp.RegisterBotTools(entry, app.Bots, app.BotDeletions) },
 		func() error { return mcphttp.RegisterThreadTools(entry, app.TaskThreads) },
 		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks) },
+		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks) },
 		func() error { return mcphttp.RegisterStepReadTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },
 	)

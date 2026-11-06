@@ -330,12 +330,13 @@ an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin
 The endpoint advertises Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
-status, deletion and property tools, ordered Task Steps reads and writes, and
-Task discussion reads and posts. Invitation links are returned only by creation; listing returns
-metadata without secrets. Task mutation inputs use the existing 1 MiB business
-JSON limit; versions are decimal strings and property values use `valueText`.
-Task and Step reads default to marked, bounded summaries; request `full` for
-complete content. Step page cursors bind the parent version and reject
+status, deletion, property, list, ready and graph tools, ordered Task Steps reads
+and writes, and Task discussion reads and posts. Invitation links are returned
+only by creation; listing returns metadata without secrets. Task mutation inputs
+use the existing 1 MiB business JSON limit; versions are decimal strings and
+property values use `valueText`. Task and Step reads default to marked, bounded
+summaries; request `full` for complete content. Step page cursors bind the parent
+version and reject
 continuation after a change. Step writes return confirmed version and change facts
 and preserve the original collection capacity. Discussion reads return complete
 messages in oldest-first order; an explicit claim ID supplies agent attribution.
@@ -345,6 +346,14 @@ available Worker defaults and does not imply startup readiness. Bot deletion
 requires an explicit version and reports the separate Worker and server cleanup
 states. A tool is discoverable only after its complete business adapter is
 registered.
+
+Task list excludes done tasks by default and orders in-progress, ready, blocked
+and done tasks before paging. Its cursor binds the caller, project, filters and
+view to a snapshot fence; `list_changed` requires restarting traversal when
+project task versions change. Graphs retain their node and edge limits. When a
+full ready result exceeds the response budget, continuation uses `task_list`,
+whose full projection omits descriptions; use `task_show` with `view: full` to
+read those complete Tasks. The continuation identifies this difference.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
