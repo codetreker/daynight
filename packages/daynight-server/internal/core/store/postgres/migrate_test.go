@@ -26,11 +26,11 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		t.Fatalf("versions: %d, %v", count, err)
 	}
 	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'
-	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass)
+	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'private_upload_chunks'::regclass)
 	 AND NOT (conrelid='task_sessions'::regclass AND conname='session_bot_owner')`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
 		t.Fatalf("legacy tables gained foreign keys: %d, %v", foreignKeys, err)
 	}
-	wantedBotKeys := map[string]map[string]bool{
+	wantedKeys := map[string]map[string]bool{
 		"bots": {
 			"FOREIGN KEY (owner_user_id) REFERENCES users(id)":                              true,
 			"FOREIGN KEY (owner_user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
@@ -45,9 +45,12 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		"task_sessions": {
 			"FOREIGN KEY (bot_id, owner_user_id) REFERENCES bots(id, owner_user_id)": true,
 		},
+		"private_upload_chunks": {
+			"FOREIGN KEY (transfer_id) REFERENCES private_transfers(id) ON DELETE CASCADE": true,
+		},
 	}
 	rows, err := database.Pool.Query(ctx, `SELECT conrelid::regclass::text,pg_get_constraintdef(oid) FROM pg_constraint
- WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'task_sessions'::regclass) AND contype='f'`)
+ WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass) AND contype='f'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,19 +60,19 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 			rows.Close()
 			t.Fatal(err)
 		}
-		if !wantedBotKeys[table][definition] {
+		if !wantedKeys[table][definition] {
 			rows.Close()
-			t.Fatalf("unexpected Bot foreign key on %s: %s", table, definition)
+			t.Fatalf("unexpected foreign key on %s: %s", table, definition)
 		}
-		delete(wantedBotKeys[table], definition)
+		delete(wantedKeys[table], definition)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for table, constraints := range wantedBotKeys {
+	for table, constraints := range wantedKeys {
 		if len(constraints) != 0 {
-			t.Fatalf("missing Bot ownership constraints on %s: %v", table, constraints)
+			t.Fatalf("missing foreign key constraints on %s: %v", table, constraints)
 		}
 	}
 	for _, sql := range []string{

@@ -370,7 +370,7 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 				var databaseError *store.Error
 				var transactionError *store.TransactionError
 				var postgresError *pgconn.PgError
-				if !errors.As(err, &databaseError) || !errors.As(err, &transactionError) || !errors.As(err, &postgresError) || postgresError.Code != "P1001" || transactionError.Outcome != store.TransactionNotCommitted || transactionError.CommitAttempted {
+				if !FileEffectPossible(err) || !errors.As(err, &databaseError) || !errors.As(err, &transactionError) || !errors.As(err, &postgresError) || postgresError.Code != "P1001" || transactionError.Outcome != store.TransactionNotCommitted || transactionError.CommitAttempted {
 					t.Fatalf("metadata write error: %v", err)
 				}
 				object, err := files.Open(ctx, attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))

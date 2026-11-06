@@ -42,6 +42,7 @@ type Application struct {
 	Attachments    *attachment.Attachments
 	PrivateContent *mcptransfer.Lifecycle
 	Downloads      *mcpdownload.Service
+	Uploads        *mcptransfer.Uploads
 	Engine         *sessioncore.Engine
 	Sessions       *session.Service
 }

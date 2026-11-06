@@ -36,6 +36,7 @@ type RequestActor struct {
 	RequestID    string
 	Context      context.Context
 	Budget       *Budget
+	admitContent func(context.Context) error
 }
 
 type scopeKey struct{}

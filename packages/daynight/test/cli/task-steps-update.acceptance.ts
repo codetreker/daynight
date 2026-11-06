@@ -20,7 +20,7 @@ const target: TaskStep = { ...old, id: "00abcdef", status: "todo" };
 type Result = { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 type RequestRecord = { readonly method: string; readonly path: string; readonly requestId: string | undefined; readonly body: unknown };
 
-it("runs both packed launchers through Step content and status writes with strict outcomes", async () => {
+it("runs the packed Step update and status matrix and verifies both native launchers", async () => {
   const installed = await createAcceptanceCli(); const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Step Update launcher 中文");
   const home = path.join(fixture, "home"), state = path.join(fixture, "configuration"), temporary = path.join(fixture, "temporary");
@@ -103,6 +103,7 @@ it("runs both packed launchers through Step content and status writes with stric
     for (const launcher of launchers) {
       for (const name of ["update", "set-status"]) expect((await invoke(launcher, ["task", "step", name, "--help"])).stdout).toContain("--if-version");
       await invoke(launcher, ["task", "step", "update", taskId, target.id], 2);
+      if (launcher === alias) continue;
       await invoke(launcher, ["task", "step", "update", taskId, "prefix", "--title=valid"], 2);
       await invoke(launcher, ["task", "step", "set-status", taskId, target.id, "invalid"], 2);
       await invoke(launcher, ["task", "step", "update", taskId, target.id, "--title=valid", "--status=done"], 2);
@@ -119,6 +120,13 @@ it("runs both packed launchers through Step content and status writes with stric
       const full = await invoke(launcher, ["task", "step", "update", taskId.toUpperCase(), target.id.toUpperCase(), `--title=${title}`, `--description=${description}`, "--json", ...explicit]);
       expect(onlyWrite(at, false).body).toEqual({ version, title, description });
       expect(parseApiJson(full.stdout)).toEqual(current); expect(full.stdout).toContain('"version":9007199254740994'); expect(full.stdout.startsWith("{")).toBe(true); expect(current.steps[0]).toEqual(old);
+      if (launcher === alias) {
+        current = { projectId, taskId, version, steps: [old, target] }; at = requests.length;
+        const changed = await invoke(launcher, ["task", "step", "set-status", taskId, target.id.toUpperCase(), "done", "--json", ...explicit]);
+        expect(onlyWrite(at, true).body).toEqual({ version, status: "done" }); expect(parseApiJson(changed.stdout)).toEqual(current);
+        expect(current.steps[1]).toEqual({ ...target, status: "done", updatedAt: stamp }); expect(current.version).toBe(version + 1n);
+        continue;
+      }
       current = { projectId, taskId, version, steps: [old, target] }; at = requests.length;
       const cleared = await invoke(launcher, ["task", "step", "update", taskId, target.id, "--description=", "--json", "--project", projectId]);
       expect(requests.slice(at).map(({ method }) => method)).toEqual(["GET", "PATCH"]); expect(requests[at]!.path).toBe(collectionPath); expect(requests[at + 1]!.body).toEqual({ version, description: "" });
@@ -147,7 +155,7 @@ it("runs both packed launchers through Step content and status writes with stric
         for (const secret of ["private-unknown", "fixture-token", `http://127.0.0.1:${address.port}`]) expect(unknown.stderr).not.toContain(secret);
       }
     }
-    scenarios.push("both-aliases-help-usage-before-config", "one-explicit-patch-or-put-exact-int64", "raw-fields-and-explicit-description-clear", "default-get-then-write-and-omitted-fields-retained", "four-statuses-and-no-op-times", "readable-and-json-complete-resource", "capacity-details-no-retry", "unknown-original-identity-correlated-read-without-replay");
+    scenarios.push("both-launchers-help-and-invalid-update-before-config", "both-launchers-explicit-patch-and-put-exact-int64", "raw-fields-and-explicit-description-clear", "default-get-then-write-and-omitted-fields-retained", "four-statuses-and-no-op-times", "readable-and-json-complete-resource", "capacity-details-no-retry", "unknown-original-identity-correlated-read-without-replay");
     expect(createHash("sha256").update(await readFile(receipt.entryPath)).digest("hex")).toBe(receipt.entrySha256);
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];

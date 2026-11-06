@@ -20,7 +20,7 @@ worker 主索引保存 project/task/claim、status、agent、session_id 和 agen
 
 Web 清理首次落盘时，以 backend 读取的时间为 startedAt；如果调用方的 deadline 已经过期，将其规范为 startedAt，表示剩余预算为零。该规则覆盖立即停止时两次取时之间的毫秒差，不授予额外执行时间。已有清理记录始终保留原 startedAt、deadline 和操作身份；worker 直接退出跳过清理 prompt，仍须独立证明原生进程停止。
 
-Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task 的 worker.phase。Task summary 保留 preparing/executing/paused 等执行阶段，避免审批期间的高频版本更新使 Agent 刚读到的 task version 立即失效。模式不可通过 worker summary 或普通 properties 更新。服务端当前 claim 是页面模式的唯一依据，nativeSessionId、是否在线或用户 YAML 均不能替代它。[认领设计](daynight-worker-claims.md)拥有实际 HTTP 路径和事务约束。
+Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task 的 worker.phase。Task summary 保留 preparing/executing/paused 等执行阶段，避免审批期间的高频版本更新使 Agent 刚读到的 task version 立即失效。模式不可通过 worker summary 或普通 properties 更新。存在 Worker claim 时，服务端当前 claim 是主页面模式的唯一依据，nativeSessionId、是否在线或用户 YAML 均不能替代它；无 claim 的只读入口使用原历史记录的内容类型，按[共同入口设计](herdr-session-web.md#页面与身份)自动选择。[认领设计](daynight-worker-claims.md)拥有实际 HTTP 路径和事务约束。
 
 ## Wire 身份与操作
 
@@ -239,7 +239,7 @@ Task 软删除保留原 Session 的归档收尾能力：仅原 owner 的有效 P
 
 完整 JSON 最多 64 MiB、100000 个条目、1000 个资源，单资源最多 8 MiB。条目身份唯一且 entrySeq 严格递增；资源引用必须存在，available 数据须符合长度及哈希，pending 资源不能封存成完整归档。超限和缺失明确失败，保留本机源；不裁剪后宣称完整。归档源及上传回执位于原 execution 目录，上传失败只重试文件传输，不重放业务输入。
 
-网页在 draining/archived 时停止 live 通道与所有操作，按归档状态展示等待、失败或只读 timeline。ready 内容通过原 Session View 渲染，资源从校验后的归档读取；不显示 chatbox，不允许历史审批、中断或设置操作。服务端独立拒绝终态网页写命令，Worker 内部已授权 cleanup 通道保持独立。活跃断线继续原 live 恢复。正常终止上传不提供容器突然销毁前的远端备份，也不从原生历史猜补遗漏内容。
+网页在 draining/archived 时停止 live 通道与所有操作，按归档状态展示等待、失败或只读 timeline。已连接 Web Session 的 ready 内容通过原 Session View 渲染，完成 Task 的自动入口和附件历史使用固定归档阅读器；两者沿用共享 Timeline、Display 偏好和资源读取能力，资源从校验后的归档读取；不显示 chatbox，不允许历史审批、中断或设置操作。服务端独立拒绝终态网页写命令，Worker 内部已授权 cleanup 通道保持独立。活跃断线继续原 live 恢复。正常终止上传不提供容器突然销毁前的远端备份，也不从原生历史猜补遗漏内容。
 
 ### 服务端归档布局
 

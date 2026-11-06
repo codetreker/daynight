@@ -95,7 +95,10 @@ func TestDownloadMetadataAndErrorsAreBounded(t *testing.T) {
 			t.Fatalf("inspect included bytes: %#v", out)
 		}
 	}
-	put("file", `text/plain; name="`+strings.Repeat("<", 6000)+`"`)
+	// Legacy rows can predate the write-side MIME limit.
+	if _, err := db.Pool.Exec(t.Context(), `UPDATE task_attachments SET content_type=$3 WHERE project_id=$1 AND task_id=$2 AND path='file'`, project.ID, task.ID, `text/plain; name="`+strings.Repeat("<", 6000)+`"`); err != nil {
+		t.Fatal(err)
+	}
 	for _, action := range []string{"", "inspect", "open"} {
 		out := invoke(action, "file", true)
 		if object(t, out["error"])["code"] != "resource_conflict" {
@@ -127,6 +130,9 @@ type escapedMetadataReader struct{ count int }
 
 func (s *escapedMetadataReader) Read(_ context.Context, _ mcptransfer.Actor, _ mcpdownload.Input) (map[string]any, error) {
 	return map[string]any{"attachment": map[string]any{"path": "file", "contentType": strings.Repeat("<", s.count)}}, nil
+}
+func (s *escapedMetadataReader) ReadAdmitted(ctx context.Context, actor mcptransfer.Actor, input mcpdownload.Input, _ func(context.Context) error) (map[string]any, error) {
+	return s.Read(ctx, actor, input)
 }
 
 func TestDownloadEncodedMetadataBudget(t *testing.T) {

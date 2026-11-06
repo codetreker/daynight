@@ -48,7 +48,8 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
-	if private, ok := files.(filestorage.TransferStorage); ok {
+	private, ok := files.(filestorage.TransferStorage)
+	if ok {
 		budget, reserve := c.MCPTempBudgetBytes, c.MCPReservedFreeBytes
 		if budget == 0 {
 			budget, reserve = 8<<30, 1<<30
@@ -58,6 +59,9 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 			app.Downloads = mcpdownload.New(app.Attachments, app.PrivateContent, private)
 		}
 	}
+	// Unavailable test dependencies fail explicitly on upload calls. OpenApp
+	// refuses startup unless the complete private storage lifecycle is present.
+	app.Uploads = mcptransfer.NewUploads(app.PrivateContent, private, app.Attachments)
 	return app
 }
 

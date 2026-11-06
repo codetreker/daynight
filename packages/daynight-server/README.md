@@ -385,8 +385,11 @@ discovery and the complete token endpoint are not yet mounted.
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
 operations have a separate 16-slot budget. A saturated budget returns
-`resource_busy`. Permits remain held until the handler and response delivery
-finish. The opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
+`resource_busy`. Attachment inspection and new download snapshots use a separate
+four-slot content budget; repeated open and transfer control calls remain on the
+control budget. A new open releases its control slot only after acquiring a content
+slot. Permits remain held until the handler and response delivery finish. The
+opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
 the 64 MiB Step collection and concurrent summary write admission with sampled
 Go heap. After preparing the isolated database and UniAuth fixture, run it
 separately from CI:

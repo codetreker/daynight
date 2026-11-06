@@ -137,6 +137,24 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 		}
 		return value
 	}
+	upload := call(productionClient, "task_attachment_put", map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "inline", "path": "upload.txt", "contentType": "text/plain", "contentBase64": "aGVsbG8="}, false)
+	data := upload["data"].(map[string]any)
+	if data["writeOutcome"] != "confirmed" || data["created"] != true {
+		t.Fatalf("upload receipt: %#v", upload)
+	}
+	metadata, object, err := attachmentservice.NewAttachments(database, database, files).Open(t.Context(), principals[0], project.ID, created.ID, "upload.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, readErr := io.ReadAll(object.Body)
+	closeErr := object.Body.Close()
+	if readErr != nil || closeErr != nil || string(content) != "hello" || metadata.SizeBytes != 5 {
+		t.Fatalf("uploaded content=%q metadata=%#v read=%v close=%v", content, metadata, readErr, closeErr)
+	}
+	current, err := taskservice.NewTasks(database).Get(t.Context(), principals[0], project.ID, created.ID)
+	if err != nil || current.Version != created.Version {
+		t.Fatalf("upload changed task version: %#v %v", current, err)
+	}
 	for _, name := range []string{"task_list", "task_ready"} {
 		for _, view := range []string{"summary", "full"} {
 			value := call(productionClient, name, map[string]any{"projectId": project.ID, "view": view}, false)
@@ -182,9 +200,9 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	}
 	put("replacement")
 	chunk := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "chunk", "transferId": transferID, "offset": "0", "format": "base64"}
-	data := call(productionClient, "task_attachment_read", chunk, false)["data"].(map[string]any)
-	if data["contentBase64"] != base64.StdEncoding.EncodeToString([]byte("first content")) || data["nextOffset"] != "13" || data["eof"] != true {
-		t.Fatalf("attachment snapshot: %#v", data)
+	downloadData := call(productionClient, "task_attachment_read", chunk, false)["data"].(map[string]any)
+	if downloadData["contentBase64"] != base64.StdEncoding.EncodeToString([]byte("first content")) || downloadData["nextOffset"] != "13" || downloadData["eof"] != true {
+		t.Fatalf("attachment snapshot: %#v", downloadData)
 	}
 	if value := call(bobQueries, "task_attachment_read", chunk, true); value["error"] == nil {
 		t.Fatalf("unauthorized snapshot: %#v", value)
@@ -305,7 +323,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,
 		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
-		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true,
+		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true, "task_attachment_put": true,
 		"task_list": true, "task_ready": true, "task_graph": true,
 	}
 	for _, tool := range tools {

@@ -17,6 +17,11 @@ records its length and SHA-256. Subsequent ranges use that immutable object and
 revalidate the current credential, stable authority and task access. Repeated
 open observes the existing record without making another copy. Cleanup uses the
 shared lifecycle and never deletes the source attachment.
+Inspect uses the content I/O budget because it opens a file. New opens switch
+from the control budget to that budget before waiting for file resources;
+failed admission retains the control permit until the error is delivered.
+Existing transfer status and cancellation retain control capacity when content
+operations are saturated.
 
 Inspection returns metadata by default; bounded explicit reads default to 8 KiB.
 Text ranges stop at UTF-8 boundaries and binary data requires explicit base64.

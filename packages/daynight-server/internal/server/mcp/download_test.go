@@ -26,6 +26,9 @@ func (s *downloadTestReader) Read(_ context.Context, actor mcptransfer.Actor, in
 	}
 	return map[string]any{"sizeBytes": "4", "contentIncluded": false, "contentRef": map[string]any{"projectId": input.ProjectID, "taskId": input.TaskID, "path": input.Path}}, nil
 }
+func (s *downloadTestReader) ReadAdmitted(ctx context.Context, actor mcptransfer.Actor, input mcpdownload.Input, _ func(context.Context) error) (map[string]any, error) {
+	return s.Read(ctx, actor, input)
+}
 
 type downloadTestOAuth struct{}
 
@@ -148,6 +151,34 @@ func TestDownloadToolBudget(t *testing.T) {
 			t.Fatalf("%s did not use independent control budget", action)
 		}
 	}
+}
+
+func TestInspectUsesContentBudget(t *testing.T) {
+	f := newEntryFixture(t)
+	reader := &downloadTestReader{}
+	if err := RegisterDownloadTool(f.entry, reader); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		release, err := f.entry.budget.Acquire(t.Context(), BudgetContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	for _, action := range []string{"", "inspect"} {
+		args := map[string]any{"projectId": testProjectID, "taskId": testTargetID, "path": "a.txt"}
+		if action != "" {
+			args["action"] = action
+		}
+		out := invitationCall(t, client, "task_attachment_read", args, true)
+		if object(t, out["error"])["code"] != "resource_busy" || reader.calls != 0 {
+			t.Fatalf("inspect admission: %#v", out)
+		}
+	}
+	args := map[string]any{"projectId": testProjectID, "taskId": testTargetID, "action": "close", "transferId": testTeamID}
+	invitationCall(t, client, "task_attachment_read", args, false)
 }
 
 func TestDownloadToolRegistration(t *testing.T) {

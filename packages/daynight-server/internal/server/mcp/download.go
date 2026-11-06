@@ -18,6 +18,7 @@ var downloadToolsJSON []byte
 
 type downloadReader interface {
 	Read(context.Context, mcptransfer.Actor, mcpdownload.Input) (map[string]any, error)
+	ReadAdmitted(context.Context, mcptransfer.Actor, mcpdownload.Input, func(context.Context) error) (map[string]any, error)
 }
 
 // RegisterDownloadTool exposes authorized attachment snapshots to MCP.
@@ -40,6 +41,9 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 		if input.Action == "inline" || input.Action == "chunk" {
 			return BudgetLarge
 		}
+		if input.Action == "" || input.Action == "inspect" {
+			return BudgetContent
+		}
 		return BudgetControl
 	}, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
 		if err := ValidateUnicodeFields(raw, "projectId", "taskId", "path", "action", "transferId", "offset", "format"); err != nil {
@@ -52,7 +56,17 @@ func RegisterDownloadTool(e *Entry, downloads downloadReader) error {
 		if len(input.Path) > 4096 {
 			return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Attachment path exceeds the MCP read limit."}
 		}
-		result, err := downloads.Read(ctx, mcptransfer.Actor{Principal: actor.Principal, AuthorityKind: actor.AuthorityRef.Kind, AuthorityID: actor.AuthorityRef.ID}, input)
+		principal := mcptransfer.Actor{Principal: actor.Principal, AuthorityKind: actor.AuthorityRef.Kind, AuthorityID: actor.AuthorityRef.ID}
+		var result map[string]any
+		var err error
+		if input.Action == "open" {
+			if actor.admitContent == nil {
+				return ToolResult{}, errors.New("content admission unavailable")
+			}
+			result, err = downloads.ReadAdmitted(ctx, principal, input, actor.admitContent)
+		} else {
+			result, err = downloads.Read(ctx, principal, input)
+		}
 		if err != nil {
 			refs := map[string]any{"projectId": input.ProjectID, "taskId": input.TaskID}
 			if input.TransferID != "" {

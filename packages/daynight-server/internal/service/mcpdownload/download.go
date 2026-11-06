@@ -15,13 +15,14 @@ import (
 
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 )
 
 const MaxChunkBytes = 512 << 10
 const DefaultBytes = 8 << 10
-const MaxContentTypeBytes = 2048
+const MaxContentTypeBytes = attachmentcore.MaxContentTypeBytes
 const MaxPathBytes = 4096
 
 type Opener interface {
@@ -69,6 +70,12 @@ func reference(i Input) map[string]any {
 	return result
 }
 func (s *Service) Read(ctx context.Context, actor mcptransfer.Actor, in Input) (map[string]any, error) {
+	return s.ReadAdmitted(ctx, actor, in, nil)
+}
+
+// ReadAdmitted invokes admitContent before new snapshot work can wait on I/O.
+// Existing transfers need only the bounded control path.
+func (s *Service) ReadAdmitted(ctx context.Context, actor mcptransfer.Actor, in Input, admitContent func(context.Context) error) (map[string]any, error) {
 	if s == nil || s.attachments == nil || s.lifecycle == nil || s.files == nil {
 		return nil, errors.New("download dependencies are required")
 	}
@@ -118,7 +125,7 @@ func (s *Service) Read(ctx context.Context, actor mcptransfer.Actor, in Input) (
 	case "inline":
 		return s.inline(ctx, actor, in)
 	case "open":
-		return s.open(ctx, actor, in)
+		return s.open(ctx, actor, in, admitContent)
 	case "chunk":
 		return s.chunk(ctx, actor, in)
 	default:
@@ -163,11 +170,20 @@ func (s *Service) inline(ctx context.Context, a mcptransfer.Actor, in Input) (ma
 	data := map[string]any{"attachment": wireAttachment(metadata), "sizeBytes": strconv.Itoa(len(b))}
 	return encode(data, in, b, true)
 }
-func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input) (result map[string]any, resultErr error) {
-	_, lookupErr := s.lifecycle.LookupBound(ctx, a, in.TransferID)
+func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input, admitContent func(context.Context) error) (result map[string]any, resultErr error) {
+	binding := mcptransfer.Binding{ID: in.TransferID, Direction: "download", ProjectID: in.ProjectID, TaskID: in.TaskID, Path: in.Path}
+	existing, lookupErr := s.lifecycle.LookupBound(ctx, a, in.TransferID)
+	if lookupErr == nil {
+		return s.existingOpen(ctx, a, binding, existing)
+	}
 	if lookupErr != nil {
 		if !errors.Is(lookupErr, model.ErrNotFound) {
 			return nil, lookupErr
+		}
+		if admitContent != nil {
+			if err := admitContent(ctx); err != nil {
+				return nil, err
+			}
 		}
 		_, source, err := s.source(ctx, a, in)
 		if err == nil {
@@ -183,16 +199,12 @@ func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input) (resu
 			}
 		}
 	}
-	record, created, err := s.lifecycle.OpenRecord(ctx, a, mcptransfer.Binding{ID: in.TransferID, Direction: "download", ProjectID: in.ProjectID, TaskID: in.TaskID, Path: in.Path})
+	record, created, err := s.lifecycle.OpenRecord(ctx, a, binding)
 	if err != nil {
 		return nil, err
 	}
 	if !created {
-		record, err = s.lifecycle.Touch(ctx, a, in.TransferID)
-		if err != nil {
-			return nil, err
-		}
-		return openResult(record)
+		return s.existingOpen(ctx, a, binding, record)
 	}
 	publicationStarted := false
 	defer func() {
@@ -260,6 +272,20 @@ func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input) (resu
 	record, err = s.lifecycle.PublishDownload(copyCtx, permit, a, in.TransferID, data, info.Size)
 	if err != nil {
 		return nil, err
+	}
+	return openResult(record)
+}
+
+func (s *Service) existingOpen(ctx context.Context, a mcptransfer.Actor, binding mcptransfer.Binding, record model.PrivateTransfer) (map[string]any, error) {
+	if !transfer.SameBinding(record, a, binding, json.RawMessage(`{}`)) {
+		return nil, mcptransfer.ErrConflict
+	}
+	record, err := s.lifecycle.Touch(ctx, a, binding.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !transfer.SameBinding(record, a, binding, json.RawMessage(`{}`)) {
+		return nil, mcptransfer.ErrConflict
 	}
 	return openResult(record)
 }

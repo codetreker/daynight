@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -12,6 +13,8 @@ import (
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
+	"github.com/google/uuid"
 )
 
 type Attachments struct {
@@ -129,10 +132,12 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 	defer permit.Close()
 	var attachment model.Attachment
 	var created bool
+	fileStarted := false
 	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
 		if err := attachmentcore.CheckPathConflict(ctx, dao, address); err != nil {
 			return err
 		}
+		fileStarted = true
 		info, err := s.files.Put(ctx, attachmentcore.Bucket, address.StoragePath, content)
 		if err != nil {
 			if errors.Is(err, filestorage.ErrPathConflict) {
@@ -147,9 +152,136 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 		return nil
 	})
 	if err != nil {
+		if fileStarted {
+			if operation.CompletionFacts(err).Outcome == store.TransactionCommitted {
+				return attachment, created, &fileEffectError{cause: err}
+			}
+			return model.Attachment{}, false, &fileEffectError{cause: err}
+		}
 		return model.Attachment{}, false, err
 	}
 	return attachment, created, nil
+}
+
+// TransferAdmission holds the target gate for one admitted transfer operation.
+type TransferAdmission struct {
+	service      *Attachments
+	address      attachmentcore.Address
+	contentType  string
+	namespace    filestorage.TransferNamespace
+	target       filestorage.TransferAttachmentTarget
+	private      filestorage.TransferStorage
+	publisher    filestorage.TransferAttachmentPublisher
+	permit       io.Closer
+	mu           sync.Mutex
+	used, closed bool
+	closeErr     error
+}
+
+// AdmitTransfer validates the current Task and authority once. The caller must
+// hold the private permit until Close and reserve staged bytes before Put.
+// Later Task deletion or access revocation does not cancel the admitted call.
+func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, namespace filestorage.TransferNamespace) (*TransferAdmission, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return nil, err
+	}
+	address, err := attachmentcore.NewAddress(projectID, taskID, path)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachmentcore.ValidateWritePath(address.RelativePath); err != nil {
+		return nil, err
+	}
+	if err := attachmentcore.ValidateContentType(contentType); err != nil {
+		return nil, err
+	}
+	if err := namespace.Validate(); err != nil {
+		return nil, err
+	}
+	private, ok := s.files.(filestorage.TransferStorage)
+	if !ok {
+		return nil, errors.New("private transfer storage is unavailable")
+	}
+	publisher, ok := s.files.(filestorage.TransferAttachmentPublisher)
+	if !ok {
+		return nil, errors.New("transfer attachment publication is unavailable")
+	}
+	target, err := filestorage.NewTransferAttachmentTarget(address.ProjectID, address.TaskID, address.RelativePath)
+	if err != nil {
+		return nil, err
+	}
+	permit, err := s.files.AcquireGate(ctx, filestorage.TargetGate, address.StoragePath)
+	if err != nil {
+		return nil, fmt.Errorf("acquire attachment gate: %w", err)
+	}
+	if err := s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
+		return attachmentcore.CheckPathConflict(ctx, dao, address)
+	}); err != nil {
+		return nil, errors.Join(err, permit.Close())
+	}
+	return &TransferAdmission{service: s, address: address, contentType: contentType, namespace: namespace, target: target, private: private, publisher: publisher, permit: permit}, nil
+}
+
+// Put consumes an admission at most once and leaves cleanup of staged objects
+// to the owning transfer namespace.
+func (a *TransferAdmission) Put(ctx context.Context, content io.Reader) (model.Attachment, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed || a.used {
+		return model.Attachment{}, false, errors.New("transfer admission is closed or already used")
+	}
+	a.used = true
+	object, err := uuid.NewRandom()
+	if err != nil {
+		return model.Attachment{}, false, fmt.Errorf("generate staged attachment ID: %w", err)
+	}
+	info, err := a.private.PutTransfer(ctx, a.namespace, object.String(), content)
+	if err != nil {
+		return model.Attachment{}, false, fmt.Errorf("stage attachment content: %w", err)
+	}
+	var attachment model.Attachment
+	var created, fileStarted bool
+	completion, err := a.service.mutations.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+		dao := scope.AttachmentDAO()
+		if err := attachmentcore.CheckPathConflict(ctx, dao, a.address); err != nil {
+			return err
+		}
+		fileStarted = true
+		if err := a.publisher.PublishTransferAttachment(ctx, a.namespace, object.String(), a.target); err != nil {
+			if errors.Is(err, filestorage.ErrPathConflict) {
+				return attachmentcore.StorageConflict(err)
+			}
+			return fmt.Errorf("publish attachment content: %w", err)
+		}
+		attachment, created, err = attachmentcore.PutMetadata(ctx, dao, a.address, a.contentType, info.Size)
+		if err != nil {
+			return fmt.Errorf("write attachment metadata: %w", err)
+		}
+		return nil
+	})
+	if err == nil && completion.Outcome != store.TransactionCommitted {
+		err = &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
+	}
+	if err != nil {
+		if fileStarted {
+			err = &fileEffectError{cause: err}
+			if operation.CompletionFacts(err).Outcome == store.TransactionCommitted {
+				return attachment, created, err
+			}
+		}
+		return model.Attachment{}, false, err
+	}
+	return attachment, created, nil
+}
+
+func (a *TransferAdmission) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.closed {
+		a.closed = true
+		a.closeErr = a.permit.Close()
+	}
+	return a.closeErr
 }
 
 func (s *Attachments) Open(ctx context.Context, principal model.Principal, projectID, taskID, path string) (model.Attachment, filestorage.Object, error) {

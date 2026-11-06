@@ -153,6 +153,12 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterAttachmentTools(entry, app.Attachments) },
 		func() error { return mcphttp.RegisterDownloadTool(entry, app.Downloads) },
+		func() error {
+			if app.Uploads == nil {
+				return errors.New("upload service is required")
+			}
+			return mcphttp.RegisterUploadTools(entry, app.Uploads)
+		},
 	)
 }
 

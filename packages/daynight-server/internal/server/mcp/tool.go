@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -298,7 +299,7 @@ func requiredExactly(value any, keys ...string) bool {
 // RegisterTool validates the exact schemas advertised to clients before a tool
 // becomes discoverable. Class must describe the largest internal materialization.
 func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHandler) error {
-	if class != BudgetControl && class != BudgetLarge {
+	if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 		return errors.New("invalid MCP tool registration")
 	}
 	return e.registerTool(tool, func(json.RawMessage) BudgetClass { return class }, handler)
@@ -363,7 +364,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
 		}
 		class := budget(raw)
-		if class != BudgetControl && class != BudgetLarge {
+		if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
 		}
 		release, err := actor.Budget.Acquire(ctx, class)
@@ -371,6 +372,21 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return e.errorResult(output, actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
 		}
 		scope.hold(release)
+		if class == BudgetControl {
+			var once sync.Once
+			var admissionErr error
+			actor.admitContent = func(admissionCtx context.Context) error {
+				once.Do(func() {
+					var contentRelease func()
+					contentRelease, admissionErr = actor.Budget.Acquire(admissionCtx, BudgetContent)
+					if admissionErr == nil {
+						scope.hold(contentRelease)
+						release()
+					}
+				})
+				return admissionErr
+			}
+		}
 		result, err := handler(ctx, actor, raw)
 		logger := e.logger.With(threadLogReferences(tool.Name, result.Refs)...)
 		if err != nil {
@@ -389,7 +405,9 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 					failure.WriteOutcome = "unknown"
 				}
 			}
-			if fault, ok := taskservice.ThreadResponseFault(err); ok && !facts.CleanupFailed {
+			if errors.Is(err, ErrResourceBusy) {
+				failure.Code, failure.Message = "resource_busy", "The tool resource budget is unavailable."
+			} else if fault, ok := taskservice.ThreadResponseFault(err); ok && !facts.CleanupFailed {
 				failure.Code = fault.Code
 				failure.Message = fault.Message
 			} else if fault, ok := operation.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code {
@@ -451,7 +469,7 @@ func registerTypedReadTool[T any](e *Entry, tool *sdk.Tool, class BudgetClass, h
 	if handler == nil {
 		return errors.New("MCP tool handler is required")
 	}
-	if class != BudgetControl && class != BudgetLarge {
+	if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 		return errors.New("invalid MCP tool registration")
 	}
 	return e.registerReadTool(tool, func(json.RawMessage) BudgetClass { return class }, typedToolHandler(handler, unicodeFields...))
