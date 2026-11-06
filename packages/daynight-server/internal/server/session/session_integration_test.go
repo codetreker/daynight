@@ -264,6 +264,10 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() { done <- projectRequest(online, http.MethodGet, path+"/timeline?direction=tail&limit=10", "") }()
 	request := sessionWSKind(t, controller, "content_request")
+	var requestedKind string
+	if err := json.Unmarshal(request["kind"], &requestedKind); err != nil || requestedKind != "timeline" {
+		t.Fatalf("timeline read requested the wrong content kind: %q, %v", requestedKind, err)
+	}
 	var requestID, historyEpoch string
 	_ = json.Unmarshal(request["requestId"], &requestID)
 	_ = json.Unmarshal(request["historyEpoch"], &historyEpoch)
@@ -303,7 +307,11 @@ func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 		t.Fatal("wrong native intent")
 	}
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID})
-	sessionWSKind(t, controller, "operation_authorized")
+	authorized := sessionWSKind(t, controller, "operation_authorized")
+	var authorizedID string
+	if err := json.Unmarshal(authorized["operationId"], &authorizedID); err != nil || authorizedID != offered.OperationID {
+		t.Fatalf("authorized operation differs from offered intent: %q, %v", authorizedID, err)
+	}
 	accepted.Operation.State = "confirmed"
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "operation_receipt", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, Operation: &accepted.Operation})
 	sessionWSKind(t, controller, "receipt_ack")

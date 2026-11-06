@@ -3,14 +3,19 @@ package attachment
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
@@ -153,6 +158,109 @@ func TestPutTransferReportsFileEffectAfterMetadataFailure(t *testing.T) {
 	var stored [5]byte
 	if _, err := object.Body.Read(stored[:]); err != nil || string(stored[:]) != "after" {
 		t.Fatalf("published content: %q %v", stored, err)
+	}
+}
+
+type failingTransferPublisher struct {
+	*local.Storage
+	cause        error
+	publishFirst bool
+	objectID     string
+}
+
+func (s *failingTransferPublisher) PublishTransferAttachment(ctx context.Context, namespace filestorage.TransferNamespace, objectID string, target filestorage.TransferAttachmentTarget) error {
+	s.objectID = objectID
+	if s.publishFirst {
+		if err := s.Storage.PublishTransferAttachment(ctx, namespace, objectID, target); err != nil {
+			return err
+		}
+	}
+	return s.cause
+}
+
+func TestPutTransferPublicationFailuresPreserveTransactionFacts(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		cause        error
+		publishFirst bool
+	}{
+		{name: "path conflict", cause: filestorage.ErrPathConflict},
+		{name: "failure after publication", cause: errors.New("publication sync failed"), publishFirst: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			attachments, tasks, database, files, task, principal := attachmentService(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			before := putAttachment(t, attachments, principal, task, "file", "before")
+			publisher := &failingTransferPublisher{Storage: files, cause: test.cause, publishFirst: test.publishFirst}
+			subject := newAttachmentService(database, publisher)
+			namespace := transferNamespace(t)
+			permit, err := files.AcquireGate(ctx, filestorage.PrivateGate, namespace.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer permit.Close()
+			defer func() {
+				cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stop()
+				if err := files.DeleteTransferNamespace(cleanupCtx, namespace); err != nil {
+					t.Error(err)
+				}
+			}()
+			admission, err := subject.AdmitTransfer(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", namespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer admission.Close()
+			item, created, err := admission.Put(ctx, strings.NewReader("after"))
+			var transaction *store.TransactionError
+			if !errors.Is(err, test.cause) || !FileEffectPossible(err) || !errors.As(err, &transaction) || transaction.Phase != "operation" || transaction.Outcome != store.TransactionNotCommitted || transaction.CommitAttempted || transaction.CleanupFailed || created || !reflect.DeepEqual(item, model.Attachment{}) {
+				t.Fatalf("publication failure lost outcome: item=%#v created=%v transaction=%#v err=%v", item, created, transaction, err)
+			}
+			if !test.publishFirst {
+				requireFault(t, err, "path_conflict")
+			} else {
+				var fault *model.Fault
+				if errors.As(err, &fault) {
+					t.Fatalf("operational failure became a domain conflict: %#v", fault)
+				}
+			}
+			if err := admission.Close(); err != nil {
+				t.Fatal(err)
+			}
+			metadata, object, err := attachments.Open(ctx, principal, task.ProjectID, task.ID, "file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, readErr := io.ReadAll(object.Body)
+			closeErr := object.Body.Close()
+			want := "before"
+			if test.publishFirst {
+				want = "after"
+			}
+			if readErr != nil || closeErr != nil || !reflect.DeepEqual(metadata, before) || string(content) != want {
+				t.Fatalf("publication failure changed metadata or file unexpectedly: metadata=%#v content=%q read=%v close=%v", metadata, content, readErr, closeErr)
+			}
+			assertTaskUnchanged(t, tasks, principal, task)
+			staged, err := files.OpenTransfer(ctx, namespace, publisher.objectID)
+			if test.publishFirst {
+				if !errors.Is(err, fs.ErrNotExist) {
+					if err == nil {
+						staged.Body.Close()
+					}
+					t.Fatalf("published object remained staged: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				bytes, readErr := io.ReadAll(staged.Body)
+				closeErr := staged.Body.Close()
+				if readErr != nil || closeErr != nil || string(bytes) != "after" {
+					t.Fatalf("failed publication lost staged content: %q %v %v", bytes, readErr, closeErr)
+				}
+			}
+		})
 	}
 }
 

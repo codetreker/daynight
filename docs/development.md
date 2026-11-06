@@ -514,9 +514,9 @@ The check builds and vets the Go module using a unit-test Web resource overlay,
 prepares the pinned UniAuth fixture, clears cached Go test results and runs
 module tests and coverage. Production builds use real Web assets. The configured
 package and function thresholds are 85% and 80%, with no production exclusions;
-the raw statement coverage must be strictly greater than 90%. The checked-in
-configuration currently disables critical-block failure and race instrumentation;
-the [server guide](../packages/daynight-server/README.md#race-instrumentation)
+the raw statement coverage must be strictly greater than 90%. Critical-block
+failure is disabled; the check enables race locally but not in CI. The
+[server guide](../packages/daynight-server/README.md#race-instrumentation)
 describes the actual check. Tests require the isolated PostgreSQL instance and
 fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
