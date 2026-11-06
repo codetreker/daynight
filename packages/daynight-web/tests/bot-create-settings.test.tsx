@@ -80,6 +80,32 @@ it('restores all implicit defaults after explicit model and effort choices', asy
   fireEvent.click(screen.getByRole('button', { name: 'Restore all defaults' })); await flush();
   await submit(); expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
 });
+it.each([false, true])('keeps creation available when restoring already-default settings after an explicit reset: %s', async afterExplicitReset => {
+  mount(); await flush(); await expand();
+  if (afterExplicitReset) {
+    await choose('Model', 'model-a'); await choose('Reasoning effort', 'low');
+    fireEvent.click(screen.getByRole('button', { name: 'Restore all defaults' })); await flush();
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Restore all defaults' })); await flush();
+  expect(screen.getByRole('button', { name: 'Create assistant' })).toBeEnabled();
+  await submit(); expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
+});
+it('ignores a late defaults response after repeated resets with unchanged choices', async () => {
+  mount(); await flush(); await expand();
+  const first = Promise.withResolvers<bots.BotDefaults>(), latest = Promise.withResolvers<bots.BotDefaults>();
+  vi.mocked(bots.getBotDefaults).mockReturnValueOnce(first.promise).mockReturnValueOnce(latest.promise);
+  fireEvent.click(screen.getByRole('button', { name: 'Restore all defaults' })); await flush();
+  const firstSignal = vi.mocked(bots.getBotDefaults).mock.lastCall![1]!;
+  fireEvent.click(screen.getByRole('button', { name: 'Restore all defaults' })); await flush();
+  expect(firstSignal.aborted).toBe(true);
+  expect(screen.getByRole('button', { name: 'Create assistant' })).toBeDisabled();
+  latest.resolve(defaults()); await flush();
+  expect(screen.getByRole('button', { name: 'Create assistant' })).toBeEnabled();
+  first.resolve({ ...defaults(), configuration: null, reason: 'unsupported_selection' }); await flush();
+  expect(screen.getByRole('button', { name: 'Create assistant' })).toBeEnabled();
+  expect(screen.queryByRole('alert')).toBeNull();
+  await submit(); expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toEqual({ id: expect.any(String), name: 'Helper' });
+});
 it('does not invent effort options for a model without supported efforts', async () => {
   mount(); await flush(); await expand(); await choose('Model', 'plain');
   const effort = screen.getByRole('combobox', { name: 'Reasoning effort' }); expect(effort).toBeDisabled();
@@ -164,6 +190,9 @@ it('returns from Browse without pinning a Worker and pins only a confirmed direc
   fireEvent.click(screen.getByRole('button', { name: 'Select this directory' })); await flush();
   expect(screen.getByRole('combobox', { name: 'Worker' })).toHaveValue(workerId);
   expect(screen.getByRole('textbox', { name: 'Working directory' })).toHaveValue('/canonical');
+  fireEvent.click(screen.getByRole('button', { name: 'Browse' })); await flush();
+  fireEvent.click(screen.getByRole('button', { name: 'Select this directory' })); await flush();
+  expect(screen.getByRole('button', { name: 'Create assistant' })).toBeEnabled();
   await submit(); expect(vi.mocked(bots.createBot).mock.calls[0]![0]).toMatchObject({ overrides: { workerId, cwd: '/canonical' } });
 });
 it('can restore one explicit model after discovery fails without clearing the directory', async () => {

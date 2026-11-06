@@ -28,6 +28,7 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   const [name, setName] = useState(''), [workerId, setWorkerId] = useState<string | null>(null);
   const [cwd, setCwd] = useState<string | null>(null), [provider, setProvider] = useState<WorkerAgent | null>(null);
   const [defaults, setDefaults] = useState<BotDefaults | null>(null), [loading, setLoading] = useState(true);
+  const [defaultsRevision, setDefaultsRevision] = useState(0);
   const [defaultsError, setDefaultsError] = useState<unknown>(null), [error, setError] = useState<unknown>(null);
   const [validation, setValidation] = useState<'name' | 'cwd' | null>(null), [busy, setBusy] = useState(false), [checking, setChecking] = useState(false);
   const unknown = unresolvedRequest !== null;
@@ -41,7 +42,7 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
   const directory = cwd ?? targetConfiguration?.cwd ?? '';
   const validDirectory = cwd === null || cwd === '' || cwd.isWellFormed() && !/\p{Cc}/u.test(cwd) && new TextEncoder().encode(cwd).length <= 4096 && (selected?.platform === 'windows' ? /^[a-z]:[\\/]/i.test(cwd) || /^\\\\[^\\]+\\[^\\]+/.test(cwd) : cwd.startsWith('/'));
   const choices = { ...(cwd === null || cwd === '' ? {} : { cwd }), ...(provider === null ? {} : { provider }), ...(model === null ? {} : { model }), ...(effort === null ? {} : { reasoningEffort: effort }) };
-  const invalidateDefaults = () => { ++generation.current; defaultsRequest.current?.abort(); setLoading(true); setDefaultsError(null); setError(null); };
+  const invalidateDefaults = () => { ++generation.current; defaultsRequest.current?.abort(); setDefaultsRevision(value => value + 1); setLoading(true); setDefaultsError(null); setError(null); };
   const pinWorker = () => { if (selected) setWorkerId(selected.workerId); };
   useLayoutEffect(() => { if (browsing === null && restoreBrowse.current) { restoreBrowse.current = false; browseButton.current?.focus(); } }, [browsing]);
   useLayoutEffect(() => { if (unknown && !busy) checkButton.current?.focus(); }, [unknown, busy]);
@@ -81,7 +82,7 @@ export function BotCreateForm({ enabled = true, unresolvedRequest, onUnresolvedR
     if (unknown || !controlsEnabled || !validDirectory) { setLoading(false); return; }
     void loadDefaults();
     return () => { ++generation.current; defaultsRequest.current?.abort(); };
-  }, [loadDefaults, unknown, controlsEnabled, validDirectory]);
+  }, [loadDefaults, defaultsRevision, unknown, controlsEnabled, validDirectory]);
   useEffect(() => () => { operation.current?.abort(); defaultsRequest.current?.abort(); }, []);
 
   const availableProvider = selected?.providers.find(item => item.provider === selectedProvider)?.available ?? false;

@@ -116,6 +116,23 @@ test('name-only payload and unknown close/reopen preserve the original request',
   await expect(page.getByText(id, { exact: true })).toBeVisible(); expect(fixture.posts).toHaveLength(1);
 });
 
+test('restoring already-default settings and repeating a reset retain name-only creation', async ({ page }) => {
+  const fixture = await install(page); await page.goto('/bots'); await open(page);
+  await page.locator('.bot-create-advanced > summary').click();
+  await page.getByRole('button', { name: 'Restore all defaults' }).click();
+  await expect(page.locator('.bot-create-actions .primary')).toBeEnabled();
+  await page.locator('#bot-model').selectOption('model-a');
+  await expect(page.locator('#bot-worker')).toHaveValue(botId(20));
+  await page.getByRole('button', { name: 'Restore all defaults' }).click();
+  await expect(page.locator('.bot-create-actions .primary')).toBeEnabled();
+  await page.getByRole('button', { name: 'Restore all defaults' }).click();
+  await expect(page.locator('.bot-create-actions .primary')).toBeEnabled();
+  await page.locator('#bot-name').fill('Reset defaults');
+  await page.locator('.bot-create-actions .primary').click();
+  await expect.poll(() => fixture.posts.length).toBe(1);
+  expect(fixture.posts).toEqual([{ id: expect.any(String), name: 'Reset defaults' }]);
+});
+
 test('no Worker keeps the name editable and prevents submission', async ({ page }) => {
   const fixture = await install(page); fixture.noWorker(); await page.goto('/bots'); await page.locator('.bot-create').click();
   await expect(page.getByRole('alert')).toContainText('No available Worker');
