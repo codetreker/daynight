@@ -13,7 +13,7 @@ const keyFor = (ownerUserId: string): string => BOT_DISPLAY_SNAPSHOT_NAMESPACE +
 type RecordValue = { historyVersion: string; preview: BotDisplayPreview };
 /** Array order is least to most recently read or saved; wall-clock changes cannot reorder it. */
 type Envelope = { schemaVersion: 1; ownerUserId: string; generation: string; records: RecordValue[] };
-type Account = { value: Envelope; memoryOnly: boolean; localGeneration: object; clearing: number };
+type Account = { value: Envelope; memoryOnly: boolean; localGeneration: object; clearing: number; revokedAll: boolean; revokedTargets: Set<string> };
 type Realm = { accounts: Map<string, Account>; listeners: Set<(ownerUserId: string) => void>; tail: Promise<void> };
 const realms = new WeakMap<object, Realm>();
 const unavailableStorage = {};
@@ -113,7 +113,7 @@ export class BotDisplaySnapshotStore {
   private account(ownerUserId: string): Account {
     let account = this.realm.accounts.get(ownerUserId);
     if (!account) {
-      account = { value: emptyEnvelope(ownerUserId), memoryOnly: !this.storage || !this.lock, localGeneration: {}, clearing: 0 };
+      account = { value: emptyEnvelope(ownerUserId), memoryOnly: !this.storage || !this.lock, localGeneration: {}, clearing: 0, revokedAll: false, revokedTargets: new Set() };
       this.realm.accounts.set(ownerUserId, account);
       // Read-only recovery is useful even if this browser cannot safely persist new writes.
       if (this.storage) {
@@ -130,7 +130,7 @@ export class BotDisplaySnapshotStore {
       const raw = this.storage.getItem(keyFor(ownerUserId));
       const value = raw === null ? emptyEnvelope(ownerUserId) : parseEnvelope(raw, ownerUserId);
       if (value.generation !== account.value.generation) account.localGeneration = {};
-      account.value = value;
+      account.value = this.withRevocations(account, value);
     } catch {
       // A corrupt or denied read is a miss, never an invitation to overwrite another tab.
       account.value = emptyEnvelope(ownerUserId, crypto.randomUUID());
@@ -138,9 +138,20 @@ export class BotDisplaySnapshotStore {
     }
     return account;
   }
+  private revoke(account: Account, botId?: string): void {
+    if (botId === undefined) account.revokedAll = true;
+    else account.revokedTargets.add(botId);
+  }
+  private withRevocations(account: Account, value: Envelope): Envelope {
+    return { ...value, records: value.records.filter(row => !account.revokedAll && !account.revokedTargets.has(row.preview.botId)) };
+  }
   private persist(account: Account): boolean {
     if (account.memoryOnly || !this.storage) return false;
-    try { this.storage.setItem(keyFor(account.value.ownerUserId), JSON.stringify(account.value)); return true; }
+    try {
+      this.storage.setItem(keyFor(account.value.ownerUserId), JSON.stringify(account.value));
+      account.revokedAll = false; account.revokedTargets.clear();
+      return true;
+    }
     catch { account.memoryOnly = true; return false; }
   }
   private serialized<T>(ownerUserId: string, run: (locked: boolean) => T, fallback: T): Promise<T> {
@@ -260,7 +271,7 @@ export class BotDisplaySnapshotStore {
     }, 'unavailable');
   }
   /**
-   * Remove this target, preserving other readable snapshots but expiring all account leases.
+   * Remove this target, normally preserving other persisted snapshots but expiring all account leases.
    * Revocation is synchronous; the result reports best-effort durable clearing. If disk cannot
    * be read, clear the account envelope rather than republish unverified sibling snapshots.
    */
@@ -270,6 +281,7 @@ export class BotDisplaySnapshotStore {
     if (this.closed || !uuid(ownerUserId) || botId !== undefined && !uuid(botId)) return Promise.resolve(false);
     const account = this.account(ownerUserId);
     account.clearing++;
+    this.revoke(account, botId);
     const generation = crypto.randomUUID();
     account.localGeneration = {};
     account.value = { ...account.value, generation, records: account.value.records.filter(row => botId !== undefined && row.preview.botId !== botId) };
@@ -277,11 +289,14 @@ export class BotDisplaySnapshotStore {
     account.memoryOnly = true;
     this.publish(ownerUserId);
     return this.serialized(ownerUserId, locked => {
+      // Earlier successful clears may have flushed the shared markers while this
+      // clear waited. Reapply its own marker and retain every failed revocation.
+      this.revoke(account, botId);
       if (locked && this.storage) {
         try {
           const raw = this.storage.getItem(keyFor(ownerUserId));
           const disk = raw === null ? emptyEnvelope(ownerUserId) : parseEnvelope(raw, ownerUserId);
-          account.value = { ...disk, generation, records: disk.records.filter(row => botId !== undefined && row.preview.botId !== botId) };
+          account.value = this.withRevocations(account, { ...disk, generation });
         } catch {
           // Unreadable disk may contain a newer cross-tab revocation. Never republish
           // unverified sibling snapshots from page memory into that namespace.
@@ -290,7 +305,7 @@ export class BotDisplaySnapshotStore {
       }
       // Every queued clear reapplies its own target filter after prior clears or disk refreshes.
       // A prior quota/read failure must not suppress a later, smaller revocation tombstone.
-      account.value = { ...account.value, generation, records: account.value.records.filter(row => botId !== undefined && row.preview.botId !== botId) };
+      account.value = this.withRevocations(account, { ...account.value, generation });
       account.memoryOnly = !locked || !this.storage;
       const persisted = this.persist(account);
       account.clearing--;
