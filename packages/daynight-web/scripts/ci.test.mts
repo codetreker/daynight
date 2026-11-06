@@ -28,7 +28,7 @@ test('quality mode keeps full checks and deadlines with four coverage workers', 
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'vitest', 'run', '--coverage']],
     ['pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'node', 'scripts/coverage.mts']],
   ]);
-  assert.deepEqual(observed.calls.map(({ options }) => options.timeoutMs), [180_000, 300_000, 60_000]);
+  assert.deepEqual(observed.calls.map(({ options }) => options.timeoutMs), [180_000, 900_000, 60_000]);
   for (const call of observed.calls) {
     assert.equal(call.options.cwd, repositoryRoot);
     assert.equal(call.options.signal, controller.signal);

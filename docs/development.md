@@ -573,7 +573,8 @@ and a statement gate strictly greater than 90%; it does not start the Go service
 or an installed CLI. `pnpm web:test:browser` separately runs the controlled
 module browser fixtures after Playwright Chromium is installed; see the
 [Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
-`checks` gate when selected.
+`checks` gate alongside the independent Web browser job; both must succeed when
+Web validation is selected.
 
 For a disposable full-stack HTTP target, run a command through
 `bash deployment/dev-ci/run.sh <command> [args...]`; it receives
@@ -713,11 +714,20 @@ records the new-artifact identity, OIDC and public-verification choices. The
 
 The [`checks` workflow](../.github/workflows/checks.yml) compares the explicit PR
 head with its merge base using the complete Git history and NUL-delimited paths.
-Deletions and both sides of renames count. Shared inputs select the union of
-consumers; unclassified paths select all modules. The
-[selector](../.github/scripts/ci-modules.mts) owns exact path rules, including
-Web's CLI source and fixture dependencies. The root README describes the job
-selection and main-run policy.
+Deletions and both sides of renames count. The
+[selector](../.github/scripts/ci-modules.mts) assigns each application directory
+to its module; the [root routing table](../README.md#ci-selection) owns that map.
+Mixed changes select their union, and unclassified paths select all modules.
+
+Implementations, fixtures and test tooling follow their containing module,
+including CLI source imported by Web and Session fixtures read by Go tests.
+Root Node workspace manifests, npm configuration and the entire `patches/`
+directory select CLI and Web. These Node inputs do not select Go. A simultaneous
+Go-directory change still selects Go regardless of path order. Documentation
+and repository-instruction exclusions remain effective inside module directories,
+except that bundled CLI source Markdown retains CLI validation. The
+[module routing decision](../.agents/notes/implemented/testing/2026-11-06-module-validation-routing.md)
+records this policy and the role of complete main-push validation.
 
 For a CLI `package.json` modification, a PR containing only a regular-file
 version change and no other semantic change selects no application jobs. The
@@ -730,12 +740,15 @@ CLI selection runs ordinary and installed phases on Linux, Windows and macOS
 ARM64, a Node compatibility matrix, and the Linux shell-completion job. The
 ordinary Ubuntu job supplies the runtime package. macOS runs its ordinary and
 installed phases in sequence with separate builds, outcomes and artifacts. Go
-and Web each run their module validation in separate jobs. The Web `quality`
-mode runs its harness, Vitest coverage and source-inventory checker with bounded
-stages; it uploads coverage counters and source manifest. Server validation uses
-its own PostgreSQL service and uploads the raw coverage profile. The final gate
-accepts only successful or skipped preceding jobs and requires selected Web
-quality to succeed. Stress workloads remain local-only.
+has its own PostgreSQL service and uploads the raw coverage profile. Web selection
+starts two jobs that depend only on module detection. `verify-web-quality` runs
+the harness, Vitest coverage and source-inventory checker with bounded stages,
+then uploads coverage evidence. `verify-web-browser` prepares its own locked
+dependencies and Chromium, runs the configured assistant Playwright suite, and
+uploads JUnit results and browser captures. Each Web job has a 20-minute limit;
+neither waits for the other. The final gate accepts only successful or skipped
+preceding jobs and requires both Web jobs to succeed when selected. Stress
+workloads remain local-only.
 
 Workflow concurrency cancels an older PR run for the same ref; main pushes queue
 without cancelling an active run. Documentation-only PRs run routing tests and
