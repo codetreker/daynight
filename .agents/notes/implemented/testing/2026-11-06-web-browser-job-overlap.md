@@ -54,7 +54,12 @@ Navigation cancellation escalates its owned command group after one second,
 inside dev-ci's five-second callback termination grace. The navigation
 verification deadlines remain 180, 540 and 180 seconds; this cleanup ordering
 does not relax those checks. A real TERM-ignoring subprocess regression verifies
-that callback cleanup joins the forced group before the outer grace expires.
+that the forced group is absent before the outer grace expires. Its existing
+bounded group wait requires `ESRCH` and counts kernel reaping time within the
+same four-second assertion. On Linux, both executable identities can disappear
+while an exited descendant remains a zombie in the process group; immediate
+absence after command settlement is not guaranteed. Production command wrappers
+still refuse a group that remains present.
 The [functional target decision](../../archived/testing/2026-11-04-web-functional-target-overlap.md)
 records the rationale for the production runner's existing independent target
 resources.
@@ -91,6 +96,11 @@ and records which job becomes the workflow's critical path.
 **Share artifacts across runners.** This introduces handoff dependencies and
 ownership beyond the serial prefix. Existing source builds and per-run receipts
 remain sufficient for this scheduling change.
+
+**Assert group absence immediately after command settlement.** This confuses
+executable exit with kernel reaping of orphaned descendants. Waiting for the
+existing absence predicate within the original total budget retains the cleanup
+requirement without assuming synchronous reaping.
 
 ## Consequences
 

@@ -391,6 +391,7 @@ test('container cancellation drains a TERM-ignoring navigation process group bef
         assert.ok(error instanceof AggregateError);
         assert.ok(error.errors.includes(failure));
         assert.ok(error.errors.some(retainsCancellationCause), inspect(error, { depth: 6 }));
+        await waitForGroupStopped(child.pid);
         assert.ok(performance.now() - started < 4_000, 'Navigation must drain before the outer five-second callback grace.');
         assert.equal(await processIdentity(child.pid), null, inspect(error, { depth: 6 }));
         assert.equal(await processIdentity(descendantPid), null, inspect(error, { depth: 6 }));
