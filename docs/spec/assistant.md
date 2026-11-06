@@ -35,6 +35,8 @@ Worker 按显式选择、最近成功显式 Worker、首次登记时间与 Worke
 
 托管观测使用服务端时间：最近报告与 assistantHost.observedAt 均须不在未来且年龄严格小于 120 秒。旧 Worker 为 unsupported；报告失联为 offline；探测过期为 stale；全部 Provider 失败为 unavailable。目标 Provider 单独失败时保留具体原因。defaults 只提供观察，不预留资源或承诺未来启动成功。
 
+原生只读预检清理未确认时，对应 Provider 保持不可用且不得启动替代探测。只有原探测取得[可靠清理确认](daynight-worker-reporting.md#原生只读探测的清理与恢复)后，才在下一轮正常采集中绕过对应旧失败缓存重新预检；新预检成功且符合当前配置与观测时效后，才可报告可用。清理确认本身、`versions` 成功、其它 Provider 可用和已有 Bot 的持久 ready 均不能替代该 Provider 的新预检。此恢复不切换默认 Provider、不修改已冻结 Bot 或 Session，也不重放用户输入。公开 DTO、服务端创建准入与前端按钮判定保持既有规则；目标 Provider 真实不可用或观测过期时仍拒绝新建，页面刷新不保证旧 Worker 恢复。
+
 读取默认值、取消未提交的表单、创建 pending 定义和启动 failed 均不提交偏好。只有绑定 Worker 的 report 经服务端核验当前 Session 身份与实际同步事实，并在同一事务中持久化 ready 后，才提交成功偏好。表单、spawn 回执和客户端声明均不能代替该核验。用户 Worker 偏好及每 Worker 的目录、Provider 偏好各自保存服务端 creation_order 水位；旧创建晚成功不能覆盖新成功显式选择，没有显式选择的字段不重写偏好。配置和偏好失败时与同一生命周期事务一起回滚。
 
 ## 创建幂等性
@@ -148,6 +150,8 @@ Worker 的 completed 声明表示它已验证原生写入停止并清理该 Bot 
 清理仅涉及该 Bot 实际关联的 Session，不修改独立任务、普通 Test Session、用户 cwd、worktree 或共享 native home。Provider 原生历史没有统一删除 API，不承诺擦除其原生文件、安全擦除、离线浏览器缓存或用户导出副本。浏览器和 Worker 各自负责其范围内的缓存/私有资料处理。
 
 ## 验证要求
+
+助手可用性验证覆盖原探测清理未确认时的拒绝、可靠确认后的下一轮重采、当前配置与新鲜度校验，以及重新预检失败仍保留实际原因。独立验证版本采集成功、其它 Provider 成功和既有 Bot ready 均不能误报该 Provider 可用；清理与取消的完整矩阵由[上报验证要求](daynight-worker-reporting.md#验证)拥有。受控预检与创建准入测试不证明真实 Worker 恢复或助手启动成功，真实创建与启动结果须分别观察。
 
 CLI 验证覆盖普通非仓库目录下的六个命令、help 与 JSON、名字创建的 pending、固定请求 ID、未知写入不重试及 show 核对、超安全整数的版本、删除阶段区别、分页及后页失败、401/403/404/409 和诊断认证材料隔离。Worker 查询验证在线与库存状态分别呈现，未知库存不假报零任务，远端查询不获取本地 runtime 锁。受控 HTTP 与命令测试只证明 CLI 契约，不证明真实 Provider、完整托管或历史清理。
 
