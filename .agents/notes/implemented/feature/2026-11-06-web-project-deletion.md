@@ -15,10 +15,11 @@ withdraw a newly authorized Project generation.
 Project Settings previews the actual Project and blocking claims and requires
 exact name confirmation. A shared guard serializes its management writes. The
 original identity retains dispatched operations across route changes; a separate
-result owner stores confirmed receipts before withdrawal and navigation. It
-uses the dispatch generation for immediate withdrawal, waits for identity
+result owner stores confirmed receipts before withdrawal and navigation. The
+owner uses the dispatch generation for immediate withdrawal, waits for identity
 admission before publishing results or navigating, and retries local cleanup
-and navigation independently. Unknown results allow only
+and navigation independently. Standalone pages present the retained result in a
+collapsible region so that other Task controls remain usable. Unknown results allow only
 read-only checks and retain their uncertainty after a 404. The
 [Web design](../../../../docs/design/daynight-web.md#项目删除) owns the complete
 interaction and outcome rules, and the [projection decision](../architecture/2026-11-06-web-project-projection-withdrawal.md)

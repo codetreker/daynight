@@ -1,8 +1,10 @@
 import { useRef, useState, type RefObject } from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { useBodyScrollLock } from '../src/app/useBodyScrollLock';
 import { SessionFullscreenContext, useSessionFullscreen, type SessionFullscreenRegistration } from '../src/features/task-agent-session/useSessionFullscreen';
+import { TaskConfirmation } from '../src/features/task-detail/TaskConfirmation';
+import { renderWithLocale } from './helpers/renderWithLocale';
 
 const client = {};
 function View({ active = true, identity = 'session-1', userId = 'user-1', owner = client, fullscreenBoundary }: {
@@ -18,6 +20,31 @@ function View({ active = true, identity = 'session-1', userId = 'user-1', owner 
 const toggle = () => fireEvent.click(screen.getByText('Toggle'));
 
 describe('Session fullscreen ownership', () => {
+  it('includes only its own standalone result slot in the fullscreen focus cycle and isolates it for a modal', async () => {
+    function Host() {
+      const boundary = useRef<HTMLDivElement>(null), fallback = useRef<HTMLButtonElement>(null);
+      const [modal, setModal] = useState(false);
+      return <><div className="standalone-task-route"><div ref={boundary}><View fullscreenBoundary={boundary} /></div>
+        <div className="standalone-deletion-slot" data-testid="own-slot"><button ref={fallback} onClick={() => setModal(true)}>Result action</button></div>
+        {modal && <TaskConfirmation owner={boundary} fallbackFocus={fallback} title="Confirm" question="Continue?" explanation="Explanation" taskTitle="Task" confirmLabel="Confirm" cancelLabel="Cancel" closeLabel="Close" onCancel={() => setModal(false)} onConfirm={() => setModal(false)} />}
+      </div><div className="standalone-task-route"><div className="standalone-deletion-slot" data-testid="other-slot"><button>Other result</button></div></div></>;
+    }
+    renderWithLocale(<Host />, { locale: 'en' }); toggle();
+    const slot = screen.getByTestId('own-slot'), other = screen.getByTestId('other-slot');
+    expect(slot).not.toHaveAttribute('inert'); expect(other.closest('[inert]')).not.toBeNull();
+    const first = screen.getByText('Toggle'), last = screen.getByText('Result action');
+    act(() => last.focus()); fireEvent.keyDown(last, { key: 'Tab' }); expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true }); expect(last).toHaveFocus();
+    fireEvent.click(last);
+    expect(slot).toHaveAttribute('inert'); expect(screen.getByRole('alertdialog')).toBeVisible();
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(slot).not.toHaveAttribute('inert'));
+    expect(last).toHaveFocus(); fireEvent.keyDown(last, { key: 'Escape' });
+    expect(screen.getByTestId('session')).toHaveAttribute('data-fullscreen', 'false');
+    expect(first).toHaveFocus(); expect(other.closest('[inert]')).toBeNull();
+  });
+
   it('includes external chrome in a stable fullscreen boundary and restores its owned presentation', () => {
     function Host() {
       const boundary = useRef<HTMLDivElement>(null);
