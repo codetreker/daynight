@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -33,6 +34,23 @@ type committedCleanupFaultWriter struct {
 	inner  store.AttachmentMutationWriter
 	failAt int32
 	calls  atomic.Int32
+}
+
+type uploadStageFailure struct {
+	filestorage.Storage
+	filestorage.TransferStorage
+	filestorage.TransferAttachmentPublisher
+	cause    error
+	stagedID string
+}
+
+func (s *uploadStageFailure) PutTransfer(ctx context.Context, namespace filestorage.TransferNamespace, id string, content io.Reader) (filestorage.FileInfo, error) {
+	info, err := s.TransferStorage.PutTransfer(ctx, namespace, id, content)
+	if err != nil {
+		return info, err
+	}
+	s.stagedID = id
+	return info, s.cause
 }
 
 func (w *committedCleanupFaultWriter) WriteAttachmentMutation(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error) {
@@ -403,6 +421,99 @@ func TestUploadMetadataFailureRemainsUnknown(t *testing.T) {
 		t.Fatalf("cleanup lost unknown facts: %+v", status)
 	}
 	verifyTarget()
+}
+
+func TestUploadStagingFailureRecordsNotCommittedAndReclaimsPrivateFiles(t *testing.T) {
+	f, uploads, attachments := uploadFixture(t)
+	ctx := t.Context()
+	const path = "existing-attachment"
+	original := []byte("previous target")
+	metadata, created, err := attachments.Put(ctx, f.actor.Principal, f.binding.ProjectID, f.binding.TaskID, path, "text/plain", bytes.NewReader(original))
+	if err != nil || !created {
+		t.Fatalf("seed attachment: %+v created=%v error=%v", metadata, created, err)
+	}
+	content := []byte("private upload content")
+	id, chunkID := uuid.NewString(), uuid.NewString()
+	runUpload(t, uploads, f, f.actor, UploadInput{Action: "begin", TransferID: id, Path: path, ContentType: "text/plain"})
+	runUpload(t, uploads, f, f.actor, UploadInput{Action: "chunk", TransferID: id, ChunkID: chunkID, Offset: "0", ContentBase64: base64.StdEncoding.EncodeToString(content)})
+	var chunkObjectID string
+	if err := f.db.Pool.QueryRow(ctx, `SELECT object_id::text FROM private_upload_chunks WHERE transfer_id=$1 AND chunk_id=$2`, id, chunkID).Scan(&chunkObjectID); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("injected staging failure after private write")
+	storage := &uploadStageFailure{Storage: f.files, TransferStorage: f.files, TransferAttachmentPublisher: f.files, cause: cause}
+	uploads.attachments = attachmentservice.NewAttachments(f.db, f.db, storage)
+	result, err := uploads.Execute(ctx, f.actor, f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "commit", TransferID: id, TotalBytes: strconv.Itoa(len(content))})
+	if !errors.Is(err, cause) || result["transferId"] != id || result["writeOutcome"] != "not_committed" || result["operationId"] == nil || storage.stagedID == "" {
+		t.Fatalf("unpublished failure outcome: %+v %v", result, err)
+	}
+	status := runUpload(t, uploads, f, f.actor, UploadInput{Action: "status", TransferID: id})
+	if status["state"] != "cleanup_pending" || status["cleanupState"] != "pending" || status["writeOutcome"] != "not_committed" || status["operationId"] != result["operationId"] || status["attachment"] != nil {
+		t.Fatalf("failure receipt or cleanup barrier: %+v", status)
+	}
+	var state, from string
+	var reserved int64
+	if err := f.db.Pool.QueryRow(ctx, `SELECT state,cleanup_from_state,reserved_bytes FROM private_transfers WHERE id=$1`, id).Scan(&state, &from, &reserved); err != nil || state != "cleanup_pending" || from != "failed" || reserved != int64(2*len(content)) {
+		t.Fatalf("failure cleanup state: state=%q from=%q reserved=%d error=%v", state, from, reserved, err)
+	}
+	verifyUploadBytes(t, attachments, f, path, original)
+	current, object, err := attachments.Open(ctx, f.actor.Principal, f.binding.ProjectID, f.binding.TaskID, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := object.Body.Close(); err != nil || current != metadata {
+		t.Fatalf("failed upload changed target metadata: %+v, %v", current, err)
+	}
+	namespace, err := filestorage.NewTransferNamespace(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := f.files.AcquireGate(ctx, filestorage.PrivateGate, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, objectID := range []string{chunkObjectID, storage.stagedID} {
+		object, openErr := f.files.OpenTransfer(ctx, namespace, objectID)
+		if openErr != nil {
+			_ = gate.Close()
+			t.Fatalf("private object before cleanup: %v", openErr)
+		}
+		data, readErr := io.ReadAll(object.Body)
+		closeErr := object.Body.Close()
+		if readErr != nil || closeErr != nil || !bytes.Equal(data, content) {
+			_ = gate.Close()
+			t.Fatalf("private object contents: %q, read=%v close=%v", data, readErr, closeErr)
+		}
+	}
+	if err := gate.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.lifecycle.Maintain(ctx); err != nil {
+		t.Fatalf("reclaim failed upload: %v", err)
+	}
+	status = runUpload(t, uploads, f, f.actor, UploadInput{Action: "status", TransferID: id})
+	if status["state"] != "closed" || status["cleanupState"] != "complete" || status["writeOutcome"] != "not_committed" || status["operationId"] != result["operationId"] || status["attachment"] != nil {
+		t.Fatalf("closed failure receipt: %+v", status)
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT reserved_bytes FROM private_transfers WHERE id=$1`, id).Scan(&reserved); err != nil || reserved != 0 {
+		t.Fatalf("reservation after cleanup: %d %v", reserved, err)
+	}
+	gate, err = f.files.AcquireGate(ctx, filestorage.PrivateGate, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Close()
+	for _, objectID := range []string{chunkObjectID, storage.stagedID} {
+		object, err := f.files.OpenTransfer(ctx, namespace, objectID)
+		if err == nil {
+			_ = object.Body.Close()
+			t.Fatal("private object survived cleanup")
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("private object cleanup: %v", err)
+		}
+	}
+	verifyUploadBytes(t, attachments, f, path, original)
 }
 
 func TestUploadExpiredCommitLeaseNeverReplaysOrDeletesTarget(t *testing.T) {

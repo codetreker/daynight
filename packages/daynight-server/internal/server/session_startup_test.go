@@ -60,6 +60,52 @@ func TestStartupReportBeforeHelloPersistsAndNegotiatesCurrent(t *testing.T) {
 	}
 }
 
+func TestFailedStartupReportHTTPReadback(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	report := startupBody(f)
+	report["startup"] = map[string]any{"state": "failed", "reasonCode": "native_rejected"}
+	body := jsonBody(t, map[string]any{
+		"version": f.task.Version, "claimId": f.snapshot.ClaimID, "phase": "waiting",
+		"nativeSessionId": nil, "herdr": nil, "startupReport": report,
+	})
+	updated := decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", body), http.StatusOK)
+	worker := apiWorker(t, updated.Properties)
+	if worker.ClaimID != f.snapshot.ClaimID || worker.UserID != f.handler.principal.UserID || worker.Phase != "waiting" || worker.NativeSessionID != nil || worker.Herdr != nil {
+		t.Fatalf("worker update lost its identity or waiting state: %+v", worker)
+	}
+
+	read := decodeResponse[api.Task](t, projectRequest(f.handler, http.MethodGet, taskPath(f.task), ""), http.StatusOK)
+	readWorker := apiWorker(t, read.Properties)
+	if read.Version != updated.Version || !reflect.DeepEqual(readWorker, worker) || !reflect.DeepEqual(read.Properties["sessionStartup"], updated.Properties["sessionStartup"]) {
+		t.Fatal("worker and startup report did not survive task readback")
+	}
+
+	response := startupRequest(f, http.MethodGet, f.base+"/current", "")
+	current := decodeResponse[struct {
+		Status        string          `json:"status"`
+		Session       sp.Snapshot     `json:"session"`
+		StartupReport json.RawMessage `json:"startupReport"`
+	}](t, response, http.StatusOK)
+	var expected map[string]any
+	var actual map[string]any
+	if err := json.Unmarshal([]byte(jsonBody(t, report)), &expected); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(current.StartupReport, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != "registered" || current.Session.SessionID != f.snapshot.SessionID || current.Session.ClaimID != f.snapshot.ClaimID || current.Session.Identity.NativeSessionID != nil || !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("current session lost failed startup evidence or identity: %+v, report=%s", current.Session, current.StartupReport)
+	}
+
+	unauthenticated := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, f.base+"/current", nil)
+	request.Header.Set("X-Daynight-Startup-Version", "1")
+	request.Header.Set("X-Request-ID", "project-test")
+	f.handler.ServeHTTP(unauthenticated, request)
+	assertProjectError(t, unauthenticated, http.StatusUnauthorized, "unauthenticated")
+}
+
 func sendStartup(t *testing.T, f *sessionHTTPFixture, report map[string]any) api.Task {
 	t.Helper()
 	f.task = decodeResponse[api.Task](t, startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", jsonBody(t, map[string]any{"version": f.task.Version, "claimId": f.snapshot.ClaimID, "startupReport": report})), http.StatusOK)

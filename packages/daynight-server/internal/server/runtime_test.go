@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -19,8 +20,14 @@ import (
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
@@ -242,6 +249,189 @@ func TestForcedDrainCancelsDatabaseWork(t *testing.T) {
 		t.Fatalf("request did not cancel query: %v", err)
 	}
 	await(t, clientDone)
+}
+
+func TestRuntimeDrainTaskWritePersistenceAndCancellation(t *testing.T) {
+	for _, forced := range []bool{false, true} {
+		t.Run(map[bool]string{false: "graceful", true: "deadline"}[forced], func(t *testing.T) {
+			config := testConfig(t)
+			config.DatabaseURL = testsupport.ServiceDatabaseURL(t)
+			config.ShutdownTimeout = 5 * time.Second
+			if forced {
+				config.ShutdownTimeout = 250 * time.Millisecond
+			}
+			var principal model.Principal
+			var task model.Task
+			writeResult := make(chan error, 1)
+			runtime, _ := startRuntimeTest(t, config, func(dependencies *runtimeTestResources) http.Handler {
+				principal = testsupport.ServicePrincipal(t, dependencies.Store)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				project, err := projectservice.NewProjects(dependencies.Store).Create(ctx, principal, projectcore.CreateProject{ExpectedUserID: principal.UserID, Name: "Drain project", RepoURL: "host:repo"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				tasks := taskservice.NewTasks(dependencies.Store)
+				task, err = tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Before drain"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					title := "Drained write"
+					_, err := tasks.Update(r.Context(), principal, task.ProjectID, task.ID, taskcore.UpdateTask{Version: task.Version, Title: &title})
+					writeResult <- err
+					if err != nil {
+						http.Error(w, "write failed", http.StatusServiceUnavailable)
+						return
+					}
+					_, _ = io.WriteString(w, "committed")
+				})
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			observer, err := pgx.Connect(ctx, config.DatabaseURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stop()
+				if err := observer.Close(cleanup); err != nil {
+					t.Error(err)
+				}
+			})
+			lock, err := observer.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			locked := true
+			t.Cleanup(func() {
+				if locked {
+					cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+					defer stop()
+					if err := lock.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+						t.Error(err)
+					}
+				}
+			})
+			if _, err := lock.Exec(ctx, `SELECT id FROM projects WHERE id=$1 FOR UPDATE`, task.ProjectID); err != nil {
+				t.Fatal(err)
+			}
+			runContext, stopRuntime := context.WithCancel(context.Background())
+			requestContext, stopRequest := context.WithCancel(context.Background())
+			clientDone, runtimeDone := make(chan struct{}), make(chan struct{})
+			cleanupCancellationRequest(t, stopRequest, stopRuntime, clientDone, runtimeDone)
+			runtimeResult := make(chan error, 1)
+			go func() { defer close(runtimeDone); runtimeResult <- runtime.Run(runContext) }()
+			type clientResult struct {
+				status int
+				body   string
+				err    error
+			}
+			clientResultChannel := make(chan clientResult, 1)
+			client := &http.Client{Timeout: 10 * time.Second}
+			defer client.CloseIdleConnections()
+			go func() {
+				defer close(clientDone)
+				request, err := http.NewRequestWithContext(requestContext, http.MethodPut, "http://"+runtime.Address(), nil)
+				if err != nil {
+					clientResultChannel <- clientResult{err: err}
+					return
+				}
+				response, err := client.Do(request)
+				if err != nil {
+					clientResultChannel <- clientResult{err: err}
+					return
+				}
+				body, err := io.ReadAll(response.Body)
+				closeErr := response.Body.Close()
+				clientResultChannel <- clientResult{status: response.StatusCode, body: string(body), err: errors.Join(err, closeErr)}
+			}()
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				if _, err := lock.Exec(ctx, `SELECT pg_stat_clear_snapshot()`); err != nil {
+					t.Fatal(err)
+				}
+				var waiting bool
+				if err := lock.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name=current_setting('application_name') AND wait_event_type='Lock' AND query LIKE 'SELECT id::text FROM projects WHERE id = % FOR UPDATE')`).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					break
+				}
+				select {
+				case result := <-clientResultChannel:
+					t.Fatalf("request ended before the project lock barrier: %+v", result)
+				case <-ctx.Done():
+					t.Fatal("request did not wait for the project lock")
+				case <-ticker.C:
+				}
+			}
+			stopRuntime()
+			if forced {
+				if err := await(t, writeResult); !errors.Is(err, context.Canceled) {
+					t.Fatalf("deadline did not cancel blocked task write: %v", err)
+				}
+				if err := await(t, runtimeResult); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("deadline drain: %v", err)
+				}
+				if result := await(t, clientResultChannel); result.err == nil && result.status < 500 {
+					t.Fatalf("expired drain reported a successful write: %+v", result)
+				}
+			} else {
+				for {
+					runtime.admission.Lock()
+					closing := runtime.closing
+					runtime.admission.Unlock()
+					if closing {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						t.Fatal("runtime did not begin graceful drain")
+					case <-ticker.C:
+					}
+				}
+				select {
+				case err := <-writeResult:
+					t.Fatalf("write finished before lock release: %v", err)
+				default:
+				}
+			}
+			if err := lock.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			locked = false
+			if !forced {
+				if err := await(t, writeResult); err != nil {
+					t.Fatalf("drained write failed: %v", err)
+				}
+				if result := await(t, clientResultChannel); result.err != nil || result.status != http.StatusOK || result.body != "committed" {
+					t.Fatalf("drained HTTP response: %+v", result)
+				}
+				if err := await(t, runtimeResult); err != nil {
+					t.Fatalf("graceful drain: %v", err)
+				}
+			}
+			reopened, err := postgres.Open(ctx, config.DatabaseURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			read, err := taskservice.NewTasks(reopened).Get(ctx, principal, task.ProjectID, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if forced {
+				if !reflect.DeepEqual(read, task) {
+					t.Fatalf("canceled write persisted after releasing lock: %+v", read)
+				}
+			} else if read.Title != "Drained write" || read.Version != task.Version+1 {
+				t.Fatalf("drained write did not persist across reopen: %+v", read)
+			}
+		})
+	}
 }
 
 func TestClientCancellationReachesDatabase(t *testing.T) {

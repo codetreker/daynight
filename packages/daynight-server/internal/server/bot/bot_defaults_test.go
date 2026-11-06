@@ -119,10 +119,13 @@ func TestBotDefaultsHTTPCandidatesAndExplicitOfflineChoice(t *testing.T) {
 	database := projectTestStore(t)
 	handler := projectTestHandler(t, database, io.Discard)
 	legacy, usable := uuid.NewString(), uuid.NewString()
-	reportSnapshotHTTP(t, handler, legacy, workerSnapshotReportBody())
+	legacyReport := reportSnapshotHTTP(t, handler, legacy, workerSnapshotReportBody())
 	reportBotHostHTTP(t, handler, usable)
 	response := projectRequest(handler, "GET", "/api/v1/me/bots/defaults", "")
 	defaults := decodeResponse[api.BotDefaults](t, response, 200)
+	if age := defaults.ObservedAt.Sub(legacyReport.LastReportedAt); age < 0 || age >= 120*time.Second {
+		t.Fatalf("legacy worker was not online at selection: report=%s observed=%s", legacyReport.LastReportedAt, defaults.ObservedAt)
+	}
 	if defaults.WorkerID == nil || *defaults.WorkerID != usable || defaults.Configuration == nil || defaults.Configuration.WorkerID != usable || defaults.Reason != nil || len(defaults.Workers) != 2 {
 		t.Fatalf("usable host not selected: %+v", defaults)
 	}

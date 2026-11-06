@@ -51,6 +51,12 @@ func TestExternalDependencyHTTPWriteReplacementAndNoop(t *testing.T) {
 	if after := readHTTPTask(t, handler, target); !reflect.DeepEqual(after, target) {
 		t.Fatal("HTTP stale classification changed task metadata")
 	}
+	target = updateHTTPTask(t, handler, target, map[string]any{"externalDependsOn": []string{b.ID}})
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, target.ID), ""), http.StatusOK)
+	if len(graph.Tasks) != 3 || graph.Tasks[0].ID != a.ID || graph.Tasks[1].ID != b.ID || graph.Tasks[2].ID != target.ID ||
+		!slices.Equal(graph.Tasks[2].DependsOn, target.DependsOn) || !slices.Equal(graph.Tasks[2].ExternalDependsOn, []string{b.ID}) || !slices.Equal(graph.Tasks[2].BlockedBy, target.BlockedBy) {
+		t.Fatalf("graph lost patched external classification: target=%#v graph=%#v", target, graph)
+	}
 }
 
 func TestExternalDependencyHTTPWriteStrictBodies(t *testing.T) {
