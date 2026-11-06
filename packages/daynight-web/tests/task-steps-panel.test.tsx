@@ -5,7 +5,7 @@ import type { StepsResource, TaskStep } from "../src/api/task-steps";
 import { TaskStepsPanel } from "../src/features/task-detail/steps/TaskStepsPanel";
 import { renderWithLocale } from "./helpers/renderWithLocale";
 
-const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn(), edit: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string; requestId?: string }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
+const read = vi.hoisted(() => ({ resource: null as StepsResource | null, status: "loading", error: null as unknown, refreshing: false, stale: true, retry: vi.fn(), canDisplayStatus: true, canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn(), edit: vi.fn(), reconcile: vi.fn(), mutation: { operation: null as null | { action: string; stepId: string; requestId?: string }, phase: "idle", error: null as unknown, reconciling: false, reconciliationError: null as unknown } }));
 vi.mock("../src/features/task-detail/useTaskSteps", () => ({ useTaskSteps: () => read }));
 const listeners = vi.hoisted(() => new Set<() => void>());
 vi.mock("../src/features/task-detail/TaskDetailSession", () => ({ useTaskDetailSessions: () => ({
@@ -26,7 +26,7 @@ const stepRow = (id: string) => within(document.querySelector(`[data-step-id="${
 const toolbar = () => within(document.querySelector(".steps-toolbar")!);
 const pagination = () => within(screen.getByRole("navigation", { name: "Steps pages" }));
 const confirmation = () => within(screen.getByRole("alertdialog"));
-beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), edit: vi.fn().mockReturnValue("request-edit"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
+beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canDisplayStatus: true, canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), edit: vi.fn().mockReturnValue("request-edit"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
 
 describe("Step status", () => {
   it("offers four keyboard-accessible choices and retains the confirmed state until a response", () => {
@@ -46,7 +46,7 @@ describe("Step status", () => {
     expect(trigger).toHaveTextContent("To do");
   });
   it("locks shared writes and exposes conflict and unknown readback without replay", () => {
-    read.canSetStatus = false;
+    read.canDisplayStatus = false; read.canSetStatus = false;
     read.mutation = { operation: { action: "stepStatus", stepId: "00000000" }, phase: "unknown", error: new ApiError("network"), reconciling: false, reconciliationError: new ApiError("network") };
     const view = renderWithLocale(panel(), { locale: "en" });
     const trigger = screen.getByRole("button", { name: "Status for Round 1: To do" });
@@ -410,7 +410,7 @@ describe("Steps read failures", () => {
 
 describe("Step position", () => {
   it("allows a local insertion draft during another write while position writes stay locked", () => {
-    read.canMove = false; read.canSetStatus = false; read.canAdd = false;
+    read.canMove = false; read.canDisplayStatus = false; read.canSetStatus = false; read.canAdd = false;
     const view = renderWithLocale(panel(), { locale: "en" });
     fireEvent.click(stepRow("00000001").getByRole("button", { name: "More actions for Round 2" }));
     expect(screen.getByRole("menuitem", { name: "Move up" })).toBeDisabled();
@@ -418,7 +418,7 @@ describe("Step position", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Title" }), { target: { value: "Draft during write" } });
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(read.move).not.toHaveBeenCalled(); expect(read.add).not.toHaveBeenCalled();
-    read.canAdd = true; read.canMove = true; read.canSetStatus = true; view.rerender(panel());
+    read.canAdd = true; read.canMove = true; read.canDisplayStatus = true; read.canSetStatus = true; view.rerender(panel());
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Draft during write");
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });

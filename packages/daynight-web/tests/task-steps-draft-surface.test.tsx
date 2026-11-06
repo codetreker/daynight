@@ -11,7 +11,7 @@ import { createTaskSessionWorld } from './helpers/taskSessions';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 import { renderWithLocale } from './helpers/renderWithLocale';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }) }; });
 vi.mock('../src/features/task-agent-session/TaskAgentSession', () => ({ TaskAgentSession: () => <div>Private session</div> }));
 vi.mock('../src/api/task-steps', async (original) => ({ ...await original<typeof import('../src/api/task-steps')>(), getTaskSteps: vi.fn(), editTaskStep: vi.fn(), deleteTaskStep: vi.fn() }));
 const projectId = '10000000-0000-4000-8000-000000000001';
@@ -63,7 +63,7 @@ it.each((['edit', 'delete'] as const).flatMap(action => (['identity', 'project']
   } finally { world.dispose(); }
 });
 
-it.each(['identity', 'project'] as const)('retains the draft across another task deletion and clears it on %s retirement', async (retirement) => {
+it.each(['identity', 'project'] as const)('retires the old draft on history replacement and clears the new tree on %s retirement', async (retirement) => {
   const world = createTaskSessionWorld(); await world.sync([detail, other]);
   const replacement = deferred<typeof detail>();
   vi.mocked(getTask).mockReset().mockResolvedValueOnce(detail).mockReturnValueOnce(replacement.promise).mockResolvedValue(detail);
@@ -78,26 +78,24 @@ it.each(['identity', 'project'] as const)('retains the draft across another task
     expect(panels.parentElement).toHaveClass('task-detail-body'); expect(panels).not.toHaveAttribute('hidden');
     fireEvent.click(screen.getByRole('button', { name: /^Cancel$/ }));
     expect(screen.getByRole('alertdialog')).toHaveTextContent('Unsaved private draft');
-    const ticket = await world.scope.beginSync(projectId, world.scope.signal);
-    await act(async () => { await world.scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { epoch: '30000000-0000-4000-8000-000000000003', versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), world.scope.signal); });
+    let ticket = await world.scope.beginSync(projectId, world.scope.signal);
+    await act(async () => {
+      await world.scope.observeHistory(ticket, '30000000-0000-4000-8000-000000000003', world.scope.signal);
+      ticket = await world.scope.beginSync(projectId, world.scope.signal);
+      await world.scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { epoch: '30000000-0000-4000-8000-000000000003', versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), world.scope.signal);
+    });
     rendered.rerender(view(2, [detail]));
     await waitFor(() => expect(getTask).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Private confirmed text')).toBeNull();
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.queryByText('Unsaved private draft')).toBeNull();
-    expect(title).not.toBeVisible(); expect(title).toHaveValue('Unsaved private draft');
-    expect(panels).toHaveAttribute('hidden'); expect(panels).toHaveAttribute('inert'); expect(panels).toHaveStyle({ display: 'none' });
-    act(() => navigate('/projects'));
-    expect(screen.getByRole('alertdialog')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect(title).not.toBeInTheDocument(); expect(panels).not.toBeInTheDocument();
     await act(async () => { replacement.reject(new Error('Offline')); });
     await screen.findByRole('button', { name: 'Retry details' });
-    expect(title).not.toBeVisible(); expect(title).toHaveValue('Unsaved private draft');
+    expect(screen.queryByDisplayValue('Unsaved private draft')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Retry details' }));
-    await waitFor(() => expect(title).toBeVisible());
-    expect(screen.getByRole('textbox', { name: 'Title' })).toBe(title);
-    expect(panels.parentElement).toHaveClass('task-detail-body'); expect(panels).not.toHaveAttribute('hidden'); expect(panels.style.display).toBe('');
-    expect(title).toHaveValue('Unsaved private draft');
+    await screen.findByRole('button', { name: 'Add step' });
+    expect(screen.queryByDisplayValue('Unsaved private draft')).toBeNull();
     await act(async () => {
       if (retirement === 'identity') await world.scope.invalidateScope();
       else { const active = await world.scope.beginSync(projectId, world.scope.signal); expect(await world.scope.revokeProject(active, world.scope.signal, false)).toBe(true); }
@@ -123,8 +121,12 @@ it('keeps the Session selection without retaining its private content while the 
   const rendered = renderWithLocale(view(1, [running, other]), { locale: 'en', taskCache: { scope: world.scope } });
   try {
     await screen.findByText('Private session');
-    const ticket = await world.scope.beginSync(projectId, world.scope.signal);
-    await act(async () => { await world.scope.applySync(ticket, taskSyncFromGraph(graphFixture([running]), { epoch: '30000000-0000-4000-8000-000000000003', versionForTask: () => running.version, propertiesForTask: () => running.properties }), world.scope.signal); });
+    let ticket = await world.scope.beginSync(projectId, world.scope.signal);
+    await act(async () => {
+      await world.scope.observeHistory(ticket, '30000000-0000-4000-8000-000000000003', world.scope.signal);
+      ticket = await world.scope.beginSync(projectId, world.scope.signal);
+      await world.scope.applySync(ticket, taskSyncFromGraph(graphFixture([running]), { epoch: '30000000-0000-4000-8000-000000000003', versionForTask: () => running.version, propertiesForTask: () => running.properties }), world.scope.signal);
+    });
     rendered.rerender(view(2, [running]));
     await waitFor(() => expect(getTask).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Private session')).toBeNull();

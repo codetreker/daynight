@@ -37,6 +37,21 @@ func TestMCPOriginsConfigurationAndValidationOrder(t *testing.T) {
 	}
 }
 
+func TestOAuthPreregisteredClients(t *testing.T) {
+	valid := `{"known":{"client_id":"known","redirect_uris":["https://client.example/callback"]}}`
+	c, err := LoadConfig(configEnvironment(map[string]string{oauthClientsField: valid}))
+	if err != nil || len(c.OAuthClients) != 1 || len(c.OAuthClients["known"]) == 0 {
+		t.Fatalf("valid preregistration: %v", err)
+	}
+	for _, value := range []string{`[]`, `null`, `{"known":null}`, `{"known":{"client_id":"other","redirect_uris":["https://client.example/callback"]}}`, `{"a":{},"a":{}}`, valid + ` {}`} {
+		_, err := LoadConfig(configEnvironment(map[string]string{oauthClientsField: value}))
+		var failure *ConfigurationError
+		if !errors.As(err, &failure) || failure.Field != oauthClientsField || strings.Contains(err.Error(), value) {
+			t.Fatalf("invalid preregistration accepted or disclosed: %v", err)
+		}
+	}
+}
+
 func configuredTestConfig() Config {
 	return Config{
 		DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0",

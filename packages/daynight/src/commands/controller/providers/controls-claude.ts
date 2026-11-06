@@ -1,6 +1,7 @@
 import type { Query, PermissionMode, Options } from "@anthropic-ai/claude-agent-sdk";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError } from "./native-rpc.js";
+import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
 export type ClaudeControlQuery = Pick<Query, "setModel" | "setPermissionMode" | "supportedModels" | "supportedCommands" | "reloadSkills" | "applyFlagSettings"> & { getSettings?: () => Promise<unknown> };
 const modes = ["default", "acceptEdits", "dontAsk", "plan", "bypassPermissions"] as const;
 const excluded = new Set(["clear", "context", "debug", "extra-usage", "heapdump", "loop", "schedule", "usage", "cost", "stats", "resume", "fork", "model", "permissions", "login", "logout", "exit", "quit", "agents", "mcp", "config", "settings"]);
@@ -10,6 +11,7 @@ export class ClaudeControls {
   private models: Record<string, unknown>[] = [];
   private model: string | null; private permission: string | null = null; private effort: string | null | undefined;
   private effortDefault: boolean;
+  private appliedModel: string | null = null;
   constructor(private readonly native: ClaudeControlQuery, model: string | null, effort: string | undefined, changed: () => void, private readonly confirmed?: (id: string) => void, private readonly resumed = false, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); this.model = resumed ? null : model ?? "default"; this.effortDefault = effort === undefined; }
   observe(raw: unknown) {
     if (this.closed) return;
@@ -36,11 +38,16 @@ export class ClaudeControls {
     this.store.update({ settings, settingsError: error });
   }
   private async readSettings() {
+    this.appliedModel = null;
     if (!this.native.getSettings) { this.effort = undefined; return; }
     const applied = record(record(await controlDeadline(this.native.getSettings(), "Claude settings readback")).applied);
+    this.appliedModel = string(applied.model) || null;
     if (applied.effort !== null && typeof applied.effort !== "string") throw new Error("Claude did not report applied effort.");
     this.effort = applied.effort; this.effortDefault = applied.effort === null;
     if (this.model !== "default" && typeof applied.model === "string") this.model = this.catalogModel(applied.model);
+  }
+  validateSelection(requested: NativeModelSelection): void {
+    assertNativeModelSelection("Claude", requested, { model: this.appliedModel, effort: this.effort ?? null, models: this.models.map(item => ({ id: string(item.value), aliases: typeof item.resolvedModel === "string" ? [item.resolvedModel] : [], efforts: item.supportsEffort && Array.isArray(item.supportedEffortLevels) ? item.supportedEffortLevels.filter((value): value is string => typeof value === "string") : null })) });
   }
   async refresh() {
     try { const models: unknown = await controlDeadline(this.native.supportedModels(), "Claude model discovery"); if (!Array.isArray(models) || models.length > 500) throw new Error("Invalid Claude model catalog."); this.models = models.map(record); await this.readSettings(); this.describe(null); }

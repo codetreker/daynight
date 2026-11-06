@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { detailFixture } from './taskDetail';
 import { createTaskSessionWorld } from './taskSessions';
 
@@ -27,7 +27,16 @@ it('gives independent server worlds their own snapshot epoch in the same user na
   const epoch = first.scope.getAuthorizedProject(projectId)!.manifest.epoch;
   first.dispose();
   const second = world();
+  const observations = vi.spyOn(second.scope, 'observeHistory');
   await second.sync([detailFixture(projectId, taskId, { version: 1n })]);
+  expect(await Promise.all(observations.mock.results.map(result => result.value))).toEqual(['confirm', 'retired', 'current']);
   expect(second.scope.getSummaryVersion(projectId, taskId)).toBe(1n);
   expect(second.scope.getAuthorizedProject(projectId)!.manifest.epoch).not.toBe(epoch);
+});
+
+it('does not apply an unconfirmed fixture history after repeated ambiguity', async () => {
+  const current = world(); const observe = vi.spyOn(current.scope, 'observeHistory').mockResolvedValue('confirm');
+  await expect(current.sync([detailFixture(projectId, taskId)])).rejects.toThrow('could not establish a stable Task history');
+  expect(observe).toHaveBeenCalledTimes(2);
+  expect(current.scope.getAuthorizedProject(projectId)).toBeNull();
 });

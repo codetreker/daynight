@@ -26,8 +26,11 @@ const scopes: TaskCacheScope[] = [];
 const sessions: TaskDetailSessions[] = [];
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 const apply = async (scope: TaskCacheScope, detail: TaskDetail, snapshot = false) => {
-  const ticket = await scope.beginSync(projectId, signal());
-  return scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), signal());
+  let ticket = await scope.beginSync(projectId, signal());
+  const build = () => taskSyncFromGraph(graphFixture([detail]), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: () => detail.version, propertiesForTask: () => detail.properties });
+  let sync = build();
+  if (await scope.observeHistory(ticket, sync.epoch, signal()) === "retired") { ticket = await scope.beginSync(projectId, signal()); sync = build(); }
+  return scope.applySync(ticket, sync, signal());
 };
 const applyAbsentSnapshot = async (scope: TaskCacheScope, withSurvivor = false) => {
   const graph = graphFixture([body()]);
@@ -51,7 +54,7 @@ it.each(["before", "after"] as const)("retains a dirty delete draft when old adm
   let session!: TaskDetailSessions;
   const Capture = () => { session = useTaskDetailSessions(); return null; };
   const Workspace = () => {
-    const current = useTaskDetail(projectId, taskId, 1, node(scope));
+    const current = useTaskDetail(projectId, taskId, 1, scope.getAuthorizedProject(projectId)?.index.nodes.get(taskId));
     return <TaskStepsPanel projectId={projectId} taskId={taskId} active={current.detail !== null} available={current.detail !== null} renderMarkdown={(text) => <div>{text}</div>} />;
   };
   const tree = () => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Capture />
@@ -672,10 +675,11 @@ it("checks the parent after Steps 404 and preserves its readable content", async
   await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: resource(), error: { kind: "server", status: 404 } })); expect(scope.getAuthorizedProject(projectId)).not.toBeNull(); expect(session.snapshot(projectId, taskId).detail?.id).toBe(taskId); expect(fetch).toHaveBeenCalledTimes(3);
 });
 
-it("retires project content only after a trusted parent 404", async () => {
-  const scope = await seed(); const session = await open(scope); const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(resource(), TEST_VIEWER_ID)).mockImplementation(() => Promise.resolve(failure(404, "not_found"))); vi.stubGlobal("fetch", fetch); start(session);
+it("withdraws the task and requests a project access revalidation after a trusted parent 404", async () => {
+  const scope = await seed(); const session = await open(scope); const events: string[] = []; scope.subscribe((event) => { if (event.taskNotFound) events.push(event.projectId); });
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(resource(), TEST_VIEWER_ID)).mockImplementation(() => Promise.resolve(failure(404, "not_found"))); vi.stubGlobal("fetch", fetch); start(session);
   await waitFor(() => expect(session.stepsSnapshot(projectId, taskId).stale).toBe(false)); session.loadSteps(projectId, taskId, true);
-  await waitFor(() => expect(scope.getAuthorizedProject(projectId)).toBeNull()); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull(); expect(session.snapshot(projectId, taskId).detail).toBeNull(); expect(fetch).toHaveBeenCalledTimes(3);
+  await waitFor(() => expect(events).toEqual([projectId])); expect(scope.getAuthorizedProject(projectId)).not.toBeNull(); expect(session.stepsSnapshot(projectId, taskId).resource).toBeNull(); expect(session.snapshot(projectId, taskId).detail).toBeNull(); expect(fetch).toHaveBeenCalledTimes(3);
 });
 
 it.each(["steps", "parent"])("treats a trusted %s 410 as deletion and clears the collection", async (source) => {

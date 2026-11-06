@@ -5,7 +5,7 @@ import { ApiError, setTaskStatus, getTask, setTaskAgentPermission, setTaskRequir
 import type { TaskDetail } from '../src/api/types';
 import { canSetStatus, canSetAgentPermission, canSetRequiredPlatform, TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn(), setTaskRequiredPlatform: vi.fn() }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const id = '20000000-0000-4000-8000-000000000001';
 const initial: TaskDetail = { assignedTo: null, id, projectId: project, title: 'Task', description: '', status: 'todo', version: 9007199254740993n,
@@ -44,6 +44,7 @@ describe('platform mutation ownership', () => {
     reads.mockResolvedValueOnce(changed); const sessions = createSessions(); await open(sessions, changed);
     const cleared = { ...changed, requiredPlatform: null, version: changed.version + 1n }; writes.mockResolvedValueOnce(cleared);
     sessions.setRequiredPlatform(project, id, null, changed.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, cleared);
     await waitFor(() => expect(sessions.snapshot(project, id).detail).toEqual(cleared));
     await waitFor(() => expect(writes).toHaveBeenCalledOnce());
@@ -77,6 +78,8 @@ describe('platform mutation ownership', () => {
       else { vi.mocked(setTaskStatus).mockReturnValueOnce(pending.promise); sessions.setStatus(project, id, 'in_progress', initial.version); }
       sessions.setRequiredPlatform(project, id, 'linux', initial.version); expect(writes).not.toHaveBeenCalled();
       const saved: TaskDetail = { ...initial, version: initial.version + 1n, ...(action === 'permission' ? { allowAgents: true } : { status: 'in_progress' as const, ready: false, startedAt: '2026-10-24T00:01:00Z' }) };
+      if (action === 'permission') await waitFor(() => expect(setTaskAgentPermission).toHaveBeenCalledOnce());
+      else await waitFor(() => expect(setTaskStatus).toHaveBeenCalledOnce());
       await synchronize(sessions, saved); pending.resolve(saved);
       await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed')); sessions.dispose();
     }
@@ -86,11 +89,12 @@ describe('platform mutation ownership', () => {
     writes.mockRejectedValueOnce(failure).mockResolvedValueOnce(changed); sessions.setRequiredPlatform(project, id, 'linux', initial.version);
     await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('refused'));
     expect(sessions.snapshot(project, id).detail?.requiredPlatform).toBeNull(); expect(writes).toHaveBeenCalledTimes(1);
-    sessions.setRequiredPlatform(project, id, 'linux', initial.version); await synchronize(sessions, changed); await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
+    sessions.setRequiredPlatform(project, id, 'linux', initial.version); await waitFor(() => expect(writes).toHaveBeenCalledTimes(2)); await synchronize(sessions, changed); await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
   });
   it.each([new ApiError('network'), new ApiError('server', 409, 'version_conflict')])('reconciles an unknown or conflicting result without resubmitting %#', async (failure) => {
     reads.mockResolvedValueOnce(initial).mockResolvedValueOnce(changed); const sessions = createSessions(); await open(sessions);
     writes.mockRejectedValueOnce(failure); sessions.setRequiredPlatform(project, id, 'linux', initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, id).detail).toEqual(changed));
     expect(writes).toHaveBeenCalledTimes(1); expect(sessions.snapshot(project, id).mutation.error).toBe(failure);
@@ -107,6 +111,7 @@ describe('platform mutation ownership', () => {
   it.each([{ ...changed, status: 'done' as const }, { ...changed, allowAgents: true }, { ...changed, requiredPlatform: 'windows' as const }, { ...changed, version: initial.version }])('reconciles a response that changes unrelated state or cannot prove the save %#', async (result) => {
     reads.mockResolvedValueOnce(initial).mockResolvedValueOnce(changed); const sessions = createSessions(); await open(sessions);
     writes.mockResolvedValueOnce(result); sessions.setRequiredPlatform(project, id, 'linux', initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, changed);
     await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(project, id).mutation.error).toMatchObject({ kind: 'protocol' }); expect(writes).toHaveBeenCalledTimes(1);

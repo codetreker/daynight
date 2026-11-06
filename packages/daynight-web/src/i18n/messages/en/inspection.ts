@@ -146,11 +146,11 @@ export const inspection: InspectionMessages = {
     relationLabel: ({ title, kind }) => `${title}, ${kind}`,
     ordinaryDependency: "Ordinary dependency", externalDependency: "External dependency",
     blockers: "Unfinished prerequisites", noBlockers: "All prerequisites are complete", successors: "Direct successors in the graph snapshot",
+    successorsPartial: "This chain shows ordinary successors. External successors may be outside this view.",
     successorsMissing: "This task is not in the current graph. Refresh the task graph to see its successors.", noSuccessors: "No successor tasks",
     created: "Created", updated: "Updated", taskId: "Task ID",
     copyTaskId: "Copy task ID", copyTaskTitle: "Copy task title", copied: "Copied",
     copyFailed: "Could not copy the task ID. Select and copy it manually.", copyTitleFailed: "Could not copy the task title. Select and copy it manually.",
-    footer: "Prerequisites and blockers use the displayed task details; names and successors use the task graph snapshot.",
     countedHeading: ({ label, count }) => `${label} · ${count}`,
   },
   pr: {

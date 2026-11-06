@@ -6,7 +6,7 @@ import { readCachedDetail, saveDetail } from '../src/features/task-detail/detail
 import { admitTaskGraph, createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), deleteTask: vi.fn(), getTask: vi.fn() }));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, deleteTask: vi.fn(), getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }) }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const target = '20000000-0000-4000-8000-000000000001'; const ordinary = '20000000-0000-4000-8000-000000000002'; const external = '20000000-0000-4000-8000-000000000003'; const downstream = '20000000-0000-4000-8000-000000000004';
 const deleted = detailFixture(project, target, { version: 9n });

@@ -56,16 +56,17 @@ type WorkerAssistantHost struct {
 }
 
 type WorkerTelemetry struct {
-	AssistantHost    *WorkerAssistantHost      `json:"assistantHost,omitempty"`
-	Machine          WorkerMachine             `json:"machine"`
-	Platform         string                    `json:"platform"`
-	WorkingDirectory string                    `json:"workingDirectory"`
-	SampledAt        time.Time                 `json:"sampledAt"`
-	OS               WorkerProbe[WorkerOS]     `json:"os"`
-	CPU              WorkerProbe[WorkerCPU]    `json:"cpu"`
-	Memory           WorkerProbe[WorkerMemory] `json:"memory"`
-	Disk             WorkerProbe[WorkerDisk]   `json:"disk"`
-	Versions         WorkerVersions            `json:"versions"`
+	RuntimeConfiguration *WorkerRuntimeConfiguration `json:"runtimeConfiguration,omitempty"`
+	AssistantHost        *WorkerAssistantHost        `json:"assistantHost,omitempty"`
+	Machine              WorkerMachine               `json:"machine"`
+	Platform             string                      `json:"platform"`
+	WorkingDirectory     string                      `json:"workingDirectory"`
+	SampledAt            time.Time                   `json:"sampledAt"`
+	OS                   WorkerProbe[WorkerOS]       `json:"os"`
+	CPU                  WorkerProbe[WorkerCPU]      `json:"cpu"`
+	Memory               WorkerProbe[WorkerMemory]   `json:"memory"`
+	Disk                 WorkerProbe[WorkerDisk]     `json:"disk"`
+	Versions             WorkerVersions              `json:"versions"`
 }
 
 type WorkerTaskReference struct {

@@ -6,9 +6,7 @@ import { canSetStatus, canWithdrawClaim, TaskDetailSessions } from '../src/featu
 import { createTaskSessionWorld } from './helpers/taskSessions';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 
-vi.mock('../src/api/client', async (original) => ({
-  ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), setTaskStatus: vi.fn(), withdrawWorkerClaim: vi.fn(),
-}));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskStatus: vi.fn(), withdrawWorkerClaim: vi.fn(), }; });
 const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const claimId = '30000000-0000-4000-8000-000000000001';
@@ -132,6 +130,7 @@ describe('worker claim withdrawal mutation ownership', () => {
     reads.mockResolvedValueOnce(reset);
     writes.mockRejectedValueOnce(failure);
     sessions.withdrawClaim(projectId, taskId, claimId, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, reset);
     await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.properties.worker).toBeUndefined());
     expect(reads).toHaveBeenCalledTimes(2);
@@ -172,6 +171,7 @@ describe('worker claim withdrawal mutation ownership', () => {
     reads.mockResolvedValueOnce(reset);
     writes.mockResolvedValueOnce(contradiction);
     sessions.withdrawClaim(projectId, taskId, claimId, initial.version);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce());
     await synchronize(sessions, reset);
     await waitFor(() => expect(sessions.snapshot(projectId, taskId).mutation.phase).toBe('reconciled'));
     expect(sessions.snapshot(projectId, taskId).mutation.error).toMatchObject({ kind: 'protocol' });
