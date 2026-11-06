@@ -20,11 +20,11 @@ shared lifecycle and never deletes the source attachment.
 
 Inspection returns metadata by default; bounded explicit reads default to 8 KiB.
 Text ranges stop at UTF-8 boundaries and binary data requires explicit base64.
-Metadata is projected with a MIME byte limit before it is materialized; default
-results also have an encoded byte budget. Oversized MIME or paths return an
-explicit error instead of being silently truncated. The original attachment is
-not altered, but MCP does not provide complete reads for those exceptional
-metadata values.
+Task admission reads only presence, and metadata is projected with a MIME byte
+limit before it is materialized; default results also have an encoded byte
+budget. Oversized MIME or paths return an explicit error instead of being
+silently truncated. The original attachment is not altered, but MCP does not
+provide complete reads for those exceptional metadata values.
 The [attachment design](../../../../docs/design/daynight-task-attachments.md#mcp-私有传输内容)
 owns the current interface and lifecycle.
 

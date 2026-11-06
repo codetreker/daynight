@@ -73,14 +73,23 @@ func (s *Attachments) read(ctx context.Context, principal model.Principal, proje
 			}
 			return err
 		}
-		if _, err := snapshot.TaskDAO().Task(ctx, projectID, taskID); err != nil {
+		presence, err := snapshot.TaskDAO().TaskPresence(ctx, projectID, taskID)
+		if err != nil {
 			if errors.Is(err, model.ErrNotFound) {
 				missing = taskcore.NotFound(err)
 				return nil
 			}
 			return err
 		}
-		err := operation(snapshot.AttachmentDAO())
+		if !presence.Found {
+			missing = taskcore.NotFound(model.ErrNotFound)
+			return nil
+		}
+		if presence.DeletedAt != nil {
+			missing = taskcore.NotFound(model.ErrTaskDeleted)
+			return nil
+		}
+		err = operation(snapshot.AttachmentDAO())
 		if errors.As(err, &missing) {
 			return nil
 		}
