@@ -1,6 +1,4 @@
-import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, open, readFile, readdir, realpath } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyStorage, type StorageReceipt } from './storage.mts';
@@ -18,32 +16,11 @@ export type CombinedTarget = {
   readonly storage: { readonly kind: 'native'; readonly root: string }
     | { readonly kind: 'container'; readonly root: '/var/lib/daynight/storage'; readonly containerId: string; readonly imageId: string };
 };
-export type UploadObservation = {
-  readonly temporaryFiles: number;
-  readonly temporaryBytes: number;
-  readonly temporarySha256: string | null;
-  readonly finalExists: boolean;
-};
-type UploadInput = {
-  readonly projectId: string;
-  readonly taskId: string;
-  readonly path: string;
-  readonly prefixBytes: number;
-  readonly prefixSha256: string;
-};
-type FileObservation = Pick<UploadObservation, 'temporaryFiles' | 'temporaryBytes' | 'temporarySha256' | 'finalExists'>;
-
 const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 const acceptanceRoot = join(repositoryRoot, 'packages/daynight-web/.tmp/acceptance');
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const digest = /^[0-9a-f]{64}$/;
 const runId = /^\d{14}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const absent = (error: unknown): boolean => error instanceof Error && 'code' in error && error.code === 'ENOENT';
-const emptyFiles = (): FileObservation => ({ temporaryFiles: 0, temporaryBytes: 0, temporarySha256: null, finalExists: false });
-const requireValue = (condition: boolean): void => { if (!condition) throw new Error('Invalid combined acceptance target or observation.'); };
-const attachmentPath = (value: string): boolean => typeof value === 'string' && value.isWellFormed() && value !== ''
-  && !/[\\\p{Cc}\p{Cs}]/u.test(value) && value.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
-
+const requireValue = (condition: boolean): void => { if (!condition) throw new Error('Invalid combined acceptance target or credential.'); };
 const validateTarget = (target: CombinedTarget): void => {
   const origin = new URL(target.baseUrl);
   requireValue(origin.origin === target.baseUrl && origin.protocol === 'http:' && origin.hostname === '127.0.0.1' && origin.port !== '');
@@ -64,96 +41,6 @@ const validateTarget = (target: CombinedTarget): void => {
       && /^sha256:[0-9a-f]{64}$/.test(target.storage.imageId));
   }
 };
-
-const directoryExists = async (path: string): Promise<boolean> => {
-  try {
-    const info = await lstat(path);
-    requireValue(info.isDirectory() && !info.isSymbolicLink());
-    return true;
-  } catch (error) { if (absent(error)) return false; throw error; }
-};
-const nativeFiles = async (root: string, input: UploadInput): Promise<FileObservation> => {
-  requireValue(await realpath(root) === root);
-  let directory = root;
-  for (const part of ['task-attachments', input.projectId, input.taskId.slice(0, 2), input.taskId, ...input.path.split('/').slice(0, -1)]) {
-    directory = join(directory, part);
-    if (!await directoryExists(directory)) return emptyFiles();
-  }
-  let temporaryFiles = 0; let temporaryBytes = 0; let temporarySha256: string | null = null;
-  let entries;
-  try { entries = await readdir(directory, { withFileTypes: true }); }
-  catch (error) { if (absent(error)) return emptyFiles(); throw error; }
-  for (const entry of entries) {
-    if (!entry.name.startsWith('.daynight-upload-')) continue;
-    requireValue(entry.isFile() && !entry.isSymbolicLink());
-    let file: Awaited<ReturnType<typeof open>>;
-    try { file = await open(join(directory, entry.name), constants.O_RDONLY | constants.O_NOFOLLOW); }
-    catch (error) { if (absent(error)) continue; throw error; }
-    try {
-      const info = await file.stat();
-      requireValue(info.isFile() && Number.isSafeInteger(info.size) && info.size >= 0);
-      temporaryFiles++; temporaryBytes += info.size;
-      requireValue(Number.isSafeInteger(temporaryBytes));
-      temporarySha256 = null;
-      if (temporaryFiles === 1 && info.size === input.prefixBytes) {
-        const hash = createHash('sha256');
-        const buffer = Buffer.alloc(Math.min(input.prefixBytes, 65_536));
-        let position = 0;
-        while (position < input.prefixBytes) {
-          const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, input.prefixBytes - position), position);
-          if (bytesRead === 0) break;
-          hash.update(buffer.subarray(0, bytesRead)); position += bytesRead;
-        }
-        if (position === input.prefixBytes) temporarySha256 = hash.digest('hex');
-      }
-    } finally { await file.close(); }
-  }
-  let finalExists = false;
-  try {
-    const info = await lstat(join(directory, basename(input.path)));
-    requireValue(info.isFile() && !info.isSymbolicLink()); finalExists = true;
-  } catch (error) { if (!absent(error)) throw error; }
-  return { temporaryFiles, temporaryBytes, temporarySha256, finalExists };
-};
-
-const containerProbe = `set -eu
-directory=$1
-[ -d "$directory" ] && [ ! -L "$directory" ] || exit 1
-for segment in task-attachments "$2" "$3" "$4"; do
-  directory="$directory/$segment"
-  [ ! -L "$directory" ] || exit 1
-  if [ ! -e "$directory" ]; then printf '0\\t0\\t-\\t0\\n'; exit 0; fi
-  if [ ! -d "$directory" ]; then [ ! -e "$directory" ] || exit 1; printf '0\\t0\\t-\\t0\\n'; exit 0; fi
-done
-remaining=$5
-while [ -n "$remaining" ]; do
-  segment=\${remaining%%/*}
-  if [ "$segment" = "$remaining" ]; then remaining=; else remaining=\${remaining#*/}; fi
-  directory="$directory/$segment"
-  [ ! -L "$directory" ] || exit 1
-  if [ ! -e "$directory" ]; then printf '0\\t0\\t-\\t0\\n'; exit 0; fi
-  if [ ! -d "$directory" ]; then [ ! -e "$directory" ] || exit 1; printf '0\\t0\\t-\\t0\\n'; exit 0; fi
-done
-files=0
-bytes=0
-checksum=-
-for file in "$directory"/.daynight-upload-*; do
-  [ ! -L "$file" ] || exit 1
-  [ -e "$file" ] || continue
-  [ -f "$file" ] || exit 1
-  if size=$(stat -c %s "$file" 2>/dev/null); then :; elif [ ! -e "$file" ]; then continue; else exit 1; fi
-  files=$((files + 1))
-  bytes=$((bytes + size))
-  checksum=-
-  if [ "$files" -eq 1 ] && [ "$size" -eq "$7" ]; then
-    if value=$(sha256sum "$file" 2>/dev/null); then checksum=\${value%% *}; elif [ -e "$file" ]; then exit 1; fi
-  fi
-done
-final=0
-[ ! -L "$directory/$6" ] || exit 1
-if [ -e "$directory/$6" ]; then [ -f "$directory/$6" ] || exit 1; final=1; fi
-printf '%s\\t%s\\t%s\\t%s\\n' "$files" "$bytes" "$checksum" "$final"
-`;
 
 export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCommand) => {
   try { validateTarget(target); }
@@ -187,27 +74,6 @@ export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCo
     'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1', '--username', 'daynight', '--dbname', target.database,
     '--tuples-only', '--no-align', '--command', query], 15_000));
   return {
-    observeUpload: async (input: UploadInput): Promise<UploadObservation> => {
-      try {
-        requireValue(uuid.test(input.projectId) && uuid.test(input.taskId) && attachmentPath(input.path)
-          && Number.isSafeInteger(input.prefixBytes) && input.prefixBytes > 0 && digest.test(input.prefixSha256));
-        await verifyOwnership();
-        let files: FileObservation;
-        if (target.storage.kind === 'native') files = await nativeFiles(target.storage.root, input);
-        else {
-          const identity = await command(['inspect', '--format', '{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.Image}}', target.storage.containerId]);
-          requireValue(identity === `${target.projectLabel.value}|server|${target.storage.imageId}`);
-          const parts = input.path.split('/');
-          const fields = (await command(['exec', target.storage.containerId, 'sh', '-c', containerProbe, 'auth-combined-upload',
-            target.storage.root, input.projectId, input.taskId.slice(0, 2), input.taskId, parts.slice(0, -1).join('/'), parts.at(-1)!, String(input.prefixBytes)])).split('\t');
-          requireValue(fields.length === 4 && fields.slice(0, 2).every((value) => /^(0|[1-9]\d*)$/.test(value))
-            && (fields[2] === '-' || digest.test(fields[2]!)) && (fields[3] === '0' || fields[3] === '1'));
-          files = { temporaryFiles: Number(fields[0]), temporaryBytes: Number(fields[1]), temporarySha256: fields[2] === '-' ? null : fields[2]!, finalExists: fields[3] === '1' };
-          requireValue(Number.isSafeInteger(files.temporaryFiles) && Number.isSafeInteger(files.temporaryBytes));
-        }
-        return files;
-      } catch { throw new Error('Combined upload observation failed.'); }
-    },
     expirePAT: async (input: { readonly id: string; readonly userId: string }): Promise<{ id: string; userId: string; expiresAt: string }> => {
       try {
         requireValue(uuid.test(input.id) && uuid.test(input.userId));

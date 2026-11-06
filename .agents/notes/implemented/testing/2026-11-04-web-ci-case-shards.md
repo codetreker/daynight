@@ -35,7 +35,7 @@ existing source/run-bound parent receipt. Failed, malformed or incomplete
 collection cannot establish a valid selection.
 
 Shard 2 owns all existing once-only checks: 28 navigation-contract cases, dev-ci
-lifecycle fixtures, both eleven-check combined-authentication journeys, and real
+lifecycle fixtures, both ten-check combined-authentication journeys, and real
 attachment persistence with paired-backup restoration. Ownership derives from
 the shard identity. Every shard still verifies its functional targets, built and
 running image identity, private resources, browser recovery and CLI cleanup.

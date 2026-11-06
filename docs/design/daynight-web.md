@@ -867,7 +867,7 @@ dev-ci 拥有唯一镜像、实际运行镜像身份校验和完整 shell 清理
 run-wide CLI 回收，避免清除另一活动目标的命令或凭据。
 
 较轻的 shard 2 统一拥有全部 28 项 navigation-contract、部署生命周期 fixture、
-原生/容器各十一项 combined-auth，以及真实附件持久化与成对备份恢复。
+原生/容器各十项 combined-auth，以及真实附件持久化与成对备份恢复。
 归属仅由分片身份推导。Shard 1 完成其功能和所有所属资源清理；两个分片都保留
 镜像身份、浏览器、CLI 与 dev-ci 清理证明。矩阵 `fail-fast` 为 false，使另一个分片在
 失败后仍能完成诊断和清理。默认本地普通入口继续单次执行完整 42+42 功能与两个
@@ -882,7 +882,7 @@ combined-auth；本地 `--stress` 不分片，并在资源准备前拒绝 shard 
 检出当前源码、设置 Node 24、下载这两份小摘要，无需 pnpm 安装或传递二进制、镜像和
 资源归属。`report.mts --shards file1 file2` 要求不同 run ID、恰好 1/2 与 2/2、
 当前 `GITHUB_SHA` 与检出 tree、clean/pass、准确的双目标和 phase 清理、每份准确选择、
-两份规范并集各覆盖一次，且只有 shard 2 拥有两个完整十一项鉴权回执。
+两份规范并集各覆盖一次，且只有 shard 2 拥有两个完整十项鉴权回执。
 缺摘要、选中 job 被跳过、错误来源、功能重复/缺失、鉴权错归属或清理不完整均使原门禁失败。
 
 [两分片决策](../../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
@@ -1131,12 +1131,12 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 真实安装 CLI 和同一目标数据，覆盖部分共享项目、原凭据服务重启、logout/PAT 独立、
 撤销、正常签发 PAT 到期与双语 pending/reveal。`same-data-cli-browser` 保留完成上传及
 原始字节比较；成员撤销通过正常 DELETE 后验证 API、预览、浏览器和安装 CLI 拒绝共享
-项目，私有项目继续可读。真实 socket 中断旅程观察 staging 前缀及清理，并经公开
-附件 GET 核对 404、完整分页列表中路径缺席和 Task 不变。它接收 runner 的服务重启 callback 与显式安装回执路径；
-目标控制校验 run/source 与资源归属后检查 staging，并使正常签发的 PAT 到期。
-Go 服务的 `TestAttachmentUploadAndProjectGrantRemovalSerialize` 通过生产 HTTP handler、
-真实 UniAuth fixture 和隔离 PostgreSQL 验证暂停上传的 grant 锁等待、完成后的
-201/204/404 与文件和 metadata，浏览器 runner 不查询数据库锁或附件 metadata。详细机制由
+项目，私有项目继续可读。它接收 runner 的服务重启 callback 与显式安装回执路径；
+目标控制校验 run/source 与数据库归属后使正常签发的 PAT 到期，不观察附件数据库或
+暂停 IO。Go 服务的 `TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock`
+使用 `cmd/e2e_tests` built-binary fixture、真实认证 HTTP 和隔离 PostgreSQL 验证暂停上传
+的 grant 锁等待、完成后的 201/204/404、原始字节及清理。
+浏览器 combined 不再运行原先的附件 socket 中断场景，该场景不由此迁移宣称覆盖。详细机制由
 [组合鉴权验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)拥有。
 这两份回执与常规 84 项 Playwright 场景并列；本地压力模式另有五项容量场景，
 不复制容量矩阵或改变其测量、预算和清理屏障；运行结果与真实上游人工登录分别留证。
@@ -1226,7 +1226,7 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 本地压力模式另写 `native/capacity/`，容量的原 schema 1 性能回执位于
 `native/capacity/performance.json`。本地普通/压力入口与 CI shard 2 必须包含 schema 1
 `kind: auth-combined` 的 `native/auth-combined/target.json` 和
-`container/auth-combined/target.json`；每份严格要求十一项具名检查、源码/浏览器/安装包、
+`container/auth-combined/target.json`；每份严格要求十项具名检查、源码/浏览器/安装包、
 重启前后进程身份及浏览器/资源清理。Shard 1 不包含这两个鉴权回执。
 分片顶层 evidence 另记录 `shard` 与 `selection`；本地完整回执无分片元数据。
 回执不保存凭据、配置 body 或原始日志，私有日志扫描只记录安全结果；既有场景

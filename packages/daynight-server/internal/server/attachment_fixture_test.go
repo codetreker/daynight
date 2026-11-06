@@ -16,12 +16,7 @@ import (
 
 func attachmentTestFiles(t *testing.T) *local.Storage {
 	t.Helper()
-	return attachmentTestFilesAt(t, t.TempDir())
-}
-
-func attachmentTestFilesAt(t *testing.T, root string) *local.Storage {
-	t.Helper()
-	files, err := local.New(root)
+	files, err := local.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

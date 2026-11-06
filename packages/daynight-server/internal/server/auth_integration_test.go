@@ -21,7 +21,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type identityIntegrationLogs struct {
@@ -49,8 +48,6 @@ func (logs *identityIntegrationLogs) contains(value string) bool {
 
 type identityIntegration struct {
 	server        *httptest.Server
-	database      *pgxpool.Pool
-	storageRoot   string
 	gateway       string
 	client        *uniauth.Client
 	requests      *identityCLIRequests
@@ -85,8 +82,7 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	config.PublicOrigin, config.UniAuthURL = origin, ready.Origin
 	config.UniAuthAppID, config.UniAuthAppSecret, config.UniAuthCallbackURL = ready.AppID, ready.AppSecret, callback
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
-	storageRoot := t.TempDir()
-	handler, err := New(Dependencies{Store: database, Files: attachmentTestFilesAt(t, storageRoot)}, config, logger)
+	handler, err := New(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +108,7 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 		}
 	}))
 	server.Start()
-	return &identityIntegration{server: server, database: database.Pool, storageRoot: storageRoot, gateway: ready.Origin, client: client, requests: requests, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
+	return &identityIntegration{server: server, gateway: ready.Origin, client: client, requests: requests, logs: logs, sessionCookie: "daynight_session", callbackPath: callbackPath, secrets: []string{ready.AppSecret}}
 }
 
 func identityBrowser(t *testing.T) *http.Client {

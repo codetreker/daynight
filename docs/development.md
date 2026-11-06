@@ -937,17 +937,16 @@ credentials in the other target. The
 owns those isolation constraints.
 
 Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
-eleven-check combined-authentication journeys and the existing real attachment
+ten-check combined-authentication journeys and the existing real attachment
 persistence/paired-backup-restoration check. That ownership derives from the
 shard identity. Browser authentication retains normal member removal, revoked
 resource/UI access, PAT lifecycle, restart and completed shared binary data.
-Browser acceptance also verifies a real interrupted upload, staging cleanup,
-public-resource 404, absence from the complete paginated attachment list and
-unchanged Task state. The paused-upload grant-lock
-race belongs to `TestAttachmentUploadAndProjectGrantRemovalSerialize` in Go
-server integration, using the production HTTP handler, real UniAuth fixture and
-isolated PostgreSQL. Both entries retain functional, image identity, process,
-browser and resource cleanup requirements. Matrix `fail-fast` is false so the
+The paused-upload grant-lock race belongs to
+`TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock` in the Go server
+E2E suite, using its built-binary fixture, authenticated HTTP and isolated PostgreSQL. The Web
+combined journey no longer runs paused upload IO, attachment database observation
+or the separate socket-disconnection scenario. Both entries retain functional,
+image identity, process, browser and resource cleanup requirements. Matrix `fail-fast` is false so the
 other entry can finish its diagnostics and cleanup after a failure.
 Local ordinary acceptance remains complete and unsharded; local stress adds
 capacity only after the same functional/container/browser/CLI barriers and

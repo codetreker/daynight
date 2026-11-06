@@ -311,7 +311,7 @@ jq -c --arg rid "$REQUEST_ID" \
 
 下表的容量、几何和性能规则固定于源码 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`；
 功能场景清单采用包含撤销批准、项目设置、执行耗时和自动执行许可场景的源码
-`d02994b22b744ae23eb67965679fb5d9edc84525`。Web 实现和独立整体验收共同引用这些基线。当前[看板验收](daynight-web.md#生产浏览器验收工具)另包含两个目标各自的 task-platform、task-detail-page、task-assignment、task-assignment-layout 与 task-pause 功能场景；下表保留固定源码的 59 场景基线，当前常规 inventory 为两目标各 42 个功能场景，共 84 个；显式本地压力验收另有五个原生容量场景，共 89 个（原生 47、容器 42）。两种模式都保留独立的 22 项 combined-auth 检查；暂停上传的真实 HTTP/PostgreSQL 锁等待由 Go 服务验收拥有，浏览器保留真实 socket 中断、同数据、重启及撤权后的可见权限。下表的固定规模、预算和断言在本地压力入口保持，历史 59 场景及每目标 11 项鉴权基线不改写为当前 CI 结果。
+`d02994b22b744ae23eb67965679fb5d9edc84525`。Web 实现和独立整体验收共同引用这些基线。当前[看板验收](daynight-web.md#生产浏览器验收工具)另包含两个目标各自的 task-platform、task-detail-page、task-assignment、task-assignment-layout 与 task-pause 功能场景；下表保留固定源码的 59 场景基线，当前常规 inventory 为两目标各 42 个功能场景，共 84 个；显式本地压力验收另有五个原生容量场景，共 89 个（原生 47、容器 42）。两种模式都保留独立的 20 项 combined-auth 检查；暂停上传的真实 HTTP/PostgreSQL 锁等待由 Go built-binary 服务验收拥有，浏览器保留同数据、重启及撤权后的可见权限，不运行原先的附件 socket 中断场景。下表的固定规模、预算和断言在本地压力入口保持，历史 59 场景及每目标 11 项鉴权基线不改写为当前 CI 结果。
 实现需要按新普通分量和显式性质更新预期值，
 但不能通过减少场景、样本、输入规模、可见边断言或放宽阈值完成本目标。
 

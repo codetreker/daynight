@@ -43,14 +43,11 @@ fails after returning headers cannot establish this transport observation.
 `packages/daynight-web/scripts/acceptance/auth-combined.mts` owns the normal
 browser and installed-CLI journey, safe API operations, exact int64 versions,
 receipt and strict result validation. `auth-combined-target.mts` validates the
-run, source and target ownership before inspecting real staging files or expiring
-a PAT minted by the normal browser session. It does not inspect attachment
-metadata or database lock waiters, and does not insert credentials, users or
-members. `auth-combined-transport.mts` owns the bounded PUT socket, explicit
-prefix, disconnection and cleanup. Its write callbacks describe bytes sent;
-independent filesystem observation establishes the held prefix.
-`auth-combined.test.mts` exercises target ownership, filesystem observations,
-normal-PAT-only expiry and socket lifecycle without claiming a production journey.
+run, source and PostgreSQL ownership before expiring a PAT minted by the normal
+browser session. It does not inspect attachment staging files, metadata or
+database lock waiters, and does not insert credentials, users or members.
+`auth-combined.test.mts` exercises ownership guards, normal-PAT-only expiry,
+receipt validation and browser lifecycle without claiming a production journey.
 
 The combined entry accepts explicit installed-package receipt and target restart
 callbacks. The runner owns service lifecycle, database, files, gateway and image
@@ -71,10 +68,7 @@ through the production browser and installed CLI.
 
 Original Cookie, PAT, membership, invitation and file state must survive the
 service-only restart. Logout invalidates its session while PAT authority stays;
-PAT revocation denies the real CLI. A real PUT pauses after a 64 KiB staging
-prefix with no final file; socket disconnection removes staging, the public
-attachment GET returns 404, the complete paginated attachment list excludes the
-path and the Task remains unchanged. Normal membership DELETE then removes Bob's
+PAT revocation denies the real CLI. Normal membership DELETE then removes Bob's
 direct grant. New CLI, raw API, preview GET/HEAD and browser reads deny access to
 P while Q remains readable. A normally minted PAT is expired and rejected by the
 installed CLI with 401. The bilingual token UI holds a real creation response
@@ -93,27 +87,26 @@ cleanup.
 
 ### Server ownership of the grant-lock race
 
-`packages/daynight-server/internal/server/attachment_grant_lock_test.go`
-owns `TestAttachmentUploadAndProjectGrantRemovalSerialize`. The Go integration
-test serves the production HTTP handler with normal authenticated membership and
-attachment endpoints, a real UniAuth fixture and isolated PostgreSQL. It pauses a
-real upload after an observed staging prefix, verifies no metadata has been
-published, and observes the actual membership request waiting on the exact grant
-row held by the attachment transaction. Completing the body permits the admitted
-upload to return 201 and member removal to return 204; retained bytes and
-metadata remain readable to the owner, and subsequent member access returns 404.
+`packages/daynight-server/cmd/e2e_tests/attachment_grant_lock_acceptance_test.go`
+owns `TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock`. It uses
+the existing built-binary fixture, real authenticated HTTP upload and Project
+member DELETE, and isolated PostgreSQL. It admits a 1 MiB upload, observes the concurrent
+DELETE waiting on the exact grant row held by the attachment transaction, then
+completes the body. The upload returns 201, member removal returns 204, subsequent
+cookie and PAT access return 404, uploaded bytes match and owned resources are
+cleaned up.
 
 The original combined browser journey proved that membership removal completed
 while an admitted request still held an incomplete body, after which that upload
 could return 201. This matched the then-current authorization snapshot, which
-ended before file I/O. The later [attachment serialization decision](https://github.com/codetreker/daynight/blob/7ee7d369dbc6a3c11c606fe9e6ebcd4e01f93908/.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)
+ended before file I/O. It also separately tested a real interrupted upload and
+staging cleanup. The later [attachment serialization decision](https://github.com/codetreker/daynight/blob/7ee7d369dbc6a3c11c606fe9e6ebcd4e01f93908/.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)
 retains authorization locks through mutation completion, so removal now waits for
-the admitted upload rather than committing during its body. The Go integration
-test owns that changed ordering. Browser acceptance retains independent
-authority, rendering, restart, shared-data and real socket-disconnection checks
-on both targets; it no longer observes the lock race or queries attachment
-metadata. The split adds no post-I/O membership recheck or credential-revocation
-serialization.
+the admitted upload rather than committing during its body. The built-binary Go
+E2E test owns that changed ordering. Browser acceptance retains independent
+authority, rendering, restart and shared-data checks on both targets, but no
+longer runs paused upload IO or the separate socket-disconnection scenario. The
+current split does not claim that socket-disconnection scenario as migrated.
 
 ### Safe evidence and failure ownership
 
@@ -123,11 +116,10 @@ It journals running/passed/failed result, pending/passed/failed cleanup and brow
 cleanup independently. It binds target/source, validated installed-package hashes,
 browser identity, individual observations and old/new restart PID/start identity;
 the parent evidence retains the source dirty flag. Strict validation requires
-all eleven named checks exactly once and passed cleanup, not merely a successful
+all ten named checks exactly once and passed cleanup, not merely a successful
 process exit: `partial-sharing`, `normal-member-writes`, `bilingual-token`,
 `same-data-cli-browser`, `restart-original-state`, `logout-independent-pat`,
-`pat-revocation`, `socket-disconnect`, `membership-revocation`, `expired-pat`
-and `secret-scan`. Observations retain safe status/request-ID/UUID/version/hash
+`pat-revocation`, `membership-revocation`, `expired-pat` and `secret-scan`. Observations retain safe status/request-ID/UUID/version/hash
 metadata; credentials, configuration/request bodies and raw logs are excluded.
 Log scanning happens privately and publishes only its safe verdict. Private homes,
 Cookie/PAT/App state and fixture environment remain outside uploaded receipt
@@ -136,8 +128,8 @@ metadata; secrets and raw transport causes do not become assertion values.
 Playwright action/network traces remain off while PNG and custom CDP evidence
 retain their existing owners.
 
-Every open request/socket, browser/context, CLI group and callback command has
-an owner and bounded completion. Cleanup failure fails the run and preserves the
+Every browser/context, CLI group and callback command has an owner and bounded
+completion. Cleanup failure fails the run and preserves the
 initial failure alongside safe cleanup diagnostics. Recovery validates recorded
 source/process/image ownership before removing resources and includes both
 combined directories in the existing browser/process scan. It cannot guess a
@@ -150,14 +142,15 @@ existing suites established PG competition, same-email identity, resource
 isolation and basic installed binary bytes, but did not prove original
 credentials and shared data across the same target's restart or membership
 change during a real upload. The combined journey supplied those observations.
-The current browser journey retains restart, browser/CLI withdrawal and socket-loss
-checks; the server journey separately owns the admitted-upload grant-lock race.
+The current browser journey retains restart and browser/CLI withdrawal checks;
+the server journey separately owns the admitted-upload grant-lock race. The old
+interrupted-upload observation remains historical evidence for its source.
 
-**Keep the grant-lock probe in browser acceptance.** This couples the browser
-runner to server transaction details and database query shape. The Go integration
-test retains the actual HTTP and PostgreSQL lock observation, while the browser
-runner keeps the raw-socket and filesystem checks needed for its separate
-interruption journey.
+**Keep paused-upload probes in browser acceptance.** This couples the browser
+runner to server transaction details, database query shape and a dedicated
+transport. The built-binary Go E2E test retains the actual HTTP and PostgreSQL
+grant-lock observation. The separate socket-disconnection case is not retained
+by this split.
 
 **Substitute an SDK mock or failing response reader for the wire loss.** Such a
 test can establish error handling without proving the real gateway consumed its

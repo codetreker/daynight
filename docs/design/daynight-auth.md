@@ -664,11 +664,11 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
 生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
 拥有实际领取结果后 TCP 断连，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
-重启、成员撤销后的可见权限及 PAT 独立性证明。两目标各有一份十一项检查的额外必需回执。
+重启、成员撤销后的可见权限及 PAT 独立性证明。两目标各有一份十项检查的额外必需回执。
 已准入上传的 grant 锁等待由 Go 服务的
-`TestAttachmentUploadAndProjectGrantRemovalSerialize` 使用生产 HTTP handler、真实 UniAuth
-fixture 和隔离 PostgreSQL 验证。浏览器继续验证真实 socket 中断、staging 清理、公开
-附件读取的 404、完整分页列表中路径缺席和 Task 不变，不查询附件 metadata 或数据库锁。常规验收保留
+`TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock` 使用 `cmd/e2e_tests`
+built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL 验证；浏览器 combined 不运行暂停上传、专用 transport 或
+数据库锁观察。该迁移不声称另行覆盖原先的附件 socket 中断场景。常规验收保留
 原生和容器各 42 项功能场景，显式本地压力验收另有 5 项原生容量场景；项目设置旅程
 单独拥有阈值读写与未知结果核对。
 

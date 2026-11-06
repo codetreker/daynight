@@ -247,6 +247,6 @@ DOM，也不调用 `bindFunctions`。Event Modeling 的合法 XHTML 标签保留
 
 独立地从完整 API 投影 P 和实际 S 推导每个卡片是否存在隐藏直接邻居，验证 96/136px 高度；P 外无关后续不产生 footer。实际DOM路线的端点/方向、平滑相切、全部可见卡片避让、真实CTM、完整body coverage、参考弧长/phase及原生箭头独立判断，不能由生产规划器输出充当有效预期。可选输入只做编译忠实度，负例覆盖缺/多边、错误箭头、穿卡片和相位/覆盖失败。稳定性比较使用图坐标/相对变换，页面滚动诊断单独保留，不能把一致的文档平移误判为图变化。
 
-常规 CI 与默认验收保留两个目标各 42 个功能场景，共 84 项；显式本地压力验收增加五个原生容量场景，共 89 项（原生 47、容器 42），两种模式另有 22 项 combined-auth 检查。压力模式保留四个完整 1000 任务输入及 999/5000 边、每图五次、mandatory visibility 和超限检查；所选场景的 coverage、零 retry、timeout 与 cleanup 保持。验收验证selected/hidden上游及selectMs≤300，保留open≤3000及detail/zoom/pan≤300。普通Details→close→立即zoom/pan、可信可见任务选择、高亮态同序列，每项取较慢state、网络单独计量；close与zoom间不加等待/reset/fit。
+常规 CI 与默认验收保留两个目标各 42 个功能场景，共 84 项；显式本地压力验收增加五个原生容量场景，共 89 项（原生 47、容器 42），两种模式另有 20 项 combined-auth 检查。压力模式保留四个完整 1000 任务输入及 999/5000 边、每图五次、mandatory visibility 和超限检查；所选场景的 coverage、零 retry、timeout 与 cleanup 保持。验收验证selected/hidden上游及selectMs≤300，保留open≤3000及detail/zoom/pan≤300。普通Details→close→立即zoom/pan、可信可见任务选择、高亮态同序列，每项取较慢state、网络单独计量；close与zoom间不加等待/reset/fit。
 
 `task-description-markdown` 在原生/容器目标保留独立描述阅读旅程，并验证图内检查→Details→相对附件导航→关闭后 S、选择、几何和视口保持。API 不引入格式标记或旧数据特判，现有字符串直接按 Markdown 展示，不批量改写已有任务描述。原型不替代生产验收。生产验证覆盖 typecheck、测试/coverage、build、真实 component/native/container 和独立审查，完整 capacity 由显式本地压力入口验证。结果必须绑定确切源码。

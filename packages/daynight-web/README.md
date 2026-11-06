@@ -1975,7 +1975,7 @@ The pure `scripts/acceptance/inventory.mts` owns canonical functional and
 combined-authentication check names.
 
 Shard 2 owns the complete 28-case navigation-contract suite, dev-ci lifecycle
-fixtures, both eleven-check combined-authentication journeys, and the real
+fixtures, both ten-check combined-authentication journeys, and the real
 attachment persistence/paired-backup-restoration check. Ownership derives from
 the shard identity. Shard 1 runs its functional selection and full owned-resource
 cleanup. Both entries retain normal dev-ci built/running image checks, private
@@ -2265,7 +2265,7 @@ or an iframe load cannot satisfy this check. The
 records the original data-sharing, rendering and independent-reading proof choices.
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
-requires a separate eleven-check receipt on each runtime target, alongside the
+requires a separate ten-check receipt on each runtime target, alongside the
 84 ordinary Playwright cases or 89 cases in local stress mode. It reuses the same
 installed package and normal Alice/Bob identities, records their initial project
 sets, and crosses browser and CLI data through shared/private projects,
@@ -2279,15 +2279,14 @@ comparison remain in `same-data-cli-browser`. Membership revocation uses the
 normal DELETE endpoint, then verifies API, preview, browser and installed-CLI
 access denial while the private project remains readable.
 
-The browser journey also disconnects a real partial upload, checks the staging
-prefix and its removal, and verifies that the public attachment read returns 404,
-the complete paginated attachment list excludes the path and the Task is unchanged. The Go server's
-[`TestAttachmentUploadAndProjectGrantRemovalSerialize`](../daynight-server/internal/server/attachment_grant_lock_test.go)
-owns the paused-upload grant-lock race using the production HTTP handler, real
-UniAuth fixture and isolated PostgreSQL. It observes the staging prefix, absent
-metadata and the target grant's waiter and blocker, then verifies upload 201,
-member removal 204, retained bytes/metadata and subsequent denial. The browser
-runner does not query attachment metadata or database locks. The
+The Go server E2E test
+[`TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock`](../daynight-server/cmd/e2e_tests/attachment_grant_lock_acceptance_test.go)
+owns the paused-upload grant-lock race using the existing built-binary fixture,
+real authenticated HTTP and isolated PostgreSQL. It verifies the target grant's
+waiter and blocker, upload 201, member removal 204, subsequent 404, matching
+uploaded bytes and resource cleanup. The browser runner does not observe
+attachment databases or run paused upload IO or the former socket-disconnection
+scenario. The
 [authentication acceptance decision](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
 owns these mechanisms, failure/cleanup rules and the separate actual-upstream
 human login requirement. Implemented checks and source-bound run results remain
@@ -2460,7 +2459,7 @@ live under `native/functional/` and `container/`; stress runs additionally creat
 `native/capacity/` and its unchanged schema 1 `performance.json` receipt.
 Local ordinary/stress runs and CI shard 2 require
 `native/auth-combined/target.json` and `container/auth-combined/target.json`, both
-schema 1 with `kind: auth-combined`. They require all eleven canonical checks,
+schema 1 with `kind: auth-combined`. They require all ten canonical checks,
 source/browser/installed-package identity, old/new restart process identity and
 passed browser/resource cleanup. Shard 1 has no combined-authentication receipts.
 They retain safe observations and hashes, not credential/configuration bodies
@@ -2470,7 +2469,7 @@ Schema 3 functional `evidence.json` includes `shard: { current, total: 2 }` and
 `selection: string[]` for CI shards. Each native/container target and functional
 phase must match that selection. The final validator requires the two selections
 to be disjoint and cover the canonical inventory exactly once per target, with
-all 22 combined checks assigned to shard 2. Local unsharded receipts keep their
+all 20 combined checks assigned to shard 2. Local unsharded receipts keep their
 complete inventory without shard metadata. `CI` requires a clean checkout
 matching `GITHUB_SHA` and the pinned browser. Each database uses one worker and
 zero retries; skipped, flaky, duplicate/missing or incomplete scenarios fail.

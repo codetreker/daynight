@@ -196,11 +196,11 @@ config, wrong origins, credential and membership revocation, direct resources,
 provider failures, grant-version/invitation concurrency and complete native/container
 journeys. The [combined authentication decision](../testing/2026-10-23-authentication-combined-acceptance.md)
 composes normal browser and installed-CLI authority across service restart,
-membership revocation and PAT lifecycle. Its eleven-check receipt on each target
+membership revocation and PAT lifecycle. Its ten-check receipt on each target
 preserves the existing Playwright inventory and budgets. The same decision
-assigns the admitted-upload grant-lock race to the Go HTTP/PostgreSQL test
-`TestAttachmentUploadAndProjectGrantRemovalSerialize`. The browser journey still
-checks an interrupted upload and its cleanup, and the real UniAuth result-loss
-test retains downstream TCP loss. Source receipts
-and third-party manual login evidence remain distinct; a code or documentation
-change does not itself establish a passing run.
+assigns the admitted-upload grant-lock race to
+`TestAttachmentGrantLockAcceptance/attachment_upload_grant_lock` in Go's
+built-binary HTTP/PostgreSQL E2E fixture. The browser journey does not own paused upload IO, and the separate
+real UniAuth result-loss test retains downstream TCP loss. Source receipts and
+third-party manual login evidence remain distinct; a code or documentation change
+does not itself establish a passing run.

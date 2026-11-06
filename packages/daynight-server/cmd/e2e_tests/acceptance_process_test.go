@@ -65,6 +65,7 @@ type acceptanceScenario struct {
 	SessionsRemoved        bool                           `json:"sessionsRemoved"`
 	StorageRootRemoved     bool                           `json:"storageRootRemoved"`
 	AttachmentFiles        []acceptanceAttachmentEvidence `json:"attachmentFiles,omitempty"`
+	GrantLock              *acceptanceGrantLockEvidence   `json:"grantLock,omitempty"`
 	AttachmentsListed      int                            `json:"attachmentsListed,omitempty"`
 	AttachmentPageRequests int                            `json:"attachmentPageRequests,omitempty"`
 	Cleanup                string                         `json:"cleanup"`

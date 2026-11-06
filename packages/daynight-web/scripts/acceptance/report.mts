@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { authCombinedChecks, functionalScenarios, validMembershipRevocation, validSocketDisconnect } from './inventory.mts';
+import { authCombinedChecks, functionalScenarios, validMembershipRevocation } from './inventory.mts';
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => {
@@ -120,7 +120,6 @@ const shardAuthentication = (value: unknown, current: number, targets: readonly 
     requireShardEvidence(checks.length === authCombinedChecks.length && authCombinedChecks.every((name) =>
       checks.filter((entry) => entry.name === name && entry.result === 'passed').length === 1), 'combined authentication checks are incomplete.');
     requireShardEvidence(validMembershipRevocation(checks.find(entry => entry.name === 'membership-revocation')), 'combined membership revocation evidence is incomplete.');
-    requireShardEvidence(validSocketDisconnect(checks.find(entry => entry.name === 'socket-disconnect')), 'combined socket disconnect evidence is incomplete.');
   }
 };
 

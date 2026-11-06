@@ -52,7 +52,7 @@ and full-size boundary assertions are unchanged.
 At adoption, default browser acceptance retained thirty-six native and thirty-six
 container functional scenarios, two eleven-check combined-authentication receipts,
 source/browser identity and cleanup. The current [Web validation guide](../../../../packages/daynight-web/README.md#production-browser-acceptance)
-owns the functional inventory and the two eleven-check combined receipts. Explicit
+owns the functional inventory and the two ten-check combined receipts. Explicit
 local `--stress` adds five native capacity/limit scenarios after functional
 execution and container/browser cleanup. It preserves complete API datasets,
 five repetitions, timing budgets, strict performance receipts and browser

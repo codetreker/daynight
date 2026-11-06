@@ -1,4 +1,4 @@
-import { authCombinedChecks as requiredChecks, validMembershipRevocation, validSocketDisconnect } from './inventory.mts';
+import { authCombinedChecks as requiredChecks, validMembershipRevocation } from './inventory.mts';
 import type { ProjectParticipant } from "../../src/api/auth-types";
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
@@ -14,7 +14,6 @@ import { createAcceptanceCli, validateInstalledCli } from './installed-cli.mts';
 import { command } from './process.mts';
 import { processIdentity, requireGroupStopped, type ProcessIdentity } from './identity.mts';
 import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget } from './auth-combined-target.mts';
-import { AuthCombinedTransportError, startAuthCombinedUpload, type PausedUpload } from './auth-combined-transport.mts';
 
 export type RestartReceipt = {
   target: 'native' | 'container'; origin: string; startedAt: string; readyAt: string;
@@ -80,19 +79,6 @@ const resourceStatus = async (api: AuthenticatedAPI, origin: string, method: 'GE
   check(response.status() === status, `${method} ${path} returned an unexpected resource status.`);
   if (status >= 400) check(/^application\/json(?:;|$)/i.test(response.headers()['content-type'] ?? ''), 'A denied resource returned a login document.');
 };
-const waitFor = async (operation: () => Promise<boolean>, signal: AbortSignal, label: string, milliseconds = 5_000): Promise<void> => {
-  const deadline = performance.now() + milliseconds;
-  for (;;) {
-    signal.throwIfAborted();
-    if (await operation()) return;
-    if (performance.now() >= deadline) throw safeFailure(label);
-    await new Promise<void>((resolve, reject) => {
-      const abort = (): void => { clearTimeout(timer); reject(safeFailure('cancellation')); };
-      const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 50);
-      signal.addEventListener('abort', abort, { once: true });
-    });
-  }
-};
 const fileUrl = (project: string, task: string, path: string): string => `/api/v1/projects/${project}/tasks/${task}/attachments/files/${path.split('/').map(encodeURIComponent).join('/')}`;
 const previewUrl = (project: string, task: string, path: string): string => `/api/v1/projects/${project}/tasks/${task}/preview/${path.split('/').map(encodeURIComponent).join('/')}`;
 type User = { id: string; name: string; email: string };
@@ -139,7 +125,6 @@ export const validateAuthCombinedReceipt = (value: unknown, target: CombinedTarg
     && receipt.origin === target.baseUrl && receipt.sourceGitSha === target.sourceGitSha, 'Combined receipt identity or cleanup differs.');
   check(Array.isArray(receipt.checks) && receipt.checks.length === requiredChecks.length && requiredChecks.every((name) => receipt.checks.filter((entry) => entry?.name === name && entry.result === 'passed').length === 1), 'Combined receipt does not contain every required result exactly once.');
   check(validMembershipRevocation(receipt.checks.find(entry => entry.name === 'membership-revocation')), 'Combined membership revocation evidence is incomplete.');
-  check(validSocketDisconnect(receipt.checks.find(entry => entry.name === 'socket-disconnect')), 'Combined socket disconnect evidence is incomplete.');
   check(receipt.restart?.origin === target.baseUrl && receipt.restart.before.pid !== receipt.restart.after.pid
     && receipt.restart.before.start !== receipt.restart.after.start, 'Combined restart did not replace the owned process.');
   check(receipt.browser?.name === 'chromium' && /^\d+\.\d+\.\d+\.\d+$/.test(receipt.browser.version)
@@ -412,7 +397,6 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   const contexts: BrowserContext[] = [];
   const clients: Cli[] = [];
   const tokenClients: AuthenticatedAPI[] = [];
-  const uploads: PausedUpload[] = [];
   const secrets = new Set<string>();
   const screenshots = async (page: Page, name: string): Promise<void> => {
     const path = join(options.directory, `${name}.png`);
@@ -581,27 +565,6 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const replacement = await pat(bob, 'Combined membership and expiry');
     const replacementCli = await cli(replacement.token, 'replacement-cli');
     const replacementApi = await tokenContext(playwrightRequest, origin, replacement.token); tokenClients.push(replacementApi);
-    const body = Buffer.alloc(1_048_576); for (let index = 0; index < body.length; index++) body[index] = index % 251;
-    const prefixBytes = 65_536, prefixSha256 = hash(body.subarray(0, prefixBytes));
-    const abortPath = `admission/${randomUUID()}/abort.bin`, abortRequestId = randomUUID();
-    const probe = { projectId: shared.id, taskId: task.id, path: abortPath, prefixBytes, prefixSha256 };
-    const aborted = await startAuthCombinedUpload({ origin, path: fileUrl(shared.id, task.id, abortPath), token: replacement.token, body, prefixBytes, requestId: abortRequestId, signal }); uploads.push(aborted);
-    await waitFor(async () => { const observed = await controls.observeUpload(probe); return observed.temporaryFiles === 1 && observed.temporaryBytes === prefixBytes && observed.temporarySha256 === prefixSha256 && !observed.finalExists; }, signal, 'aborted upload admission');
-    check(!aborted.completed && aborted.sentBytes === prefixBytes, 'Aborted upload was not held with an incomplete body.');
-    await aborted.disconnect(); await aborted.socketClosed;
-    await waitFor(async () => { const observed = await controls.observeUpload(probe); return observed.temporaryFiles === 0 && !observed.finalExists; }, signal, 'aborted upload filesystem cleanup');
-    await resourceStatus(bob, origin, 'GET', fileUrl(shared.id, task.id, abortPath), 404);
-    const cursors = new Set<string>(); let cursor: string | null = null;
-    do {
-      const page: { items: { path: string }[]; nextCursor: string | null } = await request(bob, origin, 'GET', `/api/v1/projects/${shared.id}/tasks/${task.id}/attachments?limit=100${cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`}`, 200);
-      check(!page.items.some(item => item.path === abortPath), 'Disconnected upload remained in the attachment list.');
-      cursor = page.nextCursor;
-      if (cursor !== null) { check(!cursors.has(cursor), 'Attachment pagination repeated a cursor.'); cursors.add(cursor); }
-    } while (cursor !== null);
-    const afterAbort = await request<Task>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/tasks/${task.id}`, 200);
-    check(afterAbort.version === snapshot.version && afterAbort.updatedAt === snapshot.updatedAt, 'Disconnected upload changed the task resource.');
-    await request(bob, origin, 'GET', `/api/v1/projects/${privateProject.id}`, 200);
-    await record('socket-disconnect', { path: abortPath, requestId: abortRequestId, prefixBytes, socketClosed: true, stagingRemoved: true, resourceStatus: 404, listingAbsent: true, taskUnchanged: true });
     const currentMembers = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
     const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id);
     check(currentMember !== undefined && currentMember.directGrant !== null, 'Current direct grant is missing before removal.');
@@ -650,12 +613,11 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await record('secret-scan', { actualSecretsChecked: secrets.size, retainedFiles: retained.length, matches: 0 });
     receipt.result = 'passed';
   } catch (error) {
-    failure = error instanceof CombinedFailure ? error : safeFailure(error instanceof AuthCombinedTransportError ? `${currentStep} (${error.category})` : currentStep);
+    failure = error instanceof CombinedFailure ? error : safeFailure(currentStep);
     receipt.result = 'failed'; receipt.error = (failure as Error).message;
   } finally {
     signal.removeEventListener('abort', closeOnAbort);
     const cleanupErrors: string[] = [];
-    for (const upload of uploads) { try { await upload.close(); } catch { cleanupErrors.push('HTTP transfer cleanup failed.'); } }
     for (const client of tokenClients) { try { await client.dispose(); } catch { cleanupErrors.push('API context cleanup failed.'); } }
     for (const context of contexts) { try { await context.close(); } catch { cleanupErrors.push('Browser context cleanup failed.'); } }
     try { await browser?.close(); } catch { cleanupErrors.push('Browser close failed.'); }
