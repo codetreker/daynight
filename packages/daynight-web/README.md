@@ -1854,6 +1854,13 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+Status, platform and automatic-permission API tests distinguish strict decoder
+inputs, target-specific write confirmation and shared transport failures. Complete
+detail/graph malformed-field matrices retain their input boundaries; representative
+HTTP cases check decoder admission and protocol classification. The
+[API proof decision](../../.agents/notes/implemented/testing/2026-11-06-web-api-proof-owners.md)
+owns that separation and its limits.
+
 The platform, pause, status and assignment controller session tests use
 `tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
 Testing Library with a 5ms default polling interval, preserving immediate
