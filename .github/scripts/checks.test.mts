@@ -18,7 +18,6 @@ test("the final gate waits for every independent validation stage", () => {
     assert.match(job, /^    needs: detect-changes$/m);
     assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
     assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
-    assert.ok(job.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
   }
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });

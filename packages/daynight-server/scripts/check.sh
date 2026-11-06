@@ -9,11 +9,6 @@ if (( $# != 0 )); then
   shift
 fi
 
-case "${DAYNIGHT_TEST_RACE-true}" in
-  true|false) race="${DAYNIGHT_TEST_RACE-true}" ;;
-  *) printf '%s\n' 'DAYNIGHT_TEST_RACE must be true or false.' >&2; exit 1 ;;
-esac
-
 source "$(dirname -- "${BASH_SOURCE[0]}")/env.sh"
 cd -- "$DAYNIGHT_MODULE_ROOT"
 : "${DAYNIGHT_TEST_DATABASE_URL:?Set DAYNIGHT_TEST_DATABASE_URL to the required PostgreSQL test database}"
@@ -37,12 +32,6 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache
 
-export RACE_DETECTION="$race"
-if [[ "$race" == false ]]; then
-  # go-cov omits -race=false, so override inherited race instrumentation explicitly.
-  export GOFLAGS="${GOFLAGS:+$GOFLAGS }-race=false"
-fi
-
 export CI=true
-go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.4 --coverprofile=coverage.out --skip-result-packages tests/ "$@"
+go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.4
 node scripts/coverage.mts coverage.out

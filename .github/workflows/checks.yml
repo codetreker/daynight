@@ -367,7 +367,6 @@ jobs:
       XDG_CACHE_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/cache
       GOENV: "off"
       GOTOOLCHAIN: go1.27.2
-      DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}
       DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
     services:
       postgres:
