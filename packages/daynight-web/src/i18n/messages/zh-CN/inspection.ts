@@ -144,6 +144,7 @@ export const inspection: InspectionMessages = {
     relationLabel: ({ title, kind }) => `${title}，${kind}`,
     ordinaryDependency: "普通依赖", externalDependency: "外部依赖",
     blockers: "当前未完成的前置", noBlockers: "所有前置已完成", successors: "任务图快照中的直接后续",
+    successorsPartial: "此任务链显示普通后续任务，外部后续任务可能不在此视图中。",
     successorsMissing: "当前任务尚未包含在任务图中，请刷新任务图以查看后续关系。", noSuccessors: "无后续任务",
     created: "创建时间", updated: "更新时间", taskId: "任务 ID",
     copyTaskId: "复制任务 ID", copyTaskTitle: "复制任务标题", copied: "已复制",

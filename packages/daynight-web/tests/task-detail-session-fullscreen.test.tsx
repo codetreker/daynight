@@ -16,7 +16,7 @@ import { TaskDetailSessionBoundary } from '../src/features/task-detail/TaskDetai
 import { createTaskSessionWorld } from './helpers/taskSessions';
 import { detailFixture, resourceResponse, snapshotFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
-import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
+import { directAccessFixture, TEST_VIEWER_ID, fixtureTaskEpoch } from './helpers/taskSync';
 
 const initial = (): TaskSessionSnapshot => ({ ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' });
 let world: ReturnType<typeof createTaskSessionWorld>;
@@ -47,7 +47,7 @@ async function fixture(modal: boolean, initialFullscreen = false) {
   let snapshot = initial();
   const claim = () => ({ claimId: snapshot.claimId, state: 'active', userId: TEST_VIEWER_ID, workerId: snapshot.identity.workerId, machine: { id: snapshot.identity.controllerId, name: 'Test machine' }, platform: 'macos', agent: 'codex', agentControlMode: 'web', worktreeId: snapshot.identity.worktreeId, phase: 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: '2026-11-04T00:00:00Z' });
   let detail = detailFixture(snapshot.identity.projectId, snapshot.identity.taskId, { title: 'Fullscreen task', status: 'in_progress', ready: false, properties: { worker: claim() }, version: 1n });
-  vi.spyOn(resources, 'getTask').mockImplementation(async () => detail);
+  vi.spyOn(resources, 'getTaskObservation').mockImplementation(async () => ({ detail, epoch: fixtureTaskEpoch(detail.projectId) }));
   let receive!: (message: BrowserMessage) => void;
   let connections = 0, closed = 0;
   const api: SessionApi = {
@@ -83,7 +83,7 @@ describe('Session fullscreen inside task details', () => {
     const snapshot = initial();
     const detail = detailFixture(snapshot.identity.projectId, snapshot.identity.taskId, { properties: {}, status: 'todo' });
     let finish!: (response: Response) => void;
-    vi.spyOn(resources, 'getTask').mockResolvedValue(detail);
+    vi.spyOn(resources, 'getTaskObservation').mockResolvedValue({ detail, epoch: fixtureTaskEpoch(detail.projectId) });
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).includes('/sessions?')
       ? new Promise<Response>(resolve => { finish = resolve; })
       : resourceResponse({ items: [], nextCursor: null }, TEST_VIEWER_ID)));
@@ -98,7 +98,7 @@ describe('Session fullscreen inside task details', () => {
   it('automatically retains historical Session access after a task returns to todo without a claim', async () => {
     const snapshot = initial();
     const detail = detailFixture(snapshot.identity.projectId, snapshot.identity.taskId, { properties: {}, status: 'todo' });
-    vi.spyOn(resources, 'getTask').mockResolvedValue(detail);
+    vi.spyOn(resources, 'getTaskObservation').mockResolvedValue({ detail, epoch: fixtureTaskEpoch(detail.projectId) });
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/sessions?')) return resourceResponse({ items: [{ sessionId: snapshot.sessionId, claimId: snapshot.claimId, executionGeneration: '1', agentControlMode: 'web', contentKind: 'native_timeline', createdAt: '2026-11-04T00:00:00Z', endedAt: '2026-11-04T01:00:00Z', archive: { state: 'pending', sha256: null, byteLength: null, completeness: null } }], nextCursor: null }, TEST_VIEWER_ID);
@@ -117,7 +117,7 @@ describe('Session fullscreen inside task details', () => {
     const snapshot = initial();
     const worker = { claimId: snapshot.claimId, state, userId: TEST_VIEWER_ID, workerId: snapshot.identity.workerId, machine: { id: snapshot.identity.controllerId, name: 'Test machine' }, platform: 'macos', agent: 'codex', agentControlMode: 'web', worktreeId: snapshot.identity.worktreeId, phase: 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: '2026-11-04T00:00:00Z' };
     const detail = detailFixture(snapshot.identity.projectId, snapshot.identity.taskId, { properties: { worker }, status: 'todo' });
-    vi.spyOn(resources, 'getTask').mockResolvedValue(detail);
+    vi.spyOn(resources, 'getTaskObservation').mockResolvedValue({ detail, epoch: fixtureTaskEpoch(detail.projectId) });
     const current = vi.fn(async () => ({ status: 'registered' as const, session: snapshot }));
     const command = vi.fn();
     vi.spyOn(sessions, 'createSessionApi').mockReturnValue({ current, channel: vi.fn(), timeline: vi.fn(), command } as unknown as SessionApi);

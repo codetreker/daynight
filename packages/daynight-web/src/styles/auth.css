@@ -446,6 +446,8 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
 .consent-card .device-result .button { margin-top: 22px; white-space: normal; }
 .consent-card .result-detail { margin-top: 10px; font-size: 11px; color: #7c8799; }
 .consent-card .device-loading { min-height: 270px; flex-direction: column; gap: 15px; }
+.task-confirmation .dialog-footer .button[aria-disabled="true"] { color: #737d8e; background: #f2f3f7; border-color: #e3e6ee; cursor: not-allowed; }
+
 .grant-row { grid-template-columns: minmax(0, 1.35fr) minmax(180px, 1fr) auto; align-items: start; }
 .grant-row .actions { align-self: center; }
 .grant-row.revoked .person-name { color: #778298; }

@@ -59,6 +59,7 @@ export const isAbortError = (error: unknown): boolean =>
   typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
 
 let authGeneration = 0;
+let authPauseRevision = 0;
 const unauthorizedListeners = new Set<() => void>();
 type AuthPause = { readonly waiters: Set<() => void>; owner: symbol };
 let authPause: AuthPause | null = null;
@@ -71,6 +72,7 @@ const releaseAuthRequests = (): void => {
 
 export const invalidateAuthRequests = (): void => { authGeneration += 1; releaseAuthRequests(); };
 export const pauseAuthRequests = (): (() => void) => {
+  authPauseRevision += 1;
   const owner = Symbol();
   if (authPause === null) authPause = { waiters: new Set(), owner };
   else authPause.owner = owner;
@@ -79,6 +81,7 @@ export const pauseAuthRequests = (): (() => void) => {
 };
 
 export const authRequestsPaused = (): boolean => authPause !== null;
+export const authRequestsPauseRevision = (): number => authPauseRevision;
 
 const waitForIdentity = (pause: AuthPause, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   const cleanup = () => { pause.waiters.delete(resume); signal.removeEventListener("abort", abort); };
@@ -223,6 +226,23 @@ export type TaskResponseAdmission = {
   readonly userId: string;
   readonly onPrincipalMismatch: () => void;
   readonly onWriteConfirmed?: () => void;
+};
+
+export type TaskObservation = { readonly epoch: string; readonly detail: TaskDetail };
+
+// The epoch and body are one server snapshot; neither a cached epoch nor a
+// search result can substitute for this receipt.
+export const getTaskObservation = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission, correlationId?: string): Promise<TaskObservation> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json", ...(correlationId === undefined ? {} : { "X-Request-ID": correlationId }) } });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
+  if (response.status !== 200) throw new ApiError("protocol", response.status);
+  const header = response.headers.get("Daynight-Task-Epoch");
+  if (header === null || canonicalId(header) !== header) throw new ApiError("protocol", response.status);
+  const detail = await json(response, signal, (data) => parseTaskDetail(data, project, task));
+  return { epoch: header, detail };
 };
 
 export const getTask = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission, correlationId?: string): Promise<TaskDetail> => {
