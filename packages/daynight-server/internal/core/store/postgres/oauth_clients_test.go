@@ -244,3 +244,106 @@ func TestOAuthTokenAdmissionTwoPhasesPersistent(t *testing.T) {
 		t.Fatalf("unexpected buckets global=%d client=%d", global, client)
 	}
 }
+
+func TestOAuthClientStorageRefusals(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db := isolatedStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	c := store.OAuthClient{ID: "client", Metadata: []byte(`{}`), CreatedAt: now, LastUsedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour)}
+	t.Run("invalid capacity and missing pin", func(t *testing.T) {
+		_, err := db.WriteOAuthClients(ctx, func(s store.OAuthClientScope) error {
+			if ok, err := s.OAuthClientDAO().InsertClient(ctx, c, 0, now); ok || err == nil {
+				t.Fatal("invalid capacity accepted")
+			}
+			if _, err := s.OAuthClientDAO().PinClient(ctx, "absent", now); !errors.Is(err, model.ErrNotFound) {
+				t.Fatalf("missing client: %v", err)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("duplicate insertion", func(t *testing.T) {
+		tx, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		dao := pgOAuth.NewDAO(tx)
+		if ok, err := dao.InsertClient(ctx, c, 10, now); !ok || err != nil {
+			t.Fatalf("first insert: %v %v", ok, err)
+		}
+		if ok, err := dao.InsertClient(ctx, c, 10, now); ok || err == nil {
+			t.Fatalf("duplicate insert: %v %v", ok, err)
+		}
+	})
+	t.Run("missing reference storage", func(t *testing.T) {
+		tx, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		dao := pgOAuth.NewDAO(tx)
+		old := now.Add(-8 * 24 * time.Hour)
+		stale := store.OAuthClient{ID: "stale", Metadata: []byte(`{}`), CreatedAt: old, LastUsedAt: old, ExpiresAt: old.Add(7 * 24 * time.Hour)}
+		if ok, err := dao.InsertClient(ctx, stale, 10, now); !ok || err != nil {
+			t.Fatalf("insert: %v %v", ok, err)
+		}
+		if _, err := tx.Exec(ctx, `DROP TABLE oauth_grants`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dao.PinClient(ctx, "stale", now); err == nil {
+			t.Fatal("pin ignored reference lookup failure")
+		}
+	})
+	t.Run("capacity query failure", func(t *testing.T) {
+		tx, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `DROP TABLE oauth_grants`); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := pgOAuth.NewDAO(tx).InsertClient(ctx, c, 10, now); ok || err == nil {
+			t.Fatalf("count failure: %v %v", ok, err)
+		}
+	})
+	t.Run("cancelled capacity lock", func(t *testing.T) {
+		tx, err := db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if ok, err := pgOAuth.NewDAO(tx).InsertClient(cancelled, c, 10, now); ok || err == nil {
+			t.Fatalf("lock failure: %v %v", ok, err)
+		}
+	})
+	t.Run("future last use is monotonic", func(t *testing.T) {
+		future := now.Add(time.Hour)
+		c.ID = "future"
+		c.CreatedAt = now
+		c.LastUsedAt = future
+		c.ExpiresAt = future.Add(7 * 24 * time.Hour)
+		_, err := db.WriteOAuthClients(ctx, func(s store.OAuthClientScope) error {
+			if ok, err := s.OAuthClientDAO().InsertClient(ctx, c, 10, now); !ok || err != nil {
+				return fmt.Errorf("insert: %v", err)
+			}
+			pinned, err := s.OAuthClientDAO().PinClient(ctx, c.ID, now)
+			if err != nil {
+				return err
+			}
+			if !pinned.LastUsedAt.Equal(future) || !pinned.ExpiresAt.Equal(c.ExpiresAt) {
+				return fmt.Errorf("pin moved time backwards")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}

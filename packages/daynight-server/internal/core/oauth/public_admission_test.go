@@ -246,3 +246,24 @@ func TestTokenSingleTransactionAdmission(t *testing.T) {
 		t.Fatalf("source limit: %v %v buckets=%v", ok, err, d.counts)
 	}
 }
+
+func TestTokenAdmissionRefusesWithoutPermit(t *testing.T) {
+	ctx := context.Background()
+	if permit, ok, err := (PublicAdmission{}).TakeToken(ctx, ""); permit != nil || ok || err == nil {
+		t.Fatalf("missing source: %v %v %v", permit, ok, err)
+	}
+	d := &rateDAO{counts: map[string]int{}}
+	w := &rateWriter{dao: d, fail: errors.New("write failed")}
+	if permit, ok, err := (PublicAdmission{Writer: w}).TakeToken(ctx, "source"); permit != nil || ok || err == nil {
+		t.Fatalf("store failure: %v %v %v", permit, ok, err)
+	}
+	w.fail = nil
+	for i := 0; i < 120; i++ {
+		if _, ok, err := (PublicAdmission{Writer: w}).TakeToken(ctx, "another-source"); !ok || err != nil {
+			t.Fatalf("admit %d: %v %v", i, ok, err)
+		}
+	}
+	if permit, ok, err := (PublicAdmission{Writer: w}).TakeToken(ctx, "another-source"); permit != nil || ok || err != nil {
+		t.Fatalf("limit: %v %v %v", permit, ok, err)
+	}
+}

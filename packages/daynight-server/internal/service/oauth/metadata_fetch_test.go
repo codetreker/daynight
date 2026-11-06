@@ -224,3 +224,82 @@ func TestMetadataReadLimitAndTimeout(t *testing.T) {
 		t.Fatalf("dials = %d", count.Load())
 	}
 }
+
+func TestMetadataDefaultResolverRejectsLocalhost(t *testing.T) {
+	f := NewMetadataFetcher()
+	addresses, err := f.lookup(context.Background(), "127.0.0.1")
+	if err != nil || len(addresses) != 1 || !addresses[0].IsLoopback() {
+		t.Fatalf("literal lookup: %v %v", addresses, err)
+	}
+	f.lookup = func(context.Context, string) ([]netip.Addr, error) { return addresses, nil }
+	var dialed atomic.Bool
+	f.dial = func(context.Context, string, string) (net.Conn, error) {
+		dialed.Store(true)
+		return nil, errors.New("unexpected dial")
+	}
+	if _, _, err := f.Fetch(context.Background(), "https://localhost/metadata", acceptMetadata); !errors.Is(err, ErrMetadataFetch) {
+		t.Fatalf("localhost: %v", err)
+	}
+	if dialed.Load() {
+		t.Fatal("resolved localhost reached dial")
+	}
+}
+
+func TestMetadataLookupAndDialFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lookup func(context.Context, string) ([]netip.Addr, error)
+	}{
+		{"failed DNS", func(context.Context, string) ([]netip.Addr, error) { return nil, errors.New("private diagnostic") }},
+		{"empty DNS", func(context.Context, string) ([]netip.Addr, error) { return nil, nil }},
+		{"failed dial", func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("1.1.1.1")}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewMetadataFetcher()
+			f.lookup = tc.lookup
+			var attempts atomic.Int32
+			f.dial = func(context.Context, string, string) (net.Conn, error) {
+				attempts.Add(1)
+				return nil, errors.New("private diagnostic")
+			}
+			for range 2 {
+				if _, _, err := f.Fetch(context.Background(), "https://example.com/metadata", acceptMetadata); !errors.Is(err, ErrMetadataFetch) || strings.Contains(err.Error(), "private") {
+					t.Fatalf("fetch error: %v", err)
+				}
+			}
+			if tc.name == "failed dial" && attempts.Load() != 4 {
+				t.Fatalf("failed addresses not retried safely, attempts: %d", attempts.Load())
+			}
+		})
+	}
+}
+
+func TestMetadataUnsafeLiteralNeverDials(t *testing.T) {
+	f := NewMetadataFetcher()
+	var dialed atomic.Bool
+	f.dial = func(context.Context, string, string) (net.Conn, error) {
+		dialed.Store(true)
+		return nil, errors.New("unexpected dial")
+	}
+	for _, id := range []string{"https://127.0.0.1/metadata", "https://[::ffff:169.254.169.254]/metadata"} {
+		if _, _, err := f.Fetch(context.Background(), id, acceptMetadata); !errors.Is(err, ErrMetadataFetch) {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	if dialed.Load() {
+		t.Fatal("unsafe literal reached dial")
+	}
+}
+
+func TestMetadataCacheReplacement(t *testing.T) {
+	f := NewMetadataFetcher()
+	deadline := time.Now().Add(time.Hour)
+	f.remember("same", []byte("old"), deadline)
+	f.remember("same", []byte("new"), deadline)
+	body, _, ok := f.cached("same")
+	if !ok || string(body) != "new" || f.lru.Len() != 1 {
+		t.Fatalf("replacement: %q, present %v, entries %d", body, ok, f.lru.Len())
+	}
+}

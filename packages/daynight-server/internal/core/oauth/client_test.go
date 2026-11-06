@@ -18,6 +18,7 @@ func TestClientMetadata(t *testing.T) {
 		`{"redirect_uris":["https://client.example/cb"],"token_endpoint_auth_method":null}`,
 		`{"redirect_uris":["https://client.example/cb"],"grant_types":["client_credentials"]}`,
 		`{"redirect_uris":["https://client.example/cb"],"scope":"other"}`,
+		`{"redirect_uris":["https://client.example/cb"],"response_types":["token"]}`,
 		`{"redirect_uris":["https://client.example/cb"],"redirect_uris":[]}`,
 		`{"redirect_uris":["https://client.example/cb"],"client_id":"own"}`,
 		`{"redirect_uris":["https://client.example/cb"],"client_name":"\ud800"}`,
@@ -75,5 +76,20 @@ func TestRedirectMatching(t *testing.T) {
 		if got := MatchRedirect(c.registered, c.requested); got != c.match {
 			t.Errorf("%q %q = %v", c.registered, c.requested, got)
 		}
+	}
+}
+
+func TestStoredMetadataRequiresIdentity(t *testing.T) {
+	if _, err := ParseStoredClientMetadata([]byte(`{"redirect_uris":["https://client.example"]}`), ""); err != ErrInvalidClientMetadata {
+		t.Fatalf("missing identity: %v", err)
+	}
+}
+
+func TestLoopbackRedirectWithoutPath(t *testing.T) {
+	if !MatchRedirect("http://127.0.0.1:123", "http://127.0.0.1:456") {
+		t.Fatal("literal loopback port should be permitted with empty path")
+	}
+	if MatchRedirect("http://127.0.0.1:123", "http://127.0.0.1:456/") {
+		t.Fatal("empty and slash paths differ")
 	}
 }
