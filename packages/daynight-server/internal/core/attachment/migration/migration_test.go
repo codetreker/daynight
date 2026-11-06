@@ -48,12 +48,12 @@ func (f fixtureMaintenance) Snapshot(_ context.Context, visitor store.Attachment
 }
 func (f fixtureMaintenance) Close(context.Context) error { return nil }
 
-type fixtureTask struct{ ID string }
+type fixtureTask struct{ ID, ProjectID string }
 
 func migrationRecordFixture(t *testing.T) (string, fixtureTask, fixtureMaintenance, AttachmentMigrationSummary) {
 	t.Helper()
-	task := fixtureTask{ID: "00000000-0000-0000-0000-000000000002"}
 	project := "00000000-0000-0000-0000-000000000001"
+	task := fixtureTask{ID: "00000000-0000-0000-0000-000000000002", ProjectID: project}
 	database := fixtureMaintenance{snapshot: fixtureSnapshot{
 		Identity: store.AttachmentMaintenanceIdentity{Host: "host", Port: "5432", Database: "db", DatabaseOID: "1", Schema: "public", Relations: map[string]string{"projects": "public/1", "tasks": "public/2", "task_attachments": "public/3"}},
 		Projects: []store.AttachmentMaintenanceProject{{ID: project, Data: "project"}},
