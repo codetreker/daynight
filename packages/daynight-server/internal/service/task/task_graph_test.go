@@ -35,6 +35,8 @@ func seedGraph(t *testing.T, database *store.Store, projectID string, nodes, edg
 	}
 }
 
+// A full chain keeps boundary traversal deep; convergent extra edges exercise
+// the independent edge limit while retaining every node in the component.
 func seedConnectedGraph(t *testing.T, database *store.Store, projectID string, nodes, edges int) string {
 	t.Helper()
 	ctx := context.Background()
