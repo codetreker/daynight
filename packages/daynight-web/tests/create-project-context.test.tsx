@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { IDBObjectStore } from 'fake-indexeddb';
+import { IDBObjectStore, IDBTransaction } from 'fake-indexeddb';
 import { openDB } from 'idb';
 import { CreateProjectDialog } from '../src/features/auth/CreateProjectDialog';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -74,6 +74,68 @@ describe('project creation context', () => {
     expect(screen.queryByText('No projects found.')).toBeNull();
     view.unmount(); admission.dispose();
   });
+
+  it.each([
+    ['same', 'initial'], ['same', 'continuation'], ['invalidated', 'initial'], ['closed', 'initial'],
+  ] as const)('settles an interrupted %s identity check during %s', async (identity, phase) => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    await admission.prepareProjection(new AbortController().signal);
+    let reads = 0;
+    const fetcher = vi.fn((_url: string, options?: RequestInit) => options?.method === 'POST'
+      ? Promise.reject(new Error('connection lost'))
+      : Promise.resolve(new Response(JSON.stringify({ items: [], nextCursor: phase === 'continuation' && ++reads === 1 ? 'next' : null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } })));
+    vi.stubGlobal('fetch', fetcher);
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Draft name' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:draft.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    if (phase === 'continuation') {
+      fireEvent.click(screen.getByRole('button', { name: 'Check projects' }));
+      await screen.findByRole('button', { name: 'Load more projects' });
+    }
+    const interruptions = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const resumes: Array<() => void> = [];
+    const pauseCount = identity === 'same' && phase === 'initial' ? 2 : 1;
+    let armed = pauseCount, aborted = 0;
+    const get = IDBObjectStore.prototype.get, abort = IDBTransaction.prototype.abort;
+    vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = get.apply(this, args);
+      if (this.name === 'userScopes' && armed > 0) {
+        armed--;
+        request.addEventListener('success', () => { resumes.push(pauseAuthRequests()); }, { once: true });
+      }
+      return request;
+    });
+    vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation(function (this: IDBTransaction) {
+      try { return abort.call(this); } finally { interruptions[aborted++]?.resolve(); }
+    });
+    try {
+      fireEvent.click(screen.getByRole('button', { name: phase === 'continuation' ? 'Load more projects' : 'Check projects' }));
+      await interruptions[0]!.promise;
+      expect(fetcher).toHaveBeenCalledTimes(phase === 'continuation' ? 2 : 1);
+      expect(screen.getByRole('button', { name: 'Check projects' })).toBeDisabled();
+      if (identity === 'invalidated') await act(async () => { await admission.invalidateScope(); invalidateAuthRequests(); });
+      if (identity === 'closed') view.unmount();
+      await act(async () => { resumes[0]?.(); });
+      if (pauseCount === 2) {
+        await interruptions[1]!.promise;
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole('button', { name: 'Check projects' })).toBeDisabled();
+        await act(async () => { resumes[1]?.(); });
+      }
+      if (identity === 'same') {
+        await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(phase === 'continuation' ? 3 : 2), { timeout: 3000 });
+        await screen.findByText('No projects found.', {}, { timeout: 3000 });
+        expect(screen.getByRole('button', { name: 'Check projects' })).toBeEnabled();
+        if (phase === 'continuation') expect(fetcher.mock.calls[2]?.[0]).toContain('cursor=next');
+        expect(screen.getByLabelText(/Project name/)).toHaveValue('Draft name');
+      } else {
+        expect(fetcher).toHaveBeenCalledTimes(1);
+        expect(screen.queryByText('No projects found.')).toBeNull();
+      }
+    } finally { resumes.forEach((resume) => resume()); view.unmount(); admission.dispose(); }
+  }, 10000);
 
   it('withdraws an unknown-outcome project list and rejects a late continuation', async () => {
     const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });

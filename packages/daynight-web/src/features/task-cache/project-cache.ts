@@ -300,6 +300,17 @@ export class TaskCacheScope {
     if (notifyProjection && (event.accessRevoked || event.accessRestored)) this.emitProjection(event);
   }
   async prepareProjection(signal: AbortSignal): Promise<ReadonlyMap<string, string>> {
+    for (;;) {
+      try { return await this.prepareProjectionOnce(signal); }
+      catch (error) {
+        // A foreground identity check can interrupt the durable snapshot without
+        // retiring this scope or the caller's request.
+        if (error instanceof TaskCacheLifecycleChanged && !signal.aborted && !this.isInvalidated) continue;
+        throw error;
+      }
+    }
+  }
+  private async prepareProjectionOnce(signal: AbortSignal): Promise<ReadonlyMap<string, string>> {
     await this.ready(signal);
     // A read started after a negative hint must wait for its cleanup, including failures.
     await Promise.allSettled([...this.projectionHints, ...this.projectPurges.values()]);

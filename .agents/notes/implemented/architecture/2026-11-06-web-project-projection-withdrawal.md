@@ -16,7 +16,9 @@ Independent projections capture the principal's durable Project generation map
 before starting a read and compare it with access-negative events. Each published
 page or observation retains its own captured generation. A missing entry is not
 proof of denied access; a matching or unknown generation permits withdrawal, and
-a different generation protects a later observation from an old event. Snapshot
+a different generation protects a later observation from an old event. An identity
+pause that interrupts snapshot preparation retries the read after the same live
+scope becomes ready; cancellation or scope invalidation ends it. Snapshot
 replacement and cache invalidation persist predecessor generations atomically with
 the manifest. A denial ticket carries the complete history, so a later denial
 withdraws ancestor observations even if a replacement hint was lost or delayed.

@@ -315,7 +315,7 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 			}
 		}
 		receipt := map[string]any{"sourceGit": gitHead, "sourceTree": gitTree, "dirty": dirty, "goVersion": runtime.Version(), "goFlagsSHA256": flagsSHA,
-			"buildCommand": "go build -race=<test race> -o <owned> .", "binaryGoVersion": binaryGoVersion, "testRaceEnabled": grantRaceEnabled, "binaryRaceEnabled": binaryRace,
+			"buildCommand": "go build -race=<test race> -o <owned> ./cmd/daynight-server", "binaryGoVersion": binaryGoVersion, "testRaceEnabled": grantRaceEnabled, "binaryRaceEnabled": binaryRace,
 			"binarySHA256": binarySHA, "authFixtureSHA256": fixtureSHA, "postgresql": postgresVersion, "projectId": projectID, "userId": userID, "taskId": taskID,
 			"prefixBytes": observedPrefixBytes, "bytes": observedBytes, "bodySHA256": bodySHA, "uploadStatus": uploadStatus, "removalStatus": removalStatus,
 			"projectBeforePAT": beforePAT, "projectBeforeCookie": beforeCookie, "attachmentAfterPAT": afterPAT, "attachmentAfterCookie": afterCookie,
@@ -333,8 +333,9 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	binaryRoot = grantTempRoot(t, "grant-binary-", cleanupAllowed)
 	binary := filepath.Join(binaryRoot, "daynight-server")
 	buildCtx, buildCancel := context.WithTimeout(t.Context(), 75*time.Second)
-	build := exec.CommandContext(buildCtx, "go", "build", "-race="+strconv.FormatBool(grantRaceEnabled), "-o", binary, ".")
-	build.Env = os.Environ() // Keep GOFLAGS, including an explicit source overlay when supplied.
+	build := exec.CommandContext(buildCtx, "go", "build", "-race="+strconv.FormatBool(grantRaceEnabled), "-o", binary, "./cmd/daynight-server")
+	build.Dir = filepath.Join("..", "..") // Preserve module-relative GOFLAGS, including overlays.
+	build.Env = os.Environ()              // Keep GOFLAGS, including an explicit source overlay when supplied.
 	build.WaitDelay = 2 * time.Second
 	output, err := build.CombinedOutput()
 	buildCancel()

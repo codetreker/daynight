@@ -1775,9 +1775,10 @@ so the attachment denial is checked after the upload finishes. Its logged
 evidence identifies the source, tree, dirty state, binary, authentication fixture and PostgreSQL
 version and the test and binary race settings. The fresh child uses the test's
 race mode and verifies it from the binary build information. It inherits
-`GOFLAGS`; supply an explicit source overlay through `GOFLAGS` so both the test
-and its child build use it. A `go test -overlay` argument alone is not inherited
-by the child build.
+`GOFLAGS` and runs the child build from the module root, preserving module-relative
+overlay paths. Supply an explicit source overlay through `GOFLAGS` so both the
+test and its child build use it. A `go test -overlay` argument alone is not
+inherited by the child build.
 
 After building Web assets, setting `DAYNIGHT_TEST_DATABASE_URL` and sourcing
 `scripts/env.sh`, a focused run can prepare the fixture and invoke the test:
