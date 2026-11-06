@@ -14,7 +14,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 )
 
 type compositionOnlyStore struct{ store.Transactions }
@@ -45,6 +47,20 @@ func TestOAuthProfileComposition(t *testing.T) {
 		if err := app.Close(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestUploadUnavailableWithoutPrivateStorage(t *testing.T) {
+	app := NewModules(config.Config{}, nil, nil, nil, nil)
+	if app.PrivateContent != nil || app.Uploads == nil {
+		t.Fatal("unexpected private content composition")
+	}
+	_, err := app.Uploads.Execute(context.Background(), transfer.Actor{}, "", "", mcptransfer.UploadInput{Action: "inline"})
+	if err == nil || !strings.Contains(err.Error(), "upload service unavailable") {
+		t.Fatalf("upload without private storage: %v", err)
+	}
+	if err := app.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -4,7 +4,7 @@ The Go service owns PostgreSQL-backed project and task management. Its runtime
 foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
-project/task APIs and built-process acceptance are implemented. The current
+project/task APIs are implemented. The current
 executable serves Team lifecycle, project, task, task-chain graph, task-summary synchronization
 and account-owned Worker snapshot/configuration routes together with the embedded task dashboard.
 Generic bucket/path local storage, task attachment
@@ -282,7 +282,6 @@ invalidation action. Expiry and revocation affect subsequent credential admissio
 | Path | Responsibility |
 |---|---|
 | `cmd/daynight-server/` | Environment, process signals, dependency assembly, exit status and direct command tests |
-| `cmd/e2e_tests/` | Test-only package for built-process, installed-CLI and attachment-migration acceptance |
 | `internal/server/` | API/UI routing, HTTP lifecycle, request context, request IDs, structured logs |
 | `internal/service/webui/` | Embedded production HTML/assets and resource reads |
 | `internal/server/webui/` | Static routes and HTTP response policy |
@@ -508,8 +507,7 @@ an error; if cleanup is incomplete, ownership is retained for another close
 attempt. Database operations must
 use the request context and release acquired connections.
 The runtime also closes an acquired file root on later startup failure. Local
-files remain on disk when the handle closes. Startup fixtures supply isolated
-roots; built-process restart tests reuse their fixture root.
+files remain on disk when the handle closes. Tests use isolated storage roots.
 
 Logs use JSON `slog` records with type, component, phase, and request ID. HTTP
 records include method, route template, status, and duration. A supplied
@@ -568,12 +566,10 @@ bash scripts/check.sh
 docker rm --force --volumes daynight-server-tests
 ```
 
-The complete check runs the shared root `pnpm web:build`, prepares the pinned
-real-UniAuth integration fixture, and runs coverage and E2E validation in
-sequence. Use `bash scripts/check.sh --coverage` or `bash scripts/check.sh --e2e`
-to run either responsibility independently. Each mode prepares its required Web,
-UniAuth and installed CLI inputs after the caller supplies the isolated
-`DAYNIGHT_TEST_DATABASE_URL`.
+The check builds and vets the Go module using its unit-test Web resource overlay,
+prepares the pinned UniAuth fixture, and runs module tests and coverage. The
+optional `--coverage` argument selects the same check. A production build uses
+the real Web assets described under [Build and run](#build-and-run).
 
 ### HTTP scenario ownership
 
@@ -600,107 +596,44 @@ owns the rationale and proof boundary.
 
 ### Race instrumentation
 
-`DAYNIGHT_TEST_RACE` selects race instrumentation for both coverage and E2E
-orchestration. The only accepted values are literal `true` and `false`; an absent
-value enables it for ordinary local validation, while empty or invalid values
-fail before fixture preparation. The two Go workflow jobs set it explicitly:
-PR events use `false`, and main push events use `true`.
+The checked-in `.go-cov.toml` sets `test.race = false`; the default check does
+not enable race instrumentation. PR and main CI run without it. Repository
+validation requires race instrumentation locally, but the default check does
+not enforce that requirement. `bash scripts/stress.sh` uses `-race` for its
+local-only stress tests.
 
-The orchestrator passes explicit `--race=<value>` to `go-cov` and
-`-race=<value>` to `go test`; the checked-in `.go-cov.toml` keeps its enabled
-local default. Disabled coverage also appends `-race=false` to its inherited
-`GOFLAGS`, retaining other flags; enabled coverage leaves them unchanged. The E2E
-package builds its service with the actual test binary's race mode, including direct `go test -race` invocations, and records that mode as
-`raceEnabled` in `.tmp/acceptance-evidence.json`. The orchestration receipts retain
-the actual coverage and E2E command arguments. Build, vet, functional and
-concurrency cases, atomic statement coverage and all coverage thresholds run in
-both modes. The [Go validation timing decision](../../.agents/notes/archived/testing/2026-11-04-go-validation-timing.md)
-records the event policy and its limits.
+### Coverage
 
-### Coverage and E2E responsibilities
+`scripts/check.sh` builds the executable, runs `go vet`, clears cached Go test
+results and invokes `go-cov` v0.1.4 with the checked-in configuration. Its
+package and function thresholds are 85% and 80%; production packages, files and
+functions are not excluded. Repository validation requires critical-block checks;
+`critical_blocks.fail` is currently false, so this check does not enforce them. The raw
+`coverage.out` profile also passes an exact statement comparison strictly greater
+than 90%; exactly 90% fails. The check does not set `-coverpkg`; a package test does not attribute coverage
+to production code in other packages. Tests and their database state require the
+isolated PostgreSQL instance; preparation failures fail validation.
 
-Coverage mode builds the executable, runs `go vet`, expires project-local Go test
-results so database changes cannot be hidden by cached coverage, and runs package
-tests with the selected race mode through `go-cov` pinned to commit
-`d6caf2759e330b48d69a543695e37002a48feb1d`. The checked-in `.go-cov.toml`
-requires at least 85% coverage per production package and 80% per function,
-with critical blocks enforced and no production exclusions. The Node orchestrator
-passes the full import path of `cmd/e2e_tests` to `--exclude-packages`, removing
-that test-only package from coverage execution. Because the tool uses substring
-matching, `go list ./...` must confirm that the full-path match selects exactly
-that package; extended or nested matches fail. The orchestrator also recursively
-rejects non-test Go source in that directory, preventing this exception from
-hiding production statements. The same package list supplies `-coverpkg`, so
-integration tests exercise and measure DAO implementations in their own packages.
-Imported `testdata` fixtures do not enter the profile. All production packages
-and their raw coverage profile remain in the gate. A separate exact calculation over that profile requires
-overall statement coverage **strictly greater than 90%**. Exactly 90% fails. The
-check also tests that calculation's boundary and malformed-profile behavior.
-Coverage mode retains the authentication package's installed-CLI assertions and
-normally issued PAT producer, followed by the two deadline probes and installed
-fixture cleanup. It writes `.tmp/project-task-service-evidence.json` at the
-repository root and `.tmp/coverage.out` in this module.
+`scripts/env.sh` places Go tools, caches and temporary outputs under this
+module's `.tmp/`. The `verify-server` CI job uses its own PostgreSQL service,
+runs the same check and uploads `coverage.out` as `daynight-server-acceptance`.
+Inspect the result for the tested revision; a local result does not establish a
+hosted result.
 
-E2E mode runs `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests` with the
-selected race mode. Its own packed and installed CLI belongs to that run; the
-package freshly builds a server with matching instrumentation and retains every
-process, concurrency, error-path and cleanup assertion.
-It writes this module's `.tmp/acceptance-evidence.json` and the repository-root
-`.tmp/project-task-e2e-evidence.json`, which records command results, installed
-artifact identity and installed-fixture removal. Deadline probes and their PAT
-handoff remain in coverage mode. Each orchestration receipt also records the
-source revision, tree, dirty state and actual package list.
+Ordinary discovery excludes stress-tagged files. With an isolated database,
+`bash scripts/stress.sh` runs the explicit stress-tagged workloads with race
+detection and refuses a nonempty `CI` environment.
 
-`scripts/env.sh` places downloaded tools, dependencies, caches, binaries and
-temporary outputs under this module's `.tmp/`. The Go coverage, Go E2E and Web
-browser CI jobs restore module and compiler caches using `go.sum`. Coverage
-expires test results; E2E's `-count=1` also requires a fresh run. The two server
-jobs run independently on separate runners with separate PostgreSQL services,
-using the same server selector and a 20-minute bound each. The final `checks`
-job waits for both. The `daynight-server-acceptance` artifact contains coverage
-and deadline evidence; `daynight-server-e2e-acceptance` contains process/scenario
-and E2E installation evidence. Both upload existing diagnostics after validation
-failure as well as success.
-
-Ordinary Go discovery excludes stress-tagged files. With an isolated test
-database configured, run `bash scripts/stress.sh` explicitly for the
-10,000-task/100-person query sample, full-scale Session-v2 archives and repeated
-concurrent overwrite workload. It uses race detection and selects only
-`TestStress*` in the three owning packages. The script and raw tagged test
-entrypoints refuse a nonempty `CI` environment. CI retains compact archive
-boundary checks and a deterministic two-writer publication test. The query sample
-remains source-bound local evidence, rather than a production capacity limit.
-The tests cover real database connection/query cancellation, HTTP cancellation,
-graceful and forced drain, listener/pool reuse, process configuration/exit status
-and log redaction.
-
-Authentication integration prepares the exact UniAuth gateway source at
-`0978963813fcefd9d553f6cb9bcc319084c764b3` with
-`scripts/prepare-uniauth-fixture.mts`, using Git/module registry access. Its checked-in
-`testdata/uniauth-fixture` command is built inside that source module; the real
-gateway, App registry and GitHub adapter run on loopback, with only external
-provider HTTP responses controlled. Private App credentials cross a task-local
-0600 IPC file and are removed after reading. Built-process, installed-CLI, browser
-and budget fixtures obtain normal Daynight sessions and PATs through this gateway;
-private fixture metadata stays outside public receipts and artifact trees. The fixture process, SQLite files,
-checkout and executable remain under the module `.tmp/`; tests close their own
-process and file resources. No application module replacement or global tool
-installation is required. For focused authentication integration tests after
-`scripts/env.sh`, keep `DAYNIGHT_TEST_DATABASE_URL` set and prepare the fixture:
-
-```bash
-DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-export DAYNIGHT_TEST_UNIAUTH_FIXTURE
-```
-
-The full check performs this preparation automatically. The real wire-loss test in
+Authentication integration prepares the pinned UniAuth gateway with
+`scripts/prepare-uniauth-fixture.mts`. The fixture runs on loopback with
+controlled external provider responses and owns its temporary resources. For
+focused integration tests, source `scripts/env.sh`, set
+`DAYNIGHT_TEST_DATABASE_URL`, then set `DAYNIGHT_TEST_UNIAUTH_FIXTURE` to the
+output of that preparation script. The full check performs preparation itself.
+The real wire-loss test in
 [`auth_transport_acceptance_test.go`](internal/server/auth_transport_acceptance_test.go)
-consumes a successful upstream result, closes the actual SDK-side TCP connection,
-and verifies upstream 410, callback replay 401, zero failed-login sessions and
-fresh-login recovery. Product, proxy and gateway cleanup is part of the test.
-The [combined authentication decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md) records the rationale for that proof and the separate native/container browser-plus-installed-CLI
-journeys. Focused results retain their recorded source scope; controlled-provider
-proof is separate from an actual upstream human login.
+checks the SDK-side connection and subsequent login recovery; controlled-provider
+evidence does not establish a live human login.
 
 ## File storage
 
@@ -1499,29 +1432,21 @@ concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
-`TestStepsHTTPDelete*`. Installed CLI deletion and a lost response after a real commit are covered by
-`TestInstalledCLITaskStepsDeleteAcceptance` and
-`TestInstalledCLITaskStepsDeleteUnknownAfterRealCommit`; they verify request
-budgets, complete surviving rows, parent and referenced attachment preservation,
-refusals and current-facts-only recovery. Actual binary read restart persistence is covered by
-`TestBuiltBinaryStepsReadPersistence`. Installed Step list/show and its separate
-maximum-resource CLI check are mapped in
-[built-process acceptance](#built-process-acceptance-and-ci-evidence). After
-preparing the normal auth fixture and an isolated PostgreSQL database, focused
+`TestStepsHTTPDelete*`. After preparing the normal auth fixture and an isolated PostgreSQL database, focused
 tests can be run from this module:
 
 ```bash
 source scripts/env.sh
 export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test ./internal/core/store/postgres/... ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
+go test ./internal/core/store/postgres/... ./internal/service/task ./internal/server/... -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
 Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:
 
 ```bash
-go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity|DeleteCapacity)Stress$' -count=1 -timeout=5m
+go test -tags=stress ./internal/server/task -run '^TestStressStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity|DeleteCapacity)Stress$' -count=1 -timeout=5m
 ```
 
 The read case seeds legitimate bounded individual records, observes complete
@@ -1800,266 +1725,8 @@ URLs, bodies, SQL and credentials are excluded from logs.
 
 ## Built-process acceptance and CI evidence
 
-The test-only [`cmd/e2e_tests/`](cmd/e2e_tests/) package owns the actual-process
-scenarios, installed CLI project/task, Step reads, Add/Delete and attachment workflows,
-[installed lifecycle migration/race scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
-and [offline attachment migration](cmd/e2e_tests/migrate_attachment_acceptance_test.go).
-The full check runs this package in its E2E phase, independently of production
-coverage; `go test ./...` also discovers it. Run `bash scripts/check.sh --e2e`
-for only this suite, including Web, UniAuth and installed CLI preparation. With
-`scripts/env.sh` sourced and PostgreSQL, the UniAuth fixture and
-`DAYNIGHT_TEST_INSTALLED_CLI_RECEIPT` already prepared, its direct entrypoint is
-`go test -race -count=1 -timeout=10m ./cmd/e2e_tests`. The normal real-UniAuth fixture supplies
-sessions/PATs and explicit membership;
-installed commands use private origin-matched PAT configuration. Authentication
-and authorization remain on the production resource path. The E2E package's
-`TestMain` freshly builds a server with the test binary's race mode, starts only
-owned loopback children against isolated real PostgreSQL schemas, and checks HTTP
-workflows, restart persistence, competing mutations, PR string/NUL/order/duplicate persistence, partial-write rollback,
-cancellation, graceful/forced SIGTERM,
-migration failures and simultaneous startup. This signal acceptance runs in the
-Ubuntu Go E2E CI job. Independent scenario subtests run with at most four concurrent
-slots within their sequential top-level test; each retains its own schema,
-processes, database barriers and cleanup. This keeps other top-level tests'
-process-wide environment changes outside the parallel scenario lifetime.
-Existing three-platform CLI validation remains separate.
-
-Direct tests of `main`, `run` and command-internal migration behavior remain in
-`cmd/daynight-server`. They own their temporary storage and lightweight helpers,
-so selecting that package does not invoke the E2E binary build, source checks or
-receipt initialization. Its integration tests still require PostgreSQL and the
-UniAuth fixture. With `scripts/env.sh` sourced and those inputs prepared, run
-`go test -race -timeout 10m ./cmd/daynight-server` without an installed CLI receipt.
-The [E2E package decision](../../.agents/notes/archived/testing/2026-11-03-server-e2e-package.md) records the rationale for this package separation, and the
-[CI split decision](../../.agents/notes/archived/testing/2026-11-04-server-e2e-ci-jobs.md) records the rationale for independent coverage/E2E execution; the
-[CI efficiency decision](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
-records the validation-cost trade-offs.
-
-The test process incrementally writes `.tmp/acceptance-evidence.json` with the
-checked-out Git/GitHub SHA, required root `gitTreeSha` from
-`git rev-parse HEAD^{tree}`, dirty state, Go/PostgreSQL versions, tested binary
-SHA-256, named results and cleanup counts. The installed CLI receipt's
-`source.gitTreeSha` must match that tree as well as the existing revision,
-package and artifact checks. Missing or mismatched source identity fails. CI
-requires a clean checkout and a revision matching `GITHUB_SHA`. All children stop before schemas are removed;
-the receipt records reaping, removed schemas and disappearance of owned sessions.
-Every fixture also requires `storageRootRemoved`: the owned root is removed and
-its absence is checked before cleanup can pass. The temporary tested binary is removed after the run; its hash remains in the
-receipt.
-
-The [binary scenarios](cmd/e2e_tests/acceptance_test.go) and their
-[process/evidence harness](cmd/e2e_tests/acceptance_process_test.go) map to
-the [V1–V10 requirements](../../docs/spec/daynight-server.md). The installed
-Thread scenario also verifies the [discussion contract](../../docs/spec/daynight-task-thread.md):
-
-| Requirement | Observable evidence |
-|---|---|
-| V1: persistent resources | `workflow_restart_persistence`, `graceful_sigterm_drains_committed_request`, `forced_sigterm_cancels_without_late_write`; complete objects survive process restart and listener reuse |
-| V2: dependency refusal and rollback | `refusals_scopes_filters_and_cursors`, `partial_write_http_failure_rolls_back`; rejected writes preserve complete tasks, with a sequence proving metadata and the first edge changed before the injected failure |
-| V3: concurrency and project independence | `concurrent_reverse_dependencies`, `canceled_request_and_independent_project`; owned backend waiters prove competing requests and independent progress |
-| V4: state gates | `three_state_read_projection`, `concurrent_status_same_version`, `concurrent_dependency_update_and_status`, `concurrent_reopen_and_successor_status` plus installed start/done/distinct-target/dependency-edit/same-state races; [service tests](internal/service/task/task_test.go) and [HTTP status tests](internal/server/task/task_transitions_test.go) cover all nine pairs, +0/+1, stale no-op and ordinary/external predecessor/dependent protection |
-| V5: revisions and no-ops | Workflow/refusal scenarios and `concurrent_same_version`; actual changes compete on one version and matching semantic no-ops retain fields/timestamps |
-| V6: listing and HTTP contract | `refusals_scopes_filters_and_cursors`, [HTTP tests](internal/server/tasks_test.go) and service tests cover tied keysets, scoped filters, initialized empty resources, DTOs and error mapping |
-| V7: transactions and lifecycle | Partial-failure, cancellation, graceful/forced-signal, unsupported/failed-migration-history, concurrent-startup and `installed_cli_pre_lifecycle_migration_restart` scenarios; owning store tests prove finer snapshot and cross-migration interleavings |
-| V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the [event-specific race policy](#race-instrumentation), raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
-| V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
-| V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
-| Task Steps: installed CLI Add | [`installed_cli_task_steps_add` and `installed_cli_task_steps_add_unknown`](cmd/e2e_tests/task_steps_cli_add_acceptance_test.go) cover options, saved placement, explicit one-POST/default GET+POST budgets, exact identities/versions, known refusals and current-fact-only observation after a real committed Add loses its response |
-| Task Steps: installed CLI updates | [`installed_cli_task_steps_update` and `installed_cli_task_steps_update_unknown`](cmd/e2e_tests/task_steps_cli_update_acceptance_test.go) cover raw content/omission/clearing, all four-state transitions, exact no-op/+1 versions, explicit PATCH/PUT and default GET+write budgets, preservation, refusals and current-facts-only observation after committed writes lose their response |
-| Task Steps: installed CLI Move | [`installed_cli_task_steps_move` and `installed_cli_task_steps_move_unknown`](cmd/e2e_tests/task_steps_cli_move_acceptance_test.go) cover all four positions, exact explicit/default request budgets, complete saved order and unchanged Step fields/times, no-op/+1 and maximum version, refusals and factual observation after a real committed Move loses its response |
-| Task Steps: installed CLI reads | [`installed_cli_task_steps_read`](cmd/e2e_tests/task_steps_cli_acceptance_test.go) checks installed list/show against persistent production resources, empty and full item output, exact versions, saved order, short IDs, explicit-project reads, help isolation, usage/refusal failures and Task preservation; the existing fixture owns receipt/source identity and cleanup |
-| Task Thread: CLI/service contract | [`installed_cli_task_thread`](cmd/e2e_tests/acceptance_thread_cli_test.go) verifies authenticated human/Agent authors, replies and nullable snapshots, millisecond message-ID pagination, complete resource/text byte bounds, controlled refusals and unknown submissions, task immutability and owned resource cleanup |
-
-HTTP error assertions preserve expected status/code, JSON response headers and
-exact error.requestId/X-Request-ID correlation. Known secret markers and database
-URLs are checked across the entire body. SQL-marker checks cover the complete
-JSON envelope, including unknown fields and keys, while masking only the direct
-error.requestId string after unique, syntactically valid header correlation.
-Other original bytes and nested requestId fields remain diagnostic content. The [acceptance metadata decision](../../.agents/notes/archived/bug-fix/2026-10-21-http-error-acceptance-metadata.md)
-explains why a legal opaque ID may contain the SQL marker.
-
-The installed CLI project/task scenario and its artifact/source validation live
-in [`acceptance_cli_test.go`](cmd/e2e_tests/acceptance_cli_test.go). Its
-mixed unfinished/completed fixture verifies the exact default and `--all` list
-membership and order. Each JSON array equals the complete task resources after
-removing only `description`, retaining raw PR strings, timestamps and exact int64
-versions; task show retains the full description. Human lists retain identity,
-status, readiness, dependencies and escaped PR references while omitting
-description, version and timestamps; `task show` retains those detail fields.
-Both detail and all-status list output preserve visible PR control-character
-escaping without emitting raw terminal controls.
-
-The installed Step-read case is `TestInstalledCLITaskStepsReadAcceptance` in
-[`task_steps_cli_acceptance_test.go`](cmd/e2e_tests/task_steps_cli_acceptance_test.go).
-It executes the receipt-verified installed Node entry against production
-authentication and the isolated PostgreSQL fixture; routine CLI capture and
-timeout bounds remain unchanged. The CLI package
-[packed acceptance runner](../daynight/scripts/project-task-acceptance.ts) uses its
-existing cross-spawn owner to launch the literal `daynight` and `dn` commands on
-each native platform. The real-service entry check and launcher checks provide
-complementary evidence through their existing owners.
-The opt-in [`task_steps_cli_stress_test.go`](cmd/e2e_tests/task_steps_cli_stress_test.go)
-case `TestInstalledCLITaskStepsCapacityStress` reads a legal maximum 64 MiB
-collection through the installed command and parses the complete JSON output.
-It retains the CLI's default request/operation budgets and uses stress-only
-bounded task-local file capture, independently of routine CI.
-
-After preparing the same database, UniAuth fixture and installed CLI receipt as
-the normal E2E suite, run the maximum-resource CLI check explicitly from this
-module:
-
-```bash
-go test -race -tags=stress ./cmd/e2e_tests -run '^TestInstalledCLITaskStepsCapacityStress$' -count=1 -timeout=10m
-```
-
-This test's scenario name is `installed_cli_task_steps_capacity`; run-specific
-resource bytes, source identity and cleanup observations belong to the acceptance
-receipt, separately from this test inventory. The standalone manual's build and
-installed-byte checks establish resource fidelity and do not replace these read
-behavior checks.
-
-Installed Add is owned by
-[`task_steps_cli_add_acceptance_test.go`](cmd/e2e_tests/task_steps_cli_add_acceptance_test.go):
-`TestInstalledCLITaskStepsAddAcceptance` uses the real production resource and
-`TestInstalledCLITaskStepsAddUnknownAfterRealCommit` drops a real committed 201
-receipt through the existing proxy fixture. The latter requires one original-ID
-POST, at most one same-operation UUID.r1 full GET, unknown/nonzero outcome and
-empty success stdout even when the target is currently found. Normal output and
-time bounds remain unchanged. Literal launcher behavior has its separate packed
-CLI acceptance owner.
-
-Installed Move is owned by
-[`task_steps_cli_move_acceptance_test.go`](cmd/e2e_tests/task_steps_cli_move_acceptance_test.go).
-`TestInstalledCLITaskStepsMoveAcceptance` checks the four placement modes and
-no-ops against complete persisted order, every Step field/time and unrelated
-parent metadata. It observes one explicit PUT or default GET+PUT, exact large
-versions, stale same-position and missing-anchor refusals, failed pre-read and
-maximum-version no-op. `TestInstalledCLITaskStepsMoveUnknownAfterRealCommit`
-drops the committed response and requires one PUT plus one correlated `.r1`
-GET, unknown/nonzero outcome and empty success stdout. Literal `daynight`/`dn`
-launcher, help, completion and manual checks remain in the packed CLI suite.
-
-The opt-in
-[`task_steps_cli_add_stress_test.go`](cmd/e2e_tests/task_steps_cli_add_stress_test.go)
-case `TestInstalledCLITaskStepsAddCapacityStress` retains the real database clock
-and public codec. It measures actual POST producer written_bytes under the
-original request UUID, checks the complete installed CLI result separately, and
-pairs a legal 64 MiB response with a one-byte capacity refusal and unchanged
-state. Bounded fixture padding calibration accepts only complete known 201 or
-known unchanged 409 outcomes; an unknown or invalid receipt terminates the check
-without reset or replay. It retains production CLI budgets and the existing
-stress-only file capture, independently of routine CI.
-
-With the normal database/auth prerequisites and a still-live, source-verified
-installed CLI receipt, run from this module:
-
-```bash
-go test -race -tags stress ./cmd/e2e_tests -run '^TestInstalledCLITaskStepsAddCapacityStress$' -count=1 -v -timeout=10m
-```
-
-Its scenario is `installed_cli_task_steps_add_capacity`. A later run requires a
-live installation; a receipt whose fixture was already removed is not an input.
-Run-specific bytes, hashes, source identity and cleanup results belong to the
-acceptance receipt. The [Steps contract](../../docs/spec/daynight-task-steps.md#cli-添加与结果确认)
-owns Add confirmation and unknown-result semantics.
-
-The [external-dependency write scenario](cmd/e2e_tests/acceptance_external_dependency_write_cli_test.go)
-waits for the parsed `http_request` records for both successful raw PATCHes,
-`external-flags-only` and `external-flags-noop`, before capturing the subsequent
-CLI refusal's mutation-count baseline. Each preparation record must match its
-request ID, method PATCH and status 200; an HTTP response or unrelated record
-count does not establish that the test process has consumed those logs. After
-the CLI exits, the existing mutation-log wait precedes the strict assertion of
-exactly one additional request, status 409 and the matching stderr request ID.
-The [request-log synchronization decision](../../.agents/notes/archived/testing/2026-11-03-cli-request-log-synchronization.md) records the ordering rationale and regression boundaries.
-
-The independent [platform/status scenario](cmd/e2e_tests/acceptance_platform_cli_test.go),
-`TestInstalledCLIPlatformAcceptance` / `installed_cli_platform_status_workflow`,
-owns a separate PostgreSQL fixture, installed CLI workspace and server process.
-It checks all four required-platform values across nine status pairs, exact +0/+1,
-platform and material preservation, compatibility-filtered candidates, explicit
-clear, stale/no-op behavior and in-progress platform refusals. It requires graceful
-SIGTERM exit 0 and the fixture's normal cleanup receipt. The project/task
-workflow retains its assertions. Each scenario owns its server until cleanup,
-with a process context derived from `context.Background`, bounded by the owning
-Go test's deadline and cancelled by fixture cleanup. A bounded test timeout is
-required; startup, request, CLI-operation and shutdown bounds remain independent. Runtime
-success remains established by source-bound acceptance receipts, separately
-from this scenario inventory.
-
-The [attachment scenario](cmd/e2e_tests/acceptance_attachment_cli_test.go)
-reuses the same packed/installed CLI and real-process fixture. It checks exact
-text, empty and multi-chunk binary bytes above 1 MiB; nested/special paths,
-different-directory basenames, overwrite metadata, a complete list of more than 100 files
-requiring multiple pages, tree output, deletion, scoped/refusal/requestId behavior and
-ordinary missing-content errors. The full task snapshot stays unchanged. Actual
-restart reuses the same root and compares all remaining metadata and bytes.
-`attachmentFiles` retains path/size/SHA-256, `attachmentsListed` and
-`attachmentPageRequests` record complete pagination, and existing
-`cliRefusalRequestIds` retains correlated failures; file bodies are not receipts.
-K1 remains recorded only, without asserting cross-store rollback.
-The [combined acceptance decision](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-records the original choices for this proof and the same-data CLI/browser journeys.
-
-The [status scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
-reuse the packed installation and actual-process fixture.
-`TestInstalledCLIStatusMigrationAcceptance` runs installed_cli_v12_status_migration_restart
-against genuine checked-in migrations 001–012, then lets the current service apply
-013 platform followed by 014 status. The status-only preservation oracle separately starts
-from genuine prefix13 and compares non-null platform requirements across14;
-v12 rows first gain the expected nullable platform column. It compares raw historical rows and checksum ledgers: proposed changes to todo
-once with version/update-time advancement; non-proposed rows and all other fields,
-timing, permission, properties, ordinary/external edges and attachment bytes survive.
-Database defaults/CHECK, overflow rollback and restart idempotence are separate
-oracles. Explicit fixture membership establishes test access without adopting
-legacy projects or rewriting migration history.
-
-`TestInstalledCLIStatusRacesAcceptance` starts two real installed processes with
-one observed version. Installed scenarios are installed_cli_same_version_start,
-installed_cli_same_version_done, installed_cli_same_version_distinct_targets,
-installed_cli_same_version_dependency_edit_and_start and installed_cli_same_version_same_state.
-Project-row locks and observed waiters order actual requests. Changed races require
-one committed winner and one visible version_conflict; current same-state contenders
-both succeed without changing stored fields. Correlated request IDs, process exits,
-complete snapshots and attachment bytes prove no hidden retry or material loss.
-Service/native ordinary/external reopening versus successor-start/complete races
-provide separate interleaving evidence; one process order does not prove every order.
-Settings acceptance retains real saves, no-ops, conflicts, project isolation and
-nested exact-int64 CLI readback. Optional lifecycle receipts record source, migration,
-snapshot, request/process and restart evidence without treating fixture preparation
-or a mocked client as runtime proof.
-The [cross-layer decision](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md) records the rationale for these methods and their relationship to production browser journeys.
-
-The Node orchestrator reuses that installation for two deadline probes after
-the Go coverage gate. They load a test-only preload with 1-second request and
-3-second operation deadlines, while separately asserting the installed production
-defaults of 30 seconds and five minutes. Their `deadlines` records `totalMs`,
-`requestMs` and whether it was mocked in the root
-`.tmp/project-task-service-evidence.json` receipt.
-
-The explicit local `bash scripts/check.sh --stress-budgets` command retains the
-same setup and Go coverage gate, then selects the four decoded-byte probes using
-the unchanged 128 MiB/256 MiB defaults and exact-limit/+1-byte pairs. It writes
-`.tmp/project-task-stress-evidence.json`; the script and raw probe entrypoints
-refuse CI before stress setup. The CLI package's `pnpm test:stress:budgets` and
-repository-root command of the same name forward to this entrypoint. Successful package-level
-coverage and actual process results are separate evidence: binary HTTP tests
-supplement the store/service/server package tests.
-The owning store/service tests retain deterministic snapshot and lock proofs:
-`TestQueriesSnapshotRetainsCompleteOldGraph` in [query tests](internal/core/store/postgres/query_test.go),
-`TestTaskSnapshotKeepsProjectAndDerivedTaskStateConsistent` in
-[service failure tests](internal/service/task/task_failure_test.go), and
-`TestMigrationsSessionLockSpansCommits` in [migration tests](internal/core/store/postgres/migrate_test.go).
-
-CI uploads `daynight-server-acceptance` after validation, including the JSON
-receipt and raw `.tmp/coverage.out`, even when validation fails. Artifacts are
-retained for 30 days. Inspect the artifact from the exact workflow run: a PR run
-normally tests a merge revision, so the receipt identifies the tested checkout.
-Build and result must be `passed`; all expected scenarios and their cleanup must
-pass; process start/reap counts must agree; every schema/session cleanup must be
-confirmed, including actual removal of each fixture's storage root. Recompute
-the strict coverage comparison from the accompanying raw
-profile rather than its rounded display. A failed job, partial receipt or local
-pass does not establish successful hosted acceptance for another source revision.
-Lasting technical findings belong in the relevant
-decision or research records.
+The current server check runs module tests and writes the raw `coverage.out`
+profile. It does not execute a separate built-process or installed-CLI E2E suite.
+The [coverage and race sections](#coverage) describe the checks that do run.
+A passing profile applies to its tested source and environment, and does not by
+itself prove a hosted run or a cross-product journey.

@@ -91,7 +91,7 @@ func TestOpenAppReportsBackgroundMaintenanceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(context.Background(), `DROP TABLE private_transfers`); err != nil {
+	if _, err := pool.Exec(context.Background(), `DROP TABLE private_upload_chunks, private_transfers`); err != nil {
 		t.Fatal(err)
 	}
 	logs := &appLogCapture{changed: make(chan struct{}, 1)}

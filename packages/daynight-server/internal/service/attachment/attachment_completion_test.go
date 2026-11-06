@@ -59,8 +59,8 @@ func TestAttachmentUnknownCommitDoesNotClaimSuccessOrCompensate(t *testing.T) {
 				if !errors.As(err, &transactionError) || transactionError.Outcome != store.TransactionUnknown || (!noError && (!transactionError.CommitAttempted || !errors.Is(err, cause))) {
 					t.Fatalf("unknown completion lost: %#v %v", transactionError, err)
 				}
-				if operation == "delete" && !FileEffectPossible(err) {
-					t.Fatal("delete file effect was not recorded")
+				if !FileEffectPossible(err) {
+					t.Fatal("file effect was not recorded")
 				}
 				// The fixture committed before losing the response. The service must not guess or undo that result.
 				assertAttachmentState(t, t.Context(), database, files, task, operation != "delete", "after")
@@ -100,7 +100,7 @@ func TestAttachmentCancellationAfterFileWritePreservesRealOutcome(t *testing.T) 
 	subject := newAttachmentService(database, attachmentFaultStorage{Storage: files, afterPut: cancel})
 	_, created, err := subject.Put(ctx, principal, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("after"))
 	var transactionError *store.TransactionError
-	if created || !errors.Is(err, context.Canceled) || !errors.As(err, &transactionError) || transactionError.Outcome != store.TransactionNotCommitted || transactionError.CommitAttempted {
+	if created || !FileEffectPossible(err) || !errors.Is(err, context.Canceled) || !errors.As(err, &transactionError) || transactionError.Outcome != store.TransactionNotCommitted || transactionError.CommitAttempted {
 		t.Fatalf("cancel completion lost: created=%v error=%#v %v", created, transactionError, err)
 	}
 	object, err := files.Open(t.Context(), attachmentcore.Bucket, attachmentTestStoragePath(task, "file"))

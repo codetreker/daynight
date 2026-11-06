@@ -1,8 +1,9 @@
 # daynight-server 任务管理需求
 
-状态：Go 服务、事务存储、project/task 用例与 HTTP 接口、覆盖率门槛和完整进程
-验收均已实现。[服务端验证说明](../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
-定义验证范围、要求与测试映射和 CI 产物解释；逐次运行结果随对应 PR 与 CI 保存。
+状态：Go 服务、事务存储、project/task 用例与 HTTP 接口已实现。当前 Go 检查的
+race 和关键代码块配置未满足下文 V8；完整进程证据须按被测源码另行提供。
+[服务端验证说明](../../packages/daynight-server/README.md#validate)记录当前入口与限制；
+逐次运行结果随对应 PR 与 CI 保存。
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
 [Steps 资源契约](daynight-task-steps.md)定义独立的完整有序集合、单项读取、原子添加、内容与状态更新、位置移动、当前记录删除、共享父版本、编码容量及未知结果核对；常规 Task 投影保持独立。
@@ -424,9 +425,11 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | V13 | assignedTo 覆盖历史及软删除行NULL、三套同快照响应的必填nullable键、创建/PATCH三态与规范化、实际变更原子关闭许可、等值/陈旧值/运行锁、访问变化、全部写入保留、真实竞态及回滚；具体契约由负责人需求拥有 |
 | V14 | 负责人多页原生筛选和解析后scope、Task cursor2、项目 cursor2 与账号 Worker cursor1、项目人员两种模式的资格/隐私/nullable/完整覆盖、原始引用缺失资料的500、真实快照并发/取消及查询计划样本 |
 
-实际进程与安装 CLI 验收通过固定的真实 UniAuth gateway 夹具取得浏览器会话与 PAT，
-再执行 V1–V12 业务场景。受控外部 provider 响应与真实上游登录具有不同证据
-范围；认证配置、私有夹具元数据和凭据不得写入公开产物。
+V1–V14 的服务规则、真实 PostgreSQL、授权、边界、冲突、并发与故障由 Go 模块
+验证承担，使用该模块需要的隔离数据库和认证 fixture。独立产品 E2E 以正常授权
+身份验证 CLI 与 Web 对同一数据的顺序成功路径，不展开异常或竞争矩阵。受控外部
+provider 响应与真实上游登录具有不同证据范围；认证配置、私有夹具元数据和凭据
+不得写入公开产物。
 
 覆盖率是验证门禁，不能替代 V2–V7 的行为证据。测试归属及工具版本固定规则由
 [设计](../design/daynight-server.md)定义。
