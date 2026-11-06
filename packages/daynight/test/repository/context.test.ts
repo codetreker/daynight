@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +65,40 @@ describe("repository project selection", () => {
     expect(await readFile(path.join(root, ".daynight/project.yml"), "utf8")).toBe(stringify({ serverUrl, repoIdentity: "git.example/Org/Repo", projectId: id }));
     expect(await readFile(path.join(root, ".gitignore"), "utf8")).toBe("/.daynight/\n");
     expect(await readdir(path.join(root, ".daynight"))).toEqual(["project.yml"]);
+  });
+
+  it("writes separate bindings in a linked worktree and a submodule", async () => {
+    const source = await fixture(), parent = await fixture();
+    const git = (root: string, args: string[], input?: string) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", timeout: 10_000, ...(input === undefined ? {} : { input }) }).trim();
+    const tree = git(source, ["mktree"], "");
+    const commit = git(source, ["hash-object", "-t", "commit", "-w", "--stdin"], `tree ${tree}\nauthor Fixture <fixture@example.invalid> 1700000000 +0000\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\n\nFixture\n`);
+    git(source, ["update-ref", "refs/heads/main", commit]); git(source, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+    const linked = path.join(source, "linked worktree 中文"); git(source, ["worktree", "add", "--detach", linked, "HEAD"]);
+    git(parent, ["-c", "protocol.file.allow=always", "submodule", "add", source, "module 中文"]);
+    const submodule = path.join(parent, "module 中文"); git(submodule, ["remote", "set-url", "origin", "ssh://git@git.example/Org/Repo.git"]);
+    const expected = { serverUrl, repoIdentity: "git.example/Org/Repo", projectId: id };
+    for (const root of [linked, submodule]) {
+      expect((await lstat(path.join(root, ".git"))).isFile()).toBe(true);
+      const client = api();
+      expect(await resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root })).toBe(project);
+      expect(await readFile(path.join(root, ".daynight/project.yml"), "utf8")).toBe(stringify(expected));
+      expect(git(root, ["check-ignore", "--", ".daynight/project.yml"])).toBe(".daynight/project.yml");
+      expect(client.listProjects).toHaveBeenCalledOnce(); expect(client.getProject).toHaveBeenCalledWith(id);
+    }
+    for (const root of [source, parent]) await expect(lstat(path.join(root, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reports a real access-denied binding read without rediscovery or writes", async () => {
+    const root = await fixture(); await save(root);
+    const file = path.join(root, ".daynight/project.yml"), original = await readFile(file, "utf8"), client = api();
+    await chmod(file, 0o000);
+    try {
+      const failure = await resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root }).catch((cause: unknown) => cause);
+      expect(failure).toMatchObject({ message: `Cannot read repository binding ${file}.`, cause: { code: "EACCES" } });
+      expect(formatError(failure)).toContain("Cannot read repository binding"); expect(formatError(failure)).toContain("EACCES");
+      expect(client.listProjects).not.toHaveBeenCalled(); expect(client.getProject).not.toHaveBeenCalled();
+    } finally { await chmod(file, 0o600); }
+    expect(await readFile(file, "utf8")).toBe(original); await expect(lstat(path.join(root, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps a verified cached target when another project is later registered for the same repo", async () => {
