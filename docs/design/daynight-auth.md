@@ -249,6 +249,17 @@ null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，�
 不确定 PATCH 只通过 GET 令牌列表核对，失败时只提供读取重试；读回值供新的明确决定使用，不自动
 重放原写入。身份切换使旧账号请求和编辑状态失效，语言切换保留输入与请求。
 
+账户页通过 `GET /api/v1/oauth/grants` 读取当前会话账户的无秘密授权元数据。响应包含 `userId` 和
+`grants`，每项包含 `id`、`clientName`、`clientId`、`resource`、`scope`、`createdAt`、`expiresAt`、
+可空 `revokedAt` 和 `status`（`active`、`expired` 或 `revoked`）；撤销状态优先于过期状态。
+`POST /api/v1/oauth/grants/{id}/revoke` 接受 `expectedUserId`，成功返回 `{changed:boolean}`，
+重复撤销不改变 family。两个端点只接受浏览器 Session；写入还要求精确主站 Origin 和显示账户匹配，
+不可见授权返回 404。服务复用 OAuth 生命周期用例撤销该 grant 的 access/refresh family。
+服务在同一事务中复核 Session，撤销按 grant、Session、access 锁序执行并在等待后重新检查到期。
+网页核对响应主体并独立维护授权列表与 PAT 状态。提交前按账户在 `sessionStorage` 保存无秘密的 grant ID；
+存储不可用时不派发撤销。撤销结果未知时保留目标并等待显式读取，即使离开页面或刷新也不自动重放。
+读取只说明当前状态，不推断原响应；账户变化时丢弃旧账户界面状态。
+
 明确的 Authorization 优先；重复、格式错误或无效 Bearer 返回 401，不回退 Cookie。
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
 Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精确主站 Origin，PAT 写
