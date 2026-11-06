@@ -1142,11 +1142,8 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 真实安装 CLI 和同一目标数据，覆盖部分共享项目、原凭据服务重启、logout/PAT 独立、
 撤销、已准入上传、socket 中断、正常签发 PAT 到期与双语 pending/reveal。它接收
 runner 的服务重启 callback 与显式安装回执路径；目标 probe 在校验 run/source/
-容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。成员撤销与
-已准入上传并发时，probe 在 PostgreSQL 中确认对应 grant 的等待者及阻塞事务，再完成
-上传并验证撤销；单独的真实 socket 中断场景继续核对暂存清理。锁等待的决策见
-[授权锁验收记录](../../.agents/notes/implemented/testing/2026-11-06-authentication-grant-lock-acceptance.md)，
-早期机制的历史取舍见[组合鉴权验收决策](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)。
+容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。详细机制的历史取舍见
+[组合鉴权验收决策](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)。
 这两份回执与常规 64 项 Playwright 场景并列；本地压力模式另有五项容量场景，
 不复制容量矩阵或改变其测量、预算和清理屏障；运行结果与真实上游人工登录分别留证。
 

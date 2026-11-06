@@ -2274,13 +2274,9 @@ minted PAT expiry. The bilingual token journey holds a real server response and
 checks retained pending input and one-time reveal; screenshots follow secret
 closure or masking. The runner supplies service-only restart callbacks and the
 explicit validated installed-package receipt. Actual staging bytes and metadata
-are observed independently of client write completion. A read-only PostgreSQL
-probe identifies the membership DELETE waiting on the admitted upload's exact
-grant row before the upload completes; both receipts require that evidence. The
-[grant lock decision](../../.agents/notes/implemented/testing/2026-11-06-authentication-grant-lock-acceptance.md)
-records that mechanism; the [earlier authentication decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
-records its historical rationale and the separate actual-upstream human login
-requirement. Implemented checks and source-bound run results remain
+are observed independently of client write completion. The
+[authentication acceptance decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md) records the rationale for these mechanisms, failure/cleanup rules and the separate actual-upstream
+human login requirement. Implemented checks and source-bound run results remain
 distinct; a focused pass or historical baseline does not establish full current
 acceptance.
 

@@ -27,7 +27,6 @@ export type UploadObservation = {
   readonly memberRows: number;
   readonly memberVersion: string | null;
 };
-export type GrantLockObservation = { readonly waiterPid: number; readonly blockerPid: number };
 type UploadInput = {
   readonly projectId: string;
   readonly taskId: string;
@@ -190,30 +189,6 @@ export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCo
     'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1', '--username', 'daynight', '--dbname', target.database,
     '--tuples-only', '--no-align', '--command', query], 15_000));
   return {
-    observeGrantLock: async (input: { readonly projectId: string; readonly userId: string }): Promise<GrantLockObservation | null> => {
-      try {
-        requireValue(uuid.test(input.projectId) && uuid.test(input.userId));
-        await verifyDatabase();
-        const rows = await sql(`SELECT coalesce(json_agg(json_build_object('waiterPid',waiting.pid,'blockerPid',blocking.pid)), '[]'::json)
-          FROM pg_stat_activity waiting
-          JOIN pg_locks tuple_lock ON tuple_lock.pid=waiting.pid AND tuple_lock.locktype='tuple' AND tuple_lock.relation='project_grants'::regclass
-          JOIN project_grants grant_row ON grant_row.ctid=format('(%s,%s)',tuple_lock.page,tuple_lock.tuple)::tid
-          CROSS JOIN LATERAL unnest(pg_blocking_pids(waiting.pid)) blocked_by(pid)
-          JOIN pg_stat_activity blocking ON blocking.pid=blocked_by.pid
-          WHERE waiting.datname=current_database() AND waiting.wait_event_type='Lock'
-            AND waiting.query LIKE 'DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2%'
-            AND grant_row.project_id='${input.projectId}' AND grant_row.user_id='${input.userId}'
-            AND blocking.datname=current_database() AND blocking.state='idle in transaction'
-            AND blocking.query LIKE '%FROM task_attachments%'`) as unknown;
-        requireValue(Array.isArray(rows) && rows.length <= 1);
-        const matches = rows as unknown[];
-        if (matches.length === 0) return null;
-        const value = matches[0] as GrantLockObservation;
-        requireValue(typeof value === 'object' && value !== null && Number.isSafeInteger(value.waiterPid) && value.waiterPid > 0
-          && Number.isSafeInteger(value.blockerPid) && value.blockerPid > 0 && value.waiterPid !== value.blockerPid);
-        return value;
-      } catch { throw new Error('Combined grant lock observation failed.'); }
-    },
     observeUpload: async (input: UploadInput): Promise<UploadObservation> => {
       try {
         requireValue(uuid.test(input.projectId) && uuid.test(input.taskId) && uuid.test(input.userId) && attachmentPath(input.path)

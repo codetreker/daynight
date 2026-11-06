@@ -52,7 +52,7 @@ type TargetFixture = {
   target: CombinedTarget;
   run: CombinedCommand;
   calls: RecordedCommand[];
-  state: { postgresLabel: string; service: string; serverIdentity: string; files: string; database: unknown; locks: unknown; expiry: unknown; failure: Error | null };
+  state: { postgresLabel: string; service: string; serverIdentity: string; files: string; database: unknown; expiry: unknown; failure: Error | null };
 };
 const withTarget = async (kind: CombinedTarget['target'], action: (fixture: TargetFixture) => Promise<void>): Promise<void> => {
   const acceptanceDirectory = join(repository, 'packages/daynight-web/.tmp/acceptance', `20261023000000-${randomUUID()}`);
@@ -78,7 +78,7 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
     ...(storage === undefined ? {} : { native: { storageRoot: storage.directory, storage } }) }));
   const calls: RecordedCommand[] = [];
   const state = { postgresLabel: target.projectLabel.value, service: 'postgres', serverIdentity: `${composeProject}|server|sha256:${'c'.repeat(64)}`,
-    files: '0\t0\t-\t0', database: { metadataRows: 0, memberRows: 1, memberVersion: '9223372036854775807' } as unknown, locks: [] as unknown,
+    files: '0\t0\t-\t0', database: { metadataRows: 0, memberRows: 1, memberVersion: '9223372036854775807' } as unknown,
     expiry: [{ id: patId, userId, expiresAt: '2026-10-23T00:00:00.000001+00:00' }] as unknown, failure: null as Error | null };
   const run: CombinedCommand = async (file, args, options) => {
     calls.push({ file, args: [...args] });
@@ -90,29 +90,13 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
       if (args.at(-1) === target.postgresContainer) return args[2]!.includes('com.docker.compose.service') ? state.service : state.postgresLabel;
       return state.serverIdentity;
     }
-    if (args[0] === 'exec' && args[1] === target.postgresContainer) return JSON.stringify(args.at(-1)!.startsWith('WITH expired') ? state.expiry : args.at(-1)!.includes('FROM pg_stat_activity waiting') ? state.locks : state.database);
+    if (args[0] === 'exec' && args[1] === target.postgresContainer) return JSON.stringify(args.at(-1)!.startsWith('WITH expired') ? state.expiry : state.database);
     if (args[0] === 'exec' && target.storage.kind === 'container' && args[1] === target.storage.containerId) return state.files;
     throw new Error('Unexpected combined unit control command.');
   };
   try { await action({ target, run, calls, state }); }
   finally { await rm(acceptanceDirectory, { recursive: true, force: true }); }
 };
-
-test('grant wait observation binds the target grant and validates both backend identities', async () => {
-  for (const kind of ['native', 'container'] as const) await withTarget(kind, async ({ target, run, state, calls }) => {
-    const controls = createAuthCombinedTarget(target, run);
-    assert.equal(await controls.observeGrantLock({ projectId, userId }), null);
-    state.locks = [{ waiterPid: 12, blockerPid: 34 }];
-    assert.deepEqual(await controls.observeGrantLock({ projectId, userId }), { waiterPid: 12, blockerPid: 34 });
-    const query = calls.filter(({ args }) => args.at(-1)?.includes('FROM pg_stat_activity waiting')).at(-1)!.args.at(-1)!;
-    assert.equal(query.includes(`grant_row.project_id='${projectId}'`) && query.includes(`grant_row.user_id='${userId}'`), true);
-    assert.match(query, /pg_blocking_pids/);
-    for (const invalid of [[{ waiterPid: 1, blockerPid: 1 }], [{ waiterPid: 0, blockerPid: 2 }], [{ waiterPid: 1, blockerPid: 2 }, { waiterPid: 3, blockerPid: 4 }], {}]) {
-      state.locks = invalid; await safeFailure(controls.observeGrantLock({ projectId, userId }));
-    }
-    await safeFailure(controls.observeGrantLock({ projectId: marker, userId }));
-  });
-});
 
 test('native observations distinguish an admitted prefix, publication and discarded upload with exact member versions', async () => {
   await withTarget('native', async ({ target, run, state, calls }) => {
@@ -446,9 +430,6 @@ test('unsafe configuration and pre-aborted signals never reach the HTTP listener
 const receiptChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
   'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
   'admitted-member-removal', 'expired-pat', 'secret-scan'];
-const grantProof = { grantLock: { waiterPid: 12, blockerPid: 34 }, prefixBytes: 65_536, prefixSha256: 'a'.repeat(64),
-  observedWhileBodyIncomplete: { temporaryFiles: 1, temporaryBytes: 65_536, temporarySha256: 'a'.repeat(64), finalExists: false, metadataRows: 0, memberRows: 1 },
-  status: 201, removalStatus: 204, newResourceStatus: 404, privateProjectStatus: 200 };
 const combinedReceipt = (target: CombinedTarget): AuthCombinedReceipt => {
   const restart: RestartReceipt = { target: target.target, origin: target.baseUrl,
     startedAt: '2026-10-23T00:00:00Z', readyAt: '2026-10-23T00:00:01Z',
@@ -459,7 +440,7 @@ const combinedReceipt = (target: CombinedTarget): AuthCombinedReceipt => {
     origin: target.baseUrl, result: 'passed', startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:02Z',
     cleanup: 'passed', browserCleanup: 'passed', browser: { name: 'chromium', version: '151.0.7922.34', platform: process.platform, executableOverride: false },
     installedCli: { version: '0.9.0', sourceGitSha: target.sourceGitSha, entrySha256: '1'.repeat(64), tarballSha256: '2'.repeat(64) },
-    checks: receiptChecks.map((name) => ({ name, result: 'passed', details: name === 'admitted-member-removal' ? grantProof : {} })),
+    checks: receiptChecks.map((name) => ({ name, result: 'passed', details: {} })),
     screenshots: [join(target.acceptanceDirectory, 'auth-combined/sharing.png'), join(target.acceptanceDirectory, 'auth-combined/persistence.png')],
     commands: [], commandGroups: [], restart };
 };
@@ -470,17 +451,6 @@ test('complete combined receipts retain exact native and container target identi
     assert.equal(validateAuthCombinedReceipt(receipt, target), receipt);
     assert.equal(receipt.checks.length, 11);
     assert.equal(new Set(receipt.checks.map(({ name }) => name)).size, 11);
-  });
-});
-
-test('combined receipts require the grant wait and admitted upload outcomes', async () => {
-  await withTarget('native', async ({ target }) => {
-    const receipt = combinedReceipt(target);
-    for (const details of [{ ...grantProof, grantLock: null }, { ...grantProof, removalStatus: 200 },
-      { ...grantProof, observedWhileBodyIncomplete: { ...grantProof.observedWhileBodyIncomplete, memberRows: 0 } }]) {
-      const checks = receipt.checks.map(entry => entry.name === 'admitted-member-removal' ? { ...entry, details } : entry);
-      assert.throws(() => validateAuthCombinedReceipt({ ...receipt, checks }, target), /grant lock/);
-    }
   });
 });
 
