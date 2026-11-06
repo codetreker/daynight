@@ -97,6 +97,7 @@ type Entry = {
   receipt: DirectTaskReceipt | null;
   historyRetry: boolean;
   historyHintRetry: boolean;
+  directAccessPending: boolean;
   directParentReadFailed: boolean;
   withdrawn: boolean;
   operationFence: TaskReadFence | null;
@@ -167,6 +168,27 @@ export class TaskDetailSessions {
       if (event.accessRevoked) this.projectGenerations.set(event.projectId, null);
       for (const entry of this.entries.values()) {
         if (entry.steps.projectId !== event.projectId) continue;
+        if (entry.source === "direct" && event.directAccessUncertain) {
+          this.retireMutation(entry);
+          this.cancelRead(event.projectId, entry.steps.taskId);
+          entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null; entry.committedVersion = null;
+          entry.pending = null; entry.mismatch = null; entry.admitted = false; entry.directAccessPending = true;
+          this.clearSteps(entry.steps, emptyTaskStepsState);
+          this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "loading" });
+          continue;
+        }
+        if (entry.source === "direct" && event.directAccessRecheck && entry.directAccessPending) {
+          entry.directAccessPending = false; entry.admitted = true;
+          if (event.error !== undefined) this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
+          else if (entry.listeners.size > 0) queueMicrotask(() => {
+            if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
+          });
+          continue;
+        }
+        if (entry.source === "direct" && event.accessRevoked && entry.directAccessPending) {
+          if (event.error !== undefined) this.publish(entry, { ...entry.state, status: "error", error: event.error });
+          continue;
+        }
         if (entry.source === "direct" && (event.historyChanged || event.accessRevoked)) {
           const canRetry = event.historyChanged === true && (event.historyHint ? !entry.historyHintRetry : !entry.historyRetry) && entry.listeners.size > 0;
           this.retireMutation(entry);
@@ -174,7 +196,7 @@ export class TaskDetailSessions {
           else if (event.historyChanged) entry.historyRetry = true;
           this.cancelRead(event.projectId, entry.steps.taskId);
           entry.openingGeneration++; entry.receipt = null; entry.liveVersion = null; entry.committedVersion = null;
-          entry.pending = null; entry.mismatch = null; entry.admitted = !event.accessRevoked;
+          entry.pending = null; entry.mismatch = null; entry.admitted = !event.accessRevoked; entry.directAccessPending = false;
           entry.observedGeneration = this.entryGeneration(entry);
           this.clearSteps(entry.steps, emptyTaskStepsState);
           this.publish(entry, { ...initialState(), revision: entry.state.revision, status: canRetry ? "loading" : "error",
@@ -221,7 +243,7 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, source: "project-summary", receipt: null, historyRetry: false, historyHintRetry: false, directParentReadFailed: false, withdrawn: false, operationFence: null, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { steps: { state: emptyTaskStepsState, generation: 0, recoveryReads: 0, parentRetry: null, parentRequested: null, cacheGeneration: null, floor: null, retriedFloor: null, read: null, queued: false, admission: null, pending: null, projectId, taskId, listeners: new Set() }, state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, source: "project-summary", receipt: null, historyRetry: false, historyHintRetry: false, directAccessPending: false, directParentReadFailed: false, withdrawn: false, operationFence: null, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -313,7 +335,7 @@ export class TaskDetailSessions {
     this.retireMutation(entry, true);
     this.cancelRead(projectId, taskId);
     this.clearSteps(entry.steps, emptyTaskStepsState);
-    entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.historyHintRetry = false; entry.receipt = null; entry.admitted = true;
+    entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.historyHintRetry = false; entry.directAccessPending = false; entry.receipt = null; entry.admitted = true;
     entry.observedGeneration = this.entryGeneration(entry); entry.committedVersion = null; entry.deletedGeneration = null;
     entry.liveVersion = null; entry.pending = null; entry.mismatch = null;
     this.publish(entry, { ...initialState(), revision: 1 });

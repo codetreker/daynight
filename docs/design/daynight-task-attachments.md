@@ -700,16 +700,15 @@ DELETE 的 204 空响应；错误响应继续使用 JSON DTO 和字节预算。
 服务使用必填 `DAYNIGHT_STORAGE_ROOT`，为 LocalStorage 指定明确的根目录。
 当前启动以 `local.New` 准备根目录，向工厂提供 `server.Dependencies{Store, Files}`，
 在监听前完成验证；后续启动失败与 HTTP 排空后均关闭已取得的文件根句柄。
-启动时校验配置并以服务用户准备所需目录；无法访问或创建时启动失败。引入该必填
-配置的同次交付必须更新所有现有服务启动调用方，包括 Compose、镜像目录权限、
-Web 验收启动器、Go 子进程测试及 CLI 真实服务验收，不能等待后续持久卷任务。
+启动时校验配置并以服务用户准备所需目录；无法访问或创建时启动失败。该必填
+配置适用于所有服务启动调用方，包括 Compose、镜像目录权限、Go 子进程测试及
+实际服务组合验证。
 物理目录不进入 API、PG 或 CLI 配置，所有客户端继续使用既有 `serverUrl`。
 
 两套 Compose 均将项目作用域的 `attachment-data` 命名卷挂载到
 `/var/lib/daynight/storage`，并以该路径设置 `DAYNIGHT_STORAGE_ROOT`。生产镜像已为
 UID/GID `10001:10001` 准备目录；Docker 对空卷的初始化保留该目录所有权，普通非
-root 服务直接写入，不增加 root entrypoint。Go 启动与重启 fixture、Web native
-runner 继续使用其所属独立目录。
+root 服务直接写入，不增加 root entrypoint。Go 启动与重启 fixture 使用其所属独立目录。
 
 localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保留，显式
 `down --volumes` 同时销毁两者。dev-ci 每次隔离 Compose 项目拥有独立的 PG 与
@@ -737,8 +736,8 @@ SQL 备份会保存并恢复旧 UUID，恢复 UUID 本身不能标识历史替�
 
 ## 实现验证
 
-通用存储、元数据与 HTTP 已有组件和实际二进制检查；持久卷通过现有 runner 的
-两个实际 dev-ci 项目验证。CLI 命令及字节输出已有实现，原生平台、安装产物和
+通用存储、元数据与 HTTP 由组件及实际二进制检查验证；持久卷和隔离清理由
+dev-ci 的实际部署验证。CLI 命令及字节输出已有实现，原生平台、安装产物和
 完整服务组合的验证结论仍须来自各自源码绑定的实际运行，本机验证不能代替
 Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixture，真实浏览器
 探针覆盖该环境的视觉与焦点。源绑定结果归属对应 PR 与 CI。组合验收的机制见
@@ -761,14 +760,18 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 
-Go、CLI 和 Web 分别验证附件存储、协议与界面行为；独立产品组合验证正常同数据
-读写，部署验证拥有持久化和备份恢复。Web 的受控浏览器 fixture 使用完整 Chromium
-检查 PDF iframe compositor 中的专用色块；按连通区域、边界及密度区分页面绘制和
-缩略图，成功状态、load 或固定等待不能代替绘制。多页阅读使用真实滚轮、键盘和末页
-绘制标记，不能以私有查看器 DOM 偏移代替可见结果。
+Go、CLI 和 Web 分别验证附件存储、协议与界面行为；正常同数据读写须由独立产品
+组合验证证明，部署验证拥有持久化和备份恢复。Go 模块的 `TestAttachmentGrantRevocationWithFreshProcess`
+新构建二进制，使用真实认证 HTTP 与隔离 PostgreSQL：1 MiB 上传正文未完成时成员撤销
+先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对字节和资源清理。
+
+Web 的受控浏览器 fixture 使用完整 Chromium 检查 PDF iframe compositor 中的专用色块；
+按连通区域、边界及密度区分页面绘制和缩略图，成功状态、load 或固定等待不能代替绘制。
+多页阅读使用真实滚轮、键盘和末页绘制标记，不能以私有查看器 DOM 偏移代替可见结果。
 [Web 验证说明](../../packages/daynight-web/README.md#validation-and-build)拥有模块入口与
-范围。实际验证结果须绑定源码和环境，失败或取消时回收所属资源；受控 API 不证明
-真实数据库或部署行为。
+范围。实际验证结果须绑定源码和环境，失败或取消时回收所属资源；受控 API 不证明真实
+数据库或部署行为，也不能代替安装 CLI 的同数据组合验证。[历史决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
+记录了旧跨产品验收的选择理由，其结果只属于实际测试的源码。
 
 MCP 附件列表使用有界数据库投影及完整项边界分页。首项超过摘要预算时返回路径、续页游标及 REST 附件列表的读取指引；REST 需要 PAT 或浏览器会话，MCP OAuth 凭据不能用于 REST。列表保留对已有长路径的有界处理。删除沿用共享附件用例的授权与副作用语义，并区分文件副作用开始前的拒绝与可能发生的副作用。上传提供有界 inline 内容和下述分块提交。
 

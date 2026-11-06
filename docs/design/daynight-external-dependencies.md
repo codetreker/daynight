@@ -311,11 +311,13 @@ jq -c --arg rid "$REQUEST_ID" \
 
 下表的容量、几何和性能规则固定于源码 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`；
 功能场景清单采用包含撤销批准、项目设置、执行耗时和自动执行许可场景的源码
-`d02994b22b744ae23eb67965679fb5d9edc84525`。这些固定来源记录当时的验证基线；
-旧跨产品 runner 已删除，当前模块浏览器验证见[Web 设计](daynight-web.md#验证与-ci)，
-产品组合验证另有独立职责。下表保留历史来源和原始数值，不能将其当作当前 CI 结果。
-实现需要按新普通分量和显式性质更新预期值，
-容量、几何及性能的有效保证和数值目标仍须按所属验证责任核对。
+`d02994b22b744ae23eb67965679fb5d9edc84525`。下表保留固定源码的 59 场景、规模、
+预算和断言作为历史基线，历史结果不能表述为当前 CI 或当前源码证据。原跨产品 runner
+已删除；当前模块浏览器验证见[Web 设计](daynight-web.md#验证与-ci)，产品组合验证另有
+独立职责。当前 1 MiB 上传正文未完成期间的撤权完成、后续访问拒绝与已准入上传完成
+由 Go built-binary HTTP/PostgreSQL 测试验证；Web 受控浏览器不能替代真实组合结果。
+实现需要按新普通分量和显式性质更新预期值，不能以较小展示样本替代完整输入；当前
+支持目标、完整输入规模、可见边断言和性能阈值仍由需求及[看板设计](daynight-web.md#验证与-ci)拥有。
 
 | 历史基线 | 当时的具体条件与固定来源 |
 |---|---|
@@ -326,7 +328,7 @@ jq -c --arg rid "$REQUEST_ID" \
 | 局部反馈时延 | 每个样本的 `openMs ≤ 3000`，`selectMs`、`detailMs`、`zoomMs`、`panMs` 各 `≤ 300`；[执行断言](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/capacity.spec.ts#L494-L503)和[回执校验](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/performance.mts#L53-L63)均须满足。保留普通与高亮状态中的较差值，分别记录网络、布局、渲染时间；[Details 关闭后立即缩放和平移，再选择检查](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L847-L857)不能插入 reset、fit 或额外等待来改变测量。 |
 | 独立拓扑与几何 | 依据完整 API 数据独立求新 M/P/S，保留[概览、真实诱导边、96/136 高度和 20 邻居批次的独立预期](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/visible-topology.ts#L4-L37)。对每条实际可见边保留节点/边精确覆盖、固定左右端口、水平切向、避开卡片、原生箭头、显式外部 `5/4` 虚线及真实弧长相位检查；[当前贝塞尔路线设计](daynight-task-inspection.md)使用限制在列间空隙的完整三次曲线及水平自由通道，独立检查实际曲线和精确子曲线的完整覆盖。[检查、展开及 reset](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/tests/e2e/capacity.spec.ts#L430-L488)继续证明选择不改几何/视口、展开绘制全部新增诱导边、reset 恢复确定概览及焦点。 |
 | CLI 有界操作 | [操作预算](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight/src/api/operation.ts#L10-L15)保持命令总时限 300,000ms、单请求 30,000ms、单响应解码 128MiB、累计 256MiB。新增数组须经过实际安装 CLI 的容量、超限和超时验收，不提高预算来容纳该字段。 |
-| 服务检查与覆盖率 | 运行[现有服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；race 采用[当前服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
+| 服务检查与覆盖率 | 运行[当时的服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；race 采用[当时的验证策略](../../.agents/notes/archived/testing/2026-11-04-go-validation-timing.md)的本地默认/main 开启、PR 关闭；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
 | 执行和证据身份 | [Playwright 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/playwright.config.ts#L11-L30)保留单 worker、零重试、单场景 180,000ms、总 900,000ms、断言 10,000ms、动作 15,000ms、导航 30,000ms；[回执约定](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L899-L934)要求准确源码/tree、浏览器、安装产物、进程/容器身份和所有目标清理通过。局部或原型结果不替代这些回执。 |
 
 上述固定来源记录当时的数值容差、数据集身份和字段校验。当前性能及界面行为要求由
@@ -341,9 +343,9 @@ jq -c --arg rid "$REQUEST_ID" \
 | 服务与 HTTP | 部分 PATCH 表、性质单独更新、无变化、过期版本、并发与锁后权限、外部/混合环、外部阻塞、严格字段及错误身份。 |
 | CLI 与安装产物 | 两类依赖编译为完整替换、外部单独选项语义、清空互斥、重复拒绝、所有读取保留性质、精确版本、预算、help/completion 和六份 skill。 |
 | Web 模型与交互 | 多普通根一链、外部边分隔、链内外部捷径仍虚线、完整前置闭包、进度、独立任务行的外部阻塞徽标、合并拆分定位、性质刷新、Details 各方向标签及现有局部交互。 |
-| 独立整体验收 | 真实 PostgreSQL、构建进程、打包安装 CLI、生产嵌入 Web、重启、故障与并发、native/container/capacity 以及当前既有边的只读审计。 |
+| 独立整体验收 | 真实 PostgreSQL、构建进程、打包安装 CLI、生产嵌入 Web、重启、故障与并发、完整容量以及当前既有边的只读审计。 |
 
 原型覆盖混合图、多普通起点、显式链内外部边、外部阻塞的独立任务、完成链、加载、空、错误、禁用、长内容和 320px 视口。
 它用于审阅目标行为，不替代生产浏览器证据。
-实施任务及独立验收共同遵守上述固定验收基线。
+实施与独立验收按当前需求核对容量、几何及性能目标，并保留可比较的源码绑定结果。
 每份运行结果绑定真实源码、构建产物与运行目标；当前文件不声称运行时功能已通过这些未来验收。

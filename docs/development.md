@@ -514,12 +514,16 @@ The check builds and vets the Go module using a unit-test Web resource overlay,
 prepares the pinned UniAuth fixture, clears cached Go test results and runs
 module tests and coverage. Production builds use real Web assets. The configured
 package and function thresholds are 85% and 80%, with no production exclusions;
-the raw statement coverage must be strictly greater than 90%. The checked-in
-configuration currently disables critical-block failure and race instrumentation;
-the [server guide](../packages/daynight-server/README.md#race-instrumentation)
+the raw statement coverage must be strictly greater than 90%. Critical-block
+failure is disabled; the check enables race locally but not in CI. The
+[server guide](../packages/daynight-server/README.md#race-instrumentation)
 describes the actual check. Tests require the isolated PostgreSQL instance and
 fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
+
+The Go module's [fresh-process attachment test](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+checks grant removal and new project denial while an admitted upload remains
+incomplete, then verifies the upload and cleanup against real HTTP and PostgreSQL.
 
 ## Web development
 
@@ -580,6 +584,10 @@ For a disposable full-stack HTTP target, run a command through
 `bash deployment/dev-ci/run.sh <command> [args...]`; it receives
 `DAYNIGHT_BASE_URL` and owns its test resources. The runner removes its
 containers, volume, network and image tag after completion, failure or cancellation.
+
+The [independent browser checks](../packages/daynight-web/README.md#independent-browser-checks)
+include Project withdrawal against controlled API responses and real browser
+storage; they do not establish live-service behavior.
 
 ## Local stress validation
 

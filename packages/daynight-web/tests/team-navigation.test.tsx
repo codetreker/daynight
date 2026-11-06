@@ -105,7 +105,7 @@ describe("Team workspace navigation", () => {
     fireEvent.click(screen.getByRole("link", { name: "Shared with me" }));
     await screen.findByRole("heading", { name: "Projects shared with me" });
     expect(screen.queryByRole("button", { name: /Create project/ })).toBeNull();
-    expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true);
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true));
   });
   it.each([`/teams/${a}`, "/projects"])("keeps a paginated Team menu and projects mounted through checks on %s", async (path) => {
     window.history.replaceState(null, "", path);
@@ -965,7 +965,7 @@ describe("Team selection at cold workspace entries", () => {
     const notice = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
     expect(notice).toHaveTextContent("rq-restore"); expect(notice).not.toHaveTextContent("private");
     expect(localStorage.getItem(savedKey)).toBe(a);
-    expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true);
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true));
     expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
     status = 200; fireEvent.click(within(notice).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(selector()).toHaveAttribute("aria-label", "Switch Team:   Alpha  "));

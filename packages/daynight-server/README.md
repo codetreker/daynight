@@ -337,8 +337,9 @@ Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, Task discussion reads and posts, and attachment listing, removal and
-bounded reads. Attachment open creates a private immutable snapshot for ranged
+and writes, Task discussion reads and posts, and attachment listing, removal,
+bounded reads and inline or resumable upload. The [attachment design](../../docs/design/daynight-task-attachments.md)
+owns upload admission and transfer behavior. Attachment open creates a private immutable snapshot for ranged
 reads; each request rechecks access. Inspection returns metadata by default,
 explicit reads default to 8 KiB, and binary content requires base64 selection.
 Inspect and open results are limited to 16 KiB; exceptionally oversized MIME or
@@ -613,9 +614,14 @@ owns the rationale and proof boundary.
 
 ### Race instrumentation
 
-The check enables race instrumentation locally. PR and main CI run without it;
-the CI path also overrides an inherited `GOFLAGS=-race`. The separate
+The coverage check enables race instrumentation locally. PR and main CI run it
+without race; that coverage path also overrides an inherited `GOFLAGS=-race`.
+The separate
 `bash scripts/stress.sh` entry uses `-race` for local-only stress tests.
+The fresh-process attachment test uses its test's race setting for the child
+build and verifies it in the binary; other process tests may differ. The explicit
+`testdata/testauth` fixture check is separate from the coverage run; use
+`go test -race -count=1 -timeout=30s ./testdata/testauth` for its race validation.
 
 ### Coverage
 
@@ -647,6 +653,10 @@ controlled external provider responses and owns its temporary resources. For
 focused integration tests, source `scripts/env.sh`, set
 `DAYNIGHT_TEST_DATABASE_URL`, then set `DAYNIGHT_TEST_UNIAUTH_FIXTURE` to the
 output of that preparation script. The full check performs preparation itself.
+The shared fixture cleanup waits for process exit and reports forced termination;
+an unconfirmed service, database-session or gateway exit retains dependent owned
+resources. `scripts/check.sh` explicitly tests `testdata/testauth`, which `./...`
+does not discover.
 The real wire-loss test in
 [`auth_transport_acceptance_test.go`](internal/server/auth_transport_acceptance_test.go)
 checks the SDK-side connection and subsequent login recovery; controlled-provider
@@ -1746,8 +1756,36 @@ URLs, bodies, SQL and credentials are excluded from logs.
 
 ## Built-process acceptance and CI evidence
 
-The current server check runs module tests and writes the raw `coverage.out`
-profile. It does not execute a separate built-process or installed-CLI E2E suite.
-The [coverage and race sections](#coverage) describe the checks that do run.
-A passing profile applies to its tested source and environment, and does not by
-itself prove a hosted run or a cross-product journey.
+[`TestAttachmentGrantRevocationWithFreshProcess`](cmd/daynight-server/attachment_grant_revocation_test.go)
+freshly builds and launches the service and uses normal authentication, real
+HTTP and isolated PostgreSQL. It holds a 1 MiB upload after admission, confirms
+member removal 204 and new project access 404 before releasing the body, then
+verifies upload 201, exact bytes, revoked attachment access and owned-resource
+cleanup. A read of the same attachment path waits for the upload's target gate,
+so the attachment denial is checked after the upload finishes. Its logged
+evidence identifies the source, tree, dirty state, binary, authentication fixture,
+PostgreSQL version and the test and binary race settings. The fresh child uses the test's
+race mode and verifies it from the binary build information. It inherits
+`GOFLAGS` and runs the child build from the module root, preserving module-relative
+overlay paths. Supply an explicit source overlay through `GOFLAGS` so both the
+test and its child build use it. A `go test -overlay` argument alone is not
+inherited by the child build.
+
+After setting `DAYNIGHT_TEST_DATABASE_URL` and sourcing `scripts/env.sh`, a
+focused run can prepare the fixture and use the module's test-resource overlay:
+
+```bash
+export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
+export GOFLAGS='-overlay=scripts/unit-overlay.json'
+go test -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
+# Explicit race evidence for both the test and its freshly built child:
+go test -race -count=1 -timeout=10m -run '^TestAttachmentGrantRevocationWithFreshProcess$' -v ./cmd/daynight-server
+```
+
+A focused or dirty/overlay run is evidence only for its actual source, flags,
+binary and environment; it does not replace the complete clean module check or
+hosted CI. The earlier `cmd/e2e_tests` built-process and installed-CLI scenarios
+were removed. Their recorded results and the
+[historical acceptance decisions](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
+remain bound to their original source; they are not current module checks. CLI
+native validation and independent Web browser fixtures retain their own scopes.
