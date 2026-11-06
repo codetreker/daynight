@@ -20,7 +20,7 @@ identity. The ordinary (task_id,created_at,message_id) index serves paging.
 
 A dedicated ReadCommitted Thread transaction shares the parent-task and
 credential locks, then obtains canonical strong project admission through
-`store.LockProjectAuthorization` in `project_access.go`. That primitive shares
+`LockProjectAuthorization` in `store/postgres/internal/project_access.go`. That primitive shares
 real ownership, then the existing owner Team member and direct grant rows through
 commit. It returns `ProjectAccess` by merging current source facts after waits,
 with its real nullable `DirectGrant` and without a profile projection. The

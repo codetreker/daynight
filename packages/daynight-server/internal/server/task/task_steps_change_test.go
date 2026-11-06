@@ -13,12 +13,12 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func changeHTTPFixture(t *testing.T, logs io.Writer) (*store.Store, *resourceTestHandler, api.Task, string) {
+func changeHTTPFixture(t *testing.T, logs io.Writer) (*postgres.Store, *resourceTestHandler, api.Task, string) {
 	t.Helper()
 	database, handler, task := stepsHTTPFixture(t, logs)
 	seedHTTPStep(t, database, task.ID, "abcdef01", 0, "  title  ", "  # old\n<>&  ")
@@ -201,7 +201,7 @@ func TestStepsHTTPChangeCommittedResponseLossAndReconcile(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Cleanup(pool.Close)
-					handler = projectTestHandler(t, &store.Store{Pool: pool}, &logs)
+					handler = projectTestHandler(t, &postgres.Store{Pool: pool}, &logs)
 				}
 				suffix, body := "/ABCDEF01", `{"version":1,"title":"lost-title-secret","description":"lost-markdown-secret https://secret.invalid token-secret"}`
 				if method == "PUT" {

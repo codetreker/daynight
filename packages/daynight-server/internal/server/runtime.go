@@ -14,23 +14,26 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 type Dependencies struct {
-	Store *store.Store
+	Store store.Transactions
+	Ready func(context.Context) error
 	Files filestorage.Storage
 }
 
 type Runtime struct {
 	Dependencies
 
-	files           *local.Storage
-	listener        net.Listener
-	http            *http.Server
-	logger          *slog.Logger
-	shutdownTimeout time.Duration
-	cancelRequests  context.CancelFunc
-	shutdownHandler func(context.Context) error
+	files            *local.Storage
+	listener         net.Listener
+	http             *http.Server
+	logger           *slog.Logger
+	shutdownTimeout  time.Duration
+	cancelRequests   context.CancelFunc
+	shutdownHandler  func(context.Context) error
+	closePersistence func()
 }
 
 func Start(ctx context.Context, config Config, logger *slog.Logger, handler func(Dependencies) (http.Handler, error)) (*Runtime, error) {
@@ -43,7 +46,7 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 	if err != nil {
 		return nil, &configpkg.ConfigurationError{Field: "DAYNIGHT_STORAGE_ROOT", Rule: "must identify a writable storage directory with supported filename semantics", Cause: err}
 	}
-	database, err := store.Open(startup, config.DatabaseURL)
+	database, err := service.OpenPersistence(startup, config.DatabaseURL)
 	if err != nil {
 		return nil, errors.Join(err, files.Close())
 	}
@@ -52,7 +55,7 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 		database.Close()
 		return nil, &httpx.RuntimeError{Phase: "listen", Cause: errors.Join(err, files.Close())}
 	}
-	dependencies := Dependencies{Store: database, Files: files}
+	dependencies := Dependencies{Store: database.Transactions, Ready: database.Ready, Files: files}
 	application, err := handler(dependencies)
 	if application == nil && err == nil {
 		err = errors.New("HTTP handler is required")
@@ -63,7 +66,7 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 	}
 	requests, cancelRequests := context.WithCancel(context.Background())
 	runtime := &Runtime{
-		Dependencies: dependencies, files: files, listener: listener, logger: logger, shutdownTimeout: config.ShutdownTimeout,
+		Dependencies: dependencies, files: files, listener: listener, logger: logger, shutdownTimeout: config.ShutdownTimeout, closePersistence: database.Close,
 		cancelRequests: cancelRequests,
 		http: &http.Server{
 			Handler:           httpx.RequestLogging(logger, application),
@@ -81,7 +84,7 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 func (r *Runtime) Address() string { return r.listener.Addr().String() }
 
 func (r *Runtime) Run(ctx context.Context) error {
-	defer r.Store.Close()
+	defer r.closePersistence()
 	defer r.cancelRequests()
 	result := make(chan error, 1)
 	go func() { result <- r.http.Serve(r.listener) }()

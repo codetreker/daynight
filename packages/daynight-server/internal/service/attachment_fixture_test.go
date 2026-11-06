@@ -7,12 +7,12 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
-func attachmentService(t *testing.T) (*attachmentservice.Attachments, *taskservice.Tasks, *store.Store, *local.Storage, model.Task, model.Principal) {
+func attachmentService(t *testing.T) (*attachmentservice.Attachments, *taskservice.Tasks, *postgres.Store, *local.Storage, model.Task, model.Principal) {
 	t.Helper()
 	tasks, database, project, _, principal := taskService(t)
 	files, err := local.New(t.TempDir())

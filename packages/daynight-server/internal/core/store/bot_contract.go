@@ -35,7 +35,3 @@ type BotWriteDAO interface {
 	SetBotStartup(context.Context, string, int64, model.BotStartupResult) (model.Bot, error)
 	CommitBotPreferences(context.Context, string) error
 }
-
-var _ BotWriter = (*Store)(nil)
-var _ BotScope = (*botTx)(nil)
-var _ BotWriteDAO = (*botTx)(nil)

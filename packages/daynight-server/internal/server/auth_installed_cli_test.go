@@ -148,7 +148,7 @@ func (cli *identityInstalledCLI) environment() []string {
 		key, _, _ := strings.Cut(entry, "=")
 		upper := strings.ToUpper(key)
 		_, replaced := values[upper]
-		if !replaced && !strings.HasPrefix(upper, "DAYNIGHT_") && !strings.HasPrefix(upper, "GIT_") && !strings.HasPrefix(upper, "GH_") && !strings.HasPrefix(upper, "GITHUB_") && !strings.HasPrefix(upper, "COPILOT_") && upper != "NODE_OPTIONS" {
+		if !replaced && upper != "DN_CONFIG_DIR" && !strings.HasPrefix(upper, "DAYNIGHT_") && !strings.HasPrefix(upper, "GIT_") && !strings.HasPrefix(upper, "GH_") && !strings.HasPrefix(upper, "GITHUB_") && !strings.HasPrefix(upper, "COPILOT_") && upper != "NODE_OPTIONS" {
 			environment = append(environment, entry)
 		}
 	}
@@ -156,6 +156,17 @@ func (cli *identityInstalledCLI) environment() []string {
 		environment = append(environment, key+"="+value)
 	}
 	return environment
+}
+
+func TestIdentityInstalledCLIExcludesWorkerConfig(t *testing.T) {
+	t.Setenv("DN_CONFIG_DIR", "/worker/private")
+	cli := identityInstalledCLI{root: "fixture", home: filepath.Join("fixture", "home")}
+	for _, entry := range cli.environment() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "DN_CONFIG_DIR") {
+			t.Fatal("installed CLI inherited the worker configuration directory")
+		}
+	}
 }
 
 func (cli *identityInstalledCLI) run(t *testing.T, input string, success bool, arguments ...string) (string, string) {

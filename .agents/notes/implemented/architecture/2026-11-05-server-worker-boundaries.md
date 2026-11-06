@@ -37,5 +37,5 @@ ordering and serialize unrelated work.
 
 Worker reports preserve the independent transaction, batched access checks,
 unchanged Task state and separate desired and observation revisions. Completion
-and cleanup failures retain priority over domain refusals. SQL remains in the
-existing store implementation until its physical migration.
+and cleanup failures retain priority over domain refusals. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns the
+Worker SQL implementation.

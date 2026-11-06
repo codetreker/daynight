@@ -15,7 +15,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	server "github.com/codetreker/daynight/packages/daynight-server/internal/server"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
@@ -30,8 +30,8 @@ type resourceTestHandler struct {
 	principal model.Principal
 }
 
-func projectTestStore(t *testing.T) *store.Store { return testsupport.TestStore(t) }
-func resourceTestServer(t *testing.T, database *store.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func projectTestStore(t *testing.T) *postgres.Store { return testsupport.TestStore(t) }
+func resourceTestServer(t *testing.T, database *postgres.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	instance := httptest.NewUnstartedServer(nil)
 	t.Cleanup(instance.Close)

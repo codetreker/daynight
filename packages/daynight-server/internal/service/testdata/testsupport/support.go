@@ -14,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
@@ -61,10 +62,10 @@ func ServiceDatabaseURL(t *testing.T) string {
 	return parsed.String()
 }
 
-func ProjectService(t *testing.T) (*projectservice.Projects, *store.Store, string, model.Principal) {
+func ProjectService(t *testing.T) (*projectservice.Projects, *postgres.Store, string, model.Principal) {
 	t.Helper()
 	databaseURL := ServiceDatabaseURL(t)
-	database, err := store.Open(context.Background(), databaseURL)
+	database, err := postgres.Open(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func ProjectService(t *testing.T) (*projectservice.Projects, *store.Store, strin
 	return projectservice.NewProjects(database), database, databaseURL, ServicePrincipal(t, database)
 }
 
-func ServicePrincipal(t *testing.T, database *store.Store) model.Principal {
+func ServicePrincipal(t *testing.T, database *postgres.Store) model.Principal {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	secret := secretutil.Random("dnst_")
@@ -82,7 +83,7 @@ func ServicePrincipal(t *testing.T, database *store.Store) model.Principal {
 	return principal
 }
 
-func FixtureIdentitySession(t *testing.T, database *store.Store, user model.User, session model.Session) model.Principal {
+func FixtureIdentitySession(t *testing.T, database *postgres.Store, user model.User, session model.Session) model.Principal {
 	t.Helper()
 	ctx := context.Background()
 	var principal model.Principal
@@ -108,7 +109,7 @@ func FixtureIdentitySession(t *testing.T, database *store.Store, user model.User
 	return principal
 }
 
-func TaskService(t *testing.T) (*taskservice.Tasks, *store.Store, model.Project, string, model.Principal) {
+func TaskService(t *testing.T) (*taskservice.Tasks, *postgres.Store, model.Project, string, model.Principal) {
 	t.Helper()
 	projects, database, databaseURL, principal := ProjectService(t)
 	project, err := projects.Create(context.Background(), principal, coreproject.CreateProject{ExpectedUserID: principal.UserID, Name: "Tasks", RepoURL: "git@host:repo"})

@@ -20,13 +20,14 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/google/uuid"
 )
 
-func botService(t *testing.T) (*Bots, *store.Store, model.Principal, string) {
+func botService(t *testing.T) (*Bots, *postgres.Store, model.Principal, string) {
 	t.Helper()
-	database, err := store.Open(context.Background(), serviceDatabaseURL(t))
+	database, err := postgres.Open(context.Background(), serviceDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

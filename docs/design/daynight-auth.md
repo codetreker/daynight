@@ -59,8 +59,8 @@ flowchart LR
     S --> F[现有文件存储]
 ```
 
-core 分别表达用户、凭据、独立项目授权和当前项目准入；core/store 拥有迁移、查询与
-事务，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
+core 分别表达用户、凭据、独立项目授权和当前项目准入；core/store 定义数据访问及
+事务合同，PostgreSQL 后端实现迁移和查询，service 在业务事务内作授权决定，server 拥有 HTTP/Cookie/错误映射。
 复用一个 store 和既有文件存储，不复制业务实现或增加通用权限引擎。
 
 Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 只有 session/PAT。认证代码

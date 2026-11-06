@@ -11,6 +11,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/google/uuid"
@@ -34,7 +35,7 @@ func threadWait(t *testing.T, ctx context.Context, condition func() (bool, error
 	}
 }
 
-func stepsStoredState(t *testing.T, database *store.Store, taskID string, excludeParentRevision bool) string {
+func stepsStoredState(t *testing.T, database *postgres.Store, taskID string, excludeParentRevision bool) string {
 	t.Helper()
 	var state string
 	err := database.Pool.QueryRow(context.Background(), `SELECT jsonb_build_object(
@@ -53,7 +54,7 @@ func workerDescriptor() taskcore.WorkerDescriptor {
 	return taskcore.WorkerDescriptor{ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Build machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, WorktreeID: uuid.NewString()}
 }
 
-func workerMember(t *testing.T, database *store.Store, projectID string) model.Principal {
+func workerMember(t *testing.T, database *postgres.Store, projectID string) model.Principal {
 	t.Helper()
 	principal := servicePrincipal(t, database)
 	if err := writeProjectForTest(database, context.Background(), projectID, func(tx store.ProjectWriteScope) error {
@@ -107,7 +108,7 @@ func listThread(t *testing.T, threads *taskservice.TaskThreads, principal model.
 	}
 	return result
 }
-func seedGraph(t *testing.T, database *store.Store, projectID string, nodes, edges int) {
+func seedGraph(t *testing.T, database *postgres.Store, projectID string, nodes, edges int) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, version, created_at, updated_at)
@@ -123,7 +124,7 @@ func seedGraph(t *testing.T, database *store.Store, projectID string, nodes, edg
 		t.Fatal(err)
 	}
 }
-func seedConnectedGraph(t *testing.T, database *store.Store, projectID string, nodes, edges int) string {
+func seedConnectedGraph(t *testing.T, database *postgres.Store, projectID string, nodes, edges int) string {
 	t.Helper()
 	ctx := context.Background()
 	seedGraph(t, database, projectID, nodes, 0)

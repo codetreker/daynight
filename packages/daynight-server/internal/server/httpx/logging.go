@@ -17,7 +17,6 @@ import (
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 
 	uniauth "github.com/codetreker/uniauth/sdk/go"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type requestIDKey struct{}
@@ -49,7 +48,9 @@ func ErrorKind(err error) string {
 			return fault.Code
 		}
 	}
-	var databaseError *pgconn.PgError
+	databaseFailure, _ := store.DatabaseErrorFacts(err)
+	var transaction *store.TransactionError
+	transactionFailure := errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted)
 	var storeError *store.Error
 	var networkError *net.OpError
 	var protocolError *uniauth.ProtocolError
@@ -60,7 +61,7 @@ func ErrorKind(err error) string {
 		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "deadline"
-	case errors.As(err, &databaseError):
+	case databaseFailure || transactionFailure:
 		return "database"
 	case errors.As(err, &protocolError), errors.As(err, &apiError):
 		return "protocol"
@@ -82,6 +83,13 @@ func ErrorKind(err error) string {
 }
 
 func KnownFault(err error) (*model.Fault, bool) {
+	if failed, _ := store.DatabaseErrorFacts(err); failed {
+		return nil, false
+	}
+	var thread *store.ThreadTransactionError
+	if errors.As(err, &thread) && (thread.RollbackFailed || thread.OutcomeUnknown) {
+		return nil, false
+	}
 	var transaction *store.TransactionError
 	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
 		return nil, false

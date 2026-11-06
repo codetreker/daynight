@@ -18,8 +18,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func graphPath(projectID, taskID string) string {
@@ -268,7 +268,7 @@ func TestTaskGraphHTTPDatabaseFailureAndCancellation(t *testing.T) {
 func TestTaskGraphHTTPErrorPrecedenceAndDTOUTC(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	for _, cause := range []error{&pgconn.PgError{Message: "driver-secret"}, context.Canceled, context.DeadlineExceeded} {
+	for _, cause := range []error{&store.Error{Phase: "query", DatabaseFailure: true, Cause: errors.New("driver-secret")}, context.Canceled, context.DeadlineExceeded} {
 		err := errors.Join(&model.Fault{Code: "graph_limit_exceeded", Message: "domain-secret", GraphLimit: &model.GraphLimitDetails{NodeCount: 1001, MaxNodes: 1000, MaxEdges: 5000}}, cause)
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/", nil)

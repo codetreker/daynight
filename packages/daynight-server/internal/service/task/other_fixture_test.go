@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
 
 func requireFault(t *testing.T, err error, code string) *model.Fault {
@@ -32,7 +33,7 @@ func propertyPatch(items ...model.PullRequestProperty) model.TaskPropertiesPatch
 	return model.TaskPropertiesPatch{"pullRequests": propertyJSON(values)}
 }
 
-func writeProjectForTest(s *store.Store, ctx context.Context, id string, operation func(store.ProjectWriteScope) error) error {
+func writeProjectForTest(s *postgres.Store, ctx context.Context, id string, operation func(store.ProjectWriteScope) error) error {
 	_, err := s.WriteProject(ctx, id, operation)
 	return err
 }

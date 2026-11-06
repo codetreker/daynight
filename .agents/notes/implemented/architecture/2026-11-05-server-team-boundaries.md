@@ -38,5 +38,5 @@ Separate scopes preserve both requirements.
 
 Team business rules no longer depend on a concrete transaction or root service;
 the transaction-bound DAO remains valid only during its callback. Cleanup failures
-and unknown commits take precedence over business refusals. Project authorization
-and the physical PostgreSQL move retain their separate owners.
+and unknown commits take precedence over business refusals. Project authorization and the [PostgreSQL backend](2026-11-05-server-postgres-ownership.md)
+retain their separate owners.

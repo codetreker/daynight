@@ -27,7 +27,7 @@ flowchart LR
 
 ## 报告事务
 
-`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，DAO 按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `projectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
+`Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，DAO 按输入 task ID 的主键集合批量读取任务，JOIN store 的 canonical `ProjectAccessRelation` 及项目名，排除软删除记录。准入关系在同一语句内按认证 userId 筛选，计算当前 owner Team role 与 direct grant role 的最大值；只有继承访问也具有相同可见资格。Worker 不另行解释授权来源，不改写任何 grant。
 
 按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码；core 使用 Task 的 claim 规则匹配引用。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
 
@@ -45,7 +45,7 @@ UPSERT 同时写 last_seen_at、telemetry、task_snapshot，只竞争该 Worker 
 
 列表按稳定 `(created_at,worker_id)` keyset 读取 limit+1 行。service 生成类型为 workers、绑定认证 userId 的 cursor；它不将频繁变化的 last_seen_at 用作游标。近期索引与创建时间排序承担不同职责，实际查询计划用于核对账号近期筛选及分页成本。
 
-每页收集任务快照引用后，使用与上报相同的 `projectAccessRelation` 按认证 userId 批量查询当前可访问且未删除的任务，再核对引用的 projectId 并过滤任务数组。详情使用同一个过滤机制，不逐项查询权限。计数由过滤后的数组产生；unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。
+每页收集任务快照引用后，使用与上报相同的 `ProjectAccessRelation` 按认证 userId 批量查询当前可访问且未删除的任务，再核对引用的 projectId 并过滤任务数组。详情使用同一个过滤机制，不逐项查询权限。计数由过滤后的数组产生；unavailable 输出 null，已知或 stale 输出实际可见数量。当前 claim 不参与旧观测的读取资格，因此完成和转交不会改写历史 phase/status，权限撤销与删除则立即约束后续读取的标题和计数。过滤不改写保存的快照；重新获得项目权限后，仍未删除的历史观测可再次返回。
 
 ## 时间与数据含义
 

@@ -16,11 +16,12 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func seedChangeSteps(t *testing.T, database *store.Store, taskID string) {
+func seedChangeSteps(t *testing.T, database *postgres.Store, taskID string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES
  ($1,'00000000',0,'same','original body','todo','2026-01-02T03:04:05.123456Z','2026-02-03T04:05:06.654321Z'),

@@ -8,7 +8,7 @@
 ## 现有结构与职责
 
 [状态服务](../../packages/daynight-server/internal/service/task/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
-[项目写事务](../../packages/daynight-server/internal/core/store/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
+[项目写事务](../../packages/daynight-server/internal/core/store/postgres/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
 `updated_at` 随普通编辑变化，不能作为执行起点。
 [任务链图读取服务](../../packages/daynight-server/internal/service/task/task_graph.go)在只读快照中
 读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task/task_sync.go)

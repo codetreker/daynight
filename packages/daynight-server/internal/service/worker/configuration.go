@@ -11,6 +11,9 @@ import (
 )
 
 func workerConfigurationError(operation string, err error) error {
+	if failed, _ := store.DatabaseErrorFacts(err); failed {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
 	var transaction *store.TransactionError
 	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
 		return fmt.Errorf("%s: %w", operation, err)

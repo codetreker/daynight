@@ -20,6 +20,7 @@ import (
 	identitycore "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -289,7 +290,7 @@ func TestTaskWriteChecksMembershipAfterAcquiringProjectLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	database := &store.Store{Pool: pool}
+	database := &postgres.Store{Pool: pool}
 	admin, member := f.user(t), f.user(t)
 	project := f.project(t, admin, "Membership write ordering")
 	f.join(t, admin, member, project.ID)
