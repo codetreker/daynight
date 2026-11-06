@@ -411,9 +411,11 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 用户核验与语言切换不重建 Provider。状态设置依赖当前完整详情的精确版本，冲突与未知
 结果遵守[三状态设计](daynight-task-status.md)。
 它通过 /me 取得身份，401 进入带有效目标的独立登录流程；资源 404 不退出全局会话。
-登录地址的有效目标仍是相应邀请路径时保留现有 tab 内凭据，fragment 在请求之前捕获
-并移出地址。离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理
-与失败可见性。设备授权保留原始 user_code；普通退出成功回公开首页，账号切换保留
+登录地址的有效目标仍是相应项目或 Team 邀请路径时保留现有 tab 内凭据。AuthenticatedApp 在 layout effect
+中捕获首次或新进入的已准入邀请，并在 API effect 前通过 BrowserNavigation 清除 fragment；
+导航所有者同步更新地址、当前条目的内存 URL 与已准入 location，不写入新的历史条目。
+清理后的快照不重新捕获邀请，因此 sessionStorage 受限时仍保留本次捕获的内存值。
+离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理与失败可见性。设备授权保留原始 user_code；普通退出成功回公开首页，账号切换保留
 邀请/设备目标，退出失败保持当前错误与重试。
 项目列表增加名称/仓库地址创建表单，复用原 API，成功进入空项目且创建者为 admin。
 账户页管理 PAT，项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
@@ -473,10 +475,14 @@ Project 设置、成员和转移的在途读取与写入保留原 scope 和资�
 重建组件或进入请求依赖，保持输入、一次性秘密、成员版本、当前身份和 pending
 操作。[语言设计](daynight-web-i18n.md)拥有公共机制，鉴权组件遵守相同状态规则。
 
-邀请入口 /invitations#<secret> 和 /team-invitations#<secret> 读取后立即清除 fragment，以 tab 的临时 sessionStorage
-跨登录保存，确认/取消/失效后删除；捕获时同步清理导航快照及 history marker，
-未编号历史条目的清理 replace 开始新 segment，同标签再次打开也重新捕获。
-秘密不进请求路径/Referer/日志。一次性 token/
+邀请入口 /invitations#<secret> 和 /team-invitations#<secret> 读取后立即清除 fragment，分别使用
+项目与 Team 的 tab 临时 sessionStorage key 跨登录保存，捕获时清理另一 scope 的临时值；
+已认证界面仅在内存中保留邀请，进入登录或会话失效时恢复对应临时副本，确认/取消/失效、
+主动离开或确认身份改变后删除。同标签再次打开邀请或切换邀请 scope 时重新捕获；清理产生的
+同路径快照及同流程登录返回不重新读取，以保留临时存储受限时的内存值。
+秘密不进请求路径/Referer/日志或序列化导航 marker。marker 仅保存 segment 与 index，
+清理同步通知已准入 location；未编号原生条目保留未编号状态，移除复制的 marker 并保留其他 state。
+完整 URL 的匹配与原生条目边界由[导航设计](daynight-task-steps.md#web-呈现导航与大集合)拥有。一次性 token/
 邀请复制失败可恢复，关闭前清楚提示无法再次读取。界面验证覆盖桌面、窄屏、长内容、加载、空、错误、
 失效、禁用和键盘焦点。
 
