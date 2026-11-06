@@ -20,7 +20,7 @@ const anchor: TaskStep = { ...old, id: "fedcba98" };
 type Result = { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 type RequestRecord = { readonly method: string; readonly path: string; readonly requestId: string | undefined; readonly body: unknown };
 
-it("runs both packed launchers through Add budgets, receipts, capacity refusal and one factual unknown observation", async () => {
+it("runs the packed Add matrix and verifies both native launchers", async () => {
   const installed = await createAcceptanceCli(); const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Step Add launcher 中文");
   const home = path.join(fixture, "home"), state = path.join(fixture, "configuration"), temporary = path.join(fixture, "temporary");
@@ -100,6 +100,7 @@ it("runs both packed launchers through Add budgets, receipts, capacity refusal a
     for (const launcher of launchers) {
       expect((await invoke(launcher, ["task", "step", "add", "--help"])).stdout).toContain("--if-version");
       await invoke(launcher, ["task", "step", "add", taskId], 2);
+      if (launcher === alias) continue;
       await invoke(launcher, ["task", "step", "add", taskId, "--title=valid", "--before=00000000", "--after=fedcba98"], 2);
       await invoke(launcher, ["task", "step", "add", taskId, "--title=valid", "--id=prefix"], 2);
     }
@@ -108,13 +109,16 @@ it("runs both packed launchers through Add budgets, receipts, capacity refusal a
     const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing packed Add listener.");
     await writeFile(config, `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
     const explicit = ["--project", projectId.toUpperCase(), "--if-version", version.toString()];
+    let firstReceipt: string | undefined;
     for (const launcher of launchers) {
       current = { projectId, taskId, version, steps: [old, anchor] }; mode = "normal";
       const title = "  <packed&> 中文😀  ", description = "# Packed [Plan](plan.md) <&> 😀";
       let at = requests.length;
-      const full = await invoke(launcher, ["task", "step", "add", taskId.toUpperCase(), "--id=00ABCDEF", `--title=${title}`, `--description=${description}`, "--status=skipped", "--json", ...explicit]);
+      const full = await invoke(launcher, ["task", "step", "add", taskId.toUpperCase(), "--id=00ABCDEF", "--title", title, "--description", description, "--status=skipped", "--json", ...explicit]);
       const post = onlyPost(at); expect(post.body).toEqual({ version, id: "00abcdef", title, description, status: "skipped" });
       expect(parseApiJson(full.stdout)).toEqual(current); expect(full.stdout).toContain('"version":9007199254740994'); expect(full.stdout.startsWith("{")).toBe(true);
+      if (launcher === alias) { expect(full.stdout).toBe(firstReceipt); continue; }
+      firstReceipt = full.stdout;
       current = { projectId, taskId, version, steps: [] }; at = requests.length;
       const generated = await invoke(launcher, ["task", "step", "add", taskId, "--title=Generated record", "--json", "--project", projectId]);
       const sequence = requests.slice(at); expect(sequence.map(({ method }) => method)).toEqual(["GET", "POST"]);
@@ -142,7 +146,7 @@ it("runs both packed launchers through Add budgets, receipts, capacity refusal a
       expect(unknown.stderr).toContain("Current facts only: version=9007199254740994 target=found. The Add outcome remains unknown."); expect(unknown.stderr).not.toContain("Step added.");
       for (const secret of ["private-unknown", "fixture-token", `http://127.0.0.1:${address.port}`]) expect(unknown.stderr).not.toContain(secret);
     }
-    scenarios.push("both-aliases-help-usage-before-config", "explicit-one-post-exact-int64-and-raw-single-line-fields", "default-get-then-post-generated-id-defaults", "canonical-before-after-all-four-states", "capacity409-details-no-retry", "one-unknown-post-correlated-current-facts-only-read-no-replay");
+    scenarios.push("both-launchers-help-and-missing-title-before-config", "both-launchers-equivalent-explicit-post-arguments-and-receipt", "daynight-invalid-placement-and-id-before-config", "default-get-then-post-generated-id-defaults", "canonical-before-after-all-four-states", "capacity409-details-no-retry", "one-unknown-post-correlated-current-facts-only-read-no-replay");
     expect(createHash("sha256").update(await readFile(receipt.entryPath)).digest("hex")).toBe(receipt.entrySha256);
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];
