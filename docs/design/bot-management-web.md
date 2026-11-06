@@ -8,7 +8,7 @@
 
 `bots.css` 将 `.bots-page` 定义为命名 `bots-workspace` inline-size 容器。列表固定 256px（含边框），与对话之间没有额外 gap；工作区内容宽度低于 676px 时，只显示列表或当前选中的对话，等于 676px 时仍并列并为对话保留 420px。判断依据是扣除导航后的实际容器宽度。CSS 只改变既有面板可见性，不创建宽度状态、Session 宿主或新的目标绑定。单栏返回及关闭聊天都导航到 `/bots`，不停止或删除助手。
 
-工作区、对话列、SessionHost 和 pane 的 flex 高度链允许收缩。列表面板承载创建与搜索，长列表在自己的区域滚动；短视口中面板也可滚动以到达创建操作。消息时间线继续拥有自己的滚动面，历史分页与阅读书签使用同一可见区域，输入不会因历史增长被推出页面。详情的滚动区与时间线独立。
+工作区、对话列、SessionHost 和 pane 的 flex 高度链允许收缩。列表面板承载创建入口与搜索，长列表在自己的区域滚动；创建弹窗使用独立的可见视口约束，不占用列表高度。消息时间线继续拥有自己的滚动面，历史分页与阅读书签使用同一可见区域，输入不会因历史增长被推出页面。详情的滚动区与时间线独立。
 
 列表标题与创建按钮同行，名称搜索下是列表小标题、数量和刷新按钮。刷新用 busy/disabled 表达状态，读取失败保留实际错误。列表沿用服务返回顺序，行内只保留头像标记、名称及必要的启动或 Worker 异常状态；主机、路径和完整信息在详情中读取。零助手与搜索无匹配分别显示。行上的更多、右键和键盘菜单仍固定其自身 Bot 为删除目标。
 
@@ -16,15 +16,37 @@
 
 `api/bots.ts` 消费服务端 `/api/v1/me/bots` 的 list、defaults、create、get、delete。读取要求响应 principal 与当前账号一致；定义再次核对 owner、Worker 配置和 Session 双身份。删除响应是仅含身份及删除责任的联合类型。版本与创建顺序保持十进制字符串，不经浮点数转换。
 
-创建只发送 `{id,name,overrides?}`。默认值选择、Provider 的 model/args 解析以及成功偏好保存均由服务端拥有。响应解析保留真实 pending/ready/failed；已 dispatch 的传输、解析或非明确拒绝错误转换为 `BotCreationUnknown`。接口不自动重试写入。
+创建只发送 `{id,name,overrides?}`。默认值选择、Provider 的 model/reasoningEffort/args 解析以及成功偏好保存均由服务端拥有。响应解析保留真实 pending/ready/failed；已 dispatch 的传输、解析或非明确拒绝错误转换为 `BotCreationUnknown`。接口不自动重试写入。
 
-## 内联创建与未确认请求
+## 名字优先弹窗与配置解析
 
-`BotCreateForm` 在列表标题下渲染普通 `form`，高级配置使用默认折叠的原生 `details`。表单不进入模态层，不使工作区 inert，也不取得 body scroll lock。打开时聚焦名称；已有未确认请求时聚焦核对按钮。显式取消或 Escape 关闭当前创建层并恢复仍连接的原入口；输入法组合期间不消费 Escape，提交期间禁用取消与重复提交。导航卸载表单不将焦点拉回列表。
+`BotCreateDialog` 以原生 `dialog.showModal()` 打开 `BotCreateForm`，取得计数式 body scroll lock。弹窗最大宽度 492px，不改变列表或 Session 的布局尺寸。名称自动聚焦；已保留未确认请求时聚焦核对按钮。默认界面保留名称、实际 Worker/Agent/默认或自定义摘要、折叠设置及提交区。摘要可通过键盘展开完整主机、路径、有效模型、effort 及其来源，长名称不依赖 hover 才能读取。
 
-表单以独立字段记录显式 Worker、目录和 Provider；显示默认值不改变这些记录。Worker 切换立即作废旧请求代际、取消旧读取并清除目录及 Provider 覆盖，再读取 defaults。只填名称时 POST 不含 overrides；明确失败保留输入和错误。取消与完成均不写浏览器偏好。`creating` 绑定账号 scope 与打开时的选择，目标导航使表单收起，迟到的完成回调不能把新选择导航回旧创建结果；同 scope、同选择下的后台检查、语言和布局变化不重建表单。
+首次 defaults 未完成时保留名称编辑，暂不允许创建；后续读取保留已有展示与草稿，不插入后台检查状态行。错误显示实际原因和重试入口，重试不重建表单。`creating` 绑定账号 scope 与打开时的助手选择，目标导航使弹窗收起，迟到完成不能把新选择导航回旧结果。语言、同目标后台检查和布局变化不重建表单。
 
-页面在 dispatch 前将未确认请求交给 `pending-creation.ts`。同一账号 scope 的 WeakMap 跨组件卸载保留内存请求，`sessionStorage` 仅保存 Bot ID，不保存可重放的 POST 正文。收起后重新打开、返回页面或重载后的表单只能按该 ID GET；确认结果后清除记录，404 和读取失败仍保留。scope abort 清除对应记录和可访问的存储。无法访问存储时保留同文档内存并显示 ID，不能承诺跨重载恢复。呈现方式改变不把结果未知转换为可重新 POST 的明确失败。
+`BotCreateForm` 分开记录 Worker、cwd、Provider、model 和 reasoningEffort 的显式覆盖。名字创建只发 `{id,name}`；查看默认、展开设置和取消菜单不会把预览写入请求。`getBotDefaults` 接收当前覆盖并重新解析有效配置，来源读取 `configuration.selection`，保留 explicit/preference/local/cloud/native/unknown 的区别；没有历史来源的旧记录不伪造来源。使用默认删除对应覆盖，恢复全部默认同时解除显式 Worker。
+
+确认目录或明确选择 Agent、Model、effort 时，将当前解析到的 Worker 固定为显式目标。切换 Worker 清除旧机器的 cwd、Provider、model 和 effort；切换 Provider 保留目录，清除 model 和 effort；切换 model 清除表单 effort，再读取该模型的权威默认。Worker 当前明确 effort 的兼容性由服务端解析与真实能力校验，不能通过 UI 丢弃该配置来绕过错误。显式 Worker 不可用时保留错误，不自动换机。
+
+`useBotCreationModels` 在设置展开后通过 `discoverWorkerModels` 读取目标 Worker、Provider、cwd 和模型的原生能力。它按相同连接及能力代次收齐分页，并核对 configurationGeneration、catalogGeneration、目录、Provider、重复模型和游标，再发布完整目录。模型查询的 defaults 只表达 Worker/原生观察；Bot defaults 还包括成功偏好，两者不能互相替代。没有已确认的模型或 effort 列表时不生成静态选项，失败保留重试入口；模型别名用于匹配有效选择，提交仍保留用户明确选择的标识。请求取消和表单代次隔离迟到响应。
+
+## 同一弹窗中的目录浏览
+
+`BotDirectoryBrowser` 接收打开时的 Worker、当前目录与已解析默认目录，在同一个 dialog 内切换视图，父表单保留名字和覆盖状态。`browseWorkerDirectory` 只查询目标 Worker 的目录；路径、父目录和子项路径均使用响应中的规范化值，不在浏览器拼接 HOME 或解释远端平台。默认目录按钮只导航，只有“选择此目录”才写回并固定 Worker。取消、Escape 和浏览页关闭按钮均返回原表单，焦点恢复到 Browse。
+
+目录视图提供当前层已加载条目的本地筛选、隐藏目录开关和显式加载更多。后续页固定连接及能力代次，校验同一路径、父目录、重复条目和游标；条目总数有界。改变路径或隐藏项后重新读第一页。尚未确认的路径编辑、读取中、错误和身份暂停均不能确认目录。旧 Worker 不支持、离线、权限、路径不存在及超时保留各自错误，不冒充空目录；取消或换目标中止原请求，账号 scope 继续约束结果准入。
+
+浏览不读取文件内容、不创建目录、不启动助手。浏览成功只证明这次目录观察，首次启动仍由 Worker 校验实际路径。取消浏览不产生覆盖，原表单仍可使用默认或手动输入绝对路径。
+
+## 焦点、视口与未确认请求
+
+创建弹窗以 `visualViewport.height/offsetTop` 更新高度和纵向位置，缺失时使用窗口尺寸；监听 resize 和 scroll。标题与操作区不收缩，中间内容独立滚动；窄屏左右保留 12px，Model/effort 从双列变为单列。窄屏或粗指针下输入字号至少 16px、主要交互目标至少 44px。可见视口约束用于保持操作可达，不能代替实体手机软键盘验收。
+
+原生模态隔离背景并约束焦点。Escape 由当前子视图处理：目录页先返回表单，表单取消后回到仍连接的创建入口；输入法组合不触发提交或关闭，提交期间禁用取消与重复请求。关闭创建不更换 Bot 绑定，不卸载 SessionHost，不清除会话草稿、阅读位置或执行状态。
+
+页面在 dispatch 前将未确认请求交给 `pending-creation.ts`。同一账号 scope 的 WeakMap 跨组件卸载保留内存请求，`sessionStorage` 仅保存 Bot ID，不保存可重放的 POST 正文。关闭后重新打开、返回页面或重载后的表单只能按该 ID GET；确认结果后清除记录，404 和读取失败仍保留。scope abort 清除对应记录和可访问的存储。无法访问存储时保留同文档内存并显示 ID，不能承诺跨重载恢复。弹窗和浏览视图切换不把结果未知转换为可重新 POST 的明确失败。
+
+布局取舍与原内联方案的关系见[创建弹窗决策](../../.agents/notes/implemented/architecture/2026-11-07-assistant-creation-dialog.md)。
 
 ## 读取与展示
 
@@ -76,4 +98,4 @@ WeakMap 保留同 scope 的记录，sessionStorage 保存可校验的最小身�
 
 ## 验证边界
 
-管理页规格定义容器临界值、长内容、短视口和焦点矩阵。API 与组件测试验证默认覆盖、未知结果、当前身份、缓存、标题组合和模态协同；浏览器测试才能验证真实几何、原生 dialog、滚动与 DOM 身份。原型只用于设计交互核对，受控 API 或 Session 测试只证明 Web 消费行为，不证明真实 Worker、Provider、偏好持久化或真机软键盘。共享阅读、输入和图片能力的设计由各自所有者说明，不从标题及详情改造推断其已交付。
+管理页规格定义容器临界值、长内容、短视口和焦点矩阵。API 与组件测试验证默认覆盖、Worker 绑定和级联重置、目录/模型分页与迟到响应、未知结果、当前身份、缓存、标题组合和模态协同；浏览器测试才能验证真实几何、原生 dialog、滚动与 DOM 身份。原型只用于设计交互核对，受控 API 或 Session 测试只证明 Web 消费行为，不证明真实 Worker、Provider、偏好持久化或真机软键盘。共享阅读、输入和图片能力的设计由各自所有者说明，不从标题及详情改造推断其已交付。

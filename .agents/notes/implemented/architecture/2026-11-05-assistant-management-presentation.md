@@ -19,10 +19,13 @@ available width, CSS shows the list or the selected conversation. The list keeps
 search, creation, refresh and essential status, with full environment information
 in details. List and conversation scrolling stay bounded by the Session shell.
 
-Creation uses an inline form with collapsed advanced settings. Explicit choices
-remain separate from displayed defaults. Opening, closing or navigating away from
-the form cannot turn an unknown creation into a new POST: the account scope keeps
-the original ID for observation. The
+The original presentation used an inline form with collapsed advanced settings
+to keep a name-first operation within the workspace. Its consumption of list
+height, particularly with directory and model controls, led to the
+[compact creation dialog](2026-11-07-assistant-creation-dialog.md), which supersedes
+that placement. Explicit choices remain separate from displayed defaults, and
+closing or navigating away cannot turn an unknown creation into a new POST: the
+account scope keeps the original ID for observation. The
 [management identity decision](2026-11-05-bot-management-web.md) continues to own
 default resolution, complete list reads and unknown-result retention. The
 [background-check decision](../bug-fix/2026-11-05-bot-background-check-display.md)
@@ -62,10 +65,13 @@ configuration visible but spends persistent conversation space on duplicate
 identity and controls. A compact list and on-demand details preserve access to
 that information while giving reading and input priority.
 
-**Retain modal creation.** A modal isolates the form but interrupts interaction
-with the workspace for a name-first operation. The inline form keeps advanced
-configuration reachable without changing the server's resolution rules. Its
-unresolved request must outlive the form, just as it did with modal creation.
+**Retain modal creation.** At the time of this decision, a modal interrupted
+workspace interaction for a name-first operation, while an inline form kept the
+then-limited advanced configuration reachable. That trade-off favored inline
+placement without changing server resolution. Its unresolved request still had
+to outlive the form, just as it did with modal creation. The later creation-dialog
+decision preserves this identity rule while reconsidering space and configuration
+requirements.
 
 **Use only window width to select the details mode.** This ignores space used by
 navigation and the assistant list. Measuring the remaining conversation after
@@ -81,8 +87,9 @@ a stable ancestor boundary permit the layout without changing those identities.
 
 Normal reading has less persistent management UI. Full names and configuration
 now require opening details, while errors and necessary actions remain in their
-own context. Inline creation consumes list height, so short viewports need the
-list panel's scrolling and reachable form actions. Responsive details requires
+own context. The inline placement consumed list height and required scrolling
+to reach actions on short viewports; the replacement dialog owns that form
+constraint independently. Responsive details requires
 both geometry observation and careful focus restoration across modes.
 
 The two width conditions, nested modal dismissal and reading bookmarks require
