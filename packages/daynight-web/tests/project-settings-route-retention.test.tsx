@@ -120,7 +120,7 @@ const submitSave = async () => {
 };
 const leave = () => act(() => navigate("/workers"));
 const returnToSettings = () => act(() => navigate(`/projects/${projectId}/settings`));
-const previewTransfer = async () => {
+const previewTransfer = async (blocked = false) => {
   const open = await screen.findByRole("button", { name: /^Transfer project$/ });
   await waitFor(() => expect(open).toBeEnabled());
   fireEvent.click(open);
@@ -128,13 +128,39 @@ const previewTransfer = async () => {
   fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: targetId } });
   await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
   fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
-  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled());
+  await waitFor(() => expect(within(dialog).getByText("Destination")).toBeVisible());
+  if (!blocked) expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled();
   return dialog;
 };
 const startTransfer = async () => {
   const dialog = await previewTransfer();
   fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
 };
+
+it("keeps transfer blocked while a settings save is dispatched, including after route changes", async () => {
+  const app = setup(); await submitSave();
+  await waitFor(() => expect(app.saves()).toBe(1));
+  const dialog = await previewTransfer(true);
+  expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeDisabled();
+  leave(); returnToSettings();
+  await waitFor(() => expect(within(screen.getByRole("dialog", { name: "Transfer project" })).getByRole("button", { name: "Confirm transfer" })).toBeDisabled());
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Transfer project" })).getByRole("button", { name: "Cancel" }));
+  await act(async () => { app.setSavedProject(project(90, 2n)); app.save.resolve(json(project(90, 2n))); });
+  await screen.findByText("Settings saved.");
+  await previewTransfer();
+  expect(app.transfers()).toBe(0);
+});
+
+it("blocks settings saves while a transfer is dispatched", async () => {
+  const app = setup(); await startTransfer();
+  await waitFor(() => expect(app.transfers()).toBe(1));
+  const field = screen.getByLabelText("Alert threshold");
+  expect(field).toBeEnabled(); fireEvent.change(field, { target: { value: "90" } });
+  expect(screen.getByRole("button", { name: "Save settings", hidden: true })).toBeDisabled();
+  await act(async () => app.transfer.resolve(fail(403, "forbidden", "transfer-denied")));
+  await waitFor(() => expect(screen.getByLabelText("Alert threshold")).toBeEnabled());
+  expect(app.saves()).toBe(0);
+});
 
 it("keeps an already dispatched save and its confirmed receipt across real route navigation", async () => {
   const app = setup(); await submitSave();
@@ -506,7 +532,7 @@ it("retires a private draft on Project 404 but keeps the dispatched rejection un
 
 it("hides an unconfirmed transfer preview after revocation while a settings save is retained", async () => {
   const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
-  const dialog = await previewTransfer();
+  const dialog = await previewTransfer(true);
   expect(within(dialog).getByText("Destination")).toBeVisible();
   expect(within(dialog).getByLabelText("Team ID or link")).toHaveValue(targetId);
   app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
@@ -531,7 +557,7 @@ it("hides an unconfirmed transfer preview after revocation while a settings save
 
 it("keeps an unsubmitted transfer preview during checking and a recoverable access error", async () => {
   const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
-  const dialog = await previewTransfer();
+  const dialog = await previewTransfer(true);
   const targetField = within(dialog).getByLabelText("Team ID or link");
   const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" });
   const reads = app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
@@ -544,7 +570,7 @@ it("keeps an unsubmitted transfer preview during checking and a recoverable acce
   expect(within(dialog).getByText("Destination")).toBeVisible();
   expect(app.saveSignal?.aborted).toBe(false); expect(app.transfers()).toBe(0);
   app.setHoldPermission(false); fireEvent(window, new Event("focus"));
-  await waitFor(() => expect(confirm).toBeEnabled());
+  await waitFor(() => expect(confirm).toBeDisabled());
   expect(dialog).toBeVisible(); expect(targetField).toHaveValue(targetId);
   expect(within(dialog).getByText("Destination")).toBeVisible();
   expect(app.transfers()).toBe(0);
@@ -552,7 +578,7 @@ it("keeps an unsubmitted transfer preview during checking and a recoverable acce
 
 it("retires an unsubmitted transfer preview when the account changes", async () => {
   const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
-  const dialog = await previewTransfer(); leave();
+  const dialog = await previewTransfer(true); leave();
   expect(app.saveSignal?.aborted).toBe(false);
   app.setIdentity({ ...user, id: "00000000-0000-4000-8000-000000000002", name: "Bob" });
   vi.mocked(document.hasFocus).mockReturnValue(false); fireEvent(window, new Event("blur"));
@@ -611,11 +637,11 @@ it.each(["unknown", "confirmed", "rejected"] as const)("keeps a dispatched %s tr
 });
 
 it("keeps confirmed transfer cleanup retry actionable without exposing a revoked preview", async () => {
-  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
+  const app = setup();
   await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
   app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
   await waitFor(() => expect(app.denials).toBeGreaterThan(0));
-  expect(app.saveSignal?.aborted).toBe(false); expect(app.transferSignal?.aborted).toBe(false);
+  expect(app.transferSignal?.aborted).toBe(false);
   const revoke = vi.spyOn(TaskCacheScope.prototype, "revokeProject").mockRejectedValueOnce(new Error("cleanup failed")).mockResolvedValueOnce(true);
   const ownership = { teamId: targetId, version: 2n };
   await act(async () => app.transfer.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: target, ownership, actorAccess: null })));
@@ -627,8 +653,8 @@ it("keeps confirmed transfer cleanup retry actionable without exposing a revoked
   fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(revoke).toHaveBeenCalledTimes(2));
   expect(await screen.findByText(/Project transferred to Destination/i)).toBeVisible();
-  expect(app.transferSignal?.aborted).toBe(false); expect(app.saveSignal?.aborted).toBe(false);
-  expect(app.transfers()).toBe(1); expect(app.saves()).toBe(1);
+  expect(app.transferSignal?.aborted).toBe(false);
+  expect(app.transfers()).toBe(1); expect(app.saves()).toBe(0);
 });
 
 it.each(["unknown", "confirmed"] as const)("does not publish an old account's late %s transfer after identity changes", async (result) => {
@@ -648,21 +674,6 @@ it.each(["unknown", "confirmed"] as const)("does not publish an old account's la
   expect(screen.queryByText(/Project transferred to Destination/i)).toBeNull();
   expect(screen.queryByText("Destination")).toBeNull();
   expect(app.transfers()).toBe(1);
-});
-
-it("keeps the save owner when a simultaneous rejected transfer is closed first", async () => {
-  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
-  await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
-  leave(); expect(app.saveSignal?.aborted).toBe(false); expect(app.transferSignal?.aborted).toBe(false);
-  await act(async () => app.transfer.resolve(fail(400, "invalid_input", "transfer-rejected")));
-  returnToSettings();
-  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
-  expect(await within(dialog).findByText("transfer-rejected")).toBeVisible();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-  leave(); expect(app.saveSignal?.aborted).toBe(false);
-  app.setSavedProject(project(90, 2n)); await act(async () => app.save.resolve(json(project(90, 2n))));
-  returnToSettings(); expect(await screen.findByText("Settings saved.")).toBeVisible();
-  expect(app.saves()).toBe(1); expect(app.transfers()).toBe(1);
 });
 
 it("refreshes the saved settings when only a transfer retains the page off route", async () => {
@@ -878,19 +889,4 @@ it.each([120, 90])("requires an old draft to be reconciled with newer saved valu
   fireEvent.change(returned, { target: { value: "125" } });
   expect(screen.getByRole("button", { name: "Save settings" })).toBeEnabled();
   expect(app.saves()).toBe(0); expect(app.transfers()).toBe(1);
-});
-
-it("keeps the transfer owner when the simultaneous save finishes first", async () => {
-  const app = setup(); await submitSave(); await waitFor(() => expect(app.saves()).toBe(1));
-  await startTransfer(); await waitFor(() => expect(app.transfers()).toBe(1));
-  leave(); expect(app.saveSignal?.aborted).toBe(false); expect(app.transferSignal?.aborted).toBe(false);
-  app.setSavedProject(project(90, 2n)); await act(async () => app.save.resolve(json(project(90, 2n))));
-  returnToSettings(); expect(await screen.findByText("Settings saved.")).toBeVisible();
-  expect(screen.getByRole("dialog", { name: "Transfer project" })).toBeVisible();
-  leave(); expect(app.transferSignal?.aborted).toBe(false);
-  await act(async () => app.transfer.resolve(fail(400, "invalid_input", "transfer-rejected")));
-  returnToSettings();
-  const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
-  expect(await within(dialog).findByText("transfer-rejected")).toBeVisible();
-  expect(app.saves()).toBe(1); expect(app.transfers()).toBe(1);
 });

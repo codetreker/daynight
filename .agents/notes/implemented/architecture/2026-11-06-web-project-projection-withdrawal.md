@@ -72,5 +72,4 @@ a number while retaining unrelated Worker information.
 Independent reads use the existing cache lifecycle for generation snapshots and
 withdrawal, without storing their content in IndexedDB. A local storage failure
 can delay recovery of the affected Project, but it does not authorize stale
-content or require hiding healthy projects. The design does not add Project
-removal UI or change the server's access decision.
+content or require hiding healthy projects. The withdrawal mechanism does not change the server's access decision. The [Web deletion decision](../feature/2026-11-06-web-project-deletion.md) uses it after a confirmed deletion.

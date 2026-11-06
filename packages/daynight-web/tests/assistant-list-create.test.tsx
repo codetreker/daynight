@@ -32,7 +32,7 @@ function fixture(items = [botDefinition(1), botDefinition(2)]) {
   vi.stubGlobal('fetch', fetch);
   return fetch;
 }
-const writes = (fetch: ReturnType<typeof fixture>) => fetch.mock.calls.filter(([, options]) => options?.method === 'POST');
+const writes = (fetch: ReturnType<typeof fixture>) => fetch.mock.calls.filter(([url, options]) => options?.method === 'POST' && !String(url).endsWith('/readonly/requests'));
 const listLinks = () => within(screen.getByRole('list')).queryAllByRole('link');
 
 it('searches names without reordering or fetching, and distinguishes no matches from no assistants in both languages', async () => {
@@ -61,7 +61,7 @@ it('searches names without reordering or fetching, and distinguishes no matches 
   expect(fetch).toHaveBeenCalledTimes(calls);
 });
 
-it.each(['en', 'zh-CN'] as const)('opens an inline name form from the zero-assistant state and returns focus on cancel (%s)', async locale => {
+it.each(['en', 'zh-CN'] as const)('opens a name dialog from the zero-assistant state and returns focus on cancel (%s)', async locale => {
   const fetch = fixture([]);
   mount(locale);
   await screen.findByText(locale === 'en' ? 'No assistants yet' : '还没有助手');
@@ -69,7 +69,7 @@ it.each(['en', 'zh-CN'] as const)('opens an inline name form from the zero-assis
   const opener = openAssistantCreation();
   const name = assistantNameInput();
   expect(name).toHaveFocus();
-  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.getByRole('dialog', { name: locale === 'en' ? 'Create assistant' : '创建助手' })).toBeVisible();
   expect(screen.getByRole('searchbox')).toBeEnabled();
   expect(screen.getByLabelText('Worker')).not.toBeVisible();
   expandAssistantAdvancedSettings();
@@ -90,7 +90,7 @@ it('retains the old complete list through a failed second refresh page and repla
   const next = Promise.withResolvers<Response>();
   const replacement = botDefinition(3);
   fetch.mockImplementation(async url => {
-    if (String(url).endsWith('/defaults')) return botResponse(botDefaults());
+    if (String(url).includes('/defaults')) return botResponse(botDefaults());
     if (String(url).includes('cursor=next')) return next.promise;
     return botResponse({ items: [replacement], nextCursor: 'next' });
   });
@@ -123,14 +123,14 @@ it('keeps startup failure distinct from Worker observation failure in compact se
   const fetch = fixture([botDefinition(1), failed]);
   const defaults = botDefaults();
   const offline = { ...defaults, workerId: null, configuration: null, reason: 'no_available_worker', workers: [{ ...defaults.workers[0], state: 'offline', reason: 'offline', configuration: null }] };
-  fetch.mockImplementation(async url => String(url).endsWith('/defaults') ? botResponse(offline) : botResponse({ items: [botDefinition(1), failed], nextCursor: null }));
+  fetch.mockImplementation(async url => String(url).includes('/defaults') ? botResponse(offline) : botResponse({ items: [botDefinition(1), failed], nextCursor: null }));
   mount();
   const row = await screen.findByRole('link', { name: /Assistant 2.*Startup failed.*Worker offline/ });
   expect(row).toHaveAttribute('href', `/bots/${failed.id}`);
   expect(screen.getByRole('link', { name: /Assistant 1/ })).toHaveTextContent('Starting');
   expect(within(screen.getByRole('list')).queryByText('Machine 20')).toBeNull();
   expect(within(screen.getByRole('list')).queryByText('/ordinary/directory')).toBeNull();
-  fetch.mockImplementation(async url => String(url).endsWith('/defaults') ? botError(503, 'unavailable') : botResponse({ items: [botDefinition(1), failed], nextCursor: null }));
+  fetch.mockImplementation(async url => String(url).includes('/defaults') ? botError(503, 'unavailable') : botResponse({ items: [botDefinition(1), failed], nextCursor: null }));
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await screen.findByRole('alert');
   expect(row).toHaveTextContent('Startup failed');
@@ -146,7 +146,7 @@ it('submits only the name and original ID through the real API, then checks the 
   let found = false;
   fetch.mockImplementation(async (url, options) => {
     const path = String(url);
-    if (options?.method === 'POST') {
+    if (options?.method === 'POST' && !String(url).endsWith('/readonly/requests')) {
       expect(path).toBe('/api/v1/me/bots');
       posted.push(JSON.parse(String(options.body)) as CreateBotInput);
       throw new TypeError('Response lost after dispatch');
@@ -188,12 +188,12 @@ it('preserves the form, selection and explicit request through authentication pa
   const fetch = fixture([]), navigate = vi.spyOn(router, 'navigate');
   const posted: CreateBotInput[] = [];
   fetch.mockImplementation(async (url, options) => {
-    if (options?.method === 'POST') {
+    if (options?.method === 'POST' && !String(url).endsWith('/readonly/requests')) {
       const input = JSON.parse(String(options.body)) as CreateBotInput;
       posted.push(input);
       return botResponse({ ...botDefinition(), id: input.id, name: input.name, requestedOverrides: input.overrides, resolvedConfiguration: { ...botDefaults().configuration, cwd: '/chosen/directory', provider: 'claude' } });
     }
-    return String(url).endsWith('/defaults') ? botResponse(botDefaults()) : botResponse({ items: [], nextCursor: null });
+    return String(url).includes('/defaults') ? botResponse(botDefaults()) : botResponse({ items: [], nextCursor: null });
   });
   const view = mount();
   await screen.findByText('No assistants yet');
@@ -225,7 +225,7 @@ it('preserves the form, selection and explicit request through authentication pa
   await waitFor(() => expect(assistantCreateSubmit()).toBeEnabled());
   fireEvent.click(assistantCreateSubmit());
   await waitFor(() => expect(navigate).toHaveBeenCalledTimes(1));
-  expect(posted).toEqual([{ id: expect.any(String), name: 'Preserved 助手', overrides: { cwd: '/chosen/directory', provider: 'claude' } }]);
+  expect(posted).toEqual([{ id: expect.any(String), name: 'Preserved 助手', overrides: { workerId: botId(20), cwd: '/chosen/directory', provider: 'claude' } }]);
   expect(writes(fetch)).toHaveLength(1);
   expect(navigate).toHaveBeenCalledWith(`/bots/${posted[0]!.id}`);
 });
@@ -235,11 +235,11 @@ it('restores an unknown creation into a fresh scope and blocks its check during 
   let original = '';
   const checked: string[] = [];
   fetch.mockImplementation(async (url, options) => {
-    if (options?.method === 'POST') {
+    if (options?.method === 'POST' && !String(url).endsWith('/readonly/requests')) {
       original = (JSON.parse(String(options.body)) as CreateBotInput).id;
       throw new TypeError('Response lost');
     }
-    if (String(url).endsWith('/defaults')) return botResponse(botDefaults());
+    if (String(url).includes('/defaults')) return botResponse(botDefaults());
     if (String(url).includes('?')) return botResponse({ items: [], nextCursor: null });
     checked.push(String(url));
     return botError(404, 'not_found');
@@ -276,9 +276,9 @@ it('restores an unknown creation into a fresh scope and blocks its check during 
   expect(screen.getByText(original)).toBeVisible();
 });
 
-it('shows unavailable Worker defaults beside the inline form without losing its editable name', async () => {
+it('shows unavailable Worker defaults in the creation dialog without losing its editable name', async () => {
   const fetch = fixture([]);
-  fetch.mockImplementation(async url => String(url).endsWith('/defaults')
+  fetch.mockImplementation(async url => String(url).includes('/defaults')
     ? botResponse({ ...botDefaults(), workerId: null, configuration: null, reason: 'no_available_worker', workers: [] })
     : botResponse({ items: [], nextCursor: null }));
   mount();

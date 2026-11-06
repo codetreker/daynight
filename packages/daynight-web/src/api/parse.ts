@@ -135,6 +135,7 @@ export type ServerError = {
   readonly graphLimit?: GraphLimitDetails;
   readonly serverMessage?: string;
   readonly stepsLimit?: { readonly encodedBytes: number; readonly maxEncodedBytes: number };
+  readonly writeOutcome?: "not_committed";
 };
 
 export const parseServerError = (value: unknown, includeSteps = false): ServerError => {
@@ -143,14 +144,18 @@ export const parseServerError = (value: unknown, includeSteps = false): ServerEr
   const requestId = string(data.requestId);
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(code) || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(requestId)) return malformed();
   const message = string(data.message);
+  const detailsValue = data.details;
+  const writeOutcome = typeof detailsValue === "object" && detailsValue !== null && !Array.isArray(detailsValue) &&
+    (detailsValue as Record<string, unknown>).writeOutcome === "not_committed" ? "not_committed" as const : undefined;
+  const withOutcome = (error: ServerError): ServerError => writeOutcome === undefined ? error : { ...error, writeOutcome };
   if (includeSteps && code === "steps_limit_exceeded") {
     const details = record(data.details);
-    return { code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } };
+    return withOutcome({ code, requestId, serverMessage: message, stepsLimit: { encodedBytes: count(details.encodedBytes), maxEncodedBytes: count(details.maxEncodedBytes) } });
   }
-  if (includeSteps && code !== "graph_limit_exceeded") return { code, requestId, serverMessage: message };
-  if (code !== "graph_limit_exceeded") return { code, requestId };
+  if (includeSteps && code !== "graph_limit_exceeded") return withOutcome({ code, requestId, serverMessage: message });
+  if (code !== "graph_limit_exceeded") return withOutcome({ code, requestId });
   const details = record(data.details);
-  return {
+  return withOutcome({
     code,
     requestId,
     graphLimit: {
@@ -159,7 +164,7 @@ export const parseServerError = (value: unknown, includeSteps = false): ServerEr
       maxNodes: count(details.maxNodes),
       maxEdges: count(details.maxEdges),
     },
-  };
+  });
 };
 
 export const isAttachmentPath = (value: string): boolean =>

@@ -39,7 +39,14 @@ has become uncertain.
 
 After `taskkill`, the supervisor polls every accepted original process handle
 with `WaitForSingleObject(handle, 0)` until all are signaled or the confirmation
-grace expires. The existing direct-process and stream close check still follows.
+grace expires. The existing direct-process and stream close check still follows,
+including after native confirmation fails. Native state can become observable
+before Node delivers its `close` event; an immediate native failure must not make
+the adapter abandon that still-pending event. The supervisor marks execution
+unsafe immediately, joins direct closure within its existing grace, and preserves
+both the native failure and any close timeout. Direct closure cannot turn a failed
+tree confirmation into successful exclusion.
+
 Inventory errors, native wait failures, termination failures and handle-release
 errors prevent successful exclusion and retain unsafe execution state. Every
 acquired handle is released individually, including after partial acquisition;
