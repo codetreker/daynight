@@ -1023,6 +1023,32 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		_, e := d.tx.Exec(ctx, `DELETE FROM private_transfer_ledger`)
 		return e
 	}
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `UPDATE private_transfers SET path='uncommitted' WHERE id=$1`, r.ID); e != nil {
+			return e
+		}
+		if _, e := d.tx.Exec(ctx, `ALTER TABLE private_transfers RENAME TO unavailable_private_transfers`); e != nil {
+			return e
+		}
+		_, e := d.CountActive(ctx, r.UserID)
+		if failed, state := store.DatabaseErrorFacts(e); !failed || state != "42P01" {
+			t.Fatalf("count failure lost database cause: %v", e)
+		}
+		return e
+	})
+	fail(func(d *privateTransferDAO) error {
+		if _, e := d.tx.Exec(ctx, `UPDATE private_transfers SET path='uncommitted' WHERE id=$1`, r.ID); e != nil {
+			return e
+		}
+		if _, e := d.tx.Exec(ctx, `CREATE FUNCTION reject_transfer_reservation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected ledger failure'; END $$; CREATE TRIGGER reject_transfer_reservation BEFORE UPDATE ON private_transfer_ledger FOR EACH ROW EXECUTE FUNCTION reject_transfer_reservation()`); e != nil {
+			return e
+		}
+		_, e := transfercore.Reserve(ctx, d, r.ID, 1, 100)
+		if failed, state := store.DatabaseErrorFacts(e); !failed || state != "P0001" {
+			t.Fatalf("reservation failure lost database cause: %v", e)
+		}
+		return e
+	})
 	for _, total := range []func(*privateTransferDAO) (int64, error){func(d *privateTransferDAO) (int64, error) { return d.ReservedTotal(ctx) }, func(d *privateTransferDAO) (int64, error) { return d.OutstandingTotal(ctx) }} {
 		fail(func(d *privateTransferDAO) error {
 			if e := deleteLedger(d); e != nil {
@@ -1153,7 +1179,7 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if e != nil {
 			return e
 		}
-		if got.State != "cleanup_pending" || got.ReservedBytes != 10 || total != 10 {
+		if got.State != "cleanup_pending" || got.Path != r.Path || got.ReservedBytes != 10 || got.OutstandingBytes != 10 || total != 10 {
 			t.Fatalf("failed operations altered record or ledger: %+v total=%d", got, total)
 		}
 		return nil
