@@ -330,9 +330,9 @@ an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin
 The endpoint advertises Team lifecycle, membership and scoped Project tools,
 Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
-Team or Project invitations, Task creation, reading, updating, status, deletion
-and property tools, ordered Task Steps reads and writes, and Task discussion reads
-and posts. Invitation links are returned only by creation; listing returns
+Team or Project invitations, Bot management, Task creation, reading, updating,
+status, deletion and property tools, ordered Task Steps reads and writes, and
+Task discussion reads and posts. Invitation links are returned only by creation; listing returns
 metadata without secrets. Task mutation inputs use the existing 1 MiB business
 JSON limit; versions are decimal strings and property values use `valueText`.
 Task and Step reads default to marked, bounded summaries; request `full` for
@@ -341,10 +341,13 @@ continuation after a change. Step writes return confirmed version and change fac
 and preserve the original collection capacity. Discussion reads return complete
 messages in oldest-first order; an explicit claim ID supplies agent attribution.
 A lost post response does not establish a receipt: read the thread before
-deciding whether to send again. Team and membership versions are decimal strings,
-and list results use scoped cursors. An item in a Team, Team member or scoped
-Project list that exceeds its response budget produces an explicit error;
-complete MCP retrieval and continuation past that item are not yet available.
+deciding whether to send again. Bot creation resolves omitted settings from
+available Worker defaults and does not imply startup readiness. Bot deletion
+requires an explicit version and reports the separate Worker and server cleanup
+states. Team and membership versions are decimal strings, and list results use
+scoped cursors. An item in a Team, Team member or scoped Project list that
+exceeds its response budget produces an explicit error; complete MCP retrieval
+and continuation past that item are not yet available.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control

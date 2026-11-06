@@ -26,6 +26,13 @@ type BotDeletionReceipt struct {
 	Result     model.BotCleanupResult `json:"result"`
 }
 
+// DeletionCleanupError reports that the deletion barrier committed, but a
+// subsequent cleanup operation failed. The cause retains its own transaction facts.
+type DeletionCleanupError struct{ Cause error }
+
+func (e *DeletionCleanupError) Error() string { return "bot deletion cleanup: " + e.Cause.Error() }
+func (e *DeletionCleanupError) Unwrap() error { return e.Cause }
+
 type liveSessions interface{ DiscardBotSession(string) }
 
 type Deletions struct {
@@ -144,7 +151,11 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		return model.Bot{}, errors.New("Bot deletion commit was not confirmed")
 	}
 	if out.Deletion.WorkerCleanup.State == "completed" && out.Deletion.ServerCleanup.State != "completed" {
-		return s.clean(ctx, p, id, input.DeletionID)
+		cleaned, err := s.clean(ctx, p, id, input.DeletionID)
+		if err != nil {
+			return model.Bot{}, &DeletionCleanupError{Cause: err}
+		}
+		return cleaned, nil
 	}
 	return out, nil
 }
