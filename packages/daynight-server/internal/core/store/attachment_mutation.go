@@ -14,6 +14,8 @@ type AttachmentMutationWriter interface {
 
 type AttachmentMutationScope interface {
 	LockTaskPresence(context.Context, string, string) (TaskPresence, error)
+	// ProjectAuthorization observes current access after the Task lock, without
+	// retaining authorization source locks across the admitted file operation.
 	ProjectAuthorization(context.Context, model.Principal, string) (model.ProjectAccess, error)
 	AttachmentDAO() AttachmentMutationDAO
 }
