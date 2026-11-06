@@ -50,3 +50,15 @@ func TestBoundedScopedProjectsPreservePrefixAndAuthority(t *testing.T) {
 		t.Fatalf("REST scope changed: %#v %v", all, err)
 	}
 }
+
+func TestBoundedProjectListRejectsInvalidBudgets(t *testing.T) {
+	projects, _, _, owner := projectService(t)
+	request := coreproject.ProjectListRequest{Page: model.PageRequest{Limit: 1}}
+	for _, limit := range []int{-1, 0, (128 << 20) + 1} {
+		page, err := projects.ListScopedBounded(context.Background(), owner, request, limit)
+		requireFault(t, err, "invalid_input")
+		if len(page.Items) != 0 || page.NextCursor != nil {
+			t.Fatalf("invalid budget yielded page: %#v", page)
+		}
+	}
+}

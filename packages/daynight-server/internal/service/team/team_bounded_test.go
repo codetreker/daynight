@@ -2,6 +2,7 @@ package team_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestBoundedTeamReadsAndWrites(t *testing.T) {
@@ -188,5 +190,18 @@ func TestBoundedWritesRecheckActorAfterLockWait(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBoundedTeamsQueryFailureIsNotAnEmptyPage(t *testing.T) {
+	_, db, _, actor := projectService(t)
+	teams := teamservice.NewTeams(db)
+	if _, err := db.Pool.Exec(context.Background(), `DROP TABLE teams`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := teams.ListBounded(context.Background(), actor, model.PageRequest{Limit: 10}, 16<<10)
+	var pgErr *pgconn.PgError
+	if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "42P01" || len(page.Items) != 0 || page.NextCursor != nil {
+		t.Fatalf("database failure became page: %#v %v", page, err)
 	}
 }

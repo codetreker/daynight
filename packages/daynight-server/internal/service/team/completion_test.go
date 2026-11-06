@@ -37,3 +37,12 @@ func TestListDiscardsResultsWhenSnapshotCompletionFails(t *testing.T) {
 		t.Fatalf("page %#v error %v", page, err)
 	}
 }
+
+func TestCreationErrorPreservesIdentifierAndFailure(t *testing.T) {
+	cause := &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: errors.New("lost commit")}
+	failure := &teamservice.CreationError{TeamID: uuid.NewString(), Cause: cause}
+	var tx *store.TransactionError
+	if failure.TeamID == "" || failure.Error() != cause.Error() || !errors.Is(failure, cause) || !errors.As(failure, &tx) || tx.Outcome != store.TransactionUnknown {
+		t.Fatalf("lost creation evidence: %#v", failure)
+	}
+}
