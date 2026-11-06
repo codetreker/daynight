@@ -1,10 +1,41 @@
 package config
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMCPOriginsConfigurationAndValidationOrder(t *testing.T) {
+	c, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_ALLOWED_ORIGINS": "https://client.example, http://localhost:9000"}))
+	if err != nil || len(c.MCPAllowedOrigins) != 2 || c.MCPAllowedOrigins[0] != "https://client.example" || c.MCPAllowedOrigins[1] != "http://localhost:9000" {
+		t.Fatalf("MCP allowed origins: %v, %v", c.MCPAllowedOrigins, err)
+	}
+	for _, invalid := range []string{"https://client.example/path", "https://client.example?", "null", "https://client.example,", "https://user@client.example", "https://CLIENT.example", "https://client.example#fragment"} {
+		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_ALLOWED_ORIGINS": invalid}))
+		var failure *ConfigurationError
+		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_MCP_ALLOWED_ORIGINS" || failure.Cause == nil || strings.Contains(err.Error(), invalid) {
+			t.Errorf("invalid MCP origin %q: %v", invalid, err)
+		}
+	}
+	c = configuredTestConfig()
+	c.MCPAllowedOrigins = []string{"https://client.example/path"}
+	c.UniAuthAppID = "invalid:app"
+	c.UniAuthCallbackURL = c.PublicOrigin + "/mcp"
+	var failure *ConfigurationError
+	if err := c.Validate(); !errors.As(err, &failure) || failure.Field != "DAYNIGHT_UNIAUTH_CALLBACK_URL" {
+		t.Fatalf("callback error must precede MCP origin: %v", err)
+	}
+	c.UniAuthCallbackURL = c.PublicOrigin + "/api/v1/auth/callback"
+	if err := c.Validate(); !errors.As(err, &failure) || failure.Field != "DAYNIGHT_MCP_ALLOWED_ORIGINS" {
+		t.Fatalf("MCP origin must precede credential validation: %v", err)
+	}
+	c.MCPAllowedOrigins = nil
+	if err := c.Validate(); !errors.As(err, &failure) || !strings.Contains(failure.Field, "DAYNIGHT_UNIAUTH_APP_ID") {
+		t.Fatalf("invalid credential was not validated: %v", err)
+	}
+}
 
 func configuredTestConfig() Config {
 	return Config{

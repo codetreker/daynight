@@ -15,7 +15,8 @@ single owner of shared modules and partial-startup cleanup.
 The neutral configuration package validates inputs before resources are opened.
 The application assembly creates one identity client, file root, persistence
 resource and shared modules. The HTTP runtime owns listener and request admission;
-the application owns the Session engine and underlying resources. Their shutdown
+the application owns the Session engine and underlying resources. The
+[MCP entry](2026-11-06-mcp-http-entry.md) stops and drains before the shared relay. Their shutdown
 closes admission before waiting for admitted users. Session Operations finish
 transaction and publication work before the engine reports idle. See the
 [server design](../../../../docs/design/daynight-server.md) for the shutdown

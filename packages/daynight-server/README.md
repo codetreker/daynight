@@ -317,6 +317,26 @@ understand the renamed grants or inherited authority. After a committed migratio
 recovery requires forward repair or restoration of the paired backup while
 writers remain stopped, with its corresponding loss of later writes.
 
+## MCP HTTP entry
+
+The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
+`2026-07-28` and `2025-11-25`. Configure a client with the service's HTTPS URL
+ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
+validates its own credential; browser cookies are not accepted. Requests carrying
+an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
+The endpoint currently advertises no business tools. A tool is discoverable only
+after its complete business adapter is registered.
+
+The request body limit is 4 MiB. Operations that may materialize large objects
+reserve a single 512 MiB working slot before calling a use case; bounded control
+operations have a separate 16-slot budget. A saturated budget returns
+`resource_busy`. Permits remain held until the handler and response delivery
+finish. The application rejects and cancels MCP requests during shutdown before
+stopping the shared relay. A drain timeout cancels active requests, but the
+runtime waits for handlers, the relay and database cleanup within a separate
+five-second cleanup budget before closing shared storage. If cleanup times out,
+it retains resources and returns an error; a caller can retry close.
+
 ## Local Docker deployment
 
 Configure the required UniAuth App and origin settings using the
@@ -381,6 +401,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
+| `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
 | `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin | Required |
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth backend App ID | Required |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Server-only UniAuth App secret | Required |
@@ -395,7 +416,7 @@ diagnostics and cause categories.
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/login`, `/setup`, `/teams` and every descendant path, together with the
+`/mcp`, `/login`, `/setup`, `/teams` and every descendant path, together with the
 `/api/v1/teams` API namespace. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
 starting the server. Login return loops, including `/login`, are rejected before a
@@ -412,10 +433,14 @@ Port `0` requests an ephemeral loopback port; the bound address appears
 in the startup log. Invalid timeout values fail validation.
 
 `SIGINT` and `SIGTERM` stop accepting connections and begin draining requests.
-Active request contexts remain usable during the drain. On deadline, the runtime
-cancels remaining request contexts, force-closes HTTP connections, and closes the
-file-storage root and database pool after request-owned resources are released.
-Database operations must use the request context and release acquired connections.
+Active REST request contexts remain usable during the drain; MCP requests are
+canceled when shutdown begins. On deadline, the runtime cancels remaining request
+contexts, signals Session operations and force-closes HTTP connections. It waits
+up to five additional seconds for active handlers, relay and session work, and
+database cancellation before closing the file root and pool. The timeout remains
+an error; if cleanup is incomplete, ownership is retained for another close
+attempt. Database operations must
+use the request context and release acquired connections.
 The runtime also closes an acquired file root on later startup failure. Local
 files remain on disk when the handle closes. Startup fixtures supply isolated
 roots; built-process restart tests reuse their fixture root.

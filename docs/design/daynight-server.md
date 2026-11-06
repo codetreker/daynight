@@ -114,7 +114,7 @@ packages/daynight-server/
                 └── migrations/
 ```
 
-`cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求并等待已接纳的普通 HTTP 和 WebSocket handler；WebSocket 断连事务和已准入 HTTP 请求完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。优雅期限由 `DAYNIGHT_SHUTDOWN_TIMEOUT` 控制；超时后取消请求、通知 Operation 停止并强关 transport；断连收尾仍可启动所需事务，再用独立的五秒清理期限等待实际工作。只有全部使用者退出后应用才关闭文件和数据库；清理超时保留资源供关闭重试，已发生的优雅超时仍作为错误返回。
+`cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出、WebSocket 断连事务和已准入 HTTP 请求完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。优雅期限由 `DAYNIGHT_SHUTDOWN_TIMEOUT` 控制；超时后取消请求、通知 Operation 停止并强关 transport；断连收尾仍可启动所需事务，再用独立的五秒清理期限等待实际工作。只有全部使用者退出后应用才关闭文件和数据库；清理超时保留资源供关闭重试，已发生的优雅超时仍作为错误返回。
 `cmd/e2e_tests` 是独立的 Go 测试包，拥有真实服务进程、安装 CLI 和附件迁移的
 集成验收及其 `TestMain`；两个测试包分别拥有临时资源和辅助函数。`api` 拥有 HTTP 请求、响应和错误
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、

@@ -7,39 +7,17 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
-	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
-	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
-	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"github.com/codetreker/uniauth/sdk/go"
 )
 
 // App owns the shared modules and their underlying resources.
 type App struct {
-	Identity    *identityservice.Identity
-	Memberships *projectservice.Memberships
-	Projects    *projectservice.Projects
-	Teams       *teamservice.Teams
-	Workers     *workerservice.Workers
-	Tasks       *taskservice.Tasks
-	TaskSearch  store.TaskSearchReader
-	TaskSteps   *taskservice.TaskSteps
-	TaskThreads *taskservice.TaskThreads
-	TaskSync    *taskservice.TaskSync
-	Attachments *attachmentservice.Attachments
-	Sessions    *sessionservice.Service
-	Bots        *botservice.Bots
-	Deletions   *botservice.Deletions
-	Web         *webresources.Resources
-	Engine      *sessioncore.Engine
-	Ready       func(context.Context) error
+	*application.Application
+	Web   *webresources.Resources
+	Ready func(context.Context) error
 
 	closeLock   chan struct{}
 	files       interface{ Close() error }
@@ -60,17 +38,9 @@ func NewIdentityClient(c config.Config) (*uniauth.Client, error) {
 // NewModules assembles modules from already-owned dependencies. Their owner must
 // stop the engine before closing those dependencies.
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client) *App {
-	engine := sessioncore.NewEngine(files)
 	app := &App{
-		closeLock:   make(chan struct{}, 1),
-		Identity:    identityservice.New(database, client, c.UniAuthCallbackURL),
-		Memberships: projectservice.NewMemberships(database), Projects: projectservice.NewProjects(database),
-		Teams: teamservice.NewTeams(database), Workers: workerservice.NewWorkers(database),
-		Tasks: taskservice.NewTasks(database), TaskSearch: database, TaskSteps: taskservice.NewTaskSteps(database),
-		TaskThreads: taskservice.NewTaskThreads(database), TaskSync: taskservice.NewTaskSync(database, c.TaskSyncOverlap),
-		Attachments: attachmentservice.NewAttachments(database, database, files),
-		Sessions:    sessionservice.New(database, engine), Bots: botservice.New(database),
-		Deletions: botservice.NewDeletions(database, files, engine), Web: webresources.New(), Engine: engine, Ready: ready,
+		Application: application.New(database, files, client, c.UniAuthCallbackURL, c.TaskSyncOverlap),
+		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
 	return app

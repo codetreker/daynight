@@ -21,6 +21,7 @@ type Runtime struct {
 	shutdownTimeout time.Duration
 	cancelRequests  context.CancelFunc
 	shutdownHandler func(context.Context) error
+	beginShutdown   func()
 	cancelApp       func()
 	drainApp        func(context.Context) error
 	closeApp        func(context.Context) error
@@ -59,6 +60,9 @@ func Start(ctx context.Context, address string, startupTimeout, shutdownTimeout 
 	requests, cancelRequests := context.WithCancel(context.Background())
 	r := &Runtime{listener: listener, logger: logger, shutdownTimeout: shutdownTimeout, cancelRequests: cancelRequests,
 		shutdownHandler: shutdownHandler, cancelApp: cancelApp, drainApp: drainApp, closeApp: closeApp, drained: make(chan struct{}), closeLock: make(chan struct{}, 1)}
+	if starter, ok := handler.(interface{ BeginShutdown() }); ok {
+		r.beginShutdown = starter.BeginShutdown
+	}
 	r.closeLock <- struct{}{}
 	r.http = &http.Server{
 		Handler: httpx.RequestLogging(logger, r.admit(handler)), ReadHeaderTimeout: 5 * time.Second,
@@ -201,6 +205,9 @@ func (r *Runtime) grace() error {
 	}
 	r.graceDone = true
 	r.stopAdmission()
+	if r.beginShutdown != nil {
+		r.beginShutdown()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.shutdownTimeout)
 	defer cancel()
 	r.startRelay(ctx)
