@@ -5,6 +5,7 @@ import type { Project } from "../../api/types";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { useBodyScrollLock } from "../../app/useBodyScrollLock";
 import type { TaskCacheScope } from "../task-cache/project-cache";
+import { TaskCacheError } from "../task-cache/database";
 
 export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = true, admission, onIdentityMismatch, onClose, onCreated }: { readonly userId: string; readonly teamId?: string; readonly teamName?: string; readonly teamPersonal?: boolean; readonly admission?: TaskCacheScope; readonly onIdentityMismatch: () => void; readonly onClose: () => void; readonly onCreated: (project: Project) => void }) => {
   const targetTeamId = useRef(teamId).current;
@@ -13,6 +14,14 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   const dialog = useRef<HTMLDialogElement>(null);
   const name = useRef<HTMLInputElement>(null);
   const active = useRef<AbortController | null>(null);
+  const checkActive = useRef<AbortController | null>(null);
+  const checkSnapshot = useRef<ReadonlyMap<string, string> | null>(null);
+  const itemGenerations = useRef(new Map<string, ReadonlyMap<string, string>>());
+  const loadedPages = useRef(0);
+  const checkAction = useRef<() => void>(() => {});
+  const restorePending = useRef(false);
+  const restoring = useRef(false);
+  const mounted = useRef(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [check, setCheck] = useState<{ status: "idle" | "loading" | "ready" | "error"; items: readonly Project[]; nextCursor: string | null; error: unknown }>({ status: "idle", items: [], nextCursor: null, error: null });
@@ -29,26 +38,100 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
     };
   }, []);
-  useEffect(() => () => active.current?.abort(), []);
-  const checkProjects = (cursor: string | null) => {
-    if (active.current !== null) return;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; restorePending.current = false; active.current?.abort(); };
+  }, []);
+  useEffect(() => {
+    if (admission === undefined) return;
+    return admission.subscribeProjection((event) => {
+      if (event.accessRestored) {
+        if (itemGenerations.current.has(event.projectId)) {
+          if (active.current === null) checkAction.current();
+          else restorePending.current = true;
+        }
+        return;
+      }
+      if (!event.accessRevoked) return;
+      const observed = itemGenerations.current.get(event.projectId);
+      const remove = observed !== undefined && admission.projectionEventMatches(observed, event);
+      const cancel = !(event.error instanceof TaskCacheError) && checkActive.current !== null && admission.projectionEventMatches(checkSnapshot.current, event);
+      const resumeRestoration = cancel && restoring.current;
+      if (cancel) { checkActive.current?.abort(); if (active.current === checkActive.current) active.current = null; checkActive.current = null; checkSnapshot.current = null; restoring.current = false; }
+      if (remove || cancel || event.error instanceof TaskCacheError && admission.isProjectionDenied(event.projectId)) {
+        setCheck((previous) => ({ ...previous, items: remove ? previous.items.filter((item) => item.id !== event.projectId) : previous.items,
+          status: event.error instanceof TaskCacheError ? "error" : cancel ? "ready" : previous.status,
+          error: event.error instanceof TaskCacheError ? event.error : previous.error }));
+      }
+      if (resumeRestoration) checkAction.current();
+    });
+  }, [admission]);
+  const checkProjects = (cursor: string | null, preserve = false) => {
+    if (!mounted.current) return;
+    if (active.current !== null) {
+      if (preserve || !restoring.current || checkActive.current !== active.current) return;
+      restorePending.current = true;
+      active.current.abort(); active.current = null; checkActive.current = null; checkSnapshot.current = null;
+    }
     const controller = new AbortController();
     const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal]);
     active.current = controller;
-    setCheck((previous) => ({ status: "loading", items: cursor === null ? [] : previous.items, nextCursor: cursor, error: null }));
+    checkActive.current = controller;
+    checkSnapshot.current = null;
+    restoring.current = preserve;
+    let preparationError: TaskCacheError | null = null;
+    if (!preserve) setCheck((previous) => ({ status: "loading", items: cursor === null ? [] : previous.items, nextCursor: cursor, error: null }));
     void (async () => {
       try {
+        const snapshot = admission === undefined ? new Map<string, string>() : await admission.prepareProjection(signal);
+        if (signal.aborted || admission?.isInvalidated) return;
+        checkSnapshot.current = snapshot;
+        preparationError = admission?.projectionSnapshotError(snapshot) ?? null;
+        if (admission?.projectionSnapshotHasDenials(snapshot)) {
+          setCheck((previous) => ({ ...previous, items: previous.items.filter((item) => !admission.projectionSnapshotDenied(snapshot, item.id)),
+            error: preparationError ?? previous.error }));
+        }
+        const pages: Project[] = [];
+        let nextCursor = cursor, pageCount = 0;
+        const limit = preserve ? Math.max(1, loadedPages.current) : 1;
+        const cursors = new Set<string>();
+        do {
+          if (admission !== undefined) await admission.ready(signal);
+          if (signal.aborted) return;
+          if (preserve && nextCursor !== null) {
+            if (cursors.has(nextCursor)) throw new ApiError('protocol');
+            cursors.add(nextCursor);
+          }
+          const page = await listProjects({ limit: 50, ...(nextCursor === null ? {} : { cursor: nextCursor }), ...(targetTeamId === undefined ? {} : { teamId: targetTeamId }) }, signal, { userId, onPrincipalMismatch: onIdentityMismatch });
+          if (preserve && page.nextCursor !== null && cursors.has(page.nextCursor)) throw new ApiError("protocol");
+          pages.push(...page.items); nextCursor = page.nextCursor; pageCount++;
+        } while (preserve && pageCount < limit && nextCursor !== null);
         if (admission !== undefined) await admission.ready(signal);
-        const page = await listProjects({ limit: 50, ...(cursor === null ? {} : { cursor }), ...(targetTeamId === undefined ? {} : { teamId: targetTeamId }) }, signal, { userId, onPrincipalMismatch: onIdentityMismatch });
-        if (admission !== undefined) await admission.ready(signal);
-        if (!signal.aborted) setCheck((previous) => ({ status: "ready", items: cursor === null ? page.items : [...previous.items, ...page.items], nextCursor: page.nextCursor, error: null }));
+        if (!signal.aborted) {
+          const visible = pages.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
+          if (cursor === null && !preserve) itemGenerations.current.clear();
+          for (const item of visible) if (preserve || !itemGenerations.current.has(item.id)) itemGenerations.current.set(item.id, snapshot);
+          loadedPages.current = cursor !== null ? loadedPages.current + pageCount : pageCount;
+          setCheck((previous) => {
+            const failure = preparationError ?? admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null);
+            const retained = cursor === null && !preserve ? [] : previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
+            const items = new Map<string, Project>();
+            for (const item of preserve ? [...visible, ...retained] : [...retained, ...visible]) if (!items.has(item.id)) items.set(item.id, item);
+            return { status: failure === null ? "ready" : "error", items: [...items.values()], nextCursor, error: failure };
+          });
+        }
       } catch (cause) {
         if (signal.aborted || isAbortError(cause)) return;
         try { if (admission !== undefined) await admission.ready(signal); } catch { return; }
-        if (!signal.aborted) setCheck((previous) => ({ ...previous, status: "error", error: cause }));
-      } finally { if (active.current === controller) active.current = null; }
+        if (!signal.aborted) setCheck((previous) => ({ ...previous, status: "error", error: preparationError ?? cause }));
+      } finally {
+        if (active.current === controller) active.current = null;
+        if (checkActive.current === controller) { checkActive.current = null; checkSnapshot.current = null; restoring.current = false; }
+        if (mounted.current && restorePending.current && active.current === null) { restorePending.current = false; checkAction.current(); }
+      }
     })();
   };
+  checkAction.current = () => checkProjects(null, true);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (active.current !== null || unknown) return;
@@ -79,6 +162,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       {unknown && check.status !== "idle" && <section aria-label={m.observedProjects}>
         <h3>{m.observedProjects}</h3>
         {check.items.length > 0 && <ul>{check.items.map((item) => <li key={item.id}><a href={`/projects/${item.id}`}>{item.name}</a> <code>{item.id}</code> <span>{item.repoUrl}</span></li>)}</ul>}
+        {check.error instanceof TaskCacheError && check.status !== "error" && <div role="alert"><p>{m.checkFailed}</p></div>}
         {check.status === "loading" ? <p>{m.checking}</p> : check.status === "error" ? <div role="alert"><p>{m.checkFailed}</p>{check.error instanceof ApiError && check.error.requestId !== null && <p>{common.requestId}<code>{check.error.requestId}</code></p>}</div> : check.items.length === 0 ? <p>{m.noProjects}</p> : null}
         {check.nextCursor !== null && check.status !== "loading" && <button className="button" type="button" onClick={() => checkProjects(check.nextCursor)}>{m.loadMore}</button>}
       </section>}

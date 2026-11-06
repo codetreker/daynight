@@ -111,6 +111,7 @@ describe("authentication language changes", () => {
     await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
     const alert = await screen.findByRole("alert");
     const requestId = within(alert).getByText("auth-locale-request");
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
     const requests = fetcher.mock.calls.length;
     await interaction.selectOptions(language(), "zh-CN");
     expect(screen.getByRole("alert")).toBe(alert);

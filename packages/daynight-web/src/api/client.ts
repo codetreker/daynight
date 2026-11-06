@@ -62,6 +62,7 @@ let authGeneration = 0;
 let authPauseRevision = 0;
 export const readAuthRequestGeneration = (): number => authGeneration;
 const unauthorizedListeners = new Set<() => void>();
+const authPauseListeners = new Set<() => void>();
 type AuthPause = { readonly waiters: Set<() => void>; owner: symbol };
 let authPause: AuthPause | null = null;
 
@@ -75,13 +76,19 @@ export const invalidateAuthRequests = (): void => { authGeneration += 1; release
 export const pauseAuthRequests = (): (() => void) => {
   authPauseRevision += 1;
   const owner = Symbol();
-  if (authPause === null) authPause = { waiters: new Set(), owner };
-  else authPause.owner = owner;
-  const pause = authPause;
+  const created = authPause === null;
+  const pause = authPause ?? { waiters: new Set(), owner };
+  if (created) authPause = pause;
+  else pause.owner = owner;
+  if (created) for (const listener of authPauseListeners) listener();
   return () => { if (authPause === pause && pause.owner === owner) releaseAuthRequests(); };
 };
 
 export const authRequestsPaused = (): boolean => authPause !== null;
+export const subscribeAuthPause = (listener: () => void): (() => void) => {
+  authPauseListeners.add(listener);
+  return () => { authPauseListeners.delete(listener); };
+};
 export const authRequestsPauseRevision = (): number => authPauseRevision;
 
 const waitForIdentity = (pause: AuthPause, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {

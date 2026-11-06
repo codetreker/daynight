@@ -29,6 +29,7 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
   const qualification = qualificationRef.current;
   const readReady = sessions.captureDirectSessionQualification(projectId, taskId) !== null;
   const blocked = useRef(false);
+  const directAccessPending = useRef<'uncertain' | 'failed' | null>(null);
   const denialOrigin = useRef(Symbol('direct-session-records'));
   const activeRead = useRef<AbortController | null>(null);
 
@@ -37,17 +38,46 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
   useEffect(() => scope.subscribe(event => {
     if (event.projectId !== projectId || event.sessionHistoryUncertain?.origin === denialOrigin.current || event.sessionHistoryCleared?.origin === denialOrigin.current ||
       blocked.current && (event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId)) return;
+    if (event.directAccessUncertain) {
+      activeRead.current?.abort(); setRetryInactive(false); blocked.current = true; directAccessPending.current = 'uncertain';
+      setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+      setState({ page: null, error: event.error ?? null, loading: false, checking: false, denied: true });
+      return;
+    }
+    if (event.directAccessRecheck) {
+      activeRead.current?.abort();
+      directAccessPending.current = event.error !== undefined ? 'failed' : null;
+      blocked.current = event.error !== undefined;
+      setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+      // Keep selection withdrawn until a new first page is actually admitted,
+      // even when the uncertainty and recheck are batched in one render.
+      setState({ page: null, error: event.error ?? null, loading: false, checking: event.error === undefined, denied: true });
+      return;
+    }
     if (event.accessRevoked || event.scopeSuspended || event.historyChanged || event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId) {
       activeRead.current?.abort();
       setRetryInactive(false);
-      blocked.current = !event.historyChanged;
-      if (event.historyChanged) setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+      if (event.historyChanged || event.accessRevoked && !event.scopeSuspended) {
+        // A confirmed withdrawal or retired history ends the old uncertainty,
+        // but the replacement must still obtain a fresh direct receipt.
+        directAccessPending.current = 'failed';
+        blocked.current = true;
+        setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
+      } else blocked.current = true;
       setState({ page: null, error: event.error ?? null, loading: false, checking: false, denied: true });
     } else if (event.accessRestored) {
-      blocked.current = false;
+      blocked.current = directAccessPending.current !== null;
       setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
     }
   }), [scope, projectId, taskId]);
+
+  useEffect(() => {
+    // A fresh Task observation can recover a failed access check, withdrawal,
+    // or retired history. The prior opening was retired, and its page discarded.
+    if (directAccessPending.current !== 'failed' || qualification === null || !readReady) return;
+    directAccessPending.current = null;
+    blocked.current = false;
+  }, [qualification, readReady]);
 
   useEffect(() => {
     if ((!active && !retryInactive) || qualification === null || !readReady || blocked.current) return;
@@ -146,6 +176,6 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
   const page = denied ? null : state.page;
   return { api, scope, items: page?.items ?? [], cursor: page?.cursor ?? null, error: state.error,
     loading: state.loading, checking: state.checking, confirmedEmpty: page !== null && page.items.length === 0 && page.cursor === null,
-    denied, refresh: () => { blocked.current = false; if (!active) setRetryInactive(true); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); },
+    denied, refresh: () => { if (directAccessPending.current !== null) return; blocked.current = false; if (!active) setRetryInactive(true); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); },
     more: () => { if (page?.cursor) setRequest(old => ({ cursor: page.cursor, sequence: old.sequence + 1 })); } };
 }

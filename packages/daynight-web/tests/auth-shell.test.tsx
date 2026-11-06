@@ -159,6 +159,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
     fireEvent.click(await screen.findByRole("button", { name: "＋ 创建项目" }));
     fireEvent.change(screen.getByLabelText(/项目名称/), { target: { value: "New project" } });
     fireEvent.change(screen.getByLabelText(/仓库地址/), { target: { value: "https://github.com/example/new-project" } });
@@ -166,7 +167,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     const nav = within(screen.getByRole("complementary", { name: "工作空间导航" }));
     expect(await nav.findByRole("link", { name: "New project" })).toHaveAttribute("aria-current", "true");
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
-    expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(2);
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(2));
   });
 
   it("removes a project from navigation after its own direct grant is removed and access is lost", async () => {
@@ -758,6 +759,7 @@ describe("authenticated application shell", () => {
       : Promise.resolve(defaults(url)));
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.startsWith("/api/v1/projects?"))).toBe(true));
     fireEvent.click(await screen.findByRole("button", { name: "＋ 创建项目" }));
     const dialog = screen.getByRole("dialog", { name: "创建私有项目" });
     const name = screen.getByLabelText(/项目名称/) as HTMLInputElement;

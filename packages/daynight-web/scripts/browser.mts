@@ -20,6 +20,7 @@ export const browserConfigs = [
   'team-management-identity-playwright.config.ts',
   'project-grants-playwright.config.ts',
   'project-transfer-playwright.config.ts',
+  'project-withdrawal-playwright.config.ts',
   'attachment-browser-playwright.config.ts',
   'task-controls-playwright.config.ts',
   'graph-browser-playwright.config.ts',
