@@ -326,15 +326,28 @@ ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
 The endpoint advertises Project creation, transfer, listing and inspection
-tools. A tool is discoverable only after its complete business adapter is
+tools, and ordered Task Steps reads and writes. Step reads default to bounded
+summaries; explicit full reads return complete content. Page cursors bind the
+parent version and reject continuation after a change. Step writes return
+confirmed version and change facts, and preserve the original collection
+capacity. A tool is discoverable only after its complete business adapter is
 registered.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
 operations have a separate 16-slot budget. A saturated budget returns
 `resource_busy`. Permits remain held until the handler and response delivery
-finish. The application rejects and cancels MCP requests during shutdown before
-stopping the shared relay. A drain timeout cancels active requests, but the
+finish. The opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
+the 64 MiB Step collection and concurrent summary write admission with sampled
+Go heap. After preparing the isolated database and UniAuth fixture, run it
+separately from CI:
+
+```bash
+go test -race -tags=stress ./internal/server -run '^TestStressMCPStepsCapacityAndConcurrentSummaryHeap$' -count=1 -timeout=10m
+```
+
+The application rejects and cancels MCP requests during shutdown before stopping
+the shared relay. A drain timeout cancels active requests, but the
 runtime waits for handlers, the relay and database cleanup before closing shared
 storage and returning the timeout error.
 
