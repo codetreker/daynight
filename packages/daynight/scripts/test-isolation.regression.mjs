@@ -45,6 +45,7 @@ const fixture = t => {
   const directory = mkdtempSync(path.join(temporary, "isolation-regression-"));
   const retained = path.join(directory, ".daynight");
   mkdirSync(path.join(retained, "worker"), { recursive: true });
+  mkdirSync(path.join(retained, "child"));
   mkdirSync(path.join(retained, "controller", "sockets"), { recursive: true });
   const files = new Map([
     [path.join(retained, "config.yml"), "retained configuration\n"],
@@ -215,5 +216,138 @@ test("permits Windows named pipes while retaining namespace disk protection", t 
   `;
   execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
     cwd: packageDirectory, env: f.environment, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+  });
+});
+
+test("resolves symlinks before parent traversal for writes and cleanup", t => {
+  if (process.platform === "win32") return t.skip("POSIX parent traversal follows symlinks before consuming ..; Windows paths are normalized by Node.");
+  probe(t, `
+    const safe = path.join(fixture, 'traversal-safe'), alias = path.join(safe, 'alias');
+    fs.mkdirSync(safe); fs.symlinkSync(path.join(retained, 'child'), alias);
+    const raw = alias + '/../config.yml';
+    const relative = path.relative(process.cwd(), safe) + '/alias/../config.yml';
+    for (const filename of [raw, relative, Buffer.from(raw)]) {
+      assert.throws(() => isolation.assertSafePath(filename), /retained Daynight state/);
+      assert.throws(() => fs.writeFileSync(filename, 'lost'), /retained Daynight state/);
+      assert.throws(() => fs.unlinkSync(filename), /retained Daynight state/);
+      await assert.rejects(fsp.writeFile(filename, 'lost'), /retained Daynight state/);
+    }
+    const fileAlias = path.join(safe, 'file-alias'), dangling = path.join(safe, 'dangling-alias');
+    fs.symlinkSync(raw, fileAlias);
+    fs.symlinkSync(alias + '/../new-file', dangling);
+    assert.throws(() => fs.writeFileSync(fileAlias, 'lost'), /retained Daynight state/);
+    assert.throws(() => fs.writeFileSync(dangling, 'lost'), /retained Daynight state/);
+    const selector = alias + '/../selected-state';
+    const environment = isolation.guardedEnvironment({ ...process.env, DN_CONFIG_DIR: selector });
+    const { resolveConfigurationPaths } = await import(${JSON.stringify(pathToFileURL(path.join(packageDirectory, "src/config/paths.ts")).href)});
+    const selected = resolveConfigurationPaths(process.env.HOME, path, environment);
+    assert.equal(selected.stateDirectory, path.join(safe, 'selected-state'));
+    fs.mkdirSync(selected.stateDirectory); fs.writeFileSync(selected.configFile, 'allowed');
+    fs.unlinkSync(fileAlias); fs.unlinkSync(dangling); fs.unlinkSync(alias);
+  `);
+});
+
+test("checks traversal after recursive mkdir creates a missing component", t => {
+  if (process.platform === "win32") return t.skip("POSIX recursive directory traversal is verified on Linux and macOS.");
+  probe(t, `
+    const safe = path.join(fixture, 'mkdir-safe'), alias = path.join(safe, 'alias');
+    fs.mkdirSync(safe); fs.symlinkSync(path.join(retained, 'child'), alias);
+    const raw = safe + '/missing/../alias/new-directory';
+    assert.throws(() => isolation.assertSafePath(raw), /retained Daynight state/);
+    assert.throws(() => fs.mkdirSync(raw, { recursive: true }), /retained Daynight state/);
+    await assert.rejects(fsp.mkdir(raw, { recursive: true }), /retained Daynight state/);
+    assert.equal(fs.existsSync(path.join(retained, 'child', 'new-directory')), false);
+    assert.equal(fs.existsSync(path.join(safe, 'missing')), false);
+    const unrelated = safe + '/missing/../allowed-directory';
+    fs.mkdirSync(unrelated, { recursive: true });
+    assert.equal(fs.existsSync(path.join(safe, 'allowed-directory')), true);
+  `);
+});
+
+test("preserves trailing-separator directory semantics while allowing unlink of the alias", t => {
+  if (process.platform === "win32") return t.skip("POSIX trailing-separator behavior is verified on Linux and macOS.");
+  probe(t, `
+    const alias = path.join(fixture, 'directory-alias'); fs.symlinkSync(retained, alias);
+    for (const directory of [alias + '/', alias + '/.', alias + '/child/..']) {
+      assert.throws(() => isolation.assertSafePath(directory, true, false), /retained Daynight state/);
+      assert.throws(() => fs.rmSync(directory, { recursive: true, force: true }), /retained Daynight state/);
+    }
+    fs.unlinkSync(alias); assert.equal(fs.existsSync(alias), false);
+  `);
+});
+
+test("keeps descriptor protection bound to the opened target across cwd and alias changes", t => {
+  probe(t, `
+    const cwd = process.cwd(); let descriptor, handle;
+    try {
+      process.chdir(retained);
+      descriptor = fs.openSync('config.yml', 'r'); handle = await fsp.open('config.yml', 'r');
+      process.chdir(fixture);
+      assert.throws(() => isolation.assertSafePath(descriptor), /retained Daynight state/);
+      assert.throws(() => fs.fchmodSync(descriptor, 0o600), /retained Daynight state/);
+      await assert.rejects(handle.chmod(0o600), /retained Daynight state/);
+    } finally {
+      process.chdir(cwd); if (descriptor !== undefined) fs.closeSync(descriptor); if (handle !== undefined) await handle.close();
+    }
+    const unrelated = path.join(fixture, 'fd-unrelated'); fs.writeFileSync(unrelated, 'allowed');
+    const alias = path.join(fixture, 'fd-alias');
+    fs.symlinkSync(retained, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const file = path.join(alias, 'config.yml');
+    descriptor = fs.openSync(file, 'r'); handle = await fsp.open(file, 'r');
+    try {
+      fs.unlinkSync(alias);
+      const directory = path.join(fixture, 'fd-new-target'); fs.mkdirSync(directory); fs.writeFileSync(path.join(directory, 'config.yml'), 'allowed');
+      fs.symlinkSync(directory, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      assert.throws(() => isolation.assertSafePath(descriptor), /retained Daynight state/);
+      assert.throws(() => fs.fchmodSync(descriptor, 0o600), /retained Daynight state/);
+      await assert.rejects(handle.chmod(0o600), /retained Daynight state/);
+    } finally { fs.closeSync(descriptor); await handle.close(); }
+  `);
+});
+
+test("retains descriptor protection when an alias changes before the open callback is delivered", t => {
+  const f = fixture(t);
+  const source = `
+    import assert from 'node:assert/strict'; import fs from 'node:fs'; import fsp from 'node:fs/promises';
+    import path from 'node:path'; import { createRequire } from 'node:module';
+    const nativeOpen = fs.open, nativePromiseOpen = fsp.open;
+    let announce;
+    fs.open = (file, flags, ...arguments_) => {
+      const callback = arguments_.pop();
+      nativeOpen(file, flags, ...arguments_, (error, fd) => announce({ error, fd, deliver: () => callback(error, fd) }));
+    };
+    fsp.open = (...arguments_) => new Promise((resolve, reject) => {
+      nativePromiseOpen(...arguments_).then(
+        handle => announce({ error: null, fd: handle.fd, deliver: () => resolve(handle) }),
+        error => announce({ error, deliver: () => reject(error) }),
+      );
+    });
+    const isolation = createRequire(${JSON.stringify(f.preload)})(${JSON.stringify(f.preload)});
+    const retained = ${JSON.stringify(f.retained)}, fixture = ${JSON.stringify(f.directory)};
+    try {
+      const alias = path.join(fixture, 'pending-open-alias'), safe = path.join(fixture, 'pending-open-safe');
+      fs.mkdirSync(safe); fs.writeFileSync(path.join(safe, 'config.yml'), 'allowed');
+    for (const kind of ['callback', 'promise']) {
+      if (fs.existsSync(alias)) fs.unlinkSync(alias);
+      fs.symlinkSync(retained, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      const ready = new Promise(resolve => { announce = resolve; });
+      const pending = kind === 'callback'
+        ? new Promise((resolve, reject) => fs.open(path.join(alias, 'config.yml'), 'r', (error, fd) => error === null ? resolve(fd) : reject(error)))
+        : fsp.open(path.join(alias, 'config.yml'), 'r');
+      const opened = await ready;
+      if (opened.error !== null) { opened.deliver(); await pending; }
+      assert.equal(fs.readFileSync(opened.fd, 'utf8'), fs.readFileSync(path.join(retained, 'config.yml'), 'utf8'));
+      fs.unlinkSync(alias); fs.symlinkSync(safe, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      opened.deliver();
+      const value = await pending;
+      try {
+        if (kind === 'callback') assert.throws(() => fs.fchmodSync(value, 0o600), /retained Daynight state/);
+        else await assert.rejects(value.chmod(0o600), /retained Daynight state/);
+      } finally { if (kind === 'callback') fs.closeSync(value); else await value.close(); }
+    }
+    } finally { isolation.cleanup(); }
+  `;
+  execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
+    cwd: packageDirectory, env: f.environment, encoding: "utf8", timeout: 30_000, stdio: "pipe",
   });
 });

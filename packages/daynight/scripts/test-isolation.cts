@@ -6,34 +6,104 @@ const childProcess: typeof import("node:child_process") = require("node:child_pr
 const os: typeof import("node:os") = require("node:os");
 const { fileURLToPath }: typeof import("node:url") = require("node:url");
 const { promisify }: typeof import("node:util") = require("node:util");
-const original = { lstat: fs.lstatSync, realpath: fs.realpathSync, readlink: fs.readlinkSync, mkdir: fs.mkdirSync, mkdtemp: fs.mkdtempSync, rm: fs.rmSync };
+const original = { lstat: fs.lstatSync, realpath: fs.realpathSync.native, readlink: fs.readlinkSync, mkdir: fs.mkdirSync, mkdtemp: fs.mkdtempSync, rm: fs.rmSync };
 const repositoryRoot = path.resolve(__dirname, "../../..");
 const metadataName = "DAYNIGHT_TEST_ISOLATION";
 const preload = __filename;
-const contains = (root: string, target: string): boolean => {
-  const relative = path.relative(path.toNamespacedPath(root), path.toNamespacedPath(target));
+const contains = (root: string | Buffer, target: string | Buffer): boolean => {
+  if (path.sep === "/") {
+    const parent = Buffer.isBuffer(root) ? root : Buffer.from(root);
+    const child = Buffer.isBuffer(target) ? target : Buffer.from(target);
+    const prefix = parent.at(-1) === 47 ? parent : Buffer.concat([parent, Buffer.from("/")]);
+    return parent.equals(child) || child.subarray(0, prefix.length).equals(prefix);
+  }
+  const relative = path.relative(path.toNamespacedPath(root.toString()), path.toNamespacedPath(target.toString()));
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 };
-const physicalPath = (target: string, links = new Set<string>()): string => {
-  let current = target;
-  const missing: string[] = [];
-  for (;;) {
+const absoluteRaw = (target: string, base = process.cwd()): string => {
+  if (path.isAbsolute(target)) return target;
+  if (path.sep === "\\" && /^[a-z]:/i.test(target)) return `${path.resolve(target.slice(0, 2))}${path.sep}${target.slice(2)}`;
+  return `${base}${path.sep}${target}`;
+};
+const appendBytes = (parent: Buffer, child: Buffer): Buffer => Buffer.concat([parent, parent.at(-1) === 47 ? Buffer.alloc(0) : Buffer.from("/"), child]);
+// Native realpath preserves symlink traversal before subsequent parent components.
+// https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/deps/uv/src/unix/fs.c#L794-L803
+const resolvePosixBytes = (target: Buffer, followLeaf: boolean, links: Set<string>): Buffer => {
+  const absolute = target[0] === 47 ? target : appendBytes(Buffer.from(process.cwd()), target);
+  const components: Buffer[] = [];
+  let start = 0;
+  for (let index = 0; index <= absolute.length; index++) {
+    if (index !== absolute.length && absolute[index] !== 47) continue;
+    if (index > start) components.push(absolute.subarray(start, index));
+    start = index + 1;
+  }
+  let cursor: Buffer = original.realpath(Buffer.from("/"), { encoding: "buffer" });
+  for (const [index, component] of components.entries()) {
+    if (component.equals(Buffer.from("."))) continue;
+    if (component.equals(Buffer.from(".."))) { cursor = cursor.subarray(0, Math.max(1, cursor.lastIndexOf(47))); continue; }
+    const candidate = appendBytes(cursor, component);
+    if (!followLeaf && index === components.length - 1 && absolute.at(-1) !== 47) { cursor = candidate; continue; }
     let entry: import("node:fs").Stats;
-    try { entry = original.lstat(current); }
+    try { entry = original.lstat(candidate); }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
-      const parent = path.dirname(current);
-      if (parent === current) throw error;
-      missing.push(path.basename(current)); current = parent; continue;
+      cursor = candidate; continue;
     }
-    if (entry.isSymbolicLink()) {
-      if (links.has(current)) throw new Error(`Cannot resolve cyclic symbolic link: ${current}`);
-      links.add(current);
-      const destination = path.resolve(path.dirname(current), original.readlink(current));
-      return path.join(physicalPath(destination, links), ...missing.reverse());
+    try { cursor = original.realpath(candidate, { encoding: "buffer" }); }
+    catch (error) {
+      if (!entry.isSymbolicLink() || !(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      const key = candidate.toString("hex");
+      if (links.has(key)) throw new Error(`Cannot resolve cyclic symbolic link: ${candidate}`);
+      links.add(key);
+      const destination = original.readlink(candidate, { encoding: "buffer" });
+      try { cursor = resolvePosixBytes(destination[0] === 47 ? destination : appendBytes(cursor, destination), true, links); }
+      finally { links.delete(key); }
     }
-    return path.join(original.realpath(current), ...missing.reverse());
   }
+  return cursor;
+};
+const physicalPath = (target: string | Buffer, followLeaf = true, links = new Set<string>()): string | Buffer => {
+  if (path.sep === "/") {
+    const bytes = Buffer.isBuffer(target) ? target : Buffer.from(target);
+    const leaf = bytes.subarray(bytes.lastIndexOf(47) + 1);
+    const inspectLeaf = followLeaf || leaf.length === 0 || leaf.equals(Buffer.from(".")) || leaf.equals(Buffer.from(".."));
+    try {
+      if (inspectLeaf) return original.realpath(bytes, { encoding: "buffer" });
+      const separator = bytes.lastIndexOf(47);
+      const parent = separator < 0 ? Buffer.from(".") : bytes.subarray(0, Math.max(1, separator));
+      return appendBytes(original.realpath(parent, { encoding: "buffer" }), leaf);
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      return resolvePosixBytes(bytes, followLeaf, links);
+    }
+  }
+  // Node prepares Windows filesystem arguments through this namespace conversion.
+  // https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/src/path.cc#L282-L326
+  const prepared = path.toNamespacedPath(absoluteRaw(target.toString()));
+  const root = path.parse(prepared).root;
+  const components = prepared.slice(root.length).split(/[\\/]+/).filter(component => component !== "");
+  let cursor = original.realpath(root);
+  for (const [index, component] of components.entries()) {
+    if (component === ".") continue;
+    if (component === "..") { cursor = path.dirname(cursor); continue; }
+    const candidate = `${cursor}${cursor.endsWith(path.sep) ? "" : path.sep}${component}`;
+    if (!followLeaf && index === components.length - 1 && !/[\\/]$/.test(prepared)) { cursor = candidate; continue; }
+    let entry: import("node:fs").Stats;
+    try { entry = original.lstat(candidate); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      cursor = candidate; continue;
+    }
+    try { cursor = original.realpath(candidate); }
+    catch (error) {
+      if (!entry.isSymbolicLink() || !(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      if (links.has(candidate)) throw new Error(`Cannot resolve cyclic symbolic link: ${candidate}`);
+      links.add(candidate);
+      try { cursor = physicalPath(absoluteRaw(original.readlink(candidate), cursor), true, links).toString(); }
+      finally { links.delete(candidate); }
+    }
+  }
+  return cursor;
 };
 for (const key of Object.keys(process.env)) {
   if (["DN_CONFIG_DIR", "HOME", "USERPROFILE", "NODE_OPTIONS", metadataName].includes(key.toUpperCase()) && key !== key.toUpperCase()) {
@@ -51,18 +121,23 @@ if (ownsRoot) {
   root = metadata.root;
   protectedRoots = metadata.protectedRoots;
 }
-const physicalProtectedRoots = protectedRoots.map(directory => physicalPath(directory));
-const reachesProtectedState = (target: string, destructive = false, followLeaf = true): boolean => {
-  if (protectedRoots.some(directory => contains(directory, target) || (destructive && contains(target, directory)))) return true;
-  const physical = followLeaf ? physicalPath(target) : path.join(physicalPath(path.dirname(target)), path.basename(target));
+const physicalProtectedRoots = protectedRoots.flatMap(directory => [physicalPath(directory), physicalPath(directory, false)]);
+const reachesProtectedState = (target: string | Buffer, destructive = false, followLeaf = true): boolean => {
+  const physical = physicalPath(target, followLeaf);
   return physicalProtectedRoots.some(directory => contains(directory, physical) || (destructive && contains(physical, directory)));
 };
 const descriptors = new Map<number, unknown>();
-const asPath = (value: unknown): string | undefined => {
-  if (typeof value === "string") return path.resolve(value);
-  if (Buffer.isBuffer(value)) return path.resolve(value.toString());
-  if (value instanceof URL) return path.resolve(fileURLToPath(value));
+const asPath = (value: unknown): string | Buffer | undefined => {
+  if (typeof value === "string") return absoluteRaw(value);
+  if (Buffer.isBuffer(value)) return path.sep === "/" ? (value[0] === 47 ? value : appendBytes(Buffer.from(process.cwd()), value)) : Buffer.from(absoluteRaw(value.toString()));
+  if (value instanceof URL) return absoluteRaw(fileURLToPath(value));
   return undefined;
+};
+const isNamedPipe = (target: string | Buffer): boolean => process.platform === "win32" && target.toString().replace(/\//g, "\\").toLowerCase().startsWith("\\\\.\\pipe\\");
+const openedPath = (target: string | Buffer | undefined): string | Buffer | undefined => target === undefined || isNamedPipe(target) ? target : physicalPath(target);
+const captureOpenPath = (value: unknown): string | Buffer | undefined => {
+  const target = openedPath(asPath(value));
+  return Buffer.isBuffer(target) ? Buffer.from(target) : target;
 };
 const assertSafePath = (value: unknown, destructive = false, followLeaf = true): void => {
   const target = asPath(value);
@@ -71,7 +146,7 @@ const assertSafePath = (value: unknown, destructive = false, followLeaf = true):
     else if (typeof value === "object" && value !== null && "fd" in value && typeof value.fd === "number") assertSafePath(value.fd, destructive, followLeaf);
     return;
   }
-  if (process.platform === "win32" && target.toLowerCase().startsWith("\\\\.\\pipe\\")) return;
+  if (isNamedPipe(target)) return;
   if (reachesProtectedState(target, destructive, followLeaf)) throw new Error(`Test mutation targets retained Daynight state: ${target}`);
 };
 if (ownsRoot) {
@@ -95,10 +170,10 @@ const guardedEnvironment = (supplied: NodeJS.ProcessEnv = process.env): NodeJS.P
     }
   }
   environment[metadataName] = process.env[metadataName];
-  if (environment.DN_CONFIG_DIR !== undefined) assertSafePath(environment.DN_CONFIG_DIR);
+  if (environment.DN_CONFIG_DIR !== undefined) assertSafePath(path.resolve(environment.DN_CONFIG_DIR));
   for (const name of ["HOME", "USERPROFILE"]) {
     const home = environment[name];
-    if (home === undefined || (environment.DN_CONFIG_DIR === undefined && reachesProtectedState(path.join(path.resolve(home), ".daynight")))) environment[name] = path.join(root!, "home");
+    if (home === undefined || (environment.DN_CONFIG_DIR === undefined && reachesProtectedState(path.resolve(home, ".daynight")))) environment[name] = path.join(root!, "home");
   }
   const options = environment.NODE_OPTIONS ?? "";
   environment.NODE_OPTIONS = options.includes(requireOption) ? options : `${options} ${requireOption}`.trim();
@@ -169,25 +244,30 @@ const copyCallback = fs.cp;
   (copyCallback as any)(source, destination, { ...options, filter: guardedCopyFilter(options.filter, true) }, callback);
 };
 const openSync = fs.openSync;
+// A queued open can outlive its pathname's links or current working directory.
 (fs as any).openSync = (filename: unknown, flags: unknown, mode: unknown) => {
-  if (writableOpen(flags)) assertSafePath(filename);
-  const descriptor = (openSync as any)(filename, flags, mode); descriptors.set(descriptor, filename); return descriptor;
+  const physical = captureOpenPath(filename);
+  if (writableOpen(flags)) assertSafePath(physical);
+  const descriptor = (openSync as any)(filename, flags, mode); descriptors.set(descriptor, physical); return descriptor;
 };
 const openCallback = fs.open;
 (fs as any).open = (filename: unknown, flags: unknown, ...arguments_: any[]) => {
   const callback = arguments_.pop();
-  try { if (writableOpen(flags)) assertSafePath(filename); }
+  let physical: string | Buffer | undefined;
+  try { physical = captureOpenPath(filename); if (writableOpen(flags)) assertSafePath(physical); }
   catch (error) { queueMicrotask(() => callback(error)); return; }
   (openCallback as any)(filename, flags, ...arguments_, (error: unknown, descriptor: number) => {
-    if (error === null) descriptors.set(descriptor, filename);
+    if (error === null) descriptors.set(descriptor, physical);
     callback(error, descriptor);
   });
 };
 const openPromise = promises.open;
 (promises as any).open = async (filename: unknown, flags: unknown, mode: unknown) => {
-  if (writableOpen(flags)) assertSafePath(filename);
-  const handle = await (openPromise as any)(filename, flags, mode); descriptors.set(handle.fd, filename);
-  for (const name of ["write", "writev", "writeFile", "appendFile", "truncate", "chmod", "chown", "utimes", "createWriteStream"]) patch(handle, name, () => assertSafePath(filename), name !== "createWriteStream");
+  const physical = captureOpenPath(filename);
+  if (writableOpen(flags)) assertSafePath(physical);
+  const handle = await (openPromise as any)(filename, flags, mode);
+  descriptors.set(handle.fd, physical);
+  for (const name of ["write", "writev", "writeFile", "appendFile", "truncate", "chmod", "chown", "utimes", "createWriteStream"]) patch(handle, name, () => assertSafePath(physical), name !== "createWriteStream");
   const close = handle.close.bind(handle);
   handle.close = async () => { const descriptor = handle.fd; await close(); descriptors.delete(descriptor); };
   return handle;

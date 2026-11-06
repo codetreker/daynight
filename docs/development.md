@@ -91,17 +91,23 @@ fixture constructs a restricted environment. A child with an explicit safe
 `DN_CONFIG_DIR` retains its supplied home. If its default `.daynight` path would
 reach protected state, the launcher supplies the isolated baseline home.
 
-Before a mutation or cleanup, the guard refuses access to the recorded real
-Daynight state, including aliases through symbolic links and missing descendants
-beneath a protected directory. The checks cover mutating Node filesystem calls,
-writable opens, tracked descriptors and `FileHandle` mutations, recursive-copy
-destinations, and native SQLite constructors and backup destinations. Removing
-an ancestor that contains the protected directory is also refused. Windows
-`\\.\pipe\` addresses identify IPC objects, so they skip disk-path inspection;
-namespaced disk paths retain the protected-state checks through normalized
-comparisons. Other filesystem paths remain available to tests. The standalone
-regression checks its scratch path against the protected state before creating sentinels and launching
-guarded probes.
+Before a mutation or cleanup, the guard protects both the selected Daynight
+root entries and their physical targets. POSIX paths retain their string or
+`Buffer` components and are traversed in filesystem order: existing prefixes and
+symbolic-link targets are resolved before subsequent `..` components. Missing directories retain virtual
+components so recursive creation receives the same protection. Cleanup preserves
+trailing separators, `.` and `..`, which can require following a link before
+removing a directory. A destructive operation that would remove an ancestor of
+protected state is also refused.
+
+The checks cover mutating Node filesystem calls, writable opens, tracked
+descriptors and `FileHandle` mutations, recursive-copy destinations, and native
+SQLite constructors and backup destinations. Windows disk paths undergo Node's
+namespace preparation before physical inspection and protected-root comparison.
+Local `\\.\pipe\` addresses identify IPC objects, so they skip disk-path
+inspection. Other filesystem paths remain available to tests. The standalone
+regression checks its scratch path against protected state before creating
+sentinels and launching guarded probes.
 
 Fixtures capture owned cleanup paths before changing or restoring their
 environment. Global test teardown and the standalone owning process's exit

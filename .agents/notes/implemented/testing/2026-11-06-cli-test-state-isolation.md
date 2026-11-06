@@ -11,8 +11,10 @@ built from the inherited environment has the same exposure. Cleanup that
 resolves paths after environment restoration can select the real directory.
 
 A temporary path alone does not prevent this damage. A symbolic link can redirect
-an operation into the protected directory, and native SQLite opens bypass
-JavaScript filesystem mutation wrappers.
+an operation into the protected directory. Lexically collapsing `..` before
+resolving an earlier link changes the destination selected by filesystem
+traversal. Native SQLite opens also bypass JavaScript filesystem mutation
+wrappers.
 
 ## Decision
 
@@ -34,15 +36,21 @@ its supplied home; a child whose default `.daynight` would reach protected state
 receives the isolated baseline home. Fixture-specific homes and configuration
 overrides retain their meaning.
 
-The guard protects those recorded real Daynight state directories. Before a
-write or cleanup, it checks the requested path and its physical destination
-through the nearest existing ancestor. Missing descendants inherit that checked
-ancestor; aliases through symbolic links cannot bypass protection. Destructive
-operations that would remove an ancestor containing protected state also fail.
-Windows local `\\.\pipe\` addresses are IPC objects rather than disk destinations,
-so they skip physical disk inspection. Namespaced disk paths are normalized for
-protected-root comparisons and remain protected. Other filesystem paths remain
-available for test fixtures.
+The guard protects both the selected Daynight root entries and their physical
+targets. POSIX path inspection preserves the raw string or `Buffer` components
+and traverses them in filesystem order. Native realpath resolves each existing
+prefix before a later parent component is applied; dangling link targets are traversed in the same
+order. Missing directories retain virtual components for recursive creation.
+This prevents a path such as `alias/../config.yml` from being checked against a
+lexically simplified destination that differs from the filesystem operation.
+
+Cleanup preserves trailing separators, `.` and `..` when deciding whether the
+final component is followed. Unlinking a leaf link is distinct from removing a
+directory reached through that link. Destructive operations that would remove
+an ancestor containing protected state also fail. Windows disk arguments use
+Node's namespace preparation before physical traversal and protected-root
+comparison. Local `\\.\pipe\` addresses identify IPC objects and skip physical
+disk inspection. Other filesystem paths remain available for test fixtures.
 
 The same protection covers mutating Node filesystem calls, writable opens,
 tracked descriptors, `FileHandle` mutations, recursive-copy destinations,
@@ -74,6 +82,12 @@ those homes authoritative.
 requires exceptions for native IPC, caches and filesystem probes unrelated to
 protecting real Daynight state. Protecting the retained directories directly
 gives fixtures access to the other paths their behavior requires.
+
+**Lexically normalize paths before resolving their existing ancestor.** On
+POSIX, an earlier symbolic link must be resolved before a later `..` selects its
+parent. Lexical normalization can check an unrelated path while the actual
+write or cleanup reaches protected state. Ordered physical traversal preserves
+that dependency, including link targets and missing recursive-creation paths.
 
 **Wrap only JavaScript filesystem APIs.** Native SQLite constructors and backup
 operations do not use those wrappers. They require a separate admission check.
