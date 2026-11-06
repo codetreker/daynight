@@ -19,6 +19,7 @@ var taskQueryToolDefinitions []byte
 type taskQueryService interface {
 	graphReader
 	MCPList(context.Context, model.Principal, string, taskcore.MCPListRequest, func(store.TaskPriorityItem, string, bool) bool) error
+	MCPReady(context.Context, model.Principal, string, taskcore.MCPReadyRequest) ([]store.TaskPriorityItem, error)
 }
 
 type listInput struct {
@@ -46,13 +47,11 @@ type listData struct {
 	Items      []json.RawMessage `json:"items"`
 	NextCursor *string           `json:"nextCursor"`
 	Projection string            `json:"projection"`
-	Next       *listContinuation `json:"next,omitempty"`
 }
 
-type listContinuation struct {
-	Tool            string         `json:"tool"`
-	Arguments       map[string]any `json:"arguments"`
-	FullItemsNotice string         `json:"fullItemsNotice,omitempty"`
+type readyData struct {
+	Items      []any  `json:"items"`
+	Projection string `json:"projection"`
 }
 
 type taskListFull struct {
@@ -83,7 +82,7 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 				if err := json.Unmarshal(raw, &in); err != nil {
 					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 				}
-				return listTool(ctx, actor, in, tasks, false)
+				return listTool(ctx, actor, in, tasks)
 			})
 		case "task_ready":
 			err = registerTaskListTool(entry, tool, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
@@ -91,8 +90,7 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 				if err := json.Unmarshal(raw, &in); err != nil {
 					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
 				}
-				status, ready := model.TaskTodo, true
-				return listTool(ctx, actor, listInput{ProjectID: in.ProjectID, Limit: in.Limit, Status: &status, Ready: &ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View}, tasks, true)
+				return readyTool(ctx, actor, in, tasks)
 			})
 		case "task_graph":
 			err = entry.registerReadTool(tool, func(json.RawMessage) BudgetClass { return BudgetControl }, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
@@ -112,8 +110,7 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 	return nil
 }
 
-// Summary queries use bounded DAO projections; full queries materialize one
-// complete task at a time under the large-object permit.
+// Full queries acquire the large-object permit before materializing task resources.
 func registerTaskListTool(entry *Entry, tool *sdk.Tool, handler ToolHandler) error {
 	return entry.registerReadTool(tool, func(raw json.RawMessage) BudgetClass {
 		var input struct {
@@ -127,24 +124,20 @@ func registerTaskListTool(entry *Entry, tool *sdk.Tool, handler ToolHandler) err
 	}, handler)
 }
 
-func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService, readyTool bool) (ToolResult, error) {
+func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService) (ToolResult, error) {
 	budget := 128 << 20
 	if in.View == "" || in.View == "summary" {
 		budget = 16 << 10
 	}
-	return listToolWithBudget(ctx, actor, in, tasks, readyTool, budget)
+	return listToolWithBudget(ctx, actor, in, tasks, budget)
 }
 
-func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService, readyTool bool, budget int) (ToolResult, error) {
+func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, tasks taskQueryService, budget int) (ToolResult, error) {
 	if in.View == "" {
 		in.View = "summary"
 	}
 	if in.Limit == 0 {
-		if readyTool {
-			in.Limit = 10
-		} else {
-			in.Limit = 50
-		}
+		in.Limit = 50
 	}
 	data := listData{Items: make([]json.RawMessage, 0, in.Limit), Projection: in.View}
 	totalItemBytes := 0
@@ -158,8 +151,6 @@ func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, t
 			summary.BlockedByCount = value.BlockedByCount
 			summary.TitleTruncated = summary.TitleTruncated || value.TitleTruncated
 			item = summary
-		} else if readyTool {
-			item = MapTaskFull(task)
 		} else {
 			item = taskListFull{TaskFull: MapTaskFull(task)}
 		}
@@ -171,19 +162,6 @@ func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, t
 		candidate := listData{Items: []json.RawMessage{}, Projection: in.View}
 		if more {
 			candidate.NextCursor = &cursor
-			if readyTool {
-				args := map[string]any{"projectId": in.ProjectID, "status": "todo", "ready": true, "view": in.View, "cursor": cursor}
-				if in.AllowAgents != nil {
-					args["allowAgents"] = *in.AllowAgents
-				}
-				if in.CompatiblePlatform != nil {
-					args["compatiblePlatform"] = *in.CompatiblePlatform
-				}
-				candidate.Next = &listContinuation{Tool: "task_list", Arguments: args}
-				if in.View == "full" {
-					candidate.Next.FullItemsNotice = "task_list full omits descriptions; use task_show with view full for each complete Task."
-				}
-			}
 		}
 		base, err := json.Marshal(envelope{Data: candidate, Meta: &envelopeMeta{RequestID: actor.RequestID}})
 		if err != nil {
@@ -201,7 +179,7 @@ func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, t
 		}
 		totalItemBytes += len(encodedItem)
 		data.Items = append(data.Items, encodedItem)
-		data.NextCursor, data.Next = candidate.NextCursor, candidate.Next
+		data.NextCursor = candidate.NextCursor
 		return true
 	})
 	if err != nil {
@@ -209,6 +187,33 @@ func listToolWithBudget(ctx context.Context, actor RequestActor, in listInput, t
 	}
 	if itemErr != nil {
 		return failure, itemErr
+	}
+	return ToolResult{Data: data}, nil
+}
+
+func readyTool(ctx context.Context, actor RequestActor, in readyInput, tasks taskQueryService) (ToolResult, error) {
+	if in.View == "" {
+		in.View = "summary"
+	}
+	if in.Limit == 0 {
+		in.Limit = 5
+	}
+	items, err := tasks.MCPReady(ctx, actor.Principal, in.ProjectID, taskcore.MCPReadyRequest{
+		Limit: in.Limit, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View,
+	})
+	if err != nil {
+		return ToolResult{}, err
+	}
+	data := readyData{Items: make([]any, 0, len(items)), Projection: in.View}
+	for _, item := range items {
+		if in.View == "full" {
+			data.Items = append(data.Items, MapTaskFull(item.Task))
+		} else {
+			summary := MapTaskSummary(item.Task)
+			summary.BlockedByCount = item.BlockedByCount
+			summary.TitleTruncated = summary.TitleTruncated || item.TitleTruncated
+			data.Items = append(data.Items, summary)
+		}
 	}
 	return ToolResult{Data: data}, nil
 }
