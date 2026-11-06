@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { SqliteFormat } from "../../../platform/sqlite-format.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
-import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../../platform/sqlite-sql.js";
 import { assertTerminalBinding, parseSessionV2Message, parseTerminalBinding } from "../../../session/v2/protocol.js";
 import { bool, canonicalSessionJson, choice, decodeStrictSessionJson, exact, hash, integer, list, nullable, seq, timestamp, unique, uuid } from "../../../session/v2/values.js";
@@ -60,7 +60,7 @@ const validateChange = (before: HerdrInputRecord, after: HerdrInputRecord) => {
   if (after.recoveries.length < before.recoveries.length || before.recoveries.some((entry, index) => !same(entry.prepare, after.recoveries[index]!.prepare) || entry.request !== null && !same(entry.request, after.recoveries[index]!.request))) fail("A dispatched recovery intent cannot be replaced.");
   if (after.operations.length < before.operations.length || before.operations.some((op, index) => { const next = after.operations[index]!; return op.operationId !== next.operationId || op.source !== next.source || op.digest !== next.digest || op.controlEpoch !== next.controlEpoch || op.leaseId !== next.leaseId || op.leaseSeq !== next.leaseSeq || !same(op.target, next.target) || !["queued", "dispatching"].includes(op.result.state) && !same(op.result, next.result) || op.controlAck !== null && !same(op.controlAck, next.controlAck); })) fail("Durable operation identity and final results cannot change.");
 };
-export const openHerdrInputStore = (filename: string, options: { onMigration?: SqliteMigrationReporter } = {}) => {
+export const openHerdrInputStore = (filename: SqliteDatabaseSource, options: { onMigration?: SqliteMigrationReporter } = {}) => {
   const db = openSqliteDatabase({ file: filename, format, allowCreate: true, ...options, assertMigrationAllowed: (_db, source) => { if (source.kind === "unversioned") fail("Unversioned input evidence must be retained for explicit recovery."); } });
   const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(action).deferred();
   const get = (sessionId: string): HerdrInputRecord | null => read(() => {
@@ -105,7 +105,7 @@ export const openHerdrInputStore = (filename: string, options: { onMigration?: S
         if (draft.unknownInput) draft.automationBeforeClosing = false;
       });
     },
-    close: () => closeSqliteDatabase(db, { file: filename, format }),
+    close: () => closeSqliteDatabase(db, { file: db.name, format }),
   };
 };
 export type HerdrInputStore = ReturnType<typeof openHerdrInputStore>;
