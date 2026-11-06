@@ -73,10 +73,11 @@ Browser and installed CLI then observe the same task and original binary bytes.
 Original Cookie, PAT, membership, invitation and file state must survive the
 service-only restart. Logout invalidates its session while PAT authority stays;
 PAT revocation denies the real CLI. A real PUT pauses after 64 KiB is observed in
-staging with no final file or attachment-index row. Removal then changes current
-membership while the request body remains open. Completing the suffix can return
-201 under the existing admission rule, while new CLI/raw P requests fail 404 and
-Q remains 200. Another real socket is disconnected while uploading and its staging
+staging with no final file or attachment-index row. The original acceptance expected removal to commit while the request body
+remained open. Attachment mutations now retain their authorization locks until
+the write completes, so the journey observes the exact grant lock waiter and its
+attachment transaction blocker before completing the suffix. The upload returns
+201 and removal then commits; new CLI/raw P requests fail 404 and Q remains 200. Another real socket is disconnected while uploading and its staging
 and index must disappear. A normally minted PAT is then expired and rejected by
 the installed CLI with 401. These tests preserve K1 and do not add post-IO
 membership rechecks or serialize credential revocation with business commits.
@@ -86,8 +87,8 @@ then verifies the same pending input, single submission and same revealed token
 element across English/Simplified Chinese. The response remains the actual
 server result. Screenshots happen only after closing or masking the secret.
 
-The current ordinary inventory contains twenty-nine native and twenty-nine
-container functional scenarios. Both targets require a separate combined receipt.
+The [Web validation guide](../../../../packages/daynight-web/README.md#production-browser-acceptance)
+owns the current functional inventory. Both targets require a separate combined receipt.
 The [local stress decision](2026-11-03-local-stress-suites.md) moves the five
 native capacity/limit scenarios behind explicit local stress acceptance while
 preserving fixed data, five samples, geometry checks and timing budgets. Both

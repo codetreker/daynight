@@ -52,7 +52,7 @@ type TargetFixture = {
   target: CombinedTarget;
   run: CombinedCommand;
   calls: RecordedCommand[];
-  state: { postgresLabel: string; service: string; serverIdentity: string; files: string; database: unknown; expiry: unknown; failure: Error | null };
+  state: { postgresLabel: string; service: string; serverIdentity: string; files: string; database: unknown; expiry: unknown; lockWait: unknown; failure: Error | null };
 };
 const withTarget = async (kind: CombinedTarget['target'], action: (fixture: TargetFixture) => Promise<void>): Promise<void> => {
   const acceptanceDirectory = join(repository, 'packages/daynight-web/.tmp/acceptance', `20261023000000-${randomUUID()}`);
@@ -79,7 +79,7 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
   const calls: RecordedCommand[] = [];
   const state = { postgresLabel: target.projectLabel.value, service: 'postgres', serverIdentity: `${composeProject}|server|sha256:${'c'.repeat(64)}`,
     files: '0\t0\t-\t0', database: { metadataRows: 0, memberRows: 1, memberVersion: '9223372036854775807' } as unknown,
-    expiry: [{ id: patId, userId, expiresAt: '2026-10-23T00:00:00.000001+00:00' }] as unknown, failure: null as Error | null };
+    expiry: [{ id: patId, userId, expiresAt: '2026-10-23T00:00:00.000001+00:00' }] as unknown, lockWait: [] as unknown, failure: null as Error | null };
   const run: CombinedCommand = async (file, args, options) => {
     calls.push({ file, args: [...args] });
     assert.equal(file, 'docker');
@@ -90,7 +90,7 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
       if (args.at(-1) === target.postgresContainer) return args[2]!.includes('com.docker.compose.service') ? state.service : state.postgresLabel;
       return state.serverIdentity;
     }
-    if (args[0] === 'exec' && args[1] === target.postgresContainer) return JSON.stringify(args.at(-1)!.startsWith('WITH expired') ? state.expiry : state.database);
+    if (args[0] === 'exec' && args[1] === target.postgresContainer) return JSON.stringify(args.at(-1)!.startsWith('WITH expired') ? state.expiry : args.at(-1)!.includes('pg_blocking_pids') ? state.lockWait : state.database);
     if (args[0] === 'exec' && target.storage.kind === 'container' && args[1] === target.storage.containerId) return state.files;
     throw new Error('Unexpected combined unit control command.');
   };
@@ -241,6 +241,32 @@ test('database observations preserve int64 versions and reject inconsistent memb
       state.database = database;
       await safeFailure(controls.observeUpload(upload));
     }
+  });
+});
+
+test('membership wait evidence binds the exact grant and validates its blocking transaction', async () => {
+  await withTarget('native', async ({ target, run, calls, state }) => {
+    const controls = createAuthCombinedTarget(target, run);
+    assert.equal(await controls.observeMemberRemovalWait({ projectId, userId }), null);
+    state.lockWait = [{ waiter: 101, blocker: 102 }];
+    assert.deepEqual(await controls.observeMemberRemovalWait({ projectId, userId }), { projectId, userId, waiter: 101, blocker: 102 });
+    const query = calls.filter(({ args }) => args[0] === 'exec').at(-1)!.args.at(-1)!;
+    assert.match(query, /pg_blocking_pids\(waiting.pid\)/);
+    assert.match(query, /tuple_lock.relation='project_grants'::regclass/);
+    assert.equal(query.includes(`grant_row.project_id='${projectId}' AND grant_row.user_id='${userId}'`), true);
+    assert.match(query, /waiting.query LIKE 'DELETE FROM project_grants WHERE project_id=\$1 AND user_id=\$2%'/);
+    assert.match(query, /blocking.state='idle in transaction'/);
+    assert.match(query, /blocking.query LIKE '%FROM task_attachments%'/);
+    for (const invalid of [{}, [{ waiter: 0, blocker: 1 }], [{ waiter: 1, blocker: 1 }], [{ waiter: '101', blocker: 102 }]]) {
+      state.lockWait = invalid;
+      await safeFailure(controls.observeMemberRemovalWait({ projectId, userId }));
+    }
+    const before = calls.length;
+    await safeFailure(controls.observeMemberRemovalWait({ projectId: '../invalid', userId }));
+    assert.equal(calls.length, before);
+    state.postgresLabel = 'another-run';
+    await safeFailure(controls.observeMemberRemovalWait({ projectId, userId }));
+    assert.equal(calls.slice(before).some(({ args }) => args[0] === 'exec'), false);
   });
 });
 

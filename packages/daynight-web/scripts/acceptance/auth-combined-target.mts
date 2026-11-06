@@ -18,6 +18,7 @@ export type CombinedTarget = {
   readonly storage: { readonly kind: 'native'; readonly root: string }
     | { readonly kind: 'container'; readonly root: '/var/lib/daynight/storage'; readonly containerId: string; readonly imageId: string };
 };
+export type MemberRemovalWait = { readonly projectId: string; readonly userId: string; readonly waiter: number; readonly blocker: number };
 export type UploadObservation = {
   readonly temporaryFiles: number;
   readonly temporaryBytes: number;
@@ -214,6 +215,30 @@ export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCo
             && /^[1-9]\d*$/.test(database.memberVersion) && BigInt(database.memberVersion) <= 9223372036854775807n));
         return { ...files, ...database };
       } catch { throw new Error('Combined upload observation failed.'); }
+    },
+    observeMemberRemovalWait: async (input: { readonly projectId: string; readonly userId: string }): Promise<MemberRemovalWait | null> => {
+      try {
+        requireValue(uuid.test(input.projectId) && uuid.test(input.userId));
+        await verifyDatabase();
+        // The waiting tuple identifies the exact direct grant; the blocker is the
+        // open attachment transaction, last observed checking attachment paths.
+        const waits = await sql(`SELECT COALESCE(json_agg(json_build_object('waiter',waiting.pid,'blocker',blocking.pid)), '[]'::json)
+          FROM pg_stat_activity waiting
+          JOIN pg_locks tuple_lock ON tuple_lock.pid=waiting.pid AND tuple_lock.locktype='tuple'
+            AND tuple_lock.relation='project_grants'::regclass
+          JOIN project_grants grant_row ON grant_row.ctid=format('(%s,%s)',tuple_lock.page,tuple_lock.tuple)::tid
+          CROSS JOIN LATERAL unnest(pg_blocking_pids(waiting.pid)) blocked_by(pid)
+          JOIN pg_stat_activity blocking ON blocking.pid=blocked_by.pid
+          WHERE waiting.datname=current_database() AND waiting.wait_event_type='Lock'
+            AND waiting.query LIKE 'DELETE FROM project_grants WHERE project_id=$1 AND user_id=$2%'
+            AND grant_row.project_id='${input.projectId}' AND grant_row.user_id='${input.userId}'
+            AND blocking.datname=current_database() AND blocking.state='idle in transaction'
+            AND blocking.query LIKE '%FROM task_attachments%'`) as unknown;
+        requireValue(Array.isArray(waits) && waits.every(value => typeof value === 'object' && value !== null
+          && Number.isSafeInteger(value.waiter) && value.waiter > 0 && Number.isSafeInteger(value.blocker)
+          && value.blocker > 0 && value.waiter !== value.blocker));
+        return Array.isArray(waits) && waits.length > 0 ? { projectId: input.projectId, userId: input.userId, waiter: waits[0].waiter, blocker: waits[0].blocker } : null;
+      } catch { throw new Error('Combined membership lock observation failed.'); }
     },
     expirePAT: async (input: { readonly id: string; readonly userId: string }): Promise<{ id: string; userId: string; expiresAt: string }> => {
       try {

@@ -13,7 +13,7 @@ import { browserInventory, browserTemporaryRoot, recordBrowserOwnership, recover
 import { createAcceptanceCli, validateInstalledCli } from './installed-cli.mts';
 import { command } from './process.mts';
 import { processIdentity, requireGroupStopped, type ProcessIdentity } from './identity.mts';
-import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget, type UploadObservation } from './auth-combined-target.mts';
+import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget, type MemberRemovalWait, type UploadObservation } from './auth-combined-target.mts';
 import { AuthCombinedTransportError, startAuthCombinedUpload, type PausedUpload } from './auth-combined-transport.mts';
 
 export type RestartReceipt = {
@@ -411,6 +411,8 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
   const clients: Cli[] = [];
   const tokenClients: AuthenticatedAPI[] = [];
   const uploads: PausedUpload[] = [];
+  let memberRemoval: Promise<{ readonly ok: true } | { readonly ok: false; readonly error: unknown }> | undefined;
+  let memberRemovalObserved = false;
   const secrets = new Set<string>();
   const screenshots = async (page: Page, name: string): Promise<void> => {
     const path = join(options.directory, `${name}.png`);
@@ -603,17 +605,24 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     check(!admitted.completed && admitted.sentBytes === prefixBytes, 'Admitted upload body was not incomplete.');
     const currentMembers = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
     const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined && currentMember.directGrant !== null, 'Current direct grant is missing before removal.');
-    const removalStarted = performance.now();
-    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.directGrant.version, expectedUserId: aliceUser.id });
-    const removalMs = performance.now() - removalStarted;
-    check(removalMs < 5_000 && !admitted.completed && admitted.sentBytes === prefixBytes, 'Member removal waited for the held upload IO.');
-    const removedDuringIO = await controls.observeUpload(probe(admittedPath));
-    check(incomplete(removedDuringIO, 0), 'Member removal did not commit while real file IO remained incomplete.');
+    let removalSettled = false;
+    const removal = request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204,
+      { version: currentMember.directGrant.version, expectedUserId: aliceUser.id }).then(
+      () => { removalSettled = true; return { ok: true as const }; },
+      (error: unknown) => { removalSettled = true; return { ok: false as const, error }; });
+    memberRemoval = removal;
+    let grantLockWait: MemberRemovalWait | null = null;
+    await waitFor(async () => { grantLockWait = await controls.observeMemberRemovalWait({ projectId: shared.id, userId: bobUser.id }); return grantLockWait !== null; }, signal, 'membership grant lock wait');
+    check(!removalSettled && !admitted.completed && admitted.sentBytes === prefixBytes, 'Member removal did not wait for the incomplete admitted upload.');
+    const duringIO = await controls.observeUpload(probe(admittedPath));
+    check(incomplete(duringIO, 1) && !removalSettled, 'Member removal or upload completed while the body remained incomplete.');
     const completed = await admitted.complete();
     check(completed.status === 201 && /^application\/json(?:;|$)/i.test(completed.contentType) && completed.requestId === admissionRequestId,
-      'Previously admitted upload failed or lost its JSON/request correlation after member removal.');
+      'Previously admitted upload failed or lost its JSON/request correlation.');
     check(decode<{ sizeBytes: number }>(completed.body.toString()).sizeBytes === body.length, 'Admitted response metadata has an unexpected byte size.');
     await admitted.socketClosed;
+    const removalResult = await removal; memberRemovalObserved = true;
+    if (!removalResult.ok) throw removalResult.error;
     await waitFor(async () => { const observed = await controls.observeUpload(probe(admittedPath)); return observed.temporaryFiles === 0 && observed.finalExists && observed.metadataRows === 1 && observed.memberRows === 0; }, signal, 'admitted upload publication');
     const final = await alice.get(`${origin}${fileUrl(shared.id, task.id, admittedPath)}`); check(final.status() === 200 && (await final.body()).equals(body), 'Admitted bytes differ after publication.');
     for (const path of [...protectedPaths, fileUrl(shared.id, task.id, admittedPath)]) await request(replacementApi, origin, 'GET', path, 404);
@@ -628,7 +637,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await screenshots(bobPage, 'shared-membership-removed');
     await record('admitted-member-removal', { projectId: shared.id, taskId: task.id, path: admittedPath, requestId: completed.requestId,
       responseContentType: completed.contentType, bytes: body.length, sha256: hash(body), prefixBytes, prefixSha256,
-      removalMs, observedWhileBodyIncomplete: removedDuringIO, status: completed.status, newResourceStatus: 404, privateProjectStatus: 200 });
+      grantLockWait, observedWhileBodyIncomplete: duringIO, status: completed.status, removalStatus: 204, newResourceStatus: 404, privateProjectStatus: 200 });
     const expired = await controls.expirePAT({ id: replacement.id, userId: bobUser.id });
     await cliDenied(replacementCli, privateArgs, 'unauthenticated');
     await request(replacementApi, origin, 'GET', privateResource, 401);
@@ -663,6 +672,10 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     for (const upload of uploads) { try { await upload.close(); } catch { cleanupErrors.push('HTTP transfer cleanup failed.'); } }
     for (const client of tokenClients) { try { await client.dispose(); } catch { cleanupErrors.push('API context cleanup failed.'); } }
     for (const context of contexts) { try { await context.close(); } catch { cleanupErrors.push('Browser context cleanup failed.'); } }
+    if (memberRemoval !== undefined) {
+      try { if (!(await memberRemoval).ok && !memberRemovalObserved) cleanupErrors.push('Member removal result was not confirmed.'); }
+      catch { cleanupErrors.push('Member removal result was not confirmed.'); }
+    }
     try { await browser?.close(); } catch { cleanupErrors.push('Browser close failed.'); }
     try { await abortClose; } catch { cleanupErrors.push('Cancelled browser close failed.'); }
     for (const client of clients) { try { await client.close(); } catch { cleanupErrors.push('CLI private-home cleanup failed.'); } }
@@ -671,7 +684,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
       catch { receipt.browserCleanup = 'failed'; cleanupErrors.push('Browser process/profile recovery failed.'); }
     }
     receipt.cleanup = cleanupErrors.length === 0 ? 'passed' : 'failed';
-    if (cleanupErrors.length > 0) { receipt.cleanupErrors = cleanupErrors; receipt.result = 'failed'; failure = safeFailure('owned-resource cleanup'); }
+    if (cleanupErrors.length > 0) { receipt.cleanupErrors = cleanupErrors; receipt.result = 'failed'; failure ??= safeFailure('owned-resource cleanup'); }
     receipt.finishedAt = new Date().toISOString(); await save();
   }
   if (failure !== undefined) throw failure;
