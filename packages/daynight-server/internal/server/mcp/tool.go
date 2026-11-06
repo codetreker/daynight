@@ -349,6 +349,7 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 		}
 		scope.hold(release)
 		result, err := handler(ctx, actor, raw)
+		logger := e.logger.With(threadLogReferences(tool.Name, result.Refs)...)
 		if err != nil {
 			failure := envelopeError{Code: "internal_error", Message: "The tool could not complete.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: result.Phase, Refs: result.Refs}
 			facts := operation.CompletionFacts(err)
@@ -372,7 +373,7 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 				failure.Code = fault.Code
 				failure.Message = fault.Message
 			}
-			e.logger.ErrorContext(ctx, "MCP tool failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
+			logger.ErrorContext(ctx, "MCP tool failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
 			return e.errorResult(output, actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
@@ -386,10 +387,10 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 			if result.WriteOutcome == "" && (result.Outcome == "changed" || result.Outcome == "unchanged") {
 				result.WriteOutcome = "confirmed"
 			}
-			e.logger.ErrorContext(ctx, "MCP output construction failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
+			logger.ErrorContext(ctx, "MCP output construction failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
 			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool result could not be constructed.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: "output", Refs: result.Refs}), nil
 		}
-		e.logger.InfoContext(ctx, "MCP tool completed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "user_id", actor.Principal.UserID, "credential_id", actor.Principal.CredentialID, "outcome", result.Outcome, "write_outcome", result.WriteOutcome)
+		logger.InfoContext(ctx, "MCP tool completed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "user_id", actor.Principal.UserID, "credential_id", actor.Principal.CredentialID, "outcome", result.Outcome, "write_outcome", result.WriteOutcome)
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "Completed."}}, StructuredContent: json.RawMessage(encoded)}, nil
 	})
 	return nil
@@ -446,4 +447,24 @@ func ValidateUnicodeFields(raw json.RawMessage, fields ...string) error {
 		}
 	}
 	return nil
+}
+
+// Only validated resource IDs from Thread receipts are safe to log; arbitrary
+// tool references can contain user-controlled data and are not log attributes.
+func threadLogReferences(name string, refs map[string]any) []any {
+	if name != "task_thread_read" && name != "task_thread_post" {
+		return nil
+	}
+	var attrs []any
+	for _, field := range []struct{ key, attr string }{
+		{"projectId", "project_id"}, {"taskId", "task_id"}, {"replyTo", "reply_to"},
+		{"claimId", "claim_id"}, {"messageId", "message_id"}, {"candidateMessageId", "candidate_message_id"},
+	} {
+		if value, ok := refs[field.key].(string); ok {
+			if id, err := model.CanonicalID(value); err == nil {
+				attrs = append(attrs, field.attr, id)
+			}
+		}
+	}
+	return attrs
 }
