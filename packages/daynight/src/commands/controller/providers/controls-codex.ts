@@ -4,6 +4,7 @@ import { open, opendir } from "node:fs/promises";
 import { join } from "node:path";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, sameControlValue, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError, type NativeRpc } from "./native-rpc.js";
+import { assertNativeModelSelection, type NativeModelSelection } from "./native-selection.js";
 type Command = { kind: "compact" } | { kind: "skill"; name: string; path: string } | { kind: "prompt"; body: string };
 export class CodexControls {
   readonly store: ProviderControls;
@@ -31,6 +32,9 @@ export class CodexControls {
     const modes = { readOnly: "read-only", workspaceWrite: "workspace-write", dangerFullAccess: "danger-full-access" };
     settings.push({ id: "sandbox", category: "permission", label: "Sandbox", value: string(sandbox.type) || null, options: [{ value: "readOnly", label: "Read only" }, { value: "workspaceWrite", label: "Workspace write" }, { value: "dangerFullAccess", label: "Full access" }].filter(item => allowed("allowedSandboxModes", modes[item.value as keyof typeof modes])), mutable: this.requirements !== null && !!sandbox.type, scope: "next_turn", description: "Native sandbox for subsequent turns. Full access removes filesystem and network restrictions." });
     this.store.update({ settings, settingsError: error });
+  }
+  validateSelection(requested: NativeModelSelection): void {
+    assertNativeModelSelection("Codex", requested, { model: string(this.native.model) || null, ...(typeof this.native.effort === "string" ? { effort: this.native.effort } : {}), models: this.models.map(item => ({ id: string(item.model), efforts: Array.isArray(item.supportedReasoningEfforts) ? item.supportedReasoningEfforts.map(value => string(record(value).reasoningEffort)).filter(Boolean) : null })) });
   }
   async refresh() {
     try {

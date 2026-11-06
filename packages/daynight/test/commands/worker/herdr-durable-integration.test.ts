@@ -34,6 +34,7 @@ import type { HerdrSessionApi, HerdrSessionState } from "../../../src/commands/w
 import type { WorkerPaths } from "../../../src/commands/worker/paths.js";
 import type { SessionV2Message } from "../../../src/session/v2/types.js";
 import type { HerdrInputRecord } from "../../../src/commands/worker/herdr/input-types.js";
+import type { NativeSelectionVerifier } from "../../../src/commands/worker/native-selection.js";
 
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const root = fileURLToPath(new URL("../../../../../.tmp/herdr-durable-integration/", import.meta.url));
@@ -47,7 +48,7 @@ afterEach(() => {
 });
 type Registration = Extract<SessionV2Message, { type: "registration" }>;
 type Ledger = Extract<SessionV2Message, { type: "generation_ledger" }>;
-const fixture = (realInspector = false, driverResources = false) => {
+const fixture = (realInspector = false, driverResources = false, selectionVerifier?: NativeSelectionVerifier) => {
   mkdirSync(root, { recursive: true }); const directory = mkdtempSync(path.join(root, "run-")); directories.push(directory);
   const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: driverResources ? path.join(directory, "repo", ".worktrees", "daynight", uuid(2)) : directory, agent: "codex" };
   mkdirSync(context.cwd, { recursive: true });
@@ -56,6 +57,7 @@ const fixture = (realInspector = false, driverResources = false) => {
   let task: Task = { id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
+  const adapterSelectionVerifiers: (NativeSelectionVerifier | undefined)[] = [];
   const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
   const shellSettings = { managed: false, captureFailure: false };
   let beforePromptGuard: (() => void) | undefined;
@@ -161,6 +163,7 @@ const fixture = (realInspector = false, driverResources = false) => {
     },
   };
   const createAdapter: typeof createWorkerHerdr = options => {
+    adapterSelectionVerifiers.push(options.selectionVerifier);
     let local = instances.get(options.paths.herdrDirectory);
     if (!local) { const ordinal = ++sequence; local = { ordinal, paths: resolveHerdrInstancePaths(options.paths), binding: { session: "w", workspaceId: `workspace-${ordinal}`, paneId: `pane-${ordinal}`, terminalId: `terminal-${ordinal}` }, started: false, launched: false, nativeVisible: false, daemonPid: ordinal * 100, shellPid: ordinal * 100 + 1, agentPid: ordinal * 100 + 2 }; instances.set(options.paths.herdrDirectory, local); }
     const state = local;
@@ -204,7 +207,7 @@ const fixture = (realInspector = false, driverResources = false) => {
   };
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
-    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native,
+    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => task, processControl: native, ...(selectionVerifier ? { selectionVerifier } : {}),
       readRecording: async (_record, signal) => {
         if (settings.recordingBlocked) await new Promise<void>((_resolve, reject) => {
           if (signal.aborted) reject(signal.reason);
@@ -254,13 +257,97 @@ const fixture = (realInspector = false, driverResources = false) => {
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, readTask: async () => task,
+  return { context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, observed, nativeId, api, read, stateView, register, prepare, start, reopen, adapterSelectionVerifiers, readTask: async () => task,
     revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
     mutateRecord: (change: Parameters<HerdrLifecycleStore["update"]>[1]) => { const record = read(); return reader!.update(record, change); },
     get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
 
 describe("durable Herdr facade with real SQLite", () => {
+  it("shares one owned selection verifier across the legacy and per-run adapters", async () => {
+    const f = fixture(); f.register(); await f.prepare();
+    expect(f.adapterSelectionVerifiers.length).toBeGreaterThan(1);
+    expect(f.adapterSelectionVerifiers[0]).toBeDefined();
+    expect(new Set(f.adapterSelectionVerifiers).size).toBe(1);
+  });
+
+  it("does not let an older settle receipt clear a newer pending selection probe", async () => {
+    let releaseSettle!: () => void, rejectVerify!: (error: Error) => void;
+    const settle = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { releaseSettle = resolve; })).mockResolvedValue(undefined);
+    const verify = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectVerify = reject; }));
+    const f = fixture(false, false, { verify, settle, close: async () => {} }); f.register();
+    const stopping = f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledOnce());
+    const checking = f.adapterSelectionVerifiers[0]!.verify({ native: { agent: "codex", model: null, args: [] }, cwd: f.context.cwd, environment: {} }, operation());
+    const rejected = expect(checking).rejects.toThrow("selection cleanup unconfirmed");
+    const stopped = expect(stopping).rejects.toThrow("Native selection changed during cleanup");
+    releaseSettle(); await stopped;
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    rejectVerify(new Error("selection cleanup unconfirmed")); await rejected;
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  });
+
+  it("allows concurrent task cleanup to settle the same probe generation", async () => {
+    const releases: (() => void)[] = [];
+    const settle = vi.fn(() => new Promise<void>(resolve => { releases.push(resolve); }));
+    const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} }); f.register();
+    const other = { ...f.context, taskId: uuid(92), claimId: uuid(93), worktreeId: uuid(94) };
+    f.facade.lifecycle!.registerClaim(other, uuid(5));
+    const stopping = Promise.all([f.facade.lifecycle!.stop(f.context, "shutdown", operation()), f.facade.lifecycle!.stop(other, "shutdown", operation())]);
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledTimes(2));
+    for (const release of releases) release();
+    await stopping;
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+    expect(f.facade.lifecycle!.isStopped(other)).toBe(true);
+  });
+
+  it.each(["never-started", "prepared", "unconfirmed-preparation"])("retains %s resources until native selection probes have confirmed cleanup", async phase => {
+    const settle = vi.fn().mockRejectedValue(new Error("selection cleanup unconfirmed"));
+    const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} }); f.register();
+    if (phase === "prepared") await f.prepare();
+    if (phase === "unconfirmed-preparation") { f.shellSettings.managed = true; f.shellSettings.captureFailure = true; await expect(f.prepare()).rejects.toThrow("Unconfirmed final shell image"); }
+    const original = f.read();
+    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("selection cleanup unconfirmed");
+    expect(settle).toHaveBeenCalledOnce(); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    expect(f.read().runs).toEqual(original.runs); expect(f.read().preparation).toEqual(original.preparation); expect(f.events).not.toContain("stop");
+    settle.mockResolvedValue(undefined);
+    if (phase !== "unconfirmed-preparation") {
+      await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+      expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+      if (phase === "prepared") expect(f.read().runs[0]!.run.stopProof).toMatchObject({ nativeLaunch: "not_submitted" });
+    }
+  });
+
+  it("does not reinterpret unknown native launch as a prepared stop after probe cleanup succeeds", async () => {
+    const settle = vi.fn().mockResolvedValue(undefined);
+    const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} }); f.register(); await f.prepare();
+    f.mutateRecord(record => { record.runs[0]!.phase = "launch_requested"; record.runs[0]!.nativeLaunch = "requested"; });
+    await expect(f.facade.lifecycle!.stop(f.context, "shutdown", operation())).rejects.toThrow("stop_unknown");
+    expect(settle).toHaveBeenCalledOnce(); expect(f.events).toContain("stop");
+    expect(f.read().runs[0]!.nativeLaunch).toBe("requested"); expect(f.read().runs[0]!.run.stopProof).toBeNull();
+  });
+
+  it("fences terminal cleanup, archive disposal and never-started retirement on selection stop proof", async () => {
+    const settle = vi.fn().mockResolvedValue(undefined);
+    const f = fixture(false, false, { verify: async () => {}, settle, close: async () => {} }); f.register(); await f.prepare();
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    const proof = f.read().runs[0]!.run.stopProof;
+    settle.mockRejectedValue(new Error("selection cleanup unconfirmed"));
+    await expect(f.facade.lifecycle!.cleanup!(f.context, "cleanup", operation())).rejects.toThrow("selection cleanup unconfirmed");
+    const remove = vi.fn().mockResolvedValue(undefined), target = { ...f.context, sessionId: f.read().sessionId };
+    await expect(f.facade.lifecycle!.archive!.dispose({ ...target, operationId: uuid(99), action: "delete", confirmed: true }, operation(), remove)).rejects.toThrow("selection cleanup unconfirmed");
+    await expect(f.facade.lifecycle!.archive!.advance(f.context, operation())).rejects.toThrow("selection cleanup unconfirmed");
+    await expect(f.facade.lifecycle!.archive!.retry(target, operation())).rejects.toThrow("selection cleanup unconfirmed");
+    expect(remove).not.toHaveBeenCalled(); expect(f.read().runs[0]!.run.stopProof).toEqual(proof);
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    expect(() => f.facade.lifecycle!.archive!.cleaned(f.context)).toThrow("cleanup is unconfirmed");
+    const never = fixture(false, false, { verify: async () => {}, settle, close: async () => {} }); never.register();
+    await expect(never.facade.lifecycle!.neverStarted!.retire(never.context, operation(), remove)).rejects.toThrow("selection cleanup unconfirmed");
+    expect(remove).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("requires the final shell image only for a managed launcher: %s", async managed => {
     const f = fixture(); f.shellSettings.managed = managed; f.register(); await f.prepare();
     expect(f.events.filter(event => event.startsWith("image:"))).toEqual(managed ? ["image:/bin/bash"] : []);

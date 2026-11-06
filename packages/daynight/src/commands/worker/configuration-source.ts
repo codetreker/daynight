@@ -16,10 +16,11 @@ import { RepositoryIdentityError, repositoryIdentity } from "../../repository/id
 import { validateRepositoryRoot } from "../../repository/location.js";
 import { resolveWorkerRepositoryPath, validateWorkerRepositoryLocations, workerConfigurationDefaults } from "./config.js";
 import type { WorkerPaths } from "./paths.js";
+import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
 
 export { resolveCloudNative } from "./config.js";
 
-export type WorkerLocalConfiguration = ServerConfiguration & {
+export type WorkerLocalConfiguration = ServerConfiguration & WorkerLocalNativeOverrides & {
   readonly source: string | undefined;
   readonly repositoryRoot: string;
   readonly agentControlMode: AgentControlMode;
@@ -55,7 +56,7 @@ export const parseWorkerLocalConfiguration = (source: string | undefined, paths:
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot")
     : workerConfigurationDefaults.repositoryRoot;
-  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, agentControlMode };
+  return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, agentControlMode, ...parseWorkerLocalNativeOverrides(worker) };
 };
 
 export const readWorkerLocalConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerLocalConfiguration> => {

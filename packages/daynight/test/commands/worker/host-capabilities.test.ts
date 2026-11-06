@@ -59,7 +59,9 @@ describe("assistant host observations", () => {
   it("validates native Web argument rules for all three providers", async () => {
     for (const agent of ["codex", "claude", "copilot"] as const) {
       const { assistantHost } = await collect({ configuration: { ...configuration, agent, args: ["--effort", "max"] } });
-      expect(assistantHost.providers.find(entry => entry.provider === agent)?.available).toBe(agent !== "copilot");
+      expect(assistantHost.providers.find(entry => entry.provider === agent)?.available).toBe(true);
+      const ultra = await collect({ configuration: { ...configuration, agent, args: ["--effort", "ultra"] } });
+      expect(ultra.assistantHost.providers.find(entry => entry.provider === agent)?.available).toBe(agent === "codex");
     }
   });
 

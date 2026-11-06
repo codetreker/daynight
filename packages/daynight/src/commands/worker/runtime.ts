@@ -22,8 +22,6 @@ import { createOperation } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
 import { ApiError } from "../../api/client.js";
 import type { WorkerCloudNative, WorkerCloudResource, WorkerCloudValue } from "../../api/worker-configuration.js";
-import { parseProviderArguments } from "../controller/providers/projection.js";
-import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import { probeNativeAgentVersion } from "./herdr/version-probe.js";
 import { createWorkerConfigurationManager } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
@@ -52,6 +50,9 @@ import { openWorkerStore } from "./store.js";
 import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { createWorkerGitManager } from "./worktrees.js";
+import { normalizeWorkerNative, workerRuntimeConfigurationReport } from "./native-overrides.js";
+import type { WorkerLocalNativeOverrides } from "./local-native.js";
+import { createNativeSelectionVerifier } from "./native-selection.js";
 
 const hasHerdrJournal = async (paths: WorkerPaths, platform: TaskPlatform): Promise<boolean> => {
   if (platform !== "macos") return false;
@@ -112,8 +113,14 @@ const prepareWorkerAgentEnvironment = async (paths: WorkerPaths, emit: (event: W
   return { agentEnvironment };
 };
 
+const effectiveExecutionConfiguration = (native: WorkerCloudNative, mode: AgentControlMode, recoveryLimit: number, local: WorkerLocalNativeOverrides) => ({
+  ...resolveCloudNative(normalizeWorkerNative(native, mode, local).native, mode, recoveryLimit),
+  ...(local.agentModel !== undefined || local.agentReasoningEffort !== undefined ? { validateNativeSelection: true as const } : {}),
+});
+
 const nativeConfigurationApplication = (options: {
   paths: WorkerPaths; homeDirectory: string; workingDirectory: string; mode: AgentControlMode;
+  overrides: WorkerLocalNativeOverrides;
   signal: AbortSignal; emit: (event: WorkerEvent) => void;
 }) => {
   let environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>> | undefined;
@@ -129,8 +136,7 @@ const nativeConfigurationApplication = (options: {
     current: () => environment,
     prepareEnvironment: getEnvironment,
     apply: async (native: WorkerCloudNative, signal: AbortSignal): Promise<void> => {
-      if (options.mode === "web") parseProviderArguments(native.agent, native.args);
-      else validateHerdrAgentArguments(native.agent, native.args);
+      normalizeWorkerNative(native, options.mode, options.overrides);
       const nativeEnvironment = await getEnvironment();
       const operation = createOperation({ signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
       try { await probeNativeAgentVersion({ agent: native.agent, environment: { ...process.env, ...nativeEnvironment.agentEnvironment }, cwd: options.workingDirectory }, operation); }
@@ -209,6 +215,7 @@ export const runWorker = async (options: {
   let botRun: Promise<void> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
   const failures: unknown[] = [];
+  const selectionVerifier = createNativeSelectionVerifier();
   try {
     signal.throwIfAborted();
     const local = await readWorkerLocalConfiguration(paths, signal);
@@ -265,16 +272,16 @@ export const runWorker = async (options: {
       void job.finally(() => { if (bindingJobs.get(projectId) === job) bindingJobs.delete(projectId); }).catch(() => undefined);
       return job;
     };
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, mode: local.agentControlMode, signal, emit });
+    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, mode: local.agentControlMode, overrides: local, signal, emit });
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
       const effective = snapshot.effective;
       if (effective.maxConcurrent === null || effective.recoveryLimit === null) return null;
       const repositories: WorkerRepositoryAssignment[] = [];
       for (const project of effective.projects) {
         const binding = prepared.get(project.projectId);
-        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: resolveCloudNative(project.native, local.agentControlMode, effective.recoveryLimit) });
+        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, local.agentControlMode, effective.recoveryLimit, local) });
       }
-      return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : resolveCloudNative(effective.native, local.agentControlMode, effective.recoveryLimit), maxConcurrent: effective.maxConcurrent };
+      return { repositories, targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, local.agentControlMode, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent };
     };
     const transitions = new Map<string, string>();
     let effectiveSignature = "";
@@ -322,7 +329,13 @@ export const runWorker = async (options: {
     bots = createWorkerBotHost({ ...options, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
       configuration: () => {
         const effective = manager.current().effective;
-        return effective.native === null || effective.recoveryLimit === null ? null : resolveCloudNative(effective.native, local.agentControlMode, effective.recoveryLimit);
+        // Assistant capability collection owns per-Provider Web argument failures.
+        // Keep Herdr-only defaults observable without failing the whole Worker report.
+        return effective.native === null || effective.recoveryLimit === null ? null : {
+          ...normalizeWorkerNative(effective.native, "web", local, false).native,
+          agentControlMode: "web", recoveryLimit: effective.recoveryLimit,
+          ...(local.agentModel !== undefined || local.agentReasoningEffort !== undefined ? { validateNativeSelection: true as const } : {}),
+        };
       },
       pollIntervalMs: () => manager.current().effective.pollIntervalMs,
       recoveryLimit: () => manager.current().effective.recoveryLimit,
@@ -330,7 +343,12 @@ export const runWorker = async (options: {
     botRun = bots.run(signal).catch(error => { failures.push(error); cancellation.controller.abort(error); });
     let reconcileReport = false;
     const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots });
-    reporter = createWorkerReporter({ signal, collect: operation => telemetry.collect(operation), send: (report, operation) => remote.report(workerId, report, operation), emit,
+    reporter = createWorkerReporter({ signal, collect: async operation => {
+      const sample = await telemetry.collect(operation);
+      const effective = manager.current().effective;
+      const runtimeConfiguration = workerRuntimeConfigurationReport(effective, local.agentControlMode, local);
+      return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
+    }, send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
         prepare: async operation => {
           if (!reconcileReport) return;
@@ -351,7 +369,7 @@ export const runWorker = async (options: {
     scheduleInitialRemovals();
     signal.throwIfAborted();
     const lazyHerdr = (environment: Awaited<ReturnType<typeof prepareWorkerAgentEnvironment>>): WorkerHerdrAdapter => new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => {
-      herdr = herdr === undefined ? platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...environment }) : herdr;
+      herdr = herdr === undefined ? platform === "macos" ? createDurableWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...environment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...environment }) : herdr;
       return Reflect.get(herdr, property);
     } });
     let coordinatorJob: Promise<ReturnType<typeof createWorkerCoordinator>> | undefined;
@@ -458,6 +476,7 @@ export const runWorker = async (options: {
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }
     try { herdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
+    try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }
@@ -482,6 +501,7 @@ export const runWorkerControl = async (options: {
   let actualHerdr: WorkerHerdrAdapter | undefined;
   let configurationManager: WorkerConfigurationManager | undefined;
   const failures: unknown[] = [];
+  const selectionVerifier = createNativeSelectionVerifier();
   try {
     signal.throwIfAborted();
     lock = await tryAcquireWorkerInstanceLock(paths);
@@ -496,7 +516,7 @@ export const runWorkerControl = async (options: {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, mode: local.agentControlMode, signal, emit: diagnostics.emit });
+    const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, mode: local.agentControlMode, overrides: local, signal, emit: diagnostics.emit });
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1 };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
     const frozenRetry = options.request.kind === "retry" && sources.length === 1 && sources[0]!.agentControlMode === "web";
@@ -522,17 +542,17 @@ export const runWorkerControl = async (options: {
         await configurationManager.settle();
         const effective = configurationManager.current().effective;
         if (effective.maxConcurrent === null || effective.recoveryLimit === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
-        const globalConfiguration = effective.native === null ? null : resolveCloudNative(effective.native, local.agentControlMode, effective.recoveryLimit);
+        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, local.agentControlMode, effective.recoveryLimit, local);
         const repositories = store.listProjects().flatMap(project => {
           const selected = effective.projects.find(value => value.projectId === project.projectId);
           const native = selected === undefined ? effective.native : selected.native;
-          return native === null ? [] : [{ project, configuration: resolveCloudNative(native, local.agentControlMode, effective.recoveryLimit!) }];
+          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, local.agentControlMode, effective.recoveryLimit!, local) }];
         });
         coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent };
       }
     }
     const agentEnvironment = options.request.kind === "retry" ? nativeApplication.current() === undefined ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : nativeApplication.current()! : {};
-    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
+    const herdr = new Proxy({} as WorkerHerdrAdapter, { get: (_target, property) => { actualHerdr ??= platform === "macos" ? createDurableWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...agentEnvironment, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId }) : createWorkerHerdr({ paths, selectionVerifier, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
     web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
     if (frozenRetry) coordinatorConfiguration = { repositories: [], globalConfiguration: web.webStore.getTask(sources[0]!)?.configuration ?? null, maxConcurrent: 1 };
     const machine = machineDescription(platform);
@@ -554,6 +574,7 @@ export const runWorkerControl = async (options: {
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { web?.webStore.close(); } catch (error) { failures.push(error); }
     try { actualHerdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
+    try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }

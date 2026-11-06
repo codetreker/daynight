@@ -15,6 +15,8 @@ import type { WorkerPaths } from "./paths.js";
 import type { ExecutionConfiguration } from "./types.js";
 import type { AgentControlMode } from "../../api/types.js";
 import type { WorkerCloudNative } from "../../api/worker-configuration.js";
+import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
+import { normalizeWorkerNative } from "./native-overrides.js";
 
 export type WorkerRepositoryConfiguration = ExecutionConfiguration & {
   remote: string;
@@ -62,7 +64,7 @@ const number = (value: Record<string, unknown>, field: keyof Pick<WorkerConfigur
   return result;
 };
 
-const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration): ExecutionConfiguration => {
+const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration, local?: WorkerLocalNativeOverrides): ExecutionConfiguration => {
   const agent = Object.hasOwn(value, "agent") ? value.agent : inherited.agent;
   if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new TypeError(`${field}.agent must be codex, claude or copilot.`);
   const sameKind = agent === inherited.agent;
@@ -72,6 +74,9 @@ const agentConfiguration = (value: Record<string, unknown>, field: string, inher
     if (!Array.isArray(value.args)) throw new TypeError(`${field}.args must be a sequence of native arguments.`);
     args = value.args.map((argument: unknown) => text(argument, `${field}.args`));
   } else args = sameKind ? [...inherited.args] : [];
+  if (local !== undefined && (local.agentModel !== undefined || local.agentReasoningEffort !== undefined)) {
+    return { ...normalizeWorkerNative({ agent, model, args }, inherited.agentControlMode ?? "herdr", local).native, validateNativeSelection: true, agentControlMode: inherited.agentControlMode ?? "herdr", recoveryLimit: inherited.recoveryLimit };
+  }
   if (inherited.agentControlMode === "web") parseProviderArguments(agent, args);
   else validateHerdrAgentArguments(agent, args);
   return { agent, agentControlMode: inherited.agentControlMode ?? "herdr", model, args, recoveryLimit: inherited.recoveryLimit };
@@ -92,9 +97,10 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     : workerConfigurationDefaults.repositoryRoot;
   const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
   if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
+  const local = parseWorkerLocalNativeOverrides(worker);
   const effective = agentConfiguration(worker, "worker", {
     agent: workerConfigurationDefaults.agent, agentControlMode, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
-  });
+  }, local);
   const configuredRepositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(configuredRepositories)) throw new TypeError("worker.repositories must be a sequence.");
   const identities = new Set<string>();
@@ -118,7 +124,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
       if (projects.has(projectId)) throw new TypeError(`${field}.projectId duplicates another worker repository.`);
       projects.add(projectId);
     }
-    return { ...agentConfiguration(repository, field, effective), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
+    return { ...agentConfiguration(repository, field, effective, local), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
   return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
 };

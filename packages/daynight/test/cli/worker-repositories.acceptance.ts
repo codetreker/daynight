@@ -252,7 +252,7 @@ it.skipIf(process.platform === "win32")("runs a zero-repository installed worker
   expect(await readdir(f.home)).toEqual([".daynight"]);
   const db = new Database(path.join(path.dirname(f.configuration), "worker", "state.sqlite"), { readonly: true });
   try {
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
     for (const table of ["projects", "tasks", "cleanup_schedules", "bots", "bot_executions"]) expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
   } finally { db.close(); }
   const allowed = ["GET /api/v1/me", `GET /api/v1/me/workers/${workerId}/configuration`, `POST /api/v1/me/workers/${workerId}/report`, `GET /api/v1/me/workers/${workerId}/bots?limit=100`];

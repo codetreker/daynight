@@ -109,6 +109,22 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it("applies persistent local overrides to registered cloud targets without rewriting desired", async () => {
+    const f = await fixture(), cancellation = new AbortController();
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, agentControlMode: "web", agentModel: "local-model", agentReasoningEffort: "high" } }));
+    const target = desired();
+    Object.assign(target.value.native, { args: ["--effort", "medium"] });
+    mocks.remote().configuration.mockResolvedValue(resource(target)); mocks.remote.mockClear();
+    finishAtTick(cancellation, current => {
+      expect(current.globalConfiguration).toMatchObject({ model: "local-model", args: ["--effort", "high"] });
+      expect(current.repositories[0]!.configuration).toMatchObject({ model: "local-model", args: ["--effort", "high"] });
+      const report = (mocks.reporter.mock.calls[0]![0] as ReporterOptions).configuration!.capture();
+      expect(report.bootstrap).toBeNull();
+      expect(report.observation!.items.find(item => item.key.kind === "native")!.appliedValue).toEqual(target.value.native);
+    });
+    await runWorker({ ...f, signal: cancellation.signal });
+  });
+
   it("keeps pre-cancelled startup before identity, locks, databases and remote requests", async () => {
     const f = await fixture(false, false);
     const before = (await readdir(f.homeDirectory, { recursive: true })).sort();
@@ -501,7 +517,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
   expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
   expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
-  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(11);
+  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(12);
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(4);
@@ -515,7 +531,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(3);
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
-  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(11);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(12);
   unchangedWorker.close();
 });
 

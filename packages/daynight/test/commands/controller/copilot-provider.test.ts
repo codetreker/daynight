@@ -33,6 +33,12 @@ function setup() {
 }
 beforeEach(() => { vi.clearAllMocks(); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
+test("new Copilot selection cannot pass startup after the native catalog is unavailable", async () => {
+  const result = await openCopilotProvider({ ...fixture.options, model: "requested", validateNativeSelection: true }).then(provider => ({ provider, error: null }), error => ({ provider: null, error }));
+  try { expect(result.error).toBeInstanceOf(Error); expect(fixture.native.send).not.toHaveBeenCalled(); }
+  finally { await result.provider?.close(); }
+  expect(fixture.child.signalCode).toBe("SIGTERM");
+});
 
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
 test.each([-32099, -32098, -32097, -32096])("Copilot SDK local transport error %s remains unknown", async code => {

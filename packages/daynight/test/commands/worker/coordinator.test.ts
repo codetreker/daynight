@@ -754,12 +754,12 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.remote.claim).toHaveBeenCalledOnce();
   });
 
-  it("cold-resumes a recorded native session with current configuration", async () => {
+  it("cold-resumes a recorded native session with its frozen native configuration", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const old = f.store.listTasks()[0]!; f.resources.clear();
     const current = { ...configuration, model: "updated-model" }; const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current });
     await restarted.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
-    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId, configuration: current });
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId, configuration });
     expect(f.store.getTask(old)?.sessionId).toBe(old.sessionId);
   });
 

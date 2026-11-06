@@ -1,3 +1,4 @@
+import { parseWorkerRuntimeConfiguration, type WorkerRuntimeConfiguration } from './worker-runtime-configuration';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 import { array, executionPlatform, id, malformed, record, string, timestamp } from './parse';
 import type { ExecutionPlatform, TaskStatus, WorkerAgent, WorkerPhase } from './types';
@@ -21,6 +22,7 @@ export type WorkerAssistantHost = {
   }[];
 };
 export type WorkerTelemetry = {
+  readonly runtimeConfiguration?: WorkerRuntimeConfiguration;
   readonly assistantHost?: WorkerAssistantHost;
   readonly machine: WorkerMachine;
   readonly platform: ExecutionPlatform;
@@ -129,10 +131,11 @@ const assistantHost = (value: unknown, platform: ExecutionPlatform): WorkerAssis
     defaultProvider: choice(data.defaultProvider, providerNames), providers };
 };
 const telemetry = (value: unknown): WorkerTelemetry => {
-  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...(Object.hasOwn(record(value), 'assistantHost') ? ['assistantHost'] : [])]);
+  const data = fields(value, ['machine', 'platform', 'workingDirectory', 'sampledAt', 'os', 'cpu', 'memory', 'disk', 'versions', ...['assistantHost', 'runtimeConfiguration'].filter(key => Object.hasOwn(record(value), key))]);
   const versions = fields(data.versions, ['daynight', 'herdr', 'codex', 'copilot']);
   return {
     ...(Object.hasOwn(data, 'assistantHost') ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
+    ...(Object.hasOwn(data, 'runtimeConfiguration') ? { runtimeConfiguration: parseWorkerRuntimeConfiguration(data.runtimeConfiguration) } : {}),
     machine: machine(data.machine), platform: executionPlatform(data.platform), workingDirectory: text(data.workingDirectory), sampledAt: timestamp(data.sampledAt),
     os: probe(data.os, value => {
       const os = fields(value, ['type', 'release', 'version', 'arch']);
