@@ -338,6 +338,20 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	if completed.Status != "done" || !slices.Equal(completed.DependsOn, []string{first.ID}) {
 		t.Fatalf("completed dependent lost prerequisite: %#v", completed)
 	}
+	legacy := createTask("Unknown historical start", "Legacy running task", []string{}, []string{})
+	response, body = jsonRequest(http.MethodPut, projectPath+"/tasks/"+legacy.ID+"/status", api.TaskStatusUpdateRequest{Version: legacy.Version, Status: "in_progress"})
+	legacy = processPersistenceDecode[api.Task](t, response, body, http.StatusOK)
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	_, err = admin.Exec(ctx, "UPDATE tasks SET started_at=NULL WHERE id=$1", legacy.ID)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, body = jsonRequest(http.MethodPut, projectPath+"/tasks/"+legacy.ID+"/status", api.TaskStatusUpdateRequest{Version: legacy.Version, Status: "done"})
+	legacyDone := processPersistenceDecode[api.Task](t, response, body, http.StatusOK)
+	if legacyDone.Status != "done" || legacyDone.Version != legacy.Version+1 || legacyDone.StartedAt != nil || legacyDone.CompletedAt == nil {
+		t.Fatalf("completion invented an unknown start: %+v", legacyDone)
+	}
 	second := createTask("External prerequisite", "Awaiting work", []string{}, []string{})
 	target := createTask("Blocked classified task", "Retained task", []string{first.ID, second.ID}, []string{second.ID})
 	references := []api.PullRequestProperty{
@@ -368,6 +382,13 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		}
 		target.Version = resource.Version
 	}
+	maxTask := createTask("Maximum Step version", "Independent Step parent", []string{}, []string{})
+	maxStepsPath := projectPath + "/tasks/" + maxTask.ID + "/steps"
+	response, body = jsonRequest(http.MethodPost, maxStepsPath, map[string]any{"version": maxTask.Version, "id": "fedcba98", "title": "Maximum Step", "description": "Retained at maximum", "status": "done"})
+	maxAdded := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusCreated)
+	if maxAdded.Version != maxTask.Version+1 || len(maxAdded.Steps) != 1 || maxAdded.Steps[0].ID != "fedcba98" {
+		t.Fatalf("maximum Step fixture: %+v", maxAdded)
+	}
 	attachmentPath := projectPath + "/tasks/" + target.ID + "/attachments/files/nested/data.bin"
 	content := []byte{0, 1, 255, 13, 10, 'a'}
 	response, body = request(http.MethodPut, attachmentPath, "application/octet-stream", content)
@@ -377,6 +398,9 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	_, err = admin.Exec(ctx, "UPDATE projects SET settings_version=$1 WHERE id=$2", exact, project.ID)
 	if err == nil {
 		_, err = admin.Exec(ctx, "UPDATE tasks SET version=$1 WHERE id=$2", exact, target.ID)
+	}
+	if err == nil {
+		_, err = admin.Exec(ctx, "UPDATE tasks SET version=$1 WHERE id=$2", int64(math.MaxInt64), maxTask.ID)
 	}
 	cancel()
 	if err != nil {
@@ -399,8 +423,16 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		return processPersistenceDecode[api.AttachmentPage](t, response, body, http.StatusOK)
 	}
 	project = readProject()
-	first, second, target, completed = readTask(first.ID), readTask(second.ID), readTask(target.ID), readTask(completed.ID)
+	first, second, target, completed, maxTask = readTask(first.ID), readTask(second.ID), readTask(target.ID), readTask(completed.ID), readTask(maxTask.ID)
+	if current := readTask(legacyDone.ID); !reflect.DeepEqual(current, legacyDone) {
+		t.Fatalf("unknown-start completion was not persisted: %+v", current)
+	}
 	checkReferences(target)
+	response, body = request(http.MethodGet, maxStepsPath, "", nil)
+	maxStepsBefore := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
+	if maxTask.Version != math.MaxInt64 || maxStepsBefore.ProjectID != project.ID || maxStepsBefore.TaskID != maxTask.ID || maxStepsBefore.Version != math.MaxInt64 || !reflect.DeepEqual(maxStepsBefore.Steps, maxAdded.Steps) || !bytes.Contains(body, []byte(`"version":9223372036854775807`)) {
+		t.Fatalf("maximum Step read lost exact scope, version or contents: %+v", maxStepsBefore)
+	}
 	response, body = request(http.MethodGet, stepsPath, "", nil)
 	stepsBefore := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
 	if stepsBefore.Version != exact || len(stepsBefore.Steps) != 2 || stepsBefore.Steps[0].ID != "abcdef01" || stepsBefore.Steps[0].Title != "Review evidence" || stepsBefore.Steps[0].Description != "First\n中文" || stepsBefore.Steps[0].Status != "in_progress" || stepsBefore.Steps[1].ID != "00000000" || stepsBefore.Steps[1].Title != "Follow-up" || stepsBefore.Steps[1].Description != "Second" || stepsBefore.Steps[1].Status != "todo" {
@@ -446,7 +478,7 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	if actual := readProject(); !reflect.DeepEqual(actual, project) {
 		t.Fatalf("project changed across restart: %#v", actual)
 	}
-	for _, before := range []api.Task{first, second, target, completed} {
+	for _, before := range []api.Task{first, second, target, completed, maxTask, legacyDone} {
 		actual := readTask(before.ID)
 		if !reflect.DeepEqual(actual, before) {
 			t.Fatalf("task changed across restart: %#v", actual)
@@ -459,6 +491,19 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	stepsAfter := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
 	if !reflect.DeepEqual(stepsAfter, stepsBefore) {
 		t.Fatalf("Steps changed across restart: before=%+v after=%+v", stepsBefore, stepsAfter)
+	}
+	response, body = request(http.MethodGet, stepsPath+"/ABCDEF01", "", nil)
+	item := processPersistenceDecode[api.StepResource](t, response, body, http.StatusOK)
+	if item.ProjectID != project.ID || item.TaskID != target.ID || item.Version != stepsBefore.Version || !reflect.DeepEqual(item.Step, stepsBefore.Steps[0]) {
+		t.Fatalf("uppercase Step read lost scope, version or fields across restart: %+v", item)
+	}
+	response, body = request(http.MethodGet, maxStepsPath, "", nil)
+	maxStepsAfter := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
+	if !reflect.DeepEqual(maxStepsAfter, maxStepsBefore) || !bytes.Contains(body, []byte(`"version":9223372036854775807`)) {
+		t.Fatalf("maximum Step collection changed across restart: before=%+v after=%+v", maxStepsBefore, maxStepsAfter)
+	}
+	if actual := readTask(maxTask.ID); !reflect.DeepEqual(actual, maxTask) {
+		t.Fatalf("maximum Step read changed parent after restart: %+v", actual)
 	}
 	if actual := readTask(target.ID); !reflect.DeepEqual(actual, target) {
 		t.Fatalf("Steps read changed parent after restart: %+v", actual)
