@@ -307,6 +307,60 @@ func (s *Lifecycle) LookupBound(ctx context.Context, a Actor, id string) (model.
 	}
 	return r, err
 }
+
+// Authorize checks the current credential, stable authority and task access
+// without allocating a transfer or an I/O slot.
+func (s *Lifecycle) Authorize(ctx context.Context, a Actor, projectID, taskID string) error {
+	if err := validateActor(a); err != nil {
+		return err
+	}
+	if !canonical(projectID) || !canonical(taskID) {
+		return ErrConflict
+	}
+	return s.transaction(ctx, func(d store.PrivateTransferDAO) error {
+		return d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, projectID, taskID)
+	})
+}
+
+// Touch renews an admitted transfer without acquiring an I/O slot. Terminal
+// records are returned unchanged; expired records cannot be revived.
+func (s *Lifecycle) Touch(ctx context.Context, a Actor, id string) (model.PrivateTransfer, error) {
+	if err := validateActor(a); err != nil {
+		return model.PrivateTransfer{}, err
+	}
+	if !canonical(id) {
+		return model.PrivateTransfer{}, ErrConflict
+	}
+	var r model.PrivateTransfer
+	err := s.transaction(ctx, func(d store.PrivateTransferDAO) error {
+		var e error
+		r, e = d.Get(ctx, id)
+		if e != nil {
+			return e
+		}
+		if e = authorize(ctx, d, a, r); e != nil {
+			return e
+		}
+		if r.State == "cleanup_pending" || r.State == "closed" || r.State == "failed" {
+			return nil
+		}
+		now := time.Now().UTC()
+		if !live(r, now) || !contentState(r.State) {
+			return ErrState
+		}
+		r.UpdatedAt = now
+		r.ExpiresAt = now.Add(IdleLifetime)
+		if r.ExpiresAt.After(r.HardExpiresAt) {
+			r.ExpiresAt = r.HardExpiresAt
+		}
+		r, e = d.Update(ctx, r, r.Version)
+		return e
+	})
+	if err != nil {
+		return model.PrivateTransfer{}, err
+	}
+	return r, nil
+}
 func live(r model.PrivateTransfer, now time.Time) bool {
 	return r.State != "cleanup_pending" && r.State != "closed" && now.Before(r.ExpiresAt) && now.Before(r.HardExpiresAt)
 }
@@ -364,13 +418,16 @@ func (s *Lifecycle) Reserve(ctx context.Context, a Actor, id string, additional 
 // Transition applies a versioned direction-specific state and receipt update.
 // Cleanup and close have separate operations so neither can bypass the gate.
 func (s *Lifecycle) Transition(ctx context.Context, a Actor, id string, version int64, state string, data json.RawMessage, leaseUntil *time.Time) (model.PrivateTransfer, error) {
+	if version <= 0 {
+		return model.PrivateTransfer{}, ErrState
+	}
 	return s.transition(ctx, a, id, version, state, data, leaseUntil, 0)
 }
 
 // TransitionPublished records a confirmed file publication and its receipt in
 // one transaction. Until then its reservation remains outstanding after a crash.
 func (s *Lifecycle) TransitionPublished(ctx context.Context, p *Permit, a Actor, id string, version int64, state string, data json.RawMessage, leaseUntil *time.Time, materialized int64) (model.PrivateTransfer, error) {
-	if p == nil || p.owner != s || p.id != id || materialized < 0 {
+	if p == nil || p.owner != s || p.id != id || materialized < 0 || version <= 0 {
 		return model.PrivateTransfer{}, ErrState
 	}
 	p.mu.Lock()
@@ -379,6 +436,20 @@ func (s *Lifecycle) TransitionPublished(ctx context.Context, p *Permit, a Actor,
 		return model.PrivateTransfer{}, ErrState
 	}
 	return s.transition(ctx, a, id, version, state, data, leaseUntil, materialized)
+}
+
+// PublishDownload atomically publishes a preparing snapshot against the locked
+// current row, so concurrent status renewal cannot invalidate its receipt.
+func (s *Lifecycle) PublishDownload(ctx context.Context, p *Permit, a Actor, id string, data json.RawMessage, materialized int64) (model.PrivateTransfer, error) {
+	if p == nil || p.owner != s || p.id != id || p.actor != a || materialized < 0 {
+		return model.PrivateTransfer{}, ErrState
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return model.PrivateTransfer{}, ErrState
+	}
+	return s.transition(ctx, a, id, 0, "readable", data, nil, materialized)
 }
 
 func operationID(data json.RawMessage) string {
@@ -410,6 +481,12 @@ func (s *Lifecycle) transition(ctx context.Context, a Actor, id string, version 
 			return e
 		}
 		now := time.Now().UTC()
+		if version == 0 {
+			if r.Direction != "download" || r.State != "preparing" || state != "readable" {
+				return ErrState
+			}
+			version = r.Version
+		}
 		if !live(r, now) || r.Version != version || !allowed(r.State, state) {
 			return ErrState
 		}

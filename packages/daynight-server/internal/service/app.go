@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/uniauth/sdk/go"
@@ -53,6 +54,9 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 			budget, reserve = 8<<30, 1<<30
 		}
 		app.PrivateContent, _ = mcptransfer.New(database, files, private, budget, reserve)
+		if app.PrivateContent != nil {
+			app.Downloads = mcpdownload.New(app.Attachments, app.PrivateContent, private)
+		}
 	}
 	return app
 }
