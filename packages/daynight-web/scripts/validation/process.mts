@@ -41,8 +41,8 @@ const capture = async (file: string, args: readonly string[], options: CommandOp
       void registration.catch(stop);
     });
     let forceTimer: NodeJS.Timeout | undefined;
-    const timer = setTimeout(() => stop(new Error(`Acceptance command timed out: ${file}`)), options.timeoutMs ?? 60_000);
-    const abort = (): void => stop(new Error('Acceptance command cancelled.', { cause: options.signal?.reason }));
+    const timer = setTimeout(() => stop(new Error(`Validation command timed out: ${file}`)), options.timeoutMs ?? 60_000);
+    const abort = (): void => stop(new Error('Validation command cancelled.', { cause: options.signal?.reason }));
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.input !== undefined) {
       child.stdin!.once('error', stop);
@@ -50,7 +50,7 @@ const capture = async (file: string, args: readonly string[], options: CommandOp
     }
     const collect = (data: Buffer, target: Buffer[]): void => {
       bytes += data.length;
-      if (bytes > 8 * 1024 * 1024) stop(new Error('Acceptance command exceeded its bounded output.'));
+      if (bytes > 8 * 1024 * 1024) stop(new Error('Validation command exceeded its bounded output.'));
       else target.push(data);
     };
     child.stdout!.on('data', (data: Buffer) => {
@@ -72,7 +72,7 @@ const capture = async (file: string, args: readonly string[], options: CommandOp
         try {
           await Promise.race([registration, stopped]);
           if (failure !== undefined) throw failure;
-          if (code === null) throw new Error(`Acceptance command exited by signal: ${file} (signal=${signal})`);
+          if (code === null) throw new Error(`Validation command exited by signal: ${file} (signal=${signal})`);
           resolve({ stdout: Buffer.concat(output), stderr: Buffer.concat(errors), exitCode: code });
         } catch (error) { reject(error); }
         finally {
@@ -91,6 +91,6 @@ export const commandBytes = async (file: string, args: readonly string[], option
 
 export const command = async (file: string, args: readonly string[], options: CommandOptions): Promise<string> => {
   const result = await capture(file, args, options, false);
-  if (result.exitCode !== 0) throw new Error(`Acceptance command failed: ${file} (exit=${result.exitCode}, signal=null)`);
+  if (result.exitCode !== 0) throw new Error(`Validation command failed: ${file} (exit=${result.exitCode}, signal=null)`);
   return result.stdout.toString('utf8').trim();
 };

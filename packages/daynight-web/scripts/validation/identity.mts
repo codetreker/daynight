@@ -3,7 +3,7 @@ import { darwinArguments, darwinFind, darwinIdentity } from './process-darwin.mt
 
 export type ProcessIdentity = { platform: 'linux' | 'darwin'; pid: number; executable: string; startTicks: string; group: number };
 const validatePid = (pid: number): void => {
-  if (!Number.isSafeInteger(pid) || pid <= 1 || pid > 2_147_483_647) throw new Error('Invalid acceptance process identity.');
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid > 2_147_483_647) throw new Error('Invalid validation process identity.');
 };
 const requirePlatform = (): void => {
   if (process.platform !== 'linux' && process.platform !== 'darwin') throw new Error('Process recovery requires Linux or macOS process identity support.');
@@ -54,7 +54,7 @@ export const findProcesses = async (environment: Record<string, string>): Promis
     if (!/^\d+$/.test(entry) || Number(entry) <= 1) continue;
     const pid = Number(entry);
     try {
-      // Another user's processes cannot be children of this acceptance invocation.
+      // Another user's processes cannot be children of this validation invocation.
       if (process.getuid !== undefined && (await stat(`/proc/${entry}`)).uid !== process.getuid()) continue;
       const before = await linuxStat(pid);
       let environmentBytes: Buffer;
@@ -78,12 +78,10 @@ export const sameProcess = (expected: ProcessIdentity, observed: ProcessIdentity
   observed !== null && expected.platform === observed.platform && expected.pid === observed.pid && expected.group === observed.group
   && expected.executable === observed.executable && expected.startTicks === observed.startTicks;
 export const requireStopped = async (identity: ProcessIdentity): Promise<void> => {
-  if (identity.platform !== process.platform) throw new Error('Acceptance process receipt platform differs from this host.');
+  if (identity.platform !== process.platform) throw new Error('Validation process receipt platform differs from this host.');
   const observed = await processIdentity(identity.pid);
-  if (observed !== null && observed.startTicks === identity.startTicks) throw new Error('Original acceptance process is still running; recovery refused.');
+  if (observed !== null && observed.startTicks === identity.startTicks) throw new Error('Original validation process is still running; recovery refused.');
 };
-export const ownedBrowserProcesses = async (directory: string, executables: readonly string[]): Promise<ProcessIdentity[]> =>
-  (await findProcesses({ DAYNIGHT_ACCEPTANCE_DIRECTORY: directory })).filter((identity) => executables.includes(identity.executable));
 export const isGroupStopped = (pid: number): boolean => {
   validatePid(pid); requirePlatform();
   try { process.kill(-pid, 0); }
@@ -95,5 +93,5 @@ export const isGroupStopped = (pid: number): boolean => {
 };
 
 export const requireGroupStopped = (pid: number): void => {
-  if (!isGroupStopped(pid)) throw new Error('Original acceptance process group is still running; recovery refused.');
+  if (!isGroupStopped(pid)) throw new Error('Original validation process group is still running; recovery refused.');
 };

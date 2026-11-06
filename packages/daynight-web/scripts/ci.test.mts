@@ -2,24 +2,21 @@ import assert from 'node:assert/strict';
 import type { ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { setImmediate as yieldImmediate, setTimeout as delay } from 'node:timers/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
 import test from 'node:test';
-import { parseCiArguments, runCi, runCiCommand } from './ci.mts';
-import { runContainerFunctionalChecks, runNavigationChecks } from './acceptance/navigation.mts';
-import type { AcceptanceOptions } from './acceptance/runner.mts';
-import { isGroupStopped, processIdentity, requireGroupStopped } from './acceptance/identity.mts';
-import { commandBytes, terminateGroup, type CommandOptions } from './acceptance/process.mts';
+import { runCi, runCiCommand } from './ci.mts';
+import { isGroupStopped, processIdentity, requireGroupStopped } from './validation/identity.mts';
+import { commandBytes, terminateGroup, type CommandOptions } from './validation/process.mts';
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
+
 const operations = () => {
   const calls: { file: string; args: readonly string[]; options: CommandOptions }[] = [];
-  const accepted: AbortController[] = [];
-  const acceptanceOptions: (AcceptanceOptions | undefined)[] = [];
-  return { calls, accepted, acceptanceOptions, command: async (file: string, args: readonly string[], options: CommandOptions) => {
+  return { calls, command: async (file: string, args: readonly string[], options: CommandOptions) => {
     calls.push({ file, args, options }); return '';
-  }, acceptance: async (controller: AbortController, options?: AcceptanceOptions) => { accepted.push(controller); acceptanceOptions.push(options); } };
+  } };
 };
 
 test('quality mode keeps full checks and deadlines with four coverage workers', async () => {
@@ -37,61 +34,20 @@ test('quality mode keeps full checks and deadlines with four coverage workers', 
     assert.equal(call.options.signal, controller.signal);
   }
   assert.equal(observed.calls[1]!.options.env!.VITEST_MAX_WORKERS, '4');
-  assert.deepEqual(observed.accepted, []);
+
 });
 
-test('browser mode installs its browser with the original bound before ordinary acceptance', async () => {
-  const observed = operations();
-  const controller = new AbortController();
-  const installing = Promise.withResolvers<string>();
-  const started = Promise.withResolvers<void>();
-  observed.command = async (file, args, options) => {
-    observed.calls.push({ file, args, options }); started.resolve(); return await installing.promise;
-  };
-  const pending = runCi('browser', controller, observed);
-  await started.promise;
-  assert.deepEqual(observed.accepted, []);
-  installing.resolve('installed');
-  await pending;
-  assert.equal(observed.calls.length, 1);
-  assert.deepEqual(observed.calls[0]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium']);
-  assert.equal(observed.calls[0]!.options.timeoutMs, 600_000);
-  assert.equal(observed.calls[0]!.options.signal, controller.signal);
-  assert.deepEqual(observed.acceptanceOptions, [{ navigationChecks: true }]);
-  assert.deepEqual(observed.accepted, [controller]);
-});
-
-test('CI shard arguments are bounded and only shard 2 owns navigation checks', async () => {
-  assert.deepEqual(parseCiArguments(['quality']), { mode: 'quality' });
-  assert.deepEqual(parseCiArguments(['browser']), { mode: 'browser' });
-  for (const current of [1, 2] as const) {
-    const shard = { current, total: 2 } as const;
-    assert.deepEqual(parseCiArguments(['browser', `--shard=${current}/2`]), { mode: 'browser', shard });
-    const observed = operations();
-    const controller = new AbortController();
-    await runCi('browser', controller, observed, shard);
-    assert.equal(observed.calls.length, 1);
-    assert.deepEqual(observed.acceptanceOptions, [current === 1 ? { shard } : { shard, navigationChecks: true }]);
-    assert.deepEqual(observed.accepted, [controller]);
-  }
-  for (const args of [[], ['quality', '--shard=1/2'], ['browser', '--shard=3/2'], ['browser', '--shard=1/3'],
-    ['browser', '--skip-auth'], ['browser', '--shard=1/2', '--shard=2/2']]) assert.throws(() => parseCiArguments(args), /Usage|Invalid functional shard/);
-  const observed = operations();
-  await assert.rejects(runCi('quality', new AbortController(), observed, { current: 1, total: 2 }), /Usage/);
-  assert.deepEqual(observed.calls, []);
-});
-
-test('invalid CI modes start no command or acceptance', async () => {
+test('invalid CI modes start no command', async () => {
   for (const mode of ['', 'unknown', 'coverage', 'quality browser']) {
     const observed = operations();
-    await assert.rejects(runCi(mode, new AbortController(), observed), /Usage:.*<quality\|browser>/);
+    await assert.rejects(runCi(mode, new AbortController(), observed), /Usage:.*quality/);
     assert.deepEqual(observed.calls, []);
-    assert.deepEqual(observed.accepted, []);
+
   }
 });
 
 test('command failures retain the original error and prevent later serial commands', async () => {
-  for (const { mode, failingCommand } of [{ mode: 'quality', failingCommand: 1 }, { mode: 'quality', failingCommand: 2 }, { mode: 'quality', failingCommand: 3 }, { mode: 'browser', failingCommand: 1 }]) {
+  for (const { mode, failingCommand } of [{ mode: 'quality', failingCommand: 1 }, { mode: 'quality', failingCommand: 2 }, { mode: 'quality', failingCommand: 3 }]) {
     const observed = operations();
     const failure = new Error(`${mode} command failed`);
     observed.command = async (file, args, options) => {
@@ -101,19 +57,12 @@ test('command failures retain the original error and prevent later serial comman
     };
     await assert.rejects(runCi(mode, new AbortController(), observed), (error) => error === failure);
     assert.equal(observed.calls.length, failingCommand);
-    assert.deepEqual(observed.accepted, []);
+
   }
 });
 
-test('browser acceptance failure propagates through CI after browser installation', async () => {
-  const observed = operations(), failure = new Error('Acceptance verification failed');
-  observed.acceptance = async () => { throw failure; };
-  await assert.rejects(runCi('browser', new AbortController(), observed), error => error === failure);
-  assert.equal(observed.calls.length, 1);
-});
-
 test('cancellation prevents new work after a completed serial command', async () => {
-  for (const { mode, completedCommand } of [{ mode: 'quality', completedCommand: 1 }, { mode: 'quality', completedCommand: 2 }, { mode: 'browser', completedCommand: 1 }]) {
+  for (const { mode, completedCommand } of [{ mode: 'quality', completedCommand: 1 }, { mode: 'quality', completedCommand: 2 }]) {
     const observed = operations();
     const controller = new AbortController();
     const reason = new Error('CI cancelled');
@@ -124,94 +73,11 @@ test('cancellation prevents new work after a completed serial command', async ()
     };
     await assert.rejects(runCi(mode, controller, observed), (error) => error === reason);
     assert.equal(observed.calls.length, completedCommand);
-    assert.deepEqual(observed.accepted, []);
+
     observed.calls.length = 0;
     await assert.rejects(runCi(mode, controller, observed), (error) => error === reason);
     assert.deepEqual(observed.calls, []);
   }
-});
-
-const containerBranches = () => {
-  const controller = new AbortController(), events: string[] = [];
-  const names = ['navigation', 'team', 'bots', 'functional'] as const;
-  const gates = Object.fromEntries(names.map(name => [name, Promise.withResolvers<void>()])) as Record<typeof names[number], ReturnType<typeof Promise.withResolvers<void>>>;
-  const began = Object.fromEntries(names.map(name => [name, Promise.withResolvers<void>()])) as Record<typeof names[number], ReturnType<typeof Promise.withResolvers<void>>>;
-  const ended = Object.fromEntries(names.map(name => [name, Promise.withResolvers<void>()])) as Record<typeof names[number], ReturnType<typeof Promise.withResolvers<void>>>;
-  const observed = operations();
-  const branch = async (name: typeof names[number]): Promise<void> => {
-    events.push(`${name}:start`); began[name].resolve();
-    try { await gates[name].promise; }
-    finally { events.push(`${name}:end`); ended[name].resolve(); }
-  };
-  observed.command = async (file, args, options) => {
-    observed.calls.push({ file, args, options });
-    const config = args.at(-1);
-    const name = config === 'tests/navigation/playwright.config.ts' ? 'navigation'
-      : config === 'tests/navigation/team-playwright.config.ts' ? 'team'
-      : config === 'tests/navigation/bots-viewport-playwright.config.ts' ? 'bots' : undefined;
-    assert.notEqual(name, undefined, `Unexpected navigation command ${args.join(' ')}`);
-    await branch(name!); return '';
-  };
-  const aborted = Promise.withResolvers<void>();
-  controller.signal.addEventListener('abort', () => aborted.resolve(), { once: true });
-  let settled = false;
-  const pending = runContainerFunctionalChecks(controller, () => branch('functional'), () => runNavigationChecks(controller, observed.command));
-  const completion = pending.then(() => ({ error: undefined }), (error: unknown) => ({ error })).finally(() => { settled = true; });
-  return { controller, events, gates, began, ended, observed, aborted, completion, settled: () => settled };
-};
-const startedContainerBranches = async (run: ReturnType<typeof containerBranches>): Promise<void> => {
-  await Promise.all([run.began.navigation.promise, run.began.functional.promise]);
-};
-
-test('container functional verification overlaps three serial navigation commands and joins before later work', { timeout: 5_000 }, async () => {
-  const run = containerBranches(); await startedContainerBranches(run);
-  assert.deepEqual(run.events, ['functional:start', 'navigation:start']);
-  run.gates.navigation.resolve(); await run.began.team.promise;
-  assert.ok(run.events.indexOf('navigation:end') < run.events.indexOf('team:start'));
-  run.gates.team.resolve(); await run.began.bots.promise;
-  assert.ok(run.events.indexOf('team:end') < run.events.indexOf('bots:start'));
-  run.gates.bots.resolve(); await run.ended.bots.promise; await yieldImmediate();
-  assert.equal(run.settled(), false, 'The callback must join functional browser cleanup.');
-  run.gates.functional.resolve(); assert.equal((await run.completion).error, undefined);
-  assert.deepEqual(run.observed.calls.map(({ options }) => options.timeoutMs), [180_000, 540_000, 180_000]);
-  for (const call of run.observed.calls) { assert.equal(call.file, 'pnpm'); assert.equal(call.options.cwd, repositoryRoot); assert.equal(call.options.signal, run.controller.signal); assert.equal(call.options.forceAfterMs, 1_000); }
-});
-
-for (const failed of ['navigation', 'team', 'bots'] as const) test(`${failed} failure cancels functional checks and joins their resource cleanup`, { timeout: 5_000 }, async () => {
-  const run = containerBranches(); await startedContainerBranches(run);
-  if (failed !== 'navigation') { run.gates.navigation.resolve(); await run.began.team.promise; }
-  if (failed === 'bots') { run.gates.team.resolve(); await run.began.bots.promise; }
-  const failure = new Error(`${failed} failed`); run.gates[failed].reject(failure); await run.aborted.promise;
-  assert.equal(run.controller.signal.reason, failure); await yieldImmediate(); assert.equal(run.settled(), false);
-  run.gates.functional.resolve(); assert.equal((await run.completion).error, failure);
-  if (failed === 'navigation') assert.equal(run.events.includes('team:start'), false);
-  if (failed !== 'bots') assert.equal(run.events.includes('bots:start'), false);
-});
-
-test('functional browser failure cancels and joins the active navigation command', { timeout: 5_000 }, async () => {
-  const run = containerBranches(); await startedContainerBranches(run);
-  const failure = new Error('Functional browser failed'); run.gates.functional.reject(failure); await run.aborted.promise;
-  await yieldImmediate(); assert.equal(run.settled(), false);
-  run.gates.navigation.resolve(); assert.equal((await run.completion).error, failure);
-  assert.equal(run.events.includes('team:start'), false);
-});
-
-test('external cancellation drains both container branches and preserves its reason', { timeout: 5_000 }, async () => {
-  const run = containerBranches(); await startedContainerBranches(run);
-  const reason = new Error('SIGTERM'); run.controller.abort(reason);
-  run.gates.navigation.resolve(); await run.ended.navigation.promise; await yieldImmediate(); assert.equal(run.settled(), false);
-  run.gates.functional.resolve(); assert.equal((await run.completion).error, reason);
-  assert.equal(run.events.includes('team:start'), false);
-});
-
-test('concurrent container branch failures retain original errors and cleanup failures', { timeout: 5_000 }, async () => {
-  const run = containerBranches(); await startedContainerBranches(run);
-  const failure = new Error('Navigation failed'), browserFailure = new Error('Browser assertion failed'), cleanupFailure = new Error('Browser cleanup failed');
-  const combined = new AggregateError([browserFailure, cleanupFailure], 'Browser and cleanup failed.', { cause: browserFailure });
-  run.gates.navigation.reject(failure); await run.aborted.promise; await yieldImmediate(); assert.equal(run.settled(), false);
-  run.gates.functional.reject(combined);
-  const { error } = await run.completion; assert.ok(error instanceof AggregateError);
-  assert.deepEqual(error.errors, [failure, combined]); assert.deepEqual(combined.errors, [browserFailure, cleanupFailure]);
 });
 
 const withDirectory = async (run: (directory: string) => Promise<void>): Promise<void> => {
@@ -282,7 +148,7 @@ test('CI import is inert and its entrypoint rejects missing or unknown modes bef
     for (const args of [[], ['unknown'], ['quality', 'extra'], ['quality', '--shard=1/2'], ['browser', '--shard=3/2'], ['browser', '--skip-auth']]) {
       const result = await commandBytes(process.execPath, [fileURLToPath(module), ...args], { cwd, env, timeoutMs: 5_000 });
       assert.equal(result.exitCode, 1);
-      assert.match(result.stderr.toString(), args.includes('--shard=3/2') ? /Invalid functional shard/ : /Usage:.*<quality\|browser>/);
+      assert.match(result.stderr.toString(), /Usage:.*quality/);
     }
     assert.equal(await readFile(log, 'utf8'), '');
   });
@@ -345,106 +211,4 @@ test('CI commands reject a successful leader with a surviving redirected child a
       }
     }
   });
-});
-
-test('container cancellation drains a TERM-ignoring navigation process group before the callback grace ends', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
-  await withDirectory(async cwd => {
-    for (const external of [false, true]) {
-      const controller = new AbortController(), ready = Promise.withResolvers<void>(), functional = Promise.withResolvers<void>();
-      const failure = new Error(external ? 'External callback cancellation' : 'Functional browser failed');
-      const retainsCancellationCause = (error: unknown): boolean => error instanceof Error
-        && (error.cause === failure || retainsCancellationCause(error.cause)
-          || (error instanceof AggregateError && error.errors.some(retainsCancellationCause)));
-      let child: ChildProcess | undefined, descendantPid: number | undefined, authStarted = false, calls = 0, output = '';
-      const source = `
-        const { spawn } = await import('node:child_process');
-        process.on('SIGTERM', () => {});
-        const descendant = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});process.send("ready");setInterval(()=>{},1000)'], {stdio:['ignore','ignore','ignore','ipc']});
-        descendant.once('message', () => process.stdout.write(JSON.stringify({ descendantPid: descendant.pid })+'\\n'));
-        setInterval(()=>{},1000);
-      `;
-      const navigation = () => runNavigationChecks(controller, async (_file, _args, options) => {
-        calls += 1;
-        return await runCiCommand(process.execPath, ['--input-type=module', '-e', source], { ...options, cwd, quiet: true,
-          onSpawn: spawned => { child = spawned; },
-          onOutput: chunk => {
-            output += chunk;
-            const boundary = output.indexOf('\n');
-            if (boundary < 0) return;
-            const receipt = JSON.parse(output.slice(0, boundary)) as { descendantPid: number };
-            descendantPid = receipt.descendantPid; ready.resolve();
-          } });
-      });
-      const pending = (async () => {
-        await runContainerFunctionalChecks(controller, () => functional.promise, navigation);
-        authStarted = true;
-      })();
-      const completed = pending.then(() => undefined, error => error);
-      try {
-        await ready.promise;
-        assert.ok(child?.pid !== undefined && descendantPid !== undefined);
-        assert.notEqual(await processIdentity(child.pid), null); assert.notEqual(await processIdentity(descendantPid), null);
-        const started = performance.now();
-        if (external) { controller.abort(failure); functional.resolve(); }
-        else functional.reject(failure);
-        const error = await completed;
-        assert.ok(error instanceof AggregateError);
-        assert.ok(error.errors.includes(failure));
-        assert.ok(error.errors.some(retainsCancellationCause), inspect(error, { depth: 6 }));
-        assert.ok(performance.now() - started < 4_000, 'Navigation must drain before the outer five-second callback grace.');
-        assert.equal(await processIdentity(child.pid), null, inspect(error, { depth: 6 }));
-        assert.equal(await processIdentity(descendantPid), null, inspect(error, { depth: 6 }));
-        requireGroupStopped(child.pid);
-        assert.equal(calls, 1); assert.equal(authStarted, false);
-      } finally {
-        controller.abort(failure); functional.resolve();
-        if (child?.pid !== undefined && !isGroupStopped(child.pid)) {
-          terminateGroup(child, 'SIGKILL'); await waitForGroupStopped(child.pid);
-        }
-        await completed;
-      }
-    }
-  });
-});
-
-test('Web quality and browser jobs retain independent guards and both feed the required aggregator', async () => {
-  const lines = (await readFile(new URL('../../../.github/workflows/checks.yml', import.meta.url), 'utf8')).split(/\r?\n/);
-  const jobs = new Map<string, string[]>();
-  let current: string[] | undefined;
-  for (const line of lines) {
-    const job = /^  ([\w-]+):\s*$/.exec(line);
-    if (job !== null) { current = []; jobs.set(job[1]!, current); }
-    else current?.push(line);
-  }
-  const quality = jobs.get('verify-web-quality')!.join('\n');
-  const browser = jobs.get('verify-web')!.join('\n');
-  for (const job of [quality, browser]) {
-    assert.match(job, /^    needs: detect-changes$/m);
-    assert.match(job, /^    timeout-minutes: 20$/m);
-    assert.match(job, /^    if: \$\{\{ needs\.detect-changes\.outputs\.web == 'true' \}\}$/m);
-  }
-  assert.match(quality, /scripts\/ci\.mts quality/);
-  assert.match(quality, /daynight-web-coverage/);
-  assert.doesNotMatch(quality, /web:acceptance|setup-go|attachments\.mts/);
-  assert.match(browser, /scripts\/ci\.mts browser --shard=\$\{\{ matrix\.shard \}\}\/2/);
-  assert.match(browser, /fail-fast: false/);
-  assert.match(browser, /shard: \[1, 2\]/);
-  assert.match(browser, /name: daynight-web-acceptance-\$\{\{ matrix\.shard \}\}/);
-  assert.match(browser, /name: daynight-web-summary-\$\{\{ matrix\.shard \}\}/);
-  assert.match(browser, /path: packages\/daynight-web\/\.tmp\/acceptance\/\*\/evidence\.json/);
-  for (const step of ['Verify isolated deployment lifecycle', 'Verify attachment persistence and paired backup restoration']) {
-    assert.ok(browser.includes('- name: ' + step + '\n        if: ${{ matrix.shard == 2 }}'));
-  }
-  assert.match(browser, /acceptance\.mts --cleanup/);
-  assert.match(browser, /tests\/attachments\.mts/);
-  assert.doesNotMatch(browser, /daynight-web-coverage/);
-  const aggregate = jobs.get('checks')!.join('\n');
-  const needed = /^    needs: \[([^\]]+)\]$/m.exec(aggregate)![1]!.split(',').map((name) => name.trim());
-  assert.ok(needed.includes('verify-web-quality'));
-  assert.ok(needed.includes('verify-web'));
-  assert.match(aggregate, /all\(\.\[\]; \. == "success" or \. == "skipped"\)/);
-  assert.match(aggregate, /name: daynight-web-summary-1/);
-  assert.match(aggregate, /name: daynight-web-summary-2/);
-  assert.doesNotMatch(aggregate, /pnpm|npm install|merge-multiple|pattern:/);
-  assert.match(aggregate, /report\.mts --shards \.tmp\/web-shards\/1\/\*\/evidence\.json \.tmp\/web-shards\/2\/\*\/evidence\.json/);
 });

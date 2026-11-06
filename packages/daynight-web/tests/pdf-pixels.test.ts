@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { hasPaintedPdfMarker, readPdfPixels } from './e2e/pdf-pixels';
+import { hasPaintedPdfMarker, readPdfPixels } from './helpers/pdf-pixels';
 
 const image = () => {
   const width = 601;
