@@ -710,6 +710,24 @@ describe("editing a Step", () => {
     fireEvent.click(confirmation().getByRole("button", { name: /^Discard$/ }));
     expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("Round 2");
   }, 15_000);
+  it("keeps a new edit draft when an earlier edit receipt arrives", () => {
+    const view = renderWithLocale(panel(), { locale: "en" });
+    open("00000000");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "Earlier edit" } });
+    fireEvent.click(form().getByRole("button", { name: "Save" }));
+    expect(read.edit).toHaveBeenCalledOnce();
+    read.mutation = { operation: { action: "stepEdit", stepId: "00000000", requestId: "request-edit" }, phase: "pending", error: null, reconciling: false, reconciliationError: null };
+    view.rerender(panel());
+    fireEvent.click(form().getByRole("button", { name: "Cancel" }));
+    fireEvent.click(confirmation().getByRole("button", { name: "Discard" }));
+    open("00000001");
+    fireEvent.change(form().getByRole("textbox", { name: "Title" }), { target: { value: "New draft" } });
+    read.resource = { ...resource([{ ...steps[0]!, title: "Earlier edit" }, ...steps.slice(1, 4)]), version: 4n };
+    read.mutation = { ...read.mutation, phase: "confirmed" }; publish(); view.rerender(panel());
+    expect(form().getByRole("textbox", { name: "Title" })).toHaveValue("New draft");
+    expect(form().getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(read.edit).toHaveBeenCalledOnce();
+  });
   it("preserves untouched CR and CRLF while editing displayed text", () => {
     read.resource = resource([{ ...steps[0]!, title: "First\r\nSecond", description: "One\rTwo\r\nThree" }]);
     renderWithLocale(panel(), { locale: "en" }); open("00000000");

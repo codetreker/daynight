@@ -49,6 +49,11 @@ async function install(page: Page, running = false, linked = false, large = fals
       steps = [...steps.slice(0, anchor + 1), added, ...steps.slice(anchor + 1)]; task = { ...task, version: 6n };
       return route.fulfill({ status: 201, body: stringifyWireJson({ projectId, taskId, version: task.version, steps }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, Location: `${path}/${input.id}` } });
     }
+    if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps/00000065` && request.method() === 'DELETE') {
+      expect(request.postDataJSON()).toEqual({ version: 5 });
+      task = { ...task, version: 6n }; steps = steps.filter(value => value.id !== '00000065');
+      return send({ projectId, taskId, version: task.version, steps });
+    }
     for (const detail of [task, previous]) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail);
@@ -146,7 +151,9 @@ test('a late move receipt does not steal focus or change the page of a new draft
     await entered.promise;
     await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
     const pageNumber = dialog.getByRole('spinbutton', { name: 'Page' });
+    await expect(pageNumber).toHaveValue('2'); await expect(row).toHaveCount(0);
     await pageNumber.fill('1'); await pageNumber.press('Enter');
+    await expect(pageNumber).toHaveValue('1'); await expect(row).toBeVisible();
     const form = dialog.locator('.step-add-form'), title = form.getByRole('textbox', { name: 'Title' });
     await title.fill('Draft during move'); await expect(title).toBeFocused();
     await expect(dialog.getByRole('spinbutton', { name: 'Page' })).toHaveValue('1');
@@ -158,15 +165,23 @@ test('a late move receipt does not steal focus or change the page of a new draft
 });
 
 test('Back protects a dirty Step draft and a second Back may discard it', async ({ page }) => {
-  const writes = await install(page, false, true);
+  const writes = await install(page, false, true, true);
   await page.goto(`/projects/${projectId}/tasks/${previousId}`);
   const root = page.locator('.task-detail-page');
   await root.getByRole('region', { name: 'Prerequisites', exact: true }).getByRole('button', { name: /Target task/ }).click();
   await root.getByRole('tab', { name: 'Steps', exact: true }).click();
   await root.getByRole('button', { name: 'Add step', exact: true }).click();
   const title = root.locator('.step-add-form').getByRole('textbox', { name: 'Title' }); await title.fill('Unsaved draft');
+  const openMove = async () => {
+    const pageNumber = root.getByRole('spinbutton', { name: 'Page' }); await pageNumber.fill('1'); await pageNumber.press('Enter');
+    await root.locator('.step-row[data-step-id="00000001"] .step-more').click();
+    await page.getByRole('menuitem', { name: 'Move to…', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Move step', exact: true })).toBeVisible();
+  };
+  await openMove();
   await page.evaluate(() => history.go(-2));
   const leave = page.getByRole('alertdialog'); await expect(leave).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Move step', exact: true })).toHaveCount(0);
   await expect(root).toHaveAttribute('inert', '');
   await expect(leave.getByRole('button', { name: 'Keep editing' })).toBeFocused();
   await page.keyboard.press('Tab'); await expect(leave.getByRole('button', { name: 'Discard and leave' })).toBeFocused();
@@ -174,11 +189,61 @@ test('Back protects a dirty Step draft and a second Back may discard it', async 
   await leave.getByRole('button', { name: 'Keep editing' }).click();
   await expect(root).not.toHaveAttribute('inert');
   await expect(title).toHaveValue('Unsaved draft'); await expect(title).toBeFocused();
+  await openMove();
   await page.evaluate(() => history.go(-2)); await expect(leave).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Move step', exact: true })).toHaveCount(0);
   await leave.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(page).toHaveURL(new RegExp(`/tasks/${previousId}$`));
   await expect(root.locator('.task-detail-title')).toHaveText('History origin');
   expect(writes).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1440]) {
+  test(`Step deletion confirms safely and restores focus at ${width}px in ${locale}`, async ({ page }) => {
+    const writes = await install(page, false, false, true); await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const root = page.locator('.task-detail-page');
+    const pageNumber = root.getByRole('spinbutton', { name: locale === 'en' ? 'Page' : '页码' });
+    await pageNumber.fill('2'); await pageNumber.press('Enter');
+    const row = root.locator('.step-row[data-step-id="00000065"]'); await row.locator('.step-disclosure').click();
+    await row.getByRole('button', { name: locale === 'en' ? 'Edit step' : '编辑步骤' }).click();
+    const form = root.locator('.step-add-form'), title = form.getByRole('textbox', { name: locale === 'en' ? 'Title' : '标题', exact: true });
+    await title.fill('Unpublished draft');
+    await title.focus(); await page.keyboard.press('Tab'); await expect(form.locator(':focus')).toHaveCount(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const openDelete = async () => {
+      const more = row.locator('.step-more'); await expect(more).toHaveAttribute('aria-disabled', 'false');
+      await more.focus(); await page.keyboard.press('Enter');
+      await page.getByRole('menuitem', { name: locale === 'en' ? 'Delete step' : '删除步骤', exact: true }).click();
+    };
+    await openDelete(); const confirmation = page.getByRole('alertdialog');
+    const cancel = confirmation.locator('.dialog-footer').getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
+    await expect(cancel).toBeFocused(); await expect(confirmation).toContainText('00000065');
+    await expect(confirmation).toContainText(locale === 'en' ? 'Attachments, pull requests and other references will remain' : '附件、拉取请求及其他引用会保留');
+    await expect(confirmation).toContainText(locale === 'en' ? 'Unsaved changes' : '未保存修改');
+    for (let i = 0; i < 5; i++) { await page.keyboard.press('Tab'); await expect(confirmation.locator(':focus')).toHaveCount(1); }
+    await page.keyboard.press('Escape'); await expect(confirmation).toHaveCount(0); await expect(title).toHaveValue('Unpublished draft');
+    await openDelete(); await page.getByRole('alertdialog').getByRole('button', { name: locale === 'en' ? 'Delete step' : '删除步骤', exact: true }).click();
+    await expect(form).toHaveCount(0); await expect(root.locator('.steps-pagination')).toHaveCount(0);
+    await expect(root.locator('.step-row[data-step-id="00000064"] .step-disclosure')).toBeFocused();
+    expect(writes).toEqual([`DELETE /api/v1/projects/${projectId}/tasks/${taskId}/steps/00000065`]);
+  });
+}
+
+test('touch can open and cancel the Step position target picker', async ({ browser, baseURL }) => {
+  if (baseURL === undefined) throw new Error('The task controls fixture requires a base URL.');
+  const context = await browser.newContext({ baseURL, locale: 'en-US', hasTouch: true, viewport: { width: 320, height: 640 } });
+  try {
+    const page = await context.newPage(); const writes = await install(page, false, false, true);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=steps`);
+    const row = page.locator('.step-row[data-step-id="00000001"]');
+    await expect(row.locator('.step-more')).toHaveAttribute('aria-disabled', 'false'); await row.locator('.step-more').tap();
+    await page.getByRole('menuitem', { name: 'Move to…', exact: true }).tap();
+    const picker = page.getByRole('dialog', { name: 'Move step', exact: true });
+    await picker.getByRole('radio').first().tap(); await picker.getByRole('button', { name: 'Cancel', exact: true }).tap();
+    await expect(picker).toHaveCount(0); expect(writes).toEqual([]);
+  } finally { await context.close(); }
 });
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {

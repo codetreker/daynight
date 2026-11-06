@@ -108,6 +108,7 @@ test('a process retaining the browser profile cannot silently outlive a successf
   let pid = 0;
   const source = `
     const { spawn } = require('node:child_process');
+    require('node:fs').mkdirSync(require('node:path').join(process.env.TMPDIR, 'profile'));
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', '--user-data-dir=' + require('node:path').join(process.env.TMPDIR, 'profile')], { detached: true, stdio: 'ignore', env: {} });
     child.unref(); console.log(child.pid);
   `;
@@ -143,12 +144,40 @@ test('a matching relative profile under another working directory is not owned',
   }
 });
 
+test('a profile symlink escaping the invocation directory is not killed', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
+  let pid = 0, temporary = '';
+  const cwd = fileURLToPath(new URL('../', import.meta.url));
+  const source = `
+    const { spawn } = require('node:child_process'); const path = require('node:path');
+    require('node:fs').symlinkSync('/', path.join(process.env.TMPDIR, 'profile'), 'dir');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', '--user-data-dir=' + path.join(process.env.TMPDIR, 'profile')], { detached: true, stdio: 'ignore', env: {} });
+    child.unref(); console.log(JSON.stringify({pid:child.pid,temporary:process.env.TMPDIR}));
+  `;
+  try {
+    await assert.rejects(runBrowserCommand(process.execPath, ['-e', source], {
+      cwd, timeoutMs: 10_000, quiet: true,
+      onOutput: chunk => { ({ pid, temporary } = JSON.parse(chunk.trim()) as { pid: number; temporary: string }); },
+    }), /profile resolves outside/);
+    assert.ok(pid > 1); assert.notEqual(await processIdentity(pid), null);
+  } finally {
+    if (pid > 1) {
+      const identity = await processIdentity(pid);
+      if (identity !== null && identity.group === pid && sameProcess(identity, await processIdentity(pid))) process.kill(-pid, 'SIGKILL');
+      const deadline = performance.now() + 3_000;
+      while (await processIdentity(pid) !== null && performance.now() < deadline) await delay(20);
+      assert.equal(await processIdentity(pid), null);
+    }
+    if (temporary.startsWith('.tmp/browser-run-')) await rm(path.resolve(cwd, temporary), { recursive: true, force: true });
+  }
+});
+
 test('forced timeout still cleans an unmarked process using the browser profile', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
   let pid = 0;
   let temporary = '';
   const source = `
     process.on('SIGINT', () => {});
     const { spawn } = require('node:child_process');
+    require('node:fs').mkdirSync(require('node:path').join(process.env.TMPDIR, 'profile'));
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', '--user-data-dir=' + require('node:path').join(process.env.TMPDIR, 'profile')], { detached: true, stdio: ['ignore', 'inherit', 'inherit'], env: {} });
     child.unref(); console.log(JSON.stringify({pid:child.pid,temporary:process.env.TMPDIR})); setInterval(() => {}, 1000);
   `;
@@ -170,6 +199,7 @@ test('marker cleanup failure does not prevent independent browser profile cleanu
   let temporary = '';
   const source = `
     const { spawn } = require('node:child_process');
+    require('node:fs').mkdirSync(require('node:path').join(process.env.TMPDIR, 'profile'));
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', '--user-data-dir=' + require('node:path').join(process.env.TMPDIR, 'profile')], { detached: true, stdio: 'ignore', env: {} });
     const marked = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
     child.unref(); marked.unref(); console.log(JSON.stringify({pid:child.pid,markedPid:marked.pid,temporary:process.env.TMPDIR}));
@@ -236,6 +266,7 @@ test('a surviving browser profile leader and its unmarked group members are stop
   const source = `
     const { spawn } = require('node:child_process'); const fs = require('node:fs'); const path = require('node:path');
     const ledger = path.join(process.env.TMPDIR, 'leader-ready'); const ready = path.join(process.env.TMPDIR, 'member-ready');
+    fs.mkdirSync(path.join(process.env.TMPDIR, 'profile'));
     const memberSource = 'process.on("SIGTERM",()=>{});require("node:fs").writeFileSync(process.argv[1],"ready");setInterval(()=>{},1000)';
     const leaderSource = 'const fs=require("node:fs"),{spawn}=require("node:child_process");const c=spawn(process.execPath,["-e",process.argv[3],process.argv[2]],{stdio:"ignore",env:{}});setInterval(()=>{if(fs.existsSync(process.argv[2]))fs.writeFileSync(process.argv[1],String(c.pid))},10)';
     const child = spawn(process.execPath, ['-e', leaderSource, ledger, ready, memberSource, '--user-data-dir=' + path.join(process.env.TMPDIR, 'profile')], { detached: true, stdio: 'ignore', env: {} });

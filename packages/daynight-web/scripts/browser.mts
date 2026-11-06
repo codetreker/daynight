@@ -30,6 +30,9 @@ export const browserConfigs = [
   'locale-continuity-playwright.config.ts',
   'landing-header-playwright.config.ts',
   'create-project-mobile-playwright.config.ts',
+  'task-view-continuity-playwright.config.ts',
+  'graph-visibility-browser-playwright.config.ts',
+  'team-invitation-browser-playwright.config.ts',
   'session-header-playwright.config.ts',
   'session-column-playwright.config.ts',
   'session-record-layout-playwright.config.ts',
@@ -92,11 +95,18 @@ const profileOwner = async (pid: number, profileRoot: string) => {
   const cwd = await processCwd(pid);
   if (!sameProcess(identity, await processIdentity(pid))) throw new Error('Browser process changed during profile inspection.');
   const canonicalRoot = await realpath(profileRoot);
-  const owned = args?.some(arg => {
-    if (!arg.startsWith('--user-data-dir=')) return false;
-    const relative = path.relative(canonicalRoot, path.resolve(cwd, arg.slice('--user-data-dir='.length)));
-    return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
-  });
+  let owned = false;
+  for (const arg of args) {
+    if (!arg.startsWith('--user-data-dir=')) continue;
+    const candidate = path.resolve(cwd, arg.slice('--user-data-dir='.length));
+    const inside = (value: string): boolean => {
+      const relative = path.relative(canonicalRoot, value);
+      return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+    };
+    if (!inside(candidate)) continue;
+    if (!inside(await realpath(candidate))) throw new Error('Browser profile resolves outside its invocation directory; cleanup refused.');
+    owned = true;
+  }
   return owned ? { identity, cwd } : null;
 };
 
