@@ -326,13 +326,17 @@ ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
 The endpoint advertises Project creation, transfer, listing and inspection,
-Team invitation creation, listing and revocation, and inspection and acceptance
-of Team or Project invitations, and Task discussion reads and posts. A tool is
-discoverable only after its complete business adapter is registered. Invitation
-links are returned only by creation; listing returns metadata without secrets.
-Discussion reads return complete messages in oldest-first order; an explicit
-claim ID supplies agent attribution. A lost post response does not establish a
-receipt: read the thread before deciding whether to send again.
+Team invitation creation, listing and revocation, inspection and acceptance of
+Team or Project invitations, Task creation, reading, updating, status, deletion
+and property tools, and Task discussion reads and posts. A tool is discoverable
+only after its complete business adapter is registered. Invitation links are
+returned only by creation; listing returns metadata without secrets. Task mutation
+inputs use the existing 1 MiB business JSON limit; versions are decimal strings
+and property values use `valueText`. Task results default to a marked summary;
+request `full` for the complete resource. Discussion reads return complete
+messages in oldest-first order; an explicit claim ID supplies agent attribution.
+A lost post response does not establish a receipt: read the thread before
+deciding whether to send again.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
