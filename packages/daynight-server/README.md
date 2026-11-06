@@ -630,6 +630,19 @@ retain the storage boundary. The
 records the proof split. The [server organization rules](../../docs/daynight-server.md#测试职责)
 own the stable test-layer policy.
 
+Project request validation uses a valid synthetic principal and a fail-on-access
+store for UUID, creation input, pagination and entropy refusals that precede
+storage. Real creation, readback, keyset paging and operational-error tests keep
+PostgreSQL. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
+records the input and error-chain guarantees.
+
+Attachment migration manifest, stage, receipt, path and inventory tests use a
+fixed `AttachmentMaintenance` snapshot with real temporary files and the real
+migration runner. Database-shape validation, command/root failures, maintenance
+queries and process crash recovery retain their PostgreSQL boundaries. The
+[record-validation decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-record-validation-isolation.md)
+records which storage facts are mocked and which durable operations remain real.
+
 ### HTTP scenario ownership
 
 Domain packages own their HTTP integration scenarios, including those that
