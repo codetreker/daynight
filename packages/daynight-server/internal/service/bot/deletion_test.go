@@ -146,3 +146,41 @@ func TestDeletionRequiresConfirmedCommitForResultAndRevocation(t *testing.T) {
 		})
 	}
 }
+
+type cleanupFailureWriter struct {
+	scope deletionScope
+	calls int
+	err   error
+}
+
+func (w *cleanupFailureWriter) WriteSession(_ context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	w.calls++
+	if w.calls == 2 {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, w.err
+	}
+	if err := fn(w.scope); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: store.TransactionCommitted}, nil
+}
+
+func TestDeletionCleanupFailureRetainsCommittedBarrier(t *testing.T) {
+	var calls []string
+	principal := model.Principal{Kind: model.PATCredential, UserID: "owner"}
+	id := "5f80e445-5595-4d89-a209-0f868b8dd10c"
+	request := store.DeleteBot{Version: 1, DeletionID: "3469e571-cc04-45c1-9b73-796d0c85fabe"}
+	bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: principal.UserID, Version: 2,
+		Deletion: &model.BotDeletion{DeletionID: request.DeletionID, RequestedVersion: request.Version,
+			WorkerCleanup: model.BotCleanupResult{State: "completed"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}}}
+	cause := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: errors.New("cleanup failed")}
+	writer := &cleanupFailureWriter{scope: deletionScope{dao: &deletionDAO{calls: &calls}, bot: bots}, err: cause}
+	svc := NewDeletions(writer, nil, &discardedSessions{})
+	_, err := svc.DeleteBot(context.Background(), principal, id, request)
+	var failure *DeletionCleanupError
+	if !errors.As(err, &failure) || !errors.Is(err, cause) || writer.calls != 2 {
+		t.Fatalf("cleanup failure lost barrier or cause: %v, calls=%d", err, writer.calls)
+	}
+	if got, want := failure.Error(), "bot deletion cleanup: "+cause.Error(); got != want {
+		t.Fatalf("cleanup error message: got %q, want %q", got, want)
+	}
+}
