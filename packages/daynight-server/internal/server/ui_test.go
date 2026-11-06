@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -21,10 +22,11 @@ const uiTestScriptPath = "/assets/app-12345678.js"
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := newTestHandler(Dependencies{}, configuredTestConfig(), logger)
+	handler, err := newTestHandler(Dependencies{Store: &routeOnlyStore{}}, configuredTestConfig(), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = handler.(Handler).Shutdown(context.Background()) })
 	return httpx.RequestLogging(logger, handler)
 }
 

@@ -14,7 +14,39 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+type compositionOnlyStore struct{ store.Transactions }
+
+func TestOAuthProfileComposition(t *testing.T) {
+	c := config.Config{PublicOrigin: "https://daynight.example", OAuthClients: map[string][]byte{
+		"known": []byte(`{"client_id":"known","redirect_uris":["https://client.example/callback"]}`),
+	}}
+	app := NewModules(c, compositionOnlyStore{}, nil, nil, nil)
+	if app.OAuthError != nil || app.OAuthProfile == nil {
+		t.Fatalf("valid OAuth profile: %v", app.OAuthError)
+	}
+	client, err := app.OAuthProfile.Clients.Resolve(context.Background(), "known", "https://client.example/callback")
+	if err != nil || client.Provenance != "preregistered" {
+		t.Fatalf("configured client unavailable: %v", err)
+	}
+	if err := app.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []config.Config{
+		{PublicOrigin: "https://daynight.example", OAuthClients: map[string][]byte{"bad": []byte(`{}`)}},
+		{PublicOrigin: "https://daynight.example/path"},
+	} {
+		app := NewModules(invalid, compositionOnlyStore{}, nil, nil, nil)
+		if app.OAuthProfile != nil || app.OAuthError == nil {
+			t.Fatal("invalid OAuth configuration produced a public profile")
+		}
+		if err := app.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func appTestConfig(t *testing.T) config.Config {
 	t.Helper()
