@@ -6,35 +6,19 @@ type Module = "cli" | "server" | "web";
 export type ModuleSelection = Record<Module, boolean>;
 
 const allModules: ModuleSelection = { cli: true, server: true, web: true };
-const sharedInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
+const nodeInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
 const cliManifestPath = "packages/daynight/package.json";
-const webPatches = new Set([
-  "patches/@dagrejs__dagre@3.1.1.patch",
-  "patches/@xyflow__system@0.0.83.patch",
-]);
 
 export const selectModules = (paths: readonly string[]): ModuleSelection => {
   const selected = { cli: false, server: false, web: false };
   for (const path of paths) {
-    if (sharedInputs.has(path)) return { ...allModules };
-    if (path.startsWith("packages/daynight/src/")) {
-      selected.cli = true;
-      // Web imports these production modules; the service embeds the Web build.
-      if (path.startsWith("packages/daynight/src/api/") || path.startsWith("packages/daynight/src/session/") ||
-        path === "packages/daynight/src/platform/text.ts") {
-        selected.web = true;
-        selected.server = true;
-      }
-      if (path === "packages/daynight/src/commands/controller/providers/projection.ts" ||
-        path === "packages/daynight/src/commands/controller/providers/codex-errors.ts" ||
-        path === "packages/daynight/src/commands/controller/providers/native-rpc.ts" ||
-        path === "packages/daynight/src/commands/controller/providers/types.ts" ||
-        path === "packages/daynight/src/commands/controller/provider-display.ts") selected.web = true;
-      continue;
-    }
-    if (path.startsWith("packages/daynight/test/session/fixtures/")) {
+    if (nodeInputs.has(path)) {
       selected.cli = true;
       selected.web = true;
+      continue;
+    }
+    if (path.startsWith("packages/daynight/src/")) {
+      selected.cli = true;
       continue;
     }
     if (
@@ -42,12 +26,13 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       /(^|\/)(README|AGENTS|CLAUDE)\.md$/.test(path) || path === ".gitignore" ||
       path === ".github/workflows/publish.yml"
     ) continue;
-    if (path.startsWith("packages/daynight/") || path === "scripts/dev-install.mjs" || path === "scripts/dev-install.test.mjs") selected.cli = true;
-    else if (path.startsWith("packages/daynight-server/")) selected.server = true;
-    else if (path.startsWith("packages/daynight-web/") || webPatches.has(path)) {
+    if (path.startsWith("patches/")) {
+      selected.cli = true;
       selected.web = true;
-      selected.server = true;
-    } else if (path.startsWith("deployment/")) selected.web = true;
+    } else if (path.startsWith("packages/daynight/") || path.startsWith("scripts/")) selected.cli = true;
+    else if (path.startsWith("packages/daynight-server/")) selected.server = true;
+    else if (path.startsWith("packages/daynight-web/")) selected.web = true;
+    else if (path.startsWith("deployment/")) selected.web = true;
     else return { ...allModules };
   }
   return selected;

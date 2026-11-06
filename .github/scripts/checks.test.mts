@@ -39,7 +39,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-macos", "verify-completion", "verify-server"]) {
+for (const name of ["verify", "verify-installed", "verify-macos", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -278,23 +278,54 @@ test("the macOS evidence handoff removes only the two recorder paths", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-const selectedWebStep = gate.match(/      - name: Require selected Web quality to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
 const selectedWebCommand = selectedWebStep.match(/^        run: (.+)$/m)![1]!;
+const webQuality = jobs.get("verify-web-quality")!;
+const webBrowser = jobs.get("verify-web-browser")!;
 
-test("Web quality requires frontend Playwright regressions and retains their evidence", () => {
-  const web = jobs.get("verify-web-quality")!;
-  const steps = [...web.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
+test("Web quality and browser jobs prepare independent runners after module selection", () => {
+  for (const stage of [webQuality, webBrowser]) {
+    assert.match(stage, /^    needs: detect-changes$/m);
+    assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
+    assert.match(stage, /^    runs-on: ubuntu-latest$/m);
+    assert.match(stage, /^    timeout-minutes: 20$/m);
+    assert.match(stage, /uses: actions\/checkout@/);
+    assert.match(stage, /^          persist-credentials: false$/m);
+    assert.match(stage, /^          node-version: 24$/m);
+    assert.match(stage, /uses: pnpm\/action-setup@/);
+    assert.match(stage, /^          version: 11\.28\.6$/m);
+    assert.ok(stage.includes("run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store"));
+    assert.match(stage, /COREPACK_HOME: \$\{\{ github.workspace \}\}\/\.tmp\/corepack/);
+    assert.match(stage, /XDG_CACHE_HOME: \$\{\{ github.workspace \}\}\/\.tmp\/cache/);
+    assert.doesNotMatch(stage, /download-artifact|continue-on-error/);
+  }
+});
+
+test("Web quality owns the complete harness, coverage command and evidence", () => {
+  assert.match(webQuality, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
+  assert.doesNotMatch(webQuality, /playwright|web-browser|bots-viewport/);
+  const uploads = uploadSteps(webQuality);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-coverage", "daynight-image-test-pairs-verify-web-quality"]);
+  assert.match(uploads[0]!, /^        if: \$\{\{ always\(\) && steps.web-quality.outcome != 'skipped' \}\}$/m);
+  assert.deepEqual(artifactPaths(uploads[0]!), ["packages/daynight-web/.tmp/coverage/coverage-final.json", "packages/daynight-web/.tmp/coverage/summary.json"]);
+  assert.match(uploads[0]!, /^          if-no-files-found: error$/m);
+});
+
+test("Web browser owns the unchanged frontend Playwright regressions and evidence", () => {
+  const steps = [...webBrowser.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
   const install = steps.find((step) => step.includes("playwright install"))!;
   const browser = steps.find((step) => step.includes("id: web-browser"))!;
-  const upload = uploadSteps(web).find((step) => artifactName(step) === "daynight-web-assistant-browser")!;
+  const uploads = uploadSteps(webBrowser);
+  const upload = uploads[0]!;
   assert.ok(install); assert.ok(browser); assert.ok(upload);
-  assert.match(web, /^    if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
-  assert.match(web, /run: node packages\/daynight-web\/scripts\/ci.mts quality/);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser", "daynight-image-test-pairs-verify-web-browser"]);
+  assert.doesNotMatch(webBrowser, /ci\.mts quality|id: web-quality|\.tmp\/coverage/);
+  assert.match(webBrowser, /PLAYWRIGHT_BROWSERS_PATH: \$\{\{ github.workspace \}\}\/\.tmp\/playwright-browsers/);
   assert.match(install, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright install --with-deps chromium$/m);
   assert.match(browser, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright test --config tests\/navigation\/bots-viewport-playwright.config.ts --reporter=line,junit$/m);
   assert.match(browser, /PLAYWRIGHT_JUNIT_OUTPUT_FILE: \$\{\{ github.workspace \}\}\/packages\/daynight-web\/\.tmp\/acceptance\/bots-viewport-results.xml/);
-  assert.ok(web.indexOf(install) < web.indexOf(browser));
-  assert.ok(web.indexOf(browser) < web.indexOf(upload));
+  assert.ok(webBrowser.indexOf(install) < webBrowser.indexOf(browser));
+  assert.ok(webBrowser.indexOf(browser) < webBrowser.indexOf(upload));
   assert.doesNotMatch(browser, /continue-on-error|passWithNoTests|--grep|--shard|--update-snapshots|if:/);
   assert.match(upload, /^        if: \$\{\{ always\(\) && steps.web-browser.outcome != 'skipped' \}\}$/m);
   assert.deepEqual(artifactPaths(upload), ["packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml", "packages/daynight-web/.tmp/acceptance/bots-viewport/"]);
@@ -302,21 +333,24 @@ test("Web quality requires frontend Playwright regressions and retains their evi
   assert.match(upload, /^          if-no-files-found: error$/m);
 });
 
-test("selected Web validation requires actual quality success", () => {
+test("selected Web validation requires actual quality and browser success", () => {
   assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
   assert.match(selectedWebStep, /WEB_QUALITY_RESULT: \$\{\{ needs.verify-web-quality.result \}\}/);
+  assert.match(selectedWebStep, /WEB_BROWSER_RESULT: \$\{\{ needs.verify-web-browser.result \}\}/);
 });
 
 for (const quality of ["success", "skipped", "failure", "cancelled"]) {
-  test(`selected Web quality=${quality} executes the workflow guard`, () => {
-    const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
-      env: { ...process.env, WEB_QUALITY_RESULT: quality },
-      encoding: "utf8", timeout: 5_000,
+  for (const browser of ["success", "skipped", "failure", "cancelled"]) {
+    test(`selected Web quality=${quality}, browser=${browser} executes the workflow guard`, () => {
+      const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
+        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_BROWSER_RESULT: browser },
+        encoding: "utf8", timeout: 5_000,
+      });
+      if (result.error) throw result.error;
+      assert.equal(result.signal, null);
+      assert.equal(result.status === 0, quality === "success" && browser === "success");
     });
-    if (result.error) throw result.error;
-    assert.equal(result.signal, null);
-    assert.equal(result.status === 0, quality === "success");
-  });
+  }
 }
 
 const workflowSteps = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
@@ -355,6 +389,22 @@ test("one main-protected manifest pin supplies every application job before cand
   }
 });
 
+test("Web runners retain separate receipts for their own validated input", () => {
+  for (const name of ["verify-web-quality", "verify-web-browser"]) {
+    const stage = jobs.get(name)!;
+    assert.match(stage, /^          fetch-depth: 0$/m);
+    const receipts = uploadSteps(stage).filter((entry) => artifactName(entry).startsWith("daynight-image-test-pairs-"));
+    assert.equal(receipts.length, 1);
+    assert.equal(artifactName(receipts[0]!), `daynight-image-test-pairs-${name}`);
+    assert.match(receipts[0]!, /^        if: \$\{\{ always\(\) && steps.image-pairs.outcome == 'success' \}\}$/m);
+    assert.match(receipts[0]!, /^          if-no-files-found: error$/m);
+    const download = workflowSteps(gate).find((entry) => entry.includes(`name: Download pairing evidence for ${name}\n`));
+    assert.ok(download);
+    assert.match(download, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
+    assert.equal(artifactName(download), artifactName(receipts[0]!));
+  }
+});
+
 test("pair validation has read-only step-scoped credentials without checkout persistence", () => {
   assert.match(workflow, /^permissions:\n  contents: read\n  pull-requests: read\n/m);
   assert.doesNotMatch(workflow, /^\s+[a-z-]+: write$/m);
@@ -384,8 +434,8 @@ test("the final gate checks complete pairing evidence independently of Web selec
   assert.ok(!step.includes("if:"));
   assert.ok(!gate.includes("pattern:"));
   const downloads = workflowSteps(gate).filter((entry) => entry.includes("uses: actions/download-artifact@") && entry.includes("name: daynight-image-test-pairs-"));
-  assert.equal(downloads.length, 13);
-  assert.equal(new Set(downloads.map(artifactName)).size, 13);
+  assert.equal(downloads.length, 14);
+  assert.equal(new Set(downloads.map(artifactName)).size, 14);
   assert.ok(step.includes("IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}"));
   assert.ok(step.includes("IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}"));
 });
@@ -428,11 +478,29 @@ const executePairingGate = (directory: string, environment: Record<string, strin
 test("the actual pairing gate accepts documentation-only and all-module evidence sets", () => withPairingEvidence((directory) => {
   writePairingReceipt(directory, "detect-changes");
   assert.equal(executePairingGate(directory), 0);
-  const names = ["verify-ubuntu-latest", "verify-windows-latest", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-macos", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion", "verify-server", "verify-web-quality"];
+  const names = ["verify-ubuntu-latest", "verify-windows-latest", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-macos", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion", "verify-server", "verify-web-quality", "verify-web-browser"];
   for (const name of names) writePairingReceipt(directory, name);
   assert.equal(executePairingGate(directory, { IMAGE_PAIR_CLI: "true", IMAGE_PAIR_SERVER: "true", IMAGE_PAIR_WEB: "true" }), 0);
   assert.notEqual(executePairingGate(directory), 0, "Unselected or stale receipts must not be accepted.");
 }));
+
+test("the actual pairing gate requires both selected Web receipts and rejects unselected Web receipts", () => withPairingEvidence((directory) => {
+  writePairingReceipt(directory, "detect-changes");
+  writePairingReceipt(directory, "verify-web-quality");
+  assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_WEB: "true" }), 0, "A missing browser receipt cannot be replaced by quality evidence.");
+  writePairingReceipt(directory, "verify-web-browser");
+  assert.equal(executePairingGate(directory, { IMAGE_PAIR_WEB: "true" }), 0);
+  assert.notEqual(executePairingGate(directory), 0, "Unselected Web receipts must not be accepted.");
+}));
+
+for (const field of ["manifestCommit", "combinedTree", "combinedCommit", "productionTree", "head"]) {
+  test(`the actual pairing gate rejects browser ${field} drift`, () => withPairingEvidence((directory) => {
+    writePairingReceipt(directory, "detect-changes");
+    writePairingReceipt(directory, "verify-web-quality");
+    writePairingReceipt(directory, "verify-web-browser", { ...pairingIdentity, [field]: "f".repeat(40) });
+    assert.notEqual(executePairingGate(directory, { IMAGE_PAIR_WEB: "true" }), 0);
+  }));
+}
 
 for (const field of ["manifestCommit", "combinedTree", "combinedCommit", "productionTree", "head"]) {
   test(`the actual pairing gate rejects ${field} drift`, () => withPairingEvidence((directory) => {
@@ -462,13 +530,15 @@ test("the actual runtime guard rejects differing or absent input identity before
   assert.notEqual(run().status, 0);
 }));
 
-test("main-pinned combinations validate the remaining Web quality job without restoring retired acceptance", () => {
-  const quality = jobs.get("verify-web-quality")!;
-  assert.ok(quality);
-  const step = workflowSteps(quality).find((entry) => entry.includes("id: web-quality\n"));
-  assert.ok(step);
-  assert.ok(step.includes("run: node packages/daynight-web/scripts/ci.mts quality\n"));
-  assert.ok(quality.indexOf(pairStep(quality)!) < quality.indexOf(step));
+test("main-pinned combinations validate both Web jobs without restoring retired acceptance", () => {
+  for (const [name, id] of [["verify-web-quality", "web-quality"], ["verify-web-browser", "web-browser"]]) {
+    const stage = jobs.get(name!)!;
+    const validation = workflowSteps(stage).find((entry) => entry.includes(`id: ${id}\n`));
+    assert.ok(validation);
+    const pairing = pairStep(stage);
+    assert.ok(pairing);
+    assert.ok(stage.indexOf(pairing) < stage.indexOf(validation));
+  }
   assert.doesNotMatch(workflow, /verify-web:|verify-web-[12]|WEB_SHARD_RESULT|daynight-web-summary|scripts\/acceptance|ci\.mts browser/);
   assert.doesNotMatch(workflow, /GITHUB_SHA=.*GITHUB_ENV|^\s+GITHUB_SHA:/m);
 });
