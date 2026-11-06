@@ -189,7 +189,7 @@
   },
   {
     "name": "task_ready",
-    "description": "Read the first ready Tasks ordered by creation time and UUID. Summary is default; request full list resources explicitly.",
+    "description": "Read at most limit ready Tasks ordered by creation time and UUID; default 5, maximum 20, without pagination. Summary is default; full includes complete Task descriptions.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -200,8 +200,8 @@
         "limit": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 100,
-          "default": 10
+          "maximum": 20,
+          "default": 5
         },
         "allowAgents": {
           "type": "boolean"
@@ -244,12 +244,6 @@
                 "type": "object"
               }
             },
-            "nextCursor": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "projection": {
               "enum": [
                 "summary",
@@ -258,8 +252,10 @@
             }
           },
           "required": [
-            "items"
-          ]
+            "items",
+            "projection"
+          ],
+          "additionalProperties": false
         },
         "meta": {
           "type": "object",

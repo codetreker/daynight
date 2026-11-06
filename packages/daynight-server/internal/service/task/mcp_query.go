@@ -64,3 +64,51 @@ func (s *Tasks) MCPList(ctx context.Context, principal model.Principal, projectI
 	}
 	return nil
 }
+
+// MCPReady reads the first candidates in one authorized snapshot, without a
+// continuation fence or cursor. Full items are read from that same snapshot.
+func (s *Tasks) MCPReady(ctx context.Context, principal model.Principal, projectID string, request taskcore.MCPReadyRequest) ([]store.TaskPriorityItem, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return nil, err
+	}
+	projectID, err := model.CanonicalID(projectID)
+	if err != nil {
+		return nil, err
+	}
+	query, err := taskcore.SelectMCPReady(request)
+	if err != nil {
+		return nil, err
+	}
+	var items []store.TaskPriorityItem
+	var refusal *model.Fault
+	err = s.store.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
+		if _, err := projectcore.RequireProjectRead(ctx, snapshot.ProjectDAO(), principal, projectID); err != nil {
+			if errors.As(err, &refusal) {
+				return nil
+			}
+			return err
+		}
+		page, err := snapshot.TaskDAO().TaskPriorityList(ctx, projectID, query)
+		if err != nil {
+			return err
+		}
+		items = page.Items
+		if request.View == "full" {
+			for i := range items {
+				full, err := snapshot.TaskDAO().Task(ctx, projectID, items[i].Task.ID)
+				if err != nil {
+					return err
+				}
+				items[i].Task = full
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read MCP ready tasks: %w", err)
+	}
+	if refusal != nil {
+		return nil, refusal
+	}
+	return items, nil
+}

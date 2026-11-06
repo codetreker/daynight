@@ -317,3 +317,41 @@ func TestIdentityHTTPLoginReturnsToTestSessionDeepLink(t *testing.T) {
 		t.Fatal("successful callback omitted login session")
 	}
 }
+
+func TestIdentityHTTPPATExpiryAndCookieLogoutAreIndependent(t *testing.T) {
+	h := authTestHarness(t)
+	cookie := h.Login(t, "credential-independence")
+	cookies := []*http.Cookie{cookie}
+	user := testsupport.DecodeResponse[api.User](t, h.Request(http.MethodGet, "/api/v1/me", "", cookies, nil, ""), http.StatusOK)
+	mint := func(name string) api.CreatedPersonalAccessToken {
+		t.Helper()
+		return testsupport.DecodeResponse[api.CreatedPersonalAccessToken](t, h.Request(http.MethodPost, "/api/v1/me/tokens", `{"name":"`+name+`","expiresAt":null}`, cookies, nil, h.Origin), http.StatusCreated)
+	}
+	expired, active := mint("Expired independently"), mint("Active independently")
+	result, err := h.Database.Pool.Exec(context.Background(), `UPDATE personal_access_tokens SET created_at=now()-interval '2 hours',expires_at=now()-interval '1 hour' WHERE id=$1`, expired.ID)
+	if err != nil || result.RowsAffected() != 1 {
+		t.Fatalf("expire the selected credential: %v", err)
+	}
+	expiredBearer := []string{"Bearer " + expired.Token}
+	activeBearer := []string{"Bearer " + active.Token}
+	testsupport.AssertProjectError(t, h.Request(http.MethodGet, "/api/v1/me", "", nil, expiredBearer, ""), http.StatusUnauthorized, "unauthenticated")
+	cookieUser := testsupport.DecodeResponse[api.User](t, h.Request(http.MethodGet, "/api/v1/me", "", cookies, nil, ""), http.StatusOK)
+	patUser := testsupport.DecodeResponse[api.User](t, h.Request(http.MethodGet, "/api/v1/me", "", nil, activeBearer, ""), http.StatusOK)
+	if cookieUser.ID != user.ID || patUser.ID != user.ID {
+		t.Fatal("PAT expiry changed the independent session or active credential")
+	}
+	logout := h.Request(http.MethodPost, "/api/v1/auth/logout", "", cookies, nil, h.Origin)
+	if logout.Code != http.StatusNoContent || len(logout.Result().Cookies()) != 1 || logout.Result().Cookies()[0].MaxAge != -1 {
+		t.Fatalf("session logout: %d", logout.Code)
+	}
+	testsupport.AssertProjectError(t, h.Request(http.MethodGet, "/api/v1/me", "", cookies, nil, ""), http.StatusUnauthorized, "unauthenticated")
+	patUser = testsupport.DecodeResponse[api.User](t, h.Request(http.MethodGet, "/api/v1/me", "", nil, activeBearer, ""), http.StatusOK)
+	if patUser.ID != user.ID {
+		t.Fatal("cookie logout changed the independent PAT owner")
+	}
+	for _, secret := range []string{cookie.Value, expired.Token, active.Token} {
+		if strings.Contains(h.Logs.String(), secret) {
+			t.Fatal("credential entered diagnostics")
+		}
+	}
+}
