@@ -19,8 +19,9 @@ acceptance, and selected validation cannot be accepted as skipped.
 
 The existing `verify-web` job is a two-entry matrix with `fail-fast: false`.
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
---shard=i/2`. The current 32-case inventory partitions into two disjoint sets of
-16; each shard executes its selection against separate native and container
+--shard=i/2`. At adoption, the 32-case inventory partitioned into two disjoint
+sets of 16. The current inventory has 42 cases, partitioned into two sets of 21;
+each shard executes its selection against separate native and container
 deployments. Fully-parallel controls case selection while each database retains
 one serial browser worker. The existing within-run native/container overlap,
 private profile roots, permission binding and shared CLI recovery barrier apply
@@ -67,8 +68,8 @@ owns commands, artifact names and receipt details.
 preparation and cleanup, but retains all functional cases on one critical path.
 Selected fixture sharing alone did not establish the desired hosted latency.
 
-**Use default file-level sharding.** The current suite divides 24/8 by file.
-Case-level selection yields 16/16 without concurrent access to a shared database.
+**Use default file-level sharding.** At adoption, the suite divided 24/8 by file.
+Case-level selection yielded 16/16 without concurrent access to a shared database.
 The complete canonical union remains independently checked.
 
 **Repeat every extra check in both shards.** Navigation, lifecycle,

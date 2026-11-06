@@ -346,8 +346,9 @@ invitation_unavailable；[Team 邀请决策](../../.agents/notes/implemented/arc
 
 HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在自身 Snapshot 或
 项目写锁内检查成员；凭据认证与业务事务是各自的准入时点，不额外把凭据撤销和业务
-提交串行化。附件在短快照完成项目/task/路径与成员检查后准入文件 IO，不持锁慢传输。
-已准入操作允许完成；不能在文件写入后仅因成员刚移除而拒绝元数据写入。真实存储/
+提交串行化。附件读取在短快照完成项目和 task 准入后执行文件 IO；附件变更在 Task 锁后
+检查并锁定授权来源，直至文件和事务绑定的 metadata 操作完成。已准入操作允许完成；
+不能在文件写入后仅因成员刚移除而拒绝元数据写入。真实存储/
 数据库错误按原链传播，保留 K1。撤销后新准入请求拒绝，已发字节不承诺撤回。
 
 ## HTTP、Web 与 CLI
@@ -663,8 +664,13 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
 生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
 拥有实际领取结果后 TCP 断连，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
-重启、撤销、已准入上传和 socket 中断证明。两目标各有一份额外必需回执，当前
-26+26+5 共 57 项 Playwright inventory 与容量门槛保持；项目设置旅程单独拥有阈值读写与未知结果核对。
+重启、成员撤销后的可见权限及 PAT 独立性证明。两目标各有一份十一项检查的额外必需回执。
+已准入上传的 grant 锁等待由 Go 服务的
+`TestAttachmentUploadAndProjectGrantRemovalSerialize` 使用生产 HTTP handler、真实 UniAuth
+fixture 和隔离 PostgreSQL 验证。浏览器继续验证真实 socket 中断、staging 清理、公开
+附件读取的 404、完整分页列表中路径缺席和 Task 不变，不查询附件 metadata 或数据库锁。常规验收保留
+原生和容器各 42 项功能场景，显式本地压力验收另有 5 项原生容量场景；项目设置旅程
+单独拥有阈值读写与未知结果核对。
 
 统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合
 结果核对当前源码、安装包、进程/镜像与清理；真实上游人工联调单独留证，缺少时

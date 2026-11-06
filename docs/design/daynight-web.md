@@ -850,7 +850,7 @@ Go 相关 job 继续复用以 server `go.sum` 标识的模块/编译缓存，Go 
 
 Playwright 参数为 `--fully-parallel --workers=1 --retries=0 --shard=i/2`：
 fully-parallel 使内置分片按 case 选择，每套数据库的实际执行仍为单 worker 串行。
-当前规范清单为 32 个稳定 scenario ID，两份各 16 个、互不重叠。服务准备前，runner
+当前规范清单为 42 个稳定 scenario ID，两份各 21 个、互不重叠。服务准备前，runner
 使用与执行相同的功能参数先收集完整规范清单，再收集所选分片；只把通过校验的 ID
 写入已有 evidence 的 `selection`，并记录 `shard: { current, total: 2 }`。
 功能 ID 与组合鉴权检查名由纯 `inventory.mts` 统一拥有。遗漏、重复、未知 ID、
@@ -870,7 +870,7 @@ run-wide CLI 回收，避免清除另一活动目标的命令或凭据。
 原生/容器各十一项 combined-auth，以及真实附件持久化与成对备份恢复。
 归属仅由分片身份推导。Shard 1 完成其功能和所有所属资源清理；两个分片都保留
 镜像身份、浏览器、CLI 与 dev-ci 清理证明。矩阵 `fail-fast` 为 false，使另一个分片在
-失败后仍能完成诊断和清理。默认本地普通入口继续单次执行完整 32+32 功能与两个
+失败后仍能完成诊断和清理。默认本地普通入口继续单次执行完整 42+42 功能与两个
 combined-auth；本地 `--stress` 不分片，并在资源准备前拒绝 shard 组合及 CI 环境。
 本地容量只在完整功能、dev-ci、浏览器及共享 CLI 屏障之后运行，保留原预算与数据集。
 
@@ -1129,11 +1129,16 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 
 `auth-combined.mts` 另在原生/容器各生成一份必需组合回执，复用正常 Alice/Bob 身份、
 真实安装 CLI 和同一目标数据，覆盖部分共享项目、原凭据服务重启、logout/PAT 独立、
-撤销、已准入上传、socket 中断、正常签发 PAT 到期与双语 pending/reveal。它接收
-runner 的服务重启 callback 与显式安装回执路径；目标 probe 在校验 run/source/
-容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。详细机制由
+撤销、正常签发 PAT 到期与双语 pending/reveal。`same-data-cli-browser` 保留完成上传及
+原始字节比较；成员撤销通过正常 DELETE 后验证 API、预览、浏览器和安装 CLI 拒绝共享
+项目，私有项目继续可读。真实 socket 中断旅程观察 staging 前缀及清理，并经公开
+附件 GET 核对 404、完整分页列表中路径缺席和 Task 不变。它接收 runner 的服务重启 callback 与显式安装回执路径；
+目标控制校验 run/source 与资源归属后检查 staging，并使正常签发的 PAT 到期。
+Go 服务的 `TestAttachmentUploadAndProjectGrantRemovalSerialize` 通过生产 HTTP handler、
+真实 UniAuth fixture 和隔离 PostgreSQL 验证暂停上传的 grant 锁等待、完成后的
+201/204/404 与文件和 metadata，浏览器 runner 不查询数据库锁或附件 metadata。详细机制由
 [组合鉴权验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)拥有。
-这两份回执与常规 64 项 Playwright 场景并列；本地压力模式另有五项容量场景，
+这两份回执与常规 84 项 Playwright 场景并列；本地压力模式另有五项容量场景，
 不复制容量矩阵或改变其测量、预算和清理屏障；运行结果与真实上游人工登录分别留证。
 
 双语功能的三个稳定场景由[语言设计](daynight-web-i18n.md#验证与证据归属)定义，使用同一受监控页面与场景级 locale；首屏和偏好、图/详情/附件状态、错误及窄屏布局分别提供定向检查。语言不会复制容量矩阵或改变阶段与清理屏障。
@@ -1177,7 +1182,7 @@ PDF 预览通过轮询 iframe 的实际 compositor 截图，验证 fixture 专�
 
 chain、merge 和 external 夹具保留从源向末端的节点创建批次，先通过真实 API 创建无依赖任务，再从末端向源补齐依赖。merge/external 按逆拓扑层执行完整 PATCH 批次，同层最多六请求，层间等待；每次保留返回的新 Task/version。merge 的额外边探针使用最终任务版本，external 在依赖补齐后以最终 sink 版本执行既有外部依赖分类。shared 保留直接构造。完整 API 读回仍逐 ID 校验普通/外部依赖，以实际快照顺序选择可见概览；构造顺序不改变图规模、五次测量或独立超限检查。[夹具构造决策](../../.agents/notes/implemented/testing/2026-10-28-web-capacity-fixture-construction.md)记录新增写请求的成本与选择依据。
 
-每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。本地压力模式的 69 场景（原生 37、容器 32）、原有预算、timeout、零 retry 和清理保持；常规 CI 要求 64 个功能场景及严格 coverage。鉴权和生命周期合并后源码仍需完整运行回执。
+每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。本地压力模式的 89 场景（原生 47、容器 42）、原有预算、timeout、零 retry 和清理保持；常规 CI 要求 84 个功能场景及严格 coverage。鉴权和生命周期合并后源码仍需完整运行回执。
 
 每个容量 dataset 的 `feedbackDiagnostics` 增量保存每次 open/detail/zoom/pan 的
 `kind`、`repetition`、`start`、`capturedAt`、`conditionAt`、`frame1At`、

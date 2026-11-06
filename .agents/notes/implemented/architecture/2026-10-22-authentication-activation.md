@@ -71,15 +71,18 @@ allowed loopback HTTP gateway. The Go listener still binds numeric loopback.
 `/healthz` and `/readyz` are public and expose no business data; readiness checks
 the database rather than the project list or the upstream identity provider.
 
-### Admission and unchanged attachment behavior
+### Admission and attachment behavior
 
 HTTP authentication looks up the current session/PAT for each request and forms
 its Principal. Resource services check current membership inside their existing
 Snapshot or project write lock. These are distinct admission points; this change
 does not serialize credential revocation with every business transaction.
-Attachment membership, task and path checks finish in a short snapshot before
-file IO. An admitted operation may finish after membership or credentials change;
-new requests authenticate and authorize again. No post-IO membership recheck is
+At activation, attachment membership, task and path checks finished in a short
+snapshot before file IO. Reads continue to use a short authorization snapshot.
+The later [attachment serialization decision](https://github.com/codetreker/daynight/blob/7ee7d369dbc6a3c11c606fe9e6ebcd4e01f93908/.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)
+retains Task and authorization-source locks through mutation IO and metadata
+completion. An admitted operation may finish after credentials change; new
+requests authenticate and authorize again. No post-IO membership recheck is
 added, and filesystem/PostgreSQL non-atomicity remains K1.
 
 Trusted executable HTML stays at the application origin with the viewer's
@@ -193,8 +196,11 @@ config, wrong origins, credential and membership revocation, direct resources,
 provider failures, grant-version/invitation concurrency and complete native/container
 journeys. The [combined authentication decision](../testing/2026-10-23-authentication-combined-acceptance.md)
 composes normal browser and installed-CLI authority across service restart,
-revocation during admitted IO and actual socket loss. It also owns real UniAuth
-result consumption followed by downstream TCP loss. Its two additional target
-receipts preserve the existing Playwright inventory and budgets. Source receipts
+membership revocation and PAT lifecycle. Its eleven-check receipt on each target
+preserves the existing Playwright inventory and budgets. The same decision
+assigns the admitted-upload grant-lock race to the Go HTTP/PostgreSQL test
+`TestAttachmentUploadAndProjectGrantRemovalSerialize`. The browser journey still
+checks an interrupted upload and its cleanup, and the real UniAuth result-loss
+test retains downstream TCP loss. Source receipts
 and third-party manual login evidence remain distinct; a code or documentation
 change does not itself establish a passing run.

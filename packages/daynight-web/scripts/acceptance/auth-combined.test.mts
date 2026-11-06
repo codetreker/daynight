@@ -22,8 +22,8 @@ const marker = 'dnpat_combined-private-marker';
 const cookieMarker = 'Cookie=combined-private-marker';
 const hash = (value: Uint8Array): string => createHash('sha256').update(value).digest('hex');
 const prefix = Buffer.from([0, 255, 128, 10, 1, 2, 3, 4]);
-const upload = { projectId, taskId, userId, path: "nested/quote ' $() 文档.bin", prefixBytes: prefix.length, prefixSha256: hash(prefix) };
-const emptyObservation = { temporaryFiles: 0, temporaryBytes: 0, temporarySha256: null, finalExists: false, metadataRows: 0, memberRows: 1, memberVersion: '9223372036854775807' };
+const upload = { projectId, taskId, path: "nested/quote ' $() 文档.bin", prefixBytes: prefix.length, prefixSha256: hash(prefix) };
+const emptyObservation = { temporaryFiles: 0, temporaryBytes: 0, temporarySha256: null, finalExists: false };
 const within = async <T,>(promise: Promise<T>): Promise<T> => {
   let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -52,7 +52,7 @@ type TargetFixture = {
   target: CombinedTarget;
   run: CombinedCommand;
   calls: RecordedCommand[];
-  state: { postgresLabel: string; service: string; serverIdentity: string; files: string; database: unknown; expiry: unknown; lockWait: unknown; failure: Error | null };
+  state: { postgresLabel: string; service: string; serverIdentity: string; files: string; expiry: unknown; failure: Error | null };
 };
 const withTarget = async (kind: CombinedTarget['target'], action: (fixture: TargetFixture) => Promise<void>): Promise<void> => {
   const acceptanceDirectory = join(repository, 'packages/daynight-web/.tmp/acceptance', `20261023000000-${randomUUID()}`);
@@ -78,8 +78,7 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
     ...(storage === undefined ? {} : { native: { storageRoot: storage.directory, storage } }) }));
   const calls: RecordedCommand[] = [];
   const state = { postgresLabel: target.projectLabel.value, service: 'postgres', serverIdentity: `${composeProject}|server|sha256:${'c'.repeat(64)}`,
-    files: '0\t0\t-\t0', database: { metadataRows: 0, memberRows: 1, memberVersion: '9223372036854775807' } as unknown,
-    expiry: [{ id: patId, userId, expiresAt: '2026-10-23T00:00:00.000001+00:00' }] as unknown, lockWait: [] as unknown, failure: null as Error | null };
+    files: '0\t0\t-\t0', expiry: [{ id: patId, userId, expiresAt: '2026-10-23T00:00:00.000001+00:00' }] as unknown, failure: null as Error | null };
   const run: CombinedCommand = async (file, args, options) => {
     calls.push({ file, args: [...args] });
     assert.equal(file, 'docker');
@@ -90,7 +89,7 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
       if (args.at(-1) === target.postgresContainer) return args[2]!.includes('com.docker.compose.service') ? state.service : state.postgresLabel;
       return state.serverIdentity;
     }
-    if (args[0] === 'exec' && args[1] === target.postgresContainer) return JSON.stringify(args.at(-1)!.startsWith('WITH expired') ? state.expiry : args.at(-1)!.includes('pg_blocking_pids') ? state.lockWait : state.database);
+    if (args[0] === 'exec' && args[1] === target.postgresContainer && args.at(-1)!.startsWith('WITH expired')) return JSON.stringify(state.expiry);
     if (args[0] === 'exec' && target.storage.kind === 'container' && args[1] === target.storage.containerId) return state.files;
     throw new Error('Unexpected combined unit control command.');
   };
@@ -98,8 +97,8 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
   finally { await rm(acceptanceDirectory, { recursive: true, force: true }); }
 };
 
-test('native observations distinguish an admitted prefix, publication and discarded upload with exact member versions', async () => {
-  await withTarget('native', async ({ target, run, state, calls }) => {
+test('native observations distinguish an admitted prefix, publication and discarded upload without database reads', async () => {
+  await withTarget('native', async ({ target, run, calls }) => {
     assert.equal(target.storage.kind, 'native');
     const controls = createAuthCombinedTarget(target, run);
     assert.deepEqual(await controls.observeUpload(upload), emptyObservation);
@@ -119,13 +118,10 @@ test('native observations distinguish an admitted prefix, publication and discar
     assert.equal(incomplete.temporaryBytes, prefix.length + 4);
     assert.equal(incomplete.temporarySha256, null);
     await rename(temporary, join(directory, basename(upload.path)));
-    state.database = { metadataRows: 1, memberRows: 1, memberVersion: '9223372036854775807' };
-    assert.deepEqual(await controls.observeUpload(upload), { ...emptyObservation, finalExists: true, metadataRows: 1 });
+    assert.deepEqual(await controls.observeUpload(upload), { ...emptyObservation, finalExists: true });
     await rm(taskRoot, { recursive: true });
-    state.database = { metadataRows: 0, memberRows: 0, memberVersion: null };
-    assert.deepEqual(await controls.observeUpload(upload), { ...emptyObservation, memberRows: 0, memberVersion: null });
-    const queries = calls.filter(({ args }) => args[0] === 'exec').map(({ args }) => args.at(-1)!);
-    assert.equal(queries.every((query) => query.startsWith('SELECT ') && !query.includes(upload.path)), true, 'Read observations encode attachment paths and never mutate rows.');
+    assert.deepEqual(await controls.observeUpload(upload), emptyObservation);
+    assert.equal(calls.some(({ args }) => args[0] === 'exec' && args[1] === target.postgresContainer), false);
   });
 });
 
@@ -171,7 +167,7 @@ test('target controls reject invalid paths, source receipts and changed PostgreS
     assert.equal(calls.length, 0);
     await writeFile(join(target.acceptanceDirectory, 'evidence.json'), JSON.stringify(originalEvidence));
     state.postgresLabel = 'another-run';
-    await safeFailure(controls.observeUpload(upload));
+    await safeFailure(controls.expirePAT({ id: patId, userId }));
     assert.equal(calls.some(({ args }) => args[0] === 'exec'), false);
     state.postgresLabel = target.projectLabel.value;
     state.failure = new Error(`${cookieMarker}; Authorization: Bearer ${marker}`);
@@ -230,43 +226,6 @@ test('container probes require server project, service and image before position
       state.files = files;
       await safeFailure(controls.observeUpload(upload));
     }
-  });
-});
-
-test('database observations preserve int64 versions and reject inconsistent membership projections', async () => {
-  await withTarget('native', async ({ target, run, state }) => {
-    const controls = createAuthCombinedTarget(target, run);
-    for (const database of [{ metadataRows: 2, memberRows: 1, memberVersion: '1' }, { metadataRows: 0, memberRows: 0, memberVersion: '1' },
-      { metadataRows: 0, memberRows: 1, memberVersion: 9007199254740992 }, { metadataRows: 0, memberRows: 1, memberVersion: '9223372036854775808' }]) {
-      state.database = database;
-      await safeFailure(controls.observeUpload(upload));
-    }
-  });
-});
-
-test('membership wait evidence binds the exact grant and validates its blocking transaction', async () => {
-  await withTarget('native', async ({ target, run, calls, state }) => {
-    const controls = createAuthCombinedTarget(target, run);
-    assert.equal(await controls.observeMemberRemovalWait({ projectId, userId }), null);
-    state.lockWait = [{ waiter: 101, blocker: 102 }];
-    assert.deepEqual(await controls.observeMemberRemovalWait({ projectId, userId }), { projectId, userId, waiter: 101, blocker: 102 });
-    const query = calls.filter(({ args }) => args[0] === 'exec').at(-1)!.args.at(-1)!;
-    assert.match(query, /pg_blocking_pids\(waiting.pid\)/);
-    assert.match(query, /tuple_lock.relation='project_grants'::regclass/);
-    assert.equal(query.includes(`grant_row.project_id='${projectId}' AND grant_row.user_id='${userId}'`), true);
-    assert.match(query, /waiting.query LIKE 'DELETE FROM project_grants WHERE project_id=\$1 AND user_id=\$2%'/);
-    assert.match(query, /blocking.state='idle in transaction'/);
-    assert.match(query, /blocking.query LIKE '%FROM task_attachments%'/);
-    for (const invalid of [{}, [{ waiter: 0, blocker: 1 }], [{ waiter: 1, blocker: 1 }], [{ waiter: '101', blocker: 102 }]]) {
-      state.lockWait = invalid;
-      await safeFailure(controls.observeMemberRemovalWait({ projectId, userId }));
-    }
-    const before = calls.length;
-    await safeFailure(controls.observeMemberRemovalWait({ projectId: '../invalid', userId }));
-    assert.equal(calls.length, before);
-    state.postgresLabel = 'another-run';
-    await safeFailure(controls.observeMemberRemovalWait({ projectId, userId }));
-    assert.equal(calls.slice(before).some(({ args }) => args[0] === 'exec'), false);
   });
 });
 
@@ -455,7 +414,11 @@ test('unsafe configuration and pre-aborted signals never reach the HTTP listener
 
 const receiptChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
   'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
-  'admitted-member-removal', 'expired-pat', 'secret-scan'];
+  'membership-revocation', 'expired-pat', 'secret-scan'];
+const membershipProof = { projectId, taskId, memberId: userId, removalStatus: 204, memberAbsent: true,
+  ownerBytesRetained: true, newResourceStatus: 404, privateProjectStatus: 200, cliDenied: true, browserUnavailable: true };
+const socketProof = { path: `admission/${projectId}/abort.bin`, requestId: taskId, prefixBytes: 65_536,
+  socketClosed: true, stagingRemoved: true, resourceStatus: 404, listingAbsent: true, taskUnchanged: true };
 const combinedReceipt = (target: CombinedTarget): AuthCombinedReceipt => {
   const restart: RestartReceipt = { target: target.target, origin: target.baseUrl,
     startedAt: '2026-10-23T00:00:00Z', readyAt: '2026-10-23T00:00:01Z',
@@ -466,7 +429,7 @@ const combinedReceipt = (target: CombinedTarget): AuthCombinedReceipt => {
     origin: target.baseUrl, result: 'passed', startedAt: '2026-10-23T00:00:00Z', finishedAt: '2026-10-23T00:00:02Z',
     cleanup: 'passed', browserCleanup: 'passed', browser: { name: 'chromium', version: '151.0.7922.34', platform: process.platform, executableOverride: false },
     installedCli: { version: '0.9.0', sourceGitSha: target.sourceGitSha, entrySha256: '1'.repeat(64), tarballSha256: '2'.repeat(64) },
-    checks: receiptChecks.map((name) => ({ name, result: 'passed', details: {} })),
+    checks: receiptChecks.map((name) => ({ name, result: 'passed', details: name === 'membership-revocation' ? membershipProof : name === 'socket-disconnect' ? socketProof : {} })),
     screenshots: [join(target.acceptanceDirectory, 'auth-combined/sharing.png'), join(target.acceptanceDirectory, 'auth-combined/persistence.png')],
     commands: [], commandGroups: [], restart };
 };
@@ -514,6 +477,21 @@ test('each of the eleven combined checks is mandatory exactly once with a passin
       receipt.checks.map((entry, index) => index === 0 ? { ...entry, result: 'failed' } : entry),
       [...receipt.checks, receipt.checks[0]!],
     ]) assert.throws(() => validateAuthCombinedReceipt({ ...receipt, checks }, target), /every required result exactly once/);
+  });
+});
+
+test('combined receipts require actual membership and disconnect outcomes', async () => {
+  await withTarget('native', async ({ target }) => {
+    const receipt = combinedReceipt(target);
+    for (const [name, details, message] of [
+      ['membership-revocation', { ...membershipProof, memberAbsent: false }, /membership revocation evidence/],
+      ['membership-revocation', { ...membershipProof, newResourceStatus: 200 }, /membership revocation evidence/],
+      ['socket-disconnect', { ...socketProof, stagingRemoved: false }, /socket disconnect evidence/],
+      ['socket-disconnect', { ...socketProof, resourceStatus: 200 }, /socket disconnect evidence/],
+    ] as const) {
+      const checks = receipt.checks.map(entry => entry.name === name ? { ...entry, details } : entry);
+      assert.throws(() => validateAuthCombinedReceipt({ ...receipt, checks }, target), message);
+    }
   });
 });
 

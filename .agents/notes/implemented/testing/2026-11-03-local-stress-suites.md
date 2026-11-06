@@ -49,13 +49,14 @@ selects four real 128 MiB/256 MiB exact-limit and +1-byte probes. The separate
 source, installation, precise scenario inventory and cleanup. Production limits
 and full-size boundary assertions are unchanged.
 
-Default browser acceptance requires thirty-six native and thirty-six container
-functional scenarios (72 total), both eleven-check combined-authentication
-receipts, source/browser
-identity and all existing resource cleanup. Explicit local `--stress` adds five
-native capacity/limit scenarios (41 native / 36 container, 77 total) after
-functional execution and container/browser cleanup. It preserves all complete API datasets, five repetitions, timing
-budgets, strict performance receipts and browser diagnostics. Schema 3 evidence
+At adoption, default browser acceptance retained thirty-six native and thirty-six
+container functional scenarios, two eleven-check combined-authentication receipts,
+source/browser identity and cleanup. The current [Web validation guide](../../../../packages/daynight-web/README.md#production-browser-acceptance)
+owns the functional inventory and the two eleven-check combined receipts. Explicit
+local `--stress` adds five native capacity/limit scenarios after functional
+execution and container/browser cleanup. It preserves complete API datasets,
+five repetitions, timing budgets, strict performance receipts and browser
+diagnostics. Schema 3 evidence
 records `mode: functional` or `mode: stress`; exact report validation follows
 that mode. Raw Playwright discovery excludes the capacity spec by default.
 The later [case-shard decision](2026-11-04-web-ci-case-shards.md) distributes only

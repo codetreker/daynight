@@ -2266,18 +2266,28 @@ records the original data-sharing, rendering and independent-reading proof choic
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate eleven-check receipt on each runtime target, alongside the
-84 ordinary Playwright cases or 89 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
-identities, records their initial project sets, and crosses browser and CLI data
-through shared/private projects, original-credential service restart, logout/PAT
-independence, revocation, admitted upload, real socket interruption and normally
-minted PAT expiry. The bilingual token journey holds a real server response and
-checks retained pending input and one-time reveal; screenshots follow secret
-closure or masking. The runner supplies service-only restart callbacks and the
-explicit validated installed-package receipt. Actual staging bytes and metadata
-are observed independently of client write completion. During a held upload,
-PostgreSQL lock evidence identifies the target grant and its blocking attachment
-transaction; the upload completes before member removal commits, and subsequent
-reads confirm revoked access. The
+84 ordinary Playwright cases or 89 cases in local stress mode. It reuses the same
+installed package and normal Alice/Bob identities, records their initial project
+sets, and crosses browser and CLI data through shared/private projects,
+original-credential service restart, logout/PAT independence, membership
+revocation and normally minted PAT expiry. The bilingual token journey holds a
+real server response and checks retained pending input and one-time reveal;
+screenshots follow secret closure or masking. The runner supplies service-only
+restart callbacks and the
+explicit validated installed-package receipt. Completed binary upload and byte
+comparison remain in `same-data-cli-browser`. Membership revocation uses the
+normal DELETE endpoint, then verifies API, preview, browser and installed-CLI
+access denial while the private project remains readable.
+
+The browser journey also disconnects a real partial upload, checks the staging
+prefix and its removal, and verifies that the public attachment read returns 404,
+the complete paginated attachment list excludes the path and the Task is unchanged. The Go server's
+[`TestAttachmentUploadAndProjectGrantRemovalSerialize`](../daynight-server/internal/server/attachment_grant_lock_test.go)
+owns the paused-upload grant-lock race using the production HTTP handler, real
+UniAuth fixture and isolated PostgreSQL. It observes the staging prefix, absent
+metadata and the target grant's waiter and blocker, then verifies upload 201,
+member removal 204, retained bytes/metadata and subsequent denial. The browser
+runner does not query attachment metadata or database locks. The
 [authentication acceptance decision](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
 owns these mechanisms, failure/cleanup rules and the separate actual-upstream
 human login requirement. Implemented checks and source-bound run results remain

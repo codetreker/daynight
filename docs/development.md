@@ -661,7 +661,7 @@ and records cleanup failures.
 
 `pnpm web:acceptance` builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. After shared CLI preparation, it overlaps thirty-six native functional
+parallel. After shared CLI preparation, it overlaps forty-two native functional
 workflows with the same container workflows, then requires complete target and
 shared CLI cleanup. The explicit local
 `pnpm web:acceptance:stress` command adds the fixed native capacity cases after
@@ -697,12 +697,12 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-local functional mode requires thirty-six scenarios per target (72 total);
-CI partitions that inventory into disjoint eighteen-case selections per
+local functional mode requires forty-two scenarios per target (84 total);
+CI partitions that inventory into disjoint twenty-one-case selections per
 target. Shard receipts additionally identify `shard` and `selection`, and the
 final gate requires their complete canonical union. Stress mode remains local
-and unsharded, adds five native capacity scenarios (41 native / 36 container,
-77 total) and `native/capacity/performance.json`. Both local modes retain strict
+and unsharded, adds five native capacity scenarios (47 native / 42 container,
+89 total) and `native/capacity/performance.json`. Both local modes retain strict
 source/browser identity, combined authentication and owned-resource cleanup;
 CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
 they do not establish hosted PR latency.
@@ -922,7 +922,7 @@ builds its own real native and container deployments. Case selection uses
 `--fully-parallel --workers=1 --retries=0 --shard=i/2`; every database still runs
 one worker serially. Complete and selected discovery use the same functional
 arguments as execution and the canonical scenario inventory. Current selections
-contain eighteen cases each and jointly cover all thirty-six scenarios per target. The selected IDs and shard identity remain in the existing run evidence.
+contain twenty-one cases each and jointly cover all forty-two scenarios per target. The selected IDs and shard identity remain in the existing run evidence.
 The container callback reads its validated source/run-bound parent selection.
 
 Within each entry, native and container preparation overlap. Once native
@@ -939,7 +939,14 @@ owns those isolation constraints.
 Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
 eleven-check combined-authentication journeys and the existing real attachment
 persistence/paired-backup-restoration check. That ownership derives from the
-shard identity. Both entries retain functional, image identity, process,
+shard identity. Browser authentication retains normal member removal, revoked
+resource/UI access, PAT lifecycle, restart and completed shared binary data.
+Browser acceptance also verifies a real interrupted upload, staging cleanup,
+public-resource 404, absence from the complete paginated attachment list and
+unchanged Task state. The paused-upload grant-lock
+race belongs to `TestAttachmentUploadAndProjectGrantRemovalSerialize` in Go
+server integration, using the production HTTP handler, real UniAuth fixture and
+isolated PostgreSQL. Both entries retain functional, image identity, process,
 browser and resource cleanup requirements. Matrix `fail-fast` is false so the
 other entry can finish its diagnostics and cleanup after a failure.
 Local ordinary acceptance remains complete and unsharded; local stress adds

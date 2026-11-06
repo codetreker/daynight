@@ -130,6 +130,11 @@ test('rejects an empty aggregate and duplicate required scenario names', () => {
 
 const githubSha = 'a'.repeat(40);
 const gitTreeSha = 'b'.repeat(40);
+const proofId = '11111111-1111-4111-8111-111111111111';
+const membershipProof = { projectId: proofId, taskId: proofId, memberId: proofId, removalStatus: 204, memberAbsent: true,
+  ownerBytesRetained: true, newResourceStatus: 404, privateProjectStatus: 200, cliDenied: true, browserUnavailable: true };
+const socketProof = { path: `admission/${proofId}/abort.bin`, requestId: proofId, prefixBytes: 65_536,
+  socketClosed: true, stagingRemoved: true, resourceStatus: 404, listingAbsent: true, taskUnchanged: true };
 const shardReceipt = (current: 1 | 2, sha = githubSha, tree = gitTreeSha) => {
   const midpoint = Math.ceil(functionalNames.length / 2);
   const selection = current === 1 ? functionalNames.slice(0, midpoint) : functionalNames.slice(midpoint);
@@ -144,7 +149,7 @@ const shardReceipt = (current: 1 | 2, sha = githubSha, tree = gitTreeSha) => {
     native: { cleanup: 'passed' }, installedCli: { cleanup: 'passed' }, selection: [...selection] as string[], targets,
     authCombined: current === 1 ? [] : targets.map(({ target, baseUrl }) => ({ schemaVersion: 1, kind: 'auth-combined',
       target, origin: baseUrl, sourceGitSha: sha, result: 'passed', cleanup: 'passed', browserCleanup: 'passed',
-      checks: authCombinedChecks.map((name) => ({ name, result: 'passed' })),
+      checks: authCombinedChecks.map((name) => ({ name, result: 'passed', details: name === 'membership-revocation' ? membershipProof : name === 'socket-disconnect' ? socketProof : {} })),
     })),
   };
 };
@@ -264,6 +269,8 @@ test('rejects wrong authentication ownership, source, cleanup and incomplete che
     (pair) => { pair[1].authCombined[0]!.checks.pop(); },
     (pair) => { pair[1].authCombined[0]!.checks[0]!.name = pair[1].authCombined[0]!.checks[1]!.name; },
     (pair) => { pair[1].authCombined[0]!.checks[0]!.result = 'failed'; },
+    (pair) => { pair[1].authCombined[0]!.checks.find(entry => entry.name === 'membership-revocation')!.details = { ...membershipProof, memberAbsent: false }; },
+    (pair) => { pair[1].authCombined[0]!.checks.find(entry => entry.name === 'socket-disconnect')!.details = { ...socketProof, stagingRemoved: false }; },
   ];
   for (const mutate of cases) {
     const pair = shardPair(); mutate(pair);
