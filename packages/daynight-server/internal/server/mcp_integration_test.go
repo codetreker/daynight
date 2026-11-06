@@ -99,8 +99,20 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
-		t.Fatalf("production tools: %#v, %v", list, err)
+	if err != nil {
+		t.Fatalf("list production tools: %v", err)
+	}
+	for _, name := range []string{"team_invitation_create", "team_invitation_list", "team_invitation_revoke", "invitation_inspect", "invitation_accept"} {
+		found := false
+		for _, tool := range list.Tools {
+			if tool.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing production tool %s", name)
+		}
 	}
 
 	// A separate production router with an explicitly test-only tool exposes the
@@ -190,7 +202,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	list, err = bobProduction.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil || len(list.Tools) < 5 {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
 	}
 }
