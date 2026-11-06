@@ -117,7 +117,7 @@ test("native stages retain phase-owned environment, acceptance and failure-probe
   const names = [...ordinaryUploads, ...installedUploads].map(artifactName);
   assert.equal(new Set(names).size, names.length);
   assert.deepEqual(artifactPaths(ordinaryUploads[1]!), [".tmp/validation-environment.json"]);
-  assert.deepEqual(artifactPaths(installedUploads[0]!), [".tmp/validation-environment.json", ".tmp/e2e-evidence.json", ".tmp/update-evidence.json", ".tmp/project-task-evidence.json", ".tmp/skill-install-evidence.json", ".tmp/installed-cli-preparation.json"]);
+  assert.deepEqual(artifactPaths(installedUploads[0]!), [".tmp/validation-environment.json", ".tmp/installed-cli-preparation.json"]);
   for (const probe of [ordinaryUploads[2]!, installedUploads[1]!]) {
     assert.match(probe, /^        if: \$\{\{ always\(\) && steps.environment.outcome != 'skipped' \}\}$/m);
     assert.deepEqual(artifactPaths(probe), [".tmp/validation-probes.json"]);

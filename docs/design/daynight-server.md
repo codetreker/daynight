@@ -1,7 +1,7 @@
 # Daynight Server 架构设计
 
-状态：Go 服务、事务存储、project/task 用例与 HTTP 接口、覆盖率门槛和完整进程
-验收均已实现；Go 二进制内嵌看板并与 API 同源交付。
+状态：Go 服务、事务存储、project/task 用例与 HTTP 接口已实现；Go 二进制
+内嵌看板并与 API 同源交付。当前验证与 V8 的 race 和关键代码块要求存在差距。
 
 `daynight-server` 是独立的 Go 服务，为本机 CLI 和内部程序提供 project、task
 及任务依赖管理。行为要求由[需求文档](../spec/daynight-server.md)拥有；架构选择及
@@ -95,8 +95,7 @@ store 先投影任务自身的 160 字符标题预览、业务 version、状态�
 packages/daynight-server/
 ├── go.mod
 ├── cmd/
-│   ├── daynight-server/main.go
-│   └── e2e_tests/                 独立的真实进程与安装 CLI 验收测试包
+│   └── daynight-server/main.go
 ├── api/
 └── internal/
     ├── server/
@@ -115,8 +114,7 @@ packages/daynight-server/
 ```
 
 `cmd/daynight-server` 解析配置、创建应用和 HTTP runtime 并协调进程退出。应用在打开文件和数据库前完成配置与身份客户端验证；部分启动失败按依赖逆序释放资源。HTTP runtime 在同一准入门控下停止新请求；MCP 先取消并等待已接纳的工具工作，再停止共享 relay。已接纳的普通 HTTP 和 WebSocket handler 退出且断连事务完成后，Session engine 封闭 Operation 准入并等待事务、草稿、锁、通知和文件工作结束。优雅期限由 `DAYNIGHT_SHUTDOWN_TIMEOUT` 控制；超时后取消请求、通知 Operation 停止并强关 transport；断连收尾仍可启动所需事务，再用独立的五秒清理期限等待实际工作。只有全部使用者退出后应用才关闭文件和数据库；清理超时保留资源供关闭重试，已发生的优雅超时仍作为错误返回。
-`cmd/e2e_tests` 是独立的 Go 测试包，拥有真实服务进程、安装 CLI 和附件迁移的
-集成验收及其 `TestMain`；两个测试包分别拥有临时资源和辅助函数。`api` 拥有 HTTP 请求、响应和错误
+`api` 拥有 HTTP 请求、响应和错误
 结构；`internal/server` 使用标准库 `net/http` 处理路由、JSON、请求大小限制、
 HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 用例、业务
 校验与事务编排。`internal/core/model` 拥有共享领域模型；`internal/core/store` 定义数据库中立的 DAO、作用域与事务合同；
@@ -496,9 +494,9 @@ task/依赖、属性、附件与身份/成员机制，并持久化任务起止�
 
 测试放在所属 Go package 中。领域纯函数可直接测试，store 与 service 使用真实
 PostgreSQL 实例及隔离数据库或 schema，验证 SQL、锁和事务行为。数据库环境缺失
-应使要求数据库的验证明确失败，不以跳过测试获得通过。`go-cov` 不提供
-`-coverpkg`，跨包端到端调用不自动计入被调用包的覆盖率，因此 store/service 的
-数据库测试必须位于各自的被测 package。
+应使要求数据库的验证明确失败，不以跳过测试获得通过。当前 `go-cov` 未设置
+`-coverpkg`，各 package 的测试不计入其他 package 的生产代码覆盖率；store/service
+的数据库测试按职责位于对应模块。
 
 覆盖范围包括正常资源操作、非法字段和地址、同 project 限制、自身及重复依赖、环、
 完整依赖替换、三状态九组合、同状态+0/实际改变+1、PATCH status 拒绝、版本冲突、语义空更新、
@@ -507,10 +505,9 @@ PostgreSQL 实例及隔离数据库或 schema，验证 SQL、锁和事务行为�
 反向依赖、同版本状态及依赖更新/状态竞争、重开与后继开始/完成竞争最终仍保持不变量，同时证明不同 project 可以并行。
 
 HTTP 测试验证路由、DTO、错误映射、project 范围查找、分页筛选和 cursor 范围。
-整体验收运行实际构建的服务，通过固定到 `0978963813fc` 的真实 UniAuth gateway
-夹具获取会话/PAT，再通过 HTTP 创建 project/task，停止并重新启动服务后
-再读取已提交资源，证明跨重启持久化。凭据只保存在权限为 0600 的私有夹具
-元数据中，日志与产物只记录非秘密身份。
+Go 模块须使用实际构建的服务及固定的真实 UniAuth gateway 夹具取得会话/PAT，
+通过 HTTP 创建 project/task，并在重启后读取已提交资源，证明跨重启持久化。凭据只保存在权限为 0600 的私有夹具元数据中，日志与产物只记录非秘密身份。
+当前 Go 模块检查不执行独立跨产品进程验收。
 关键数据库验证采用以下可观察场景：
 
 - 回滚：在已更新 task 元数据并写入至少一条依赖后，通过测试数据库中的受控失败
@@ -529,76 +526,19 @@ HTTP 测试验证路由、DTO、错误映射、project 范围查找、分页筛�
 生命周期测试还覆盖连接失败、有界关闭和日志脱敏。测试不以模拟 store 替代数据库
 行为；最终交付必须给出需求 V1–V10 的全部验收证据。
 
-实现交付的验证包含 `go vet`、完整测试及 `go-cov --ci`。race 在本地默认和 main CI 开启，PR CI 关闭；[服务端验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有显式选择与回执语义。覆盖率配置位于 Go
-模块内的 `.go-cov.toml`，总计门槛严格大于 90%、每包至少 85%、每函数至少 80%，critical
-路径保持默认阻断。`go-cov` 的 total 配置仍使用 90；同一原始 coverage profile
-再按唯一代码块的语句数执行 `covered * 10 > total * 9` 精确检查，拒绝零语句和
-无效报告。恰好 90% 必须失败，显示为 `90.0%` 但实际高于 90% 的结果按原始值判断。
-工具固定到提交 `d6caf2759e330b48d69a543695e37002a48feb1d`；该提交包含
-排除项分母修正，不能用缺少该修正的 `v0.1.3` 代替。配置及门槛语义见
-[固定版本 README](https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/README.md#configuration)。
+当前 `bash scripts/check.sh` 要求隔离的 `DAYNIGHT_TEST_DATABASE_URL`，使用
+单测资源 overlay 构建和 vet，准备固定 UniAuth fixture，清除 Go 测试缓存后调用
+`go-cov` v0.1.4 运行模块测试。配置不排除生产 package、文件或函数，但未通过 `-coverpkg` 统计跨包调用；
+package 和 function 门槛分别为 85% 和 80%。原始 `coverage.out`
+另按语句数精确检查 `covered * 10 > total * 9`，恰好 90% 失败。
 
-覆盖率不替代并发、回滚和调用方行为断言。PR 按[仓库 CI 路由](../../README.md#ci-selection)
-选择受影响模块，main push 执行全量应用检查。最终 `checks` 只接受所有前置 job 的
-`success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。
-Go、web、CLI 和 shell completion 各自的检查内容及门槛保持。
-统一验证入口为模块内的 `bash scripts/check.sh`，要求显式设置
-`DAYNIGHT_TEST_DATABASE_URL`，依次完成覆盖率与 E2E 两个阶段。干净 checkout 先从
-根目录 frozen 安装 Node 24/pnpm 11.28.6 依赖；`--coverage` 和 `--e2e` 可分别
-选择一个阶段。每种选择都在 Go build/test 前发布真实 Web 资源、准备固定 UniAuth
-夹具并构建安装 CLI，缺少工具、依赖或真实产物直接失败。两个 CI job 使用同一
-server selector，在各自 runner 与 PostgreSQL 服务上并行执行，分别保留 20 分钟
-上限，最终 `checks` 等待并检查两者。CLI 启动入口、立即加载的命令定义、共享
-代码和 project/task/auth 等验收命令的输入继续选择 server；独立延迟加载命令的
-实现及资源仅选择 CLI。CLI manifest 使用 merge-base 与 PR head 的解析内容比较，
-仅忽略顶层 `version`，打包和准备输入的其他语义变更仍选择 server。Web 构建输入
-也选择两个 Go job。具体路径与失败行为由[仓库 CI 路由](../../README.md#ci-selection)
-拥有，取舍见[服务 CI 输入决策](../../.agents/notes/archived/testing/2026-11-04-server-ci-input-selection.md)。
+需求 V8 仍要求本地与 main CI 开启 race、PR CI 关闭并阻断关键代码块缺口；
+当前 `.go-cov.toml` 设置 `test.race = false` 和 `critical_blocks.fail = false`，
+入口未按事件选择 race，因此现有检查不满足这些要求。配置、实际入口及本地
+stress 命令由[服务端验证说明](../../packages/daynight-server/README.md#validate)维护。
+覆盖率不替代并发、回滚、实际进程或调用方行为证据。
 
-覆盖率阶段保留 build、vet、按事件选择的 race instrumentation、固定版本 `go-cov` 与 strict raw profile 检查。`DAYNIGHT_TEST_RACE` 只接受 `true`/`false`，缺席时本地默认开启；工作流对 PR 传 `false`，main push 传 `true`。编排显式传 `--race=<value>`，不改变生产覆盖率范围、atomic mode 或任何门槛。
-编排层把 `cmd/e2e_tests` 的完整 module import path 传给 `--exclude-packages`，
-使该纯测试包不再在覆盖率阶段执行。由于固定工具按子串匹配，编排层先通过
-`go list ./...` 确认该匹配仅命中精确的 E2E 包，任何同名扩展或嵌套包都失败，
-并递归拒绝该目录中的非 `_test.go` Go 源文件，防止排除生产语句。生产覆盖率的
-范围和所有门槛保持。
-
-E2E 阶段以 `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests` 完整执行
-独立测试包，沿用同一显式 race 选择。其 `TestMain` 根据测试 binary 的实际 race build tag
-构建相同 instrumentation 的服务 binary，并在进程回执中记录 `raceEnabled`；直接本地
-`go test -race` 也保持匹配。通过真实 HTTP、PostgreSQL、
-信号和进程重启执行验收。`go test ./...` 仍能发现此包。主命令包测试自行管理临时
-存储与轻量辅助函数，单独选择该包时不触发 E2E 构建、源码身份核验或证据初始化；
-其中直接运行服务的测试仍需真实 PostgreSQL 和 UniAuth。测试包归属与选择方式见
-[E2E 测试包决策](../../.agents/notes/archived/testing/2026-11-03-server-e2e-package.md)，
-CI 分工与代价见[独立作业决策](../../.agents/notes/archived/testing/2026-11-04-server-e2e-ci-jobs.md)。
-
-安装 CLI 验收复用 E2E 测试包的 fixture，包含
-`installed_cli_project_task_workflow` 场景，通过 `PT.V*` 要求编号对应 CLI 的真实
-project/task 操作、依赖推进、重启持久化及版本竞争。E2E 与覆盖率各自拥有一次
-独立安装，互不传递活跃资源或凭据。覆盖率阶段的安装供 `internal/server` 鉴权
-断言使用；该包的正常 PAT 签发是随后预算探针的凭据生产者，私有交接文件、探针
-和安装清理均留在同一阶段。预算探针运行在 Go 默认 10 分钟 test timer 之外；
-常规入口与 CI 选择两个期限场景，通过测试侧 preload 使用 1 秒单次和 3 秒总期限，
-生产默认 30 秒/5 分钟由测试单独断言。显式本地
-`bash scripts/check.sh --stress-budgets` 在覆盖率阶段选择四个完整字节场景，随后
-完成 E2E，保留真实 128 MiB/256 MiB 限制及精确边界和 +1 字节配对，并在 CI 环境中拒绝。
-独立实际进程场景在其顶层测试内最多四个并发，各自保留 schema、进程、数据库
-屏障及清理；顶层测试间的全局环境修改仍串行。原始服务场景不被 CLI 场景替换，细节见
-[安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)及
-[CLI 设计](daynight-project-task.md#验证与交付证据)。
-
-根目录 `.tmp/project-task-service-evidence.json` 记录覆盖率阶段安装身份、Go/期限
-结果与清理；本地完整字节套件改写入 `.tmp/project-task-stress-evidence.json`，
-两者均校验所选 suite 和精确场景集合。根目录 `.tmp/project-task-e2e-evidence.json`
-记录 E2E 安装身份、Go 命令和安装清理，不包含预算探针。各阶段回执同时记录实际
-源码 revision、tree、dirty 与所选 package 清单。CI 的 `daynight-server-acceptance`
-归档覆盖率与期限回执，`daynight-server-e2e-acceptance` 归档 E2E 编排回执及 Go 包
-增量写入的 `.tmp/acceptance-evidence.json`；后者记录源版本、binary hash、场景及
-资源清理。失败路径仍上传已产生的诊断。CI 要求 checkout 干净且 Git revision 与
-`GITHUB_SHA` 一致。V1–V10 的证据归属与 receipt 解释见
-[服务端验证说明](../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)；
-逐次运行结果随对应 PR 与 CI 保存。
-
-覆盖率阶段运行前失效项目内的 Go 测试结果缓存，E2E 使用 `-count=1`，确保数据库
-状态变化不能被缓存报告掩盖。覆盖率、E2E 与 Web browser 三个 job 通过 `setup-go`
-复用以 server `go.sum` 为依赖身份的编译与模块缓存。真实业务和跨层验收证据随对应任务交付。
+PR 按[仓库 CI 路由](../../README.md#ci-selection)选择受影响模块，main push
+执行全部应用检查。Go job 使用独立 PostgreSQL 服务并归档原始覆盖率 profile；
+最终 `checks` 接受前置 job 的 `success` 或 `skipped`，失败、取消及其他结果
+使汇总失败。实际运行结果属于被测源码与环境，不能以本地结果推断托管结果。

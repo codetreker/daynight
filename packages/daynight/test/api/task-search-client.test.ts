@@ -5,7 +5,8 @@ import type { Operation, OperationLimits } from "../../src/api/index.js";
 import { parseServerError } from "../../src/api/parse.js";
 
 // Captured from the server's real HTTP contract test, including its cursor and errors.
-const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../../../daynight-server/testdata/task-search/${name}.json`, import.meta.url), "utf8"));
+// https://github.com/codetreker/daynight/tree/4da0b3c005688eae5c873d4ba62d4595a878a670/packages/daynight-server/testdata/task-search
+const fixture = (name: string): any => JSON.parse(readFileSync(new URL(`../fixtures/task-search/${name}.json`, import.meta.url), "utf8"));
 const first = fixture("first-page"), next = fixture("next-page"), empty = fixture("empty-page");
 const projectId = first.projectId as string;
 const userId = "459052e2-186f-4a52-8a58-55425ce43631";
