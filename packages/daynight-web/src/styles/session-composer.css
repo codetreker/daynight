@@ -105,3 +105,9 @@
 
 /* Extra content yields space to the input minimum and native action controls. */
 .session-composer-attachments { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }
+
+/* The complete menu scrolls when there is too little space for a fixed heading. */
+.session-composer-compact-menus { position: relative; }
+.session-composer.session-composer-adaptive.session-composer-compact-menus > :is(.session-command-menu, .session-controls-panel) { position: absolute; z-index: 3; top: var(--session-menu-top, 0px); left: var(--session-menu-left, 0px); width: var(--session-menu-width, 100%); max-height: var(--session-menu-height, 0px); min-height: 0; margin: 0; overflow: auto; overscroll-behavior: contain; box-shadow: 0 4px 16px #30364418; }
+.session-composer-compact-menus > .session-command-menu { display: block; }
+.session-composer-compact-menus .session-command-body { position: static; min-height: 0; overflow: visible; }
