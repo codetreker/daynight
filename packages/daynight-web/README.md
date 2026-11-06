@@ -847,6 +847,15 @@ index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+Project task search submits the original expression to the server, including
+completed Tasks and chain members. Its draft, filters and cursor pages are
+independent of the ordinary lists. Clearing the search restores the ordinary
+view and its scroll position. Search results open a live Task detail, including
+when project graph synchronization fails. Errors and empty results remain
+distinct; the server owns matching, ordering and context. The
+[requirements](../../docs/spec/daynight-web.md#项目任务搜索) and
+[design](../../docs/design/daynight-web.md) own the interaction and lifecycle.
+
 ## Steps reading and writing
 
 Task details always expose Steps after Overview, in both the dialog and standalone
@@ -2002,6 +2011,17 @@ and [Session](../../docs/design/bot-session-view.md) validation responsibilities
 The Web quality command does not run a cross-product acceptance suite. Controlled
 browser fixtures establish only their stated frontend scope. A real-service result
 requires its own source-bound execution and cleanup evidence.
+
+`pnpm web:acceptance` runs the project task search browser checks against a
+production Web build embedded in a locally built Go server, a disposable
+PostgreSQL 18.6 Docker container and the pinned UniAuth fixture. It requires
+Node.js 24, pnpm 11.28.6, Go 1.27.2, Docker with Linux host networking and a
+Playwright Chromium installation. By default Chromium is read from the
+worktree's `.tmp/playwright-browsers`; set `PLAYWRIGHT_BROWSERS_PATH` to use an
+existing installation. The result under `.tmp/task-search-acceptance/` records
+the source fingerprint, server binary and browser asset hashes and observed
+checks. The runner removes its own server, fixture and database resources.
+This focused result does not replace complete cross-product acceptance.
 
 ## Dependency declarations
 
