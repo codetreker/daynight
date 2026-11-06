@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { devNull } from "node:os";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, createOperation } from "../../src/api/index.js";
@@ -42,12 +41,14 @@ const operation = (): Operation => { const value = createOperation(); operations
 const fixture = async () => {
   savedGitEnvironment ??= Object.entries(process.env).filter(([name, value]) => name.toUpperCase().startsWith("GIT_") && value !== undefined).map(([name, value]) => [name, value!] as [string, string]);
   clearGitEnvironment();
-  process.env.GIT_CONFIG_NOSYSTEM = "1";
-  process.env.GIT_CONFIG_GLOBAL = devNull;
   const temporary = path.resolve(import.meta.dirname, "../../../../.tmp/repository-tests");
   await mkdir(temporary, { recursive: true });
   const root = await mkdtemp(path.join(temporary, "context 用户 "));
   directories.push(root);
+  const isolatedConfig = path.join(root, "isolated-gitconfig");
+  await writeFile(isolatedConfig, "");
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  process.env.GIT_CONFIG_GLOBAL = isolatedConfig;
   execFileSync("git", ["init", "-q", root]);
   execFileSync("git", ["-C", root, "remote", "add", "origin", "git@git.example:Org/Repo.git"]);
   return root;

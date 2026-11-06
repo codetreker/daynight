@@ -111,7 +111,7 @@ afterEach(async () => {
 });
 
 
-it("uses the latest cloud model for resumed native argv after a Worker restart", async () => {
+it("keeps cloud configuration current for new sessions and resumes the same native session after a Worker restart", async () => {
   const f = await fixture();
   const document = { ...f.document, worker: { ...f.document.worker, agent: "codex", model: "stale-local-model", args: ["--search"] } };
   const source = stringify(document);
@@ -123,17 +123,27 @@ it("uses the latest cloud model for resumed native argv after a Worker restart",
   const cwd = path.join(f.repository.path, ".worktrees", "daynight", uuid(801));
   const firstCancel = new AbortController(); cancellations.add(firstCancel);
   finishAtTick(firstCancel, options => {
-    const args = buildHerdrAgentArguments(options.repositories[0]!.configuration, cwd, savedSession);
-    expect(args.slice(0, 6)).toEqual(["--no-daemon", "resume", savedSession, "--model", "previous-cloud-model", "--search"]);
+    const configuration = options.repositories[0]!.configuration;
+    expect(configuration.model).toBe("previous-cloud-model");
+    const fresh = buildHerdrAgentArguments(configuration, cwd);
+    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "previous-cloud-model", "--search"]);
+    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
+    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
+    expect(resumed).toContain("--search");
   });
   await runWorker({ ...f, signal: firstCancel.signal });
   remote.configuration.mockResolvedValue(resource(target("current-cloud-model")));
   const restartedCancel = new AbortController(); cancellations.add(restartedCancel);
   finishAtTick(restartedCancel, options => {
-    const args = buildHerdrAgentArguments(options.repositories[0]!.configuration, cwd, savedSession);
-    expect(args.slice(0, 6)).toEqual(["--no-daemon", "resume", savedSession, "--model", "current-cloud-model", "--search"]);
-    expect(args).not.toContain("stale-local-model");
-    expect(args).not.toContain("previous-cloud-model");
+    const configuration = options.repositories[0]!.configuration;
+    expect(configuration.model).toBe("current-cloud-model");
+    const fresh = buildHerdrAgentArguments(configuration, cwd);
+    expect(fresh.slice(0, 4)).toEqual(["--no-daemon", "--model", "current-cloud-model", "--search"]);
+    expect(fresh).not.toContain("stale-local-model");
+    expect(fresh).not.toContain("previous-cloud-model");
+    const resumed = buildHerdrAgentArguments(configuration, cwd, savedSession);
+    expect(resumed.slice(0, 3)).toEqual(["--no-daemon", "resume", savedSession]);
+    expect(resumed).toContain("--search");
   });
   await runWorker({ ...f, signal: restartedCancel.signal });
   expect(remote.configuration).toHaveBeenCalledTimes(2);

@@ -138,6 +138,25 @@ it("keeps returned external classification in a successful status response", asy
   } finally { await f.close(); }
 }, 60_000);
 
+it("keeps a blocked todo resource returned by a same-status confirmation", async () => {
+  const prerequisite = "b1b2c3d4-1111-4222-8333-123456789abd";
+  const blocked = { ...task, status: "todo", ready: false, startedAt: null, version: 9_007_199_254_740_993n, dependsOn: [prerequisite], blockedBy: [prerequisite] };
+  const f = await fixture((request, response) => {
+    if (request.method === "PUT" && request.path === `/api/v1/projects/${projectId}/tasks/${taskId}/status`) respond(response, blocked);
+    else respond(response, { error: { code: "not_found", message: "Unexpected request", requestId: "unexpected" } }, 404);
+  });
+  try {
+    const result = await f.run(["set-status", taskId, "todo"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+    for (const value of ["Status: todo\n", "Ready: false\n", `Depends on: ${prerequisite}\n`, `Blocked by: ${prerequisite}\n`, "Version: 9007199254740993\n"]) expect(result.stdout).toContain(value);
+    expect(f.requests).toEqual([
+      { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
+      { method: "PUT", path: `/api/v1/projects/${projectId}/tasks/${taskId}/status`, body: { version: 9_007_199_254_740_993n, status: "todo" } },
+    ]);
+  } finally { await f.close(); }
+}, 60_000);
+
 it("keeps returned external classification on a task read after a property write", async () => {
   const prerequisite = "b1b2c3d4-1111-4222-8333-123456789abd";
   const properties = { pullRequests: [{ url: "reference", title: "Preserved" }] };
@@ -160,6 +179,43 @@ it("keeps returned external classification on a task read after a property write
       { method: "PUT", path: `/api/v1/projects/${projectId}/tasks/${taskId}/properties/pullRequests`, body: { version: 9_007_199_254_740_993n, valueText: value } },
       { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
       { method: "GET", path: `/api/v1/projects/${projectId}/tasks/${taskId}`, body: null },
+    ]);
+  } finally { await f.close(); }
+}, 60_000);
+
+it.each(["property", "metadata", "status"] as const)("preserves nonempty PRs and execution timestamps through a %s response", async (action) => {
+  const startedAt = "2026-10-19T23:00:00.123456789Z";
+  const properties = { pullRequests: [{ url: "opaque 中文", title: "First\nline" }, { url: "opaque 中文", title: "First\nline" }] };
+  const original = { ...task, startedAt, version: 9_007_199_254_740_993n, properties };
+  const returned = action === "property" ? original : action === "metadata" ? { ...original, description: "Updated metadata", version: original.version + 1n } : { ...original, status: "done", completedAt: time, version: original.version + 1n };
+  const resourcePath = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+  const f = await fixture((request, response) => {
+    if (request.method === "GET" && request.path === resourcePath) respond(response, returned);
+    else if (action === "property" && request.method === "PUT" && request.path === `${resourcePath}/properties/pullRequests`) respond(response, { projectId, taskId, version: original.version, properties });
+    else if (action === "metadata" && request.method === "PATCH" && request.path === resourcePath) respond(response, returned);
+    else if (action === "status" && request.method === "PUT" && request.path === `${resourcePath}/status`) respond(response, returned);
+    else respond(response, { error: { code: "not_found", message: "Unexpected request", requestId: "unexpected" } }, 404);
+  });
+  try {
+    const raw = JSON.stringify(properties.pullRequests);
+    const args = action === "property" ? ["set-property", taskId, "pullRequests", raw] : action === "metadata" ? ["update", taskId, "--description", "Updated metadata"] : ["set-status", taskId, "done"];
+    const changed = await f.run(args);
+    expect(changed.code, changed.stderr).toBe(0);
+    expect(changed.stderr).toBe("");
+    expect(changed.stdout).toContain('"url":"opaque 中文","title":"First\\nline"');
+    expect(changed.stdout).toContain(`Version: ${returned.version}\n`);
+    const shown = await f.run(["show", taskId, "--json"], false);
+    expect(shown.code, shown.stderr).toBe(0);
+    expect(parseApiJson(shown.stdout)).toEqual(returned);
+    const write = action === "property"
+      ? { method: "PUT", path: `${resourcePath}/properties/pullRequests`, body: { version: original.version, valueText: raw } }
+      : action === "metadata"
+        ? { method: "PATCH", path: resourcePath, body: { version: original.version, description: "Updated metadata" } }
+        : { method: "PUT", path: `${resourcePath}/status`, body: { version: original.version, status: "done" } };
+    expect(f.requests).toEqual([
+      ...(action === "property" ? [] : [{ method: "GET", path: `/api/v1/projects/${projectId}`, body: null }]), write,
+      { method: "GET", path: `/api/v1/projects/${projectId}`, body: null },
+      { method: "GET", path: resourcePath, body: null },
     ]);
   } finally { await f.close(); }
 }, 60_000);

@@ -74,6 +74,7 @@ describe("Step Delete command preparation and output", () => {
   it("pre-reads exactly once by default and renders the complete confirmed collection", async () => {
     const f = fixture(); await runTaskCommand(f.args(), f.context, f.dependencies);
     expect(f.fetch.mock.calls.map(([, options]) => options!.method)).toEqual(["GET", "DELETE"]);
+    expect(f.fetch.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([`/api/v1/projects/${projectId}/tasks/${taskId}/steps`, `/api/v1/projects/${projectId}/tasks/${taskId}/steps/${stepId}`]);
     expect(parseApiJson(String(f.fetch.mock.calls[1]![1]!.body))).toEqual({ version: previous.version });
     const output = f.context.stdout.mock.calls[0]![0]; expect(output).toContain(`Step deleted. ID: ${stepId}`); expect(output).toContain("00000000"); expect(output).not.toContain("private-target");
   });
