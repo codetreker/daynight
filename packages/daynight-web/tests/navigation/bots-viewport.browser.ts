@@ -14,7 +14,7 @@ const install = async (page: Page, options: { items?: readonly BotDefinition[]; 
   const writes: string[] = [];
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    if (request.method() !== 'GET') writes.push(`${request.method()} ${path}`);
+    if (request.method() !== 'GET' && !path.endsWith('/readonly/requests')) writes.push(`${request.method()} ${path}`);
     const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
     if (path === '/api/v1/me') return send(profile);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
@@ -402,7 +402,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
     expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
   });
 
-  test(`distinguishes search and empty list and operates inline creation in ${locale}`, async ({ page }, info) => {
+  test(`distinguishes search and empty list and operates dialog creation in ${locale}`, async ({ page }, info) => {
     const writes = await install(page);
     await page.setViewportSize({ width: 390, height: 300 });
     await page.goto('/bots');
@@ -418,9 +418,9 @@ for (const locale of ['en', 'zh-CN'] as const) {
     const form = page.locator('.bot-create-form'), name = form.getByRole('textbox', { name: /^(Name|名称)$/ });
     await expect(name).toBeFocused();
     await name.fill('Created with keyboard');
-    const advanced = form.locator('summary');
+    const advanced = form.locator('.bot-create-advanced > summary');
     await focusBotControl(page, advanced); await page.keyboard.press('Enter');
-    await expect(form.locator('details')).toHaveAttribute('open', '');
+    await expect(form.locator('.bot-create-advanced')).toHaveAttribute('open', '');
     const cwd = form.getByRole('textbox', { name: /^(Working directory|工作目录)$/ });
     await cwd.fill('/ordinary/long-directory-for-creation');
     await cwd.scrollIntoViewIfNeeded();
@@ -574,4 +574,32 @@ test('preserves a visible text anchor through details, focus mode and navigation
   expect(writes).toEqual([]);
   expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
   await writeFile(info.outputPath('text-anchor.json'), JSON.stringify({ saved, offsets }, null, 2));
+});
+
+test('creation dialog leaves the active Session, draft and reading position intact', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const writes = await install(page);
+  await page.goto(`/bots/${botId(1)}`);
+  const input = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(input).toBeEnabled(); await input.fill('Session draft remains here');
+  const timeline = page.locator(`${visiblePane} .session-timeline`);
+  await expect(page.locator(`${visiblePane} .session-entry`)).toHaveCount(100);
+  await page.waitForTimeout(500);
+  await timeline.hover(); await page.mouse.wheel(0, -600); await page.waitForTimeout(150);
+  const saved = await anchor(page), originalInput = await input.elementHandle(), originalTimeline = await timeline.elementHandle();
+  const metrics = await page.evaluate(() => ({ ...window.botViewport.metrics }));
+  await page.locator('.bot-create').click();
+  await expect(page.locator('dialog.bot-create-dialog')).toBeVisible();
+  await page.locator('#bot-name').fill('Unsubmitted assistant');
+  await page.locator('.bot-create-advanced > summary').click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('dialog.bot-create-dialog')).toHaveCount(0);
+  await expect(page.locator('.bot-create')).toBeFocused();
+  await expect(input).toHaveValue('Session draft remains here');
+  expect(await input.evaluate((node, previous) => node === previous, originalInput)).toBe(true);
+  expect(await timeline.evaluate((node, previous) => node === previous, originalTimeline)).toBe(true);
+  const restored = await anchor(page);
+  expect(restored.key).toBe(saved.key); expect(Math.abs(restored.offset - saved.offset)).toBeLessThanOrEqual(3);
+  expect(await page.evaluate(() => ({ ...window.botViewport.metrics }))).toEqual(metrics);
+  expect(writes).toEqual([]);
 });

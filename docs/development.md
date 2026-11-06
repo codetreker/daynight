@@ -530,6 +530,13 @@ describes the actual check. Tests require the isolated PostgreSQL instance and
 fail if it is unavailable. The [server guide](../packages/daynight-server/README.md#validate)
 owns prerequisites and focused commands.
 
+Business-rule unit tests use domain facts and DAO-interface mocks without a
+PostgreSQL fixture; SQL, transaction, persistence and cross-operation authority
+proofs remain integration tests. The
+[server test guide](../packages/daynight-server/README.md#business-rules-and-dao-mocks)
+owns their scope and failure expectations. A selected pure-rule test must run
+without a database URL; the full module check still includes real PostgreSQL.
+
 The server's checked-in PostgreSQL format snapshot is compared with the complete
 migration history during ordinary validation. Refresh it with every migration;
 the [snapshot maintenance guide](../packages/daynight-server/README.md#schema-snapshot-maintenance)

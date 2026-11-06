@@ -9,7 +9,7 @@ import { navigate } from '../../app/router';
 import type { TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { BotSessionHost, useBotSessionCache } from './BotSessionHost';
-import { BotCreateForm } from './BotCreateForm';
+import { BotCreateDialog } from './BotCreateDialog';
 import { BotListItem } from './BotListItem';
 import { BotDeleteDialog } from './BotDeleteDialog';
 import { BotDeletionStatus } from './BotDeletionStatus';
@@ -114,7 +114,7 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
   return <section className={`bots-page${botId ? ' bot-selected' : ''}`} aria-label={m.title}>
     <aside className="bot-list-panel" aria-label={m.title}>
       <header className="bot-list-heading"><h1>{m.title}</h1><button className="button quiet bot-create" type="button" aria-label={m.create} title={m.create} disabled={!readEnabled} onClick={() => setCreating({ scope, botId })}><span aria-hidden="true">+</span></button></header>
-      {creating && creating.scope === scope && creating.botId === botId && !scope.isInvalidated ? <BotCreateForm enabled={readEnabled} unresolvedRequest={unresolved?.scope === scope ? unresolved.request : null} onUnresolvedRequestChange={request => { rememberBotCreation(scope, request); setUnresolved(request === null ? null : { scope, request }); }} onClose={() => setCreating(null)} onCreated={created => { if (selection.current.scope !== scope || selection.current.botId !== botId || scope.isInvalidated) return; setCreating(null); list.refresh(); defaults.refresh(); navigate(`/bots/${created.id}`); detail.refresh(); }} /> : null}
+      {creating && creating.scope === scope && creating.botId === botId && !scope.isInvalidated ? <BotCreateDialog enabled={readEnabled} unresolvedRequest={unresolved?.scope === scope ? unresolved.request : null} onUnresolvedRequestChange={request => { rememberBotCreation(scope, request); setUnresolved(request === null ? null : { scope, request }); }} onClose={() => setCreating(null)} onCreated={created => { if (selection.current.scope !== scope || selection.current.botId !== botId || scope.isInvalidated) return; setCreating(null); list.refresh(); defaults.refresh(); navigate(`/bots/${created.id}`); detail.refresh(); }} /> : null}
       <label className="bot-search"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg><input type="search" aria-label={m.search} placeholder={m.search} value={search} onChange={event => setSearch(event.target.value)} /></label>
       <div className="bot-list-section"><h2>{m.yourAssistants}{list.value !== null ? <span className="bot-list-count">{visibleBots.length}</span> : null}</h2><button className="button quiet bot-refresh" type="button" aria-label={m.refresh} title={m.refresh} aria-busy={list.busy || defaults.busy} onClick={refreshed} disabled={!readEnabled || list.busy || defaults.busy}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M20 7a9 9 0 1 0 1 8M20 3v5h-5" /></svg></button></div>
       {list.value === null && list.error === null ? <p role="status">{m.loading}</p> : null}

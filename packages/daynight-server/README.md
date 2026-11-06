@@ -605,6 +605,31 @@ prepares the pinned UniAuth fixture, and runs module tests and coverage. The
 optional `--coverage` argument selects the same check. A production build uses
 the real Web assets described under [Build and run](#build-and-run).
 
+### Business rules and DAO mocks
+
+Business-rule unit tests construct domain facts directly and use narrow mocks
+of the `core/store` DAO interfaces when a rule needs query results or storage
+errors. Check arguments, expected calls, results and error chains; unconfigured
+access must fail immediately. Pure functions need no storage mock. Keep these
+rule selections runnable without `DAYNIGHT_TEST_DATABASE_URL`, rather than
+preparing PostgreSQL merely to obtain fixed model data.
+
+PostgreSQL integration tests own real SQL, constraints, locking, commit and
+rollback, persisted readback and authority or version changes across operations.
+HTTP and process tests retain their composition and protocol boundaries. Moving
+a rule matrix does not remove these proofs or replace them with a single mock
+call. Do not mock SQL strings or implement a second in-memory database to test
+business rules.
+
+The Session control catalog, activity and argument rules call the authorization
+function with ordinary Task facts, a matching active Worker and fence, and a
+controlled clock. Positive commands establish that the fixture admits valid
+inputs. Real Submit/outsider, durable operation and offer/dispatch recheck tests
+retain the storage boundary. The
+[control-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-control-rule-isolation.md)
+records the proof split. The [server organization rules](../../docs/daynight-server.md#测试职责)
+own the stable test-layer policy.
+
 ### HTTP scenario ownership
 
 Domain packages own their HTTP integration scenarios, including those that

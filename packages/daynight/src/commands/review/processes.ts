@@ -103,13 +103,19 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
     if (entry.stopping === undefined) entry.stopping = (async () => {
       try {
         if (process.platform === "win32") {
-          await stopWindowsProcessTree({ pid: entry.pid, graceMs: grace,
-            assertCurrent: () => {
-              if (entry.closed || child.exitCode !== null || child.signalCode !== null) uncertain("The Windows agent exited before its current process tree could be terminated; operator recovery is required.");
-            },
-            terminate: async () => { await command("taskkill", ["/PID", String(entry.pid), "/T", "/F"], grace); },
-          });
-          await waitForClose(entry);
+          const failures: unknown[] = [];
+          try {
+            await stopWindowsProcessTree({ pid: entry.pid, graceMs: grace,
+              assertCurrent: () => {
+                if (entry.closed || child.exitCode !== null || child.signalCode !== null) uncertain("The Windows agent exited before its current process tree could be terminated; operator recovery is required.");
+              },
+              terminate: async () => { await command("taskkill", ["/PID", String(entry.pid), "/T", "/F"], grace); },
+            });
+          } catch (error) { safe = false; failures.push(error); }
+          // Native exit observation can precede Node's close event. Preserve
+          // tree failure while still joining the original child and streams.
+          try { await waitForClose(entry); } catch (error) { failures.push(error); }
+          if (failures.length) throw new AggregateError(failures, "Windows agent tree termination or direct-process closure failed.");
           entry.excluded = true;
         } else await stopGroup(entry);
       } catch (cause) { uncertain("Cannot confirm that the current agent and its foreground tools have stopped; execution state was retained.", cause); }
