@@ -659,6 +659,14 @@ storage. Real creation, readback, keyset paging and operational-error tests keep
 PostgreSQL. The [Project validation decision](../../.agents/notes/implemented/testing/2026-11-06-project-request-validation-isolation.md)
 records the input and error-chain guarantees.
 
+Task request tests separate service preflight from candidates that require a
+stored Task. Preflight rejects before storage; `PrepareUpdate` and `PrepareStatus`
+tests use `TaskWriteDAO` expectations for reads, version order, results and error
+chains. Real scope, refusal-without-mutation, graph, rollback, concurrency and
+all-status-pair/version observations remain PostgreSQL integration proofs. The
+[Task validation decision](../../.agents/notes/implemented/testing/2026-11-06-task-request-candidate-isolation.md)
+records the read-before-validation distinction.
+
 Attachment migration manifest, stage, receipt, path and inventory tests use a
 fixed `AttachmentMaintenance` snapshot with real temporary files and the real
 migration runner. Database-shape validation, command/root failures, maintenance
