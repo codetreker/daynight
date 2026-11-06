@@ -12,11 +12,9 @@ import { buildGraphIndex, type GraphIndex } from '../src/features/task-graph/mod
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
-vi.mock('../src/api/client', async (original) => ({
-  ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), getTaskSync: vi.fn(),
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(),
   listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
-  attachmentPreviewRoot: (projectId: string, taskId: string) => `/fixtures/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/preview/`,
-}));
+  attachmentPreviewRoot: (projectId: string, taskId: string) => `/fixtures/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/preview/`, }; });
 vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, rootId, onOpenTask }: {
   index: GraphIndex; rootId: string; onOpenTask: (id: string, trigger: HTMLElement) => void;
 }) => <button data-testid="graph-node" onClick={(event) => { onOpenTask(rootId, event.currentTarget); }}>图节点 {index.nodes.get(rootId)!.titlePreview}</button> }));
@@ -81,7 +79,7 @@ beforeEach(() => {
 
 beforeEach(() => {
   root = document.createElement('div'); root.id = 'root'; document.body.append(root);
-  graphRequest.mockReset(); graphRequest.mockImplementation(async (id) => snapshot(seeds, id));
+  graphRequest.mockReset(); graphRequest.mockImplementation(async (id) => servedGraphs.get(id) ?? snapshot(seeds, id));
   vi.mocked(getTask).mockReset();
   vi.mocked(getTask).mockImplementation(async (projectId, id) => {
     const task = servedGraphs.get(projectId)!.tasks.find((item) => item.id === id)!;
@@ -936,14 +934,15 @@ describe('recent task browsing and pagination', () => {
 
   it('clamps a removed final page immediately and does not restore it when tasks return', async () => {
     const initial = snapshot(manyStandalone(31));
-    graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(resetSnapshot(snapshot(manyStandalone(15)))).mockResolvedValueOnce(resetSnapshot(initial));
+    const reduced = resetSnapshot(snapshot(manyStandalone(15)));
+    graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(reduced).mockResolvedValueOnce(reduced).mockResolvedValueOnce(resetSnapshot({ ...initial }));
     mount(); await screen.findByRole('tab', { name: '独立任务' }); fireEvent.click(tab('standalone'));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     expect(document.querySelectorAll('.standalone-row')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    await waitFor(() => expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull());
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
+    await waitFor(() => expect(document.querySelectorAll('.standalone-row')).toHaveLength(15));
+    expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页'));
     expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);

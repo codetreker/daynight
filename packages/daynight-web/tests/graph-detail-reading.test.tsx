@@ -10,10 +10,8 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 import { installGraphMeasurements } from './graph-measurements';
 import { completeContextGraph } from './helpers/graphData';
 
-vi.mock('../src/api/client', async (original) => ({
-  ...await original<typeof import('../src/api/client')>(),
-  setTaskStatus: vi.fn(), getTaskSync: vi.fn(), getTask: vi.fn(), listAttachments: vi.fn(), readAttachmentText: vi.fn(),
-}));
+vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual,
+  setTaskStatus: vi.fn(), getTaskSync: vi.fn(), getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), listAttachments: vi.fn(), readAttachmentText: vi.fn(), }; });
 
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 

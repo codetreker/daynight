@@ -82,7 +82,7 @@ describe('task chain status filtering', () => {
 
   it('ignores obsolete visibility preferences and still distinguishes an empty project', async () => {
     window.localStorage.setItem(`daynight:completed-chains:${projectId}`, '{');
-    request.mockResolvedValueOnce(graph([seeds[2]!, seeds[3]!])).mockResolvedValueOnce(resetSnapshot(graph([])));
+    request.mockResolvedValueOnce(graph([seeds[2]!, seeds[3]!])).mockResolvedValue(resetSnapshot(graph([])));
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('combobox', { name: '状态' });
     expect(root('00000000-0000-4000-8000-000000000003')).toBeVisible();
