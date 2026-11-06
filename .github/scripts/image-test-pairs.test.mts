@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,8 @@ import test, { type TestContext } from "node:test";
 import { validatePairs, parseManifest, type GitHubSource } from "./image-test-pairs.mts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+const registryPath = ".github/scripts/image-test-pairs.json";
+const mainRules = () => [{ type: "deletion" }, { type: "non_fast_forward" }, { type: "pull_request", parameters: { required_approving_review_count: 1, dismiss_stale_reviews_on_push: true, required_review_thread_resolution: true } }, { type: "required_status_checks", parameters: { required_status_checks: [{ context: "checks" }] } }];
 const testPath = "packages/daynight/test/session/images.test.ts";
 const content = 'import assert from "node:assert/strict";\nassert.equal(2 + 2, 4);\n';
 
@@ -22,13 +24,21 @@ const fixture = (t: TestContext, change?: (repo: { cwd: string; write: (path: st
   git("config", "user.email", "pair@example.invalid");
   git("config", "maintenance.auto", "false");
   write(".gitignore", ".tmp/\n");
+  write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] }));
   write("packages/daynight/src/value.ts", "export const value = 1;\n");
   baseSetup?.(write);
   const base = commit();
   git("checkout", "-b", "implementation");
   write("packages/daynight/src/value.ts", "export const value = 2;\n");
   const implementation = commit();
-  const productionTree = git("rev-parse", `${implementation}^{tree}`);
+  const productionTreeAt = (revision: string) => {
+    mkdirSync(join(cwd, ".tmp"), { recursive: true });
+    const env = { ...process.env, GIT_INDEX_FILE: join(cwd, ".tmp/expected-index") };
+    const indexGit = (...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8", timeout: 10_000 }).trim();
+    indexGit("read-tree", revision); indexGit("update-index", "--force-remove", "--", registryPath);
+    const result = indexGit("write-tree"); rmSync(env.GIT_INDEX_FILE, { force: true }); return result;
+  };
+  const productionTree = productionTreeAt(implementation);
   git("checkout", "-b", "tests");
   if (change) change({ cwd, write, git }); else write(testPath, content);
   const tests = commit();
@@ -36,34 +46,37 @@ const fixture = (t: TestContext, change?: (repo: { cwd: string; write: (path: st
   const manifest = { schemaVersion: 1, pairs: [pair] };
   let manifestCommit: string;
   const saveManifest = () => {
-    git("checkout", "-B", "ci/image-test-pairs", base);
-    write("image-test-pairs.json", JSON.stringify(manifest));
-    manifestCommit = commit();
+    git("checkout", "-B", "main", base);
+    write(registryPath, JSON.stringify(manifest));
+    git("add", "--all"); git("commit", "--allow-empty", "-m", "Record registry fixture");
+    manifestCommit = git("rev-parse", "HEAD");
     git("checkout", "--detach", implementation);
     return manifestCommit;
   };
   saveManifest();
   const author = (id: number) => ({ id, login: `user-${id}`, type: "User" });
   const prs: Record<number, any> = {
-    11: { number: 11, state: "open", merged: false, head: { sha: implementation, repo: { full_name: "owner/repository" } }, base: { ref: "main", sha: base, repo: { full_name: "owner/repository" } }, user: author(1) },
-    12: { number: 12, state: "open", merged: false, head: { sha: tests, repo: { full_name: "owner/repository" } }, base: { ref: "implementation", sha: implementation, repo: { full_name: "owner/repository" } }, user: author(2) },
+    11: { number: 11, state: "open", merged: false, merge_commit_sha: null, head: { sha: implementation, repo: { full_name: "owner/repository" } }, base: { ref: "main", sha: base, repo: { full_name: "owner/repository" } }, user: author(1) },
+    12: { number: 12, state: "open", merged: false, merge_commit_sha: null, head: { sha: tests, repo: { full_name: "owner/repository" } }, base: { ref: "implementation", sha: implementation, repo: { full_name: "owner/repository" } }, user: author(2) },
   };
   const reviews: Record<number, any[]> = {
     11: [{ id: 101, state: "APPROVED", commit_id: implementation, user: author(3), submitted_at: "2026-01-01T00:00:00Z" }],
     12: [{ id: 102, state: "APPROVED", commit_id: tests, user: author(4), submitted_at: "2026-01-01T00:00:00Z" }],
   };
-  let rules = [{ type: "update" }, { type: "deletion" }, { type: "non_fast_forward" }];
+  let rules: any[] = mainRules();
   const requests: string[] = [];
   const source: GitHubSource = { async get(path) {
     requests.push(path);
-    if (path === "/git/ref/heads/ci/image-test-pairs") return { object: { type: "commit", sha: manifestCommit } };
-    if (path === "/rules/branches/ci%2Fimage-test-pairs") return rules;
+    if (path === "/git/ref/heads/main") return { object: { type: "commit", sha: git("rev-parse", "main") } };
+    if (path === "/rules/branches/main") return rules;
     const match = /^\/pulls\/(\d+)(\/reviews\?per_page=100&page=1)?$/.exec(path);
     if (match) return structuredClone(match[2] ? reviews[Number(match[1])] : prs[Number(match[1])]);
     throw new Error(`Unexpected API request ${path}`);
   } };
-  const run = (options: Record<string, unknown> = {}) => validatePairs({ cwd, manifestCommit, event: "pull_request", head: implementation, pr: 11, repository: "owner/repository", source, ...options });
-  return { cwd, git, write, commit, base, implementation, tests, pair, manifest, saveManifest, prs, reviews, requests, source, run, setRules: (next: typeof rules) => { rules = next; } };
+  const run = (options: Record<string, unknown> = {}) => validatePairs({ cwd, manifestCommit: options.event === "push" ? undefined : manifestCommit, event: "pull_request", head: implementation, pr: 11, repository: "owner/repository", source, ...options });
+  const markMerged = (id: number, revision: string) => { prs[id].state = "closed"; prs[id].merged = true; prs[id].merge_commit_sha = revision; };
+  const ordinaryPR = (head: string, baseSha = base, pr = 13) => { prs[pr] = { ...structuredClone(prs[11]), number: pr, head: { ...prs[11].head, sha: head }, base: { ...prs[11].base, sha: baseSha } }; return pr; };
+  return { cwd, git, write, commit, base, implementation, tests, pair, manifest, saveManifest, prs, reviews, requests, source, run, markMerged, ordinaryPR, productionTreeAt, setRules: (next: typeof rules) => { rules = next; } };
 };
 
 test("composes reviewed tests onto I in a clean checkout while preserving production files", async (t) => {
@@ -98,19 +111,19 @@ test("squash-merged I main window receives the original approved T bytes", async
   f.git("commit", "-m", "Squashed implementation");
   const main = f.git("rev-parse", "HEAD");
   assert.notEqual(main, f.implementation);
-  f.prs[11].state = "closed";
-  f.prs[11].merged = true;
+  f.markMerged(11, main);
   const result = await f.run({ event: "push", head: main, pr: undefined });
-  assert.equal(result.combinedTree, f.git("rev-parse", `${f.tests}^{tree}`));
+  assert.equal(result.combinedTree, f.git("rev-parse", "HEAD^{tree}"));
   assert.equal(readFileSync(join(f.cwd, testPath), "utf8"), content);
 });
 
 test("final integrated main validates its already-present tests without overlay", async (t) => {
   const f = fixture(t);
-  f.git("checkout", "--detach", f.tests);
-  for (const pr of Object.values(f.prs)) { pr.state = "closed"; pr.merged = true; }
-  const result = await f.run({ event: "push", head: f.tests, pr: undefined });
-  assert.equal(result.combinedTree, f.git("rev-parse", `${f.tests}^{tree}`));
+  f.git("checkout", "main"); f.git("merge", "--no-ff", "tests", "-m", "Integrated test fixture");
+  const main = f.git("rev-parse", "HEAD"); f.markMerged(11, f.implementation); f.markMerged(12, main);
+  const result = await f.run({ event: "push", head: main, pr: undefined });
+  assert.equal(result.combinedTree, f.git("rev-parse", "HEAD^{tree}"));
+  assert.equal(result.mode, "ordinary");
   assert.equal(f.git("status", "--porcelain"), "");
 });
 
@@ -131,9 +144,9 @@ for (const [label, update, pattern] of [
   ["wrong review commit", (f: ReturnType<typeof fixture>) => { f.reviews[12][0].commit_id = f.base; }, /review/i],
   ["candidate author's review", (f: ReturnType<typeof fixture>) => { f.reviews[12][0].user = f.prs[11].user; }, /independent/i],
   ["current change request", (f: ReturnType<typeof fixture>) => { f.reviews[12].push({ ...f.reviews[12][0], id: 103, user: { id: 9, login: "reviewer-9", type: "User" }, state: "CHANGES_REQUESTED", submitted_at: "2026-01-02T00:00:00Z" }); }, /review/i],
-  ["missing ref update protection", (f: ReturnType<typeof fixture>) => { f.setRules([{ type: "deletion" }, { type: "non_fast_forward" }]); }, /protect/i],
-  ["missing ref deletion protection", (f: ReturnType<typeof fixture>) => { f.setRules([{ type: "update" }, { type: "non_fast_forward" }]); }, /protect/i],
-  ["missing ref force-push protection", (f: ReturnType<typeof fixture>) => { f.setRules([{ type: "update" }, { type: "deletion" }]); }, /protect/i],
+  ["missing main review protection", (f: ReturnType<typeof fixture>) => { f.setRules(mainRules().filter(rule => rule.type !== "pull_request")); }, /protect/i],
+  ["missing ref deletion protection", (f: ReturnType<typeof fixture>) => { f.setRules(mainRules().filter(rule => rule.type !== "deletion")); }, /protect/i],
+  ["missing ref force-push protection", (f: ReturnType<typeof fixture>) => { f.setRules(mainRules().filter(rule => rule.type !== "non_fast_forward")); }, /protect/i],
 ] as const) test(`refuses ${label} before materializing candidate bytes`, async (t) => {
   const f = fixture(t); update(f);
   await assert.rejects(f.run(), pattern);
@@ -148,9 +161,10 @@ test("fails closed when the protected source cannot be read", async (t) => {
 
 test("rejects production drift during the I-to-T main window", async (t) => {
   const f = fixture(t);
+  f.git("checkout", "main"); f.git("merge", "--squash", "implementation"); f.git("commit", "-m", "Merged implementation");
+  f.markMerged(11, f.git("rev-parse", "HEAD"));
   f.write("packages/daynight/src/other.ts", "export const other = true;\n");
   const main = f.commit();
-  f.prs[11].state = "closed"; f.prs[11].merged = true;
   await assert.rejects(f.run({ event: "push", head: main, pr: undefined }), /production|matching/i);
   assert.equal(existsSync(join(f.cwd, testPath)), false);
 });
@@ -183,9 +197,11 @@ test("rejects missing pins, unknown fields and duplicate pair identities", () =>
   assert.throws(() => parseManifest({ schemaVersion: 2, pairs: [] }), /version/i);
 });
 
-test("refuses an unrelated PR while a required pair is registered", async (t) => {
-  const f = fixture(t);
-  await assert.rejects(f.run({ pr: 13 }), /matching|registered/i);
+test("an unrelated PR before I incorporation keeps its original checks and source", async (t) => {
+  const f = fixture(t); const pr = f.ordinaryPR(f.base); f.git("checkout", "--detach", f.base);
+  const result = await f.run({ pr, head: f.base });
+  assert.equal(result.mode, "ordinary"); assert.equal(result.combinedCommit, f.base);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
 });
 
 test("does not overwrite untracked local test files", async (t) => {
@@ -270,7 +286,7 @@ for (const [label, before, after] of [
 
 test("rejects a commit pin outside the protected ref history", async (t) => {
   const f = fixture(t);
-  await assert.rejects(f.run({ manifestCommit: f.tests }), /protected ref/);
+  await assert.rejects(f.run({ manifestCommit: f.tests }), /protected main/);
 });
 
 test("rejects a tree object supplied as the manifest commit", async (t) => {
@@ -301,16 +317,19 @@ test("rejects unavailable I and broken base ancestry before composition", async 
   await assert.rejects(f.run(), /ancestor/);
 });
 
-test("main cannot adopt an unmerged implementation's tests", async (t) => {
-  const f = fixture(t);
-  await assert.rejects(f.run({ event: "push", head: f.implementation, pr: undefined }), /has not merged/);
+test("main before I incorporation runs ordinary checks without candidate tests", async (t) => {
+  const f = fixture(t); f.git("checkout", "main"); const head = f.git("rev-parse", "HEAD");
+  const result = await f.run({ event: "push", head, pr: undefined });
+  assert.equal(result.mode, "ordinary"); assert.equal(existsSync(join(f.cwd, testPath)), false);
 });
 
-test("merged T cannot be overlaid onto a main tree missing its tests", async (t) => {
-  const f = fixture(t);
-  for (const pr of Object.values(f.prs)) { pr.state = "closed"; pr.merged = true; }
-  await assert.rejects(f.run({ event: "push", head: f.implementation, pr: undefined }), /already be present/);
-  assert.equal(existsSync(join(f.cwd, testPath)), false);
+test("a queued I-main run still overlays T after a later T merge", async (t) => {
+  const f = fixture(t); f.git("checkout", "main"); f.git("merge", "--squash", "implementation"); f.git("commit", "-m", "Merged implementation");
+  const head = f.git("rev-parse", "HEAD"); f.markMerged(11, head);
+  f.git("merge", "--squash", "tests"); f.git("commit", "-m", "Merged tests"); f.markMerged(12, f.git("rev-parse", "HEAD"));
+  f.git("checkout", "--detach", head);
+  const result = await f.run({ event: "push", head, pr: undefined, manifestCommit: undefined });
+  assert.equal(result.mode, "paired-window"); assert.equal(readFileSync(join(f.cwd, testPath), "utf8"), content);
 });
 
 test("PR event identity cannot substitute a different candidate SHA", async (t) => {
@@ -397,4 +416,178 @@ test("local composition detaches HEAD without moving the implementation branch",
   assert.equal(f.git("rev-parse", "implementation"), f.implementation);
   assert.equal(f.git("rev-parse", "HEAD"), result.combinedCommit);
   assert.equal(f.git("branch", "--show-current"), "");
+});
+
+test("PR detection resolves its immutable registry pin from main once", async (t) => {
+  const f = fixture(t); const expected = f.git("rev-parse", "main");
+  const result = await f.run({ manifestCommit: undefined });
+  assert.equal(result.manifestCommit, expected);
+  assert.equal(f.requests.filter(path => path === "/git/ref/heads/main").length, 1);
+});
+
+test("main push pins its event registry even when protected main later advances", async (t) => {
+  const f = fixture(t); const eventHead = f.git("rev-parse", "main");
+  f.git("checkout", "main"); f.write("README.md", "later unrelated main\n"); f.commit();
+  f.git("checkout", "--detach", eventHead);
+  const result = await f.run({ manifestCommit: undefined, event: "push", head: eventHead, pr: undefined });
+  assert.equal(result.manifestCommit, eventHead); assert.equal(result.mode, "ordinary");
+});
+
+
+test("an unmerged registry candidate is verified but never supplies executable tests", async (t) => {
+  const f = fixture(t); f.manifest.pairs = []; const trusted = f.saveManifest();
+  f.git("checkout", "-b", "registry-proposal", "main");
+  f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [f.pair] })); const head = f.commit();
+  const result = await f.run({ pr: f.ordinaryPR(head, trusted), head });
+  assert.equal(result.mode, "ordinary"); assert.equal(result.registryChecked, true); assert.equal(result.manifestCommit, trusted);
+  assert.equal(result.combinedCommit, head); assert.equal(existsSync(join(f.cwd, testPath)), false);
+  assert.equal(readFileSync(join(f.cwd, "packages/daynight/src/value.ts"), "utf8"), "export const value = 1;\n");
+});
+
+test("a registry PR cannot remove even a pending I mapping before T has reached main", async (t) => {
+  const f = fixture(t); const trusted = f.git("rev-parse", "main");
+  f.git("checkout", "-b", "remove-registry", "main"); f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] })); const head = f.commit();
+  await assert.rejects(f.run({ pr: f.ordinaryPR(head, trusted), head }), /cannot remove/);
+});
+
+const mergeImplementation = (f: ReturnType<typeof fixture>) => {
+  f.git("checkout", "main"); f.git("merge", "--squash", "implementation"); f.git("commit", "-m", "Merge implementation fixture");
+  const head = f.git("rev-parse", "HEAD"); f.markMerged(11, head); return head;
+};
+
+test("a registry deletion cannot bypass the active window on a main push", async (t) => {
+  const f = fixture(t); mergeImplementation(f);
+  f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] })); const head = f.commit();
+  await assert.rejects(f.run({ event: "push", head, pr: undefined }), /cannot remove/);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
+});
+
+test("a registry PR in the active window cannot erase the pending test input", async (t) => {
+  const f = fixture(t); const base = mergeImplementation(f);
+  f.git("checkout", "-b", "registry-deletion"); f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] })); const head = f.commit();
+  await assert.rejects(f.run({ pr: f.ordinaryPR(head, base), head }), /cannot remove/);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
+});
+
+test("replacement tests remain untrusted until the registry PR merges into main", async (t) => {
+  const f = fixture(t); const base = mergeImplementation(f);
+  f.git("checkout", "-b", "replacement-tests", f.tests); f.git("merge", "--no-ff", "main", "-m", "Synchronize registry and merged I");
+  const replacementContent = `${content}assert.equal(4 * 4, 16);\n`;
+  f.write(testPath, replacementContent); const replacement = f.commit();
+  f.prs[14] = { ...structuredClone(f.prs[12]), number: 14, head: { ...f.prs[12].head, sha: replacement }, base: { ...f.prs[12].base, ref: "main", sha: base } };
+  f.reviews[14] = [{ ...f.reviews[12][0], id: 104, commit_id: replacement }];
+  const proposed = { schemaVersion: 1, pairs: [{ ...f.pair, tests: { pr: 14, sha: replacement, reviews: [104] } }] };
+  f.git("checkout", "-b", "replacement-registry", "main"); f.write(registryPath, JSON.stringify(proposed)); const head = f.commit();
+  const result = await f.run({ pr: f.ordinaryPR(head, base), head });
+  assert.equal(result.mode, "paired-window"); assert.equal(result.registryChecked, true); assert.equal(result.tests, f.tests);
+  assert.equal(readFileSync(join(f.cwd, testPath), "utf8"), content, "A registry proposal must still run the old trusted test bytes.");
+  assert.deepEqual(JSON.parse(readFileSync(join(f.cwd, registryPath), "utf8")), proposed);
+  f.git("checkout", "main"); f.git("merge", "--ff-only", "replacement-registry");
+  const accepted = await f.run({ event: "push", head, pr: undefined });
+  assert.equal(accepted.manifestCommit, head); assert.equal(accepted.tests, replacement);
+  assert.equal(readFileSync(join(f.cwd, testPath), "utf8"), replacementContent);
+});
+
+test("registry removal becomes ordinary only after both actual merge commits reach main", async (t) => {
+  const f = fixture(t); mergeImplementation(f);
+  f.git("merge", "--squash", "tests"); f.git("commit", "-m", "Merge tests fixture"); const mergedTests = f.git("rev-parse", "HEAD"); f.markMerged(12, mergedTests);
+  f.git("checkout", "-b", "completed-registry-cleanup"); f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] })); const head = f.commit();
+  const result = await f.run({ pr: f.ordinaryPR(head, mergedTests), head });
+  assert.equal(result.mode, "ordinary"); assert.equal(result.registryChecked, true); assert.equal(result.pairCount, 0);
+  f.git("checkout", "main"); f.git("merge", "--ff-only", "completed-registry-cleanup");
+  const accepted = await f.run({ event: "push", head, pr: undefined });
+  assert.equal(accepted.mode, "ordinary"); assert.equal(accepted.combinedCommit, head);
+});
+
+test("a merge receipt outside main cannot authorize registry removal", async (t) => {
+  const f = fixture(t); const base = mergeImplementation(f); f.markMerged(12, f.tests);
+  f.git("checkout", "-b", "premature-registry-cleanup"); f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] })); const head = f.commit();
+  await assert.rejects(f.run({ pr: f.ordinaryPR(head, base), head }), /cannot remove/);
+});
+
+for (const [label, alter] of [
+  ["independent approval", (rules: any[]) => { rules[2].parameters.required_approving_review_count = 0; }],
+  ["stale review dismissal", (rules: any[]) => { rules[2].parameters.dismiss_stale_reviews_on_push = false; }],
+  ["thread resolution", (rules: any[]) => { rules[2].parameters.required_review_thread_resolution = false; }],
+  ["required checks", (rules: any[]) => { rules[3].parameters.required_status_checks = [{ context: "other" }]; }],
+] as const) test(`rejects main without ${label}`, async (t) => {
+  const f = fixture(t); const rules = mainRules(); alter(rules); f.setRules(rules);
+  await assert.rejects(f.run(), /protection/);
+});
+
+test("push consumers cannot replace the event registry with another main ancestor", async (t) => {
+  const f = fixture(t); const manifestCommit = f.git("rev-parse", "main"); const head = mergeImplementation(f);
+  await assert.rejects(f.run({ event: "push", head, pr: undefined, manifestCommit }), /must match its event HEAD/);
+});
+
+test("a delayed push cannot borrow a later T merge to validate its earlier registry deletion", async (t) => {
+  const f = fixture(t); mergeImplementation(f);
+  f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] })); const head = f.commit();
+  f.git("merge", "--squash", "tests"); f.git("commit", "-m", "Later merged tests"); f.markMerged(12, f.git("rev-parse", "HEAD"));
+  f.git("checkout", "--detach", head);
+  await assert.rejects(f.run({ event: "push", head, pr: undefined }), /cannot remove/);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
+});
+
+test("the real CLI accepts an empty initial PR pin but never falls back for a consumer", async (t) => {
+  const f = fixture(t); const snapshot: Record<string, unknown> = {};
+  for (const path of ["/rules/branches/main", "/git/ref/heads/main", "/pulls/11", "/pulls/12", "/pulls/11/reviews?per_page=100&page=1", "/pulls/12/reviews?per_page=100&page=1"]) snapshot[path] = await f.source.get(path);
+  const preloader = join(f.cwd, ".tmp/cli-transport.mjs");
+  const requests = join(f.cwd, ".tmp/cli-requests.jsonl");
+  f.write(".tmp/cli-transport.mjs", `import { appendFileSync } from 'node:fs';\nconst responses = ${JSON.stringify(snapshot)};\nglobalThis.fetch = async (url) => {\n  const path = String(url).replace('https://api.github.com/repos/owner/repository', '');\n  if (!(path in responses)) throw new Error('Unexpected API request: ' + path);\n  appendFileSync(${JSON.stringify(requests)}, JSON.stringify(path) + '\\n');\n  return new Response(JSON.stringify(responses[path]), {status: 200});\n};\n`);
+  const output = join(f.cwd, ".tmp/cli-output");
+  const env: NodeJS.ProcessEnv = { ...process.env, GITHUB_REPOSITORY: "owner/repository", GITHUB_TOKEN: "test-only-read-token", GITHUB_OUTPUT: output,
+    IMAGE_PAIR_EVENT: "pull_request", IMAGE_PAIR_HEAD: f.implementation, IMAGE_PAIR_PR: "11", IMAGE_PAIR_MANIFEST_COMMIT: "" };
+  delete env.IMAGE_PAIR_EXPECTED_COMBINED_TREE;
+  const run = () => spawnSync(process.execPath, ["--import", preloader, join(root, ".github/scripts/image-test-pairs.mts")], { cwd: f.cwd, env, encoding: "utf8", timeout: 30_000 });
+  const detection = run(); assert.equal(detection.status, 0, detection.stderr);
+  assert.match(readFileSync(output, "utf8"), new RegExp(`manifest_commit=${f.git("rev-parse", "main")}`));
+  assert.equal(readFileSync(requests, "utf8").trim().split("\n").filter(line => JSON.parse(line) === "/git/ref/heads/main").length, 1);
+  rmSync(requests); env.IMAGE_PAIR_EXPECTED_COMBINED_TREE = "a".repeat(40);
+  const consumer = run(); assert.notEqual(consumer.status, 0); assert.match(consumer.stderr, /Manifest commit/);
+  assert.equal(existsSync(requests), false, "A consumer with a missing pin must not reread main as a replacement.");
+});
+
+test("preserves checkout newline normalization while excluding validation credentials", async (t) => {
+  const f = fixture(t); const previousHome = process.env.HOME;
+  f.write(".tmp/git-home/.gitconfig", "[core]\n\tautocrlf = true\n");
+  process.env.HOME = join(f.cwd, ".tmp/git-home");
+  try {
+    f.git("checkout", "--force", "--detach", f.base); f.git("checkout", "--force", "--detach", f.implementation);
+    assert.match(readFileSync(join(f.cwd, "packages/daynight/src/value.ts"), "utf8"), /\r\n/);
+    const result = await f.run();
+    assert.equal(result.mode, "paired-pr");
+    assert.equal(readFileSync(join(f.cwd, testPath), "utf8"), content);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+  }
+});
+
+test("an unchanged cancelled I record does not block registration of a new valid pair", async (t) => {
+  const f = fixture(t); f.prs[11].state = "closed"; f.prs[12].state = "closed";
+  const trusted = f.git("rev-parse", "main");
+  f.git("checkout", "-b", "next-implementation", f.base); f.write("packages/daynight/src/value.ts", "export const value = 3;\n"); const implementation = f.commit();
+  const productionTree = f.productionTreeAt(implementation);
+  f.git("checkout", "-b", "next-tests"); f.write(testPath, content); const tests = f.commit();
+  f.prs[21] = { ...structuredClone(f.prs[11]), number: 21, state: "open", head: { ...f.prs[11].head, sha: implementation } };
+  f.prs[22] = { ...structuredClone(f.prs[12]), number: 22, state: "open", head: { ...f.prs[12].head, sha: tests }, base: { ...f.prs[12].base, sha: implementation } };
+  f.reviews[21] = [{ ...f.reviews[11][0], id: 201, commit_id: implementation }]; f.reviews[22] = [{ ...f.reviews[12][0], id: 202, commit_id: tests }];
+  const next = { base: f.base, implementation: { pr: 21, sha: implementation, reviews: [201] }, tests: { pr: 22, sha: tests, reviews: [202] }, productionTree, allowPaths: [testPath] };
+  f.git("checkout", "-b", "add-next-pair", "main"); f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [f.pair, next] })); const head = f.commit();
+  const result = await f.run({ pr: f.ordinaryPR(head, trusted), head });
+  assert.equal(result.mode, "ordinary"); assert.equal(result.registryChecked, true);
+  f.git("checkout", "main"); f.git("merge", "--ff-only", "add-next-pair");
+  const accepted = await f.run({ event: "push", head, pr: undefined }); assert.equal(accepted.mode, "ordinary");
+});
+
+test("an unchanged closed T still fails while its implementation is in the active window", async (t) => {
+  const f = fixture(t); const base = mergeImplementation(f); f.prs[12].state = "closed";
+  f.git("checkout", "-b", "format-active-registry"); f.write(registryPath, JSON.stringify(f.manifest, null, 2)); const head = f.commit();
+  await assert.rejects(f.run({ pr: f.ordinaryPR(head, base), head }), /closed without merging/);
+});
+
+test("a cancelled unmerged I record cannot be deleted from the registry", async (t) => {
+  const f = fixture(t); f.prs[11].state = "closed"; const base = f.git("rev-parse", "main");
+  f.git("checkout", "-b", "delete-cancelled-pair", "main"); f.write(registryPath, JSON.stringify({ schemaVersion: 1, pairs: [] })); const head = f.commit();
+  await assert.rejects(f.run({ pr: f.ordinaryPR(head, base), head }), /cannot remove/);
 });

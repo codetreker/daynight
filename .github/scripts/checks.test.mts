@@ -307,12 +307,16 @@ for (const quality of ["success", "skipped", "failure", "cancelled"]) {
 const workflowSteps = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
 const pairStep = (stage: string): string | undefined => workflowSteps(stage).find((step) => step.includes("        id: image-pairs\n"));
 
-test("one protected manifest pin supplies every application job before candidate execution", () => {
-  assert.equal((workflow.match(/vars\.DAYNIGHT_IMAGE_TEST_PAIRS_COMMIT/g) ?? []).length, 1);
+test("one main-protected manifest pin supplies every application job before candidate execution", () => {
+  assert.doesNotMatch(workflow, /vars\.|DAYNIGHT_IMAGE_TEST_PAIRS_COMMIT|refs\/heads\/ci\/image-test-pairs/);
   const detect = jobs.get("detect-changes")!;
   assert.ok(detect.includes("image_pair_manifest_commit: ${{ steps.image-pairs.outputs.manifest_commit }}"));
   assert.ok(detect.includes("image_pair_combined_tree: ${{ steps.image-pairs.outputs.combined_tree }}"));
-  assert.ok(pairStep(detect));
+  const detectionInput = pairStep(detect)!;
+  assert.ok(detectionInput);
+  assert.ok(detectionInput.includes("IMAGE_PAIR_MANIFEST_COMMIT: ${{ github.event_name == 'push' && github.sha || '' }}"), "PR detection resolves main once; push detection retains the event commit even when main later advances.");
+  assert.ok(!detectionInput.includes("IMAGE_PAIR_EXPECTED_COMBINED_TREE:"), "Only initial detection may select the manifest and composition.");
+  assert.ok(detect.includes("image_pair_combined_commit: ${{ steps.image-pairs.outputs.combined_commit }}"));
   assert.ok(detect.indexOf("id: image-pairs") < detect.indexOf("Test module selection"));
   assert.ok(detect.includes(".github/scripts/image-test-pairs.test.mts"));
   for (const [name, stage] of jobs) {
@@ -442,3 +446,20 @@ test("the actual runtime guard rejects differing or absent input identity before
   writeFileSync(own, JSON.stringify({ schemaVersion: 1 })); writeFileSync(producer, JSON.stringify({ schemaVersion: 1 }));
   assert.notEqual(run().status, 0);
 }));
+
+test("main-pinned combinations retain the original Web source gate and event identity", () => {
+  const browser = jobs.get("verify-web")!;
+  const expected = [
+    [browser, "Verify production dashboard and container deployment", 'env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/ci.mts browser --shard=${{ matrix.shard }}/2'],
+    [browser, "Recover recorded dashboard acceptance resources", 'env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/acceptance.mts --cleanup'],
+    [gate, "Verify complete Web shard evidence", 'env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/acceptance/report.mts --shards .tmp/web-shards/1/*/evidence.json .tmp/web-shards/2/*/evidence.json'],
+  ];
+  for (const [stage, name, command] of expected) {
+    const step = workflowSteps(stage!).find((entry) => entry.includes(`name: ${name}\n`));
+    assert.ok(step, `${name} must remain an original source-identity consumer.`);
+    assert.ok(step.includes("IMAGE_PAIR_COMBINED_COMMIT: ${{ steps.image-pairs.outputs.combined_commit }}"));
+    assert.ok(step.includes(`run: ${command}\n`), `${name} must run the original command against its actual combined commit.`);
+    assert.ok(pairStep(stage!)!.includes("IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}"));
+  }
+  assert.doesNotMatch(workflow, /GITHUB_SHA=.*GITHUB_ENV|^\s+GITHUB_SHA:/m);
+});

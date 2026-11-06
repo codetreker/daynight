@@ -39,7 +39,7 @@ jobs:
         id: image-pairs
         working-directory: ${{ github.workspace }}
         env:
-          IMAGE_PAIR_MANIFEST_COMMIT: ${{ vars.DAYNIGHT_IMAGE_TEST_PAIRS_COMMIT }}
+          IMAGE_PAIR_MANIFEST_COMMIT: ${{ github.event_name == 'push' && github.sha || '' }}
           IMAGE_PAIR_EVENT: ${{ github.event_name }}
           IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           IMAGE_PAIR_PR: ${{ github.event.pull_request.number }}
