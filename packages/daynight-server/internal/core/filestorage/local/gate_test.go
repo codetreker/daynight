@@ -3,6 +3,7 @@ package local
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +14,76 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	"golang.org/x/sys/unix"
 )
+
+func TestGateRejectsUnsafeControlObjects(t *testing.T) {
+	for _, kind := range []string{"directory-file", "directory-symlink", "lock-symlink", "lock-fifo"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			storage, err := New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			control := filepath.Join(root, gateDirectory)
+			stripe := sha256.Sum256([]byte("key"))[0]
+			lock := filepath.Join(control, fmt.Sprintf("target-%03d", stripe))
+			switch kind {
+			case "directory-file":
+				err = os.WriteFile(control, []byte("not a directory"), 0o600)
+			case "directory-symlink":
+				err = os.Symlink(t.TempDir(), control)
+			case "lock-symlink":
+				if err = os.Mkdir(control, 0o700); err == nil {
+					err = os.Symlink(filepath.Join(root, "elsewhere"), lock)
+				}
+			case "lock-fifo":
+				if err = os.Mkdir(control, 0o700); err == nil {
+					err = unix.Mkfifo(lock, 0o600)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			permit, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "key")
+			if err == nil {
+				permit.Close()
+				t.Fatalf("accepted unsafe %s", kind)
+			}
+			if kind != "lock-symlink" && !errors.Is(err, filestorage.ErrNotRegular) {
+				t.Fatalf("unexpected failure: %v", err)
+			}
+			if kind == "directory-file" || kind == "directory-symlink" {
+				if err := os.Remove(control); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Remove(lock); err != nil {
+				t.Fatal(err)
+			}
+			permit, err = storage.AcquireGate(t.Context(), filestorage.TargetGate, "key")
+			if err != nil {
+				t.Fatalf("failed acquisition retained permit: %v", err)
+			}
+			if err := permit.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestGateClosedStorageFails(t *testing.T) {
+	storage, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.AcquireGate(t.Context(), filestorage.TargetGate, "key"); err == nil {
+		t.Fatal("closed storage accepted gate acquisition")
+	}
+}
 
 func TestGateAcrossInstancesAndDomains(t *testing.T) {
 	root := t.TempDir()

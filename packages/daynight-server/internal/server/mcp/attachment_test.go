@@ -218,3 +218,24 @@ func TestAttachmentOversizedPathReferences(t *testing.T) {
 		t.Fatalf("fabricated long path reference: %#v", failure)
 	}
 }
+
+func TestAttachmentToolRegistrationFailures(t *testing.T) {
+	fixture := newEntryFixture(t)
+	if err := RegisterAttachmentTools(fixture.entry, nil); err == nil {
+		t.Fatal("missing service accepted")
+	}
+	original := attachmentToolsJSON
+	t.Cleanup(func() { attachmentToolsJSON = original })
+	for _, tc := range []struct{ name, definition string }{
+		{"invalid JSON", `[`},
+		{"unknown tool", `[{"name":"unexpected","inputSchema":{"type":"object"},"outputSchema":{"type":"object"}}]`},
+		{"invalid schema", `[{"name":"task_attachment_list","inputSchema":{"type":"string"},"outputSchema":{"type":"object"}}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attachmentToolsJSON = []byte(tc.definition)
+			if err := RegisterAttachmentTools(fixture.entry, &attachmentTestOperations{}); err == nil {
+				t.Fatal("invalid tool registration accepted")
+			}
+		})
+	}
+}
