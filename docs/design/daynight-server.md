@@ -189,7 +189,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 登录/项目 writer 与双来源计算。Project 点读 LEFT JOIN 归属并校验必需事实，缺行明确失败；
 不存在业务读取时补 owner 的分支。
 
-`043_project_soft_delete.sql` 为 Project 增加可空删除时间和活跃列表索引，并为 Project 内历史 Task 和 Session 的 UUID 锁扫描建立索引。Project 读取和准入先排除删除标记，再校验活跃 owner Team 的完整性；保留的历史 ownership 因此可以指向后来删除的 Team。Team 非空检查、邀请和 Worker 投影使用同一活跃语义。
+`044_project_soft_delete.sql` 为 Project 增加可空删除时间和活跃列表索引，并为 Project 内历史 Task 和 Session 的 UUID 锁扫描建立索引。Project 读取和准入先排除删除标记，再校验活跃 owner Team 的完整性；保留的历史 ownership 因此可以指向后来删除的 Team。Team 非空检查、邀请和 Worker 投影使用同一活跃语义。
 
 Project 删除在 Read Committed 事务内先锁活跃 Project，再按 UUID 锁全部 Task，包括已删除 Task；锁等待后以新语句锁定并复核 owner Team admin、规范解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
 
