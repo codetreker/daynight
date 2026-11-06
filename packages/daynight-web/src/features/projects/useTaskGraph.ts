@@ -50,7 +50,7 @@ export const useTaskGraph = (projectId: string) => {
     if (!liveAccess.current || sample === null) return;
     setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, pausedTaskIds: project.pausedTaskIds, workerMachines: project.workerMachines, ...sample }, status: "ready", refreshing: false, error: null });
   }, [projectId, scope]);
-  const request = useCallback(async (automatic = false, historyRetry = false) => {
+  const request = useCallback(async (automatic = false, historyRetry = false, confirmationRetry = false) => {
     if (automatic && active.current !== null) return;
     active.current?.abort();
     const controller = new AbortController();
@@ -90,11 +90,15 @@ export const useTaskGraph = (projectId: string) => {
       const receivedAt = Date.now();
       if (signal.aborted || revision !== generation.current) return;
       observingHistory.current = true;
-      let history: "current" | "retired";
+      let history: "current" | "retired" | "confirm";
       try { history = await scope.observeHistory(ticket, response.epoch, signal); }
       finally { observingHistory.current = false; }
+      if (history === "confirm") {
+        if (!confirmationRetry) { void request(false, historyRetry, true); return; }
+        throw new ApiError("protocol");
+      }
       if (history === "retired") {
-        if (!historyRetry) { void request(false, true); return; }
+        if (!historyRetry) { void request(false, true, confirmationRetry); return; }
         throw new ApiError("protocol");
       }
       const applyStarted = performance.now();

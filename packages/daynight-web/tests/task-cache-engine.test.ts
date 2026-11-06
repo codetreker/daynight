@@ -155,13 +155,87 @@ it("honors a current history's access denial after repeated stale manifest hints
   expect(await direct.observeHistory(recovery, nextEpoch, signal())).toBe("current");
   const suppress = vi.spyOn(Channel.prototype, "postMessage").mockImplementation(() => {});
   const newer = scope(); const old = await newer.beginSync(projectId, signal());
-  expect(await newer.observeHistory(old, nextEpoch, signal())).toBe("retired");
+  expect(await newer.observeHistory(old, nextEpoch, signal())).toBe("confirm");
+  const confirmation = await newer.beginSync(projectId, signal());
+  expect(await newer.observeHistory(confirmation, nextEpoch, signal())).toBe("retired");
   const fresh = await newer.beginSync(projectId, signal());
   await newer.applySync(fresh, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
   const denied = await newer.beginSync(projectId, signal()); suppress.mockRestore();
   expect(await newer.revokeProject(denied, signal())).toBe(true);
   await vi.waitFor(() => expect(events.some(event => event.accessRevoked)).toBe(true));
   expect(direct.isTaskReadCurrent(recovery, true)).toBe(false); injector.close();
+});
+
+it.each([true, false])("confirms overlapping graph and direct reads without retiring their newer live epoch (graph starts first: %s)", async (graphFirst) => {
+  const cache = scope(); const sessions = new TaskDetailSessions(cache);
+  const unsubscribe = sessions.subscribe(projectId, taskId(1), () => {});
+  const live = (value: string) => wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(userId, { "Daynight-Task-Epoch": value }) });
+  let release!: (value: Response) => void; const held = new Promise<Response>(resolve => { release = resolve; }); let reads = 0;
+  let releaseConfirmation!: (value: Response) => void; const confirming = new Promise<Response>(resolve => { releaseConfirmation = resolve; });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(() => ++reads === 1 ? held : confirming));
+  const events: { historyHint?: true }[] = []; cache.subscribe(event => events.push(event));
+  try {
+    let graph = graphFirst ? await cache.beginSync(projectId, signal()) : null;
+    sessions.openDirect(projectId, taskId(1)); await vi.waitFor(() => expect(reads).toBe(1));
+    graph ??= await cache.beginSync(projectId, signal());
+    expect(await cache.observeHistory(graph, nextEpoch, signal())).toBe("current");
+    await cache.applySync(graph, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+    release(live(epoch));
+    await vi.waitFor(() => expect(events.some(event => event.historyHint)).toBe(true));
+    await vi.waitFor(() => expect(reads).toBe(2));
+    expect(cache.canPreviewProject(projectId)).toBe(false);
+    expect(await cache.readProject(projectId, signal())).toBeNull();
+    const unconfirmed = await cache.beginSync(projectId, signal());
+    await expect(cache.applySync(unconfirmed, response([task(1)], { epoch: nextEpoch }), signal())).rejects.toMatchObject({ name: "AbortError" });
+    releaseConfirmation(live(nextEpoch));
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1))).toMatchObject({ status: "ready", error: null, requiresFreshRead: false }));
+    expect(reads).toBe(2);
+    const retry = await cache.beginTaskRead(projectId, taskId(1), 2, 1, signal());
+    expect(await cache.observeHistory(retry, nextEpoch, signal())).toBe("current");
+  } finally { unsubscribe(); sessions.dispose(); }
+});
+
+it("confirms a delayed old graph after a direct owner has already admitted the newer epoch", async () => {
+  const cache = scope(); const graph = await cache.beginSync(projectId, signal());
+  const sessions = new TaskDetailSessions(cache); const unsubscribe = sessions.subscribe(projectId, taskId(1), () => {});
+  let release!: (value: Response) => void; const held = new Promise<Response>(resolve => { release = resolve; }); let reads = 0;
+  const live = () => wireResponse(detailFixture(projectId, taskId(1)), { headers: viewerHeaders(userId, { "Daynight-Task-Epoch": nextEpoch }) });
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(() => ++reads === 1 ? Promise.resolve(live()) : held));
+  try {
+    sessions.openDirect(projectId, taskId(1)); await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1)).status).toBe("ready"));
+    expect(await cache.observeHistory(graph, epoch, signal())).toBe("confirm");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    expect(cache.canPreviewProject(projectId)).toBe(false);
+    const confirmed = await cache.beginSync(projectId, signal());
+    expect(await cache.observeHistory(confirmed, nextEpoch, signal())).toBe("current");
+    await cache.applySync(confirmed, response([task(1)], { mode: "snapshot", epoch: nextEpoch }), signal());
+    release(live());
+    await vi.waitFor(() => expect(sessions.snapshot(projectId, taskId(1))).toMatchObject({ status: "ready", error: null, requiresFreshRead: false }));
+    const later = await cache.beginTaskRead(projectId, taskId(1), 2, 1, signal());
+    expect(await cache.observeHistory(later, nextEpoch, signal())).toBe("current");
+  } finally { unsubscribe(); sessions.dispose(); }
+});
+
+it.each(["replacement", "revocation"] as const)("keeps uncertain write ownership only until confirmed %s", async (ending) => {
+  const cache = scope();
+  const delayed = await cache.beginTaskRead(projectId, taskId(1), 1, 1, signal());
+  const owner = await cache.beginTaskRead(projectId, taskId(1), 1, 2, signal());
+  expect(await cache.observeHistory(owner, nextEpoch, signal())).toBe("current");
+  expect(await cache.observeHistory(delayed, epoch, signal())).toBe("confirm");
+  expect(cache.isTaskReadCurrent(owner, true)).toBe(false);
+  expect(cache.isTaskHistoryPossiblyCurrent(owner)).toBe(true);
+  expect(cache.isTaskHistoryConfirmedCurrent(owner)).toBe(false);
+  const confirmation = await cache.beginTaskRead(projectId, taskId(1), 2, 1, signal());
+  expect(await cache.observeHistory(confirmation, nextEpoch, signal())).toBe("current");
+  expect(cache.isTaskHistoryConfirmedCurrent(owner)).toBe(true);
+  if (ending === "replacement") {
+    const later = await cache.beginTaskRead(projectId, taskId(1), 3, 1, signal());
+    expect(await cache.observeHistory(later, "30000000-0000-0000-0000-000000000003", signal())).toBe("retired");
+  } else {
+    const denied = await cache.beginSync(projectId, signal());
+    expect(await cache.revokeProject(denied, signal())).toBe(true);
+  }
+  expect(cache.isTaskHistoryPossiblyCurrent(owner)).toBe(false);
 });
 
 it("automatically rereads after a peer hint is confirmed as a real history replacement", async () => {

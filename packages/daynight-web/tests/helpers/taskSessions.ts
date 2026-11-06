@@ -9,13 +9,16 @@ export const admitTaskGraph = async (scope: TaskCacheScope, graph: TaskGraph, { 
   readonly propertiesForTask?: (task: GraphTask) => TaskProperties;
   readonly epoch?: string;
 }): Promise<CachedProject> => {
-  let ticket = await scope.beginSync(graph.project.id, scope.signal);
-  let sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
-  if (await scope.observeHistory(ticket, sync.epoch, scope.signal) === 'retired') {
-    ticket = await scope.beginSync(graph.project.id, scope.signal);
-    sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
+  let confirmed = false; let retired = false;
+  for (;;) {
+    const ticket = await scope.beginSync(graph.project.id, scope.signal);
+    const sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
+    const history = await scope.observeHistory(ticket, sync.epoch, scope.signal);
+    if (history === 'current') return (await scope.applySync(ticket, sync, scope.signal)).project;
+    if (history === 'confirm' && !confirmed) { confirmed = true; continue; }
+    if (history === 'retired' && !retired) { retired = true; continue; }
+    throw new Error('The fixture could not establish a stable Task history.');
   }
-  return (await scope.applySync(ticket, sync, scope.signal)).project;
 };
 
 export const createTaskSessionWorld = ({ viewerId = TEST_VIEWER_ID, onIdentityMismatch = () => { throw new Error('The fixture returned another principal.'); } }: {

@@ -4,6 +4,7 @@ import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types
 import { ApiError, authRequestsPaused, isAbortError } from '../../api/client';
 import { createTerminalSessionApi, parseSessionHistory, type SessionHistoryItem, type TerminalSessionApi } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { useTaskDetailSessions } from '../task-detail/TaskDetailSession';
 import { beginSessionHistoryPagination, beginSessionHistoryRefresh, clearSessionHistory, isSessionHistoryClearCurrent, readCachedSessionHistory, readSessionHistoryOwnership, readSessionHistoryPaginationState, releaseSessionHistoryRefresh, saveSessionHistory, completeSessionHistoryPagination } from './session-history-cache';
 import { TaskAgentSession } from './TaskAgentSession';
 import { TerminalSessionView } from './TerminalSessionView';
@@ -416,13 +417,15 @@ export function TaskSessionHost(props: SessionHostProps) {
 }
 function DirectSessionHost(props: SessionHostProps) {
   const history = useDirectSessionRecords(props.projectId, props.taskId, props.active && props.current);
-  return <SessionHostContent {...props} history={history} />;
+  const sessions = useTaskDetailSessions();
+  const presentationCurrent = sessions.directSessionCurrent(props.projectId, props.taskId, true);
+  return <SessionHostContent {...props} presentationCurrent={presentationCurrent} history={history} />;
 }
 function SummarySessionHost(props: SessionHostProps) {
   const history = useRecords(props.projectId, props.taskId, props.active && props.current);
-  return <SessionHostContent {...props} history={history} />;
+  return <SessionHostContent {...props} presentationCurrent={props.current} history={history} />;
 }
-function SessionHostContent({ projectId, taskId, claimId, mode, active, current, direct, history }: SessionHostProps & { readonly history: Records }) {
+function SessionHostContent({ projectId, taskId, claimId, mode, active, current, direct, history, presentationCurrent }: SessionHostProps & { readonly history: Records; readonly presentationCurrent: boolean }) {
   const m = useTerminalHostMessages();
   // Retain the selected immutable reference even when a refresh discovers a new claim.
   const selectionKey = `daynight:recording:${history.scope.userId}:${projectId}:${taskId}`;
@@ -447,7 +450,7 @@ function SessionHostContent({ projectId, taskId, claimId, mode, active, current,
     <div className="task-session-current" hidden={selected !== null} inert={selected !== null}>
       {mode === 'web' ? <TaskAgentSession key={claimId} projectId={projectId} taskId={taskId} claimId={claimId} active={active && selected === null} current={current} /> : <TerminalSessionView key={claimId} projectId={projectId} api={history.api} claimId={claimId} active={active && selected === null} current={current} />}
     </div>
-    {selected && !history.denied ? <FixedSessionRecording key={`${selected.sessionId}/${selected.archive.sha256}`} api={history.api} item={selected} active={active && current} /> : null}
+    {selected && !history.denied ? <FixedSessionRecording key={`${selected.sessionId}/${selected.archive.sha256}`} api={history.api} item={selected} active={active && presentationCurrent} current={current} /> : null}
   </div>;
 }
 type ManagedRecordsProps = ScopeProps & { readonly resetSelection?: object; readonly children: (records: AttachmentRecordSlots) => ReactNode };
@@ -480,7 +483,7 @@ function ManagedRecordsContent({ projectId, taskId, active, resetSelection, chil
   const preview = selected && !history.denied ? <><div className="managed-recording-close"><button className="button" onClick={clearSelection}>{m.close}</button></div><FixedSessionRecording key={`${selected.sessionId}/${selected.archive.sha256}`} api={history.api} item={selected} active={active} /></> : null;
   return children({ sidebar, preview, clearSelection });
 }
-export function FixedSessionRecording({ api, item, active }: { readonly api: TerminalSessionApi; readonly item: SessionHistoryItem; readonly active: boolean }) {
+export function FixedSessionRecording({ api, item, active, current = true }: { readonly api: TerminalSessionApi; readonly item: SessionHistoryItem; readonly active: boolean; readonly current?: boolean }) {
   const scope = useTaskCacheScope(); const m = useTerminalHostMessages(); const sm = useSessionMessages();
   const [revision, refresh] = useState(0);
   const [loaded, setLoaded] = useState<{ terminal?: SessionV2Archive; native?: SessionArchive; status: string } | null>(null);
@@ -493,18 +496,19 @@ export function FixedSessionRecording({ api, item, active }: { readonly api: Ter
     const abort = () => { controller.abort(); setLoaded(null); }; scope.signal.addEventListener('abort', abort);
     setLoaded(null); setError(null);
     void (async () => {
+      await scope.ready(controller.signal);
       if (item.agentControlMode === 'herdr') {
-        const result = await api.archive(item, controller.signal); if (controller.signal.aborted) return;
+        const result = await api.archive(item, controller.signal); await scope.ready(controller.signal); if (controller.signal.aborted) return;
         setLoaded({ status: result.status.payload.state, ...(result.archive ? { terminal: result.archive } : {}) });
       } else {
-        const result = await api.nativeArchive(item, controller.signal); if (controller.signal.aborted) return;
+        const result = await api.nativeArchive(item, controller.signal); await scope.ready(controller.signal); if (controller.signal.aborted) return;
         setLoaded({ status: result.status.state, ...(result.archive ? { native: result.archive } : {}) });
       }
     })().catch(cause => { if (!controller.signal.aborted) setError(cause); });
     return () => { controller.abort(); scope.signal.removeEventListener('abort', abort); };
   }, [api, item, active, revision, scope]);
   return <section ref={fullscreen.sectionRef} className={`task-agent-session terminal-session${fullscreen.fullscreen ? ' session-fullscreen' : ''}`} onKeyDown={fullscreen.onKeyDown}>
-    <div className="terminal-host-toolbar"><strong>{m.readonly}</strong><button className="button" onClick={() => refresh(value => value + 1)}>{m.refresh}</button><button ref={fullscreen.buttonRef} className="button" aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>{fullscreen.fullscreen ? sm.exitFullscreen : sm.enterFullscreen}</button></div>
+    <div className="terminal-host-toolbar"><strong>{m.readonly}</strong><button className="button" disabled={!current} onClick={() => { if (current && !authRequestsPaused()) refresh(value => value + 1); }}>{m.refresh}</button><button ref={fullscreen.buttonRef} className="button" aria-pressed={fullscreen.fullscreen} onClick={fullscreen.toggle}>{fullscreen.fullscreen ? sm.exitFullscreen : sm.enterFullscreen}</button></div>
     {error ? <p role="alert" className="session-error">{recordingError(error, m)}</p> : !loaded ? <p role="status">{m.loading}</p> : loaded.terminal ? <TerminalRecordingView archive={loaded.terminal} active={active} /> : loaded.native ? <NativeRecording archive={loaded.native} active={active} /> : <p role="status">{m[loaded.status === 'pending' ? 'pending' : loaded.status === 'failed' ? 'failed' : 'unavailable']}</p>}
   </section>;
 }

@@ -106,7 +106,9 @@ it("automatically confirms a peer's real replacement before restoring the projec
   vi.mocked(getTaskSync).mockReturnValueOnce(confirmation.promise).mockReturnValueOnce(finalRead.promise);
   const peer = scope(); const signal = new AbortController().signal;
   const ticket = await peer.beginSync(projectId, signal);
-  expect(await peer.observeHistory(ticket, replacementEpoch, signal)).toBe("retired");
+  expect(await peer.observeHistory(ticket, replacementEpoch, signal)).toBe("confirm");
+  const peerConfirmation = await peer.beginSync(projectId, signal);
+  expect(await peer.observeHistory(peerConfirmation, replacementEpoch, signal)).toBe("retired");
   const fresh = await peer.beginSync(projectId, signal);
   await act(async () => { await peer.applySync(fresh, taskSyncFromGraph(replacement, { epoch: replacementEpoch, versionForTask: () => 2n }), signal); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
@@ -127,6 +129,15 @@ it("bounds project graph retries when consecutive live observations keep replaci
   const view = mount(cache);
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: { kind: "protocol" } }));
   expect(getTaskSync).toHaveBeenCalledTimes(2);
+});
+
+it("bounds graph confirmation and subsequent repeated history replacements", async () => {
+  const cache = scope();
+  vi.spyOn(cache, "observeHistory").mockResolvedValueOnce("confirm").mockResolvedValue("retired");
+  vi.mocked(getTaskSync).mockResolvedValue(taskSyncFromGraph(graph(), { versionForTask: () => 1n }));
+  const view = mount(cache);
+  await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: { kind: "protocol" } }));
+  expect(getTaskSync).toHaveBeenCalledTimes(3);
 });
 
 it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), new ApiError("server", 500, "internal_error")])("retains cached data and exposes a failed background sync %#", async (failure) => {
@@ -293,7 +304,7 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null, error: failure }));
 
   const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(recovery.promise)
-    .mockResolvedValueOnce(taskSyncFromGraph(replacement, { query: { epoch: replacementEpoch }, epoch: replacementEpoch, versionForTask: () => 2n }));
+    .mockResolvedValue(taskSyncFromGraph(replacement, { query: { epoch: replacementEpoch }, epoch: replacementEpoch, versionForTask: () => 2n }));
   act(() => { view.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(4));
   expect(view.result.current.snapshot).toBeNull();
@@ -328,12 +339,13 @@ it("keeps withdrawal knowledge across same-scope remount and project navigation 
   await waitFor(() => expect(independent.result.current.snapshot?.revision).toBe(0));
   expect(independent.result.current.snapshot!.graph.project.id).toBe(projectId);
   independent.unmount();
-  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(recovery.promise).mockResolvedValueOnce({ ...replacement, mode: "delta" });
+  const recovery = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(recovery.promise).mockResolvedValue({ ...replacement, mode: "delta" });
   act(() => { reopened.result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(6));
   await act(async () => { recovery.resolve({ ...replacement, mode: "delta" }); });
   await waitFor(() => expect(reopened.result.current.snapshot?.revision).toBeGreaterThan(0));
   reopened.unmount();
+  vi.mocked(getTaskSync).mockImplementation(() => new Promise(() => {}));
   const admitted = mount(cache);
   await waitFor(() => expect(admitted.result.current.snapshot?.revision).toBe(0));
 });

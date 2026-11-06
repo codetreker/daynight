@@ -225,7 +225,7 @@ it("cannot restore a retired epoch or let an earlier request replace a newer fir
   const early = await scope.beginTaskRead(project, task, 1, 1, signal());
   const later = await scope.beginTaskRead(project, task, 1, 2, signal());
   expect(await scope.observeHistory(later, replacement, signal())).toBe("current");
-  await expect(scope.observeHistory(early, epoch, signal())).rejects.toMatchObject({ name: "AbortError" });
+  expect(await scope.observeHistory(early, epoch, signal())).toBe("confirm");
   const current = await scope.beginTaskRead(project, task, 1, 3, signal());
   expect(await scope.observeHistory(current, epoch, signal())).toBe("retired");
   const after = await scope.beginTaskRead(project, task, 1, 4, signal());
@@ -642,4 +642,97 @@ it("keeps the existing direct receipt fresh during a pending Step write while bl
   expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
   expect(sessions.canSetStepStatus(project, task)).toBe(false);
   write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "missing-step" } }, null, 404));
+});
+
+it('retains the write lock when an ambiguous early response is confirmed as the same history', async () => {
+  const { sessions, scope } = world(); const old = await scope.beginTaskRead(project, task, 1, 0, signal());
+  const write = deferred<Response>(); let writes = 0;
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === 'PUT') { writes++; return write.promise; }
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  sessions.setStatus(project, task, 'in_progress', 1n); await waitFor(() => expect(writes).toBe(1));
+  expect(await scope.observeHistory(old, replacement, signal())).toBe('confirm');
+  await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: 'ready', detail: { version: 1n } }));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  sessions.setStatus(project, task, 'done', 1n); expect(writes).toBe(1);
+  write.resolve(response({ error: { code: 'forbidden', message: 'denied', requestId: 'refused' } }, null, 403));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(writes).toBe(1);
+});
+
+it.each([404, 410] as const)('handles a fresh parent %s after an ambiguous retired 404 without admitting the earlier positive read', async status => {
+  const { sessions, scope } = world(); const old = await scope.beginTaskRead(project, task, 1, 0, signal());
+  const write = deferred<Response>(); const confirmParent = deferred<Response>(); let parents = 0; let accessReads = 0; let writes = 0;
+  const missing = () => response({ error: { code: 'not_found', message: 'missing', requestId: 'missing' } }, null, 404);
+  const negative = () => response({ error: { code: status === 404 ? 'not_found' : 'task_deleted', message: 'missing', requestId: 'parent' } }, null, status);
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === 'PUT') { writes++; return write.promise; }
+    if (url.endsWith('/access')) { accessReads++; return Promise.resolve(response(directAccessFixture(project, TEST_VIEWER_ID, 'admin'))); }
+    parents++;
+    if (parents === 2) return confirmParent.promise;
+    if (parents === 3) return Promise.resolve(negative());
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  sessions.setStatus(project, task, 'in_progress', 1n); await waitFor(() => expect(writes).toBe(1));
+  expect(await scope.observeHistory(old, replacement, signal())).toBe('confirm');
+  await waitFor(() => expect(parents).toBe(2)); write.resolve(missing());
+  await waitFor(() => expect(parents).toBe(3));
+  await waitFor(() => expect(sessions.snapshot(project, task).detail).toBeNull());
+  if (status === 404) await waitFor(() => expect(accessReads).toBe(1));
+  else expect(sessions.snapshot(project, task).status).toBe('deleted');
+  confirmParent.resolve(response(body())); await new Promise(resolve => setTimeout(resolve, 20));
+  expect(sessions.snapshot(project, task).detail).toBeNull(); expect(writes).toBe(1);
+});
+
+it('bounds and retries a retired 404 parent confirmation even without an open view', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const early = await scope.beginTaskRead(project, task, 1, 0, signal());
+  const write = deferred<Response>(); const parent = deferred<Response>(); let parents = 0; let writes = 0;
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+    if (init.method === 'PUT') { writes++; return write.promise; }
+    parents++; return parents === 2 ? parent.promise : Promise.resolve(response(body()));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  sessions.setStatus(project, task, 'in_progress', 1n); await waitFor(() => expect(writes).toBe(1)); unsubscribe();
+  expect(await scope.observeHistory(early, replacement, signal())).toBe('confirm');
+  write.resolve(response({ error: { code: 'not_found', message: 'missing', requestId: 'missing' } }, null, 404));
+  await waitFor(() => expect(parents).toBe(2));
+  const confirming = await scope.beginTaskRead(project, task, 0, 0, signal());
+  expect(await scope.observeHistory(confirming, epoch, signal())).toBe('current');
+  parent.resolve(response(body(), replacement));
+  await waitFor(() => expect(parents).toBe(3));
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(writes).toBe(1); reopen();
+});
+
+it.each([200, 404] as const)('revalidates a fresh parent 404 without an open view when project access is %s', async accessStatus => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const sessions = new TaskDetailSessions(scope); worlds.push({ scope, sessions });
+  const events = vi.fn(); scope.subscribe(events);
+  const early = await scope.beginTaskRead(project, task, 1, 0, signal());
+  const write = deferred<Response>(); let parents = 0; let accesses = 0;
+  const missing = () => response({ error: { code: 'not_found', message: 'missing', requestId: 'missing' } }, null, 404);
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === 'PUT') return write.promise;
+    if (url.endsWith('/access')) { accesses++; return Promise.resolve(accessStatus === 200 ? response(directAccessFixture(project, TEST_VIEWER_ID, 'admin')) : missing()); }
+    return ++parents === 2 ? Promise.resolve(missing()) : Promise.resolve(response(body()));
+  }));
+  const unsubscribe = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  sessions.setStatus(project, task, 'in_progress', 1n);
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1));
+  unsubscribe(); expect(await scope.observeHistory(early, replacement, signal())).toBe('confirm'); write.resolve(missing());
+  await waitFor(() => expect(accesses).toBe(1));
+  if (accessStatus === 404) { await waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ accessRevoked: true }))); return; }
+  const reopen = sessions.subscribe(project, task, () => {}); sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  reopen();
 });
