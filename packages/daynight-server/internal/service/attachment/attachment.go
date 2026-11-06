@@ -107,6 +107,9 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 	if err != nil {
 		return model.Attachment{}, false, err
 	}
+	if err := attachmentcore.ValidateWritePath(address.RelativePath); err != nil {
+		return model.Attachment{}, false, err
+	}
 	if err := attachmentcore.ValidateContentType(contentType); err != nil {
 		return model.Attachment{}, false, err
 	}

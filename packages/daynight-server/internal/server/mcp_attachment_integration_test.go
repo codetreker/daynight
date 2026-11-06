@@ -146,19 +146,4 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	if oversized["code"] != "resource_conflict" || refs["path"] != "giant" || refs["readTool"] != "task_attachment_read" {
 		t.Fatalf("oversized metadata: %+v", oversized)
 	}
-	longPath := "z/" + strings.TrimSuffix(strings.Repeat(strings.Repeat("z", 220)+"/", 43), "/")
-	for _, path := range []string{longPath, "zz"} {
-		if _, _, err := attachments.Put(t.Context(), principal, projectID, parent.ID, path, "text/plain", strings.NewReader("x")); err != nil {
-			t.Fatalf("put long-path fixture: %v", err)
-		}
-	}
-	longError := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": refs["nextCursor"]}, true)["error"])
-	longRefs := obj(longError["refs"])
-	if longRefs["path"] != longPath || longRefs["readTool"] != "task_attachment_read" || longRefs["nextCursor"] == nil {
-		t.Fatalf("long path lost: %+v", longError)
-	}
-	tailLong := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": longRefs["nextCursor"]}, false)["data"])
-	if len(tailLong["items"].([]any)) != 1 || obj(tailLong["items"].([]any)[0])["path"] != "zz" {
-		t.Fatalf("long path continuation: %+v", tailLong)
-	}
 }

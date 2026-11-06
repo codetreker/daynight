@@ -806,6 +806,8 @@ individually. No request uploads or replaces a directory. A missing content type
 means `application/octet-stream`; invalid types are rejected. Binary uploads do
 not use the existing 1 MiB JSON decoder.
 
+New or replaced attachment paths are limited to 1024 Unicode code points, including separators. Existing longer paths remain readable and removable under the original transport rules.
+
 Metadata is stored in `task_attachments`, keyed by task and path with C collation;
 the service derives the storage address as
 `task-attachments/<canonicalProjectId>/<canonicalTaskId[:2]>/<canonicalTaskId>/<path>`.

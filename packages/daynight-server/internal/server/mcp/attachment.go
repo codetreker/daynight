@@ -72,7 +72,7 @@ func RegisterAttachmentTools(e *Entry, attachments attachmentOperations) error {
 		var err error
 		switch name {
 		case "task_attachment_list":
-			// An oversized first path requires one larger bounded projection.
+			// Legacy paths can exceed the current write limit.
 			err = e.registerReadTool(definition, func(json.RawMessage) BudgetClass { return BudgetLarge }, handler)
 		case "task_attachment_remove":
 			err = e.RegisterTool(definition, BudgetControl, handler)
@@ -104,9 +104,8 @@ func listAttachments(ctx context.Context, actor RequestActor, attachments attach
 		return ToolResult{}, err
 	}
 	if len(page.Items) > 0 && len(page.Oversized) > 0 && page.Oversized[0] && page.Items[0].Path == "" {
-		// Re-read at most one item, under the large permit, so ordinary pages
-		// never materialize many large fields. The same cursor is rechecked by
-		// the service and a changed first row is handled as the new observation.
+		// Re-read at most one item under the large permit. The cursor is applied
+		// again in a new snapshot, so a changed first row becomes the observation.
 		page, err = attachments.ListBounded(ctx, actor.Principal, project, task, model.PageRequest{Limit: 1, Cursor: input.Cursor}, 4<<20)
 		if err != nil {
 			return ToolResult{}, err

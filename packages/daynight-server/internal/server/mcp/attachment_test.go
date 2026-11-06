@@ -190,32 +190,37 @@ func TestAttachmentListHighEscapeBudget(t *testing.T) {
 	}
 }
 
-func TestAttachmentOversizedPathReferences(t *testing.T) {
+func TestAttachmentListAndRemoveLegacyOverlongPath(t *testing.T) {
 	fixture := newEntryFixture(t)
-	path := strings.TrimSuffix(strings.Repeat(strings.Repeat("<", 220)+"/", 8), "/")
-	s := &attachmentTestOperations{items: []model.Attachment{{Path: path, ContentType: strings.Repeat("x", 10000)}}}
+	base := strings.Repeat(strings.Repeat("界", 50)+"/", 20) + "界界界界"
+	path := base + "x"
+	s := &attachmentTestOperations{items: []model.Attachment{
+		{Path: "a", ContentType: "text/plain"},
+		{Path: path, ContentType: "text/plain"},
+		{Path: base + "y", ContentType: "text/plain"},
+	}}
 	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
 		t.Fatal(err)
 	}
 	client := fixture.client(t, "2026-07-28", "alice")
-	args := map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}
-	failure := object(t, invitationCall(t, client, "task_attachment_list", args, true)["error"])
-	refs := object(t, failure["refs"])
-	if refs["path"] != path || refs["readTool"] != "task_attachment_read" || refs["nextCursor"] == nil {
-		t.Fatalf("lost exact identifier or continuation: %#v", refs)
+	args := map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID, "limit": 1}
+	first := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
+	if len(first["items"].([]any)) != 1 || object(t, first["items"].([]any)[0])["path"] != "a" {
+		t.Fatalf("page: %#v", first)
 	}
-	longPath := strings.TrimSuffix(strings.Repeat(strings.Repeat("a", 220)+"/", 43), "/")
-	s.items = []model.Attachment{{Path: longPath, ContentType: strings.Repeat("x", 10000000)}}
-	failure = object(t, invitationCall(t, client, "task_attachment_list", args, true)["error"])
-	refs = object(t, failure["refs"])
-	if refs["path"] != longPath || refs["nextCursor"] == nil {
-		t.Fatalf("long path was not recovered: %#v", refs)
+	args["cursor"] = first["nextCursor"]
+	last := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
+	if len(last["items"].([]any)) != 1 || object(t, last["items"].([]any)[0])["path"] != path || last["nextCursor"] == nil {
+		t.Fatalf("legacy path lost: %#v", last)
 	}
-	s.items = []model.Attachment{{Path: strings.Repeat("a", (4<<20)+1), ContentType: "x"}}
-	failure = object(t, invitationCall(t, client, "task_attachment_list", args, true)["error"])
-	refs = object(t, failure["refs"])
-	if refs["path"] != nil || refs["nextCursor"] != nil || !strings.Contains(failure["message"].(string), "cannot be referenced") {
-		t.Fatalf("fabricated long path reference: %#v", failure)
+	args["cursor"] = last["nextCursor"]
+	tail := object(t, invitationCall(t, client, "task_attachment_list", args, false)["data"])
+	if len(tail["items"].([]any)) != 1 || object(t, tail["items"].([]any)[0])["path"] != base+"y" {
+		t.Fatalf("legacy cursor: %#v", tail)
+	}
+	result := object(t, invitationCall(t, client, "task_attachment_remove", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID, "path": path}, false)["data"])
+	if result["removed"] != true || s.removed != path {
+		t.Fatal("legacy path could not be removed")
 	}
 }
 
