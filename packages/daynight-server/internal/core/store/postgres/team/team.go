@@ -219,7 +219,8 @@ func (tx *writer) HasProjects(ctx context.Context) (bool, error) {
 	// This separate Read Committed statement observes ownership committed by a
 	// writer that held the Team lock before us, without locking its Project.
 	var found bool
-	err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project_ownership WHERE team_id=$1)`, tx.teamID).Scan(&found)
+	err := tx.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project_ownership o JOIN projects p ON p.id=o.project_id
+        WHERE o.team_id=$1 AND p.deleted_at IS NULL)`, tx.teamID).Scan(&found)
 	if err != nil {
 		return false, pg.QueryError("read Team ownership references", err)
 	}

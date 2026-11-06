@@ -7,6 +7,7 @@ import (
 
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
@@ -50,6 +51,9 @@ func (s *Lifecycle) uploadChunkAt(ctx context.Context, p *Permit, offset int64) 
 func (s *Lifecycle) reserveAdmittedUpload(ctx context.Context, p *Permit, additional int64) (model.PrivateTransfer, error) {
 	var result model.PrivateTransfer
 	err := s.admittedUpload(ctx, p, func(d store.PrivateTransferDAO, r model.PrivateTransfer) error {
+		if e := d.LockProjectLifecycle(ctx, r.ProjectID, r.TaskID); e != nil {
+			return projectcore.LookupError(e)
+		}
 		if e := transfer.UploadReservationAllowed(r, additional, time.Now()); e != nil {
 			return e
 		}
@@ -76,6 +80,9 @@ func (s *Lifecycle) reserveAdmittedUpload(ctx context.Context, p *Permit, additi
 func (s *Lifecycle) startAdmittedCommit(ctx context.Context, p *Permit, data json.RawMessage) (model.PrivateTransfer, error) {
 	var result model.PrivateTransfer
 	err := s.admittedUpload(ctx, p, func(d store.PrivateTransferDAO, r model.PrivateTransfer) error {
+		if e := d.LockProjectLifecycle(ctx, r.ProjectID, r.TaskID); e != nil {
+			return projectcore.LookupError(e)
+		}
 		next, e := transfer.UploadStartCommit(r, data, time.Now().UTC())
 		if e != nil {
 			return e
@@ -90,6 +97,9 @@ func (s *Lifecycle) startAdmittedCommit(ctx context.Context, p *Permit, data jso
 // an expired commit lease or a namespace whose cleanup barrier is established.
 func (s *Lifecycle) keepAdmittedUpload(ctx context.Context, p *Permit, opID string) error {
 	return s.admittedUpload(ctx, p, func(d store.PrivateTransferDAO, r model.PrivateTransfer) error {
+		if e := d.LockProjectLifecycle(ctx, r.ProjectID, r.TaskID); e != nil {
+			return projectcore.LookupError(e)
+		}
 		next, e := transfer.UploadRenew(r, opID, time.Now().UTC())
 		if e != nil {
 			return e

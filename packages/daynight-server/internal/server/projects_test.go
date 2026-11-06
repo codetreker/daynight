@@ -212,12 +212,11 @@ func TestProjectHTTPInvalidQueriesAndMissingResources(t *testing.T) {
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodGet, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""), http.StatusNotFound, "not_found")
 	assertProjectError(t, projectRequest(handler, http.MethodGet, "/unknown-secret-path?query=secret", ""), http.StatusNotFound, "not_found")
-	for _, path := range []string{"/api/v1/projects", "/api/v1/projects/00000000-0000-4000-8000-000000000099"} {
-		response := projectRequest(handler, http.MethodDelete, path, "")
-		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
-		if !strings.Contains(response.Header().Get("Allow"), "GET") || strings.Contains(response.Header().Get("Allow"), "POST") != (path == "/api/v1/projects") {
-			t.Fatalf("invalid Allow: %s", response.Header().Get("Allow"))
-		}
+	assertProjectError(t, projectRequest(handler, http.MethodDelete, "/api/v1/projects/00000000-0000-4000-8000-000000000099", ""), http.StatusNotFound, "not_found")
+	response := projectRequest(handler, http.MethodDelete, "/api/v1/projects", "")
+	assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
+	if !strings.Contains(response.Header().Get("Allow"), "GET") || !strings.Contains(response.Header().Get("Allow"), "POST") {
+		t.Fatalf("invalid Allow: %s", response.Header().Get("Allow"))
 	}
 }
 

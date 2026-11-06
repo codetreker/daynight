@@ -11,7 +11,7 @@ import (
 // A mutation locks the transfer first, verifies authorization, then takes the
 // ledger only if needed. Never acquire a new transfer or authorization lock once
 // the ledger is held. A scope is valid only in the callback; do not perform
-// content I/O inside it.
+// content I/O inside it, except for a bounded upload chunk protected by the Task lifecycle lock.
 type PrivateTransferWriter interface {
 	WritePrivateTransfer(context.Context, func(PrivateTransferDAO) error) (Completion, error)
 }
@@ -28,6 +28,9 @@ type PrivateTransferDAO interface {
 	// Authorize verifies the current credential, stable authority, Task presence,
 	// and Project access, rechecking expiry after all potentially blocking locks.
 	Authorize(context.Context, model.Principal, string, string, string, string) error
+	// LockProjectLifecycle acquires the Task after the transfer and checks the live
+	// Project in a fresh statement, without reauthorizing an admitted operation.
+	LockProjectLifecycle(context.Context, string, string) error
 	Get(context.Context, string) (model.PrivateTransfer, error)
 	// Insert returns an existing row on conflict; the caller checks its binding.
 	Insert(context.Context, model.PrivateTransfer) (model.PrivateTransfer, bool, error)
