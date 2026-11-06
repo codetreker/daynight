@@ -149,7 +149,7 @@ export const inspection: InspectionMessages = {
     created: "创建时间", updated: "更新时间", taskId: "任务 ID",
     copyTaskId: "复制任务 ID", copyTaskTitle: "复制任务标题", copied: "已复制",
     copyFailed: "无法复制任务 ID，请选中并手动复制。", copyTitleFailed: "无法复制任务标题，请选中并手动复制。",
-    footer: "前置与阻塞项来自当前显示的任务详情，名称与后续关系来自任务图快照。", countedHeading: ({ label, count }) => `${label} · ${count}`,
+    countedHeading: ({ label, count }) => `${label} · ${count}`,
   },
   pr: {
     title: "关联 PR", heading: ({ count }) => `关联 PR · ${count}`, range: ({ start, end, total }) => `第 ${start}–${end} 项，共 ${total} 项`,

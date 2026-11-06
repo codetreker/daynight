@@ -70,6 +70,16 @@ func (s *Identity) validReturnPath(value string) bool {
 		return false
 	}
 	target := path.Clean(decoded)
+	if target == "/oauth" || strings.HasPrefix(target, "/oauth/") {
+		// Only an existing local consent journey may resume through login. The
+		// external callback and authorization parameters never become return paths.
+		query, err := url.ParseQuery(u.RawQuery)
+		if err != nil || target != "/oauth/consent" || u.Path != "/oauth/consent" || u.Fragment != "" || len(query) != 1 || len(query["request"]) != 1 {
+			return false
+		}
+		id, err := uuid.Parse(query.Get("request"))
+		return err == nil && id != uuid.Nil && id.String() == query.Get("request")
+	}
 	return target != "/login" && !strings.HasPrefix(target, "/login/") && target != callback.Path && !strings.HasPrefix(target, callback.Path+"/")
 }
 

@@ -82,6 +82,24 @@ describe("worker project mappings", () => {
 });
 
 describe("worker claim and native session index", () => {
+  it("persists the original native tuple and rejects a replacement after reopening", () => {
+    const { store, database, register } = fixture();
+    register();
+    const native = { agent: "codex" as const, model: "original", args: ["-c", 'model_reasoning_effort="high"'], validateNativeSelection: true as const };
+    store.freezeNativeConfiguration(claim, native);
+    native.args.push("--search");
+    const reopened = open(database);
+    expect(reopened.getNativeConfiguration(claim)).toEqual({ agent: "codex", model: "original", args: ["-c", 'model_reasoning_effort="high"'], validateNativeSelection: true });
+    expect(() => reopened.freezeNativeConfiguration(claim, { ...native, model: "replacement" })).toThrow("frozen");
+    expect(reopened.getNativeConfiguration({ ...claim, claimId: uuid(99) })).toBeNull();
+  });
+
+  it("does not invent a frozen tuple for a legacy native session", () => {
+    const { store, register } = fixture(); register(); store.setSessionId(claim, uuid(8));
+    expect(store.getNativeConfiguration(claim)).toBeNull();
+    expect(() => store.freezeNativeConfiguration(claim, { agent: "codex", model: "current", args: [] })).toThrow("native session");
+  });
+
   it("materializes a pending claim without a session and preserves repeated registration", () => {
     const { store, register } = fixture();
     expect(register()).toEqual({ ...claim, status: "pending", agent: "codex", agentControlMode: "herdr" as const, sessionId: null });
@@ -135,7 +153,7 @@ it("rebuilds the current seven-column layout when its stored version is zero", (
   const rebuilt = open(db);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
-  expect(db.pragma("user_version", { simple: true })).toBe(11);
+  expect(db.pragma("user_version", { simple: true })).toBe(12);
 });
 
 it("rebuilds an unknown unversioned schema containing duplicate identities and invalid payloads", () => {
@@ -144,12 +162,12 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   const rebuilt = open(db);
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
-  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
-  expect(db.pragma("user_version", { simple: true })).toBe(11);
+  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "bot_executions" }, { name: "bots" }, { name: "claim_native_configurations" }, { name: "cleanup_schedules" }, { name: "projects" }, { name: "tasks" }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(12);
 });
 
 it("fences an open worker connection before writing a subsequently changed format", () => {
-  const { database: db, store, register } = fixture(); register(); db.pragma("user_version = 12");
+  const { database: db, store, register } = fixture(); register(); db.pragma("user_version = 13");
   expect(() => store.activateTask(claim)).toThrow("unsupported-version");
   expect(() => store.getTask(claim)).toThrow("unsupported-version");
   expect(db.prepare("SELECT status FROM tasks").get()).toEqual({ status: "pending" });
@@ -201,7 +219,7 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getTask(claim)).toMatchObject({ status: "active", sessionId: uuid(75) });
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("submitted");
     expect((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).map(column => column.name)).not.toContain("notified");
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
   });
 
   it("upgrades version five while retaining every original claim and project", () => {
@@ -215,6 +233,6 @@ describe("worker cleanup schedules", () => {
     expect(recovered.getTask(claim)).toMatchObject({ ...claim, status: "active", sessionId: uuid(75) });
     expect(recovered.listCleanupSchedules()).toEqual([]);
     recovered.saveCleanupSchedule(owner, schedule);
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
   });
 });

@@ -148,7 +148,7 @@ func workerDetailResponse(worker model.WorkerSnapshot) api.WorkerDetail {
 	telemetry := worker.Telemetry
 	response := api.WorkerDetail{WorkerSummary: workerSummaryResponse(worker), InventoryObservedAt: workerOptionalTime(worker.TaskSnapshot.InventoryObservedAt), Tasks: make([]api.WorkerTaskSnapshot, 0, len(worker.TaskSnapshot.Items)),
 		Telemetry: api.WorkerTelemetry{Machine: api.WorkerMachine{ID: telemetry.Machine.ID, Name: telemetry.Machine.Name}, Platform: string(telemetry.Platform),
-			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(), AssistantHost: workerAssistantHostResponse(telemetry.AssistantHost),
+			WorkingDirectory: telemetry.WorkingDirectory, SampledAt: telemetry.SampledAt.UTC(), AssistantHost: workerAssistantHostResponse(telemetry.AssistantHost), RuntimeConfiguration: workerRuntimeConfigurationResponse(telemetry.RuntimeConfiguration),
 			OS:     workerProbeResponse(telemetry.OS, func(value model.WorkerOS) api.WorkerOS { return api.WorkerOS(value) }),
 			CPU:    workerProbeResponse(telemetry.CPU, func(value model.WorkerCPU) api.WorkerCPU { return api.WorkerCPU(value) }),
 			Memory: workerProbeResponse(telemetry.Memory, func(value model.WorkerMemory) api.WorkerMemory { return api.WorkerMemory(value) }),

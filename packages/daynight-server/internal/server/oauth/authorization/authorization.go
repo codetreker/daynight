@@ -41,13 +41,28 @@ type BrowserAuthentication interface {
 // Production route selection and the complete token endpoint belong to their
 // respective integrators. The origin must be the configured issuer origin.
 type AuthorizationHTTP struct {
-	service AuthorizationService
-	auth    BrowserAuthentication
-	secure  bool
+	service        AuthorizationService
+	auth           BrowserAuthentication
+	secure         bool
+	startErrorPage http.Handler
 }
 
 func NewAuthorizationHTTP(s AuthorizationService, auth BrowserAuthentication) *AuthorizationHTTP {
 	return &AuthorizationHTTP{service: s, auth: auth, secure: strings.HasPrefix(auth.Origin(), "https://")}
+}
+
+// SetStartErrorPage supplies the local browser error page. Non-browser callers
+// continue to receive OAuth JSON error responses.
+func (h *AuthorizationHTTP) SetStartErrorPage(page http.Handler) { h.startErrorPage = page }
+
+func (h *AuthorizationHTTP) startError(w http.ResponseWriter, r *http.Request, code string) {
+	w.Header().Add("Vary", "Accept")
+	if h.startErrorPage != nil && strings.Contains(r.Header.Get("Accept"), "text/html") {
+		w.Header().Set("X-OAuth-Error", code)
+		h.startErrorPage.ServeHTTP(w, r)
+		return
+	}
+	writeError(w, http.StatusBadRequest, code)
 }
 
 func (h *AuthorizationHTTP) cookieName(id string) string {
@@ -120,11 +135,19 @@ func (h *AuthorizationHTTP) Start(w http.ResponseWriter, r *http.Request) {
 	}
 	v, ok := singleValues(r.URL.RawQuery, "client_id", "redirect_uri", "response_type", "scope", "resource", "state", "code_challenge", "code_challenge_method")
 	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid_request")
+		h.startError(w, r, "invalid_request")
 		return
 	}
 	result, err := h.service.Start(r.Context(), service.StartInput{Source: sourceAddress(r), ClientID: v.Get("client_id"), RedirectURI: v.Get("redirect_uri"), ResponseType: v.Get("response_type"), Scope: v.Get("scope"), Resource: v.Get("resource"), State: v.Get("state"), StatePresent: v.Has("state"), CodeChallenge: v.Get("code_challenge"), CodeChallengeMethod: v.Get("code_challenge_method")})
 	if err != nil {
+		if errors.Is(err, core.ErrInvalidClient) {
+			h.startError(w, r, "invalid_client")
+			return
+		}
+		if errors.Is(err, core.ErrInvalidAuthorization) {
+			h.startError(w, r, "invalid_request")
+			return
+		}
 		authorizationError(w, err)
 		return
 	}

@@ -17,6 +17,10 @@ type Dependencies struct {
 	Files filestorage.Storage
 }
 
+// routeOnlyStore allows server composition in routing tests. Any unexpected
+// database access fails via the unimplemented embedded interface.
+type routeOnlyStore struct{ store.Transactions }
+
 func newTestHandler(d Dependencies, c config.Config, logger *slog.Logger) (http.Handler, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err

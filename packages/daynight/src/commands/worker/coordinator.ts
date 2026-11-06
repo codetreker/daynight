@@ -135,6 +135,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (repository === undefined && (configuration.targetProjectIds?.includes(task.projectId) || configuration.targetProjectIds === undefined && configuration.readyProjectIds !== undefined && selected(task.projectId))) return null;
     const current = repository?.configuration ?? configuration.globalConfiguration;
     if (current === null) return null;
+    const frozen = options.store.getNativeConfiguration(task);
+    if (frozen !== null) return { ...frozen, agentControlMode: task.agentControlMode ?? "herdr", recoveryLimit: current.recoveryLimit };
     return current.agent === task.agent ? { ...current, agentControlMode: task.agentControlMode ?? "herdr" } : { agent: task.agent, agentControlMode: task.agentControlMode ?? "herdr", model: null, args: [], recoveryLimit: current.recoveryLimit };
   };
   const canAdvance = (task: LocalTask): boolean => canAdvanceProject(task.projectId) && configurationFor(task) !== null;
@@ -477,6 +479,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!execute) return;
     const currentConfiguration = configurationFor(task);
     if (currentConfiguration === null) return;
+    if (task.sessionId === null) options.store.freezeNativeConfiguration(task, currentConfiguration);
     const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration };
     const observed = await execution.advance(input, signal);
     const latest = options.store.getTask(task)!;
@@ -847,7 +850,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         try {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: currentRepository.configuration.agent, ...(currentRepository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(granted);
-          const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode });
+          const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode, nativeConfiguration: currentRepository.configuration });
           registerClaim(granted);
           options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
           if (allMappingsObserved() && coveredProjects.has(local.projectId) && selected(local.projectId) && canAdvance(local) && !blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < configuration.maxConcurrent) schedule(options.store.activateTask(local), granted);

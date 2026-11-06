@@ -2,7 +2,7 @@ import path from "node:path";
 import type { WorkerAgent } from "../../../api/types.js";
 import { canonicalId } from "../../../api/parse.js";
 
-export type HerdrAgentConfiguration = { agent: WorkerAgent; model: string | null; args: readonly string[] };
+export type HerdrAgentConfiguration = { agent: WorkerAgent; model: string | null; args: readonly string[]; validateNativeSelection?: true };
 
 export const nativeAgentPermissionArguments = (agent: WorkerAgent): string[] => agent === "codex"
   ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
@@ -70,6 +70,23 @@ export const validateHerdrAgentArguments = (agent: WorkerAgent, args: readonly s
   }
 };
 
+export const omitNativeModelAndEffortArguments = (agent: WorkerAgent, args: readonly string[]): string[] => {
+  const retained: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    const equals = argument.indexOf("="), option = equals < 0 ? argument : argument.slice(0, equals);
+    const value = equals < 0 ? args[index + 1] : argument.slice(equals + 1);
+    const effort = agent === "claude" && option === "--effort" || agent === "copilot" && option === "--reasoning-effort";
+    const codexSetting = agent === "codex" && (option === "-c" || option === "--config") && value !== undefined
+      && /^\s*(?:model|model_reasoning_effort|"model"|"model_reasoning_effort"|'model'|'model_reasoning_effort')\s*=/.test(value);
+    if (effort || codexSetting) { if (equals < 0) index++; continue; }
+    retained.push(argument);
+    // Preserve option values verbatim; a value can itself resemble a native option.
+    if (equals < 0 && optionSets[agent].values.has(option) && value !== undefined) { retained.push(value); index++; }
+  }
+  return retained;
+};
+
 export const buildHerdrAgentArguments = (configuration: HerdrAgentConfiguration, cwd: string, resumeSessionId?: string): string[] => {
   validateHerdrAgentArguments(configuration.agent, configuration.args);
   if (configuration.model !== null && (typeof configuration.model !== "string" || configuration.model === "" || /\p{Cc}/u.test(configuration.model))) throw new TypeError("The native model must be null or nonempty text without control characters.");
@@ -79,8 +96,10 @@ export const buildHerdrAgentArguments = (configuration: HerdrAgentConfiguration,
     if (sessionId === undefined) throw new TypeError("Native recovery requires the exact original session UUID.");
   }
   const args = configuration.agent === "codex" ? ["--no-daemon", ...(sessionId === undefined ? [] : ["resume", sessionId])] : (sessionId === undefined ? [] : configuration.agent === "claude" ? ["--resume", sessionId] : [`--resume=${sessionId}`]);
-  if (configuration.model !== null) args.push("--model", configuration.model);
-  return [...args, ...configuration.args, ...nativeAgentPermissionArguments(configuration.agent), ...(configuration.agent === "codex" ? ["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments(cwd)] : [])];
+  if (sessionId === undefined && configuration.model !== null) args.push("--model", configuration.model);
+  // Native resume owns settings changed inside the original conversation.
+  const configured = sessionId === undefined ? configuration.args : omitNativeModelAndEffortArguments(configuration.agent, configuration.args);
+  return [...args, ...configured, ...nativeAgentPermissionArguments(configuration.agent), ...(configuration.agent === "codex" ? ["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments(cwd)] : [])];
 };
 
 export const codexConfigurationArguments = (args: readonly string[]): { arguments: string[]; profile: boolean } => {

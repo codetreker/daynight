@@ -139,7 +139,7 @@ describe('Session fullscreen inside task details', () => {
     const toggle = screen.getByRole('button', { name: 'Enter Session fullscreen' }); fireEvent.click(toggle);
     expect(f.surface).toHaveClass('task-detail-session-fullscreen');
     expect(f.surface.classList.contains('task-detail-fullscreen')).toBe(outer);
-    for (const selector of ['.task-detail-header', '.task-detail-heading', '.task-detail-tabs', '.task-detail-footer', '.task-detail-notifications']) expect(f.surface.querySelector(selector)).toHaveAttribute('inert');
+    for (const selector of ['.task-detail-header', '.task-detail-heading', '.task-detail-tabs', '.task-detail-notifications']) expect(f.surface.querySelector(selector)).toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
     expect(screen.getByRole('textbox', { name: 'Message' })).toBe(input);
     expect(screen.getByText('Retained message')).toBe(message);

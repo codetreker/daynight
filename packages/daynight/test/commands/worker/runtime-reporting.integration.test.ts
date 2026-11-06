@@ -114,6 +114,31 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("reports effective local sources separately and restores cloud sources after restart", async () => {
+    const f = await fixture();
+    const writeConfiguration = (overrides: object) => writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "web", ...overrides } }));
+    target = { ...target, value: { ...target.value, native: { agent: "codex", model: "cloud-model", args: ["--effort", "medium"] }, projects: [] } };
+    await writeConfiguration({ agentModel: "local-model", agentReasoningEffort: "high" });
+    const running = start(f);
+    await eventually(() => expect(configurationTransitions().some(item => item.key.kind === "native" && item.state === "applied")).toBe(true));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(report.mock.calls.some(([, body]) => body.runtimeConfiguration?.native?.model.value === "local-model")).toBe(true));
+    const localReport = report.mock.calls.find(([, body]) => body.runtimeConfiguration?.native?.model.value === "local-model")!;
+    expect(localReport[1].runtimeConfiguration!.native).toEqual({ agent: "codex", model: { value: "local-model", source: "local" }, reasoningEffort: { value: "high", source: "local" } });
+    expect(localReport[2].observation!.items.find(item => item.key.kind === "native")!.appliedValue).toEqual(target.value.native);
+    f.signal.abort(); await running;
+    await writeConfiguration({});
+    report.mockClear(); mocks.emit.mockClear();
+    const restart = { ...f, signal: new AbortController() };
+    const restarted = start(restart);
+    await eventually(() => expect(configurationTransitions().some(item => item.key.kind === "native" && item.state === "applied")).toBe(true));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await eventually(() => expect(report.mock.calls.some(([, body]) => body.runtimeConfiguration?.native?.model.source === "cloud")).toBe(true));
+    const restored = report.mock.calls.find(([, body]) => body.runtimeConfiguration?.native?.model.source === "cloud")![1];
+    expect(restored.runtimeConfiguration!.native).toEqual({ agent: "codex", model: { value: "cloud-model", source: "cloud" }, reasoningEffort: { value: "medium", source: "cloud" } });
+    restart.signal.abort(); await restarted;
+  });
+
   it("reconciles an imported target after a lost bootstrap receipt before capturing another report", async () => {
     const f = await fixture(), order: string[] = [];
     target = { ...target, revision: "2", value: { ...target.value, maxConcurrent: 4, native: { ...target.value.native, model: "cloud-after-lost-receipt" } } };

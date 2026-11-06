@@ -7,7 +7,10 @@ import (
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth"
+	oauthauthorization "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/authorization"
 	granthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/grants"
+	oauthtoken "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/token"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
@@ -46,18 +49,36 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	if err != nil {
 		return nil, err
 	}
+	if app.OAuthProfile == nil {
+		endpoint.BeginShutdown()
+		return nil, errors.Join(errors.New("OAuth public profile is unavailable"), app.OAuthError)
+	}
 	if err := registerMCPTools(app.Application, endpoint, config.PublicOrigin); err != nil {
 		endpoint.BeginShutdown()
 		return nil, err
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", endpoint)
+	profile := app.OAuthProfile
+	authorization := oauthauthorization.NewAuthorizationHTTP(profile.Authorizations, auth)
+	web := webhttp.New(app.Web)
+	authorization.SetStartErrorPage(web.BadRequestHandler(logger))
+	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.PublicOrigin + "/mcp", Codes: profile.Authorizations, Grants: profile.Grants}
+	mux.Handle("/oauth/register", oauthhttp.Handler(profile.Clients))
+	mux.HandleFunc("/oauth/authorize", authorization.Start)
+	mux.HandleFunc("/oauth/token", tokens.Token)
+	mux.HandleFunc("/oauth/revoke", tokens.Revoke)
+	mux.HandleFunc("/api/v1/oauth/requests/{id}", authorization.Inspect)
+	mux.HandleFunc("/api/v1/oauth/requests/{id}/decision", authorization.Decide)
+	oauthhttp.RegisterMetadata(mux, config.PublicOrigin)
 	auth.RegisterRoutes(mux)
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
+	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
+	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, auth, logger)
 	taskhttp.TaskSearchRoutes(mux, app.TaskSearch, auth, logger)
 	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
@@ -71,30 +92,38 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
 	relay.RegisterRoutes(mux)
 	healthRoutes(mux, app.Ready, logger)
-	web := webhttp.New(app.Web)
 	web.RegisterRoutes(mux, logger)
 	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint}, nil
+	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly}, nil
 }
 
 type sessionApplication struct {
 	http.Handler
-	relay   *sessionhttp.Routes
-	service *sessionservice.Service
-	engine  *sessioncore.Engine
-	mcp     *mcphttp.Entry
+	relay          *sessionhttp.Routes
+	service        *sessionservice.Service
+	engine         *sessioncore.Engine
+	mcp            *mcphttp.Entry
+	workerReadOnly *workerhttp.ReadOnlyRoutes
 }
 
 func (a *sessionApplication) BeginShutdown() {
+	if a.workerReadOnly != nil {
+		a.workerReadOnly.BeginShutdown()
+	}
 	if a.mcp != nil {
 		a.mcp.BeginShutdown()
 	}
 }
 
 func (a *sessionApplication) Shutdown(ctx context.Context) error {
+	if a.workerReadOnly != nil {
+		if err := a.workerReadOnly.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
 	if a.mcp != nil {
 		if err := a.mcp.Shutdown(ctx); err != nil {
 			return err
@@ -152,6 +181,7 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error { return mcphttp.RegisterStepReadTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterStepWriteTools(entry, app.TaskSteps) },
 		func() error { return mcphttp.RegisterAttachmentTools(entry, app.Attachments) },
+		func() error { return mcphttp.RegisterDownloadTool(entry, app.Downloads) },
 		func() error {
 			if app.Uploads == nil {
 				return errors.New("upload service is required")
