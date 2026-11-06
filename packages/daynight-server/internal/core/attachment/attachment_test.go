@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -200,5 +201,35 @@ func TestCursorBoundsAndInvalidEncodings(t *testing.T) {
 	page, err := MakePage(store.AttachmentPage{Items: items}, "project", "task")
 	if err != nil || page.NextCursor != nil || !reflect.DeepEqual(page.Items, items) {
 		t.Fatalf("final page = %#v, %v", page, err)
+	}
+}
+
+func TestContentTypeByteLimit(t *testing.T) {
+	prefix, suffix := `text/plain; name="`, `"`
+	for _, tc := range []struct {
+		name, value string
+		valid       bool
+	}{
+		{"ascii boundary", prefix + strings.Repeat("a", 2048-len(prefix)-len(suffix)) + suffix, true},
+		{"ascii over", prefix + strings.Repeat("a", 2049-len(prefix)-len(suffix)) + suffix, false},
+		{"utf8 boundary", prefix + strings.Repeat("界", 676) + strings.Repeat("a", 2048-len(prefix)-len(suffix)-676*3) + suffix, true},
+		{"utf8 over", prefix + strings.Repeat("界", 676) + strings.Repeat("a", 2049-len(prefix)-len(suffix)-676*3) + suffix, false},
+		{"invalid syntax", "text/plain; charset", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateContentType(tc.value)
+			if tc.valid && err != nil {
+				t.Fatalf("rejected %d bytes: %v", len(tc.value), err)
+			}
+			if !tc.valid {
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "invalid_input" {
+					t.Fatalf("accepted or wrong error for %d bytes: %v", len(tc.value), err)
+				}
+				if len(tc.value) > MaxContentTypeBytes && fault.Message != "Attachment content type must not exceed 2048 bytes." {
+					t.Fatalf("unexpected message: %s", fault.Message)
+				}
+			}
+		})
 	}
 }
