@@ -8,6 +8,8 @@ type Transactions interface {
 	TeamWriter
 	IdentityWriter
 	CredentialFamilyWriter
+	GrantLifecycleWriter
+	PrivateTransferWriter
 	OAuthClientWriter
 	WorkerWriter
 	BotWriter

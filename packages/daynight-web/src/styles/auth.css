@@ -417,3 +417,27 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
 .members-project-name { overflow-wrap: anywhere; min-height: 1.5em; }
 .members-project-name-placeholder { display: inline-block; width: min(22rem, 100%); height: 1em; border-radius: 3px; background: var(--line); vertical-align: middle; }
 .members-page-heading > .button { flex-shrink: 0; }
+
+.grant-row { grid-template-columns: minmax(0, 1.35fr) minmax(180px, 1fr) auto; align-items: start; }
+.grant-row .actions { align-self: center; }
+.grant-row.revoked .person-name { color: #778298; }
+.grant-meta-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.grant-origin, .grant-scope, .grant-facts { margin-top: 5px; font-size: 11px; color: #737d8e; overflow-wrap: anywhere; }
+.grant-facts p + p { margin-top: 5px; }
+.grant-facts strong { color: #566279; font-weight: 500; }
+.grant-dialog-client { padding: 14px 15px; border: 1px solid var(--line); border-radius: 7px; background: #fcfcfe; margin-bottom: 16px; overflow-wrap: anywhere; }
+.grant-dialog-client p { margin-top: 5px; }
+.grant-dialog-account { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.grant-status-notice { margin: 18px 23px; }
+@media (max-width: 800px) {
+  .grant-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .grant-row .grant-main { grid-column: 1 / -1; }
+  .grant-row .grant-facts { grid-column: 1; }
+  .grant-row .actions { grid-column: 2; grid-row: 2; }
+}
+@media (max-width: 400px) {
+  .grant-row { grid-template-columns: minmax(0, 1fr); }
+  .grant-row .grant-facts, .grant-row .actions { grid-column: 1; grid-row: auto; }
+  .grant-row .actions { justify-content: flex-start; margin-left: 0; }
+  .grant-status-notice { margin-inline: 14px; }
+}

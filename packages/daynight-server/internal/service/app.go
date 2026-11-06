@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/uniauth/sdk/go"
 )
@@ -45,11 +47,23 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
+	if private, ok := files.(filestorage.TransferStorage); ok {
+		budget, reserve := c.MCPTempBudgetBytes, c.MCPReservedFreeBytes
+		if budget == 0 {
+			budget, reserve = 8<<30, 1<<30
+		}
+		app.PrivateContent, _ = mcptransfer.New(database, files, private, budget, reserve)
+	}
 	return app
 }
 
 // OpenApp validates and assembles one set of application dependencies.
 func OpenApp(ctx context.Context, c config.Config) (*App, error) {
+	return OpenAppWithLogger(ctx, c, slog.Default())
+}
+
+// OpenAppWithLogger uses the server's structured logger for owned background work.
+func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger) (*App, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -69,6 +83,18 @@ func OpenApp(ctx context.Context, c config.Config) (*App, error) {
 	}
 	app := NewModules(c, database.Transactions, database.Ready, files, client)
 	app.files, app.persistence = files, database
+	if app.PrivateContent == nil {
+		return nil, errors.Join(errors.New("private transfer storage is unavailable"), app.Close(context.Background()))
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	app.PrivateContent.SetLogger(logger)
+	if err := app.PrivateContent.Start(func(error) {
+		logger.Error("private transfer maintenance failed", "component", "mcptransfer", "operation", "maintain")
+	}); err != nil {
+		return nil, errors.Join(err, app.Close(context.Background()))
+	}
 	return app, nil
 }
 
@@ -88,6 +114,11 @@ func (a *App) Close(ctx context.Context) error {
 	}
 	if a.closed {
 		return a.closeErr
+	}
+	if a.PrivateContent != nil {
+		if err := a.PrivateContent.Close(ctx); err != nil {
+			return err
+		}
 	}
 	if err := a.Engine.Stop(ctx); err != nil {
 		return err

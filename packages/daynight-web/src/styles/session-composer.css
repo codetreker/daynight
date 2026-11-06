@@ -1,4 +1,4 @@
-.session-composer { container: session-composer / inline-size; padding: 12px 26px 16px; display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; background: #fff; }
+.session-composer { container: session-composer / inline-size; padding: 12px var(--session-column-right, 26px) 16px var(--session-column-left, 26px); display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; background: #fff; }
 .session-composer-surface { container: session-composer-surface / inline-size; display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; min-width: 0; border: 1px solid #d9deea; border-radius: 12px; padding: 6px 10px 8px; background: #fff; }
 .session-composer-surface:focus-within { border-color: #8585cf; box-shadow: 0 0 0 2px #8585cf18; }
 .session-composer.session-composer-adaptive textarea { display: block; box-sizing: border-box; width: 100%; resize: none; min-height: 48px; max-height: 180px; overflow-y: auto; padding: 7px 2px; font: inherit; line-height: 1.5; color: inherit; border: 0; border-radius: 0; background: transparent; outline: none; }
@@ -45,7 +45,7 @@
   .session-composer.session-composer-adaptive textarea { max-height: 120px; }
 }
 @media (max-width: 600px) {
-  .session-composer { padding: 10px 12px max(10px, env(safe-area-inset-bottom)); }
+  .session-composer { padding: 10px var(--session-column-right, 12px) max(10px, env(safe-area-inset-bottom)) var(--session-column-left, 12px); }
   .session-composer.session-composer-adaptive textarea { min-height: 44px; }
 }
 
@@ -105,3 +105,9 @@
 
 /* Extra content yields space to the input minimum and native action controls. */
 .session-composer-attachments { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }
+
+/* The complete menu scrolls when there is too little space for a fixed heading. */
+.session-composer-compact-menus { position: relative; }
+.session-composer.session-composer-adaptive.session-composer-compact-menus > :is(.session-command-menu, .session-controls-panel) { position: absolute; z-index: 3; top: var(--session-menu-top, 0px); left: var(--session-menu-left, 0px); width: var(--session-menu-width, 100%); max-height: var(--session-menu-height, 0px); min-height: 0; margin: 0; overflow: auto; overscroll-behavior: contain; box-shadow: 0 4px 16px #30364418; }
+.session-composer-compact-menus > .session-command-menu { display: block; }
+.session-composer-compact-menus .session-command-body { position: static; min-height: 0; overflow: visible; }

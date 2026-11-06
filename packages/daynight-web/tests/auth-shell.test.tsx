@@ -797,7 +797,7 @@ describe("authenticated application shell", () => {
     await screen.findByRole("button", { name: "账户菜单：Alice" });
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问凭据" })); });
     expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByText("正在加载项目")).toHaveAttribute("role", "status");
     expect(within(screen.getByRole("region", { name: "个人访问令牌" })).getByRole("status")).toHaveTextContent("正在加载访问令牌…");
     expect(document.body).not.toHaveClass("auth-session-checking");
@@ -831,7 +831,7 @@ describe("authenticated application shell", () => {
     await screen.findByRole("button", { name: "账户菜单：Alice" });
     returnFromAnotherWindow();
     await waitFor(() => expect(checks).toHaveLength(1));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问凭据" })); });
     await act(async () => checks[0]!(fail(503, "internal")));
     await screen.findByRole("heading", { name: "暂时无法重新确认当前账户" });
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
@@ -861,7 +861,7 @@ describe("authenticated application shell", () => {
     await screen.findByRole("button", { name: "账户菜单：Alice" });
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问凭据" })); });
     fireEvent.click(screen.getByRole("button", { name: "账户菜单：Alice" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "退出登录" }));
     await waitFor(() => expect(window.location.pathname).toBe("/"));
@@ -882,7 +882,7 @@ describe("authenticated application shell", () => {
       : defaults(url)));
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "访问令牌" }));
+    fireEvent.click(await screen.findByRole("button", { name: "访问凭据" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "创建令牌" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "创建令牌" }));
     fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } });
@@ -1009,7 +1009,7 @@ describe("authenticated application shell", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("button", { name: "访问令牌" }));
+    fireEvent.click(await screen.findByRole("button", { name: "访问凭据" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "创建令牌" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "创建令牌" }));
     fireEvent.change(screen.getByLabelText(/令牌名称/), { target: { value: "Device" } });

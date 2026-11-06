@@ -12,7 +12,9 @@ Pagination also needs an explicit answer when the project changes between pages.
 ## Decision
 
 The server owns literal expression parsing, positive-match evidence and ordered
-project search. A read-only repeatable-read snapshot binds admission, the project
+project search. The parser, evidence calculation and PostgreSQL compiler share a
+pure expression data model; the store contract does not depend on search business
+operations. A read-only repeatable-read snapshot binds admission, the project
 Task fence, matching and dependency context. A cursor binds the query, filters,
 identity, fence and last sort key; a changed fence rejects continuation. The
 [requirements](../../../../docs/spec/daynight-task-search.md) and
@@ -20,6 +22,10 @@ identity, fence and last sort key; a changed fence rejects continuation. The
 mechanism.
 
 ## Alternatives
+
+**Keep the expression model in the query business package.** This makes the
+root DAO contract depend on parsing and evidence operations, reversing the
+shared-model dependency.
 
 **Full-text search.** Tokenization cannot preserve arbitrary substrings, such as
 one Chinese character or a fragment of a code identifier, under the confirmed

@@ -25,7 +25,7 @@ func taskWriteFault(err error) *model.Fault {
 }
 
 func enforceAssignmentTransition(ctx context.Context, tx store.ProjectWriteScope, mutation taskcore.Mutation) (taskcore.Mutation, error) {
-	changed, err := taskcore.AssignmentChanged(mutation.Current, mutation.Values)
+	values, changed, err := taskcore.AssignmentCandidate(mutation.Current, mutation.Values)
 	if err != nil {
 		return taskcore.Mutation{}, err
 	}
@@ -40,6 +40,6 @@ func enforceAssignmentTransition(ctx context.Context, tx store.ProjectWriteScope
 			return taskcore.Mutation{}, err
 		}
 	}
-	mutation.Values.AllowAgents = false
+	mutation.Values = values
 	return mutation, nil
 }
