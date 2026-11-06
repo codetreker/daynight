@@ -62,7 +62,7 @@ func deletionJSON(value any) []byte  { data, _ := json.Marshal(value); return da
 func sameDeletionJSON(a, b any) bool { return string(deletionJSON(a)) == string(deletionJSON(b)) }
 
 func (s *Deletions) credential(ctx context.Context, dao store.SessionDAO, p model.Principal) error {
-	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential {
+	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && p.Kind != model.OAuthCredential {
 		return deletionDenied()
 	}
 	if err := dao.LockCredential(ctx, p, s.now()); err != nil {

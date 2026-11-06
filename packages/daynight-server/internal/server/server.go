@@ -13,6 +13,7 @@ import (
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
 	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 
@@ -43,7 +44,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := mcphttp.New(app.Identity, config.PublicOrigin, config.MCPAllowedOrigins, logger)
+	endpoint, err := mcphttp.New(app.Identity, config.PublicOrigin, config.MCPAllowedOrigins, logger, oauthservice.NewAuthenticator(dependencies.Store))
 	if err != nil {
 		return nil, err
 	}

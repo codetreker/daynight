@@ -43,7 +43,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	routes := fixture.application.relay
 	engine := fixture.application.engine
 	runtime, err := Start(context.Background(), config, testLogger(), func(deps Dependencies) (http.Handler, error) {
-		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
+		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +169,7 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 	query := "select pg_sleep(30) /* " + uuid.NewString() + " */"
 	queryDone := make(chan error, 1)
 	runtime, err := Start(context.Background(), config, testLogger(), func(deps Dependencies) (http.Handler, error) {
-		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
+		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
 		if err != nil {
 			return nil, err
 		}

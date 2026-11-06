@@ -325,7 +325,9 @@ writers remain stopped, with its corresponding loss of later writes.
 
 The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 `2026-07-28` and `2025-11-25`. Configure a client with the service's HTTPS URL
-ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
+ending in `/mcp` and an `Authorization: Bearer <PAT>` header. The entry also
+accepts MCP OAuth access credentials for its exact resource and `daynight:mcp`
+scope. OAuth authorization and token endpoints are not yet exposed. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
 The endpoint advertises Project creation, transfer, listing and inspection,
@@ -340,6 +342,14 @@ cursors bind the parent version and reject continuation after a change. Step
 writes return confirmed version and change facts and preserve the original
 collection capacity. A tool is discoverable only after its complete business
 adapter is registered.
+
+OAuth grant families store only hashes of access and refresh secrets. Initial
+issuance and revocation participate in the caller's transaction; access lasts at
+most one hour and the grant and refresh at most 30 days. The principal carries
+the access credential ID, while the stable authority reference carries the grant
+ID. Revocation invalidates access rows in the same transaction, and Thread and
+Bot credential checks recheck expiry after lock waits. OAuth credentials do not
+authenticate ordinary REST or private Worker endpoints.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control

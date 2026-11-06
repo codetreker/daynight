@@ -12,12 +12,17 @@ import (
 	"sync"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Authenticator interface {
 	Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error)
+}
+
+type OAuthAuthenticator interface {
+	AuthenticateAccess(context.Context, string, string) (store.OAuthAccessIdentity, error)
 }
 
 type AuthorityRef struct {
@@ -62,6 +67,8 @@ type Entry struct {
 	server     *sdk.Server
 	http       http.Handler
 	auth       Authenticator
+	oauth      OAuthAuthenticator
+	resource   string
 	logger     *slog.Logger
 	origins    map[string]bool
 	publicHost string
@@ -85,7 +92,7 @@ func ValidateOrigins(origins []string) error {
 }
 
 // New creates a stateless HTTP endpoint. Register tools before serving requests.
-func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger) (*Entry, error) {
+func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logger *slog.Logger, oauth OAuthAuthenticator) (*Entry, error) {
 	if auth == nil || logger == nil {
 		return nil, errors.New("MCP authentication and logger are required")
 	}
@@ -99,7 +106,7 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: logger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
-	e := &Entry{server: server, auth: auth, logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), ctx: ctx, cancel: cancel}
+	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), ctx: ctx, cancel: cancel}
 	e.http = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 4 << 20, Logger: logger, DisableLocalhostProtection: true})
 	return e, nil
 }
@@ -192,13 +199,27 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	stop := context.AfterFunc(e.ctx, cancel)
 	defer stop()
-	p, err := e.auth.Authenticate(ctx, model.PATCredential, parts[1])
+	var p model.Principal
+	var authority AuthorityRef
+	var err error
+	if strings.HasPrefix(parts[1], model.OAuthAccessPrefix) {
+		if e.oauth == nil {
+			err = model.Unauthenticated(nil)
+		} else {
+			var identity store.OAuthAccessIdentity
+			identity, err = e.oauth.AuthenticateAccess(ctx, parts[1], e.resource)
+			p, authority = identity.Principal, AuthorityRef{Kind: "oauth", ID: identity.GrantID}
+		}
+	} else {
+		p, err = e.auth.Authenticate(ctx, model.PATCredential, parts[1])
+		authority = AuthorityRef{Kind: "pat", ID: p.CredentialID}
+	}
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		httpx.WriteError(w, r, e.logger, "mcp", "authenticate", err)
 		return
 	}
-	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: AuthorityRef{Kind: "pat", ID: p.CredentialID}, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
+	s := &requestScope{actor: RequestActor{Principal: p, AuthorityRef: authority, RequestID: httpx.RequestID(r.Context()), Context: ctx, Budget: e.budget}}
 	defer s.delivered()
 	e.http.ServeHTTP(w, r.WithContext(context.WithValue(ctx, scopeKey{}, s)))
 }
