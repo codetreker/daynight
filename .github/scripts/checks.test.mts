@@ -14,9 +14,9 @@ test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
   const server = jobs.get("verify-server")!;
-  assert.match(server, /^    needs: detect-changes$/m);
+  assert.match(server, /^    needs: \[detect-changes, build-web-assets\]$/m);
   assert.match(server, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
-  assert.ok(server.includes("run: bash scripts/check.sh"));
+  assert.ok(server.includes("run: go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.0 --coverprofile=coverage.out --skip-result-packages tests/ \"$@\""));
   assert.ok(server.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });

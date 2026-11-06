@@ -164,7 +164,7 @@ test('joins both shard inventories and requires all authentication checks only o
   validateShardEvidence(pair, githubSha, gitTreeSha);
   validateShardEvidence([...pair].reverse(), githubSha, gitTreeSha);
   assert.equal(pair[0].authCombined.length, 0);
-  assert.equal(pair[1].authCombined.flatMap(({ checks }) => checks).length, 22);
+  assert.equal(pair[1].authCombined.flatMap(({ checks }) => checks).length, 20);
 });
 
 test('rejects missing, extra, duplicate or invalid shard and run identities', () => {

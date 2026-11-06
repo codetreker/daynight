@@ -350,8 +350,9 @@ SQLite SQL directories with the compiled dist tree; the
 [development guide](docs/development.md#cli-development) owns packaging details.
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
-18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
-`DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
+18.6. Prepare its embedded resources separately with `pnpm web:build` from the
+repository root, then run `bash scripts/check.sh` from `packages/daynight-server/`
+with `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,
 browser acceptance and complete validation commands.
 
@@ -423,10 +424,13 @@ owns macOS failure, evidence and budget handling. The Web selector enables a qua
 browser matrix entries, each with a 20-minute bound. The two browser shards
 jointly cover the complete native/container inventory; shard 2 owns the shared
 navigation, deployment, combined-authentication and persistence checks. The
-server selector enables Go module validation with a 20-minute bound. It builds
-the service, runs vet and package tests, and enforces the original coverage
-thresholds without building or installing the CLI. Its real Web asset build is
-an executable input, not a Web test run. All selected jobs are required by
+server selector enables the separate `build-web-assets` producer, followed by
+Go module validation with a 20-minute bound. The producer compiles production
+Web resources and uploads `daynight-web-assets` for the same source revision
+and tree. Go validates that identity, consumes the real embed inputs and runs
+build, vet, package tests and the original coverage gates. It does not install
+pnpm dependencies or compile JavaScript; Node runs only its own validation and
+auth-fixture scripts. The producer runs no Web tests. All selected jobs are required by
 `checks`. The [Go validation boundary](.agents/notes/implemented/testing/2026-11-06-go-module-validation-boundary.md) owns this separation.
 The final `checks` job uses `always()` and accepts only `success` or `skipped`
 from preceding jobs. Selected Web quality and browser matrix results must be

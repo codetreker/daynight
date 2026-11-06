@@ -429,7 +429,7 @@ test('unsafe configuration and pre-aborted signals never reach the HTTP listener
 
 const receiptChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
   'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
-  'admitted-member-removal', 'expired-pat', 'secret-scan'];
+  'expired-pat', 'secret-scan'];
 const combinedReceipt = (target: CombinedTarget): AuthCombinedReceipt => {
   const restart: RestartReceipt = { target: target.target, origin: target.baseUrl,
     startedAt: '2026-10-23T00:00:00Z', readyAt: '2026-10-23T00:00:01Z',
@@ -449,8 +449,8 @@ test('complete combined receipts retain exact native and container target identi
   for (const kind of ['native', 'container'] as const) await withTarget(kind, async ({ target }) => {
     const receipt = combinedReceipt(target);
     assert.equal(validateAuthCombinedReceipt(receipt, target), receipt);
-    assert.equal(receipt.checks.length, 11);
-    assert.equal(new Set(receipt.checks.map(({ name }) => name)).size, 11);
+    assert.equal(receipt.checks.length, 10);
+    assert.equal(new Set(receipt.checks.map(({ name }) => name)).size, 10);
   });
 });
 
@@ -475,7 +475,7 @@ test('combined receipts cannot pass while either browser or target cleanup is in
   });
 });
 
-test('each of the eleven combined checks is mandatory exactly once with a passing result', async () => {
+test('each of the ten combined checks is mandatory exactly once with a passing result', async () => {
   await withTarget('native', async ({ target }) => {
     const receipt = combinedReceipt(target);
     for (const omitted of receiptChecks) {

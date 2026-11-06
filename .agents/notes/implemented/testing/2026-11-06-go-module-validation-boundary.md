@@ -19,15 +19,26 @@ subprocess, installed receipt or PAT budget-file handoff. The former
 `cmd/e2e_tests` package and its dedicated job are removed together with the
 CLI-located service/deadline orchestration and its exclusive support code.
 
-Go's executable still embeds production Web resources. Preparing those real
-assets is a compilation dependency, not execution of Web tests. Real PostgreSQL
+Go's executable still embeds production Web resources, but its validation and
+stress entrypoints only consume independently generated assets. Local callers
+run the root `pnpm web:build` before entering Go validation. In CI, a separate
+`build-web-assets` job compiles resources and uploads `daynight-web-assets` bound
+to the same source revision and Git tree. The Go job requires that producer,
+validates the artifact identity and copies its embed inputs; it does not set up
+pnpm, install frontend dependencies or compile JavaScript. The producer runs no
+Web tests. Node remains only for Go-owned builtin-module coverage/fixture tools.
+Missing generated resources fail compilation. Real PostgreSQL
 and UniAuth fixtures remain dependencies of the Go tests that own database,
 authentication and HTTP behavior. Coverage uses the complete production package
 list and preserves critical, package, function and exact total thresholds.
 `DAYNIGHT_TEST_RACE` keeps its local/main-enabled and PR-disabled policy. The
-Go-owned coverage runner owns its watchdog and SIGINT/SIGTERM handling. It
+local Go-owned coverage runner keeps its existing commit pin and
+`.tmp/coverage.out`, watchdog and SIGINT/SIGTERM handling. It
 terminates the complete detached command group, escalates remaining descendants
 to SIGKILL and waits for command closure before reporting the original failure.
+CI instead invokes go-cov `v0.1.0` directly with module `coverage.out` and retains
+the separate exact raw-profile checker; it does not use the local supervisor.
+Its `tests/` result-summary filter does not skip test execution or raw coverage.
 
 Client request, output, timeout, unknown-result and retry rules belong to CLI
 module tests. UI state and asynchronous-response rules belong to Web module
@@ -35,6 +46,13 @@ tests. Service authorization, transactions, locks, boundaries and concurrency
 belong to Go module tests. Product E2E has a separate responsibility: a small
 normal-data journey through installed CLI, production Web and the real service.
 It does not own boundary, conflict, fault or competing-writer matrices.
+
+The existing Web combined journey also excludes the `admitted-member-removal`
+race. Request admission, locking, authorization and publication under a member
+change belong to Go module verification; access-withdrawal presentation belongs
+to Web and refusal handling to CLI. Removing that combined race does not
+establish that its replacement module assertions have been implemented or run.
+The other combined checks retain their current execution scope.
 
 The [package extraction](../../archived/testing/2026-11-03-server-e2e-package.md) and
 [CI split](../../archived/testing/2026-11-04-server-e2e-ci-jobs.md) records retain the earlier rationale.
@@ -50,6 +68,11 @@ split kept the normal PAT producer, its consumers and cleanup together, avoiding
 cross-job credentials while retaining handler coverage. That made Go validation
 pay for client build/install and mixed client behavior with server coverage.
 The assertion owner now determines the verification location.
+
+**Build Web resources inside Go validation.** This makes clean-checkout embed
+inputs automatic, but mixes frontend dependency installation and JavaScript
+compilation into the Go test lifetime. An independent source-bound producer
+keeps the real compile dependency while separating the two workloads.
 
 **Move the complete former package into product E2E.** This would retain its
 boundary, refusal, fault and race matrices under another runner name. Product

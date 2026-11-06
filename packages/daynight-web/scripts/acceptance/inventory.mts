@@ -7,4 +7,4 @@ export const functionalScenarios = ['project-list', 'project-graph', 'detail-nav
 
 export const authCombinedChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
   'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
-  'admitted-member-removal', 'expired-pat', 'secret-scan'] as const;
+  'expired-pat', 'secret-scan'] as const;

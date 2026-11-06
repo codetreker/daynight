@@ -757,7 +757,7 @@ pnpm web:acceptance
 DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
 ```
 
-`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行常规 Vitest/V8 单元及组件测试与严格覆盖率检查；完整规模图与几何证明由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`；任何一段失败都使完整命令失败。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；默认浏览器按原生功能、容器功能完成验证；显式本地 `web:acceptance:stress` 才在其后添加原生容量，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
+`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行常规 Vitest/V8 单元及组件测试与严格覆盖率检查；完整规模图与几何证明由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`；任何一段失败都使完整命令失败。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；默认浏览器按原生功能、容器功能完成验证；显式本地 `web:acceptance:stress` 才在其后添加原生容量，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。本地 Go 验证与 stress 前须独立执行根目录 `pnpm web:build`；Go 入口只消费真实 embed 资源，不调用 pnpm 或编译 JavaScript。CI 由独立 `build-web-assets` job 生成绑定源码 revision/tree 的 `daynight-web-assets`，Go job 下载并核对后使用。缺少 index 或资源使 Go 编译失败，构建准备不运行 Web 测试。
 
 开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。运行机器只需要服务二进制与 PostgreSQL；源码构建固定使用 Node 24 与 pnpm 11.28.6。根目录现有 CLI build/test/acceptance 命令的含义保持独立，新增 web 命令显式选择 `@codetreker/daynight-web`。
 
@@ -880,7 +880,7 @@ TERM grace 内；180/540/180 秒验证时限保持不变。此调度不改变分
 [浏览器 job 调度决策](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)拥有。
 
 较轻的 shard 2 统一拥有全部 28 项 navigation-contract、部署生命周期 fixture、
-原生/容器各十一项 combined-auth，以及真实附件持久化与成对备份恢复。
+原生/容器各十项 combined-auth，以及真实附件持久化与成对备份恢复。
 归属仅由分片身份推导。Shard 1 完成其功能和所有所属资源清理；两个分片都保留
 镜像身份、浏览器、CLI 与 dev-ci 清理证明。矩阵 `fail-fast` 为 false，使另一个分片在
 失败后仍能完成诊断和清理。默认本地普通入口继续单次执行完整 32+32 功能与两个
@@ -895,7 +895,7 @@ combined-auth；本地 `--stress` 不分片，并在资源准备前拒绝 shard 
 检出当前源码、设置 Node 24、下载这两份小摘要，无需 pnpm 安装或传递二进制、镜像和
 资源归属。`report.mts --shards file1 file2` 要求不同 run ID、恰好 1/2 与 2/2、
 当前 `GITHUB_SHA` 与检出 tree、clean/pass、准确的双目标和 phase 清理、每份准确选择、
-两份规范并集各覆盖一次，且只有 shard 2 拥有两个完整十一项鉴权回执。
+两份规范并集各覆盖一次，且只有 shard 2 拥有两个完整十项鉴权回执。
 缺摘要、选中 job 被跳过、错误来源、功能重复/缺失、鉴权错归属或清理不完整均使原门禁失败。
 
 [两分片决策](../../.agents/notes/archived/testing/2026-11-04-web-ci-case-shards.md)
@@ -1140,9 +1140,11 @@ PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` �
 
 `auth-combined.mts` 另在原生/容器各生成一份必需组合回执，复用正常 Alice/Bob 身份、
 真实安装 CLI 和同一目标数据，覆盖部分共享项目、原凭据服务重启、logout/PAT 独立、
-撤销、已准入上传、socket 中断、正常签发 PAT 到期与双语 pending/reveal。它接收
-runner 的服务重启 callback 与显式安装回执路径；目标 probe 在校验 run/source/
-容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。详细机制的历史取舍见
+撤销、socket 中断、正常签发 PAT 到期与双语 pending/reveal。它接收
+runner 的服务重启 callback 与显式安装回执路径。成员变更期间的请求准入、锁定、
+授权与提交一致性归 Go 模块验证，失权后的 Web 呈现和 CLI 错误处理分别归客户端
+模块；当前组合回执不再宣称验证已准入上传与成员移除的竞争，也不代表对应模块
+断言已补齐。详细机制的历史取舍见
 [组合鉴权验收决策](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)。
 这两份回执与常规 64 项 Playwright 场景并列；本地压力模式另有五项容量场景，
 不复制容量矩阵或改变其测量、预算和清理屏障；运行结果与真实上游人工登录分别留证。
@@ -1232,7 +1234,7 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 本地压力模式另写 `native/capacity/`，容量的原 schema 1 性能回执位于
 `native/capacity/performance.json`。本地普通/压力入口与 CI shard 2 必须包含 schema 1
 `kind: auth-combined` 的 `native/auth-combined/target.json` 和
-`container/auth-combined/target.json`；每份严格要求十一项具名检查、源码/浏览器/安装包、
+`container/auth-combined/target.json`；每份严格要求十项具名检查、源码/浏览器/安装包、
 重启前后进程身份及浏览器/资源清理。Shard 1 不包含这两个鉴权回执。
 分片顶层 evidence 另记录 `shard` 与 `selection`；本地完整回执无分片元数据。
 回执不保存凭据、配置 body 或原始日志，私有日志扫描只记录安全结果；既有场景

@@ -596,39 +596,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     check(afterAbort.version === snapshot.version && afterAbort.updatedAt === snapshot.updatedAt, 'Disconnected upload changed the task resource.');
     await request(bob, origin, 'GET', `/api/v1/projects/${privateProject.id}`, 200);
     await record('socket-disconnect', { path: abortPath, requestId: abortRequestId, prefixBytes, socketClosed: true, stagingRemoved: true, metadataRows: 0, taskUnchanged: true });
-    const admittedPath = `admission/${randomUUID()}/complete.bin`;
-    const admissionRequestId = randomUUID();
-    const admitted = await startAuthCombinedUpload({ origin, path: fileUrl(shared.id, task.id, admittedPath), token: replacement.token, body, prefixBytes, requestId: admissionRequestId, signal }); uploads.push(admitted);
-    await waitFor(async () => incomplete(await controls.observeUpload(probe(admittedPath)), 1), signal, 'real upload admission');
-    check(!admitted.completed && admitted.sentBytes === prefixBytes, 'Admitted upload body was not incomplete.');
-    const currentMembers = await request<{ items: Member[] }>(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200);
-    const currentMember = currentMembers.items.find((member) => member.userId === bobUser.id); check(currentMember !== undefined && currentMember.directGrant !== null, 'Current direct grant is missing before removal.');
-    const removalStarted = performance.now();
-    await request(alice, origin, 'DELETE', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 204, { version: currentMember.directGrant.version, expectedUserId: aliceUser.id });
-    const removalMs = performance.now() - removalStarted;
-    check(removalMs < 5_000 && !admitted.completed && admitted.sentBytes === prefixBytes, 'Member removal waited for the held upload IO.');
-    const removedDuringIO = await controls.observeUpload(probe(admittedPath));
-    check(incomplete(removedDuringIO, 0), 'Member removal did not commit while real file IO remained incomplete.');
-    const completed = await admitted.complete();
-    check(completed.status === 201 && /^application\/json(?:;|$)/i.test(completed.contentType) && completed.requestId === admissionRequestId,
-      'Previously admitted upload failed or lost its JSON/request correlation after member removal.');
-    check(decode<{ sizeBytes: number }>(completed.body.toString()).sizeBytes === body.length, 'Admitted response metadata has an unexpected byte size.');
-    await admitted.socketClosed;
-    await waitFor(async () => { const observed = await controls.observeUpload(probe(admittedPath)); return observed.temporaryFiles === 0 && observed.finalExists && observed.metadataRows === 1 && observed.memberRows === 0; }, signal, 'admitted upload publication');
-    const final = await alice.get(`${origin}${fileUrl(shared.id, task.id, admittedPath)}`); check(final.status() === 200 && (await final.body()).equals(body), 'Admitted bytes differ after publication.');
-    for (const path of [...protectedPaths, fileUrl(shared.id, task.id, admittedPath)]) await request(replacementApi, origin, 'GET', path, 404);
-    await request(replacementApi, origin, 'HEAD', preview, 404);
-    await resourceStatus(bob, origin, 'GET', preview, 404); await resourceStatus(bob, origin, 'HEAD', preview, 404);
-    await cliDenied(replacementCli, binaryArgs, 'not_found');
     const privateArgs = ['task', 'attachment', 'read', privateTask.id, 'private.bin', '--project', privateProject.id];
-    check((await replacementCli.read(privateArgs)).equals(binary), 'Removing shared membership changed private-project authority.');
-    sameIds(await projectIds(bob, origin), [...b0, privateProject.id], 'Removed membership remained in paginated project results.');
-    await bobPage.goto(`${origin}/projects/${shared.id}`);
-    await expect(bobPage.getByRole('heading', { name: '项目不存在或你没有访问权限', exact: true })).toBeVisible();
-    await screenshots(bobPage, 'shared-membership-removed');
-    await record('admitted-member-removal', { projectId: shared.id, taskId: task.id, path: admittedPath, requestId: completed.requestId,
-      responseContentType: completed.contentType, bytes: body.length, sha256: hash(body), prefixBytes, prefixSha256,
-      removalMs, observedWhileBodyIncomplete: removedDuringIO, status: completed.status, newResourceStatus: 404, privateProjectStatus: 200 });
     const expired = await controls.expirePAT({ id: replacement.id, userId: bobUser.id });
     await cliDenied(replacementCli, privateArgs, 'unauthenticated');
     await request(replacementApi, origin, 'GET', privateResource, 401);

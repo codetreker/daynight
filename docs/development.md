@@ -535,7 +535,8 @@ Read the [server organization rules](daynight-server.md) before adding to, chang
 or reviewing daynight-server.
 
 Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS and pnpm 11.28.6. Run
-`pnpm install --frozen-lockfile` from the repository root before source builds. The
+`pnpm install --frozen-lockfile` and `pnpm web:build` from the repository root
+as a separate asset-preparation step before Go validation or local Go stress. The
 [server module](../packages/daynight-server/README.md) owns configuration, startup,
 the isolated database setup and complete validation commands. Its HTTP runtime
 binds only numeric loopback addresses and serves authenticated project/task,
@@ -551,9 +552,13 @@ PostgreSQL database, then run:
 bash scripts/check.sh
 ```
 
-The entrypoint prepares real embedded Web assets and the pinned UniAuth fixture,
-then builds the service, runs vet and validates Go module tests and coverage. It
-accepts no validation-mode flags and does not build, install or execute the CLI.
+The entrypoint consumes the prepared real embedded Web assets and prepares the
+pinned UniAuth fixture, then builds the service, runs vet and validates Go module
+tests and coverage. It accepts no validation-mode flags, does not install package
+dependencies or build JavaScript, and does not build, install or execute the CLI.
+Missing generated assets fail the Go embed compilation. Node runs the Go-owned
+coverage and fixture scripts using builtin modules; the Go entrypoint needs no
+pnpm or frontend dependency installation.
 PostgreSQL is mandatory; a missing URL or unavailable database fails validation.
 
 The pinned `go-cov` gate requires statement coverage strictly greater than 90%,
@@ -575,8 +580,16 @@ and `true` for main pushes. The [server race policy](../packages/daynight-server
 owns the command and inherited `GOFLAGS` behavior. Module tests retain their
 normal boundary, failure, transaction and concurrency responsibilities.
 
-When CI selects the server, `verify-server` runs with its own PostgreSQL and a
-20-minute bound. The final `checks` job requires its result. The
+When CI selects the server, `build-web-assets` independently installs Web build
+dependencies and compiles the production resources, with no Web tests. Its
+`daynight-web-assets` artifact records the source revision and tree. The
+`verify-server` job requires that producer, validates the downloaded identity
+and consumes the real assets without pnpm setup, dependency installation or a
+JavaScript build. Go validation has its own PostgreSQL and a 20-minute bound.
+CI invokes go-cov `v0.1.0` directly and writes module `coverage.out`, then applies
+the separate exact raw-profile checker. The local supervised runner keeps its
+existing commit pin and `.tmp/coverage.out`; the CI command does not use that
+wrapper. The final `checks` job requires both selected results. The
 [server validation guide](../packages/daynight-server/README.md#go-module-validation-and-ci-evidence)
 owns the raw profile and evidence interpretation; the
 [Go validation boundary](../.agents/notes/implemented/testing/2026-11-06-go-module-validation-boundary.md)
@@ -663,7 +676,7 @@ archive, rendering and decoded-byte workloads use explicit local entrypoints:
 | Workload | Repository-root command | Prerequisites and output |
 |---|---|---|
 | CLI rendering and full Session-v2 archives | `pnpm test:stress` | Builds the CLI and selects `.stress.ts` files with `vitest.stress.config.ts` |
-| Go query, archive and repeated-write checks | `pnpm server:test:stress` | Requires isolated PostgreSQL and the server test environment; invokes the explicit stress-tagged packages with race detection |
+| Go query, archive and repeated-write checks | `pnpm server:test:stress` | Requires separately prepared real Web assets, isolated PostgreSQL and the server test environment; invokes stress-tagged Go packages with race detection |
 | Web graph/model/geometry scale checks | `pnpm web:test:stress` | Selects Web `.stress.ts` files with `vitest.stress.config.ts` |
 | Production browser capacity matrix | `pnpm web:acceptance:stress` | Uses the production browser prerequisites and adds five native capacity/limit scenarios with their original measurements and budgets |
 
@@ -851,7 +864,7 @@ records the rationale and retained publication responsibilities.
 The exact build/configuration and acceptance-script inputs in
 [the selector](../.github/scripts/ci-modules.mts) select CLI and Go validation.
 Web source and its Dagre/XYFlow patches select Go validation because the service
-builds embedded Web assets. Documentation exclusions apply after CLI source
+embeds their built assets; the build itself belongs to the separate producer. Documentation exclusions apply after CLI source
 ownership. The `.gitignore` exclusion matches only the repository root; nested
 ignore files retain their module ownership or the unclassified-path fallback.
 An excluded path does not suppress jobs selected by other changed files. New
@@ -861,8 +874,10 @@ records the dependency boundary and its maintenance cost.
 
 Selected jobs keep their ordinary functional checks, coverage thresholds,
 timeouts and cleanup requirements. Stress workloads have explicit local-only
-entrypoints and are excluded from routine CI selection. Go validation builds
-real embedded Web assets and prepares PostgreSQL and UniAuth without installing the CLI; each Web browser shard still builds and
+entrypoints and are excluded from routine CI selection. Go validation consumes
+source-validated assets from the separate Web build producer and prepares
+PostgreSQL and UniAuth without installing the CLI or building frontend source;
+each Web browser shard still builds and
 exercises its own Go service and production deployment.
 The same Web selector enables quality and both browser matrix entries; all are required by the final gate. The Ubuntu shell-completion and Web
 browser jobs select the
@@ -924,7 +939,7 @@ outer termination grace, preserving verification deadlines. The
 owns cancellation, concurrency and measurement limits.
 
 Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
-eleven-check combined-authentication journeys and the existing real attachment
+ten-check combined-authentication journeys and the existing real attachment
 persistence/paired-backup-restoration check. That ownership derives from the
 shard identity. Both entries retain functional, image identity, process,
 browser and resource cleanup requirements. Matrix `fail-fast` is false so the

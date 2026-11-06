@@ -14,8 +14,6 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/env.sh"
 cd -- "$DAYNIGHT_MODULE_ROOT"
 : "${DAYNIGHT_TEST_DATABASE_URL:?Set DAYNIGHT_TEST_DATABASE_URL to an isolated PostgreSQL test database}"
 
-export COREPACK_HOME="$DAYNIGHT_MODULE_ROOT/.tmp/corepack"
-pnpm --dir "$DAYNIGHT_MODULE_ROOT/../.." web:build
 DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 

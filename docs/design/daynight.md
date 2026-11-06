@@ -566,7 +566,8 @@ GitHub Actions 保留原生 Linux、macOS、Windows 的普通测试与既有 rev
 安装验收，并在独立 Linux 作业中执行补全的真实 shell 验收。独立
 project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
 文件行为。Go 模块验证独立执行服务端 build、vet、模块测试与严格 coverage gate，
-不安装或运行 CLI。其真实 Web assets 是可执行程序的编译输入；认证、事务、
+不安装或运行 CLI，也不编译 JavaScript；真实 Web assets 由独立构建提供，
+Go 只消费可执行程序的 embed 输入。认证、事务、
 生命周期和并发属于服务端模块测试，客户端请求、输出、期限与未知结果属于 CLI
 模块测试。race 在 PR CI 关闭、main CI 和本地默认开启，具体策略由
 [服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。

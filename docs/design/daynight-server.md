@@ -534,19 +534,24 @@ HTTP 测试验证路由、DTO、错误映射、project 范围查找、分页筛�
 路径保持默认阻断。`go-cov` 的 total 配置仍使用 90；同一原始 coverage profile
 再按唯一代码块的语句数执行 `covered * 10 > total * 9` 精确检查，拒绝零语句和
 无效报告。恰好 90% 必须失败，显示为 `90.0%` 但实际高于 90% 的结果按原始值判断。
-工具固定到提交 `d6caf2759e330b48d69a543695e37002a48feb1d`；该提交包含
-排除项分母修正，不能用缺少该修正的 `v0.1.3` 代替。配置及门槛语义见
-[固定版本 README](https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/README.md#configuration)。
+本地 coverage runner 保留提交 pin `d6caf2759e330b48d69a543695e37002a48feb1d`、
+进程组监督和 `.tmp/coverage.out`。CI 直接执行 go-cov `v0.1.0`，写入模块内
+`coverage.out`，不经过本地 Node supervisor；其 `--skip-result-packages tests/`
+只影响包结果行展示，不跳过测试或改变 raw profile。两个入口都保留独立精确
+checker，不能用 go-cov 的格式化总百分比替代严格大于 90% 的比较。CI 版本源码见
+[固定版本 README](https://github.com/codetreker/go-cov/blob/2232eb005859457af19bb329384440f0e76d7ad9/README.md#configuration)。
 
 覆盖率不替代并发、回滚和调用方行为断言。PR 按[仓库 CI 路由](../../README.md#ci-selection)
 选择受影响模块，main push 执行全量应用检查。最终 `checks` 只接受所有前置 job 的
 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。
 Go、web、CLI 和 shell completion 各自的检查内容及门槛保持。
 模块内的 `bash scripts/check.sh` 是 Go 验证入口，不接受模式参数，要求显式设置
-`DAYNIGHT_TEST_DATABASE_URL`。干净 checkout 先从根目录 frozen 安装
-Node 24/pnpm 11.28.6 依赖；入口准备真实嵌入 Web 资源和固定 UniAuth 夹具，
-执行 Go build、vet、模块测试和完整生产覆盖率。缺少工具、依赖、数据库或真实资源
-直接失败，不构建、安装或运行 CLI，不生成 PAT budget 文件，不执行产品 E2E。
+`DAYNIGHT_TEST_DATABASE_URL`。本地先在仓库根独立执行 frozen 依赖安装与
+`pnpm web:build`，再进入 Go 验证或 stress。Go 入口只消费已生成的真实 embed
+资源，准备固定 UniAuth 夹具，执行 Go build、vet、模块测试和完整覆盖率；
+不安装前端依赖、不调用 pnpm、不编译 JavaScript，也不构建、安装或运行 CLI。
+Node 24 仅执行使用 builtin 模块的 Go 自有 coverage/fixture 脚本。缺少工具、
+数据库或真实资源直接失败，不生成 PAT budget 文件，不执行产品 E2E。
 
 固定版本 go-cov 对全部生产包执行覆盖率检查；`go list ./...` 的完整包清单供
 `-coverpkg` 使用，使组装后的 Go 测试能够度量 DAO 调用。没有纯测试 E2E 包的
@@ -554,14 +559,18 @@ Node 24/pnpm 11.28.6 依赖；入口准备真实嵌入 Web 资源和固定 UniAu
 总语句覆盖率严格大于 90%，保留 package/function/critical 门槛。
 
 `DAYNIGHT_TEST_RACE` 只接受 `true`/`false`，本地缺省和 main CI 开启，PR CI 关闭。
-入口向 go-cov 显式传值；关闭时在继承的 `GOFLAGS` 末尾保留 `-race=false`，
+本地入口向 go-cov 显式传值；关闭时在继承的 `GOFLAGS` 末尾保留 `-race=false`，
 防止上游环境重新开启 instrumentation。模块测试保留并发、事务、取消和失败断言，
-覆盖率不替代这些行为保证。生产数据库测试仍使用隔离 PostgreSQL。
+覆盖率不替代这些行为保证。CI 通过 `RACE_DETECTION` 传入事件选择；生产
+数据库测试仍使用隔离 PostgreSQL。
 
-CI 的 Go job 使用一个独立 PostgreSQL 服务和 20 分钟上限，最终 `checks` 汇总其结果。
-Go 与现有 Web browser job 复用以 server `go.sum` 为身份的编译及模块缓存；Go
-验证在测试前使结果缓存失效，避免数据库变化被缓存掩盖。真实 Web assets 是 Go
-可执行程序的编译输入，准备资源不代表执行 Web 模块测试。
+CI 的 `build-web-assets` job 独立安装前端构建依赖并执行 `pnpm web:build`，
+以 `daynight-web-assets` 保存同源码 revision/tree 的真实资源，不运行 Web 测试。
+Go job 依赖 producer，下载后核对来源并复制到 embed 目录，不设置 pnpm 或安装
+前端依赖；使用独立 PostgreSQL 服务和 20 分钟上限。最终 checks 汇总两个已选择
+job 的结果。Go 与现有 Web browser job 复用以 server `go.sum` 为身份的编译及
+模块缓存，Go 测试前使结果缓存失效，避免数据库变化被缓存掩盖。真实 Web assets
+是编译输入，消费它们不代表 Go job 构建前端或执行 Web 模块测试。
 
 当前命令、原始 profile 和 CI 产物解释由
 [服务验证说明](../../packages/daynight-server/README.md#go-module-validation-and-ci-evidence)

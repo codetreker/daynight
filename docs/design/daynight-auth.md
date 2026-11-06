@@ -658,8 +658,10 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ```
 
 验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
-生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)记录了实际领取结果后 TCP 断连的历史取舍，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
-重启、撤销、已准入上传和 socket 中断证明。两目标各有一份额外必需回执，当前
+生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)保留实际领取结果后 TCP 断连等历史取舍。当前组合旅程验证浏览器和安装 CLI
+同数据、原凭据重启、撤销和 socket 中断，两目标各有一份十项检查的额外回执。
+已准入上传与成员移除的竞争退出该旅程；请求准入、授权和提交一致性归 Go，
+失权呈现归 Web、拒绝处理归 CLI，职责划分不代表新模块断言已交付。当前
 26+26+5 共 57 项 Playwright inventory 与容量门槛保持；项目设置旅程单独拥有阈值读写与未知结果核对。
 
 统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合

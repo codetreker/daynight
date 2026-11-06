@@ -500,9 +500,15 @@ the recovered value and stack are not printed by the HTTP server.
 
 ## Validate
 
-Install the root workspace dependencies with `pnpm install --frozen-lockfile`
-before validation. Tests require a real PostgreSQL database and fail when it is
-unavailable or
+Prepare the real embedded Web resources before entering Go validation. From
+the repository root, run `pnpm install --frozen-lockfile` and `pnpm web:build`,
+following [Build and run](#build-and-run). Neither `scripts/check.sh` nor
+`scripts/stress.sh` installs frontend dependencies or builds JavaScript. Go
+compilation fails if its real generated embed inputs are missing. Node.js 24
+remains required for Go-owned coverage and authentication-fixture tooling; those
+scripts use Node builtins rather than frontend workspace dependencies.
+
+Tests require a real PostgreSQL database and fail when it is unavailable or
 `DAYNIGHT_TEST_DATABASE_URL` is missing. For a disposable local instance, use the
 same PostgreSQL **18.6-bookworm** image as CI:
 
@@ -522,11 +528,11 @@ bash scripts/check.sh
 docker rm --force --volumes daynight-server-tests
 ```
 
-The check runs the shared root `pnpm web:build` to supply the executable's
-embedded resources, prepares the pinned real-UniAuth integration fixture, and
-runs Go build, vet, module tests and coverage. It accepts no flags. The caller
-supplies an isolated `DAYNIGHT_TEST_DATABASE_URL`. No CLI build, installation,
-process or product E2E runs in this entrypoint. The Go-owned
+The check consumes the prepared embedded resources, prepares the pinned
+real-UniAuth integration fixture, and runs Go build, vet, module tests and
+coverage. It accepts no flags. The caller supplies an isolated
+`DAYNIGHT_TEST_DATABASE_URL`. No frontend or CLI build, package installation,
+CLI process or product E2E runs in this local entrypoint. The Go-owned
 [coverage runner](scripts/coverage-runner.mts) bounds coverage execution to twelve
 minutes and terminates its complete process group on cancellation or timeout,
 including descendants that outlive the direct command.
@@ -561,11 +567,12 @@ and `false` are valid; an absent value enables race detection for ordinary local
 validation. Invalid values fail before fixture preparation. The Go workflow job
 sets `false` for PR events and `true` for main pushes.
 
-The check passes explicit `--race=<value>` to the pinned `go-cov`; the checked-in
+The local check passes explicit `--race=<value>` to its pinned `go-cov`; the checked-in
 `.go-cov.toml` retains its enabled local default. Disabled coverage appends
 `-race=false` to inherited `GOFLAGS`, preserving other flags and overriding an
-ambient `-race`. Enabled coverage lets the tool's explicit child flag choose
-instrumentation. Build, vet, functional and concurrency cases and all coverage
+ambient `-race`. Enabled local coverage lets the explicit child flag choose
+instrumentation. CI supplies the event choice through `RACE_DETECTION` to its
+direct go-cov command. Build, vet, functional and concurrency cases and all coverage
 thresholds retain the same responsibilities in either mode. The
 [Go validation timing decision](../../.agents/notes/archived/testing/2026-11-04-go-validation-timing.md)
 records the event policy and its original cross-process context.
@@ -574,14 +581,26 @@ records the event policy and its original cross-process context.
 
 The check builds the executable, runs `go vet`, expires Go test results because
 database state is outside their cache key, and runs all Go module packages
-through `go-cov` pinned to commit `d6caf2759e330b48d69a543695e37002a48feb1d`.
+through its existing `go-cov` commit pin
+`d6caf2759e330b48d69a543695e37002a48feb1d`. That local supervised path writes
+`.tmp/coverage.out`. CI instead invokes go-cov directly:
+
+```bash
+go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.0 --coverprofile=coverage.out --skip-result-packages tests/ "$@"
+```
+
+The CI command reads the module's `.go-cov.toml` and writes `coverage.out`.
+`--skip-result-packages tests/` affects displayed package-result rows; it does
+not skip test execution or remove those statements from the raw profile. The CI
+command is not wrapped by the local Node coverage supervisor.
 The checked-in configuration requires at least 85% coverage per production
 package and 80% per function, with critical blocks enforced. No production
 package, file or function is excluded. The package list supplied to `-coverpkg`
 measures DAO statements reached through assembled Go tests without pulling
 imported `testdata` fixtures into the production denominator.
 
-The raw `.tmp/coverage.out` profile also passes a separate exact comparison:
+Both the local `.tmp/coverage.out` and CI `coverage.out` profiles pass the same
+separate exact comparison:
 overall statement coverage must be **strictly greater than 90%**. Exactly 90%
 fails regardless of display rounding. Existing tests verify malformed profiles
 and the exact threshold boundary. A coverage failure remains a failed gate.
@@ -589,13 +608,19 @@ and the exact threshold boundary. A coverage failure remains a failed gate.
 `scripts/env.sh` keeps tools, dependencies, caches, binaries and temporary
 outputs under this module's `.tmp/`. The Go validation job restores module and
 compiler caches using `go.sum`, prepares its own PostgreSQL service, and has a
-20-minute bound. The final `checks` job requires it. Available raw coverage
-diagnostics are uploaded after failure as well as success. The
+20-minute bound. A separate `build-web-assets` job installs the Web build
+dependencies, runs `pnpm web:build` and uploads `daynight-web-assets` with its
+source revision and Git tree. The Go job requires that producer, validates the
+downloaded identity and copies the real resources into its embed directory; it
+has no pnpm setup, dependency installation or JavaScript build. The producer
+does not execute Web tests. The final `checks` job requires both selected jobs.
+Available raw coverage diagnostics are uploaded after failure as well as success. The
 [Go validation boundary](../../.agents/notes/implemented/testing/2026-11-06-go-module-validation-boundary.md)
 owns the separation from installed-CLI and product E2E validation.
 
 Ordinary Go discovery excludes stress-tagged files. With an isolated test
-database configured, run `bash scripts/stress.sh` explicitly for the
+database configured and real embedded Web assets already prepared, run
+`bash scripts/stress.sh` explicitly for the
 10,000-task/100-person query sample, full-scale Session-v2 archives and repeated
 concurrent overwrite workload. It uses race detection and selects only
 `TestStress*` in the three owning packages. The script and raw tagged test
@@ -1727,8 +1752,10 @@ URLs, bodies, SQL and credentials are excluded from logs.
 Go validation covers the service's own business, HTTP, DAO, migration and
 resource-lifecycle behavior. It does not install or run the CLI, produce CLI
 budget credentials or execute cross-product process scenarios. Real PostgreSQL
-and UniAuth fixtures are module dependencies; building embedded Web assets is a
-service compilation prerequisite, not a Web test run.
+and UniAuth fixtures are module dependencies. Real embedded Web assets must be
+built independently before Go validation, or received from the source-validated
+CI producer; consuming those resources is a service compilation prerequisite,
+not a frontend build or Web test run.
 
 Direct tests of `main`, `run` and command-internal migration behavior remain in
 `cmd/daynight-server`. They own their temporary storage and lightweight helpers.
@@ -1746,7 +1773,7 @@ proofs: `TestQueriesSnapshotRetainsCompleteOldGraph` in
 own method, scope, status, response and request-log behavior. Coverage measures
 executed production statements and does not replace these assertions.
 
-CI uploads `daynight-server-coverage` containing the raw `.tmp/coverage.out`
+CI uploads `daynight-server-coverage` containing the raw module `coverage.out`
 profile and retains it for 30 days. Inspect the artifact
 from the exact workflow run and tested checkout; PR workflows normally test a
 merge revision. Recompute the strict total comparison from the raw profile,

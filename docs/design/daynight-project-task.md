@@ -760,7 +760,8 @@ symlink 偏好；独立 e2e 仍验证默认 PNPM shim，生产依赖与真实 np
 Go 服务的 `bash scripts/check.sh` 只执行 Go build、vet、模块测试和严格覆盖率，
 不再通过 CLI 所在目录的 Node 编排器构建或安装客户端。服务端认证授权、事务、
 版本裁决、边界及并发由 Go 模块测试负责；配置、请求构造、结果校验、输出、期限、
-未知结果与不重放由 CLI 模块测试负责。真实 Web 构建资源仍作为 Go embed 的编译输入。
+未知结果与不重放由 CLI 模块测试负责。真实 Web 资源由独立构建准备，Go 验证
+只消费 embed 输入，不调用前端编译或安装。
 当前命令和 profile 归属由[服务验证说明](../../packages/daynight-server/README.md#go-module-validation-and-ci-evidence)
 拥有；职责选择见[Go 验证边界](../../.agents/notes/implemented/testing/2026-11-06-go-module-validation-boundary.md)。
 

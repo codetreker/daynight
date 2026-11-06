@@ -16,9 +16,6 @@ cd -- "$DAYNIGHT_MODULE_ROOT"
 : "${DAYNIGHT_TEST_DATABASE_URL:?Set DAYNIGHT_TEST_DATABASE_URL to the required PostgreSQL test database}"
 rm -f .tmp/coverage.out
 
-export COREPACK_HOME="$DAYNIGHT_MODULE_ROOT/.tmp/corepack"
-pnpm --dir "$DAYNIGHT_MODULE_ROOT/../.." web:build
-
 # Coverage gates use the checked-in rules; the runner selects race instrumentation.
 unset COVERPROFILE MODULE_PREFIX PROJECT_NAME HTML_OUT THRESHOLD_FUNC \
   THRESHOLD_PACKAGE THRESHOLD_PRINT THRESHOLD_TOTAL UNCOVERED_LIMIT \

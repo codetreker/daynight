@@ -1826,8 +1826,10 @@ and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed val
 or publication fails the build; a failed swap attempts to restore previous assets
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored
-by Git, and clean server builds require this explicit build first. The Go
-`scripts/check.sh` invokes the same command before build, vet and go-cov; Go race
+by Git, and clean server builds require this explicit build first. Go validation
+and stress consume these generated assets without calling the frontend build.
+CI prepares a source-revision/tree-bound `daynight-web-assets` artifact in the
+separate `build-web-assets` job, then the Go job validates and consumes it. Go race
 instrumentation follows the [server validation policy](../daynight-server/README.md#race-instrumentation).
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
@@ -1978,7 +1980,7 @@ existing paths. The
 owns this isolation and resource trade-off.
 
 Shard 2 owns the complete 28-case navigation-contract suite, dev-ci lifecycle
-fixtures, both eleven-check combined-authentication journeys, and the real
+fixtures, both ten-check combined-authentication journeys, and the real
 attachment persistence/paired-backup-restoration check. Ownership derives from
 the shard identity. Shard 1 runs its functional selection and full owned-resource
 cleanup. Both entries retain normal dev-ci built/running image checks, private
@@ -2265,16 +2267,19 @@ or an iframe load cannot satisfy this check. The
 records the original data-sharing, rendering and independent-reading proof choices.
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
-requires a separate eleven-check receipt on each runtime target, alongside the
+requires a separate ten-check receipt on each runtime target, alongside the
 72 ordinary Playwright cases or 77 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
 identities, records their initial project sets, and crosses browser and CLI data
 through shared/private projects, original-credential service restart, logout/PAT
-independence, revocation, admitted upload, real socket interruption and normally
+independence, revocation, real socket interruption and normally
 minted PAT expiry. The bilingual token journey holds a real server response and
 checks retained pending input and one-time reveal; screenshots follow secret
 closure or masking. The runner supplies service-only restart callbacks and the
-explicit validated installed-package receipt. Actual staging bytes and metadata
-are observed independently of client write completion. The
+explicit validated installed-package receipt. Service admission, authorization
+changes during IO and publication consistency belong to Go module verification;
+Web access-withdrawal presentation and CLI refusal handling have their own module
+owners. The remaining combined journey does not claim replacement coverage for
+those removed race assertions. The
 [authentication acceptance decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md) records the rationale for these mechanisms, failure/cleanup rules and the separate actual-upstream
 human login requirement. Implemented checks and source-bound run results remain
 distinct; a focused pass or historical baseline does not establish full current
@@ -2444,7 +2449,7 @@ live under `native/functional/` and `container/`; stress runs additionally creat
 `native/capacity/` and its unchanged schema 1 `performance.json` receipt.
 Local ordinary/stress runs and CI shard 2 require
 `native/auth-combined/target.json` and `container/auth-combined/target.json`, both
-schema 1 with `kind: auth-combined`. They require all eleven canonical checks,
+schema 1 with `kind: auth-combined`. They require all ten canonical checks,
 source/browser/installed-package identity, old/new restart process identity and
 passed browser/resource cleanup. Shard 1 has no combined-authentication receipts.
 They retain safe observations and hashes, not credential/configuration bodies
@@ -2454,7 +2459,7 @@ Schema 3 functional `evidence.json` includes `shard: { current, total: 2 }` and
 `selection: string[]` for CI shards. Each native/container target and functional
 phase must match that selection. The final validator requires the two selections
 to be disjoint and cover the canonical inventory exactly once per target, with
-all 22 combined checks assigned to shard 2. Local unsharded receipts keep their
+all 20 combined checks assigned to shard 2. Local unsharded receipts keep their
 complete inventory without shard metadata. `CI` requires a clean checkout
 matching `GITHUB_SHA` and the pinned browser. Each database uses one worker and
 zero retries; skipped, flaky, duplicate/missing or incomplete scenarios fail.
