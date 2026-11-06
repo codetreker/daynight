@@ -8,7 +8,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { processIdentity } from './identity.mts';
-import { writeContainerPermission } from './permission.mts';
 import { functionalScenarios } from './inventory.mts';
 import { launchNativeServer, restartContainerServer } from './runner.mts';
 import type { CombinedCommand } from './auth-combined-target.mts';
@@ -60,9 +59,9 @@ const fixture = async (run: (value: Fixture) => Promise<void>): Promise<void> =>
   }
 };
 
-const start = (args: readonly string[], value: Fixture, initialization?: { timeoutMs: number }) => {
+const start = (args: readonly string[], value: Fixture) => {
   const child = spawn(process.execPath, args, { cwd: value.directory, env: value.env,
-    stdio: initialization === undefined ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe', 'ipc'] });
+    stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   let error: Error | undefined;
@@ -70,45 +69,12 @@ const start = (args: readonly string[], value: Fixture, initialization?: { timeo
   child.stdout!.on('data', (data: Buffer) => { stdout += data.toString(); });
   child.stderr!.on('data', (data: Buffer) => { stderr += data.toString(); });
   const timeout = (): void => { timedOut = true; child.kill('SIGKILL'); };
-  let timer = setTimeout(timeout, initialization?.timeoutMs ?? 5_000);
-  const runCallback = (): void => {
-    clearTimeout(timer);
-    timer = setTimeout(timeout, 5_000);
-    child.send('run');
-  };
+  const timer = setTimeout(timeout, 5_000);
   child.once('error', (failure) => { error = failure; });
   const done = new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; error: Error | undefined; timedOut: boolean }>((resolve) => {
     child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr, error, timedOut }); });
   });
-  return { child, done, runCallback };
-};
-
-const callbackInitialized = (running: ReturnType<typeof start>): Promise<void> => new Promise((resolve, reject) => {
-  const receive = (message: unknown): void => {
-    running.child.removeListener('message', receive);
-    if (message === 'initialized') resolve();
-    else reject(new Error('Container callback sent an unexpected initialization message.'));
-  };
-  running.child.once('message', receive);
-  void running.done.then((result) => {
-    running.child.removeListener('message', receive);
-    reject(new Error(`Container callback exited before initialization (exit=${result.code}, signal=${result.signal}, watchdog=${result.timedOut}).`));
-  });
-});
-
-const readyReceipt = async (path: string, running: ReturnType<typeof start>): Promise<Record<string, unknown>> => {
-  const deadline = performance.now() + 3_000;
-  for (;;) {
-    if (running.child.exitCode !== null || running.child.signalCode !== null) {
-      assert.fail(`Container callback exited before readiness: ${JSON.stringify(await running.done)}`);
-    }
-    try { return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>; }
-    catch (error) {
-      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
-    }
-    if (performance.now() >= deadline) throw new Error('Container callback did not persist readiness.');
-    await delay(10);
-  }
+  return { child, done };
 };
 
 test('importing the acceptance runner executes no commands or signal registration', { skip: process.platform === 'win32' }, async () => {
@@ -137,7 +103,7 @@ test('the thin CLI rejects unknown arguments before starting acceptance', { skip
     const result = await start([cli, '--unknown'], value).done;
     assert.equal(result.timedOut, false);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--apfs\] \[--stress\] \| --cleanup \[run-id\]/);
+    assert.match(result.stderr, /Usage: node scripts\/acceptance\.mts \[--native\] \[--apfs\] \[--stress\] \| --cleanup \[run-id\]/);
     assert.equal(await readFile(value.commands, 'utf8'), '');
   });
 });
@@ -171,10 +137,13 @@ test('programmatic stress acceptance rejects CI before preparing resources', { s
   });
 });
 
-test('shard identity and stress combinations fail before any preparation command', { skip: process.platform === 'win32' }, async () => {
+test('target selection, shard identity and stress combinations fail before any preparation command', { skip: process.platform === 'win32' }, async () => {
   await fixture(async (value) => {
     delete value.env.CI;
     for (const [options, message] of [
+      [{ target: 'both' }, 'one native or container target'],
+      [{ target: 'container', stress: true }, 'require the native target'],
+      [{ target: 'container', allowApfsImage: true }, 'require the native target'],
       [{ stress: true, shard: { current: 1, total: 2 } }, 'cannot be sharded'],
       [{ shard: { current: 0, total: 2 } }, 'Invalid functional shard'],
       [{ shard: { current: 1, total: 3 } }, 'Invalid functional shard'],
@@ -232,7 +201,7 @@ case "$*" in
   *) exit 91 ;;
 esac
 `);
-    for (const args of [[], ['--apfs']]) {
+    for (const args of [[], ['--native'], ['--apfs']]) {
       await writeFile(value.commands, '');
       const result = await start([cli, ...args], value).done;
       assert.equal(result.timedOut, false);
@@ -247,7 +216,7 @@ esac
 
 test('recovery rejects unsupported receipt schemas before issuing Docker commands', { skip: process.platform === 'win32' }, async () => {
   await fixture(async (value) => {
-    for (const schemaVersion of [1, 2, 99]) {
+    for (const schemaVersion of [1, 2, 3, 99]) {
       const id = runId();
       const directory = join(evidenceRoot, id);
       await mkdir(directory, { recursive: true });
@@ -272,7 +241,7 @@ test('recovery removes only the recorded native storage after confirming the nat
     const operatorStorage = join(value.directory, 'operator-storage');
     const owner = `daynight-web-${id}`;
     const evidence = {
-      schemaVersion: 3, runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
+      schemaVersion: 4, target: 'native', mode: 'functional', runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
       runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [],
       native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
         binary: join(directory, 'daynight-server'), storageRoot },
@@ -306,7 +275,7 @@ test('recovery refuses a storage path outside its run and preserves storage whil
       const storageRoot = join(directory, 'native-storage');
       const owner = `daynight-web-${id}`;
       const evidence = {
-        schemaVersion: 3, runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
+        schemaVersion: 4, target: 'native', mode: 'functional', runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
         runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [],
         native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
           binary: join(directory, 'daynight-server'), storageRoot: invalid === 'path' ? value.directory : storageRoot,
@@ -324,108 +293,6 @@ test('recovery refuses a storage path outside its run and preserves storage whil
         assert.equal(await readFile(value.commands, 'utf8'), '');
       } finally { await rm(directory, { recursive: true, force: true }); }
     }
-  });
-});
-
-const earlyContainerCallback = async (value: Fixture, delays = { initializationMs: 0, readinessMs: 0 }, shard?: 1 | 2) => {
-  const id = runId();
-  const devCiRunId = '20261021123457-1234-56789';
-  const directory = join(evidenceRoot, id);
-  const containerDirectory = join(directory, 'container');
-  await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha },
-    ...(shard === undefined ? {} : { mode: 'functional', shard: { current: shard, total: 2 },
-      selection: shard === 1 ? functionalScenarios.slice(0, Math.ceil(functionalScenarios.length / 2)) : functionalScenarios.slice(Math.ceil(functionalScenarios.length / 2)) }) }));
-  await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'%s\\n\' "$0 $*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nif [ "$1" != ps ]; then exit 91; fi\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
-  value.env = { ...value.env, DAYNIGHT_ACCEPTANCE_DIRECTORY: containerDirectory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
-    DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
-  const spawnedAt = performance.now();
-  const running = start(['--input-type=module', '--eval', `
-    import assert from 'node:assert/strict';
-    import { getEventListeners } from 'node:events';
-    import { setTimeout as delay } from 'node:timers/promises';
-    import { runContainerCallback } from ${JSON.stringify(runner)};
-    const cancellation = new AbortController();
-    const reason = new Error('callback-test-abort');
-    let begin;
-    const started = new Promise((resolve) => { begin = resolve; });
-    const receive = (message) => {
-      if (message === 'run') begin();
-      else if (message === 'status') process.send('waiting-for-permission');
-      else if (message === 'abort') cancellation.abort(reason);
-    };
-    process.on('message', receive);
-    await delay(${delays.initializationMs});
-    process.send('initialized');
-    try {
-      await started;
-      await delay(${delays.readinessMs});
-      await runContainerCallback(cancellation);
-      throw new Error('Container callback completed without permission.');
-    } catch (error) {
-      assert.equal(cancellation.signal.aborted, true);
-      assert.ok(error === reason || error.cause === reason);
-      assert.equal(getEventListeners(cancellation.signal, 'abort').length, 0);
-      assert.equal(process.getActiveResourcesInfo().filter((type) => type === 'Timeout').length, 0);
-      console.log('callback-aborted-cleanly');
-    } finally {
-      process.removeListener('message', receive);
-      process.disconnect();
-    }
-  `], value, { timeoutMs: 30_000 });
-  let stage = 'module initialization';
-  try {
-    await callbackInitialized(running);
-    const initializedAt = performance.now();
-    stage = 'readiness publication';
-    running.runCallback();
-    const ready = await readyReceipt(join(containerDirectory, 'ready.json'), running);
-    const readyAt = performance.now();
-    assert.equal(ready.acceptanceRunId, id);
-    assert.equal(ready.devCiRunId, devCiRunId);
-    assert.equal(ready.sourceGitSha, sourceGitSha);
-    assert.equal((ready.callback as { pid: number }).pid, running.child.pid);
-    assert.deepEqual(JSON.parse(await readFile(join(containerDirectory, 'dev-ci-run.json'), 'utf8')), { runId: devCiRunId });
-    assert.deepEqual(JSON.parse(await readFile(join(containerDirectory, 'callback.json'), 'utf8')), ready.callback);
-    stage = 'permission gating';
-    const status = new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => { running.child.removeListener('message', receive); reject(new Error('Container callback stopped responding while gated.')); }, 1_000);
-      const receive = (message: unknown): void => { clearTimeout(timer); running.child.removeListener('message', receive); resolve(message); };
-      running.child.once('message', receive);
-    });
-    running.child.send('status');
-    assert.equal(await status, 'waiting-for-permission');
-    assert.deepEqual((await readdir(containerDirectory)).sort(), ['callback.json', 'dev-ci-run.json', 'ready.json']);
-    const commands = (await readFile(value.commands, 'utf8')).trim().split('\n');
-    assert.equal(commands.length, 1);
-    assert.match(commands[0]!, /docker ps --quiet --no-trunc --filter label=com\.docker\.compose\.project=daynight-dev-ci-/);
-    stage = 'cancellation cleanup';
-    running.child.send('abort');
-    const result = await running.done;
-    assert.equal(result.error, undefined);
-    assert.equal(result.timedOut, false);
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, 'callback-aborted-cleanly\n');
-    assert.equal(result.stderr, '');
-    assert.deepEqual((await readdir(containerDirectory)).sort(), ['callback.json', 'dev-ci-run.json', 'ready.json']);
-    assert.equal(await processIdentity(running.child.pid!), null);
-    return { initializationMs: initializedAt - spawnedAt, readinessMs: readyAt - initializedAt, elapsedMs: readyAt - spawnedAt };
-  } catch (cause) {
-    throw new Error(`Container callback test failed during ${stage}.`, { cause });
-  } finally {
-    if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGKILL');
-    await running.done;
-    await rm(directory, { recursive: true, force: true });
-  }
-};
-
-test('an early container callback records readiness and waits for permission before inspecting Chromium', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
-  await fixture(async (value) => { await earlyContainerCallback(value); });
-});
-
-test('both sharded callbacks derive selection from their parent and retain the readiness/permission boundary', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
-  for (const shard of [1, 2] as const) await fixture(async (value) => {
-    await earlyContainerCallback(value, { initializationMs: 0, readinessMs: 0 }, shard);
   });
 });
 
@@ -447,51 +314,15 @@ test('container callbacks reject malformed shard metadata before Docker or brows
         { mode: 'stress', navigationChecks: true },
         { mode: 'functional', navigationChecks: true, shard: { current: 1, total: 2 }, selection: functionalScenarios.slice(0, Math.ceil(functionalScenarios.length / 2)) },
       ]) {
-        await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id,
+        await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 4, target: 'container', runId: id,
           source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha }, ...metadata }));
         const result = await start([cli, '--container'], value).done;
         assert.equal(result.timedOut, false);
         assert.equal(result.code, 1);
-        assert.match(result.stderr, /Invalid functional shard|Functional shard selection|cannot declare a shard selection|requires functional acceptance|Navigation checks require functional acceptance/);
+        assert.match(result.stderr, /Invalid functional shard|Functional shard selection|cannot declare a shard selection|requires functional acceptance|Navigation checks require functional acceptance|does not belong/);
         assert.equal(await readFile(value.commands, 'utf8'), '');
       }
     } finally { await rm(directory, { recursive: true, force: true }); }
-  });
-});
-
-test('callback readiness retains its full budget after delayed initialization', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
-  await fixture(async (value) => {
-    const elapsed = await earlyContainerCallback(value, { initializationMs: 4_000, readinessMs: 2_000 });
-    assert.ok(elapsed.initializationMs >= 4_000, `Initialization gate released after ${elapsed.initializationMs}ms.`);
-    assert.ok(elapsed.readinessMs >= 2_000, `Callback readiness gate released after ${elapsed.readinessMs}ms.`);
-    assert.ok(elapsed.elapsedMs > 5_000, `Callback readiness was observed after only ${elapsed.elapsedMs}ms.`);
-  });
-});
-
-test('the callback execution watchdog replaces the initialization budget', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
-  await fixture(async (value) => {
-    const running = start(['--input-type=module', '--eval', `
-      process.on('message', (message) => {
-        if (message === 'run') setTimeout(() => process.exit(0), 15_000);
-      });
-      process.send('initialized');
-    `], value, { timeoutMs: 30_000 });
-    try {
-      await callbackInitialized(running);
-      const startedAt = performance.now();
-      running.runCallback();
-      const result = await running.done;
-      assert.equal(result.error, undefined);
-      assert.equal(result.timedOut, true);
-      assert.equal(result.code, null);
-      assert.equal(result.signal, 'SIGKILL');
-      assert.ok(performance.now() - startedAt >= 4_500, 'Callback watchdog expired before its execution budget.');
-      assert.equal(await readFile(value.commands, 'utf8'), '');
-      assert.equal(await processIdentity(running.child.pid!), null);
-    } finally {
-      if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGKILL');
-      await running.done;
-    }
   });
 });
 
@@ -527,7 +358,7 @@ const installationRecoveryFixture = async (value: Fixture, completed: boolean) =
     installedCli.receiptPath = receiptPath;
     await writeFile(receiptPath, JSON.stringify(receipt));
   }
-  const evidence = { schemaVersion: 3, runId: id, source, installedCli,
+  const evidence = { schemaVersion: 4, target: 'native', mode: 'functional', runId: id, source, installedCli,
     runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [],
     native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`, binary: join(directory, 'daynight-server'), storageRoot } };
   await writeFile(join(directory, 'evidence.json'), JSON.stringify(evidence));
@@ -539,7 +370,7 @@ test('CI navigation intent is strict and scoped before any acceptance preparatio
   await fixture(async value => {
     delete value.env.CI;
     for (const options of [{ navigationChecks: false }, { navigationChecks: 'true' }, { navigationChecks: undefined },
-      { navigationChecks: true, stress: true }, { navigationChecks: true, shard: { current: 1, total: 2 } }]) {
+      { navigationChecks: true, stress: true }, { navigationChecks: true, target: 'native' }, { navigationChecks: true, shard: { current: 1, total: 2 } }]) {
       const serialized = options.navigationChecks === undefined ? '{navigationChecks:undefined}' : JSON.stringify(options);
       const result = await start(['--input-type=module', '--eval', `
         import assert from 'node:assert/strict';
@@ -551,65 +382,74 @@ test('CI navigation intent is strict and scoped before any acceptance preparatio
   });
 });
 
-test('container navigation starts after source-bound permission and installed CLI validation', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
+test('container verification starts only with its prepared source-bound CLI and no permission handshake', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
   await fixture(async value => {
     const current = await installationRecoveryFixture(value, true);
     const devCiRunId = '20261021123457-1234-56789', directory = join(current.directory, 'container');
-    const evidence = { ...current.evidence, mode: 'functional', navigationChecks: true };
-    await writeFile(join(current.directory, 'evidence.json'), JSON.stringify(evidence));
+    const { native: _native, ...shared } = current.evidence;
+    await writeFile(join(current.directory, 'evidence.json'), JSON.stringify({ ...shared, target: 'container', navigationChecks: true }));
     await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'docker %s\\n\' "$*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
     await writeFile(join(value.bin, 'pnpm'), '#!/bin/sh\nprintf \'pnpm %s\\n\' "$*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nexit 91\n');
     const browserExecutable = join(value.bin, 'fixture-browser');
     await writeFile(browserExecutable, '#!/bin/sh\nexit 91\n', { mode: 0o755 });
     value.env = { ...value.env, CI: undefined, DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
       DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345', DAYNIGHT_BROWSER_EXECUTABLE: browserExecutable };
-    const running = start([cli, '--container'], value);
     try {
-      const ready = await readyReceipt(join(directory, 'ready.json'), running);
-      assert.equal(ready.acceptanceRunId, current.id);
-      assert.equal((await readFile(value.commands, 'utf8')).includes('pnpm'), false);
-      await writeContainerPermission(directory, { acceptanceRunId: current.id, devCiRunId, sourceGitSha });
-      const result = await running.done;
+      const result = await start([cli, '--container'], value).done;
       assert.equal(result.timedOut, false); assert.equal(result.code, 1);
       const commands = (await readFile(value.commands, 'utf8')).trim().split('\n');
       assert.ok(commands.some(command => command.includes('tests/navigation/playwright.config.ts')));
       assert.equal(commands.some(command => command.includes('tests/navigation/team-playwright.config.ts')), false);
       assert.equal(commands.some(command => command.includes('tests/navigation/bots-viewport-playwright.config.ts')), false);
       assert.match(result.stderr, /Acceptance command failed/);
+      assert.equal((await readdir(directory)).includes('ready.json'), false);
+      assert.equal((await readdir(directory)).includes('permission.json'), false);
     } finally {
-      if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGKILL');
-      await running.done; await rm(current.directory, { recursive: true, force: true });
+      await rm(current.directory, { recursive: true, force: true });
       await rm(join(temporaryRoot, 'acceptance-private', current.id), { recursive: true, force: true });
     }
   });
 });
 
-test('container callback rechecks immutable navigation intent after permission before verification commands', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async () => {
+test('container callbacks reject absent or foreign installed CLI before any Docker or browser command', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
   await fixture(async value => {
-    const current = await installationRecoveryFixture(value, true), devCiRunId = '20261021123457-1234-56789';
-    const directory = join(current.directory, 'container');
-    await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'docker %s\\n\' "$*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
-    value.env = { ...value.env, CI: undefined, DAYNIGHT_ACCEPTANCE_DIRECTORY: directory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
-      DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
+    const current = await installationRecoveryFixture(value, true);
+    const { native: _native, ...shared } = current.evidence;
+    value.env = { ...value.env, CI: undefined, DAYNIGHT_ACCEPTANCE_DIRECTORY: join(current.directory, 'container'),
+      DAYNIGHT_DEV_CI_RUN_ID: '20261021123457-1234-56789', DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
     try {
-      for (const initial of [undefined, true] as const) {
-        await rm(directory, { recursive: true, force: true }); await writeFile(value.commands, '');
-        const evidence = { ...current.evidence, mode: 'functional', ...(initial === undefined ? {} : { navigationChecks: true }) };
-        await writeFile(join(current.directory, 'evidence.json'), JSON.stringify(evidence));
-        const running = start([cli, '--container'], value);
-        try {
-          await readyReceipt(join(directory, 'ready.json'), running);
-          const changed = { ...current.evidence, mode: 'functional', ...(initial === true ? {} : { navigationChecks: true }) };
-          await writeFile(join(current.directory, 'evidence.json'), JSON.stringify(changed));
-          await writeContainerPermission(directory, { acceptanceRunId: current.id, devCiRunId, sourceGitSha });
-          const result = await running.done;
-          assert.equal(result.code, 1); assert.match(result.stderr, /navigation intent changed/);
-          assert.equal((await readFile(value.commands, 'utf8')).includes('pnpm'), false);
-        } finally {
-          if (running.child.exitCode === null && running.child.signalCode === null) running.child.kill('SIGKILL');
-          await running.done;
-        }
+      for (const installedCli of [undefined, { ...shared.installedCli, root: value.directory }]) {
+        await writeFile(join(current.directory, 'evidence.json'), JSON.stringify({ ...shared, target: 'container', installedCli }));
+        const result = await start([cli, '--container'], value).done;
+        assert.equal(result.timedOut, false); assert.equal(result.code, 1);
+        assert.match(result.stderr, /not prepared|differs from/);
+        assert.equal(await readFile(value.commands, 'utf8'), '');
       }
+    } finally { await rm(current.directory, { recursive: true, force: true }); }
+  });
+});
+
+test('container recovery owns only its CLI preparation and rejects native resource claims', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async value => {
+    const current = await installationRecoveryFixture(value, false);
+    const { native, ...shared } = current.evidence;
+    try {
+      for (const target of [undefined, 'unknown', 'container']) {
+        await writeFile(join(current.directory, 'evidence.json'), JSON.stringify({ ...shared, target, ...(target === 'container' ? { native } : {}) }));
+        const rejected = await start([cli, '--cleanup', current.id], value).done;
+        assert.equal(rejected.code, 1); assert.match(rejected.stderr, /does not identify this run/);
+        assert.equal(await readFile(value.commands, 'utf8'), '');
+        assert.equal(await readFile(join(current.root, 'partial-install'), 'utf8'), 'owned preparation');
+      }
+      await writeFile(join(current.directory, 'evidence.json'), JSON.stringify({ ...shared, target: 'container' }));
+      const recovered = await start([cli, '--cleanup', current.id], value).done;
+      assert.equal(recovered.timedOut, false); assert.equal(recovered.code, 0, recovered.stderr);
+      await assert.rejects(readFile(join(current.root, 'partial-install')), { code: 'ENOENT' });
+      assert.equal(await readFile(join(native.storageRoot, 'owned-file'), 'utf8'), 'owned native storage');
+      assert.equal(await readFile(value.commands, 'utf8'), '');
+      const receipt = JSON.parse(await readFile(join(current.directory, 'recovery.json'), 'utf8'));
+      assert.equal(receipt.target, 'container'); assert.equal(receipt.installedCli, 'passed'); assert.equal(receipt.result, 'passed');
+      assert.equal(receipt.nativeProcess, undefined); assert.equal(receipt.nativeStorage, undefined); assert.equal(receipt.nativeDocker, undefined);
     } finally { await rm(current.directory, { recursive: true, force: true }); }
   });
 });
@@ -812,7 +652,7 @@ test('recovery cleans only recorded native auth directories and refuses an unide
       await writeFile(join(authDirectory, 'apps.db'), 'owned private fixture database');
       const auth = { directory: authDirectory, binary: fileURLToPath(new URL('../../../daynight-server/.tmp/uniauth-fixture', import.meta.url)),
         binarySha256: 'a'.repeat(64), cleanup: 'pending', ...(kind === 'live' ? { processPid: process.pid } : {}) };
-      await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: id,
+      await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 4, target: 'native', mode: 'functional', runId: id,
         source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
         runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [],
         native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
@@ -1056,7 +896,7 @@ test('cancelling actual restart readiness retains the replacement journal withou
 
 test('combined recovery refuses an active recorded command group before any resource cleanup and succeeds after it stops', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 10_000 }, async () => {
   await fixture(async (value) => {
-    for (const targetDirectory of ['native/auth-combined', 'container/auth-combined']) {
+    for (const targetDirectory of ['native/auth-combined']) {
       const current = await installationRecoveryFixture(value, false);
       const owned = spawn(process.execPath, ['--eval', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
       const spawned = new Promise<void>((resolve, reject) => { owned.once('spawn', resolve); owned.once('error', reject); });

@@ -84,11 +84,10 @@ const shardScenarios = (value: unknown): Scenario[] => array(value).map((raw) =>
   return { name: scenario.name, title: scenario.title, durationMs: scenario.durationMs, screenshots: screenshots as string[] };
 });
 
-type ShardTarget = { target: 'native' | 'container'; baseUrl: string; scenarios: Scenario[] };
+type ShardTarget = { target: 'container'; baseUrl: string; scenarios: Scenario[] };
 const shardTargets = (value: unknown, required: readonly string[]): ShardTarget[] => {
   const targets = array(value).map(object);
-  requireShardEvidence(targets.length === 2 && new Set(targets.map(({ target }) => target)).size === 2
-    && targets.every(({ target }) => target === 'native' || target === 'container'), 'native and container targets are required exactly once.');
+  requireShardEvidence(targets.length === 1 && targets[0]!.target === 'container', 'one production container target is required.');
   const verified = targets.map((target): ShardTarget => {
     requireShardEvidence(target.result === 'passed' && typeof target.baseUrl === 'string'
       && /^http:\/\/127\.0\.0\.1:[1-9]\d*$/.test(target.baseUrl), 'target identity or result differs.');
@@ -108,9 +107,8 @@ const shardTargets = (value: unknown, required: readonly string[]): ShardTarget[
 
 const shardAuthentication = (value: unknown, current: number, targets: readonly ShardTarget[], githubSha: string): void => {
   const receipts = array(value).map(object);
-  requireShardEvidence(receipts.length === (current === 2 ? 2 : 0), 'combined authentication belongs only to shard 2.');
+  requireShardEvidence(receipts.length === (current === 2 ? 1 : 0), 'combined authentication belongs only to shard 2.');
   if (current === 1) return;
-  requireShardEvidence(new Set(receipts.map(({ target }) => target)).size === 2, 'combined authentication target is duplicated.');
   for (const receipt of receipts) {
     const target = targets.find((candidate) => candidate.target === receipt.target);
     requireShardEvidence(target !== undefined && receipt.schemaVersion === 1 && receipt.kind === 'auth-combined'
@@ -127,29 +125,32 @@ export const validateShardEvidence = (receipts: readonly unknown[], githubSha: s
   requireShardEvidence(receipts.length === 2, 'exactly two shard receipts are required.');
   const shards = new Set<number>();
   const runs = new Set<string>();
-  const targetScenarios: Record<ShardTarget['target'], Scenario[][]> = { native: [], container: [] };
+  const targetScenarios: Scenario[][] = [];
   for (const raw of receipts) {
     const receipt = object(raw);
     const shard = object(receipt.shard);
     requireShardEvidence(shard.total === 2 && (shard.current === 1 || shard.current === 2), 'expected shard 1/2 or 2/2.');
     requireShardEvidence(!shards.has(shard.current), 'shard identity is duplicated.');
     shards.add(shard.current);
-    requireShardEvidence(receipt.schemaVersion === 3 && receipt.mode === 'functional' && receipt.result === 'passed'
+    requireShardEvidence(receipt.schemaVersion === 4 && receipt.target === 'container' && receipt.native === undefined && receipt.mode === 'functional' && receipt.result === 'passed'
       && receipt.cleanup === 'passed', 'functional run or cleanup did not pass.');
     requireShardEvidence(typeof receipt.runId === 'string' && receipt.runId.length > 0 && !runs.has(receipt.runId), 'run identity is missing or duplicated.');
     runs.add(receipt.runId);
     const source = object(receipt.source);
     requireShardEvidence(source.gitSha === githubSha && source.githubSha === githubSha && source.dirty === false
       && source.gitTreeSha === gitTreeSha, 'source does not match the clean current checkout.');
-    requireShardEvidence(object(receipt.native).cleanup === 'passed' && object(receipt.installedCli).cleanup === 'passed', 'native or installed CLI cleanup did not pass.');
+    const deployment = object(receipt.container);
+    requireShardEvidence(deployment.result === 'passed' && deployment.cleanupResult === 'passed'
+      && typeof deployment.imageId === 'string' && /^sha256:[a-f0-9]{64}$/.test(deployment.imageId)
+      && object(receipt.installedCli).cleanup === 'passed', 'production container or installed CLI cleanup did not pass.');
     const selection = array(receipt.selection);
     requireShardEvidence(selection.length > 0 && new Set(selection).size === selection.length
       && selection.every((name) => typeof name === 'string' && (functionalScenarios as readonly string[]).includes(name)), 'selected inventory is invalid.');
     const targets = shardTargets(receipt.targets, selection as string[]);
-    for (const target of targets) targetScenarios[target.target].push(target.scenarios);
+    for (const target of targets) targetScenarios.push(target.scenarios);
     shardAuthentication(receipt.authCombined, shard.current, targets, githubSha);
   }
-  for (const phases of Object.values(targetScenarios)) aggregateScenarios(phases, functionalScenarios);
+  aggregateScenarios(targetScenarios, functionalScenarios);
 };
 
 const main = async (): Promise<void> => {

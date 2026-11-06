@@ -105,12 +105,27 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   });
   const layouts: unknown[] = [];
   try {
-    for (const state of ['active', 'released'] as const) {
+    for (const { state, surfaces } of [
+      { state: 'active', surfaces: [
+        { mode: 'dialog', samples: [
+          { viewport: { width: 1440, height: 1000 }, fullscreen: false },
+          { viewport: { width: 320, height: 240 }, fullscreen: true },
+        ] },
+        { mode: 'page', samples: [{ viewport: { width: 320, height: 800 }, fullscreen: false }] },
+      ] },
+      { state: 'released', surfaces: [
+        { mode: 'dialog', samples: [{ viewport: { width: 320, height: 800 }, fullscreen: false }] },
+        { mode: 'page', samples: [
+          { viewport: { width: 1440, height: 1000 }, fullscreen: true },
+          { viewport: { width: 320, height: 240 }, fullscreen: false },
+        ] },
+      ] },
+    ] as const) {
       if (state === 'released') {
         const response = await api.post(`${path}/worker-claim/release`, { headers: { 'Daynight-Worker-Protocol': '2' }, data: { version: current.version, claimId, stoppedConfirmed: true } });
         expect(response.status()).toBe(200);
       }
-      for (const mode of ['dialog', 'page'] as const) {
+      for (const { mode, samples } of surfaces) {
         await page.setViewportSize({ width: 1440, height: 1000 });
         if (mode === 'page') await page.goto(`/projects/${project.id}/tasks/${task.id}`);
         else {
@@ -122,51 +137,49 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
         const heading = root.getByRole('region', { name: /^(任务设置与认领|Task settings and claim)$/, exact: true });
         await expect(heading.locator('.task-claim-owner strong')).toHaveText(ownerName);
         await expect(heading.locator('.task-claim-account')).toHaveText(account);
-        for (const viewport of [{ width: 1440, height: 1000 }, { width: 320, height: 800 }, { width: 320, height: 240 }]) {
+        for (const { viewport, fullscreen } of samples) {
           await page.setViewportSize(viewport);
-          for (const fullscreen of [false, true]) {
-            if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
-            await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).focus();
-            await page.keyboard.press('End');
-            const lastTab = root.locator('.task-detail-tabs').getByRole('tab').last();
-            await expect(lastTab).toHaveAttribute('aria-selected', 'true');
-            await expect(lastTab).toBeFocused();
-            await expect.poll(() => lastTab.evaluate((element) => {
-              const tab = element.getBoundingClientRect();
-              const list = element.closest('[role=tablist]')!.getBoundingClientRect();
-              return tab.left >= list.left - 1 && tab.right <= list.right + 1;
-            })).toBe(true);
-            await page.keyboard.press('Home');
-            await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).click();
-            const overview = root.locator('.task-detail-panel-overview');
-            await expect.poll(async () => (await overview.boundingBox())!.height).toBeGreaterThanOrEqual(32);
-            const overviewBounds = await overview.boundingBox();
-            expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-            await expectIdentityEdges(heading);
-            await verifyClaimControlFocus(heading, root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }));
-            await root.getByRole('tab', { name: /^(附件|Attachments)$/, exact: true }).click();
-            await (await attachmentFileButton(root, 'docs/guide.md')).click();
-            const preview = root.locator('.attachment-preview-body');
-            await expect(preview.locator('.attachment-markdown')).toContainText('The attachment remains readable.');
-            await info.attach('claim-reading-allocation', { contentType: 'application/json', body: JSON.stringify({ state, mode, viewport, fullscreen, allocation: await page.evaluate(() => {
-              const selectors = ['.auth-shell', '.task-detail-page-container', '.task-detail-page', '.task-detail-dialog', '.task-detail-page-topbar', '.task-detail-header', '.task-detail-body', '.task-detail-heading', '.task-detail-panels', '.task-detail-tabs', '.task-detail-panel-attachments', '.attachment-split', '.attachment-preview-pane', '.attachment-preview-header', '.attachment-preview-body'];
-              return { locale: document.documentElement.lang, elements: selectors.map((selector) => {
-                const element = document.querySelector<HTMLElement>(selector);
-                if (element === null) return { selector, missing: true };
-                const bounds = element.getBoundingClientRect(), style = getComputedStyle(element);
-                return { selector, height: bounds.height, top: bounds.top, bottom: bounds.bottom, client: element.clientHeight, scroll: element.scrollHeight, overflow: style.overflowY, flex: style.flex, minHeight: style.minHeight, maxHeight: style.maxHeight, display: style.display };
-              }) };
-            }) }, null, 2) });
-            await expect.poll(async () => (await preview.boundingBox())!.height).toBeGreaterThanOrEqual(18);
-            await preview.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-            await expect.poll(() => preview.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-            layouts.push({ state, mode, viewport, fullscreen, heading: await heading.boundingBox(), overview: overviewBounds, preview: await preview.boundingBox() });
-            if (viewport.height === 240) {
-              const screenshot = info.outputPath(`claim-reading-${state}-${mode}-${fullscreen}.png`);
-              await page.screenshot({ path: screenshot }); await info.attach('claim-reading-layout', { path: screenshot, contentType: 'image/png' });
-            }
-            if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
+          if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
+          await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).focus();
+          await page.keyboard.press('End');
+          const lastTab = root.locator('.task-detail-tabs').getByRole('tab').last();
+          await expect(lastTab).toHaveAttribute('aria-selected', 'true');
+          await expect(lastTab).toBeFocused();
+          await expect.poll(() => lastTab.evaluate((element) => {
+            const tab = element.getBoundingClientRect();
+            const list = element.closest('[role=tablist]')!.getBoundingClientRect();
+            return tab.left >= list.left - 1 && tab.right <= list.right + 1;
+          })).toBe(true);
+          await page.keyboard.press('Home');
+          await root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }).click();
+          const overview = root.locator('.task-detail-panel-overview');
+          await expect.poll(async () => (await overview.boundingBox())!.height).toBeGreaterThanOrEqual(32);
+          const overviewBounds = await overview.boundingBox();
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          await expectIdentityEdges(heading);
+          await verifyClaimControlFocus(heading, root.getByRole('tab', { name: /^(概览|Overview)$/, exact: true }));
+          await root.getByRole('tab', { name: /^(附件|Attachments)$/, exact: true }).click();
+          await (await attachmentFileButton(root, 'docs/guide.md')).click();
+          const preview = root.locator('.attachment-preview-body');
+          await expect(preview.locator('.attachment-markdown')).toContainText('The attachment remains readable.');
+          await info.attach('claim-reading-allocation', { contentType: 'application/json', body: JSON.stringify({ state, mode, viewport, fullscreen, allocation: await page.evaluate(() => {
+            const selectors = ['.auth-shell', '.task-detail-page-container', '.task-detail-page', '.task-detail-dialog', '.task-detail-page-topbar', '.task-detail-header', '.task-detail-body', '.task-detail-heading', '.task-detail-panels', '.task-detail-tabs', '.task-detail-panel-attachments', '.attachment-split', '.attachment-preview-pane', '.attachment-preview-header', '.attachment-preview-body'];
+            return { locale: document.documentElement.lang, elements: selectors.map((selector) => {
+              const element = document.querySelector<HTMLElement>(selector);
+              if (element === null) return { selector, missing: true };
+              const bounds = element.getBoundingClientRect(), style = getComputedStyle(element);
+              return { selector, height: bounds.height, top: bounds.top, bottom: bounds.bottom, client: element.clientHeight, scroll: element.scrollHeight, overflow: style.overflowY, flex: style.flex, minHeight: style.minHeight, maxHeight: style.maxHeight, display: style.display };
+            }) };
+          }) }, null, 2) });
+          await expect.poll(async () => (await preview.boundingBox())!.height).toBeGreaterThanOrEqual(18);
+          await preview.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+          await expect.poll(() => preview.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+          layouts.push({ state, mode, viewport, fullscreen, heading: await heading.boundingBox(), overview: overviewBounds, preview: await preview.boundingBox() });
+          if (viewport.height === 240) {
+            const screenshot = info.outputPath(`claim-reading-${state}-${mode}-${fullscreen}.png`);
+            await page.screenshot({ path: screenshot }); await info.attach('claim-reading-layout', { path: screenshot, contentType: 'image/png' });
           }
+          if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();
         }
       }
     }

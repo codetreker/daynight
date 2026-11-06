@@ -57,7 +57,7 @@ test('browser mode installs its browser with the original bound before ordinary 
   assert.deepEqual(observed.calls[0]!.args, ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium']);
   assert.equal(observed.calls[0]!.options.timeoutMs, 600_000);
   assert.equal(observed.calls[0]!.options.signal, controller.signal);
-  assert.deepEqual(observed.acceptanceOptions, [{ navigationChecks: true }]);
+  assert.deepEqual(observed.acceptanceOptions, [{ target: 'container', navigationChecks: true }]);
   assert.deepEqual(observed.accepted, [controller]);
 });
 
@@ -71,7 +71,7 @@ test('CI shard arguments are bounded and only shard 2 owns navigation checks', a
     const controller = new AbortController();
     await runCi('browser', controller, observed, shard);
     assert.equal(observed.calls.length, 1);
-    assert.deepEqual(observed.acceptanceOptions, [current === 1 ? { shard } : { shard, navigationChecks: true }]);
+    assert.deepEqual(observed.acceptanceOptions, [current === 1 ? { target: 'container', shard } : { target: 'container', shard, navigationChecks: true }]);
     assert.deepEqual(observed.accepted, [controller]);
   }
   for (const args of [[], ['quality', '--shard=1/2'], ['browser', '--shard=3/2'], ['browser', '--shard=1/3'],

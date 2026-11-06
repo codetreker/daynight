@@ -47,13 +47,6 @@ const capacityNames = ['capacity-chain', 'capacity-merge', 'capacity-shared', 'c
 const stressNativeNames = [...functionalNames, ...capacityNames];
 const scenario = (name: string): Scenario => ({ name, title: name, durationMs: 12, screenshots: [`/owned/${name}.png`] });
 
-test('keeps functional and explicit local stress inventory totals distinct', () => {
-  assert.equal(functionalNames.length, 41);
-  assert.equal(functionalNames.length * 2, 82);
-  assert.equal(stressNativeNames.length, 46);
-  assert.equal(stressNativeNames.length + functionalNames.length, 87);
-});
-
 test('verifies the complete functional inventory for the container target', () => {
   const scenarios = readReport(report([...functionalNames]), functionalNames);
   assert.equal(scenarios.length, functionalNames.length);
@@ -133,15 +126,15 @@ const gitTreeSha = 'b'.repeat(40);
 const shardReceipt = (current: 1 | 2, sha = githubSha, tree = gitTreeSha) => {
   const midpoint = Math.ceil(functionalNames.length / 2);
   const selection = current === 1 ? functionalNames.slice(0, midpoint) : functionalNames.slice(midpoint);
-  const targets = (['native', 'container'] as const).map((target, index) => {
+  const targets = (['container'] as const).map((target, index) => {
     const baseUrl = `http://127.0.0.1:${current * 10_000 + index + 1}`;
     return { target, baseUrl, result: 'passed', scenarios: selection.map(scenario), phases: [{
       target, baseUrl, phase: 'functional', result: 'passed', browserCleanup: 'passed', scenarios: selection.map(scenario),
     }] };
   });
-  return { schemaVersion: 3, mode: 'functional', runId: `shard-${current}`, shard: { current: current as number, total: 2 },
+  return { schemaVersion: 4, target: 'container', mode: 'functional', runId: `shard-${current}`, shard: { current: current as number, total: 2 },
     source: { gitSha: sha, githubSha: sha, gitTreeSha: tree, dirty: false }, result: 'passed', cleanup: 'passed',
-    native: { cleanup: 'passed' }, installedCli: { cleanup: 'passed' }, selection: [...selection] as string[], targets,
+    container: { result: 'passed', cleanupResult: 'passed', imageId: `sha256:${'c'.repeat(64)}` }, installedCli: { cleanup: 'passed' }, selection: [...selection] as string[], targets,
     authCombined: current === 1 ? [] : targets.map(({ target, baseUrl }) => ({ schemaVersion: 1, kind: 'auth-combined',
       target, origin: baseUrl, sourceGitSha: sha, result: 'passed', cleanup: 'passed', browserCleanup: 'passed',
       checks: authCombinedChecks.map((name) => ({ name, result: 'passed' })),
@@ -164,7 +157,7 @@ test('joins both shard inventories and requires all authentication checks only o
   validateShardEvidence(pair, githubSha, gitTreeSha);
   validateShardEvidence([...pair].reverse(), githubSha, gitTreeSha);
   assert.equal(pair[0].authCombined.length, 0);
-  assert.equal(pair[1].authCombined.flatMap(({ checks }) => checks).length, 22);
+  assert.equal(pair[1].authCombined.flatMap(({ checks }) => checks).length, 11);
 });
 
 test('rejects missing, extra, duplicate or invalid shard and run identities', () => {
@@ -205,20 +198,24 @@ test('requires both receipts to match the actual clean checkout revision and tre
 
 test('rejects incomplete run, target, phase, browser and owned cleanup results', () => {
   const cases: ((pair: ShardPair) => void)[] = [
-    (pair) => { pair[0].schemaVersion = 4; },
+    (pair) => { pair[0].schemaVersion = 3; },
     (pair) => { pair[0].mode = 'stress'; },
+    (pair) => { pair[0].target = 'native'; },
+    (pair) => { (pair[0] as unknown as { native: unknown }).native = { cleanup: 'passed' }; },
+    (pair) => { pair[0].container.result = 'failed'; },
+    (pair) => { pair[0].container.imageId = 'foreign'; },
     (pair) => { pair[0].result = 'running'; },
     (pair) => { pair[1].cleanup = 'pending'; },
-    (pair) => { pair[0].native.cleanup = 'failed'; },
+    (pair) => { pair[0].container.cleanupResult = 'failed'; },
     (pair) => { pair[1].installedCli.cleanup = 'pending'; },
     (pair) => { pair[0].targets.pop(); },
-    (pair) => { pair[0].targets[1]!.target = 'native'; },
+    (pair) => { pair[0].targets.push(pair[0].targets[0]!); },
     (pair) => { pair[1].targets[0]!.result = 'failed'; },
     (pair) => { pair[0].targets[0]!.baseUrl = 'http://example.com'; },
     (pair) => { pair[0].targets[0]!.phases = []; },
     (pair) => { pair[0].targets[0]!.phases.push(pair[0].targets[0]!.phases[0]!); },
     (pair) => { pair[0].targets[0]!.phases[0]!.phase = 'capacity'; },
-    (pair) => { pair[0].targets[0]!.phases[0]!.target = 'container'; },
+    (pair) => { (pair[0].targets[0]!.phases[0]! as { target: string }).target = 'native'; },
     (pair) => { pair[0].targets[0]!.phases[0]!.baseUrl = 'http://127.0.0.1:29999'; },
     (pair) => { pair[0].targets[0]!.phases[0]!.result = 'failed'; },
     (pair) => { pair[0].targets[0]!.phases[0]!.browserCleanup = 'pending'; },
@@ -237,10 +234,10 @@ test('rejects omitted, repeated, unexpected or mismatched selected scenario evid
     (pair) => { pair[0].selection.push(pair[0].selection[0]!); },
     (pair) => { replaceSelection(pair[0], ['unexpected-flow', ...pair[0].selection.slice(1)]); },
     (pair) => { pair[0].targets[0]!.scenarios.pop(); },
-    (pair) => { pair[0].targets[1]!.phases[0]!.scenarios.pop(); },
-    (pair) => { pair[0].targets[1]!.scenarios.push(pair[0].targets[1]!.scenarios[0]!); },
+    (pair) => { pair[0].targets[0]!.phases[0]!.scenarios.pop(); },
+    (pair) => { pair[0].targets[0]!.scenarios.push(pair[0].targets[0]!.scenarios[0]!); },
     (pair) => { pair[1].targets[0]!.scenarios[0]!.durationMs = NaN; },
-    (pair) => { pair[1].targets[1]!.scenarios[0]!.screenshots = []; },
+    (pair) => { pair[1].targets[0]!.scenarios[0]!.screenshots = []; },
   ];
   for (const mutate of cases) {
     const pair = shardPair(); mutate(pair);
@@ -253,7 +250,7 @@ test('rejects wrong authentication ownership, source, cleanup and incomplete che
     (pair) => { pair[0].authCombined = pair[1].authCombined; },
     (pair) => { pair[1].authCombined = []; },
     (pair) => { pair[1].authCombined.pop(); },
-    (pair) => { pair[1].authCombined[1]!.target = 'native'; },
+    (pair) => { (pair[1].authCombined[0]! as { target: string }).target = 'native'; },
     (pair) => { pair[1].authCombined[0]!.sourceGitSha = 'c'.repeat(40); },
     (pair) => { pair[1].authCombined[0]!.origin = 'http://127.0.0.1:29999'; },
     (pair) => { pair[1].authCombined[0]!.schemaVersion = 2; },

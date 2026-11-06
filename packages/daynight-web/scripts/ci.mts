@@ -36,9 +36,8 @@ export const runCi = async (mode: string, cancellation: AbortController,
   }
   await run(['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'install', '--with-deps', 'chromium'], { timeoutMs: 600_000 });
   cancellation.signal.throwIfAborted();
-  await operations.acceptance(cancellation, ownsSharedChecks(shard)
-    ? { ...(shard === undefined ? {} : { shard }), navigationChecks: true }
-    : shard === undefined ? undefined : { shard });
+  await operations.acceptance(cancellation, { target: 'container', ...(shard === undefined ? {} : { shard }),
+    ...(ownsSharedChecks(shard) ? { navigationChecks: true } : {}) });
 };
 
 const main = async (): Promise<void> => {

@@ -170,10 +170,10 @@ export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCo
   };
   const verifyDatabase = async (): Promise<void> => {
     const evidence = JSON.parse(await readFile(join(target.acceptanceDirectory, 'evidence.json'), 'utf8')) as {
-      schemaVersion: unknown; runId: unknown; source?: { gitSha?: unknown };
+      schemaVersion: unknown; target: unknown; runId: unknown; source?: { gitSha?: unknown };
       native?: { storageRoot?: string; storage?: StorageReceipt };
     };
-    requireValue(evidence.schemaVersion === 3 && evidence.runId === basename(target.acceptanceDirectory)
+    requireValue(evidence.schemaVersion === 4 && evidence.target === target.target && evidence.runId === basename(target.acceptanceDirectory)
       && evidence.source?.gitSha === target.sourceGitSha);
     if (target.storage.kind === 'native') {
       const storage = evidence.native?.storage;

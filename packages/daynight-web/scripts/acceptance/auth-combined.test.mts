@@ -74,7 +74,7 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
       root: target.storage.root, mode: 'directory', phase: 'ready' };
     await writeFile(join(directory, 'storage-receipt.json'), JSON.stringify(storage));
   }
-  await writeFile(join(acceptanceDirectory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: basename(acceptanceDirectory), source: { gitSha: sourceGitSha },
+  await writeFile(join(acceptanceDirectory, 'evidence.json'), JSON.stringify({ schemaVersion: 4, target: kind, runId: basename(acceptanceDirectory), source: { gitSha: sourceGitSha },
     ...(storage === undefined ? {} : { native: { storageRoot: storage.directory, storage } }) }));
   const calls: RecordedCommand[] = [];
   const state = { postgresLabel: target.projectLabel.value, service: 'postgres', serverIdentity: `${composeProject}|server|sha256:${'c'.repeat(64)}`,
@@ -185,7 +185,8 @@ test('native target observation binds the ready storage journal before database 
     const evidence = JSON.parse(await readFile(path, 'utf8'));
     const controls = createAuthCombinedTarget(target, run);
     for (const changed of [
-      { ...evidence, schemaVersion: 2 },
+      { ...evidence, schemaVersion: 3 },
+      { ...evidence, target: 'container' },
       { ...evidence, native: { ...evidence.native, storage: undefined } },
       { ...evidence, native: { ...evidence.native, storage: { ...evidence.native.storage, phase: 'planned' } } },
       { ...evidence, native: { ...evidence.native, storage: { ...evidence.native.storage, directoryIdentity: { device: '0', inode: '0' } } } },

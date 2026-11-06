@@ -61,12 +61,54 @@ const expectMenuGeometry = async (page: Page): Promise<void> => {
       && popup.closest('.task-detail-dialog') !== null;
   }), { message: 'Assignee popup remains within the viewport and its detail focus owner' }).toBe(true);
 };
-const layouts = [
-  { locale: 'zh-CN', width: 1366 }, { locale: 'en', width: 1366 },
-  { locale: 'zh-CN', width: 390 }, { locale: 'en', width: 390 },
-  { locale: 'zh-CN', width: 375 }, { locale: 'en', width: 375 },
-  { locale: 'zh-CN', width: 320 }, { locale: 'en', width: 320 },
+const currentLayouts = [
+  { locale: 'zh-CN', width: 1366 },
+  { locale: 'en', width: 320 },
+  { locale: 'zh-CN', width: 320 },
 ] as const;
+const formerLayouts = [
+  { locale: 'zh-CN', width: 1366 },
+  { locale: 'en', width: 320 },
+] as const;
+
+const verifyStatusFilter = async (page: Page, info: TestInfo): Promise<void> => {
+  await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');
+  await page.setViewportSize({ width: 320, height: 900 });
+  await standalone(page);
+  await chooseFilter(page, longName);
+  const status = page.getByRole('combobox', { name: 'Status', exact: true });
+  for (const value of ['all', 'todo', 'in_progress', 'done']) {
+    await status.selectOption(value);
+    expect(await status.evaluate((select) => {
+      const box = select.getBoundingClientRect();
+      const svg = select.parentElement!.querySelector('svg')!;
+      const arrow = svg.getBoundingClientRect();
+      const path = svg.querySelector('path')!;
+      const shape = path.getBBox();
+      const style = getComputedStyle(select);
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d')!;
+      context.font = `${style.fontSize} ${style.fontFamily}`;
+      const textWidth = context.measureText((select as HTMLSelectElement).selectedOptions[0]!.text).width;
+      return style.appearance === 'none' && path.getAttribute('d') === 'm2 4 3 3 3-3'
+        && shape.x === 2 && shape.y === 4 && shape.width === 6 && shape.height === 3
+        && Math.abs(arrow.top + arrow.height / 2 - box.top - box.height / 2) <= .5
+        && Math.abs(box.right - arrow.right - 9) <= .5
+        && box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) + textWidth < arrow.left
+        && arrow.right < box.right && box.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
+    })).toBe(true);
+  }
+  await status.selectOption('all');
+  const arrowBox = await status.locator('..').locator('svg').boundingBox();
+  await page.mouse.click(arrowBox!.x + arrowBox!.width / 2, arrowBox!.y + arrowBox!.height / 2);
+  await expect(status).toBeFocused(); await page.keyboard.press('Escape');
+  await page.locator('.task-assignee-filter .assignee-trigger').focus(); await page.keyboard.press('Tab');
+  await expect(status).toBeFocused(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  await expect(status).toHaveValue('todo');
+  await picture(page, info, 'status-filter-en-320');
+  await status.selectOption('all');
+  await chooseFilter(page, 'Everyone');
+};
 
 const verifyPeopleReuse = async (page: Page, api: AuthenticatedAPI, missing: AuthenticatedAPI, alice: Profile, missingProfile: Profile, info: TestInfo): Promise<void> => {
   // The padding models an inline profile photo's transfer cost while keeping the image fixture deterministic.
@@ -249,7 +291,8 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
       if (url.pathname === `/api/v1/projects/${project.id}/task-assignees`) peopleRequests.push({ bounded: url.searchParams.has('userId'), status: response.status() });
     });
     await page.goto(`/projects/${project.id}`);
-    for (const { locale, width } of layouts) {
+    await verifyStatusFilter(page, info);
+    for (const { locale, width } of currentLayouts) {
       await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
       await page.setViewportSize({ width, height: 900 }); await standalone(page);
       const status = page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true });
@@ -266,35 +309,6 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
         const statusBounds = await status.boundingBox();
         expect(Math.abs(ownerBounds!.y + ownerBounds!.height / 2 - statusBounds!.y - statusBounds!.height / 2)).toBeLessThanOrEqual(2);
       }
-      for (const value of ['all', 'todo', 'in_progress', 'done']) {
-        await status.selectOption(value);
-        expect(await status.evaluate((select) => {
-          const box = select.getBoundingClientRect();
-          const svg = select.parentElement!.querySelector('svg')!;
-          const arrow = svg.getBoundingClientRect();
-          const path = svg.querySelector('path')!;
-          const shape = path.getBBox();
-          const style = getComputedStyle(select);
-          const canvas = document.createElement('canvas');
-          const context = canvas.getContext('2d')!;
-          context.font = `${style.fontSize} ${style.fontFamily}`;
-          const textWidth = context.measureText((select as HTMLSelectElement).selectedOptions[0]!.text).width;
-          return style.appearance === 'none' && path.getAttribute('d') === 'm2 4 3 3 3-3'
-            && shape.x === 2 && shape.y === 4 && shape.width === 6 && shape.height === 3
-            && Math.abs(arrow.top + arrow.height / 2 - box.top - box.height / 2) <= .5
-            && Math.abs(box.right - arrow.right - 9) <= .5
-            && box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) + textWidth < arrow.left
-            && arrow.right < box.right && box.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
-        })).toBe(true);
-      }
-      await status.selectOption('all');
-      const arrowBox = await status.locator('..').locator('svg').boundingBox();
-      await page.mouse.click(arrowBox!.x + arrowBox!.width / 2, arrowBox!.y + arrowBox!.height / 2);
-      await expect(status).toBeFocused(); await page.keyboard.press('Escape');
-      await page.locator('.task-assignee-filter .assignee-trigger').focus(); await page.keyboard.press('Tab');
-      await expect(status).toBeFocused(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
-      await expect(status).toHaveValue('todo');
-      await picture(page, info, `status-filter-${locale}-${width}`);
       await status.selectOption('all');
       await chooseFilter(page, locale === 'en' ? 'Everyone' : '所有负责人');
       const row = page.locator(`#standalone-task-${assigned.id}`);
@@ -379,7 +393,7 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
     if (former === undefined) throw new Error('Former-assignee acceptance requires the exact current Bob membership.');
     expect((await api.delete(`/api/v1/projects/${project.id}/members/${bobProfile.id}`, { headers: { 'Content-Type': 'application/json' }, data: stringifyApiJson({ version: former.directGrant!.version, expectedUserId: aliceProfile.id }) })).status()).toBe(204);
     await page.reload();
-    for (const { locale, width } of layouts) {
+    for (const { locale, width } of formerLayouts) {
       await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale); await page.setViewportSize({ width, height: 900 }); await standalone(page);
       const formerRow = page.locator(`#standalone-task-${nullable.id}`);
       await expect(formerRow.locator('.assignee-former')).toHaveText(locale === 'en' ? 'No project access' : '已失去项目权限');

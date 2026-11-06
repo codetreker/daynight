@@ -10,10 +10,10 @@ try {
   else if ((process.argv.length === 3 || process.argv.length === 4) && process.argv[2] === '--cleanup') await recoverAcceptance(cancellation, process.argv[3]);
   else {
     const flags = process.argv.slice(2);
-    if (new Set(flags).size !== flags.length || flags.some((flag) => flag !== '--apfs' && flag !== '--stress')) {
-      throw new Error('Usage: node scripts/acceptance.mts [--apfs] [--stress] | --cleanup [run-id]');
+    if (new Set(flags).size !== flags.length || flags.some((flag) => flag !== '--native' && flag !== '--apfs' && flag !== '--stress')) {
+      throw new Error('Usage: node scripts/acceptance.mts [--native] [--apfs] [--stress] | --cleanup [run-id]');
     }
-    await runAcceptance(cancellation, { allowApfsImage: flags.includes('--apfs'), stress: flags.includes('--stress') });
+    await runAcceptance(cancellation, { target: flags.some((flag) => flag === '--native' || flag === '--apfs' || flag === '--stress') ? 'native' : 'container', allowApfsImage: flags.includes('--apfs'), stress: flags.includes('--stress') });
   }
 } catch (error) {
   console.error(error);
