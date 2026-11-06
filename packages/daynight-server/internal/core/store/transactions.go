@@ -11,6 +11,8 @@ type Transactions interface {
 	GrantLifecycleWriter
 	PrivateTransferWriter
 	OAuthClientWriter
+	AuthorizationWriter
+	GrantLifecycleWriter
 	WorkerWriter
 	BotWriter
 	SessionWriter

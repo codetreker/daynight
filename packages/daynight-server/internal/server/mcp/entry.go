@@ -104,6 +104,9 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 }
 
 func mustOriginHost(origin string) string { u, _ := url.Parse(origin); return u.Host }
+func (e *Entry) challenge() string {
+	return `Bearer resource_metadata="` + strings.TrimSuffix(e.resource, "/mcp") + `/.well-known/oauth-protected-resource/mcp"`
+}
 func (e *Entry) allowedHost(host string) bool {
 	if host == e.publicHost {
 		return true
@@ -163,7 +166,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	if len(origins) == 1 {
 		w.Header().Set("Access-Control-Allow-Origin", origins[0])
 		w.Header().Add("Vary", "Origin")
-		w.Header().Set("Access-Control-Expose-Headers", "MCP-Session-Id, MCP-Protocol-Version")
+		w.Header().Set("Access-Control-Expose-Headers", "MCP-Session-Id, MCP-Protocol-Version, WWW-Authenticate")
 	}
 	if r.Method == http.MethodOptions {
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -173,13 +176,13 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	}
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 {
-		w.Header().Set("WWW-Authenticate", "Bearer")
+		w.Header().Set("WWW-Authenticate", e.challenge())
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
 	parts := strings.Fields(values[0])
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		w.Header().Set("WWW-Authenticate", "Bearer")
+		w.Header().Set("WWW-Authenticate", e.challenge())
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
@@ -203,7 +206,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 		authority = AuthorityRef{Kind: "pat", ID: p.CredentialID}
 	}
 	if err != nil {
-		w.Header().Set("WWW-Authenticate", "Bearer")
+		w.Header().Set("WWW-Authenticate", e.challenge())
 		httpx.WriteError(w, r, e.logger, "mcp", "authenticate", err)
 		return
 	}

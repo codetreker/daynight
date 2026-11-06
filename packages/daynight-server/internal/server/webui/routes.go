@@ -21,8 +21,17 @@ func (ui *UI) RegisterRoutes(mux *http.ServeMux, logger *slog.Logger) {
 		mux.HandleFunc("GET "+pattern, page)
 		mux.HandleFunc(pattern, httpx.MethodNotAllowed(logger, "GET, HEAD"))
 	}
+	mux.HandleFunc("GET /oauth/consent", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		page(w, r)
+	})
+	mux.HandleFunc("/oauth/consent", httpx.MethodNotAllowed(logger, "GET, HEAD"))
 	mux.HandleFunc("GET /assets/", asset)
 	mux.HandleFunc("/assets/", httpx.MethodNotAllowed(logger, "GET, HEAD"))
+}
+
+func (ui *UI) BadRequestHandler(logger *slog.Logger) http.Handler {
+	return uiHandler(logger, ui.BadRequestPage)
 }
 
 func uiHandler(logger *slog.Logger, serve func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {

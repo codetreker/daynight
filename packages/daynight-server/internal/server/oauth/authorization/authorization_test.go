@@ -362,3 +362,37 @@ func TestRedeemHTTPRejectionsAndPreflight(t *testing.T) {
 		}
 	}
 }
+
+func TestStartInvalidBrowserRequestUsesLocalErrorPage(t *testing.T) {
+	svc := &authorizationsStub{}
+	h := NewAuthorizationHTTP(svc, browserAuth{})
+	h.SetStartErrorPage(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("local shell"))
+	}))
+	for _, tc := range []struct {
+		query   string
+		failure error
+		code    string
+	}{
+		{"client_id=a&client_id=b", nil, "invalid_request"},
+		{"client_id=bad&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback", core.ErrInvalidClient, "invalid_client"},
+		{"client_id=valid&redirect_uri=https%3A%2F%2Fevil.example%2Fcallback", core.ErrInvalidAuthorization, "invalid_request"},
+	} {
+		svc.err = tc.failure
+		r := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+tc.query, nil)
+		r.Header.Set("Accept", "text/html,application/xhtml+xml")
+		w := httptest.NewRecorder()
+		h.Start(w, r)
+		if w.Code != http.StatusBadRequest || w.Body.String() != "local shell" || w.Header().Get("X-OAuth-Error") != tc.code || w.Header().Get("Location") != "" || w.Header().Get("Referrer-Policy") != "no-referrer" {
+			t.Fatalf("browser error: %d %v %s", w.Code, w.Header(), w.Body)
+		}
+		r.Header.Set("Accept", "application/json")
+		w = httptest.NewRecorder()
+		h.Start(w, r)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"error":"`+tc.code+`"`) || w.Header().Get("Location") != "" {
+			t.Fatalf("protocol error: %d %v %s", w.Code, w.Header(), w.Body)
+		}
+	}
+}

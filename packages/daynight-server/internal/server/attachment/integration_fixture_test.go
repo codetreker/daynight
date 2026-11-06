@@ -16,6 +16,7 @@ import (
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/appsupport"
@@ -108,13 +109,20 @@ func authorizeResourceRequest(handler http.Handler, request *http.Request) {
 	}
 }
 
+// uiOnlyStore supports composition for route-only tests; any database access is
+// unexpected and fails through the unimplemented embedded interface.
+type uiOnlyStore struct{ store.Transactions }
+
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	config := configpkg.Config{DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second, PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example", UniAuthAppID: "configuration-test", UniAuthAppSecret: "configuration-test", UniAuthCallbackURL: "https://daynight.example/api/v1/auth/callback"}
-	handler, err := appsupport.NewHandler(config, nil, nil, nil, logger)
+	handler, err := appsupport.NewHandler(config, &uiOnlyStore{}, nil, nil, logger)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if lifecycle, ok := handler.(interface{ Shutdown(context.Context) error }); ok {
+		t.Cleanup(func() { _ = lifecycle.Shutdown(context.Background()) })
 	}
 	return httpx.RequestLogging(logger, handler)
 }

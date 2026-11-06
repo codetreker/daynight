@@ -8,10 +8,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
+	oauthservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/oauth"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 	"github.com/codetreker/uniauth/sdk/go"
 )
@@ -19,8 +21,11 @@ import (
 // App owns the shared modules and their underlying resources.
 type App struct {
 	*application.Application
-	Web   *webresources.Resources
-	Ready func(context.Context) error
+	Web              *webresources.Resources
+	Ready            func(context.Context) error
+	OAuthProfile     *OAuthProfile
+	OAuthError       error
+	oauthMaintenance *oauthservice.MaintenanceRunner
 
 	closeLock         chan struct{}
 	files             interface{ Close() error }
@@ -29,6 +34,15 @@ type App struct {
 	filesClosed       chan struct{}
 	closed            bool
 	closeErr          error
+}
+
+// OAuthProfile composes the public authorization and credential use cases.
+type OAuthProfile struct {
+	Admission      coreoauth.PublicAdmission
+	Clients        *oauthservice.Clients
+	Authorizations *oauthservice.Authorizations
+	Grants         *coreoauth.GrantLifecycle
+	Maintenance    oauthservice.Maintenance
 }
 
 // NewIdentityClient constructs the one application client before opening resources.
@@ -48,6 +62,22 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1),
 	}
 	app.closeLock <- struct{}{}
+	if database != nil && c.PublicOrigin != "" {
+		admission := coreoauth.PublicAdmission{Writer: database}
+		clients, err := oauthservice.NewClients(database, admission, c.OAuthClients)
+		if err != nil {
+			app.OAuthError = err
+		} else {
+			authorizations, authErr := oauthservice.NewAuthorizations(database, clients, admission, c.PublicOrigin)
+			if authErr != nil {
+				app.OAuthError = authErr
+			} else {
+				grants := coreoauth.NewGrantLifecycle(database)
+				app.OAuthProfile = &OAuthProfile{Admission: admission, Clients: clients, Authorizations: authorizations, Grants: grants,
+					Maintenance: oauthservice.Maintenance{Clients: database, Authorizations: authorizations, Credentials: grants}}
+			}
+		}
+	}
 	private, ok := files.(filestorage.TransferStorage)
 	if ok {
 		budget, reserve := c.MCPTempBudgetBytes, c.MCPReservedFreeBytes
@@ -97,6 +127,12 @@ func OpenAppWithLogger(ctx context.Context, c config.Config, logger *slog.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if app.OAuthProfile == nil {
+		return nil, errors.Join(errors.New("OAuth public profile is unavailable"), app.OAuthError, app.Close(context.Background()))
+	}
+	app.oauthMaintenance = oauthservice.StartMaintenance(app.OAuthProfile.Maintenance, func(error) {
+		logger.Error("OAuth maintenance failed", "component", "oauth", "operation", "maintain")
+	})
 	app.PrivateContent.SetLogger(logger)
 	if err := app.PrivateContent.Start(func(error) {
 		logger.Error("private transfer maintenance failed", "component", "mcptransfer", "operation", "maintain")
@@ -122,6 +158,11 @@ func (a *App) Close(ctx context.Context) error {
 	}
 	if a.closed {
 		return a.closeErr
+	}
+	if a.oauthMaintenance != nil {
+		if err := a.oauthMaintenance.Stop(ctx); err != nil {
+			return err
+		}
 	}
 	if a.PrivateContent != nil {
 		if err := a.PrivateContent.Close(ctx); err != nil {
