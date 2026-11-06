@@ -42,12 +42,12 @@ semantics. Protocols, raw bytes, immutable receipts and public URLs retain their
 existing behavior. Existing files and metadata stay in place; this directory
 arrangement neither relocates them nor adds a compatibility path or repair rule.
 
-The [attachment layout decision](2026-10-24-project-sharded-attachment-layout.md)
+The [attachment layout decision](../../archived/architecture/2026-10-24-project-sharded-attachment-layout.md)
 provides the precedent for business-owned grouping and UUID shards. This decision
 replaces the direct address for new writes within the
-[completed archive decision](2026-10-30-session-file-archives.md), preserving its
+[completed archive decision](../../archived/architecture/2026-10-30-session-file-archives.md), preserving its
 content ownership and lifecycle. The
-[Bot deletion decision](2026-11-04-bot-history-deletion.md) retains cleanup of the
+[Bot deletion decision](../../archived/architecture/2026-11-04-bot-history-deletion.md) retains cleanup of the
 current derived namespace and excludes old direct-directory bytes. The
 [Session design](../../../../docs/design/task-session-protocol.md#服务端归档布局)
 owns the address rule; the

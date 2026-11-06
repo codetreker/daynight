@@ -36,10 +36,10 @@ The [worker design](../../../../docs/design/daynight-worker.md) and
 runtime details.
 
 This partially supersedes the global collection requirement in the
-[claim inventory decision](2026-10-26-worker-claim-inventory.md) and the
-failure retention rule in the [reporting decision](2026-10-28-worker-runtime-reporting.md).
+[claim inventory decision](../../archived/architecture/2026-10-26-worker-claim-inventory.md) and the
+failure retention rule in the [reporting decision](../../archived/architecture/2026-10-28-worker-runtime-reporting.md).
 It also partially supersedes the global discovery gate in the [claim record
-decision](../simplification/2026-10-27-worker-claim-records.md). These decisions
+decision](../../archived/simplification/2026-10-27-worker-claim-records.md). These decisions
 retain their original rationale for complete project queries and resource
 accounting.
 

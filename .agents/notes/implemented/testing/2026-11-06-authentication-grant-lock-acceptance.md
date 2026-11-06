@@ -10,7 +10,7 @@ withdrawal while respecting the service's transaction and cleanup guarantees.
 
 ## Decision
 
-The [combined authentication journey](2026-10-23-authentication-combined-acceptance.md)
+The [combined authentication journey](../../archived/testing/2026-10-23-authentication-combined-acceptance.md)
 keeps its real paused upload and separate interrupted-upload checks on both
 native and container targets. A read-only probe binds the exact project grant
 row to its waiting DELETE and blocking attachment transaction through PostgreSQL

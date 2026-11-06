@@ -1,11 +1,15 @@
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { coveragePackages, goValidationArguments, readBudgetToken, requireTestOnlyE2E, runProjectTaskAcceptance } from "../../scripts/project-task-acceptance.js";
-import { runBudgetProbes } from "../../scripts/project-task-budgets.js";
+import { coverageGoFlags, coveragePackages, goValidationArguments, readBudgetToken, requireTestOnlyE2E, runProjectTaskAcceptance } from "../../scripts/project-task-acceptance.js";
+import { budgetChildEnvironment, runBudgetProbes } from "../../scripts/project-task-budgets.js";
 import type { InstalledCliReceipt } from "../fixtures/installed-cli.js";
 
 const directories: string[] = [];
+
+it("isolates budget CLI configuration from the worker environment", () => {
+  expect(budgetChildEnvironment({ DN_CONFIG_DIR: "/worker", dn_config_dir: "/worker-alt", PATH: "/bin" }, "/fixture")).toEqual({ PATH: "/bin", HOME: "/fixture", USERPROFILE: "/fixture" });
+});
 const fixture = async (source: string) => {
   const temporary = path.resolve(import.meta.dirname, "../../../../.tmp/budget-credential-tests");
   await mkdir(temporary, { recursive: true });
@@ -18,6 +22,12 @@ const fixture = async (source: string) => {
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
 
 describe("Go validation race selection", () => {
+  it("instruments exactly the selected packages without discarding other Go flags", () => {
+    const packages = coveragePackages(["example/production", "github.com/codetreker/daynight/packages/daynight-server/cmd/e2e_tests"]);
+    expect(coverageGoFlags("-trimpath -race=false", packages)).toBe("-trimpath -race=false -coverpkg=example/production");
+    expect(coverageGoFlags(undefined, packages)).toBe("-coverpkg=example/production");
+    expect(coverageGoFlags("-coverpkg=wrong", packages)).toBe("-coverpkg=wrong -coverpkg=example/production");
+  });
   it.each([undefined, "true"])("retains race detection for local defaults and main CI (%s)", (setting) => {
     const args = goValidationArguments(setting);
     expect(args.coverage).toContain("--race=true");

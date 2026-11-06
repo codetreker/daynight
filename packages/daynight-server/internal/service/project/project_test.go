@@ -17,6 +17,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/query"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -131,7 +132,7 @@ func TestProjectSnapshotQueryFailuresRemainOperational(t *testing.T) {
 	}
 }
 
-func createPrivateProjectFixture(database *store.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
+func createPrivateProjectFixture(database *postgres.Store, ctx context.Context, principal model.Principal, id, name, repoURL string) (model.Project, error) {
 	var project model.Project
 	completion, err := database.WriteProjectCreation(ctx, principal.UserID, func(dao store.ProjectCreationDAO) error {
 		var err error

@@ -18,6 +18,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 )
@@ -57,7 +58,7 @@ func listThread(t *testing.T, threads *taskservice.TaskThreads, principal model.
 	return result
 }
 
-func threadStoredState(t *testing.T, database *store.Store, taskID string) string {
+func threadStoredState(t *testing.T, database *postgres.Store, taskID string) string {
 	t.Helper()
 	var result string
 	if err := database.Pool.QueryRow(context.Background(), `SELECT json_build_object(
@@ -258,7 +259,7 @@ func TestThreadExactMessageBudgetsAndRollback(t *testing.T) {
 	}
 }
 
-func insertThreadFixture(t *testing.T, database *store.Store, task model.Task, principal model.Principal, id string, createdAt time.Time, body string) {
+func insertThreadFixture(t *testing.T, database *postgres.Store, task model.Task, principal model.Principal, id string, createdAt time.Time, body string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_thread_messages(task_id,message_id,created_at,author_user_id,author_agent,body) VALUES($1,$2,$3,$4,false,$5)`, task.ID, id, createdAt, principal.UserID, body); err != nil {
 		t.Fatal(err)

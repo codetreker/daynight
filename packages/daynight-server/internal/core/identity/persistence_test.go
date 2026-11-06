@@ -10,13 +10,14 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func identityDatabase(t *testing.T) *store.Store {
+func identityDatabase(t *testing.T) *postgres.Store {
 	t.Helper()
 	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -49,7 +50,7 @@ func identityDatabase(t *testing.T) *store.Store {
 	q.Set("search_path", schema)
 	q.Set("timezone", "UTC")
 	parsed.RawQuery = q.Encode()
-	database, err := store.Open(ctx, parsed.String())
+	database, err := postgres.Open(ctx, parsed.String())
 	if err != nil {
 		t.Fatal(err)
 	}

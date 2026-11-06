@@ -2,14 +2,16 @@ package bot
 
 import (
 	"context"
-	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
-	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	"reflect"
 	"testing"
 	"time"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
+	pgbot "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/bot"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
@@ -23,7 +25,7 @@ func validAssistantHost() *model.WorkerAssistantHost {
 	}}
 }
 
-func reportBotHost(t *testing.T, database *store.Store, principal model.Principal, workerID, cwd string) {
+func reportBotHost(t *testing.T, database *postgres.Store, principal model.Principal, workerID, cwd string) {
 	t.Helper()
 	report := serviceWorkerReport()
 	report.Telemetry.AssistantHost = validAssistantHost()
@@ -195,7 +197,7 @@ func TestBotDefaultsPendingAndFailedNeverChangeSuccessfulPreferences(t *testing.
 		if _, err := tx.Exec(ctx, `UPDATE bots SET session_id=$2,startup_result='{"state":"ready","code":null}' WHERE id=$1`, bot.ID, uuid.NewString()); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.BotTransaction(tx).CommitBotPreferences(ctx, bot.ID); err != nil {
+		if err := pgbot.NewWriter(tx).CommitBotPreferences(ctx, bot.ID); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(ctx); err != nil {

@@ -18,7 +18,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
@@ -33,7 +33,7 @@ type Auth interface {
 	RegisterRoutes(*http.ServeMux)
 }
 type AuthHarness[A Auth] struct {
-	Database *store.Store
+	Database *postgres.Store
 	Auth     A
 	Identity *identityservice.Identity
 	Handler  http.Handler
@@ -143,7 +143,7 @@ func (h *AuthHarness[A]) Login(t *testing.T, code string) *http.Cookie {
 	return nil
 }
 
-func TestStore(t *testing.T) *store.Store {
+func TestStore(t *testing.T) *postgres.Store {
 	t.Helper()
 	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -177,7 +177,7 @@ func TestStore(t *testing.T) *store.Store {
 	query.Set("timezone", "UTC")
 	query.Set("application_name", schema)
 	parsed.RawQuery = query.Encode()
-	database, err := store.Open(ctx, parsed.String())
+	database, err := postgres.Open(ctx, parsed.String())
 	if err != nil {
 		t.Fatal(err)
 	}

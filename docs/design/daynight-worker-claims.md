@@ -1,6 +1,6 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、强制撤回、人工接续及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
+状态：服务端认领、归属更新、释放、强制撤回、人工接续及 CLI/Web 归属展示已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/archived/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
 
 ## 资源和属性所有权
 
@@ -85,7 +85,7 @@ Release 要求当前 active claim、原 owner/admin 权限和停止确认。它�
 
 stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代表服务端远程停止了进程。Release 命令在 runner 停止后取得同一实例锁，完成原 agent 有界清理、停止和 workspace 关闭，保留 worktree 提交远端变更；确认源归属结束后再删除 worktree。远端拒绝时保留原工作区；未知结果只读取核对，操作者确认结果后再启动 runner。不确定原执行是否已停时不提交 release。
 
-强制撤回不以停止证明为前提：服务端先撤回归属，原 worker 下一次成功完整自有清单发现原 claim 缺席后开始既有终止清理。该请求不保证旧 agent 立即停止，也不撤销它的外部凭据；allowAgents=false 阻止自动再次领取。此取舍由[强制撤回决策](../../.agents/notes/implemented/architecture/2026-10-27-worker-force-withdrawal.md)拥有。
+强制撤回不以停止证明为前提：服务端先撤回归属，原 worker 下一次成功完整自有清单发现原 claim 缺席后开始既有终止清理。该请求不保证旧 agent 立即停止，也不撤销它的外部凭据；allowAgents=false 阻止自动再次领取。此取舍由[强制撤回决策](../../.agents/notes/archived/architecture/2026-10-27-worker-force-withdrawal.md)拥有。
 
 ## 事务、错误和身份范围
 
@@ -135,4 +135,4 @@ jq 'select(.task_id == "<task-id>" and .request_id == "<request-id>")' server.js
 
 服务基础验证包括真实 PostgreSQL 同版本竞争、owner/admin/成员边界、本人/他人/未分配的自动领取资格及负责人竞争、许可/平台变化、所有状态旁路、旧 claim、释放/强制撤回/接续、撤回原子性及事务回滚，以及属性迁移的 NUL/Unicode 保全。客户端验证覆盖完整读取、写保护类型、200 操作、精确 int64、未知结果不重发和候选游标推进。
 
-这些检查证明服务端和 typed client 的归属基础，不代替本机 SQLite、Git 或原生 agent 的独立证据。当前资源适配的 Linux 针对性结果及限制由[运行时验证边界](daynight-worker.md#验证边界)拥有；前台协调与人工管理各有自己的验收，完整三平台交付仍须最终验证。[人工管理决策](../../.agents/notes/implemented/architecture/2026-10-27-worker-manual-control.md)保存终止后新执行和唯一控制者的取舍。
+这些检查证明服务端和 typed client 的归属基础，不代替本机 SQLite、Git 或原生 agent 的独立证据。当前资源适配的 Linux 针对性结果及限制由[运行时验证边界](daynight-worker.md#验证边界)拥有；前台协调与人工管理各有自己的验收，完整三平台交付仍须最终验证。[人工管理决策](../../.agents/notes/archived/architecture/2026-10-27-worker-manual-control.md)保存终止后新执行和唯一控制者的取舍。

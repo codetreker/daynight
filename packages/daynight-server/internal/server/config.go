@@ -8,12 +8,14 @@ import (
 	"time"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
 type Config struct {
 	PublicOrigin        string
+	MCPAllowedOrigins   []string
 	UniAuthURL          string
 	UniAuthAppID        string
 	UniAuthAppSecret    string
@@ -55,6 +57,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	config := Config{
 		PublicOrigin:        getenv("DAYNIGHT_PUBLIC_ORIGIN"),
+		MCPAllowedOrigins:   splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
 		UniAuthURL:          getenv("DAYNIGHT_UNIAUTH_URL"),
 		UniAuthAppID:        getenv("DAYNIGHT_UNIAUTH_APP_ID"),
 		UniAuthAppSecret:    getenv("DAYNIGHT_UNIAUTH_APP_SECRET"),
@@ -69,6 +72,17 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		TaskSyncOverlap:     taskSyncOverlap,
 	}
 	return config, config.Validate()
+}
+
+func splitMCPOrigins(value string) []string {
+	if value == "" {
+		return nil
+	}
+	values := strings.Split(value, ",")
+	for i := range values {
+		values[i] = strings.TrimSpace(values[i])
+	}
+	return values
 }
 
 func loadFlag(getenv func(string) string, field string) (bool, error) {
@@ -118,6 +132,9 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := configpkg.ValidateAuthSettings(configpkg.AuthSettings{PublicOrigin: c.PublicOrigin, AllowHTTPTestOrigin: c.AllowHTTPTestOrigin}, c.UniAuthCallbackURL); err != nil {
 		return err
+	}
+	if err := mcphttp.ValidateOrigins(c.MCPAllowedOrigins); err != nil {
+		return &configpkg.ConfigurationError{Field: "DAYNIGHT_MCP_ALLOWED_ORIGINS", Rule: "must contain comma-separated exact origins", Cause: err}
 	}
 	if _, err := c.identityClient(); err != nil {
 		return err

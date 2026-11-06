@@ -13,7 +13,7 @@ must not prevent independent work.
 
 ## Decision
 
-The [configuration application decision](2026-11-04-worker-cloud-runtime-configuration.md)
+The [configuration application decision](../../archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)
 retains the single commit and report owner. Project adapters resolve existing
 bindings or derive local paths, prepare repositories outside the commit queue,
 and report preparation and removal through that owner. Concurrent candidates

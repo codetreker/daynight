@@ -103,10 +103,3 @@ type ProjectSessionDAO interface {
 	TaskSessionFreezeDAO
 	MatchSessionStartup(context.Context, string, *model.WorkerClaim, sp.StartupReport) (bool, error)
 }
-
-var _ ProjectWriter = (*Store)(nil)
-var _ ProjectCreationWriter = (*Store)(nil)
-var _ ProjectWriteScope = (*ProjectTx)(nil)
-var _ ProjectWriteDAO = (*ProjectTx)(nil)
-var _ TaskWriteDAO = (*ProjectTx)(nil)
-var _ ProjectSessionDAO = (*ProjectTx)(nil)

@@ -9,7 +9,6 @@ import (
 
 	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	attachmentpostgres "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 )
@@ -44,7 +43,7 @@ func TestAttachmentUnknownCommitDoesNotClaimSuccessOrCompensate(t *testing.T) {
 					putAttachment(t, attachments, principal, task, "file", "before")
 				}
 				cause := errors.New("commit response lost")
-				writer := lostAttachmentCommitReceipt{inner: attachmentpostgres.New(database.Pool), cause: cause, noError: noError}
+				writer := lostAttachmentCommitReceipt{inner: database, cause: cause, noError: noError}
 				subject := NewAttachments(database, writer, files)
 				var err error
 				if operation == "put" {

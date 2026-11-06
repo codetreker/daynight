@@ -2,9 +2,7 @@
 
 公开 skill 使用用户确认推进的需求讨论、方案讨论和实际交付协议，区分普通指定任务与
 worker-managed 执行，保留服务生命周期与安装机制。[Goal 需求](../spec/daynight-goal-workflow.md)拥有 GW1–GW13，
-[用户确认讨论决策](../../.agents/notes/implemented/process/2026-10-24-user-confirmed-goal-discussions.md)
-拥有阶段顺序；[完整 spec 确认决策](../../.agents/notes/implemented/process/2026-11-02-goal-spec-confirmation.md)
-拥有需求附件与确认门槛；[原阶段设计决策](../../.agents/notes/implemented/process/2026-10-22-goal-workflow-design.md)
+[用户确认讨论决策](../../.agents/notes/archived/process/2026-10-24-user-confirmed-goal-discussions.md)记录了阶段顺序的历史取舍；[完整 spec 确认决策](../../.agents/notes/archived/process/2026-11-02-goal-spec-confirmation.md)记录了需求附件与确认门槛的历史取舍；[原阶段设计决策](../../.agents/notes/archived/process/2026-10-22-goal-workflow-design.md)
 保留阶段资料和共享来源的历史理由。当前发布结构由
 [Agent skill 设计](daynight-agent-skill.md)拥有。
 

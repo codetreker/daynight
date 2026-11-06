@@ -17,6 +17,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -24,7 +25,7 @@ import (
 
 var moveStepIDs = []string{"00000000", "11111111", "abcdef01", "fedcba98"}
 
-func seedMoveSteps(t *testing.T, database *store.Store, taskID string) {
+func seedMoveSteps(t *testing.T, database *postgres.Store, taskID string) {
 	t.Helper()
 	for index, id := range moveStepIDs {
 		if _, err := database.Pool.Exec(context.Background(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,'same',$4,$5,'2026-01-02T03:04:05.123456Z'::timestamptz+$3::bigint*interval '1 day','2026-02-03T04:05:06.654321Z'::timestamptz+$3::bigint*interval '1 day')`, taskID, id, index, "  # "+id+"\n<原值&>  ", []model.TaskStepStatus{model.TaskStepTodo, model.TaskStepInProgress, model.TaskStepDone, model.TaskStepSkipped}[index]); err != nil {

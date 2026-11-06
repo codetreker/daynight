@@ -8,7 +8,7 @@
 行为要求由[附件需求](../spec/daynight-task-attachments.md)拥有；本文解释通用存储接口、
 附件元数据及各端集成机制。
 [附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
-[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)与
+[项目分片决策](../../.agents/notes/archived/architecture/2026-10-24-project-sharded-attachment-layout.md)与
 [附件变更与 Task 删除串行决策](../../.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)
 保存选择依据、已接受的限制及重新评估条件。
 
@@ -57,7 +57,7 @@ mockup/
 | [Task 模型](../../packages/daynight-server/internal/core/model/task.go)保存正文、状态、版本及依赖 | 新增独立附件模型与服务，不向 task PATCH 加入文件传输 |
 | [HTTP 组装](../../packages/daynight-server/internal/server/server.go)在同一 mux 注册 API 和内嵌页面 | 附件 API 与预览复用同一服务及 origin |
 | [JSON 解码](../../packages/daynight-server/internal/server/httpx/http.go)读取并校验受 1 MiB 限制的 JSON | 二进制上传使用独立的流式处理，既有 JSON 限制保持原义 |
-| [附件迁移](../../packages/daynight-server/internal/core/store/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
+| [附件迁移](../../packages/daynight-server/internal/core/store/postgres/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
 | [CLI API 客户端](../../packages/daynight/src/api/client.ts)区分 JSON、字节与空响应 | 复用期限、取消、错误及元数据预算；原始文件流不经过 JSON 解码 |
 | [CLI 上下文](../../packages/daynight/src/cli/context.ts)提供 text 与 bytes 输出 | `stdoutBytes` 可等待且保留背压，`closeStdoutBytes` 负责命令结束前的输出清理 |
 | [任务详情](../../packages/daynight-web/src/features/task-detail/TaskDetailDialog.tsx)独立加载 task | 组合附件区域，附件 hook 独立持有分页、写状态和预览，保持图和详情读取行为 |
@@ -125,7 +125,7 @@ case folding 模拟文件系统规则。创建父目录前、发布临时文件�
 不写入元数据；原文件内容和目录保持不变。这不提供不同大小写名称共存能力。
 大小写检查不改变业务寻址，也不提供普通操作的跨进程协调。Linux gate 保留真实共存测试，
 macOS APFS 专项仍可显式运行，日常开发无需镜像。
-[开发文件系统覆盖决策](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
+[开发文件系统覆盖决策](../../.agents/notes/archived/testing/2026-10-23-native-development-filesystem-coverage.md)
 记录这项平台覆盖取舍。
 
 本地物理布局直接采用：
@@ -451,7 +451,7 @@ Enter/空格继续有效。`TaskAttachmentsPanel`、表单及目录控件保留�
 各段的祖先加入展开集合，兄弟分支及既有手动状态保持；路径意图不依赖清单是否
 已经到达，因此后续分页出现的目标目录也遵循同一次定位。定位只消费一次，当前
 选择不会持续约束目录状态，因此用户可以收起正在预览的文件所在目录。重复点击
-同一描述链接仍是新的定位，普通刷新及页签切换不重新执行旧定位。相关取舍由[目录展开决策](../../.agents/notes/implemented/feature/2026-10-25-attachment-directory-disclosure.md)
+同一描述链接仍是新的定位，普通刷新及页签切换不重新执行旧定位。相关取舍由[目录展开决策](../../.agents/notes/archived/feature/2026-10-25-attachment-directory-disclosure.md)
 保存。
 
 附件面板使用占满可用正文的 `attachment-split` grid：左侧
@@ -479,7 +479,7 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 滚动所有权，不通过外层滚动或任意 reader 最低高度容纳右侧预览。内嵌预览标题在下载后紧邻提供新标签页打开链接；删除由左侧文件条目菜单提供。链接
 使用当前选择的元数据路径，即使正文请求仍未完成也保持正确地址。
 `attachmentPageUrl` 沿用 ID 与路径校验，生成逐段编码的独立页面 URL。选择与
-滚动所有权的理由见[分屏决策](../../.agents/notes/implemented/architecture/2026-10-22-task-attachment-split-view.md)。
+滚动所有权的理由见[分屏决策](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-split-view.md)。
 
 上传表单位于默认关闭的原生 `details` 内，`summary` 使用当前语言的“上传文件”
 文案。浏览器提供鼠标与键盘展开/收起以及折叠内容的焦点排除。表单始终挂载，收起
@@ -506,7 +506,7 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 订阅当前语言，不渲染语言选择器及其偏好反馈；语言变化只重译内容，不重新提交。
 页面保留自身语言入口与偏好反馈。页签激活状态显式传给附件组件，用于关闭
 隐藏面板中未提交的菜单和确认；task/project 变化释放原组件。
-[删除确认决策](../../.agents/notes/implemented/feature/2026-10-23-attachment-delete-confirmation.md)
+[删除确认决策](../../.agents/notes/archived/feature/2026-10-23-attachment-delete-confirmation.md)
 记录层级与交互取舍。
 
 `useAttachments` 分开持有列表、写操作、选中路径和预览。列表逐页读取，并检查路径
@@ -540,7 +540,7 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 协议和根相对 URL 保持正常 URL 语义，并经过渲染库的默认安全规则；原始 HTML
 不作为可执行节点插入 Markdown。描述的内嵌导航和原生点击规则见
 [阅读设计](daynight-task-inspection.md#markdown-与附件链接)，决策见
-[Markdown 描述决策](../../.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)。
+[Markdown 描述决策](../../.agents/notes/archived/architecture/2026-10-22-task-description-markdown.md)。
 
 HTML 入口是固定同源 URL，例如：
 
@@ -575,7 +575,7 @@ Document 监听并释放全部待处理器；退出独立页全屏不重建 fram
 与 frame 控件处理。
 PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的桥接结果作为 PDF
 键盘证明；保留原生 reader 与显式退出/返回控件，并记录真实浏览器验证的边界。
-[全屏阅读决策](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
+[全屏阅读决策](../../.agents/notes/archived/feature/2026-10-25-task-detail-fullscreen.md)
 拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
 
 ## 独立附件阅读页
@@ -618,10 +618,8 @@ frame document/owner/卸载清理和关闭恢复按上述共享规则执行。
 Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 no-store index。
 附件原始路径守卫在 ServeMux 清理或重定向前验证路径，保留中间 `..` 掩盖命名空间
 的意图检查。无效页面 ID 仍由前端显示未找到页面，数据与授权由已有接口检查。
-[完整阅读决策](../../.agents/notes/implemented/architecture/2026-10-22-task-attachment-full-reader.md)
-拥有非模态渲染及路径基础，[共享附件页决策](../../.agents/notes/implemented/architecture/2026-10-24-shared-attachment-page.md)
-保留完整附件面板复用的理由，[独立详情决策](../../.agents/notes/implemented/architecture/2026-10-24-standalone-task-detail.md)
-拥有当前完整任务详情组合。
+[完整阅读决策](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-full-reader.md)记录了非模态渲染及路径基础的历史取舍，[共享附件页决策](../../.agents/notes/archived/architecture/2026-10-24-shared-attachment-page.md)
+保留完整附件面板复用的理由，[独立详情决策](../../.agents/notes/archived/architecture/2026-10-24-standalone-task-detail.md)记录了当前完整任务详情组合的历史取舍。
 
 源码、构建产物及浏览器环境的证据必须对应其被测对象，历史运行结果
 不能替代当前扩展的验证。原有边界的选择依据记录在

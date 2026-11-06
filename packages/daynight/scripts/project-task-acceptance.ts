@@ -35,6 +35,12 @@ export const coveragePackages = (packages: readonly string[]): string[] => {
   return packages.filter((name) => name !== e2ePackage);
 };
 
+// Go's default package-local instrumentation misses DAO calls made by the
+// assembled backend tests. Use only go-list packages so imported testdata
+// fixtures do not enter the production coverage profile.
+export const coverageGoFlags = (goFlags: string | undefined, packages: readonly string[]): string =>
+  [goFlags, `-coverpkg=${packages.join(",")}`].filter((value) => value !== undefined && value !== "").join(" ");
+
 export const requireTestOnlyE2E = async (directory: string): Promise<void> => {
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
@@ -152,7 +158,7 @@ export const runProjectTaskAcceptance = async (suite: BudgetProbeSuite = "deadli
         throw error;
       }
     } else {
-      try { evidence.goCoverage = await runCommand("go", goArguments.coverage, serverRoot, { ...env, GOFLAGS: goArguments.coverageGoFlags }, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
+      try { evidence.goCoverage = await runCommand("go", goArguments.coverage, serverRoot, { ...env, GOFLAGS: coverageGoFlags(goArguments.coverageGoFlags, productionPackages) }, fixtureModule.terminateInstalledProcess, cancellation.signal, 12 * 60_000); }
       catch (error) {
         if (typeof error === "object" && error !== null && "commandReceipt" in error) evidence.goCoverage = error.commandReceipt as CommandReceipt;
         throw error;

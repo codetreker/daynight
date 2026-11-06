@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -34,7 +35,7 @@ func (action taskQueryAction) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ 
 	}
 }
 
-func tracedStore(t *testing.T, databaseURL string, action taskQueryAction) *store.Store {
+func tracedStore(t *testing.T, databaseURL string, action taskQueryAction) *postgres.Store {
 	t.Helper()
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -46,7 +47,7 @@ func tracedStore(t *testing.T, databaseURL string, action taskQueryAction) *stor
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return &store.Store{Pool: pool}
+	return &postgres.Store{Pool: pool}
 }
 
 func assertOperational(t *testing.T, err error) {
@@ -62,7 +63,7 @@ type taskResult struct {
 	err  error
 }
 
-func waitForTaskWriters(t *testing.T, ctx context.Context, database *store.Store, count int) {
+func waitForTaskWriters(t *testing.T, ctx context.Context, database *postgres.Store, count int) {
 	t.Helper()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
@@ -96,12 +97,12 @@ func receiveTaskResult(t *testing.T, ctx context.Context, result <-chan taskResu
 	}
 }
 
-func writeProjectForTest(s *store.Store, ctx context.Context, id string, operation func(store.ProjectWriteScope) error) error {
+func writeProjectForTest(s *postgres.Store, ctx context.Context, id string, operation func(store.ProjectWriteScope) error) error {
 	_, err := s.WriteProject(ctx, id, operation)
 	return err
 }
 
-func competeTaskWrites(t *testing.T, database *store.Store, projectID string, operations ...func(context.Context) (model.Task, error)) []taskResult {
+func competeTaskWrites(t *testing.T, database *postgres.Store, projectID string, operations ...func(context.Context) (model.Task, error)) []taskResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -141,7 +142,7 @@ func assertOneTaskWinner(t *testing.T, results []taskResult, code string) {
 	}
 }
 
-func workerMember(t *testing.T, database *store.Store, projectID string) model.Principal {
+func workerMember(t *testing.T, database *postgres.Store, projectID string) model.Principal {
 	t.Helper()
 	principal := servicePrincipal(t, database)
 	if err := writeProjectForTest(database, context.Background(), projectID, func(tx store.ProjectWriteScope) error {
