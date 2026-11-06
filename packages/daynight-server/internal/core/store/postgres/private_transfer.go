@@ -42,9 +42,11 @@ func (s *Store) WritePrivateTransfer(ctx context.Context, operation func(store.P
 	return store.Completion{Outcome: outcome}, err
 }
 
-func (d *privateTransferDAO) Stats(ctx context.Context, pending string) (store.PrivateTransferStats, error) {
+// Fixed state predicates in these queries match the partial indexes in migration 041,
+// including when PostgreSQL selects a generic prepared plan.
+func (d *privateTransferDAO) Stats(ctx context.Context) (store.PrivateTransferStats, error) {
 	var stats store.PrivateTransferStats
-	err := d.tx.QueryRow(ctx, `SELECT l.reserved_bytes, count(t.id), min(t.created_at) FROM private_transfer_ledger l LEFT JOIN private_transfers t ON t.state=$1 WHERE l.singleton GROUP BY l.reserved_bytes`, pending).Scan(&stats.ReservedBytes, &stats.CleanupPending, &stats.OldestPendingCreatedAt)
+	err := d.tx.QueryRow(ctx, `SELECT l.reserved_bytes, count(t.id), min(t.created_at) FROM private_transfer_ledger l LEFT JOIN private_transfers t ON t.state='cleanup_pending' WHERE l.singleton GROUP BY l.reserved_bytes`).Scan(&stats.ReservedBytes, &stats.CleanupPending, &stats.OldestPendingCreatedAt)
 	if err != nil {
 		return store.PrivateTransferStats{}, pg.QueryError("read private transfer statistics", err)
 	}
@@ -142,9 +144,9 @@ func (d *privateTransferDAO) Insert(ctx context.Context, t model.PrivateTransfer
 	return result, true, nil
 }
 
-func (d *privateTransferDAO) CountActive(ctx context.Context, userID, closedState string) (int, error) {
+func (d *privateTransferDAO) CountActive(ctx context.Context, userID string) (int, error) {
 	var active int
-	if err := d.tx.QueryRow(ctx, `SELECT count(*) FROM private_transfers WHERE user_id=$1 AND state<>$2`, userID, closedState).Scan(&active); err != nil {
+	if err := d.tx.QueryRow(ctx, `SELECT count(*) FROM private_transfers WHERE user_id=$1 AND state<>'closed'`, userID).Scan(&active); err != nil {
 		return 0, pg.QueryError("count active private transfers", err)
 	}
 	return active, nil
@@ -217,13 +219,13 @@ func (d *privateTransferDAO) Release(ctx context.Context, t model.PrivateTransfe
 	return scanPrivateTransfer(d.tx.QueryRow(ctx, `UPDATE private_transfers SET state=$4,reserved_bytes=0,outstanding_bytes=0,retain_until=$3,lease_until=NULL,updated_at=clock_timestamp(),version=version+1 WHERE id=$1 AND version=$2 RETURNING `+transferColumns, t.ID, expected, retainUntil, closedState))
 }
 
-func (d *privateTransferDAO) Due(ctx context.Context, now time.Time, limit int, states store.PrivateTransferDueStates) ([]model.PrivateTransfer, error) {
+func (d *privateTransferDAO) Due(ctx context.Context, now time.Time, limit int) ([]model.PrivateTransfer, error) {
 	rows, err := d.tx.Query(ctx, `WITH candidates AS (
- SELECT id FROM private_transfers WHERE state<>$3
- AND (state=$4 OR expires_at<=$1 OR hard_expires_at<=$1 OR (state=$5 AND (lease_until IS NULL OR lease_until<=$1)))
- AND (state<>$5 OR lease_until IS NULL OR lease_until<=$1)
- ORDER BY COALESCE(last_cleanup_attempt,LEAST(expires_at,hard_expires_at,CASE WHEN state=$4 THEN updated_at WHEN state=$5 THEN COALESCE(lease_until,created_at) ELSE expires_at END)),id LIMIT $2 FOR UPDATE SKIP LOCKED
- ) UPDATE private_transfers SET last_cleanup_attempt=$1,version=version+1 WHERE id IN (SELECT id FROM candidates) RETURNING `+transferColumns, now, limit, states.Closed, states.Pending, states.Committing)
+ SELECT id FROM private_transfers WHERE state<>'closed'
+ AND (state='cleanup_pending' OR expires_at<=$1 OR hard_expires_at<=$1 OR (state='committing' AND (lease_until IS NULL OR lease_until<=$1)))
+ AND (state<>'committing' OR lease_until IS NULL OR lease_until<=$1)
+ ORDER BY COALESCE(last_cleanup_attempt,LEAST(expires_at,hard_expires_at,CASE WHEN state='cleanup_pending' THEN updated_at WHEN state='committing' THEN COALESCE(lease_until,created_at) ELSE expires_at END)),id LIMIT $2 FOR UPDATE SKIP LOCKED
+ ) UPDATE private_transfers SET last_cleanup_attempt=$1,version=version+1 WHERE id IN (SELECT id FROM candidates) RETURNING `+transferColumns, now, limit)
 	if err != nil {
 		return nil, pg.QueryError("list due private transfers", err)
 	}
@@ -242,8 +244,8 @@ func (d *privateTransferDAO) Due(ctx context.Context, now time.Time, limit int, 
 	return result, nil
 }
 
-func (d *privateTransferDAO) Prune(ctx context.Context, now time.Time, limit int, closed string) (int64, error) {
-	result, err := d.tx.Exec(ctx, `DELETE FROM private_transfers WHERE id IN (SELECT id FROM private_transfers WHERE state=$3 AND retain_until<=$1 ORDER BY retain_until,id LIMIT $2)`, now, limit, closed)
+func (d *privateTransferDAO) Prune(ctx context.Context, now time.Time, limit int) (int64, error) {
+	result, err := d.tx.Exec(ctx, `DELETE FROM private_transfers WHERE id IN (SELECT id FROM private_transfers WHERE state='closed' AND retain_until<=$1 ORDER BY retain_until,id LIMIT $2)`, now, limit)
 	if err != nil {
 		return 0, pg.QueryError("prune private transfers", err)
 	}

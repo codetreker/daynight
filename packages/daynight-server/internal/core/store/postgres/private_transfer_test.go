@@ -625,7 +625,7 @@ func TestPrivateTransferStats(t *testing.T) {
 	db := isolatedStore(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	_, err := db.WritePrivateTransfer(ctx, func(d store.PrivateTransferDAO) error {
-		stats, e := transfercore.Stats(ctx, d)
+		stats, e := d.Stats(ctx)
 		if e != nil {
 			return e
 		}
@@ -654,7 +654,7 @@ func TestPrivateTransferStats(t *testing.T) {
 				return e
 			}
 		}
-		stats, e := transfercore.Stats(ctx, d)
+		stats, e := d.Stats(ctx)
 		if e != nil {
 			return e
 		}
@@ -1094,7 +1094,7 @@ func TestPrivateTransferDatabaseFailuresRollback(t *testing.T) {
 		if _, e := d.tx.Exec(ctx, `DROP TABLE private_transfer_ledger`); e != nil {
 			return e
 		}
-		_, e := transfercore.Stats(ctx, d)
+		_, e := d.Stats(ctx)
 		return e
 	})
 	fail(func(d *privateTransferDAO) error {

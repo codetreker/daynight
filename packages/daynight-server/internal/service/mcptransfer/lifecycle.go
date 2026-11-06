@@ -544,7 +544,7 @@ func (s *Lifecycle) Maintain(ctx context.Context) error {
 		failures = append(failures, err)
 	}
 	var stats store.PrivateTransferStats
-	if e := s.transaction(ctx, func(d store.PrivateTransferDAO) error { var err error; stats, err = transfer.Stats(ctx, d); return err }); e != nil {
+	if e := s.transaction(ctx, func(d store.PrivateTransferDAO) error { var err error; stats, err = d.Stats(ctx); return err }); e != nil {
 		failures = append(failures, e)
 	} else {
 		s.logger.InfoContext(ctx, "private transfer maintenance", "component", "mcptransfer", "sweep_id", sweepID, "temp_reserved_bytes", stats.ReservedBytes, "temp_budget_bytes", s.budget, "cleanup_backlog", stats.CleanupPending, "cleanup_oldest", stats.OldestPendingCreatedAt)

@@ -34,6 +34,8 @@ type AuthorizationDAO interface {
 	UpdateAuthorization(context.Context, OAuthAuthorization) error
 	FreshTime(context.Context, time.Time) (time.Time, error)
 	LockAuthorizationCapacity(context.Context) error
-	ExpiredAuthorizations(context.Context, time.Time, int, string) ([]OAuthAuthorization, error)
+	AuthorizationCleanupCursor(context.Context) (int, error)
+	SetAuthorizationCleanupCursor(context.Context, int) error
+	ExpiredAuthorizations(context.Context, time.Time, int) ([]OAuthAuthorization, error)
 	DeleteRetainedAuthorizations(context.Context, time.Time, int) (int, error)
 }

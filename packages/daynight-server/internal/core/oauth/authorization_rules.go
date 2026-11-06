@@ -44,11 +44,11 @@ func AuthorizationStatus(a store.OAuthAuthorization, now time.Time) (string, boo
 	return status, status == "approved" && (a.CodeExpiresAt == nil || !a.CodeExpiresAt.After(now))
 }
 
-// DecideAuthorization applies a single decision to a locked authorization.
 func ValidAuthorizationDecision(decision string) bool {
 	return decision == "approve" || decision == "deny"
 }
 
+// DecideAuthorization applies a single decision to a locked authorization.
 func DecideAuthorization(a *store.OAuthAuthorization, binding, decision, userID, issuer string, now time.Time) (string, error) {
 	if !AuthorizationBound(*a, binding) || a.Status != "pending" || !a.ExpiresAt.After(now) || !ValidAuthorizationDecision(decision) {
 		return "", ErrInvalidAuthorization
@@ -76,11 +76,19 @@ func DecideAuthorization(a *store.OAuthAuthorization, binding, decision, userID,
 
 type CodeBinding struct{ ClientID, RedirectURI, Resource, Verifier string }
 
-// CheckAuthorizationCode validates bindings before allowing issue or replay.
+// CheckAuthorizationCodeBinding verifies the immutable code bindings.
+func CheckAuthorizationCodeBinding(a store.OAuthAuthorization, binding CodeBinding) error {
+	if a.ClientID != binding.ClientID || a.RedirectURI != binding.RedirectURI || a.Resource != binding.Resource || a.Scope != Scope || !VerifyChallenge(a.Challenge, binding.Verifier) {
+		return ErrInvalidGrant
+	}
+	return nil
+}
+
+// CheckAuthorizationCode validates issue or replay after checking the bindings.
 // A replay must be committed with the family revocation by the caller.
 func CheckAuthorizationCode(a store.OAuthAuthorization, binding CodeBinding, now time.Time) (bool, error) {
-	if a.ClientID != binding.ClientID || a.RedirectURI != binding.RedirectURI || a.Resource != binding.Resource || a.Scope != Scope || !VerifyChallenge(a.Challenge, binding.Verifier) {
-		return false, ErrInvalidGrant
+	if err := CheckAuthorizationCodeBinding(a, binding); err != nil {
+		return false, err
 	}
 	if a.Status == "consumed" {
 		return true, nil
@@ -108,22 +116,59 @@ func PruneAuthorizationBatch(ctx context.Context, dao store.AuthorizationDAO, no
 	if err := dao.LockAuthorizationCapacity(ctx); err != nil {
 		return 0, err
 	}
-	candidates, err := dao.ExpiredAuthorizations(ctx, now, limit, "pending")
+	if limit <= 0 {
+		return 0, nil
+	}
+	start, err := dao.AuthorizationCleanupCursor(ctx)
 	if err != nil {
 		return 0, err
 	}
-	fresh, err := dao.FreshTime(ctx, now)
-	if err != nil {
+	if err := dao.SetAuthorizationCleanupCursor(ctx, (start+limit)%2); err != nil {
 		return 0, err
 	}
-	for _, a := range candidates {
-		if a.Status == "pending" && !a.ExpiresAt.After(fresh) {
-			a.Status, a.State, a.StatePresent = "expired", "", false
-			if err := dao.UpdateAuthorization(ctx, a); err != nil {
-				return 0, err
+	prune := func(kind, quota int) (int, error) {
+		if kind == 1 {
+			return dao.DeleteRetainedAuthorizations(ctx, now, quota)
+		}
+		candidates, err := dao.ExpiredAuthorizations(ctx, now, quota)
+		if err != nil || len(candidates) == 0 {
+			return 0, err
+		}
+		fresh, err := dao.FreshTime(ctx, now)
+		if err != nil {
+			return 0, err
+		}
+		for _, a := range candidates {
+			if a.Status == "pending" && !a.ExpiresAt.After(fresh) {
+				a.Status, a.State, a.StatePresent = "expired", "", false
+				if err := dao.UpdateAuthorization(ctx, a); err != nil {
+					return 0, err
+				}
 			}
 		}
+		return len(candidates), nil
 	}
-	deleted, err := dao.DeleteRetainedAuthorizations(ctx, now, limit-len(candidates))
-	return len(candidates) + deleted, err
+	total := 0
+	for offset := 0; offset < 2; offset++ {
+		quota := limit / 2
+		if offset < limit%2 {
+			quota++
+		}
+		if quota == 0 {
+			continue
+		}
+		n, err := prune((start+offset)%2, quota)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	for offset := 0; offset < 2 && total < limit; offset++ {
+		n, err := prune((start+offset)%2, limit-total)
+		if err != nil {
+			return total, err
+		}
+		total += n
+	}
+	return total, nil
 }

@@ -59,8 +59,8 @@ func (d *DAO) LockAuthorizationCapacity(ctx context.Context) error {
 	return pg.AuthQueryError("lock OAuth authorization capacity", err)
 }
 
-func (d *DAO) ExpiredAuthorizations(ctx context.Context, now time.Time, limit int, status string) ([]store.OAuthAuthorization, error) {
-	rows, err := d.tx.Query(ctx, `SELECT `+authorizationColumns+` FROM oauth_authorizations WHERE status=$3 AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED`, now, limit, status)
+func (d *DAO) ExpiredAuthorizations(ctx context.Context, now time.Time, limit int) ([]store.OAuthAuthorization, error) {
+	rows, err := d.tx.Query(ctx, `SELECT `+authorizationColumns+` FROM oauth_authorizations WHERE status='pending' AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED`, now, limit)
 	if err != nil {
 		return nil, pg.AuthQueryError("read expiring OAuth authorizations", err)
 	}
@@ -79,4 +79,16 @@ func (d *DAO) ExpiredAuthorizations(ctx context.Context, now time.Time, limit in
 func (d *DAO) DeleteRetainedAuthorizations(ctx context.Context, now time.Time, limit int) (int, error) {
 	tag, err := d.tx.Exec(ctx, `DELETE FROM oauth_authorizations WHERE id IN (SELECT id FROM oauth_authorizations WHERE retain_until<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY retain_until,id LIMIT $2 FOR UPDATE SKIP LOCKED)`, now, limit)
 	return int(tag.RowsAffected()), pg.AuthQueryError("prune OAuth authorizations", err)
+}
+
+// AuthorizationCleanupCursor locks the persistent position for this transaction.
+func (d *DAO) AuthorizationCleanupCursor(ctx context.Context) (int, error) {
+	var start int
+	err := d.tx.QueryRow(ctx, `SELECT next_kind FROM oauth_authorization_cleanup_cursor WHERE singleton=true FOR UPDATE`).Scan(&start)
+	return start, pg.AuthQueryError("read OAuth authorization cleanup cursor", err)
+}
+
+func (d *DAO) SetAuthorizationCleanupCursor(ctx context.Context, next int) error {
+	_, err := d.tx.Exec(ctx, `UPDATE oauth_authorization_cleanup_cursor SET next_kind=$1 WHERE singleton=true`, next)
+	return pg.AuthQueryError("advance OAuth authorization cleanup cursor", err)
 }

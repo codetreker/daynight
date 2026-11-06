@@ -21,7 +21,7 @@ func Create(ctx context.Context, d store.PrivateTransferDAO, t model.PrivateTran
 	if err = d.LockLedger(ctx); err != nil {
 		return model.PrivateTransfer{}, false, err
 	}
-	active, err := d.CountActive(ctx, t.UserID, "closed")
+	active, err := d.CountActive(ctx, t.UserID)
 	if err != nil {
 		return model.PrivateTransfer{}, false, err
 	}
@@ -134,14 +134,11 @@ func Due(ctx context.Context, d store.PrivateTransferDAO, now time.Time, limit i
 	if limit < 1 || limit > 100 {
 		return nil, &model.Fault{Code: "invalid_input", Message: "Invalid maintenance batch size."}
 	}
-	return d.Due(ctx, now, limit, store.PrivateTransferDueStates{Closed: "closed", Pending: "cleanup_pending", Committing: "committing"})
+	return d.Due(ctx, now, limit)
 }
 func Prune(ctx context.Context, d store.PrivateTransferDAO, now time.Time, limit int) (int64, error) {
 	if limit < 1 || limit > 100 {
 		return 0, &model.Fault{Code: "invalid_input", Message: "Invalid maintenance batch size."}
 	}
-	return d.Prune(ctx, now, limit, "closed")
-}
-func Stats(ctx context.Context, d store.PrivateTransferDAO) (store.PrivateTransferStats, error) {
-	return d.Stats(ctx, "cleanup_pending")
+	return d.Prune(ctx, now, limit)
 }
