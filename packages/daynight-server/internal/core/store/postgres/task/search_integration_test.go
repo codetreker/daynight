@@ -2,14 +2,14 @@ package task_test
 
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch/query"
 	"testing"
 )
 
-func atom(field query.Field, term string) *query.Node {
-	return &query.Node{Kind: query.Leaf, Atom: query.Atom{Field: field, Term: term}}
+func atom(field tasksearch.Field, term string) *tasksearch.Node {
+	return &tasksearch.Node{Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: field, Term: term}}
 }
 func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 	f := newFixture(t)
@@ -33,7 +33,7 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 	if fence.Epoch == "" || fence.Count != "4" || fence.VersionSum != "5" {
 		t.Fatalf("search fence: %+v", fence)
 	}
-	page, e := s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(query.AnyField, "alpha"), Limit: 3})
+	page, e := s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 3})
 	mustOK(t, e)
 	if page.Total != 4 || len(page.Items) != 3 || !page.HasMore {
 		t.Fatalf("search page: %+v", page)
@@ -44,23 +44,23 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 		}
 	}
 	last := page.Items[2]
-	page, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(query.AnyField, "alpha"), Limit: 3, After: &store.TaskSearchPosition{ID: last.ID, UpdatedAt: last.UpdatedAt, TitlePriority: last.TitlePriority}})
+	page, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 3, After: &store.TaskSearchPosition{ID: last.ID, UpdatedAt: last.UpdatedAt, TitlePriority: last.TitlePriority}})
 	mustOK(t, e)
 	if page.Total != 4 || len(page.Items) != 1 || page.Items[0].ID != b.ID || page.Items[0].TitlePriority || page.HasMore {
 		t.Fatalf("continuation: %+v", page)
 	}
 	cases := []struct {
 		name string
-		expr *query.Node
+		expr *tasksearch.Node
 		ids  []string
 	}{
-		{"title", atom(query.TitleField, "alpha"), []string{a.ID, c.ID, d.ID}},
-		{"description", atom(query.DescriptionField, "red"), []string{a.ID, b.ID}},
-		{"and", &query.Node{Kind: query.And, Left: atom(query.AnyField, "alpha"), Right: atom(query.DescriptionField, "red")}, []string{a.ID, b.ID}},
-		{"or", &query.Node{Kind: query.Or, Left: atom(query.TitleField, "second"), Right: atom(query.DescriptionField, "blue")}, []string{b.ID, c.ID}},
-		{"negation", &query.Node{Kind: query.And, Left: atom(query.AnyField, "alpha"), Right: &query.Node{Kind: query.Leaf, Atom: query.Atom{Field: query.AnyField, Term: "blue"}, Negated: true}}, []string{a.ID, b.ID, d.ID}},
-		{"duplicate", &query.Node{Kind: query.And, Left: atom(query.TitleField, "alpha"), Right: atom(query.TitleField, "alpha")}, []string{a.ID, c.ID, d.ID}},
-		{"nul", atom(query.AnyField, "\x00"), []string{}},
+		{"title", atom(tasksearch.TitleField, "alpha"), []string{a.ID, c.ID, d.ID}},
+		{"description", atom(tasksearch.DescriptionField, "red"), []string{a.ID, b.ID}},
+		{"and", &tasksearch.Node{Kind: tasksearch.And, Left: atom(tasksearch.AnyField, "alpha"), Right: atom(tasksearch.DescriptionField, "red")}, []string{a.ID, b.ID}},
+		{"or", &tasksearch.Node{Kind: tasksearch.Or, Left: atom(tasksearch.TitleField, "second"), Right: atom(tasksearch.DescriptionField, "blue")}, []string{b.ID, c.ID}},
+		{"negation", &tasksearch.Node{Kind: tasksearch.And, Left: atom(tasksearch.AnyField, "alpha"), Right: &tasksearch.Node{Kind: tasksearch.Leaf, Atom: tasksearch.Atom{Field: tasksearch.AnyField, Term: "blue"}, Negated: true}}, []string{a.ID, b.ID, d.ID}},
+		{"duplicate", &tasksearch.Node{Kind: tasksearch.And, Left: atom(tasksearch.TitleField, "alpha"), Right: atom(tasksearch.TitleField, "alpha")}, []string{a.ID, c.ID, d.ID}},
+		{"nul", atom(tasksearch.AnyField, "\x00"), []string{}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -81,7 +81,7 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 		})
 	}
 	for _, filter := range []model.TaskAssignmentFilter{{Mode: model.TaskAssignmentUnassigned}, {Mode: model.TaskAssignmentUser, UserID: f.user}} {
-		p, e := s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(query.AnyField, "alpha"), Limit: 100, AssignedTo: filter})
+		p, e := s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 100, AssignedTo: filter})
 		mustOK(t, e)
 		want := int64(3)
 		if filter.Mode == model.TaskAssignmentUser {
@@ -92,7 +92,7 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 		}
 	}
 	ready := true
-	p, e := s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(query.AnyField, "alpha"), Limit: 100, Ready: &ready, AllowAgents: &ready})
+	p, e := s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "alpha"), Limit: 100, Ready: &ready, AllowAgents: &ready})
 	mustOK(t, e)
 	if p.Total != 1 || p.Items[0].ID != a.ID {
 		t.Fatalf("ready search: %+v", p)
@@ -121,15 +121,15 @@ func TestSearchSnapshotMatchingPaginationAndContext(t *testing.T) {
 	if size.NodeCount != 0 {
 		t.Fatal("deleted root retained")
 	}
-	for _, bad := range []*query.Node{nil, atom(query.AnyField, ""), atom(query.Field(9), "a"), {Kind: query.Kind(9)}, {Kind: query.And, Left: nil, Right: atom(query.AnyField, "a")}} {
+	for _, bad := range []*tasksearch.Node{nil, atom(tasksearch.AnyField, ""), atom(tasksearch.Field(9), "a"), {Kind: tasksearch.Kind(9)}, {Kind: tasksearch.And, Left: nil, Right: atom(tasksearch.AnyField, "a")}} {
 		if _, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: bad, Limit: 1}); e == nil {
 			t.Fatalf("invalid expression accepted: %+v", bad)
 		}
 	}
-	if _, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(query.AnyField, "a"), Limit: 0}); e == nil {
+	if _, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "a"), Limit: 0}); e == nil {
 		t.Fatal("invalid limit accepted")
 	}
-	if _, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(query.AnyField, "a"), Limit: 1, AssignedTo: model.TaskAssignmentFilter{Mode: "bad"}}); e == nil {
+	if _, e = s.Matches(ctx, f.project, store.TaskSearchQuery{Expression: atom(tasksearch.AnyField, "a"), Limit: 1, AssignedTo: model.TaskAssignmentFilter{Mode: "bad"}}); e == nil {
 		t.Fatal("invalid assignment accepted")
 	}
 }

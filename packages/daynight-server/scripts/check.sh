@@ -32,10 +32,6 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache
 
-# Include imported Go packages exercised by assembled module tests.
-coverage_packages="$(go list ./... | paste -sd, -)"
-export GOFLAGS="${GOFLAGS:+$GOFLAGS }-coverpkg=$coverage_packages"
-
 export CI=true
 go run github.com/codetreker/go-cov/cmd/go-cov@v0.1.4
 node scripts/coverage.mts coverage.out
