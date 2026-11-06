@@ -65,7 +65,7 @@ continues those redirected requests before invoking user routes.
 
 ## Consequences
 
-The native and container executions retain all existing login, responsive layout,
+Each selected runtime retains the existing login, responsive layout,
 session reload and logout assertions with zero retries. Focused regressions
 exercise success, original timeout preservation, multiple cleanup failures,
 bounded cleanup and diagnostic attachment failures. Ordinary traces remain off.

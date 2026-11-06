@@ -338,8 +338,7 @@ FA1–FA14 的验收覆盖存储、HTTP、CLI、Web、部署、布局迁移和�
 持久性，实际安装 CLI 验证二进制字节，生产浏览器验证相对资源和可信 HTML 交互。
 Go 和 Web 既有覆盖率及原生 CLI 检查持续有效；Go race 按[服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)在本地默认及 main CI 开启、PR CI 关闭。
 
-实际服务验收在原生和
-生产容器两个目标上由已安装 CLI 与页面交叉读取同一 task 文件；二进制按原始字节
+实际服务验收在所选生产目标上由已安装 CLI 与页面交叉读取同一 task 文件；二进制按原始字节
 比较，PDF 必须在 compositor 截图中出现预期色块，HTML 相对资源通过可见交互验证。
 验收通过正常 UniAuth 登录取得会话或 PAT，API 数据准备和安装 CLI 复用当前用户
 凭据，凭据只写私有夹具元数据。图场景保持只读，但 `refresh-staleness` 仅允许一次已登记 fixture task/file PUT，挂起真实上传响应并跨自动读取验证状态保留；附件场景和[双语需求](daynight-web-i18n.md)的 `language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE；后者检查语言切换的状态保持及挂起写入的状态和次数，组件测试另以受控语言变化验证在途操作。JSDOM 不具备布局，

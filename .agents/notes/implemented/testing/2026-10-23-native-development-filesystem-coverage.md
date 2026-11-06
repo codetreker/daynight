@@ -26,7 +26,7 @@ An alias write returns the existing attachment path-conflict response before
 metadata is written. This protects existing bytes without promising coexistence
 of differently cased names on an insensitive filesystem.
 
-Default Web acceptance uses an owned ordinary directory on macOS and records the
+Explicit native Web acceptance uses an owned ordinary directory on macOS and records the
 measured case-sensitivity capability. Its native attachment fixture avoids the
 directory-case collision when that capability is absent. The same functional,
 authentication and cleanup scenarios execute. The
@@ -49,9 +49,10 @@ The [original macOS acceptance decision](2026-10-22-macos-web-acceptance.md)
 required automatic images to preserve the then-current native storage contract.
 This decision replaces that default and coverage policy. Its ownership checks,
 bounded ordinary detach, persisted transitions, and recovery behavior remain.
-Recovery does not require opting into a new attachment. Existing receipts remain
-recoverable; a missing capability field in an old receipt is not evidence of a
-measured capability.
+Recovery does not require opting into a new attachment. Current schema-4 receipts
+retain recorded storage capability; older top-level evidence versions are rejected
+under the [single-target policy](2026-11-06-single-target-web-acceptance.md). A
+missing capability is not evidence of a measured capability.
 
 ## Alternatives
 

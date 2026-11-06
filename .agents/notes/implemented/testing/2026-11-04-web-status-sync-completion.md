@@ -61,6 +61,6 @@ there is no response fallback, generation protocol or changed test budget.
 
 A minimal browser diagnostic validates that the completed-event waiter ignores
 an aborted 200 response, selects the successful replacement and observes rendered
-state. Genuine native/container production acceptance remains necessary for
+state. Genuine selected-target production acceptance remains necessary for
 the complete status journeys; this diagnostic does not establish their full
 business behavior or classify the historical timeout as infrastructure.

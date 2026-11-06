@@ -4,9 +4,9 @@ Status: implemented
 
 ## Problem
 
-Complete Web browser validation repeats a substantial functional workload in
-native and container deployments. Their execution already overlaps within a
-runner, but both complete inventories remain on that runner's critical path.
+At the original sharding decision, complete Web validation repeated its
+functional workload against native and container deployments. Those executions
+already overlapped within one runner but still formed its browser critical path.
 Sharing selected fixture preparation reduced setup operations without proving a
 causal hosted-CI latency improvement.
 
@@ -19,27 +19,26 @@ acceptance, and selected validation cannot be accepted as skipped.
 
 The existing `verify-web` job is a two-entry matrix with `fail-fast: false`.
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
---shard=i/2`. The current 32-case inventory partitions into two disjoint sets of
-16; each shard executes its selection against separate native and container
-deployments. Fully-parallel controls case selection while each database retains
-one serial browser worker. The existing within-run native/container overlap,
-private profile roots, permission binding and shared CLI recovery barrier apply
-to both shards.
+--shard=i/2`. Each shard executes its selection once on an independent production
+container. Fully-parallel controls case selection while each database retains
+one serial browser worker. The [single-target decision](2026-11-06-single-target-web-acceptance.md)
+replaces the original dual-target execution and permission handoff, retaining
+private profiles, source binding and actual CLI/resource cleanup.
 
 Before service preparation, complete and selected collection use the same
 functional arguments as execution and the canonical scenario names from pure
 `inventory.mts`. The selected IDs and shard identity are recorded in the existing
-schema 3 functional evidence. Container callbacks read that selection through the
+schema 4 functional evidence. Container callbacks read that selection through the
 existing source/run-bound parent receipt. Failed, malformed or incomplete
 collection cannot establish a valid selection.
 
-Shard 2 owns all existing once-only checks: 28 navigation-contract cases, dev-ci
-lifecycle fixtures, both eleven-check combined-authentication journeys, and real
+Shard 2 owns all existing once-only checks: complete navigation-contract cases, dev-ci
+lifecycle fixtures, one container eleven-check combined-authentication journey, and real
 attachment persistence with paired-backup restoration. Ownership derives from
-the shard identity. Every shard still verifies its functional targets, built and
+the shard identity. Every shard still verifies its one functional target, built and
 running image identity, private resources, browser recovery and CLI cleanup.
 Local ordinary validation remains complete and unsharded; local stress adds the
-same capacity cases after cleanup barriers and rejects a shard combination
+same native capacity cases after cleanup barriers and rejects a shard combination
 before preparing resources.
 
 Each entry uploads its complete artifact and a small summary containing only the
@@ -49,7 +48,8 @@ succeed. It checks out current source, sets up Node 24, downloads both exact
 summary names and runs the install-free report validator. Passing requires
 shards 1/2 and 2/2 with distinct run IDs, clean successful evidence at the current
 `GITHUB_SHA` and checkout tree, exact target/phase cleanup and inventories,
-disjoint canonical coverage and both complete combined receipts only on shard 2.
+disjoint canonical coverage and one complete container combined receipt only on
+shard 2. The two receipts must each declare container and contain it exactly once.
 Missing, duplicated, wrongly sourced or incomplete evidence fails that gate.
 Executable files, images and runtime ownership do not cross runner boundaries.
 
@@ -57,7 +57,8 @@ This supersedes the single complete browser job retained by the
 [quality isolation decision](2026-10-26-web-quality-job-isolation.md) and the
 per-invocation complete CI inventory in the
 [functional target decision](2026-11-04-web-functional-target-overlap.md).
-Their independent quality budgets and within-run resource guarantees remain.
+Independent quality budgets and phase-private resource ownership remain; current
+single-target policy is owned by the later decision linked above.
 The [Web validation guide](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns commands, artifact names and receipt details.
 
@@ -67,8 +68,9 @@ owns commands, artifact names and receipt details.
 preparation and cleanup, but retains all functional cases on one critical path.
 Selected fixture sharing alone did not establish the desired hosted latency.
 
-**Use default file-level sharding.** The current suite divides 24/8 by file.
-Case-level selection yields 16/16 without concurrent access to a shared database.
+**Use default file-level sharding.** At the sharding decision, the 32-case suite
+divided 24/8 by file. Case-level selection yielded 16/16 without concurrent access
+to a shared database.
 The complete canonical union remains independently checked.
 
 **Repeat every extra check in both shards.** Navigation, lifecycle,

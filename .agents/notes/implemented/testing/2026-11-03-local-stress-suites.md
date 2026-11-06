@@ -49,19 +49,20 @@ selects four real 128 MiB/256 MiB exact-limit and +1-byte probes. The separate
 source, installation, precise scenario inventory and cleanup. Production limits
 and full-size boundary assertions are unchanged.
 
-Default browser acceptance requires thirty-six native and thirty-six container
-functional scenarios (72 total), both eleven-check combined-authentication
-receipts, source/browser
-identity and all existing resource cleanup. Explicit local `--stress` adds five
-native capacity/limit scenarios (41 native / 36 container, 77 total) after
-functional execution and container/browser cleanup. It preserves all complete API datasets, five repetitions, timing
-budgets, strict performance receipts and browser diagnostics. Schema 3 evidence
-records `mode: functional` or `mode: stress`; exact report validation follows
-that mode. Raw Playwright discovery excludes the capacity spec by default.
-The later [case-shard decision](2026-11-04-web-ci-case-shards.md) distributes only
-CI functional cases, with complete union validation and combined authentication
-on shard 2. Local default and stress remain complete and unsharded, and a
-stress/shard combination fails before preparation.
+Default browser acceptance executes the complete canonical functional inventory
+once on the production container, with one eleven-check combined-authentication
+receipt, source/browser identity and actual resource cleanup. The
+[single-target decision](2026-11-06-single-target-web-acceptance.md) removes the
+original native/container repetition. Explicit `--native`, `--apfs` or `--stress`
+selects native instead; stress adds five capacity/limit scenarios after functional
+and browser/CLI cleanup. It preserves complete API datasets, five repetitions,
+timing budgets, strict performance receipts and browser diagnostics. Schema 4
+evidence records the selected target and functional/stress mode; exact report
+validation follows that mode. Raw discovery excludes capacity by default.
+The [case-shard decision](2026-11-04-web-ci-case-shards.md) distributes only CI
+container functional cases, with complete union validation and one combined
+journey on shard 2. Local default and stress remain complete and unsharded; CI
+stress and a stress/shard combination fail before preparation.
 The [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns execution order and evidence interpretation.
 

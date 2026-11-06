@@ -38,17 +38,15 @@ decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
 isolation and full product-source manifest remain unchanged.
 
 Browser mode installs pinned Chromium with Linux dependencies under the existing
-600-second bound, then invokes ordinary core acceptance. That runner owns native
-and container preparation, atomic permission release, recovery and cleanup.
-The [functional target decision](2026-11-04-web-functional-target-overlap.md)
-replaces the original native-before-container functional browser order with
-concurrent isolated targets and a shared CLI cleanup barrier. The [local stress decision](2026-11-03-local-stress-suites.md)
-partially supersedes the original mandatory capacity phase: ordinary CI runs the
-complete functional inventory, while explicit local stress acceptance adds
-capacity after the same preparation and cleanup barriers. It has no quality/browser preparation callbacks,
-empty success phases or readiness-admission observer. Local acceptance continues
-to use its preinstalled browser through the same ordinary core. The existing
-`ready.json` remains diagnostic; it does not grant browser execution.
+600-second bound, then invokes the core acceptance runner. The
+[single-target decision](2026-11-06-single-target-web-acceptance.md) selects one
+production container by default and removes native repetition, permission waits
+and the dual-target pipeline. Explicit local native/APFS/stress runs select
+native; only local stress adds capacity after functional/browser and CLI cleanup.
+The earlier [functional overlap decision](2026-11-04-web-functional-target-overlap.md)
+preserves why both targets once overlapped and the phase-private ownership that
+remains. Local acceptance uses its preinstalled browser and does not add quality
+callbacks, empty success phases or readiness-admission observers.
 
 `runCiCommand` retains process ownership after each managed command settles.
 `requireGroupStopped` verifies that its owned process group has stopped, even
@@ -115,8 +113,8 @@ wait. Internal CI modes do not add a product CLI or deployment interface.
 This costs a second Node/pnpm setup and a separate quality artifact upload. It
 does not omit tests, weaken the strict coverage comparison, bypass process-group
 cleanup or replace protected merge checks. Wrapper tests cover full commands and
-errors; core tests retain native/container ordering, permission, optional local
-capacity ownership and cleanup without obsolete quality placeholders.
+errors; core tests retain selected-target identity, optional local capacity
+ownership and actual cleanup without obsolete quality placeholders.
 
 Isolation does not establish the CPU/I/O cause of an earlier timeout or guarantee
 a faster hosted run. Actual completion and elapsed-time observations remain

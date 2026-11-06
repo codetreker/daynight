@@ -610,7 +610,7 @@ Vite 保留原 /api Go 代理；设置同一 DAYNIGHT_UNIAUTH_CALLBACK_URL 后�
 
 ## 真实协议 fixture 与验证隐私
 
-Go、安装 CLI、Web native/container 和 Docker 附件/恢复调用方通过正常 UniAuth
+Go、安装 CLI、所选 Web runtime 和 Docker 附件/恢复调用方通过正常 UniAuth
 协议取得 session/PAT。共用固定 0978963 的 fixture 可执行文件与 bootstrap 协议，
 每个目标独立拥有 App、SQLite、端口、用户会话和清理。只控制外部 provider 响应，
 不直接插入 Daynight 用户、会话、PAT 或成员作为验收捷径。预算服务验证 Bearer，
@@ -660,10 +660,13 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 ```
 
 验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
-生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
-拥有实际领取结果后 TCP 断连，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
-重启、撤销、已准入上传和 socket 中断证明。两目标各有一份额外必需回执，当前
-26+26+5 共 57 项 Playwright inventory 与容量门槛保持；项目设置旅程单独拥有阈值读写与未知结果核对。
+生产浏览器及本地容量预算。[组合验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
+拥有实际领取结果后 TCP 断连，以及所选目标的浏览器和安装 CLI 同数据、原凭据重启、
+撤销、已准入上传和 socket 中断证明。默认与 CI 选择实际生产容器；显式本地原生
+入口才验证主机 runtime/文件系统组合。每次完整运行只生成一份十一项组合回执，
+CI 由 shard 2 拥有。功能规范清单与本地五项容量清单独立校验；项目设置旅程单独
+拥有阈值读写与未知结果核对。目标去重与覆盖取舍由
+[单目标验收决策](../../.agents/notes/implemented/testing/2026-11-06-single-target-web-acceptance.md)拥有。
 
 统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合
 结果核对当前源码、安装包、进程/镜像与清理；真实上游人工联调单独留证，缺少时

@@ -421,7 +421,7 @@ producer matrix, while final `checks` still requires macOS. The
 [single-allocation decision](.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
 owns macOS failure, evidence and budget handling. The Web selector enables a quality job and two
 browser matrix entries, each with a 20-minute bound. The two browser shards
-jointly cover the complete native/container inventory; shard 2 owns the shared
+jointly cover the complete production-container inventory once; shard 2 owns the shared
 navigation, deployment, combined-authentication and persistence checks. The
 server selector enables parallel coverage and E2E jobs, also bounded to 20 minutes
 each. All selected jobs are required by `checks` and retain their complete

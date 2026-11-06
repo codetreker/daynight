@@ -14,10 +14,11 @@ current language.
 ## Decision
 
 The [status assignment decision](../architecture/2026-10-24-task-status-assignment.md) owns the current three-state
-protocol. Status journeys use exact registered PUT status writes; current
-inventory is 33 native and 28 container results. The rollout counts below retain
-their original delivery context; repeatable current commands and mappings belong
-to the Web README.
+protocol. Status journeys use exact registered PUT status writes. Current
+validation executes the canonical functional inventory once on its selected
+target under the [single-target policy](../testing/2026-11-06-single-target-web-acceptance.md).
+The rollout counts below retain their original delivery context; repeatable
+commands and mappings belong to the Web README.
 
 The production entry resolves the initial locale before React rendering, sets
 the initial document language and route title, and mounts one persistent

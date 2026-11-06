@@ -757,14 +757,14 @@ Go 的 `installed_cli_task_attachment_workflow` 使用既有安装回执与实�
 任务资源。回执保存附件 path/size/SHA-256 与分页数量，所有 fixture 的清理 gate
 必须确认 `storageRootRemoved`。
 
-Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上让同一次安装的 CLI
+Web 的 `task-attachments` 功能场景在所选实际目标上让同一次安装的 CLI
 与页面操作同一批数据；图功能场景属于常规 CI，完整原生容量/超限矩阵由显式本地压力验收保留。
 完整上下文交付另加入 `capacity-external`，原生容量/超限共五个场景；机制与统计
 由[看板设计](daynight-web.md#验证与-ci)拥有。
 另有 `project-view-tabs` 验证项目内任务视图；[双语界面](daynight-web-i18n.md)增加三个功能场景，
 [三状态架构](daynight-task-status.md)拥有当前状态设置。状态、冲突、恢复与组合场景只允许
 登记资源和精确次数的 PUT status；附件写入保持自己的 fixture-scoped allowlist。
-当前常规严格 inventory 为原生、容器各 29 个功能场景，共 58 个；显式本地压力模式另加五项原生容量/超限，共 63 个结果。任务描述阅读、鉴权、设置、
+当前常规 CI 在实际生产容器上执行一次规范功能清单，显式本地原生入口才覆盖主机 runtime/文件系统组合；原生压力模式另加五项容量/超限。精确清单由看板验收脚本拥有，任务描述阅读、鉴权、设置、
 许可和计时场景仍保有独立的写入边界。
 
 附件场景与

@@ -18,42 +18,43 @@ active target for a leaked resource or remove its credentials.
 
 ## Decision
 
-Native and container functional targets overlap after native preparation has
-finished preparing the shared installed CLI. Each target retains one Playwright
-worker and zero retries. Local ordinary/stress runs execute the complete
-functional and combined-authentication inventory. The later
-[case-shard decision](2026-11-04-web-ci-case-shards.md) partitions CI functional
-selection across two runners and assigns combined authentication to shard 2;
-this decision's within-run isolation and cleanup barriers apply to both shards.
-The existing atomic container permission remains bound to its
-acceptance run, dev-ci run and source SHA; its phase identifies completed native
-preparation. A slow container announcement is awaited with cancellation rather
-than treated as failed native preparation.
+The [single-target decision](2026-11-06-single-target-web-acceptance.md) replaces
+concurrent native/container execution with one selected runtime per invocation.
+Container is the default CI target; explicit local native/APFS/stress runs use
+native. The permission handoff and dual-target pipeline no longer exist. This
+record preserves the original concurrency rationale and the ownership choices
+that remain useful for browser/CLI lifetime management.
 
-Every browser phase derives its profile root under the run's private acceptance
-directory. Launch, inventory, profile extraction and recovery use the same root.
-Profiles stay outside uploaded acceptance artifacts, including on failure.
-Recovery still rejects unknown profiles and changed process identities within
-that phase; another active phase has a separate root. Playwright's parent uses
-the private root to allocate profiles, while the Chromium child retains the
-short relative `.tmp` socket directory. Using the full private path for Chromium
-socket creation exceeds Unix-domain socket path limits even in a short checkout.
-The explicit profile argument still points to the private phase root.
+### Original concurrency arrangement
 
-Each CLI invocation retains its own process-group check and private client home.
-Combined authentication passes cancellation to its CLI commands so cancellation
-stops those commands without recovering another active target. Run-wide CLI
-recovery happens after both functional targets have drained, before optional
-local capacity. Unconditional final recovery remains responsible for failures.
-The shared installed package remains available until all consumers finish.
+The original implementation started both preparations and released the container
+browser after native preparation had installed the shared CLI. Each deployment
+kept one worker and zero retries. An atomic permission bound acceptance run,
+dev-ci run and source SHA; a slow container announcement was awaited with
+cancellation. The later [case-shard decision](2026-11-04-web-ci-case-shards.md)
+partitioned CI functional selection and placed combined authentication on shard 2.
 
-The optional capacity phase remains local-only and starts after both functional
-targets, container teardown, browser recovery and the shared CLI barrier. Failure
-propagation and draining remain required before final resource cleanup. The
+Separate phase-private profile roots prevented one target from classifying the
+other's active browser as leaked. Playwright allocated profiles beneath those
+roots, outside public artifacts, while Chromium used the short relative `.tmp`
+socket directory to avoid Unix-domain socket path limits. Launch, inventory,
+ownership and recovery used the same saved root and identity.
+
+Each CLI invocation retained its process-group check and private client home.
+Combined cancellation stopped its commands without recovering another target.
+Run-wide CLI recovery waited until both targets drained, then optional local
+capacity began after container/browser cleanup. This ordering preserved active
+commands and credentials while concurrency was required.
+
+### Retained ownership
+
+The selected target still uses phase-private browser roots, verified process
+identity, explicit CLI cancellation and a shared installed package until all
+consumers finish. Capacity remains local-only, starts after functional/browser
+and CLI cleanup barriers and retains its full data and timing budgets. A failure
+must drain started work and preserve errors before final cleanup. The
 [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
-owns the runtime contract. This supersedes the native-before-container browser
-ordering retained by the [quality isolation decision](2026-10-26-web-quality-job-isolation.md),
-without changing that decision's separate quality job or command budgets.
+owns current commands, receipts and recovery.
 
 ## Alternatives
 
@@ -82,13 +83,13 @@ less elapsed time than the two serial browser suites.
 
 ## Consequences
 
-The critical path can overlap the complete functional targets while keeping
-failures, source identity and cleanup observable. The job still performs the
-same verification and uses its existing artifact and recovery entry points.
-Concurrent functional work can contend for runner resources; a scheduling change
-alone does not prove a hosted speedup. Before/after results belong to the tested
-PR and CI runs, and variation between hosted samples limits causal claims.
+The original overlap removed the serial sum of two functional invocations but
+retained duplicated work and resource competition. It did not alone prove a
+hosted speedup; observed results remain bound to their source, workload and
+runner. The single-target replacement accepts less routine native UI/runtime
+coverage and removes the coordination that existed only for two active targets.
 
-Private profile roots and a shared CLI barrier become required scheduling
-constraints. Any later additional target must preserve those ownership and
-cleanup rules. Local capacity remains isolated from active functional work.
+Private profile roots and cleanup barriers remain necessary within the selected
+target's functional, combined-authentication and optional capacity phases. A new
+concurrent target would require a separate decision about those ownership and
+resource costs; the current receipt cannot represent an omitted target as passed.

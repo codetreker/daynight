@@ -19,8 +19,10 @@ combined authentication and resource ownership. The
 the original all-in-one acceptance requirement: ordinary CI and local acceptance
 run the functional inventory, while explicit local stress mode retains the four
 fixed capacity datasets, five measurements and existing latency limits.
-Linux remains the full CI platform; macOS local acceptance requires native
-execution and does not imply a macOS CI job.
+Linux remains the full CI platform. macOS uses the default container or an
+explicit local native/APFS/stress target under the
+[single-target policy](2026-11-06-single-target-web-acceptance.md); a native local
+pass does not imply a macOS CI job.
 The [bounded-line rendering decision](../bug-fix/2026-10-22-bounded-dashed-dependency-lines.md)
 owns the GPU paint correction needed to retain those capacity budgets on macOS.
 
@@ -90,10 +92,10 @@ The native suite verifies busy recovery with a real acknowledged read-only file
 holder. Only a real detach refusal followed by a PID-specific open-file check,
 acknowledged release and successful retry establishes that lifecycle evidence.
 
-Top-level evidence and recovery use schema 3. Older schemas and cross-platform
-process identities are rejected; receipt interpretation never guesses identity
-units or silently drops ownership checks. Capacity and container-permission
-receipt formats remain unchanged.
+Top-level evidence and recovery use schema 4 and require one declared target.
+Older schemas and cross-platform process identities are rejected; interpretation
+never guesses identity units or drops ownership checks. Capacity retains its
+existing receipt format; the dual-target container-permission protocol is removed.
 
 The shared dev-ci runner supports macOS system Bash 3.2. Bootstrap logging uses
 an owned FIFO and an explicit background logger: dynamically allocated file

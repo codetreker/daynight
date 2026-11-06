@@ -19,8 +19,8 @@ The existing acceptance owners provide complementary evidence for the
 whose race instrumentation matches the test process under the
 [event-specific validation policy](2026-11-04-go-validation-timing.md), isolated PostgreSQL schema, project-row barriers, structured request logs and
 restart/cleanup ownership. The
-production Web runner reuses its existing packed CLI, native and container
-services, browser phases and request allowlists. Native CLI acceptance validates
+production Web runner reuses its packed CLI, selected runtime service, browser
+phases and request allowlists. Native CLI acceptance validates
 the actual installed package. The
 [authentication activation](../architecture/2026-10-22-authentication-activation.md)
 provides normal real-UniAuth sessions/PATs and explicit membership. Browser and
@@ -93,8 +93,11 @@ cases use actual GET/PUT digits and database results independently of multi-hop
 version growth. Graph failures use owned real failure paths. Redacting request
 forwarding preserves original method, headers, body and Origin validation.
 
-Production CI requires twenty-nine functional scenarios per target, source-bound
-runtime receipts, strict coverage, one worker, zero retries and complete cleanup.
+Production CI requires the complete canonical functional inventory once across
+the two container shards, source-bound receipts, strict coverage, one worker per
+database, zero retries and complete cleanup. The
+[single-target decision](2026-11-06-single-target-web-acceptance.md) owns the
+removed native repetition and explicit local native mode.
 The [local stress decision](2026-11-03-local-stress-suites.md) separately retains
 five native capacity/limit cases and their performance budgets in explicit local
 stress mode.

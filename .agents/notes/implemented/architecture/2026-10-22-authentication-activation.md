@@ -192,11 +192,13 @@ continue to apply.
 Deployment now requires real App configuration and every fixture must acquire
 credentials through the protocol. Current-source validation must cover missing
 config, wrong origins, credential and membership revocation, direct resources,
-provider failures, grant-version/invitation concurrency and complete native/container
-journeys. The [combined authentication decision](../testing/2026-10-23-authentication-combined-acceptance.md)
+provider failures, grant-version/invitation concurrency and the selected
+production runtime's complete journey. The [combined authentication decision](../testing/2026-10-23-authentication-combined-acceptance.md)
 composes normal browser and installed-CLI authority across service restart,
 revocation during admitted IO and actual socket loss. It also owns real UniAuth
-result consumption followed by downstream TCP loss. Its two additional target
-receipts preserve the existing Playwright inventory and budgets. Source receipts
+result consumption followed by downstream TCP loss. Its one selected-target
+receipt complements the canonical functional inventory; the
+[single-target policy](../testing/2026-11-06-single-target-web-acceptance.md) owns
+routine container validation and explicit native modes. Source receipts
 and third-party manual login evidence remain distinct; a code or documentation
 change does not itself establish a passing run.

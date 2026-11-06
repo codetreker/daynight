@@ -37,7 +37,7 @@ loads that process's list on first use; the existing Playwright dependency
 installation retains its own normal update. A local isolated APT fixture also
 verified a download from a replacement mirror without a second update.
 
-All pinned shell/browser identities, package selection, native and container
+All pinned shell/browser identities, package selection, selected-target
 scenarios, zero browser retries, coverage thresholds, preparation deadlines,
 performance limits and cleanup checks remain required. Local developer setup
 and production deployments retain their existing host configuration. The

@@ -113,10 +113,11 @@ They retain 1,000 tasks each and their exact 999/5,000 edges, with five samples.
 initial S, all real induced visible edges and explicit expansion/reset, rather
 than all input tasks/edges simultaneously in the DOM. `openMs ≤ 3000` and existing
 detail/zoom/pan feedback ≤300ms remain. The original overview retained 31
-scenarios; the [approval lifecycle](2026-10-22-task-approval-lifecycle.md) adds
+scenarios; the [approval lifecycle](2026-10-22-task-approval-lifecycle.md) then added
 three functional scenarios per target. The
 [Markdown description decision](../architecture/2026-10-22-task-description-markdown.md)
-adds one per target, producing 39 (22 native, 17 container).
+added one per target, producing 39 (22 native, 17 container) at that delivery.
+Current inventory and selected-target policy belong to the Web validation guide.
 Zero retries, timeouts, size refusals,
 coverage and cleanup gates remain. Independent visible-route and paint checks
 cover every edge; inspection additionally verifies selection timing and curves.

@@ -13,10 +13,11 @@ prerequisites, so a root-anchored viewport can conceal the new context.
 ## Decision
 
 The [status assignment decision](../architecture/2026-10-24-task-status-assignment.md) owns the current three-state
-protocol. Status journeys use exact registered PUT status writes; current
-inventory is 33 native and 28 container results. The rollout counts below retain
-their original delivery context; repeatable current commands and mappings belong
-to the Web README.
+protocol. Status journeys use exact registered PUT status writes. Current
+validation executes the canonical functional inventory once on its selected
+target under the [single-target policy](../testing/2026-11-06-single-target-web-acceptance.md).
+The rollout counts below retain their original delivery context; repeatable
+commands and mappings belong to the Web README.
 
 The [external dependency decision](../architecture/2026-10-23-external-dependency-design.md)
 retains complete ancestor context and implements ordinary-component membership

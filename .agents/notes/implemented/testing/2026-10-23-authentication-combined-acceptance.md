@@ -39,7 +39,7 @@ Cleanup closes the product, proxy transports and real gateway and requires zero
 active requests and hijacked connections. A fake SDK response or a reader that
 fails after returning headers cannot establish this transport observation.
 
-### One additional journey for each target
+### One additional journey for the selected target
 
 `packages/daynight-web/scripts/acceptance/auth-combined.mts` owns the normal
 browser and installed-CLI journey, safe API operations, exact int64 versions,
@@ -86,14 +86,16 @@ then verifies the same pending input, single submission and same revealed token
 element across English/Simplified Chinese. The response remains the actual
 server result. Screenshots happen only after closing or masking the secret.
 
-The current ordinary inventory contains twenty-nine native and twenty-nine
-container functional scenarios. Both targets require a separate combined receipt.
+The complete canonical functional inventory runs once on the selected target,
+with one separate combined receipt in a local complete run or CI shard 2. The
+[single-target decision](2026-11-06-single-target-web-acceptance.md) selects the
+production container by default and retains native as an explicit local mode.
 The [local stress decision](2026-11-03-local-stress-suites.md) moves the five
 native capacity/limit scenarios behind explicit local stress acceptance while
 preserving fixed data, five samples, geometry checks and timing budgets. Both
 modes retain exact raw report validation, zero retries and complete cleanup.
-Local capacity remains isolated from competing preparation, restart and
-container cleanup.
+Local capacity remains isolated from functional work and restart and runs only
+on the explicitly selected native target.
 
 ### Safe evidence and failure ownership
 
@@ -151,7 +153,7 @@ The added Go wire-loss test has a focused race pass for file SHA256
 `20d5e75452021f75e879c850de8b8f9bcf1e4efe984afd7e85f4ee107555c6b7` on that baseline.
 The working tree then contained the uncommitted test, so this is a dirty-source
 focused result, not a clean-head or complete acceptance claim. Full current-code
-CI, both combined run receipts and their cleanup must be assessed separately.
+CI, the selected target's combined receipt and its cleanup must be assessed separately.
 
 Actual App/third-party human login and configured isolated deployment remain
 independent acceptance items. Controlled external-provider responses, provider

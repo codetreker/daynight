@@ -668,16 +668,15 @@ For a disposable full-stack HTTP target, run a command through
 containers, volume, network and image tag after completion, failure or cancellation,
 and records cleanup failures.
 
-`pnpm web:acceptance` builds production UI and a native Go executable, creates an
-owned PostgreSQL instance and starts the normal dev-ci production build in
-parallel. After shared CLI preparation, it overlaps thirty-six native functional
-workflows with the same container workflows, then requires complete target and
-shared CLI cleanup. The explicit local
-`pnpm web:acceptance:stress` command adds the fixed native capacity cases after
-those phases. Both modes require Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and
-Playwright Chromium. The
+`pnpm web:acceptance` prepares one installed CLI, then builds and validates the
+normal dev-ci production container. It executes the canonical functional
+inventory and one combined-authentication journey on that target. Explicit local
+`--native`, `--apfs` or `--stress` selects a native service and its owned database
+and storage instead. The stress entry adds five capacity cases after functional
+and browser/CLI cleanup. Both target modes require Go 1.27.2, Docker, Node 24,
+pnpm 11.28.6 and Playwright Chromium. The
 [web README](../packages/daynight-web/README.md#production-browser-acceptance) owns
-browser setup, required gates and receipt interpretation.
+browser setup, target selection, required gates and receipt interpretation.
 
 ## Local stress validation
 
@@ -706,15 +705,16 @@ Default CLI service acceptance retains two bounded deadline probes and
 `.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
 the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
 claiming CI execution. Web evidence records `mode: functional` or `mode: stress`:
-local functional mode requires thirty-six scenarios per target (72 total);
-CI partitions that inventory into disjoint eighteen-case selections per
-target. Shard receipts additionally identify `shard` and `selection`, and the
-final gate requires their complete canonical union. Stress mode remains local
-and unsharded, adds five native capacity scenarios (41 native / 36 container,
-77 total) and `native/capacity/performance.json`. Both local modes retain strict
-source/browser identity, combined authentication and owned-resource cleanup;
-CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
-they do not establish hosted PR latency.
+local functional mode requires the complete canonical scenario inventory once
+on its selected target. Container is the default and required CI target; explicit
+`--native`, `--apfs` or `--stress` selects native. CI partitions the container
+inventory into two disjoint case selections, recorded as `shard` and `selection`;
+the final gate requires the complete canonical union. Stress is local and
+unsharded, adding five native capacity scenarios and
+`native/capacity/performance.json`. Both local modes retain exact source/browser
+identity, one combined-authentication receipt and owned-resource cleanup; only
+CI shard 2 owns that journey. Local measurements prove their recorded source and
+host, independently of hosted PR latency.
 
 The [local stress decision](../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md)
 records the workload split and retained correctness guarantees.
@@ -926,47 +926,41 @@ calibrates that setting for the dedicated public standard Linux runner's four
 CPUs; it does not change inputs, assertions or coverage gates.
 
 Each browser entry invokes `browser --shard=1/2` or `browser --shard=2/2`, installs
-pinned Chromium/Linux dependencies under the existing 600-second bound, and
-builds its own real native and container deployments. Case selection uses
-`--fully-parallel --workers=1 --retries=0 --shard=i/2`; every database still runs
-one worker serially. Complete and selected discovery use the same functional
-arguments as execution and the canonical scenario inventory. Current selections
-contain eighteen cases each and jointly cover all thirty-six scenarios per target. The selected IDs and shard identity remain in the existing run evidence.
-The container callback reads its validated source/run-bound parent selection.
+pinned Chromium/Linux dependencies under the existing 600-second bound, prepares
+one installed CLI and builds one actual production-container deployment. Its
+Dockerfile owns the Web and embedded Go build. Case selection uses
+`--fully-parallel --workers=1 --retries=0 --shard=i/2`; each database runs one
+worker serially. Complete and selected discovery use the execution arguments and
+canonical scenario inventory; the selected IDs and shard identity remain in the
+source/run-bound parent evidence.
 
-Within each entry, native and container preparation overlap. Once native
-preparation has installed the shared CLI, an atomic source/run-bound permission
-releases the container functional browser alongside the native functional
-browser. Its permission wait remains 900 seconds. Each phase has a separate
-private profile root outside uploaded artifacts. Command wrappers require
-owned groups to stop after settlement; failures and cancellation still fail.
-Both targets drain before run-wide CLI recovery, preserving active commands and
-credentials in the other target. The
-[functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
-owns those isolation constraints.
+Every invocation selects one target. Default/container CI does not build or run
+a host-native target; explicit native/APFS/stress runs do not start a container
+browser deployment. The CLI is ready before the target starts, so there is no
+dual-target pipeline, permission file or permission wait. Each phase retains a
+private profile root outside uploaded artifacts. Command wrappers require owned
+groups to stop after settlement; operation, cancellation and cleanup errors fail.
+The [single-target decision](../.agents/notes/implemented/testing/2026-11-06-single-target-web-acceptance.md)
+records the removed native repetition and representative layout trade-offs.
 
-Chromium installation completes before CI starts acceptance. A validated optional
-navigation request in the existing source/run receipt makes the container callback
-run serial navigation alongside its functional browser, after permission and
-installed-CLI validation. Both branches drain before combined-authentication
-restart and callback exit, keeping network teardown outside navigation. Their
-hosts, output directories, profiles and API fixtures remain separate. Navigation
-command environments omit the production browser-ownership marker while retaining
-browser-channel and tool settings. Navigation
-command cancellation uses a one-second escalation grace inside the callback's
-outer termination grace, preserving verification deadlines. The
+A validated optional navigation request makes the container callback run its
+serial navigation branch alongside the functional browser, after installed-CLI
+validation and stable networking. Both branches drain before combined-auth restart
+and callback exit. Hosts, output directories, profiles and API fixtures remain
+separate; navigation environments omit the production browser-ownership marker
+and preserve explicit browser/tool settings. Its one-second cancellation
+escalation remains within callback termination grace, with verification deadlines
+unchanged. The
 [browser job scheduling decision](../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
-owns cancellation, concurrency and measurement limits.
+owns that network lifetime and error propagation.
 
-Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
-eleven-check combined-authentication journeys and the existing real attachment
-persistence/paired-backup-restoration check. That ownership derives from the
-shard identity. Both entries retain functional, image identity, process,
-browser and resource cleanup requirements. Matrix `fail-fast` is false so the
-other entry can finish its diagnostics and cleanup after a failure.
-Local ordinary acceptance remains complete and unsharded; local stress adds
-capacity only after the same functional/container/browser/CLI barriers and
-rejects a shard combination before preparation.
+Shard 2 owns complete navigation-contract, dev-ci lifecycle fixtures, one
+container eleven-check combined journey and real attachment persistence/paired
+backup restoration. Both shards retain their functional, image identity, process,
+browser and resource cleanup requirements. Matrix `fail-fast` remains false.
+Local ordinary acceptance is complete and unsharded; native stress adds capacity
+after functional/browser and CLI barriers, refusing CI or a shard combination
+before preparation.
 
 The existing final `checks` job first applies its general preceding-job gate.
 For selected Web validation it also requires quality and the browser matrix to
@@ -974,8 +968,9 @@ succeed, checks out current source, sets up Node 24, and downloads exactly
 `daynight-web-summary-1` and `daynight-web-summary-2`. Each contains only the
 existing `runID/evidence.json`. The install-free report CLI validates two distinct
 run IDs, shard identities 1/2 and 2/2, clean passing receipts at `GITHUB_SHA` and
-the checkout tree, exact native/container inventories and cleanup, disjoint
-canonical coverage and both combined receipts only on shard 2. Missing,
+the checkout tree, schema 4 with exactly one container target per run, actual
+image/deployment and browser/CLI cleanup, a disjoint canonical union and one
+container combined receipt only on shard 2. Missing,
 inconsistent or incomplete summaries fail the same required job. Full browser
 artifacts are `daynight-web-acceptance-1` and `daynight-web-acceptance-2`; coverage
 remains separate. Artifacts retain 30 days. The
@@ -1063,7 +1058,7 @@ owns the same-data packed-CLI/production-Web journey, real installed-process
 competition and genuine historical-SQL startup/restart proof. These extend the
 existing service and browser fixtures, with their normal source, fault and cleanup
 ownership. Native project/task HTTP fixtures remain controlled client evidence;
-actual Go/PostgreSQL and native/container browser receipts remain separate.
+actual Go/PostgreSQL and selected-target browser receipts remain separate.
 Installed skill checks validate the six shipped resources, metadata, contained
 references and bounded cross-resource instruction contracts on actual package and
 target copies. Simulated launchers and instruction artifacts do not establish

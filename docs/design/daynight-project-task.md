@@ -781,8 +781,8 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 
 附件 `installed_cli_task_attachment_workflow` 复用同一服务安装及进程 fixture，覆盖
 原始字节、多页路径列表、拒绝、同根重启及完整 task 不变；清理 gate 同时要求存储
-根实际消失。共享安装 fixture 也供完整 Web run 使用，在原生与容器页面上复用一次
-安装来操作同组真实数据。机制与证据字段见[附件验证设计](daynight-task-attachments.md#实现验证)，
+根实际消失。共享安装 fixture 也供完整 Web run 使用，在所选目标的生产页面上复用
+一次安装来操作同组真实数据。机制与证据字段见[附件验证设计](daynight-task-attachments.md#实现验证)，
 其选择依据记录在
 [附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
 原有 PT 场景与两个常规期限探针保持；四个完整字节预算探针由显式本地压力入口拥有。

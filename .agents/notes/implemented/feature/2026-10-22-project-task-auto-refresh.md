@@ -71,7 +71,7 @@ the [design](../../../../docs/design/daynight-web.md#请求刷新与故障) owns
 component responsibilities. Hook and component validation cover scheduling,
 visibility, request priority, late responses, recovery and retained state. The
 existing production `refresh-staleness` journey covers task changes from the
-real service without manual refresh, retaining the native/container functional
+real service without manual refresh, retaining the selected-target functional
 inventory and cleanup gates. The [local stress decision](../testing/2026-11-03-local-stress-suites.md)
 separately owns the explicit local capacity matrix and its performance budgets.
 

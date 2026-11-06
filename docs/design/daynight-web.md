@@ -758,7 +758,7 @@ pnpm web:acceptance
 DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
 ```
 
-`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行常规 Vitest/V8 单元及组件测试与严格覆盖率检查；完整规模图与几何证明由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`；任何一段失败都使完整命令失败。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；默认浏览器按原生功能、容器功能完成验证；显式本地 `web:acceptance:stress` 才在其后添加原生容量，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
+`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行常规 Vitest/V8 单元及组件测试与严格覆盖率检查；完整规模图与几何证明由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`；任何一段失败都使完整命令失败。`web:acceptance` 默认只构建和验证正常 dev-ci 生产容器；共享 CLI 安装完成后才启动该目标。显式本地 `--native`、`--apfs` 或 `--stress` 改为原生目标，自行准备有所有权标记的 PostgreSQL、存储、真实嵌入资源和 Go 进程；压力模式在原生功能及清理屏障之后增加五个容量场景。单次运行只有一个目标，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
 
 开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。运行机器只需要服务二进制与 PostgreSQL；源码构建固定使用 Node 24 与 pnpm 11.28.6。根目录现有 CLI build/test/acceptance 命令的含义保持独立，新增 web 命令显式选择 `@codetreker/daynight-web`。
 
@@ -845,48 +845,40 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 
 两个浏览器 job 分别调用 `scripts/ci.mts browser --shard=1/2` 与 `--shard=2/2`。
 固定 Chromium/Linux 依赖安装保留 600 秒上限，Node/pnpm 与冻结锁文件安装保持。
-每个 runner 构建独立的真实 UI/Go、数据库、UniAuth、安装 CLI 和正常 dev-ci 容器目标。
+每个 runner 先准备一次真实安装 CLI，再通过 dev-ci 构建并启动生产容器；Dockerfile
+拥有 Web 与嵌入 Go 产物，不再准备第二套 host-native 服务、数据库或浏览器。
 Go 相关 job 继续复用以 server `go.sum` 标识的模块/编译缓存，Go gate 仍失效测试结果缓存。
 
-Playwright 参数为 `--fully-parallel --workers=1 --retries=0 --shard=i/2`：
-fully-parallel 使内置分片按 case 选择，每套数据库的实际执行仍为单 worker 串行。
-当前规范清单为 32 个稳定 scenario ID，两份各 16 个、互不重叠。服务准备前，runner
-使用与执行相同的功能参数先收集完整规范清单，再收集所选分片；只把通过校验的 ID
-写入已有 evidence 的 `selection`，并记录 `shard: { current, total: 2 }`。
-功能 ID 与组合鉴权检查名由纯 `inventory.mts` 统一拥有。遗漏、重复、未知 ID、
-错误分片或收集错误均失败。容器 callback 从现有 run/source 绑定的父回执取得同一选择，
-原生和容器分别按该清单校验实际结果。
+Playwright 使用 `--fully-parallel --workers=1 --retries=0 --shard=i/2`；内置分片按 case
+选择，每个独立数据库仍为单 worker 串行。服务准备前先收集规范功能清单，再按相同
+执行参数收集分片；纯 `inventory.mts` 拥有功能 ID 和组合鉴权检查名。
+校验后的选择与 `shard: { current, total: 2 }` 写入 schema 4 evidence；遗漏、重复、
+未知 ID、错误分片或收集错误均失败。每份回执必须声明 `target: "container"`，
+且只含这一目标一次。默认本地普通入口同样只跑容器；显式原生入口只跑原生。
+原生 UI/runtime 与主机文件系统组合不再由常规 Web CI 重复覆盖，独立 Go gates
+继续验证 native build、HTTP 和内嵌资源；具体取舍见
+[单目标验收决策](../../.agents/notes/implemented/testing/2026-11-06-single-target-web-acceptance.md)。
 
-每个分片内部继续并行准备原生 UI/Go/PostgreSQL 与正常 dev-ci 源码构建/启动。
-dev-ci 拥有唯一镜像、实际运行镜像身份校验和完整 shell 清理。原生准备完成安装 CLI
-后，runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器许可。
-容器 callback 登记身份并验证许可，保留 900 秒等待上限，再记录浏览器 inventory；
-其功能浏览器与原生功能浏览器重叠，`ready.json` 只记录诊断时间。
+CLI 就绪后启动 dev-ci，callback 验证 run/source 绑定的父回执及安装包，随后记录
+浏览器 inventory；不存在第二目标的 permission、ready announcement 或等待协议。
 每个 phase 的 profile 留在独立私有根；命令结束后必须确认整个所属进程组停止。
-错误、取消、意外服务退出和清理失败都传播并排空已启动任务。两个目标结束后才做
-run-wide CLI 回收，避免清除另一活动目标的命令或凭据。
+错误、取消、意外服务退出和清理失败都传播并排空已启动任务，所选目标的消费者
+结束后才回收 run-wide CLI。
 
-Chromium 安装完成后，CI 通过现有 run/source 绑定的父 evidence 请求导航检查；
-可选字段仅允许缺省或 `navigationChecks: true`，且必须属于 functional 共享检查分片。
-容器 callback 验证原有 permission 和安装 CLI 后，并行执行串行导航与 container
-functional；两个分支排空后才进行 combined-auth 重启，callback 结束后 dev-ci 才可
-清理网络。导航使用独立端口、Vite cache/outDir 和受控 API，不修改生产目标数据库、
-profile 或安装 CLI。导航命令使用环境副本并移除生产浏览器归属标记
-`DAYNIGHT_ACCEPTANCE_DIRECTORY`，保留显式 browser channel 与工具配置，使相同
-executable 的导航浏览器不会被 functional cleanup 视为未记录生产进程。
-任一分支失败立即取消共享 controller，等待所属资源清理完成后
-传播原始与清理错误。导航命令取消后的一秒 escalation 位于 dev-ci callback 的五秒
-TERM grace 内；180/540/180 秒验证时限保持不变。此调度不改变分片选择、worker 数、原有许可和 native/container
-屏障；direct acceptance 与 shard 1 保持原路径。资源权衡由
-[浏览器 job 调度决策](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)拥有。
+Chromium 安装完成后，CI 通过父 evidence 请求 `navigationChecks: true`，该可选字段
+只属于 functional 共享检查分片。容器 callback 在安装 CLI 验证后并行执行串行导航
+与 container functional；两分支排空后才进行 combined-auth 重启，callback 结束后
+才允许 dev-ci 清理网络。导航使用独立端口、Vite cache/outDir 和受控 API，不修改
+生产目标数据库、profile 或安装 CLI；其环境副本移除生产浏览器归属标记
+`DAYNIGHT_ACCEPTANCE_DIRECTORY`，保留显式 browser channel 与工具配置。
+任一分支失败立即取消共享 controller，排空后传播原始和清理错误。导航取消后的
+一秒 escalation 位于 dev-ci callback 的五秒 TERM grace 内，验证时限保持不变。
 
-较轻的 shard 2 统一拥有全部 28 项 navigation-contract、部署生命周期 fixture、
-原生/容器各十一项 combined-auth，以及真实附件持久化与成对备份恢复。
-归属仅由分片身份推导。Shard 1 完成其功能和所有所属资源清理；两个分片都保留
-镜像身份、浏览器、CLI 与 dev-ci 清理证明。矩阵 `fail-fast` 为 false，使另一个分片在
-失败后仍能完成诊断和清理。默认本地普通入口继续单次执行完整 32+32 功能与两个
-combined-auth；本地 `--stress` 不分片，并在资源准备前拒绝 shard 组合及 CI 环境。
-本地容量只在完整功能、dev-ci、浏览器及共享 CLI 屏障之后运行，保留原预算与数据集。
+Shard 2 统一拥有完整 navigation-contract、部署生命周期 fixture、一次容器十一项
+combined-auth 和附件持久化/成对备份恢复。归属仅由分片身份推导；Shard 1 完成其
+功能选择及清理。两个分片都要求真实镜像、浏览器、CLI 和 dev-ci 清理证明，矩阵
+`fail-fast` 为 false。本地完整入口有当前目标的一份 combined-auth；`--stress`
+选择原生，在资源准备前拒绝 CI 或 shard 组合，容量阶段仍保留完整数据及预算。
 
 质量产物仍为 `daynight-web-coverage`。完整浏览器产物分别为
 `daynight-web-acceptance-1` 与 `daynight-web-acceptance-2`，第二份含一次性检查回执。
@@ -895,14 +887,14 @@ combined-auth；本地 `--stress` 不分片，并在资源准备前拒绝 shard 
 层次，所有产物维持 30 天留存。最终 `checks` 在原有 job 结果门禁之后，仅对选中 Web
 检出当前源码、设置 Node 24、下载这两份小摘要，无需 pnpm 安装或传递二进制、镜像和
 资源归属。`report.mts --shards file1 file2` 要求不同 run ID、恰好 1/2 与 2/2、
-当前 `GITHUB_SHA` 与检出 tree、clean/pass、准确的双目标和 phase 清理、每份准确选择、
-两份规范并集各覆盖一次，且只有 shard 2 拥有两个完整十一项鉴权回执。
+当前 `GITHUB_SHA` 与检出 tree、clean/pass、每份恰好一个 container target、真实镜像和
+phase/CLI 清理、准确选择和完整互斥规范并集，且只有 shard 2 拥有一份容器十一项鉴权回执。
 缺摘要、选中 job 被跳过、错误来源、功能重复/缺失、鉴权错归属或清理不完整均使原门禁失败。
 
 [两分片决策](../../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
 记录重复准备、runner minutes 和估算时长的取舍；实际收益绑定被测源码、工作量及 runner。
-[功能目标决策](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
-继续拥有单个 runner 内的目标隔离和许可；
+[单目标验收决策](../../.agents/notes/implemented/testing/2026-11-06-single-target-web-acceptance.md)
+拥有当前目标选择、删除双目标重复与代表矩阵的取舍；
 [质量隔离决策](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
 拥有独立质量职责及命令预算。原有
 [流水线决策](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
@@ -1105,8 +1097,8 @@ Worker 请求沿用 requestId 和当前账号/资源身份。页面取消请求�
 `packages/daynight-web/scripts/acceptance.mts` 是解析命令及显式传入取消控制器的
 CLI。`scripts/ci.mts` 的 browser 模式完成浏览器安装后调用同一普通 runner，quality
 模式独立执行完整质量命令；core 没有准备 hook 或空质量阶段。
-`pipeline.mts` 只表达本验收的固定阶段依赖，`permission.mts` 拥有绑定运行和源码的
-原子许可；没有新增部署环境接口或旧二进制交接路径。`tests/e2e/` 拥有功能流程、
+runner 直接管理所选目标的准备、功能、可选原生容量和清理；双目标 pipeline 与
+permission 模块已删除，不增加跨目标或旧二进制交接。`tests/e2e/` 拥有功能流程、
 API 数据和固定图集。
 [web 验证说明](../../packages/daynight-web/README.md#production-browser-acceptance)
 拥有验证命令、要求与场景映射和回执解释。逐次运行结果随对应 PR 与 CI 保存。
@@ -1115,14 +1107,13 @@ API 数据和固定图集。
 渲染器的原生长虚线绘制也曾触发 hosted 超时；局部绘制分解随 PR #52 交付，
 对应运行结果由该 PR 与 CI 保存。
 
-每次运行生成真实 UI 与 Go 可执行文件、启动独立 PostgreSQL 18.6，等待服务
-结构化就绪日志并记录二进制摘要；正常 dev-ci 生产构建/启动与这些工作并行。
-两目标通过固定到 `0978963813fcefd9d553f6cb9bcc319084c764b3` 的真实 UniAuth
-gateway 夹具取得正常浏览器会话和 PAT，数据准备与安装 CLI 使用同一授权通道。
-App 与用户凭据只保存在私有 0600 元数据，公开回执和截图不包含秘密。受控外部
-provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录。
-默认原生目标包含三十二个功能场景，容器目标经实际生产镜像 gateway 执行同一个
-三十二场景功能集合。显式本地压力模式另加五个原生容量/超限场景。`refresh-staleness` 验证自动读取后图、统计和当前详情
+默认运行通过 dev-ci 构建实际生产镜像，并使用其 gateway、PostgreSQL 18.6、
+UniAuth 和附件卷。显式原生运行才构建 host Go、准备独立数据库/存储并等待结构化
+就绪日志；单次运行不同时准备两类目标。正常浏览器会话和 PAT 都由固定到
+`0978963813fcefd9d553f6cb9bcc319084c764b3` 的真实 UniAuth gateway 夹具取得，
+数据准备与安装 CLI 使用同一授权通道。App 与用户凭据只保存在私有 0600 元数据，
+公开回执和截图不包含秘密；受控 provider 响应不等于真实上游账号登录。
+每个所选目标只运行一次规范功能集合。显式本地压力模式另加五个原生容量/超限场景。`refresh-staleness` 验证自动读取后图、统计和当前详情
 的一致更新，以及保留浏览、焦点和附件状态的故障恢复；定时器、可见性、请求串行与
 资源切换另由 hook/组件测试验证。浏览器顺序和清理屏障由[CI 构建归属](#ci-构建归属)定义。日常 localhost 栈
 不参与测试。`project-view-tabs` 覆盖两类分类及依赖迁移、独立任务直接详情、状态和负责人联合筛选、
@@ -1131,23 +1122,23 @@ provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录�
 PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` 和 `task-status-transitions`
 单独允许已登记 project/task 的 PUT status 和精确请求次数；六个鉴权场景仅放行各自
 登记的精确管理请求；`project-settings` 另只放行四次登记设置 PATCH，覆盖成功、409、真实提交后丢失响应及降权 403，重读失败后只重试读取。该场景还检查真实大版本、项目隔离、成员只读及双语 320px/390px 控件与导航边界及文字不截断。`task-agent-permission` 只允许登记任务的许可 PATCH 和精确请求次数，覆盖普通成员双向确认、取消/Escape、锁定、冲突、已提交响应丢失与读取核对、详情关闭/切换后的请求归属、严格布尔/精确版本及双语窄屏几何；未知写入只核对，不重放。`task-platform` 仅允许登记任务的精确平台 PATCH，覆盖状态行选择后确认、当前值无操作、各取消路径零写入和下拉框焦点恢复、确认后设置/清除、状态/许可共享锁、冲突与真实丢响应后的 GET 核对、跨任务归属、人工开始后锁定、字段传播及双语 320px/390px 窄屏。
-`task-assignment` 仅放行登记任务和精确次数的负责人 PATCH，验证设置/清空、同值零写入、冲突、真实提交丢响应与 GET-only 恢复，以及完整材料保持。`task-assignment-layout` 覆盖双语 1366px/390px/320px、长姓名与 null 姓名、头像失败、菜单焦点与滚动/全屏、失权人员显示、只读浏览，以及联合筛选时仍显示完整链成员并保持进度和依赖事实。
+`task-assignment` 仅放行登记任务和精确次数的负责人 PATCH，验证设置/清空、同值零写入、冲突、真实提交丢响应与 GET-only 恢复，以及完整材料保持。`task-assignment-layout` 使用双语桌面/320px 代表布局覆盖长姓名与 null 姓名、头像失败、菜单焦点与滚动/全屏、失权人员显示、只读浏览，以及联合筛选时仍显示完整链成员并保持进度和依赖事实。
 `task-pause` 覆盖项目概览、独立任务与任务链、图和公共详情头部的暂停发现，完整项目/分量数量口径、精确版本解除与完整材料保持、提交防重、版本冲突及真实提交丢响应后的 GET-only 核对，以及中英文窄屏。浏览器只允许已登记任务的解除暂停 PATCH 与精确次数，未知结果不重放。
 
 平台确认的浏览器辅助函数先等待下拉框可用，再聚焦并确认焦点，随后才选择选项；缓存详情可见不表示实时读取已允许编辑。取消后的原值、焦点恢复和零写入断言保持独立验证，不在取消后强制聚焦，也不放宽超时或重试规则。附件组件测试将删除确认框的 DOM 移除与被动清理中的焦点恢复分开，在附件重载仍挂起时等待预览区域实际获得焦点，随后放行重载并继续验证焦点保持。[可观测验收就绪决策](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)记录这项前置条件。
 
-`task-detail-page` 在 browser context 层观测来源页与 popup，精确放行登记任务五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件各一次 PUT/DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，来源页自身不放行写入，取消不增加请求，未知结果只读取核查。另一个匿名 context 通过真实应用/gateway 重定向验证保留导航查询参数的登录返回，仅控制 provider 端点且不允许应用写入。task-execution-time 保持浏览器 GET/HEAD-only，由正常 API/安装 CLI 准备起止、保存阈值和完成任务；挂起图响应与错误本机墙钟隔离本地单调 tick，验证实时/冻结/未知、卡片/独立行、外部虚线及焦点和图几何，其他写请求仍失败。附件场景在两目标上都让安装 CLI 与生产页面操作同一
+`task-detail-page` 在 browser context 层观测来源页与 popup，精确放行登记任务五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件各一次 PUT/DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，来源页自身不放行写入，取消不增加请求，未知结果只读取核查。另一个匿名 context 通过真实应用/gateway 重定向验证保留导航查询参数的登录返回，仅控制 provider 端点且不允许应用写入。task-execution-time 保持浏览器 GET/HEAD-only，由正常 API/安装 CLI 准备起止、保存阈值和完成任务；挂起图响应与错误本机墙钟隔离本地单调 tick，验证实时/冻结/未知、卡片/独立行、外部虚线及焦点和图几何，其他写请求仍失败。附件场景在所选目标上让安装 CLI 与生产页面操作同一
 组数据，按原始字节交叉验证写入、覆盖、下载与删除；具体机制见
 [附件验证设计](daynight-task-attachments.md#实现验证)，选择依据记录在
 [附件组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。
 
-`auth-combined.mts` 另在原生/容器各生成一份必需组合回执，复用正常 Alice/Bob 身份、
+`auth-combined.mts` 在本地完整运行或 CI shard 2 为所选目标生成一份必需组合回执，复用正常 Alice/Bob 身份、
 真实安装 CLI 和同一目标数据，覆盖部分共享项目、原凭据服务重启、logout/PAT 独立、
 撤销、已准入上传、socket 中断、正常签发 PAT 到期与双语 pending/reveal。它接收
 runner 的服务重启 callback 与显式安装回执路径；目标 probe 在校验 run/source/
 容器标记后读取实际 staging/SQL，客户端发送成功不作为服务端准入证据。详细机制由
 [组合鉴权验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)拥有。
-这两份回执与常规 64 项 Playwright 场景并列；本地压力模式另有五项容量场景，
+这份回执与规范功能 Playwright 清单并列；本地压力模式另有五项原生容量场景，
 不复制容量矩阵或改变其测量、预算和清理屏障；运行结果与真实上游人工登录分别留证。
 
 双语功能的三个稳定场景由[语言设计](daynight-web-i18n.md#验证与证据归属)定义，使用同一受监控页面与场景级 locale；首屏和偏好、图/详情/附件状态、错误及窄屏布局分别提供定向检查。语言不会复制容量矩阵或改变阶段与清理屏障。
@@ -1162,12 +1153,12 @@ runner 的服务重启 callback 与显式安装回执路径；目标 probe 在�
 
 Playwright 固定单 worker、零 retry；报告必须包含全部要求的唯一场景、一次成功
 执行、有效 PNG 附件及一致的汇总，跳过、重试、flaky、缺失、多余或重复场景及
-全局错误均失败。默认与 CI 严格要求原生、容器各三十二个唯一功能场景；显式本地
-压力模式将原生 functional/capacity 两份报告严格合并为三十七个唯一场景，容器仍为
-三十二个。原生与容器及同目标各阶段浏览器身份必须一致。
+全局错误均失败。默认容器与显式原生各要求一次完整规范功能清单；CI 两分片的
+container 选择必须组成完整互斥并集。显式本地压力模式将原生 functional/capacity
+严格合并为规范功能清单加五项容量场景，同一目标各阶段的浏览器身份必须一致。
 CI 要求当前 Linux 或 macOS 平台与浏览器回执一致、锁定 Playwright 的完整 Chromium channel `chromium`、干净 checkout，且 git SHA 必须
 等于 `GITHUB_SHA`；本机可以显式选择现有 Chromium，回执必须记录这一差异。
-完整 CI 工作流仍在 Linux 上执行；macOS 本机默认运行相同功能与恢复验收，显式压力模式保留相同容量矩阵及预算。
+完整 CI 工作流在 Linux 上执行；macOS 可显式选择原生功能与恢复验收，压力模式保留相同容量矩阵及预算。
 Linux 进程身份由 procfs 提供；macOS 使用项目临时目录内编译的 Apple SDK helper，
 通过内核读取微秒级启动时间、实际 executable、PGID、argv 和精确环境标记。
 浏览器 profile 按 argv 项匹配，macOS inventory 包含 Chromium bundle 内的 Helper 与 Crashpad。
@@ -1191,7 +1182,7 @@ PDF 预览通过轮询 iframe 的实际 compositor 截图，验证 fixture 专�
 
 chain、merge 和 external 夹具保留从源向末端的节点创建批次，先通过真实 API 创建无依赖任务，再从末端向源补齐依赖。merge/external 按逆拓扑层执行完整 PATCH 批次，同层最多六请求，层间等待；每次保留返回的新 Task/version。merge 的额外边探针使用最终任务版本，external 在依赖补齐后以最终 sink 版本执行既有外部依赖分类。shared 保留直接构造。完整 API 读回仍逐 ID 校验普通/外部依赖，以实际快照顺序选择可见概览；构造顺序不改变图规模、五次测量或独立超限检查。[夹具构造决策](../../.agents/notes/implemented/testing/2026-10-28-web-capacity-fixture-construction.md)记录新增写请求的成本与选择依据。
 
-每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。本地压力模式的 69 场景（原生 37、容器 32）、原有预算、timeout、零 retry 和清理保持；常规 CI 要求 64 个功能场景及严格 coverage。鉴权和生命周期合并后源码仍需完整运行回执。
+每次从 trusted 输入到完整可见概览、根可操作和两次 animation frame，openMs≤3,000；select/detail/zoom/pan≤300。普通 Details→关闭→立即缩放/平移之后，可信选择可见任务，再执行高亮态同序列；每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。依赖检查验证完整 H、隐藏祖先去重及独立曲线/paint/marker。`visibility[5]` 逐次保留 repetition、overviewNodes/Edges、addedNodes/Edges、expandedNodes/Edges、resetNodes/Edges、selectedId 和 hiddenUpstream，要求顺序、预算、精确增量和 reset 计数正确。布局/渲染诊断与网络独立计量，1,001 节点和 5,001 边仍完整 409 拒绝。本地原生压力模式严格执行完整功能清单及五项容量/超限场景，原有预算、timeout、零 retry 和清理保持；常规 CI 要求 container 完整功能并集及严格 coverage。鉴权和生命周期合并后源码仍需完整运行回执。
 
 每个容量 dataset 的 `feedbackDiagnostics` 增量保存每次 open/detail/zoom/pan 的
 `kind`、`repetition`、`start`、`capturedAt`、`conditionAt`、`frame1At`、
@@ -1223,8 +1214,10 @@ CDP timeline、User Timing、frame 与 GC 事件关联浏览器内的输入/条�
 等待；正常 ready/count 判定与全部预算保持原义。
 
 回执增量写入 `packages/daynight-web/.tmp/acceptance/<run-id>/`，顶层
-`evidence.json` 指向最近一次结果，顶层 `schemaVersion: 3` 包含源码、二进制、
-数据库/浏览器版本、`mode: functional` 或 `mode: stress`、两目标结果、生产镜像与清理状态。已安装 CLI 回执核对 Git SHA、
+`evidence.json` 指向最近一次结果，顶层 `schemaVersion: 4` 和必需 `target` 声明所选
+container/native；`targets` 只包含该目标一次。回执包含源码、数据库/浏览器版本、
+functional/stress 模式、阶段和清理；容器记录实际镜像与 dev-ci，原生才有 `native`
+资源字段和二进制身份。已安装 CLI 回执核对 Git SHA、
 dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty 标记不代表工作区文件
 内容指纹，CI 的干净源码与 `GITHUB_SHA` 检查继续承担源码归属。`stages` 逐阶段记录名称、
 结果、起止时间、实际取得的受管理命令进程身份 `commands` 和这些命令的
@@ -1233,10 +1226,10 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 起止时间、Playwright 进程/组、浏览器身份及 `browserCleanup`。
 `native/functional/`、`container/` 分别保留原始 Playwright JSON、场景截图和浏览器身份；
 本地压力模式另写 `native/capacity/`，容量的原 schema 1 性能回执位于
-`native/capacity/performance.json`。本地普通/压力入口与 CI shard 2 必须包含 schema 1
-`kind: auth-combined` 的 `native/auth-combined/target.json` 和
-`container/auth-combined/target.json`；每份严格要求十一项具名检查、源码/浏览器/安装包、
-重启前后进程身份及浏览器/资源清理。Shard 1 不包含这两个鉴权回执。
+`native/capacity/performance.json`。本地普通/压力入口与 CI shard 2 必须包含当前目标下的一份 schema 1
+`kind: auth-combined` 回执，路径为该目标的 `auth-combined/target.json`；严格要求
+十一项具名检查、源码/浏览器/安装包、重启前后进程身份及浏览器/资源清理。
+Shard 1 不包含鉴权回执。
 分片顶层 evidence 另记录 `shard` 与 `selection`；本地完整回执无分片元数据。
 回执不保存凭据、配置 body 或原始日志，私有日志扫描只记录安全结果；既有场景
 报告校验保持独立。CI 的 `daynight-web-acceptance-1`/`daynight-web-acceptance-2`
@@ -1245,10 +1238,10 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 清单，小摘要供原有最终门禁验证完整并集。已选择 job 的执行或清理失败必须使该 job 失败。
 
 恢复命令为 `node packages/daynight-web/scripts/acceptance.mts --cleanup [run-id]`，
-默认读取最近一次回执，缺失回执不操作资源。恢复只接受顶层 schema 3，schema 1、schema 2
-及未知版本明确失败。恢复先确认原 runner、阶段命令身份和全部登记进程组均停止；
-浏览器按已登记阶段的逆序检查和回收：可选 `native/capacity`，再到 `container`、`native/functional`。
-两个 `auth-combined/` 目录同样加入已有浏览器与命令进程恢复扫描。callback 和
+默认读取最近一次回执，缺失回执不操作资源。恢复只接受顶层 schema 4，旧版及
+未知版本明确失败。恢复先确认原 runner、阶段命令身份和全部登记进程组均停止；
+浏览器只按所选目标的已登记阶段逆序检查和回收：原生可选 capacity 后回收 functional，
+或回收 container functional；该目标的 `auth-combined/` 同样扫描浏览器和命令进程。callback 和
 Playwright 的进程及其组必须已停止，再依据记录的平台、PID、
 executable、内核启动身份与源码身份处理资源。仍存活的原生服务必须额外匹配二进制摘要，Docker 只按本次精确标记
 和名称清理。Chromium 单独记录隔离进程组、已验证 executable 和项目内 profile
@@ -1287,7 +1280,7 @@ Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖
 
 各组件保留有效测试与覆盖率，组合验收验证真实进程。设计预览不是实际 API、覆盖率、Docker 或集成完成证据。
 组件与状态测试覆盖附件交互；真实浏览器验证 CSS 隐藏、contenteditable、frame Tab/Esc、portal/inert 和焦点恢复。
-JSDOM 不提供可见性证据。附件后端旅程纳入组合 CI inventory；既有看板的原生/容器功能场景继续属于 CI，容量场景及其门槛由显式本地压力验收拥有。
+JSDOM 不提供可见性证据。附件后端旅程纳入组合 CI inventory；CI 在实际生产容器执行完整功能清单，原生功能与容量由显式本地入口选择。代表布局矩阵保留主要交互及最短屏检查，但不声称覆盖所有状态、语言、格式和视口的笛卡尔组合。
 
 ## 风险与重审条件
 
