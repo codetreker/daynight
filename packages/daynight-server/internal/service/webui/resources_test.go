@@ -5,28 +5,32 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"regexp"
 	"testing"
 	"testing/fstest"
 )
 
-func TestBundledPageAndReferencedAssets(t *testing.T) {
-	resources := New()
-	index, err := resources.Read("dist/index.html")
+func TestNewReadsDeclaredFileSystem(t *testing.T) {
+	expected, err := fs.ReadFile(bundled, "dist/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(index, []byte(`<div id="root"></div>`)) || bytes.Contains(index, []byte("/src/main.tsx")) {
-		t.Fatal("embedded page is not the production frontend")
+	actual, err := New().Read("dist/index.html")
+	if err != nil || !bytes.Equal(actual, expected) {
+		t.Fatalf("default resources returned %q, %v; want %q", actual, err, expected)
 	}
-	assets := regexp.MustCompile(`(?:src|href)="(/assets/[^"?#]+)"`).FindAllStringSubmatch(string(index), -1)
-	if len(assets) < 2 {
-		t.Fatal("production index does not reference emitted script and stylesheet")
+}
+
+func TestReadReturnsProvidedFileContents(t *testing.T) {
+	files := fstest.MapFS{
+		"shell.html": {Data: []byte("fixed shell")},
+		"empty":      {Data: []byte{}},
+		"nested/raw": {Data: []byte{0, 1, 0xff}},
 	}
-	for _, asset := range assets {
-		data, err := resources.Read("dist" + asset[1])
-		if err != nil || len(data) == 0 {
-			t.Fatalf("embedded asset %s: %v", asset[1], err)
+	resources := NewFromFS(files)
+	for name, file := range files {
+		actual, err := resources.Read(name)
+		if err != nil || !bytes.Equal(actual, file.Data) {
+			t.Fatalf("resource %s returned %q, %v; want %q", name, actual, err, file.Data)
 		}
 	}
 }
