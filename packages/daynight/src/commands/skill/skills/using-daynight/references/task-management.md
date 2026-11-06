@@ -11,13 +11,23 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | --- | --- |
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
 | `task list` | Traverse all matching pages. Excludes `done` by default; explicitly include completed tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
+| `task search <expression>` | Search full titles and Markdown descriptions in one project, including completed tasks. Traverses all pages in server relevance order; returns a compact match and chain context, not complete tasks. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
 | `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |
 | `task thread read <task-id>` | One bounded page of durable discussion, independent of task metadata and execution. |
 | `task graph <task-id>` | The target's full bidirectionally connected component of ordinary dependencies, plus one layer of external prerequisites for those tasks. Includes all statuses without recursively expanding external tasks. |
 
-Human-readable lists are summaries; JSON lists omit only `description`.
+For search, pass the complete expression as one argument; `--` supports a leading dash.
+Use uppercase `AND`, `OR`, `NOT`, parentheses, quoted phrases, and `title:` or
+`description:` fields. Adjacent terms imply `AND`; matching is literal substring
+with ASCII case folding. Search accepts the list filters `--status`, `--assigned-to`,
+`--ready`, `--allow-agents`, and `--compatible-platform`, but not `--all`.
+Its text and JSON omit assignee and update time; JSON entries contain only
+`id`, `projectId`, `title`, `status`, `context`, and `match`. A failure, including
+`search_changed`, leaves stdout empty; rerun the search after a change.
+
+Human-readable ordinary lists are summaries; their JSON entries omit only `description`.
 Ready results, task details, and write results that return tasks contain complete tasks.
 Dependency graphs provide compact relationship context without full descriptions, PR properties, or versions and cannot replace task details. `--depends-only --json` returns only `id`, the full `dependsOn` set, and its `externalDependsOn` subset.
 Graph nodes retain complete dependency references, which may point outside the graph; read the relevant tasks or their dependency graphs when those paths need assessment.

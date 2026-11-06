@@ -190,6 +190,7 @@ daynight bot delete <bot-id> --if-version <version> [--request-id <uuid>] [--jso
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
+daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
 daynight task step
@@ -714,6 +715,36 @@ receipt. Use `--json` for the validated preview or acceptance receipt.
 
 ## Task management
 
+`daynight task search <expression>` searches complete Task titles and Markdown
+descriptions in one project, including completed Tasks by default. Supply the
+entire expression as one shell argument; `--` permits an expression beginning
+with a dash. For example:
+
+```bash
+daynight task search 'title:缓存 AND NOT description:废弃' --status done
+daynight task search -- '-worker'
+```
+
+Words and quoted phrases match literal substrings, with ASCII case folding.
+Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `title:`
+and `description:` fields form expressions. Inside quotes, `\"` and `\\`
+escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
+`--allow-agents`, and `--compatible-platform` intersect the expression; search
+does not accept `--all`. Explicit `--project` searches that project directly;
+otherwise the current repository resolves the project.
+
+Search reads and validates every page before producing output, preserving the
+server's order. Text shows the full Task ID and title, status, chain representative
+or `none`, positive match fields, and a description snippet when present. A
+negative-only match is identified as such; text escapes terminal controls.
+`--json` emits one newline-terminated array whose entries contain only `id`,
+`projectId`, `title`, `status`, `context`, and `match`. Both formats omit the
+assignee and update time; use `task show` for complete Task details. An empty
+result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
+expression syntax exit 2; read, permission, protocol, cancellation, budget and
+`search_changed` failures exit 1. Errors go to stderr, and a failed search emits
+no partial results on stdout. A changed search must be started again.
+
 Task commands use the same `serverUrl` configuration as project commands:
 
 ```bash
@@ -981,7 +1012,8 @@ starting with a dash are rejected. Directory options, switches and help reject
 inline assignment. Attachment `put` declares its `--path` as text, accepting
 `--path=value`; attachment `put/read/remove` also accept `--` before positional
 paths starting with a dash. Property set/remove also accept this terminator for
-literal property/value positionals; other operations retain their declared syntax.
+literal property/value positionals; search accepts it for an expression beginning with a dash.
+Other operations retain their declared syntax.
 
 The internal typed ApiClient accepts optional `assignedTo` and `workerId` on
 TaskFilters and TaskPageQuery. Assignment selectors accept `me`, `unassigned` or
