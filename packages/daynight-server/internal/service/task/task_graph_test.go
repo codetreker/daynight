@@ -52,6 +52,10 @@ func seedConnectedGraph(t *testing.T, database *store.Store, projectID string, n
   WHERE predecessor < target-1 ORDER BY target, predecessor LIMIT $3`, projectID, nodes, edges-(nodes-1)); err != nil {
 		t.Fatal(err)
 	}
+	// Graph queries can reach a fresh bulk fixture before autovacuum gathers statistics.
+	if _, err := database.Pool.Exec(ctx, `ANALYZE tasks, task_dependencies`); err != nil {
+		t.Fatal(err)
+	}
 	var rootID string
 	if err := database.Pool.QueryRow(ctx, `SELECT md5($1::text || ':1')::uuid::text`, projectID).Scan(&rootID); err != nil {
 		t.Fatal(err)

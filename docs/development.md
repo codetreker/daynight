@@ -510,6 +510,12 @@ independently of display rounding. No production files or functions are excluded
 Only the test-only `cmd/e2e_tests` package is removed from coverage execution;
 a recursive source check rejects non-test Go files there before validation.
 
+TaskGraph exact-limit fixtures collect planner statistics after their complete
+bulk graph load. Their real PostgreSQL traversal, 1000-node backbone, 5000
+references and independent overflow assertions remain part of ordinary validation;
+the [server fixture guide](../packages/daynight-server/README.md#task-graph-boundary-fixtures)
+owns the preparation boundary.
+
 The coverage installation supports the authentication package's installed-CLI
 assertions and its normally issued PAT handoff to two public-command deadline
 probes. These probes run outside Go's ten-minute timer. Test-only mocks use a
