@@ -1858,6 +1858,13 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+The Project settings route-retention suite exercises dispatched saves through
+`AuthenticatedApp` navigation, including request survival, the confirmed
+receipt and return-read ordering. Form tests separately cover localized feedback,
+exact version serialization and cancellation before dispatch. The
+[project checks decision](../../.agents/notes/implemented/bug-fix/2026-11-05-stable-project-checks.md)
+records the ownership trade-off.
+
 Status, platform and automatic-permission API tests distinguish strict decoder
 inputs, target-specific write confirmation and shared transport failures. Complete
 detail/graph malformed-field matrices retain their input boundaries; representative
