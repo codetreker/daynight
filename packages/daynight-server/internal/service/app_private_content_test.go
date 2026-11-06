@@ -112,6 +112,41 @@ func TestOpenAppReportsBackgroundMaintenanceFailure(t *testing.T) {
 	}
 }
 
+func TestOpenAppReportsOAuthMaintenanceFailure(t *testing.T) {
+	c := appTestConfig(t)
+	first, err := OpenApp(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(context.Background(), c.DatabaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(context.Background(), `DROP TABLE oauth_clients`); err != nil {
+		t.Fatal(err)
+	}
+	logs := &appLogCapture{changed: make(chan struct{}, 1)}
+	app, err := OpenAppWithLogger(context.Background(), c, slog.New(slog.NewJSONHandler(logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := app.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	got := logs.wait(t, "OAuth maintenance failed")
+	if !strings.Contains(got, `"component":"oauth"`) || !strings.Contains(got, `"operation":"maintain"`) || strings.Contains(got, "oauth_clients") {
+		t.Fatalf("unsafe OAuth maintenance failure log: %s", got)
+	}
+}
+
 func TestAppCloseWaitsForPrivateTransferPermit(t *testing.T) {
 	tasks, db, project, url, principal := testsupport.TaskService(t)
 	task := testsupport.CreateTask(t, tasks, principal, project.ID, "transfer")
