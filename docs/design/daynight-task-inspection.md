@@ -244,11 +244,13 @@ DOM，也不调用 `bindFunctions`。Event Modeling 的合法 XHTML 标签保留
 
 独立地从完整 API 投影 P 和实际 S 推导每个卡片是否存在隐藏直接邻居，验证 96/136px 高度；P 外无关后续不产生 footer。实际DOM路线的端点/方向、平滑相切、全部可见卡片避让、真实CTM、完整body coverage、参考弧长/phase及原生箭头独立判断，不能由生产规划器输出充当有效预期。可选输入只做编译忠实度，负例覆盖缺/多边、错误箭头、穿卡片和相位/覆盖失败。稳定性比较使用图坐标/相对变换，页面滚动诊断单独保留，不能把一致的文档平移误判为图变化。
 
-Web 模块测试和独立图/几何压力测试保留其各自范围；独立浏览器 fixture 使用受控响应，
-不证明真实服务或安装 CLI 的组合结果。原 native/container 浏览器 runner 与容量入口已移除，
-其源码绑定的结果不证明当前版本。完整 1,000 任务、999/5,000 边数据及每图五次的容量
-验证目标保持；需验证 selected/hidden 上游、超限拒绝、`openMs ≤ 3000` 和
-`select/detail/zoom/pan ≤ 300ms`。普通 Details → close → 立即 zoom/pan、可信可见任务选择
-和高亮态同序列取较慢状态，网络单独计量，不在 close 与 zoom 间加入等待、reset 或 fit。
+Web 模块测试和受控浏览器 fixture 验证各自范围，不能证明真实服务或安装 CLI 的组合结果。
+全规模压力验证独立于常规 CI，保留四个完整 1,000 任务输入、999/5,000 边、每图五次、
+selected/hidden 上游、visibility 和超限检查，以及 `openMs ≤ 3000`、
+`select/detail/zoom/pan ≤ 300ms` 的目标。普通 Details 关闭后立即 zoom/pan，再可信选择
+并执行高亮态同序列，取较慢状态，单独记录网络；关闭与缩放间不加等待、reset 或 fit。
+实际结果必须绑定源码和环境；旧跨产品 runner 已删除，其结果不能证明当前版本。
 
-`task-description-markdown` 在原生/容器目标保留独立描述阅读旅程，并验证图内检查→Details→相对附件导航→关闭后 S、选择、几何和视口保持。API 不引入格式标记或旧数据特判，现有字符串直接按 Markdown 展示，不批量改写已有任务描述。原型不替代生产验收。生产验证覆盖 typecheck、测试/coverage、build、真实 component/native/container 和独立审查，完整 capacity 由显式本地压力入口验证。结果必须绑定确切源码。
+描述阅读中的图检查、相对附件导航及关闭后的选择、几何和视口保持由 Web 模块验证。
+API 不引入格式标记或旧数据特判，现有字符串直接按 Markdown 展示。类型、模块单测、
+受控浏览器和构建分别验证其职责，真实产品连接由独立组合验证承担。

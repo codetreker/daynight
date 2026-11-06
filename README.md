@@ -349,7 +349,7 @@ These commands target the CLI. Its build publishes skill bundles and per-owner
 SQLite SQL directories with the compiled dist tree; the
 [development guide](docs/development.md#cli-development) owns packaging details.
 Web checks use `pnpm web:typecheck`,
-`pnpm web:test` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
+`pnpm web:test`, `pnpm web:test:browser` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
 [development guide](docs/development.md) for prerequisites, native diagnostics,

@@ -15,6 +15,16 @@ import { createCoordinatorFixtures } from "./coordinator-fixtures.js";
 const { proof, uuid, deferred, waitFor, untilAborted, observation, fixture } = createCoordinatorFixtures(true);
 
 describe("foreground review coordination", () => {
+  it("keeps independent sessions for different pull requests", async () => {
+    const f = fixture(); f.update(1); f.update(2); f.start();
+    await waitFor(() => f.store.getPullRequest(f.pr(1))?.completedRevision === 1 && f.store.getPullRequest(f.pr(2))?.completedRevision === 1, "both reviews");
+    const first = f.store.getPullRequest(f.pr(1))!.sessionId, second = f.store.getPullRequest(f.pr(2))!.sessionId;
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    expect(first).toMatch(uuidPattern); expect(second).toMatch(uuidPattern); expect(second).not.toBe(first);
+    expect(f.launched).toHaveLength(2);
+    expect(f.launched.map(({ review, session }) => [review.number, session])).toEqual(expect.arrayContaining([[1, first], [2, second]]));
+  });
+
   it("waits for all unresolved conversations without reserving resources, including outdated and other-author threads", async () => {
     const f = fixture(); f.update(1);
     f.threads.push({ id: "outdated-other-author", reviewId: "other-review", isResolved: false });

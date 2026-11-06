@@ -16,12 +16,14 @@
     "web:dev": "pnpm --filter @codetreker/daynight-web dev",
     "web:typecheck": "pnpm --filter @codetreker/daynight-web typecheck",
     "web:test": "pnpm --filter @codetreker/daynight-web test",
+    "web:test:browser": "pnpm --filter @codetreker/daynight-web test:browser",
     "web:build": "pnpm --filter @codetreker/daynight-web build && pnpm --filter @codetreker/daynight-web exec node scripts/publish-assets.mts",
     "completion:acceptance": "pnpm --filter @codetreker/daynight completion:acceptance",
     "dev:install": "node scripts/dev-install.mjs",
     "dev:test": "node --test packages/daynight/scripts/test-isolation.regression.mjs && node --require ./packages/daynight/scripts/test-isolation.cts --test scripts/dev-install.test.mjs",
     "test:stress": "pnpm --filter @codetreker/daynight test:stress",
     "server:test:stress": "bash packages/daynight-server/scripts/stress.sh",
-    "web:test:stress": "pnpm --filter @codetreker/daynight-web test:stress"
+    "web:test:stress": "pnpm --filter @codetreker/daynight-web test:stress",
+    "web:acceptance": "bash packages/daynight-web/scripts/acceptance/task-search.sh"
   }
 }

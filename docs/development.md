@@ -202,7 +202,10 @@ global prefix. Ordinary CLI tests own command behavior and its error and
 concurrency cases. The installed suite does not modify the operator's installed
 CLI or require live review credentials.
 
-Shell completion has a separate real-shell acceptance command. It requires
+Ordinary CLI tests require Python 3 and exercise completion behavior through a real
+Bash 4.2 or newer editor on Linux and a real zsh editor on macOS. The completion CI job also runs the module behavior
+matrix on Bash 4.2, modern Bash and zsh. Shell completion has a separate
+real-shell artifact acceptance command. It requires
 Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
 isolated shell executables from the repository root:
 
@@ -564,13 +567,16 @@ pnpm web:dev
 pnpm web:typecheck
 pnpm web:build
 pnpm web:test
+pnpm web:test:browser
 ```
 
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes them into the Go embed directory. A production Go build
 requires generated assets. Web quality runs the module harness, Vitest/V8 suite
 and a statement gate strictly greater than 90%; it does not start the Go service
-or an installed CLI. The CI Web quality job contributes its result to the final
+or an installed CLI. `pnpm web:test:browser` separately runs the controlled
+module browser fixtures after Playwright Chromium is installed; see the
+[Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
 `checks` gate when selected.
 
 For a disposable full-stack HTTP target, run a command through

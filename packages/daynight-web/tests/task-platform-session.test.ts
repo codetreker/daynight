@@ -61,12 +61,15 @@ describe('platform mutation ownership', () => {
   });
   it('keeps a submitted write through closing, re-opening and another task', async () => {
     const sessions = createSessions(); const release = sessions.subscribe(project, id, vi.fn()); await open(sessions);
+    const other: TaskDetail = { ...initial, id: '20000000-0000-4000-8000-000000000002', title: 'Other task', requiredPlatform: 'windows' };
+    await synchronize(sessions, other);
     const pending = deferred<TaskDetail>(); writes.mockReturnValueOnce(pending.promise);
     sessions.setRequiredPlatform(project, id, 'linux', initial.version); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); release(); sessions.load(project, id, 2);
     expect(reads).toHaveBeenCalledTimes(1); await waitFor(() => expect(writes).toHaveBeenCalledOnce()); expect(writes.mock.calls[0]![4].aborted).toBe(false);
-    expect(sessions.snapshot(project, 'other').detail).toBeNull();
+    reads.mockResolvedValueOnce(other); const releaseOther = sessions.subscribe(project, other.id, vi.fn()); sessions.load(project, other.id, 2);
+    await waitFor(() => expect(sessions.snapshot(project, other.id).detail).toEqual(other));
     await synchronize(sessions, changed); pending.resolve(changed); await waitFor(() => expect(sessions.snapshot(project, id).mutation.phase).toBe('confirmed'));
-    expect(sessions.snapshot(project, 'other').detail).toBeNull();
+    expect(sessions.snapshot(project, other.id).detail).toEqual(other); expect(writes).toHaveBeenCalledOnce(); releaseOther();
   });
   it('blocks platform saves while a permission or status write owns the task', async () => {
     for (const action of ['permission', 'status']) {

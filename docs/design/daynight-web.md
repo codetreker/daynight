@@ -210,7 +210,8 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 - 任务链是普通依赖的弱连通分量，一个分量只产生一个条目；普通多起点合流不重复成员。没有普通前置及后续的单成员进入独立任务，即使外部前置使其阻塞。代表是服务端精确顺序中最早的普通入度零成员，供应标题和排序。状态及负责人筛选不改变拓扑，完整快照先计算分量与进度再过滤条目。机制与取舍见[外部依赖决策](../../.agents/notes/archived/architecture/2026-10-23-external-dependency-design.md)。
 - 独立任务使用紧凑原生整行按钮，显示标题、自身状态、自动执行许可、平台要求、ID、创建时间及已知执行耗时/提醒；耗时容器紧随创建时间，嵌入可换行 flex 信息行，点击直接打开详情，不挂载单节点画布。任务链以代表任务作为顶层 Goal 条目，保留原标题、整链状态与进度；链头不渲染 Goal 标签或任务数/未完成数摘要。`ChainRow` 从 `component.memberIds` 读取当前状态，累计 `in_progress`，在标题后的可换行布局显示本地化数量；成员集包含代表任务且排除仅作外部上下文的任务，零值仍显示。该数量与整链状态各自保留原本语义。两个列表共享负责人和状态条件，从完整索引逐任务联合匹配后筛选顶层条目；默认全部状态包含全历史。任一普通分量成员同时匹配两项即保留真实代表及完整子任务列表，链外前置不参与匹配。工具栏显示符合筛选的完整条目数/全部条目数。统计、完整索引、图投影与上下文保持完整；筛选和翻页不发请求，定时同步仍按页面可见性运行。
-- 两个内层类别共享负责人和状态条件及一个项目任务列表偏移。状态默认为全部状态，筛选条件在本次项目访问中保留，不写浏览器存储。`useTaskListScroll(projectId, active)` 以 `daynight:task-list-scroll:${projectId}` 保存非负有限数值；类别不属于 hook 的输入，因此内层切换不触发恢复或重新注册监听。内容缩短时由浏览器限制当前位置，后续保存记录实际偏移。任务滚动 hook 仅在快照可用且外层任务列表活动时拥有 window scroll/pagehide；离开前保存，在布局阶段释放监听，重新进入任务区且面板可见后恢复。首次进入、刷新或返回项目读取同一共享偏移；显式分页和概览导航随后覆盖恢复位置。概览使用本次项目挂载期间的独立内存位置，首次为零。共享 `usePagination(total, pageSize)` 为筛选后的完整序列计算有效页码和范围，两个任务类别使用 `taskPageSize=15`，概览显式使用 20，在条目减少时钳位；组件按该范围截取展示序列，负责人或状态改变时重置两个任务列表到第一页。三个列表的页码均由持续挂载的项目 owner 保存，概览将 Goal 与独立汇总合并并按状态稳定排序后，作为同一完整行序列切片，三者互不覆盖。`ListPagination` 只呈现本地化范围、总数和上一页/下一页控件，只有一页时不渲染；Goal 子任务不增加父列表条数。页码仅属于本次访问，不增加持久化记录。偏好失败保留本次内存操作并显示提示。子任务展开、图打开、详情、全屏和图视口仍不持久化；原 `daynight:project-view:${projectId}` 不再读写。机制见[浏览偏好决策](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)、[图浮层决策](../../.agents/notes/archived/feature/2026-10-26-task-chain-graph-dialog.md)、[近期分页决策](../../.agents/notes/archived/feature/2026-10-27-recent-task-pages.md)及[共享滚动决策](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md)。
+- 两个内层类别共享负责人和状态条件及一个项目任务列表偏移。状态默认为全部状态，筛选条件在本次项目访问中保留，不写浏览器存储。`useTaskListScroll(projectId, active)` 以 `daynight:task-list-scroll:${projectId}` 保存非负有限数值；类别不属于 hook 的输入，因此内层切换不触发恢复或重新注册监听。内容缩短时由浏览器限制当前位置，后续保存记录实际偏移。任务滚动 hook 仅在快照可用、外层任务列表活动且搜索未激活时拥有 window scroll/pagehide；离开前保存，在布局阶段释放监听，重新进入普通任务区且面板可见后恢复。首次进入、刷新或返回项目读取同一共享偏移；显式分页和概览导航随后覆盖恢复位置。概览使用本次项目挂载期间的独立内存位置，首次为零。共享 `usePagination(total, pageSize)` 为筛选后的完整序列计算有效页码和范围，两个任务类别使用 `taskPageSize=15`，概览显式使用 20，在条目减少时钳位；组件按该范围截取展示序列，负责人或状态改变时重置两个任务列表到第一页。三个列表的页码均由持续挂载的项目 owner 保存，概览将 Goal 与独立汇总合并并按状态稳定排序后，作为同一完整行序列切片，三者互不覆盖。`ListPagination` 只呈现本地化范围、总数和上一页/下一页控件，只有一页时不渲染；Goal 子任务不增加父列表条数。页码仅属于本次访问，不增加持久化记录。偏好失败保留本次内存操作并显示提示。子任务展开、图打开、详情、全屏和图视口仍不持久化；原 `daynight:project-view:${projectId}` 不再读写。机制见[浏览偏好决策](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)、[图浮层决策](../../.agents/notes/archived/feature/2026-10-26-task-chain-graph-dialog.md)、[近期分页决策](../../.agents/notes/archived/feature/2026-10-27-recent-task-pages.md)及[共享滚动决策](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md)。
+- 项目任务搜索独立持有草稿、已应用表达式、筛选和游标栈，不从摘要匹配或重新排序。`api/task-search.ts` 校验主体、项目、搜索投影和固定错误详情；Unicode 错误位置只转换为输入控件的 UTF-16 选择范围。每页请求服务端，首页成功重读退休后续游标，续页变化时清栈并有界重读首页。请求绑定项目、身份、历史、generation 和取消信号；可见时周期重读，后台检查保持既有界面，历史或访问退休撤回结果。命中仅选择 `direct` 详情观察，不制造完整 Task 或缓存资格；详情从实时读取准入。搜索决策见[Web 搜索记录](../../.agents/notes/implemented/feature/2026-11-06-web-task-search.md)，接口机制见[任务搜索设计](daynight-task-search.md)。
 - `ProjectView` 的图临时定位任务初始为 null，只有“查看依赖关系”按钮打开图，Goal 主体展开操作不写该状态。通过 `componentByTask` 解析其当前普通分量和可见代表，有效定位任务不随代表变化而覆盖；任务被移除、成为单成员、被筛选排除或不再处于当前页时，关闭图并清除定位。没有可见链时不选择其他条目，重新显示或返回视图等待新的显式打开。真正空项目、类别为空与筛选无匹配有不同状态；入口消失时焦点恢复到仍可用的控件或列表区域。
 - 完整图索引保留服务端 `(createdAt,id)` 升序。展示序列从完整代表顺序生成倒序副本，再用 `task-order.ts` 的 `compareTaskStatus` 按 `in_progress` → `todo` → `done` 稳定排序，之后分类、筛选和分页。独立任务的单成员分量状态等于自身状态，Goal 状态读取完整 `component.progress.status`；同状态保留创建时间与相同时间 ID 的精确倒序，状态刷新会重新排列；更新时间不影响同状态位置。前端不通过 JavaScript 毫秒时间重新排序，避免丢失数据库时间精度。状态排序与原始顺序隔离的理由见[状态排序决策](../../.agents/notes/archived/bug-fix/2026-10-28-project-status-order.md)，原展示取舍见[任务链展示决策](../../.agents/notes/archived/feature/2026-10-21-task-chain-presentation.md)。
 - 紧凑条目保留自然换行、原生操作及可见焦点。Goal 主体与“查看依赖关系”是同一标题行内的兄弟按钮；主体保留 `task-root-<id>`，供概览定位，并用 `aria-expanded` / `aria-controls` 关联子任务区。依赖图按钮使用 `task-chain-graph-<id>` 和 `aria-haspopup="dialog"`，名称包含对应任务标题。桌面标题保持 13px、窄屏 12px，进度区按断点收窄；`.goal-row` 提供 inline-size 容器，容器宽度不超过 600px 时标题与计数占据展开图标后的完整首行，进度和状态另起一行，图入口换行；该规则读取实际可用行宽，避免展开侧栏和项目导航挤压桌面视口中的英文计数。独立任务保留紧凑视觉与直接详情交互，不显示链进度。`.standalone-list` 提供名为 `standalone-list` 的 inline-size 容器，其宽度不超过 650px 时沿用手机行排列：徽标在右侧纵排、隐藏箭头、缩小元信息字号及行间距；更宽列表仍横排。独立行断点读取列表宽度；650px 阈值覆盖 1000px 窗口展开侧栏时约 604px 的列表，以及英文暂停徽标额外占用的宽度，避免标题被横排徽标挤压；不对标题设置固定最小宽度，保留 320px 手机的自然换行。详见[独立任务行决策](../../.agents/notes/implemented/bug-fix/2026-11-06-standalone-row-container.md)。
@@ -753,20 +754,17 @@ pnpm web:dev
 pnpm web:typecheck
 pnpm web:test
 pnpm web:build
+pnpm web:test:browser
 
 # Go 模块：完整校验（显式提供隔离 PG URL）
 DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
 ```
 
-`web:dev`、`web:typecheck`、`web:test` 和 `web:build` 属于 Web 模块。共享 `web:build`
-调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录
-暂存与替换；替换失败时尝试恢复先前目录，恢复也失败时保留两个原因。`web:test` 串行
-执行 Node 工具测试、常规 Vitest/V8 单元及组件测试和严格覆盖率检查；完整规模图与
-几何证明由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`。独立
-Playwright 配置可在本地验证受控响应下的界面交互，命令和限制见
-[Web 说明](../../packages/daynight-web/README.md#independent-browser-checks)。
-`web:build` 不调用 Go；Go `scripts/check.sh` 在执行需要内嵌资源的命令前调用该构建。
-缺少 pnpm、依赖、index 或资源时明确失败。
+`web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，
+完整暂存并替换资源；替换与恢复失败均须传播。`web:test` 串行运行工具测试和 Vitest/V8
+单元及组件测试、严格覆盖率检查；`web:test:browser` 独立运行受控 API 浏览器 fixture。
+完整规模图与几何测试由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`。
+`web:build` 不调用 Go；Go 模块验证使用独立资源覆盖层。
 
 开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。运行机器只需要服务二进制与 PostgreSQL；源码构建固定使用 Node 24 与 pnpm 11.28.6。根目录现有 CLI build/test/acceptance 命令的含义保持独立，新增 web 命令显式选择 `@codetreker/daynight-web`。
 
@@ -820,32 +818,24 @@ file/project-directory/project-name 参数。使用生产 Dockerfile 构建本�
 记录 image ID；先启动 gateway/PostgreSQL 并发现主站 base URL，再配置精确 callback、
 真实 UniAuth fixture 与私有 auth.env，最后启动服务并等待公开 readyz。
 `DAYNIGHT_BASE_URL`、本 run 的私有配置/descriptor 交给子命令，凭据不进入公开回执。
-显式调用该入口只管理其独立资源，不启动、重建或清理日常 localhost 栈。Web 模块
-CI 不调用完整浏览器 runner；Go 覆盖率和直接二进制测试使用独立 PostgreSQL 测试机制。
+该入口与日常 localhost 栈独立；Go 模块验证使用独立 PostgreSQL 测试机制。
 详细配置和重建恢复顺序由[dev-ci 指南](../../deployment/dev-ci/README.md)拥有。
 
 正常退出、测试失败和信号取消都先终止本次子命令进程组，再收集本项目的必要日志及状态，执行仅针对该项目的 `down --volumes --remove-orphans`。进程组在 leader 退出后仍受管理，避免成功或失败的 callback 留下继续使用资源的后代。清理拒绝空项目名、非 dev-ci 前缀和 `daynight-localhost`，不执行全局 prune；本次镜像标签也只在确认本次容器退出后移除。取消后的清理采用独立有界步骤，清理失败必须使验收失败并保留原测试失败。run ID、base URL、image ID、资源清单和结果记录在任务 `.tmp/`，诊断不输出环境凭据、原始连接串或任务正文。恢复入口 `run.sh --cleanup RUN_ID` 只接受已有本地回执的有效身份，保留原 manifest，另写 recovery-manifest；执行恢复前必须先停止原 runner 与子命令进程组。显式恢复只复用已登记的 run 身份；进程被强制终止而无法确认清理时，保留资源清单并报告未完成，不能宣称已回收。
 
-两套环境定义、隔离 HTTP smoke、运行镜像身份和并发隔离均已本地验证，正常重建保留数据。12 项受控 Docker fixture 验证成功、失败、取消、恢复与遗留子进程清理；它们不代替真实 Docker 故障验收。较早渲染器的本地生产浏览器/性能与实际 Docker 故障矩阵已有通过记录；后者保留独立健康栈，
-验证启动中途失败、callback 失败、取消及卷清理失败后的定向恢复。这些历史结果不证明当前源码的完整浏览器或手工 Docker 故障矩阵。
-长虚线分解前后的本地生产、几何/相位与性能回执属于各自的历史源码，不能证明当前源码。localhost 的配置与数据不会作为测试前置被修改。
+隔离 HTTP smoke、运行镜像身份和并发隔离由部署模块验证；受控 Docker fixture
+不代替真实 Docker 故障验收。localhost 的配置与数据不作为测试前置被修改。
 
 ### CI 构建归属
 
-同一个 Web 模块选择结果启用 `verify-web-quality`；浏览器消费的 CLI `src/api/`、
-`src/session/` 和精确的 `src/platform/text.ts` 变更同时选择 CLI 与 Web。最终 `checks`
-保留前置结果的 `success`/未选择 `skipped` 门禁，并要求已选择的 Web 质量作业成功。
-路由和 main push 全量规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
+Web 质量 job 使用 `scripts/ci.mts quality` 串行运行工具测试、Vitest/V8 覆盖率
+采集及独立的源码清单与严格语句覆盖率检查。各阶段有独立期限，采集使用四个 worker；
+测试失败、取消或进程清理失败均须传播。已选中的 Web 质量 job 必须成功才能通过
+最终 `checks`。实际选择规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
 
-质量 job 通过 `scripts/ci.mts quality` 串行执行 `test:harness`、完整 Vitest/V8 采集与
-`scripts/coverage.mts`。harness 限时 180 秒，采集限时 300 秒，最终源码清单与严格
-覆盖率校验独立限时 60 秒；已完成的采集不能耗尽最终 checker 的预算。完整产品源码
-清单与严格语句覆盖率保持；Vitest/V8 子进程使用四个 worker 与文件隔离。质量产物
-保留原始覆盖率与完整源码清单摘要；测试文件逐项通过不能替代 V8 报告及严格 checker。
-
-原 native/container 浏览器矩阵与 combined runner 已移除；其源码绑定的结果、阶段和
-清理历史仍可由[原流水线决策](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
-及对应运行记录追溯，不能作为当前源码的成功检查。
+Web 模块浏览器 fixture 使用前端预览和受控 API，不启动 Go、数据库或安装 CLI。
+其入口、环境要求及覆盖范围由 [Web 验证说明](../../packages/daynight-web/README.md#validation-and-build)
+拥有。产品跨模块的真实连接与部署验证具有独立职责，不能以受控 fixture 的结果代替。
 
 ## 执行耗时与提醒
 
@@ -1026,34 +1016,27 @@ Worker 请求沿用 requestId 和当前账号/资源身份。页面取消请求�
 
 ## 验证与 CI
 
-Web 模块测试验证生产轮询默认值、可见性恢复、失败与取消。独立 Playwright 配置
-使用受控响应验证浏览器交互；它们不证明真实服务、安装 CLI 或原生/容器组合结果。
-Go 模块新构建二进制测试使用隔离 PostgreSQL 和真实认证 HTTP 验证服务合同，其中
-`TestAttachmentGrantRevocationWithFreshProcess` 验证
-1 MiB 上传正文未完成时撤权 204、新访问 404，随后已准入上传 201、字节和资源清理。
+Vitest 和 Testing Library 验证组件、状态、缓存、错误及异步请求的归属和恢复。
+需要原生布局、焦点、历史、滚动或选区的行为由受控 API 的模块浏览器 fixture 验证；
+JSDOM 的模拟几何不能证明这些浏览器行为。测试各自隔离身份与数据，未知写入通过
+读取核对，不以重放模拟确认。完整命令及 fixture 范围见
+[Web 验证说明](../../packages/daynight-web/README.md#validation-and-build)。
+
+Web 覆盖率采集包含所有 `src/**/*.{ts,tsx}` 产品文件。独立 checker 对照源码清单和
+`coverage-final.json` 的语句命中表，以整数严格检查 `covered * 10 > total * 9`；
+缺失、空或畸形报告失败。纯类型文件须经编译器证明没有运行语句。类型检查、模块
+测试、浏览器验证及构建各自承担职责；大规模压力测试使用独立本地入口，不进入常规 CI。
+
+产品与服务之间的真实连接需要独立的组合验证；受控 API、截图和设计预览不能证明
+真实服务、数据库、CLI 或部署的行为。失败与资源回收的结果随对应运行保留。
+
+项目撤权的独立浏览器测试通过受控 API 和同账号多标签验证目录、Worker 与配置的
+私有投影撤回、迟到读取隔离、健康项目的焦点与草稿，以及重新授权后的恢复；组件测试
+补充存储清理失败和代际边界。该测试使用独立 Playwright 配置，不能证明真实服务或
+安装 CLI。Go 模块的 `TestAttachmentGrantRevocationWithFreshProcess` 另用新构建服务、
+真实认证 HTTP 和隔离 PostgreSQL 验证上传已准入后成员撤销的先后次序、字节与清理。
 [附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
-记录服务与 Web 的分工。原 combined/full-stack runner 已移除；先前结果只属于其实际
-源码及环境，不替代当前模块或服务端检查。
-
-### 验证矩阵
-
-Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖未知/空/旧任务观测、资源/版本失败、零容量、跨页失败原子保留、取消/晚到响应、当前 principal 的 404 与 mismatch、同账号核验及换号、119/120 秒、72 小时、错误 wall clock、隐藏恢复/错误冻结、任务真实链接和 390px/桌面焦点。配置 API/状态/组件验证另外覆盖独立于概况 404 的配置读取、每字段覆盖投影、原始无效输入保留、草稿基线与观测独立、保存和轮询竞态、409/未知响应核对、身份退休、项目重新加入时的旧准备结果和已移除项目结果。独立浏览器测试可检查受控响应下桌面/窄屏、键盘对话框及后台刷新中的焦点和选区；它们不能单独证明真实 Worker、CLI 或服务组合行为。
-
-1. Go：真实 PostgreSQL 测试任务链图与统计一致性、孤立任务、分叉汇合、一层外部前置与反向外部引用排除、原始依赖保留、目标缺失/删除、返回集合规模边界、长文本预览、并发写期间的一致快照、取消与数据库失败；增加静态资源、深链接、API 优先级、缺失资源与方法测试。
-2. web：Vitest + Testing Library，重点测本地自然日边界、午夜无快照推进、时区与夏令时、Goal 最后成员及未知时间证据、20/21/40/41 条分页、汇总行和 Goal 子任务计数、跨页定位、独立页码恢复/筛选重置/缩页钳位、完整图独立分类、页签未完成任务数与默认/恢复、普通多起点合为唯一分量、筛选计数稳定、全部完成归零及刷新后的状态/分类计数、独立任务直接详情、分类迁移、独立筛选与浏览位置、普通起点/代表识别、闭包、菱形去重、显式外部边与链外前置、统计口径、请求取消/晚到、失败重试和居中详情焦点。项目列表必须覆盖续页游标、末页隐藏加载按钮、去重及下一页失败重试，证明所有项目可访问。断言可见行为，不依赖框架内部坐标。
-3. 覆盖率：保留 Go go-cov 和原始 profile 的严格 `covered * 10 > total * 9`。web job 使用 Vitest V8 provider 输出的 `coverage-final.json`，按产品文件的语句命中表汇总计数并用整数执行同样严格比较。显式设置 `coverage.include` 为 `src/**/*.{ts,tsx}`；检查脚本另行枚举同一源码清单并逐文件核对报告，含未被测试导入的产品文件，缺失即失败。纯类型文件只有在确认没有运行语句时允许零语句；API、图算法和入口没有排除项。拒绝空、畸形报告，测试恰好 90%、舍入、未导入文件和遗漏文件等失败边界。第三方库与构建产物不属于产品源码。
-4. 两个模块分别大于 90%，因此加权总体也大于 90%；不能靠 Go 的高覆盖率掩盖 web 缺口。现有 Go package/function 和 CLI 原生平台门槛保持；关键代码块验证要求仍需核对，当前 Go 配置不以 critical blocks 阻断，默认通过不能证明该要求已满足。
-5. 独立 Playwright 配置验证受控响应下的浏览器布局、焦点和交互；对应结果不代表真实服务或安装 CLI 的组合验收。真实服务事务行为由 Go 模块新构建二进制测试单独验证。
-
-6. PR 按[仓库 CI 路由](../../README.md#ci-selection)选择受影响模块，main push 执行全量应用检查。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。Go 服务检查在干净 checkout 中生成真实 UI 产物并完成所属验证；Web 质量作业检查当前 Web 源码。模块路由覆盖各自实际使用的 CLI 和 Web 构建输入。依赖变更遵守现有 workspace 与 PR 的 CLI 版本检查规则。
-7. 1,000 任务/5,000 边的支持目标与 `openMs ≤ 3000`、选择/详情/缩放/平移反馈各 `≤ 300ms` 的验证要求保持；原生产浏览器容量矩阵入口已移除，其运行结果只属于原源码。Web 的独立图/几何压力测试保留在 `web:test:stress`，不证明生产浏览器时延。
-
-## 实施与验收边界
-
-各组件保留有效测试与覆盖率。设计预览不是实际 API、覆盖率、Docker 或集成完成证据。
-组件与状态测试覆盖附件交互；独立浏览器配置验证其受控场景下的真实布局和焦点，
-JSDOM 不提供可见性证据。Go 模块新构建二进制测试与 Web 测试分别提供服务和界面证据，
-不能将它们等同于已移除的完整原生/容器组合旅程。
+记录两者职责；原 combined/full-stack runner 已移除，其历史结果只适用于当时的源码与环境。
 
 ## 风险与重审条件
 

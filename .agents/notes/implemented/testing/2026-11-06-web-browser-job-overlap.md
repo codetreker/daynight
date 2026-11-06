@@ -18,6 +18,11 @@ relying on a navigation branch usually finishing first.
 
 ## Decision
 
+The full-stack browser runner and its shard have since been removed. The
+[Web module browser entry](2026-11-06-web-module-browser-entry.md) now runs the
+independent frontend fixtures. The following records the original scheduling
+decision and its rationale.
+
 Chromium and its OS dependencies finish installation before CI starts acceptance.
 The shared-check owner requests navigation through an optional
 `navigationChecks: true` in the existing run/source-bound parent evidence.

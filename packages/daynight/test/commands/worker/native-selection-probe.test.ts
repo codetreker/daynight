@@ -1,13 +1,17 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
-import { inspectNativeSelection } from "../../../src/commands/worker/native-selection-probe.js";
+import { inspectNativeSelection, inspectNativeCapabilities } from "../../../src/commands/worker/native-selection-probe.js";
 import { withCodexConfigurationRpc } from "../../../src/commands/worker/herdr/codex-config.js";
+import { HerdrCommandCleanupError } from "../../../src/commands/worker/herdr/command.js";
+import { copilotExecutable } from "../../../src/commands/controller/providers/copilot-runtime.js";
 import { buildHerdrAgentArguments, codexConfigurationArguments, codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 
 vi.mock("../../../src/commands/worker/herdr/codex-config.js", () => ({ withCodexConfigurationRpc: vi.fn() }));
+vi.mock("../../../src/commands/controller/providers/copilot-runtime.js", () => ({ copilotExecutable: vi.fn(() => "/bundled/copilot") }));
 
-const mocks = vi.hoisted(() => ({ current: vi.fn(), list: vi.fn(), disconnect: vi.fn(), create: vi.fn(), stop: vi.fn(), options: [] as unknown[] }));
+const mocks = vi.hoisted(() => ({ current: vi.fn(), list: vi.fn(), disconnect: vi.fn(), create: vi.fn(), stop: vi.fn(), options: [] as unknown[], claude: vi.fn(), claudeModels: vi.fn(), claudeSettings: vi.fn(), claudeClose: vi.fn() }));
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: mocks.claude }));
 vi.mock("which", () => ({ default: async () => "/native/copilot" }));
 vi.mock("@github/copilot-sdk", () => ({
   RuntimeConnection: { forStdio: (value: unknown) => value },
@@ -20,10 +24,12 @@ vi.mock("@github/copilot-sdk", () => ({
 }));
 beforeEach(() => {
   vi.resetAllMocks(); mocks.options.length = 0;
+  vi.mocked(copilotExecutable).mockReturnValue("/bundled/copilot");
   mocks.current.mockResolvedValue({ modelId: "native-model", reasoningEffort: "high" });
   mocks.list.mockResolvedValue({ list: [{ id: "native-model", supportedReasoningEfforts: ["low", "high"] }] });
   mocks.disconnect.mockResolvedValue(undefined); mocks.stop.mockResolvedValue([]);
   mocks.create.mockResolvedValue({ rpc: { model: { getCurrent: mocks.current, list: mocks.list } }, disconnect: mocks.disconnect });
+  mocks.claude.mockReturnValue({ initializationResult: async () => ({}), supportedModels: mocks.claudeModels, getSettings: mocks.claudeSettings, close: mocks.claudeClose });
 });
 
 it("validates effort-only against the model resolved by a no-input, memory-backed native session", async () => {
@@ -32,6 +38,87 @@ it("validates effort-only against the model resolved by a no-input, memory-backe
   expect(mocks.create.mock.calls[0]![0]).toMatchObject({ workingDirectory: process.cwd(), reasoningEffort: "high", createSessionFsProvider: expect.any(Function) });
   expect(mocks.create.mock.calls[0]![0]).not.toHaveProperty("model");
   expect(mocks.disconnect).toHaveBeenCalledOnce(); expect(mocks.stop).toHaveBeenCalledOnce();
+});
+
+it("returns Copilot capabilities when its effective default model cannot be confirmed", async () => {
+  mocks.current.mockResolvedValue({ reasoningEffort: "high" });
+  mocks.list.mockResolvedValue({ list: [{ id: "native-model", name: "Native model", supportedReasoningEfforts: ["low", "high"] }, { id: "plain", capabilities: { supports: { reasoning_effort: [] } } }] });
+  expect(await inspectNativeCapabilities({ agent: "copilot", model: null, args: [] })).toEqual({ model: null, effort: "high", models: [
+    { id: "native-model", label: "Native model", hidden: false, efforts: ["low", "high"], defaultEffort: null },
+    { id: "plain", label: "plain", hidden: false, efforts: [], defaultEffort: null },
+  ] });
+  expect(mocks.disconnect).toHaveBeenCalledOnce(); expect(mocks.stop).toHaveBeenCalledOnce();
+});
+
+it("preserves Codex hidden capabilities and each model's native effort default", async () => {
+  const request = vi.fn(async (method: string) => method === "config/read" ? { config: { model: "secret" } } : { data: [
+    { model: "secret", displayName: "Hidden native model", hidden: true, supportedReasoningEfforts: [{ reasoningEffort: "high" }], defaultReasoningEffort: "high" },
+    { model: "plain", supportedReasoningEfforts: [] },
+  ], nextCursor: null });
+  vi.mocked(withCodexConfigurationRpc).mockImplementation(async (_options, _operation, read) => read({ request } as never));
+  expect(await inspectNativeCapabilities({ agent: "codex", model: null, args: [] })).toEqual({ model: "secret", models: [
+    { id: "secret", label: "Hidden native model", hidden: true, efforts: ["high"], defaultEffort: "high" },
+    { id: "plain", label: "plain", hidden: false, efforts: [], defaultEffort: null },
+  ] });
+});
+
+it("reads the Copilot model's native effort default without treating current effort as its default", async () => {
+  mocks.list.mockResolvedValue({ list: [{ id: "native-model", supportedReasoningEfforts: ["low", "high"], defaultReasoningEffort: "low" }] });
+  expect(await inspectNativeCapabilities({ agent: "copilot", model: null, args: [] })).toMatchObject({ effort: "high", models: [{ defaultEffort: "low" }] });
+});
+
+it("preserves Claude aliases and unsupported effort without guessing native defaults", async () => {
+  mocks.claudeModels.mockResolvedValue([{ value: "alias", displayName: "Alias", resolvedModel: "native-model", supportsEffort: true, supportedEffortLevels: ["low", "max"] }, { value: "plain", displayName: "Plain", supportsEffort: false }]);
+  mocks.claudeSettings.mockResolvedValue({ applied: { model: "native-model", effort: null } });
+  expect(await inspectNativeCapabilities({ agent: "claude", model: null, args: [] })).toEqual({ model: "native-model", effort: null, models: [
+    { id: "alias", label: "Alias", aliases: ["native-model"], hidden: false, efforts: ["low", "max"], defaultEffort: null },
+    { id: "plain", label: "Plain", aliases: [], hidden: false, efforts: null, defaultEffort: null },
+  ] });
+  const options = mocks.claude.mock.calls[0]![0];
+  expect(options.options.persistSession).toBe(false);
+  expect(options.prompt[Symbol.asyncIterator]).toEqual(expect.any(Function));
+  expect(options.options).not.toHaveProperty("resume");
+  expect(options.options).not.toHaveProperty("pathToClaudeCodeExecutable");
+  expect(mocks.claudeClose).toHaveBeenCalledOnce();
+});
+
+it("uses the Web bundled Copilot executable for discovery and the Herdr PATH executable for verification", async () => {
+  await inspectNativeCapabilities({ agent: "copilot", model: null, args: [] });
+  await inspectNativeSelection({ agent: "copilot", model: null, args: [] });
+  expect(mocks.options[0]).toMatchObject({ connection: { path: "/bundled/copilot" } });
+  expect(mocks.options[1]).toMatchObject({ connection: { path: "/native/copilot" } });
+});
+
+it.each([1, "", "x".repeat(4097)])("rejects a malformed Codex page cursor", async nextCursor => {
+  const request = vi.fn(async (method: string) => method === "config/read" ? { config: { model: null } } : { data: [{ model: "native-model" }], nextCursor });
+  vi.mocked(withCodexConfigurationRpc).mockImplementation(async (_options, _operation, read) => read({ request } as never));
+  await expect(inspectNativeCapabilities({ agent: "codex", model: null, args: [] })).rejects.toMatchObject({ code: "capability_error" });
+  expect(request.mock.calls).toHaveLength(2);
+});
+
+it.each([
+  { list: [{ id: "duplicate" }, { id: "duplicate" }], code: "capability_error" },
+  { list: [{ id: "" }], code: "capability_error" },
+  { list: [{ id: "invalid", supportedReasoningEfforts: [1] }], code: "capability_error" },
+  { list: Array.from({ length: 501 }, (_, index) => ({ id: `model-${index}` })), code: "limit_exceeded" },
+  { list: [{ id: "huge", name: "x".repeat(65536) }], code: "limit_exceeded" },
+])("rejects invalid or oversized native capability output: $code", async ({ list, code }) => {
+  mocks.list.mockResolvedValue({ list });
+  await expect(inspectNativeCapabilities({ agent: "copilot", model: null, args: [] })).rejects.toMatchObject({ code });
+  expect(mocks.disconnect).toHaveBeenCalledOnce(); expect(mocks.stop).toHaveBeenCalledOnce();
+});
+
+it("retains discovery failure when native disconnect and client shutdown also fail", async () => {
+  mocks.current.mockRejectedValue(new Error("network failed"));
+  mocks.disconnect.mockRejectedValue(new Error("disconnect failed"));
+  mocks.stop.mockResolvedValue([new Error("stop failed")]);
+  await expect(inspectNativeCapabilities({ agent: "copilot", model: null, args: [] })).rejects.toMatchObject({ code: "cleanup_unknown", errors: [expect.objectContaining({ message: "network failed" }), expect.objectContaining({ message: "disconnect failed" }), expect.objectContaining({ message: "stop failed" })] });
+});
+
+it("preserves Codex's unconfirmed inner process cleanup", async () => {
+  const cleanup = new HerdrCommandCleanupError([new Error("process still open")], new Error("native timed out"));
+  vi.mocked(withCodexConfigurationRpc).mockRejectedValue(cleanup);
+  await expect(inspectNativeCapabilities({ agent: "codex", model: null, args: [] })).rejects.toMatchObject({ code: "cleanup_unknown", cause: cleanup });
 });
 
 it.each([{ modelId: undefined, reasoningEffort: "high" }, { modelId: "native-model", reasoningEffort: "low" }])("rejects unresolved or unapplied native settings and closes the session", async current => {
@@ -64,6 +151,27 @@ it("uses the trusted project model and complete launch configuration when only e
   expect(inspected.cwd).toBe(cwd);
   expect(codexConfigurationArguments(inspected.args)).toEqual(codexConfigurationArguments(buildHerdrAgentArguments(native, cwd)));
   expect(inspected.args).not.toContain("--model");
+});
+
+it("uses Web configuration trust for discovery while preserving Herdr launch trust for verification", async () => {
+  const cwd = path.normalize(await realpath(process.cwd()));
+  vi.mocked(withCodexConfigurationRpc).mockImplementation(async (options, _operation, read) => {
+    const trusted = options.args.includes(codexProjectTrustArguments(cwd).at(-1)!);
+    return read({ request: async (method: string) => method === "config/read" ? { config: { model: trusted ? "project-model" : "user-model" } } : { data: [{ model: "user-model" }, { model: "project-model" }], nextCursor: null } } as never);
+  });
+  const native = { agent: "codex" as const, model: null, args: [] };
+  expect((await inspectNativeCapabilities(native)).model).toBe("user-model");
+  expect(vi.mocked(withCodexConfigurationRpc).mock.calls[0]![0].args).toEqual([]);
+  expect((await inspectNativeSelection(native)).model).toBe("project-model");
+});
+
+it("uses only explicit model and effort config overrides for Web discovery", async () => {
+  const request = vi.fn(async (method: string) => method === "config/read" ? { config: { model: "selected", model_reasoning_effort: "high" } } : { data: [{ model: "selected", supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], nextCursor: null });
+  vi.mocked(withCodexConfigurationRpc).mockImplementation(async (_options, _operation, read) => read({ request } as never));
+  expect((await inspectNativeCapabilities({ agent: "codex", model: "selected", args: ["--effort", "high", "--sandbox", "read-only"] })).effort).toBe("high");
+  expect(vi.mocked(withCodexConfigurationRpc).mock.calls[0]![0].args).toEqual(["-c", 'model_reasoning_effort="high"', "-c", 'model="selected"']);
+  await expect(inspectNativeCapabilities({ agent: "codex", model: null, args: ["--profile", "unsupported-web-profile"] })).rejects.toThrow("Web");
+  expect(vi.mocked(withCodexConfigurationRpc)).toHaveBeenCalledOnce();
 });
 
 it("uses the canonical launch directory for project trust and configuration inspection", async () => {

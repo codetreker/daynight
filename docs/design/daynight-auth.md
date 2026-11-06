@@ -164,10 +164,10 @@ version 后才接受相同原文。真实改名只更新 Team 名称、元数据
 不确定提交遵守相同的 unknown 合同。详细取舍见
 [成员管理决策](../../.agents/notes/archived/architecture/2026-11-04-team-membership-management.md)。
 
-删除在取得 Team 锁后，另发一条不加行锁的 ownership `EXISTS` 查询。Read Committed 的新语句
-快照能看见取锁等待期间已提交的 ownership；把检查合并进最初的锁定查询会使用等待前的快照。
-检查使用既有 `project_ownership(team_id,project_id)` 索引。非空返回 team_not_empty，空集才在
-同一事务删除成员和 Team。事务不取得已有 Project、Task 或 Thread head 锁，避免把 Team-only
+删除在取得 Team 锁后，另发一条不加行锁的活跃 Project 与 ownership `EXISTS` 查询。Read Committed 的新语句
+快照能看见取锁等待期间已提交的 ownership 和 Project 删除标记；把检查合并进最初的锁定查询会使用等待前的快照。
+检查使用既有 `project_ownership(team_id,project_id)` 索引并排除已删除 Project。非空返回 team_not_empty，空集才在
+同一事务删除成员和 Team；已删除 Project 的历史 ownership 保留。事务不取得已有 Project、Task 或 Thread head 锁，避免把 Team-only
 操作引入那些资源的锁序。创建 Project 先锁目标 Team；任何建立目标
 ownership 的写入必须先锁定并重读该 Team，和删除共享其存在性锁，不能在 Team 删除后插入孤立归属。
 
@@ -623,8 +623,8 @@ Vite 保留原 /api Go 代理；设置同一 DAYNIGHT_UNIAUTH_CALLBACK_URL 后�
 
 ## 真实协议 fixture 与验证隐私
 
-Go、安装 CLI、Web native/container 和 Docker 附件/恢复调用方通过正常 UniAuth
-协议取得 session/PAT。共用固定 0978963 的 fixture 可执行文件与 bootstrap 协议，
+Go 服务测试和 dev-ci 附件/恢复验证通过正常 UniAuth 协议取得 session/PAT。
+它们使用固定 0978963 的 fixture 可执行文件与 bootstrap 协议，
 每个目标独立拥有 App、SQLite、端口、用户会话和清理。只控制外部 provider 响应，
 不直接插入 Daynight 用户、会话、PAT 或成员作为验收捷径。预算服务验证 Bearer，
 同时保留其合成 transport 场景与真实授权证明的区别。
@@ -641,15 +641,11 @@ UniAuth，发布同一回环 U 端口供浏览器与 SDK 共用；随后写私�
 reconfigure --bootstrap 允许先恢复配对 SQL/附件，私有 UniAuth 目录沿 run 生命周期
 保留，既有 target 清理结束后删除。详情由[dev-ci 指南](../../deployment/dev-ci/README.md)拥有。
 
-Playwright action/network trace 在固定版本会保留凭据 header 与响应体，因此普通
-trace 和 capacity override 均关闭；PNG 只在秘密关闭或遮蔽后捕获。自定义 CDP
-性能 trace、全部断言、原始报告校验、截图 oracle、请求/容量/时间预算保持。
-`auth-login-session` 为等待操作命名，并在成功和失败时保存 `auth-login-operations`
-附件；字段仅包含操作名、状态、耗时和可选的错误类型，不保存 URL、OAuth 参数、凭据或响应体。
-身份 route 与 provider 的每个清理操作独立限时五秒，`Fetch.disable` 失败后仍尝试
-CDP detach。原始错误、清理错误与附件保存错误共同保留，唯一错误原样抛出，多项失败用
-`AggregateError` 保留原对象及首个错误原因链。[登录诊断决策](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
-拥有这些诊断和错误传播规则；历史产物或操作栈缺失时，后续成功不能证明原超时的触发原因。
+浏览器 trace 可能包含凭据 header 或响应体；使用真实身份验证时，采集、截图及产物
+必须避免泄露秘密。Web 模块浏览器 fixture 使用受控响应，具体入口及产物规则见
+[Web 验证说明](../../packages/daynight-web/README.md#validation-and-build)。
+[登录诊断决策](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
+记录旧登录验收的诊断和错误传播取舍；历史产物或操作栈缺失时，后续成功不能证明原超时原因。
 [启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)
 保存包版本、源码位置、隐私证据与诊断能力取舍。各适用 gate 和真实上游人工登录
 仍须提供源码绑定结果；受控组件或协议成功不冒充第三方人工登录。
@@ -672,20 +668,18 @@ URL query、body、Cookie、Authorization、code、App Secret 或身份 origin p
 docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_id == "REQUEST_ID") | {request_id,user_id,team_id,project_id,component,phase,error_code,cause}'
 ```
 
-验证按 AU-V1–AU-V12 映射。Web 模块使用 typecheck、组件测试和严格覆盖率；独立
-浏览器 fixture 可验证受控响应下的界面交互，不能代替真实服务或安装 CLI 授权证据。
-Go 服务的 `TestAttachmentGrantRevocationWithFreshProcess`
+验证按 AU-V1–AU-V12 映射：服务模块验证真实 PostgreSQL 并发、SDK 与受控 UniAuth，
+CLI 和 Web 分别验证客户端协议、错误、状态隔离及恢复。Web 模块浏览器入口使用受控
+响应，不能代替真实服务或安装 CLI 的授权证据。Go 服务的 `TestAttachmentGrantRevocationWithFreshProcess`
 在 `cmd/daynight-server` 中新构建并运行服务，使用真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB
 上传正文未完成时成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对
 字节与清理。[附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
-记录服务与 Web 的验证边界。原 native/container 浏览器 combined runner 已移除；其
+记录服务与 Web 的验证边界。真实服务与客户端的正常连接须由独立产品组合验证证明；
 [组合验收历史](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
-记录原有跨组件及 TCP 断连取舍，旧源码结果不能证明当前源码。
+记录原有断连、撤销及同数据验证的取舍，历史结果不能证明当前源码。
 
-统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合
-结果核对当前源码、安装包、进程/镜像与清理；真实上游人工联调单独留证，缺少时
-不宣称全部完成。模型工具预算不适用：不新增 MCP；CLI 不增加认证预检往返，沿用
-既有 request/operation/response/累计预算和 stdout 合同。
+结果绑定实际源码、产物和环境，真实上游人工联调单独留证；缺少证据时不宣称完成。
+CLI 不增加认证预检往返，保持既有 request/operation/response/累计预算和 stdout 合同。
 
 ## 交付边界
 

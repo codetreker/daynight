@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stringify } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,17 +16,39 @@ const serverUrl = "http://localhost:8787";
 const project: Project = { id, name: "Project", repoUrl: "https://git.example/Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: "2026-10-20T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z" };
 const directories: string[] = [];
 const operations: Operation[] = [];
+let savedGitEnvironment: [string, string][] | undefined;
+const clearGitEnvironment = () => { for (const name of Object.keys(process.env)) if (name.toUpperCase().startsWith("GIT_")) delete process.env[name]; };
 afterEach(async () => {
-  operations.splice(0).forEach((operation) => operation.dispose());
-  vi.restoreAllMocks();
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  const failures: unknown[] = [];
+  try {
+    for (const operation of operations.splice(0)) {
+      try { operation.dispose(); } catch (error) { failures.push(error); }
+    }
+    try { vi.restoreAllMocks(); } catch (error) { failures.push(error); }
+    for (const directory of directories.splice(0)) {
+      try { await rm(directory, { recursive: true, force: true }); } catch (error) { failures.push(error); }
+    }
+  } finally {
+    if (savedGitEnvironment !== undefined) {
+      clearGitEnvironment();
+      for (const [name, value] of savedGitEnvironment) process.env[name] = value;
+      savedGitEnvironment = undefined;
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "Repository fixture cleanup failed.");
 });
 const operation = (): Operation => { const value = createOperation(); operations.push(value); return value; };
 const fixture = async () => {
+  savedGitEnvironment ??= Object.entries(process.env).filter(([name, value]) => name.toUpperCase().startsWith("GIT_") && value !== undefined).map(([name, value]) => [name, value!] as [string, string]);
+  clearGitEnvironment();
   const temporary = path.resolve(import.meta.dirname, "../../../../.tmp/repository-tests");
   await mkdir(temporary, { recursive: true });
   const root = await mkdtemp(path.join(temporary, "context 用户 "));
   directories.push(root);
+  const isolatedConfig = path.join(root, "isolated-gitconfig");
+  await writeFile(isolatedConfig, "");
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  process.env.GIT_CONFIG_GLOBAL = isolatedConfig;
   execFileSync("git", ["init", "-q", root]);
   execFileSync("git", ["-C", root, "remote", "add", "origin", "git@git.example:Org/Repo.git"]);
   return root;
@@ -65,6 +87,46 @@ describe("repository project selection", () => {
     expect(await readFile(path.join(root, ".daynight/project.yml"), "utf8")).toBe(stringify({ serverUrl, repoIdentity: "git.example/Org/Repo", projectId: id }));
     expect(await readFile(path.join(root, ".gitignore"), "utf8")).toBe("/.daynight/\n");
     expect(await readdir(path.join(root, ".daynight"))).toEqual(["project.yml"]);
+  });
+
+  it("writes separate bindings in a linked worktree and a submodule", async () => {
+    const sentinel = await fixture();
+    const sentinelConfig = await readFile(path.join(sentinel, ".git/config"), "utf8");
+    process.env.GIT_DIR = path.join(sentinel, ".git");
+    process.env.GIT_WORK_TREE = sentinel;
+    const source = await fixture(), parent = await fixture();
+    const git = (root: string, args: string[], input?: string) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", timeout: 10_000, ...(input === undefined ? {} : { input }) }).trim();
+    const tree = git(source, ["mktree"], "");
+    const commit = git(source, ["hash-object", "-t", "commit", "-w", "--stdin"], `tree ${tree}\nauthor Fixture <fixture@example.invalid> 1700000000 +0000\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\n\nFixture\n`);
+    git(source, ["update-ref", "refs/heads/main", commit]); git(source, ["symbolic-ref", "HEAD", "refs/heads/main"]);
+    const linked = path.join(source, "linked worktree 中文"); git(source, ["worktree", "add", "--detach", linked, "HEAD"]);
+    git(parent, ["-c", "protocol.file.allow=always", "submodule", "add", source, "module 中文"]);
+    const submodule = path.join(parent, "module 中文"); git(submodule, ["remote", "set-url", "origin", "ssh://git@git.example/Org/Repo.git"]);
+    const expected = { serverUrl, repoIdentity: "git.example/Org/Repo", projectId: id };
+    for (const root of [linked, submodule]) {
+      expect((await lstat(path.join(root, ".git"))).isFile()).toBe(true);
+      const client = api();
+      expect(await resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root })).toBe(project);
+      expect(await readFile(path.join(root, ".daynight/project.yml"), "utf8")).toBe(stringify(expected));
+      expect(git(root, ["check-ignore", "--", ".daynight/project.yml"])).toBe(".daynight/project.yml");
+      expect(client.listProjects).toHaveBeenCalledOnce(); expect(client.getProject).toHaveBeenCalledWith(id);
+    }
+    for (const root of [source, parent]) await expect(lstat(path.join(root, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(sentinel, ".git/config"), "utf8")).toBe(sentinelConfig);
+    expect(git(sentinel, ["for-each-ref", "--format=%(refname)", "refs/heads/"])).toBe("");
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reports a real access-denied binding read without rediscovery or writes", async () => {
+    const root = await fixture(); await save(root);
+    const file = path.join(root, ".daynight/project.yml"), original = await readFile(file, "utf8"), client = api();
+    await chmod(file, 0o000);
+    try {
+      const failure = await resolveProject({ serverUrl, operation: operation(), api: client, workingDirectory: root }).catch((cause: unknown) => cause);
+      expect(failure).toMatchObject({ message: `Cannot read repository binding ${file}.`, cause: { code: "EACCES" } });
+      expect(formatError(failure)).toContain("Cannot read repository binding"); expect(formatError(failure)).toContain("EACCES");
+      expect(client.listProjects).not.toHaveBeenCalled(); expect(client.getProject).not.toHaveBeenCalled();
+    } finally { await chmod(file, 0o600); }
+    expect(await readFile(file, "utf8")).toBe(original); await expect(lstat(path.join(root, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps a verified cached target when another project is later registered for the same repo", async () => {

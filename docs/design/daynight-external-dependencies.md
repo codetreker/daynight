@@ -312,13 +312,14 @@ jq -c --arg rid "$REQUEST_ID" \
 下表的容量、几何和性能规则固定于源码 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`；
 功能场景清单采用包含撤销批准、项目设置、执行耗时和自动执行许可场景的源码
 `d02994b22b744ae23eb67965679fb5d9edc84525`。下表保留固定源码的 59 场景、规模、
-预算和断言作为历史基线；原 native/container 浏览器 runner 和 combined-auth 回执已
-移除，历史结果不能表述为当前 CI 或当前源码证据。当前 1 MiB 上传正文未完成期间的
-撤权完成、后续访问拒绝与已准入上传完成由 Go built-binary HTTP/PostgreSQL 验收拥有；
-Web 模块和独立浏览器 fixture 分别验证各自范围，不能替代真实组合结果。
-当前支持目标、完整输入规模、可见边断言和性能阈值仍由需求及[看板设计](daynight-web.md#验证与-ci)拥有。
+预算和断言作为历史基线，历史结果不能表述为当前 CI 或当前源码证据。原跨产品 runner
+已删除；当前模块浏览器验证见[Web 设计](daynight-web.md#验证与-ci)，产品组合验证另有
+独立职责。当前 1 MiB 上传正文未完成期间的撤权完成、后续访问拒绝与已准入上传完成
+由 Go built-binary HTTP/PostgreSQL 测试验证；Web 受控浏览器不能替代真实组合结果。
+实现需要按新普通分量和显式性质更新预期值，不能以较小展示样本替代完整输入；当前
+支持目标、完整输入规模、可见边断言和性能阈值仍由需求及[看板设计](daynight-web.md#验证与-ci)拥有。
 
-| 基线 | 必须满足的具体条件与固定来源 |
+| 历史基线 | 当时的具体条件与固定来源 |
 |---|---|
 | 浏览器场景清单 | 保留 27 个 native 功能场景加 5 个 native 容量/超限场景，共 32 个 native；另有同一组 27 个 container 功能场景，总计 59 个。功能清单包含 `task-unapproval`、`project-settings`、`task-execution-time` 和 `task-agent-permission`。场景名由 [`functionalScenarios` / `capacityScenarios`](https://github.com/codetreker/daynight/blob/d02994b22b744ae23eb67965679fb5d9edc84525/packages/daynight-web/scripts/acceptance/runner.mts#L27-L33)拥有；[报告验证器](https://github.com/codetreker/daynight/blob/d02994b22b744ae23eb67965679fb5d9edc84525/packages/daynight-web/scripts/acceptance/report.mts#L13-L64)拒绝缺失、额外、重复、skipped、flaky 或重试结果，每个场景需要真实截图。 |
 | 独立认证组合回执 | 在 59 个场景之外，native 和 container 各有一个 `auth-combined` 回执；每份包含[既有 11 个检查](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/auth-combined.mts#L36-L38)，并通过[源码、目标、浏览器、安装 CLI、重启及清理身份验证](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/auth-combined.mts#L133-L146)。[聚合器](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/runner.mts#L925-L936)要求两个目标均通过，不能以其中一个替代另一份。 |
@@ -330,9 +331,9 @@ Web 模块和独立浏览器 fixture 分别验证各自范围，不能替代真�
 | 服务检查与覆盖率 | 运行[当时的服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；race 采用[当时的验证策略](../../.agents/notes/archived/testing/2026-11-04-go-validation-timing.md)的本地默认/main 开启、PR 关闭；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
 | 执行和证据身份 | [Playwright 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/playwright.config.ts#L11-L30)保留单 worker、零重试、单场景 180,000ms、总 900,000ms、断言 10,000ms、动作 15,000ms、导航 30,000ms；[回执约定](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L899-L934)要求准确源码/tree、浏览器、安装产物、进程/容器身份和所有目标清理通过。局部或原型结果不替代这些回执。 |
 
-上述来源拥有完整的数值容差、数据集身份和字段校验。本设计保留其强度，
-只把与普通根可达性、上下文推断的旧预期替换为本文的普通分量和显式边性质预期。
-新增外部行为应扩充既有命名场景的步骤与数据断言，不能用较小的展示样本替代固定完整输入。
+上述固定来源记录当时的数值容差、数据集身份和字段校验。当前性能及界面行为要求由
+[Web 规范](../spec/daynight-web.md#验收)和[检查规范](../spec/daynight-task-inspection.md)拥有；
+模块测试与产品组合验证按各自职责承接，历史 runner 和场景清单不作为当前入口。
 
 ### 验收责任
 
@@ -342,9 +343,9 @@ Web 模块和独立浏览器 fixture 分别验证各自范围，不能替代真�
 | 服务与 HTTP | 部分 PATCH 表、性质单独更新、无变化、过期版本、并发与锁后权限、外部/混合环、外部阻塞、严格字段及错误身份。 |
 | CLI 与安装产物 | 两类依赖编译为完整替换、外部单独选项语义、清空互斥、重复拒绝、所有读取保留性质、精确版本、预算、help/completion 和六份 skill。 |
 | Web 模型与交互 | 多普通根一链、外部边分隔、链内外部捷径仍虚线、完整前置闭包、进度、独立任务行的外部阻塞徽标、合并拆分定位、性质刷新、Details 各方向标签及现有局部交互。 |
-| 独立整体验收 | 真实 PostgreSQL、构建进程、打包安装 CLI、生产嵌入 Web、重启、故障与并发、native/container/capacity 以及当前既有边的只读审计。 |
+| 独立整体验收 | 真实 PostgreSQL、构建进程、打包安装 CLI、生产嵌入 Web、重启、故障与并发、完整容量以及当前既有边的只读审计。 |
 
 原型覆盖混合图、多普通起点、显式链内外部边、外部阻塞的独立任务、完成链、加载、空、错误、禁用、长内容和 320px 视口。
 它用于审阅目标行为，不替代生产浏览器证据。
-实施任务及独立验收共同遵守上述固定验收基线。
+实施与独立验收按当前需求核对容量、几何及性能目标，并保留可比较的源码绑定结果。
 每份运行结果绑定真实源码、构建产物与运行目标；当前文件不声称运行时功能已通过这些未来验收。

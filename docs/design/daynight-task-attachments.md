@@ -24,7 +24,7 @@ Task SHARE 锁的事务，在获取锁后通过 `pg.ReadProjectAccess` 以单条
 Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
 已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
 凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
-相对资源、键盘机制和单 gateway 部署继续保留；单文件操作和 K1 边界继续有效。MCP 分块上传提交的独立准入与任务删除语义见下方私有传输内容。
+相对资源、键盘机制和单 gateway 部署继续保留；单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
 
 ## 目标与操作单位
 
@@ -223,7 +223,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 | `created_at`、`updated_at` | PG 生成的创建与更新时间 |
 
 以 `(task_id, path)` 作为主键，path 使用 `COLLATE "C"` 保持排序与唯一性区分大小写。业务服务在读写前检查 project/task
-归属及任务未删除状态，不新增 foreign key。[Task 软删除](daynight-task-deletion.md)不改附件元数据或字节；普通附件变更的 Task 锁与软删除的写锁串行，删除先提交时等待中的变更返回授权的 `410 task_deleted` 且不修改文件。已准入的 MCP 分块提交不持有该 Task 锁，删除可先完成，提交仍继续；后续常规访问拒绝已删除任务。文件操作与数据库提交仍不具备跨存储原子性；文件成功后数据库失败或提交结果未知时，保留实际错误和提交状态，不猜测补偿文件。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
+归属及任务未删除状态，不新增 foreign key。[Task 软删除](daynight-task-deletion.md)不改附件元数据或字节；普通附件变更的 Task 锁与软删除的写锁串行，删除先提交时等待中的变更返回授权的 `410 task_deleted` 且不修改文件。MCP 分块写入和提交也受 Task 锁及 fresh Project 生命周期检查保护；删除先提交时不得暂存或发布文件。文件操作与数据库提交仍不具备跨存储原子性；文件成功后数据库失败或提交结果未知时，保留实际错误和提交状态，不猜测补偿文件。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
 推导，表中不保存分片、`storage_key` 或物理根目录。布局转换不需要新增表、列、索引或修改历史 SQL 迁移。
 
 覆盖保留 `created_at`，更新 MIME、大小和 `updated_at`。删除后重新上传同一路径
@@ -700,16 +700,15 @@ DELETE 的 204 空响应；错误响应继续使用 JSON DTO 和字节预算。
 服务使用必填 `DAYNIGHT_STORAGE_ROOT`，为 LocalStorage 指定明确的根目录。
 当前启动以 `local.New` 准备根目录，向工厂提供 `server.Dependencies{Store, Files}`，
 在监听前完成验证；后续启动失败与 HTTP 排空后均关闭已取得的文件根句柄。
-启动时校验配置并以服务用户准备所需目录；无法访问或创建时启动失败。引入该必填
-配置的同次交付必须更新所有现有服务启动调用方，包括 Compose、镜像目录权限、
-Web 验收启动器、Go 子进程测试及 CLI 真实服务验收，不能等待后续持久卷任务。
+启动时校验配置并以服务用户准备所需目录；无法访问或创建时启动失败。该必填
+配置适用于所有服务启动调用方，包括 Compose、镜像目录权限、Go 子进程测试及
+实际服务组合验证。
 物理目录不进入 API、PG 或 CLI 配置，所有客户端继续使用既有 `serverUrl`。
 
 两套 Compose 均将项目作用域的 `attachment-data` 命名卷挂载到
 `/var/lib/daynight/storage`，并以该路径设置 `DAYNIGHT_STORAGE_ROOT`。生产镜像已为
 UID/GID `10001:10001` 准备目录；Docker 对空卷的初始化保留该目录所有权，普通非
-root 服务直接写入，不增加 root entrypoint。Go 启动与重启 fixture、Web native
-runner 继续使用其所属独立目录。
+root 服务直接写入，不增加 root entrypoint。Go 启动与重启 fixture 使用其所属独立目录。
 
 localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保留，显式
 `down --volumes` 同时销毁两者。dev-ci 每次隔离 Compose 项目拥有独立的 PG 与
@@ -737,8 +736,8 @@ SQL 备份会保存并恢复旧 UUID，恢复 UUID 本身不能标识历史替�
 
 ## 实现验证
 
-通用存储、元数据与 HTTP 已有组件和实际二进制检查；持久卷通过现有 runner 的
-两个实际 dev-ci 项目验证。CLI 命令及字节输出已有实现，原生平台、安装产物和
+通用存储、元数据与 HTTP 由组件及实际二进制检查验证；持久卷和隔离清理由
+dev-ci 的实际部署验证。CLI 命令及字节输出已有实现，原生平台、安装产物和
 完整服务组合的验证结论仍须来自各自源码绑定的实际运行，本机验证不能代替
 Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixture，真实浏览器
 探针覆盖该环境的视觉与焦点。源绑定结果归属对应 PR 与 CI。组合验收的机制见
@@ -761,23 +760,18 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 
-此前 `installed_cli_task_attachment_workflow` 使用安装回执与实际服务，比较文本、空内容
-及超过 1 MiB 的二进制，并覆盖多级/特殊路径、同 basename、覆盖、分页、删除、requestId
-及重启后的 metadata、bytes 和任务资源。原跨产品测试包已移除；其回执和清理结果只属于
-实际测试的源码，不构成当前模块检查。
+Go、CLI 和 Web 分别验证附件存储、协议与界面行为；正常同数据读写须由独立产品
+组合验证证明，部署验证拥有持久化和备份恢复。Go 模块的 `TestAttachmentGrantRevocationWithFreshProcess`
+新构建二进制，使用真实认证 HTTP 与隔离 PostgreSQL：1 MiB 上传正文未完成时成员撤销
+先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对字节和资源清理。
 
-Web 模块通过组件、状态和 API 测试验证附件交互；独立浏览器 fixture 的受控响应不
-证明真实服务或安装 CLI 的组合行为。Go 模块新构建二进制测试
-`TestAttachmentGrantRevocationWithFreshProcess` 使用真实认证 HTTP 与隔离 PostgreSQL：1 MiB 上传正文未完成时成员撤销先返回 204、新访问
-返回 404，已准入上传再以 201 完成，并核对字节和资源清理。
-
-原 native/container 浏览器 runner 及其附件、语言和容量场景已移除；此前相同 task
-文件的 CLI/Web 交叉字节比较、PDF compositor 色块、真实滚轮与键盘阅读及故障结果
-只属于其实际源码和环境，不能作为当前源码的自动检查或成功结论。验证 PDF 内容绘制
-仍需实际画面而非仅依据 MIME、load 或固定等待；验证真实服务、安装 CLI 和浏览器的
-完整路径需要各自来源、范围与清理证据。原组合验收的选择理由见
-[历史决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。
-当前 Web 命令和独立浏览器范围见[Web 验证说明](../../packages/daynight-web/README.md#independent-browser-checks)。
+Web 的受控浏览器 fixture 使用完整 Chromium 检查 PDF iframe compositor 中的专用色块；
+按连通区域、边界及密度区分页面绘制和缩略图，成功状态、load 或固定等待不能代替绘制。
+多页阅读使用真实滚轮、键盘和末页绘制标记，不能以私有查看器 DOM 偏移代替可见结果。
+[Web 验证说明](../../packages/daynight-web/README.md#validation-and-build)拥有模块入口与
+范围。实际验证结果须绑定源码和环境，失败或取消时回收所属资源；受控 API 不证明真实
+数据库或部署行为，也不能代替安装 CLI 的同数据组合验证。[历史决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
+记录了旧跨产品验收的选择理由，其结果只属于实际测试的源码。
 
 MCP 附件列表使用有界数据库投影及完整项边界分页。首项超过摘要预算时返回路径、续页游标及 REST 附件列表的读取指引；REST 需要 PAT 或浏览器会话，MCP OAuth 凭据不能用于 REST。列表保留对已有长路径的有界处理。删除沿用共享附件用例的授权与副作用语义，并区分文件副作用开始前的拒绝与可能发生的副作用。上传提供有界 inline 内容和下述分块提交。
 
@@ -789,9 +783,9 @@ MCP 附件列表使用有界数据库投影及完整项边界分页。首项超�
 
 上传块的 UUID、偏移、长度、hash 和私有对象地址分别持久保存；回执与预留消费在同一短事务提交。重复块只有身份、偏移、长度和 hash 均一致才返回已有回执。提交先验证总长度和整体 hash，保留目标暂存容量，并以原 transfer 的唯一 operation 进入 committing。已确认块按偏移流式读取，完整文件无需物化到内存。
 
-每次外部调用重新检查当前凭据和任务权限。提交在目标 gate 内以短事务完成授权和路径准入，再在已登记的私有 namespace 内组合暂存对象；发布到目标及 metadata 写入使用短事务。Task 删除或撤权发生在准入之后时，该提交继续完成，但删除后的新调用被拒绝，附件不再通过常规入口可见。提交所属 permit 可为同一 operation 内部续租和记录后来的已证结果，无需再次认证；租约续期失败取消所属操作，不自动重放。文件发布与 metadata 仍非原子，失败后不删除目标或伪造结果。详见[上传决策](../../.agents/notes/implemented/architecture/2026-11-06-resumable-mcp-upload.md)。
+每次外部调用重新检查当前凭据和任务权限。分块写入先锁 transfer，再锁 Task 并以新语句检查 Project 生命周期；私有文件和块回执写入在该作用域内完成。提交在目标 gate 内完成身份和路径准入，最终事务锁住 Task 并再次检查 Project 和 Task 生命周期后，才组合暂存、发布目标并写入 metadata。删除先提交时这些物理变更不执行；写入先取得锁时删除等待。已准入身份的凭据或成员权限后续撤销不取消该次提交。提交读取逐块确认的 immutable receipt，并持有 private permit；最终事务直接读取这些回执，不逆向获取 transfer 行锁。租约续期也须通过生命周期屏障；续期失败取消所属操作，不自动重放。文件发布与 metadata 仍非原子，失败后不删除目标或伪造结果。详见[上传删除屏障决策](../../.agents/notes/implemented/architecture/2026-11-06-upload-deletion-barrier.md)。
 
-私有文件操作持有与数据库事务独立的跨进程 namespace gate，获取后重新检查状态和权限。清理先持久化 `cleanup_pending`、取消本实例操作，再等待同一 gate 并删除整个受限命名空间；文件删除失败保留清理责任和账目。租约失效不会释放活着的文件 permit。提交操作失联时保留 `unknown` 和原操作标识，原 permit 持有者仍可记录同一操作后来取得的可证结果。启动扫描和每十分钟的有界维护可跨重启续扫；应用关闭时取消并等待维护器和持有的操作，再释放底层存储。普通状态查询不占文件 I/O 槽，也不等待共享容量账本。决策及权衡见[私有传输生命周期](../../.agents/notes/implemented/architecture/2026-11-06-private-transfer-lifecycle.md)。
+私有文件操作持有与数据库事务独立的跨进程 namespace gate，获取后重新检查状态和权限。清理先持久化 `cleanup_pending`、取消本实例操作，再等待同一 gate 并删除整个受限命名空间；文件删除失败保留清理责任和账目。租约失效不会释放活着的文件 permit。提交操作失联时保留 `unknown` 和原操作标识，原 permit 持有者仍可记录同一操作后来取得的可证结果，包括 Project 删除前已提交的正式附件结果；这不重新准入已删除 Project。Project 删除后的临时分块仍按私有传输机制清理，清理范围仅限私有命名空间，不删除或改写正式附件。启动扫描和每十分钟的有界维护可跨重启续扫；应用关闭时取消并等待维护器和持有的操作，再释放底层存储。普通状态查询不占文件 I/O 槽，也不等待共享容量账本。决策及权衡见[私有传输生命周期](../../.agents/notes/implemented/architecture/2026-11-06-private-transfer-lifecycle.md)。
 
 `core/mcptransfer` 拥有传输状态、操作身份和准入规则；service 在同一事务中协调凭据、任务及账本，并管理文件 permit 和清理生命周期。DAO 执行锁定与数据操作。
 

@@ -28,18 +28,21 @@ func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T)
 	}
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 1)
-	task := queryTask(t, database, project.ID, 10, model.TaskInProgress)
+	// Seed against the actual pre-030 schema; the current writer requires later
+	// lifecycle columns and is not a valid historical migration fixture.
+	taskID := queryID(10)
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status) VALUES($1,$2,'Task','Description','in_progress')`, taskID, project.ID)
 	var before, after string
-	if err := pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, task.ID).Scan(&before); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, taskID).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, task.ID).Scan(&after); err != nil || before != after {
+	if err := pool.QueryRow(ctx, `SELECT to_jsonb(t)::text FROM tasks t WHERE id=$1`, taskID).Scan(&after); err != nil || before != after {
 		t.Fatalf("existing task changed: %v", err)
 	}
-	seedStoreStep(t, database, task.ID, "00abcdef", 0)
+	seedStoreStep(t, database, taskID, "00abcdef", 0)
 	for _, sql := range []string{
 		`INSERT INTO task_steps SELECT task_id,'00ABCDEF',1,title,description,status,created_at,updated_at FROM task_steps`,
 		`INSERT INTO task_steps SELECT task_id,'00000001',-1,title,description,status,created_at,updated_at FROM task_steps`,
@@ -51,7 +54,7 @@ func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T)
 			t.Fatalf("constraint accepted: %s", sql)
 		}
 	}
-	seedStoreStep(t, database, task.ID, "00000001", 1)
+	seedStoreStep(t, database, taskID, "00000001", 1)
 	// The unique position constraint is deferred so a single transaction can
 	// exchange dense positions without a temporary sentinel.
 	tx, err := pool.Begin(ctx)
@@ -59,7 +62,7 @@ func TestTaskStepsMigrationPreservesExistingTaskAndAddsConstraints(t *testing.T)
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `UPDATE task_steps SET position=1-position WHERE task_id=$1`, task.ID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE task_steps SET position=1-position WHERE task_id=$1`, taskID); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {

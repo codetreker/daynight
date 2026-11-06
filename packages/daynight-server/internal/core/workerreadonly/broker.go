@@ -16,15 +16,18 @@ type Authorize func(context.Context, model.Principal, string) error
 
 type Connection struct {
 	Fence
-	Principal model.Principal
-	Messages  chan Message
-	Done      chan struct{}
-	pending   map[string]*pending
-	seen      map[string]bool
+	Principal  model.Principal
+	Messages   chan Message
+	Done       chan struct{}
+	pending    map[string]*pending
+	seen       map[string]bool
+	operations map[string]bool
 }
 type pending struct {
-	actor  model.Principal
-	answer chan outcome
+	actor     model.Principal
+	answer    chan outcome
+	operation string
+	provider  string
 }
 type outcome struct {
 	message Message
@@ -72,6 +75,10 @@ func (b *Broker) Connect(ctx context.Context, p model.Principal, worker string, 
 		return nil, fault("busy", "Worker read-only channel capacity is exhausted.")
 	}
 	c := &Connection{Fence: Fence{Protocol: Protocol, OwnerUserID: p.UserID, WorkerID: worker, ConnectionID: uuid.NewString(), CapabilityGeneration: h.CapabilityGeneration}, Principal: p, Messages: make(chan Message, 32), Done: make(chan struct{}), pending: map[string]*pending{}, seen: map[string]bool{}}
+	c.operations = map[string]bool{}
+	for _, operation := range h.Operations {
+		c.operations[operation] = true
+	}
 	b.connections[k] = c
 	delete(b.disconnected, k)
 	for k, at := range b.disconnected {
@@ -135,7 +142,8 @@ func requestContextError(ctx context.Context, err error) error {
 	}
 }
 func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (result Message, err error) {
-	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
+	timeout := OperationTimeout(r.Operation)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// Normalize every exit while the operation context still reflects its caller or deadline.
 	defer func() {
@@ -179,6 +187,10 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 		b.mu.Unlock()
 		return Message{}, fault("offline", "Worker connection changed before dispatch.")
 	}
+	if !c.operations[r.Operation] {
+		b.mu.Unlock()
+		return Message{}, fault("unsupported", "Worker does not support the requested read-only operation.")
+	}
 	if len(c.seen) >= 4096 {
 		b.disconnect(c, fault("offline", "Worker request identity capacity requires reconnection."))
 		b.mu.Unlock()
@@ -192,8 +204,13 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 		b.mu.Unlock()
 		return Message{}, fault("invalid_input", "requestId was already used on this connection.")
 	}
-	work := &pending{actor: p, answer: make(chan outcome, 1)}
-	m := Message{Fence: c.Fence, Type: "request", RequestID: r.RequestID, Operation: r.Operation, Input: append(json.RawMessage(nil), r.Input...), TimeoutMs: int(RequestTimeout / time.Millisecond)}
+	work := &pending{actor: p, answer: make(chan outcome, 1), operation: r.Operation}
+	if r.Operation == "model.list" {
+		var input ModelInput
+		_ = json.Unmarshal(r.Input, &input)
+		work.provider = input.Provider
+	}
+	m := Message{Fence: c.Fence, Type: "request", RequestID: r.RequestID, Operation: r.Operation, Input: append(json.RawMessage(nil), r.Input...), TimeoutMs: int(timeout / time.Millisecond)}
 	c.pending[r.RequestID] = work
 	c.seen[r.RequestID] = true
 	b.count++
@@ -242,7 +259,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 	}
 }
 func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {
-	if e := ValidateResult(m); e != nil {
+	if e := validateResultEnvelope(m); e != nil {
 		return e
 	}
 	if m.Fence != c.Fence {
@@ -256,6 +273,16 @@ func (b *Broker) Deliver(ctx context.Context, c *Connection, m Message) error {
 	b.mu.Unlock()
 	if work == nil {
 		return fault("cancelled", "Worker read-only request is no longer active.")
+	}
+	if e := ValidateOperationResult(m, work.operation); e != nil {
+		return e
+	}
+	if work.operation == "model.list" && m.Error == nil {
+		var result ModelResult
+		_ = json.Unmarshal(m.Result, &result)
+		if result.Provider != work.provider {
+			return fault("invalid_input", "Model capabilities belong to another Provider.")
+		}
 	}
 	authErr := b.authorize(ctx, work.actor, c.WorkerID)
 	b.mu.Lock()

@@ -855,6 +855,15 @@ index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+Project task search submits the original expression to the server, including
+completed Tasks and chain members. Its draft, filters and cursor pages are
+independent of the ordinary lists. Clearing the search restores the ordinary
+view and its scroll position. Search results open a live Task detail, including
+when project graph synchronization fails. Errors and empty results remain
+distinct; the server owns matching, ordering and context. The
+[requirements](../../docs/spec/daynight-web.md#项目任务搜索) and
+[design](../../docs/design/daynight-web.md) own the interaction and lifecycle.
+
 ## Steps reading and writing
 
 Task details always expose Steps after Overview, in both the dialog and standalone
@@ -1866,6 +1875,7 @@ records the original complete Task Detail composition choices.
 pnpm web:typecheck
 pnpm web:build
 pnpm web:test
+pnpm web:test:browser
 ```
 
 The build typechecks the package and emits production HTML and hashed assets to
@@ -1889,7 +1899,21 @@ root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
 excludes those files while retaining compact correctness and boundary cases. Either command can be
 run directly with `pnpm --filter @codetreker/daynight-web test:harness` or
 `pnpm --filter @codetreker/daynight-web test:coverage`; `pnpm web:test` remains the
-complete local test gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
+unit and tooling gate. `pnpm web:test:browser` separately runs every module
+browser configuration serially, each with its own Vite host and controlled API
+fixture. Install Playwright Chromium first; a failed or cancelled suite fails the
+command. The runner requests Playwright cleanup, checks its own preview processes
+and isolated browser profiles, and reports cleanup failures. If a forced stop
+leaves ownership uncertain, the command fails without claiming cleanup. Windows
+uses its process-tree terminator; orphaned browsers whose identity cannot be
+verified are reported rather than terminated.
+
+The attachment and task-reading fixtures exercise native frames, relative HTML
+resources, PDF page pixels, selection, focus and narrow reading layouts. Graph
+fixtures check rendered dependency geometry and retained viewports. Step and task
+controls exercise browser history, keyboard focus and short viewport menus. These
+controlled responses establish frontend behavior; they cannot establish a server
+commit or authorization decision. All `src/**/*.ts` and `src/**/*.tsx` files belong
 to the product manifest, including the browser entry. Tests live outside `src`.
 The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
@@ -1956,24 +1980,19 @@ package's `.tmp/` and are removed after classification. Typechecking remains a
 separate mandatory check.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
-The Web selector enables `verify-web-quality`; the final `checks` job requires
-it to succeed when selected. The job runs `test:harness`, the ordinary Vitest/V8
-suite and `scripts/coverage.mts` serially with respective 180-, 300- and
-60-second bounds. The Vitest/V8 subprocess uses four workers with file isolation.
-Quality uploads the raw coverage and summary artifacts, then runs the Assistant
-browser suite and uploads its results and captures.
+The Web selector runs `verify-web-quality`; the final gate requires it to succeed
+when selected. The quality command runs the harness, Vitest/V8 collection and
+coverage checker serially with bounded stages. The module browser entry runs the navigation, Team, assistant and other
+fixture configurations independently; the assistant browser suite below also runs
+in the selected Web CI job.
 
 ## Independent browser checks
 
-Playwright suites in `tests/navigation/` build focused production UI hosts with
-controlled API responses. Most run independently of Web CI and can be run locally
-after installing Chromium, for example:
+Run all module browser configurations after installing Chromium with
+`pnpm web:test:browser`, or run the Project withdrawal fixture directly:
 
 ```bash
-pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/playwright.config.ts
-pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/project-transfer-playwright.config.ts
 pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/project-withdrawal-playwright.config.ts
-pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/worker-configuration-navigation-playwright.config.ts
 ```
 
 The Project withdrawal fixture uses controlled API responses across multiple
@@ -1989,12 +2008,6 @@ completion, attachment refusal, byte verification and cleanup. The
 [acceptance ownership decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 records the division.
 
-The former native/container Web runner, combined authentication receipts and
-production browser capacity runner are no longer part of the repository's
-validation. Their source-bound results and rationale remain historical; the
-[original authentication decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
-and [production acceptance decision](../../.agents/notes/archived/testing/2026-10-20-dashboard-production-acceptance.md)
-do not establish a current-source result.
 
 ### Assistant browser validation
 
@@ -2044,6 +2057,17 @@ and [Session](../../docs/design/bot-session-view.md) validation responsibilities
 The Web quality command does not run a cross-product acceptance suite. Controlled
 browser fixtures establish only their stated frontend scope. A real-service result
 requires its own source-bound execution and cleanup evidence.
+
+`pnpm web:acceptance` runs the project task search browser checks against a
+production Web build embedded in a locally built Go server, a disposable
+PostgreSQL 18.6 Docker container and the pinned UniAuth fixture. It requires
+Node.js 24, pnpm 11.28.6, Go 1.27.2, Docker with Linux host networking and a
+Playwright Chromium installation. By default Chromium is read from the
+worktree's `.tmp/playwright-browsers`; set `PLAYWRIGHT_BROWSERS_PATH` to use an
+existing installation. The result under `.tmp/task-search-acceptance/` records
+the source fingerprint, server binary and browser asset hashes and observed
+checks. The runner removes its own server, fixture and database resources.
+This focused result does not replace complete cross-product acceptance.
 
 ## Dependency declarations
 

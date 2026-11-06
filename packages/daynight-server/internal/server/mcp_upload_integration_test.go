@@ -263,4 +263,34 @@ func TestMCPUploadRecoversLostBeginAndCommitResponses(t *testing.T) {
 	if err != nil || after.Version != task.Version || !after.UpdatedAt.Equal(task.UpdatedAt) {
 		t.Fatalf("task changed: %+v %v", after, err)
 	}
+	missing := args("status")
+	missing["transferId"] = uuid.NewString()
+	if failure := object(call(client, missing, true)["error"]); failure["code"] != "not_found" {
+		t.Fatalf("missing transfer: %#v", failure)
+	}
+	pendingID := uuid.NewString()
+	pending := args("begin")
+	pending["transferId"], pending["path"], pending["contentType"] = pendingID, "pending.bin", "application/octet-stream"
+	call(client, pending, false)
+	if _, err = projectservice.NewProjects(database).Delete(t.Context(), principal, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"status", "abort", "chunk", "commit", "begin", "inline"} {
+		input := args(action)
+		switch action {
+		case "status", "abort":
+			input["transferId"] = pendingID
+		case "chunk":
+			input["transferId"], input["chunkId"], input["offset"], input["contentBase64"] = pendingID, uuid.NewString(), "0", base64.StdEncoding.EncodeToString([]byte("x"))
+		case "commit":
+			input["transferId"], input["totalBytes"] = pendingID, "0"
+		case "begin":
+			input["transferId"], input["path"], input["contentType"] = uuid.NewString(), "new.bin", "text/plain"
+		case "inline":
+			input["path"], input["contentType"], input["contentBase64"] = "new.bin", "text/plain", base64.StdEncoding.EncodeToString([]byte("x"))
+		}
+		if failure := object(call(client, input, true)["error"]); failure["code"] != "not_found" {
+			t.Fatalf("deleted Project %s: %#v", action, failure)
+		}
+	}
 }

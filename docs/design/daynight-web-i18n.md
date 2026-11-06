@@ -108,9 +108,11 @@ Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻�
 
 ## 验证与证据归属
 
-基础测试提供显式 `renderWithLocale` helper、可控 storage 和隔离组件 fixture，覆盖浏览器匹配、显式选择优先、自动检测不保存、读写故障、无效值、成功清除错误、多个选择器共享状态、缺少 Provider 失败、完整目录与格式化。使用 `pnpm web:typecheck`、`pnpm web:test` 与 `pnpm web:build` 保持所有产品源码的严格语句覆盖率门槛。
+基础测试提供显式 `renderWithLocale` helper、可控 storage 和隔离组件 fixture，覆盖浏览器匹配、显式选择优先、自动检测不保存、读写故障、无效值、成功清除错误、多个选择器共享状态、缺少 Provider 失败、完整目录与格式化。`pnpm web:typecheck`、`pnpm web:test` 与 `pnpm web:build` 执行模块检查，覆盖率门槛由 `pnpm web:test` 检查；`pnpm web:test:browser` 单独运行模块浏览器配置。
 
-组件测试验证领域文案、已显示错误重翻译、待完成附件操作期间切换、DOM/预览身份和浏览状态保持。现有组件测试与 standalone 入口显式使用 Provider。原生产浏览器入口及下列三个场景已移除；其方法和结果仅作为对应源码的历史证据，不代表当前自动化：
+组件测试验证领域文案、已显示错误重翻译、待完成附件操作期间切换、DOM/预览身份和浏览状态保持。现有组件测试与 standalone 入口显式使用 Provider。受控浏览器 fixture 验证两种语言的键盘操作、窄屏布局及实际焦点、选区和视口；真实服务连接由独立产品组合验证承担。测试结果绑定实际源码和环境，模拟响应与本地浏览器结果不能证明真实服务或部署行为。
+
+原生产浏览器入口及下列三个场景已移除；其方法和结果仅作为对应源码的历史证据，不代表当前自动化：
 
 | 历史场景 | 验证内容 |
 |---|---|

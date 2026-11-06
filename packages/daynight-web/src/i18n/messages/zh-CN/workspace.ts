@@ -17,6 +17,14 @@ export const workspace: WorkspaceMessages = {
     graphLimitCounts: ({ nodes, edges, maxNodes, maxEdges }) => `当前 ${number(nodes)} 个任务、${number(edges)} 条依赖；支持最多 ${number(maxNodes)} 个任务、${number(maxEdges)} 条依赖。`,
     refreshFailed: "刷新失败", showingSnapshot: "仍显示上次成功读取的数据。", retryRefresh: "重试刷新", selectedTaskRemoved: "所选任务已不在新的任务图中，详情已关闭。", dismissNotice: "关闭提示", statistics: "项目任务统计", totalTasks: "任务总数", uniqueTasks: "按任务 ID 去重", completion: ({ percent }) => `完成比例 ${number(percent)}%`, waiting: "等待开始", advancing: "正在推进", ready: "可开始", blocked: "被阻塞", todoSubset: "待处理的子集", empty: "还没有任务", emptyDetail: "项目中的任务会显示在这里。创建任务后，点击刷新查看。", chains: "任务依赖链",
   },
+  search: {
+    form: "搜索项目任务", input: "搜索任务标题和描述", placeholder: "搜索标题和描述，支持 AND、OR、NOT…", submit: "搜索", clear: "清空搜索",
+    help: "搜索语法", helpDescription: "搜索当前项目的完整标题和描述。", helpExamples: '空格表示 AND；支持 OR、NOT、括号、引号短语以及 title: 和 description:。例如：title:缓存 AND (Worker OR Agent)',
+    heading: "搜索结果", applied: ({ query }) => `搜索结果：${query}`, empty: "未找到匹配任务", loading: "正在搜索任务…",
+    failed: "无法完成搜索。", stale: "仍显示上次成功的结果；刷新失败。", syntax: ({ position, reason }) => `搜索语法第 ${position} 个字符：${reason}`,
+    reasons: { empty_query: "请输入表达式。", empty_phrase: "短语不能为空。", expected_operand: "此处需要表达式。", field_group_not_supported: "字段不能限定括号组。", invalid_escape: "只能转义引号或反斜杠。", missing_field_value: "字段需要一个值。", nesting_too_deep: "括号嵌套过深。", query_too_large: "表达式过长。", too_many_terms: "表达式条件过多。", unclosed_group: "请闭合括号。", unclosed_quote: "请闭合引号。", unexpected_closing_group: "多余的右括号。", unexpected_token: "出现意外内容。", unknown_field: "未知字段；请使用 title 或 description。" },
+    open: ({ title }) => `打开任务：${title}`, titleMatch: "标题命中", descriptionMatch: "描述命中", negativeMatch: "否定条件", updated: ({ date }) => `更新于 ${date}`,
+  },
   overview: {
     heading: "整体进度", standalone: "独立任务", standaloneScope: "未完成任务 + 今天及前 6 天完成的任务",
     allCompleted: "暂无近期任务", allCompletedDetail: "当前没有未完成或今天及前 6 天完成的任务链与独立任务。",
