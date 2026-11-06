@@ -614,8 +614,9 @@ owns the rationale and proof boundary.
 
 ### Race instrumentation
 
-The check enables race instrumentation locally. PR and main CI run without it;
-the CI path also overrides an inherited `GOFLAGS=-race`. The separate
+The coverage check enables race instrumentation locally. PR and main CI run it
+without race; that coverage path also overrides an inherited `GOFLAGS=-race`.
+The separate
 `bash scripts/stress.sh` entry uses `-race` for local-only stress tests.
 The fresh-process attachment test uses its test's race setting for the child
 build and verifies it in the binary; other process tests may differ. The explicit
