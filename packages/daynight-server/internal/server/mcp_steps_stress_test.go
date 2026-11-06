@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,8 +103,10 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 		t.Fatal(err)
 	}
 	remaining := taskcodec.MaxEncodedBytes - len(empty)
+	sizes := make([]int, len(items))
 	for i := range items {
 		size := min(remaining, 524288)
+		sizes[i] = size
 		remaining -= size
 		_, err := pool.Exec(t.Context(), `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,'A',repeat('X',$4),'todo',$5,$5)`, task.ID, items[i].ID, i, size, stamp)
 		if err != nil {
@@ -201,5 +205,51 @@ func TestStressMCPStepsCapacityAndConcurrentSummaryHeap(t *testing.T) {
 	var position int64
 	if err := pool.QueryRow(ctx, `SELECT t.version,s.title,s.position FROM tasks t JOIN task_steps s ON s.task_id=t.id WHERE t.id=$1 AND s.id='00000000'`, task.ID).Scan(&version, &title, &position); err != nil || version != 2 || title != "A" || position != 127 {
 		t.Fatalf("refusal changed task: version=%d title=%q position=%d err=%v", version, title, position, err)
+	}
+	// Receive the maximum admitted resource over both actual MCP protocols.
+	// Run sequentially, since the SDK client and server share this test process.
+	for i, protocol := range []string{"2025-11-25", "2026-07-28"} {
+		runtime.GC()
+		client := sdk.NewClient(&sdk.Implementation{Name: "mcp-steps-capacity", Version: "1"}, nil)
+		connection, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: mcpPATTransport{token: handler.token}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: protocol})
+		if err != nil {
+			t.Fatalf("%s connection: %v", protocol, err)
+		}
+		position := "first"
+		if i == 1 {
+			position = "last"
+		}
+		result, callErr := connection.CallTool(ctx, &sdk.CallToolParams{Name: "task_step_move", Arguments: map[string]any{"projectId": project.ID, "taskId": task.ID, "stepId": "00000000", "position": position, "ifVersion": fmt.Sprint(i + 2), "returnView": "full"}})
+		closeErr := connection.Close()
+		if callErr != nil || closeErr != nil || result == nil || result.IsError {
+			t.Fatalf("%s full result: call=%v close=%v resultError=%v", protocol, callErr, closeErr, result != nil && result.IsError)
+		}
+		envelope, ok := result.StructuredContent.(map[string]any)
+		if !ok {
+			t.Fatalf("%s: missing structured envelope", protocol)
+		}
+		data, ok := envelope["data"].(map[string]any)
+		if !ok || data["projectId"] != project.ID || data["taskId"] != task.ID || data["stepId"] != "00000000" || data["version"] != fmt.Sprint(i+3) || data["projection"] != "full" || data["changed"] != true {
+			t.Fatalf("%s: invalid full receipt metadata", protocol)
+		}
+		steps, ok := data["steps"].([]any)
+		if !ok || len(steps) != len(items) {
+			t.Fatalf("%s: expected %d complete Steps, received %d", protocol, len(items), len(steps))
+		}
+		for j, value := range steps {
+			index := j
+			if i == 1 {
+				index = (j + 1) % len(items)
+			}
+			step, ok := value.(map[string]any)
+			if !ok {
+				t.Fatalf("%s: Step %d is not an object", protocol, j)
+			}
+			description, ok := step["description"].(string)
+			if !ok || len(description) != sizes[index] || strings.Trim(description, "X") != "" || step["id"] != items[index].ID || step["title"] != "A" || step["status"] != "todo" || step["createdAt"] != stamp.Format(time.RFC3339) || step["updatedAt"] != stamp.Format(time.RFC3339) {
+				t.Fatalf("%s: Step %d content or order differs from fixture", protocol, j)
+			}
+		}
+		t.Logf("%s received full 64 MiB Step resource at version %d", protocol, i+3)
 	}
 }
