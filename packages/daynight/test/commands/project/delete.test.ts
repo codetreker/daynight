@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runProjectCommand } from "../../../src/commands/project/command.js";
@@ -77,6 +78,21 @@ describe("project deletion", () => {
     const f = await fixture({ interactive: false });
     await runProjectCommand([...args, "--confirm"], f.context, f.dependencies);
     expect(f.ask).not.toHaveBeenCalled(); expect(f.calls.filter(({ method }) => method === "DELETE")).toHaveLength(1);
+  });
+  it("selects a repository binding without rewriting it", async () => {
+    const f = await fixture({ interactive: false });
+    const repo = f.context.workingDirectory();
+    execFileSync("git", ["init", "-q", repo]);
+    execFileSync("git", ["-C", repo, "remote", "add", "origin", project.repoUrl]);
+    await mkdir(path.join(repo, ".daynight"));
+    const binding = `serverUrl: http://localhost:8787\nrepoIdentity: example.test/repo\nprojectId: ${projectId}\n`;
+    await writeFile(path.join(repo, ".daynight", "project.yml"), binding);
+    await runProjectCommand(["delete", "--confirm", "--json"], f.context, f.dependencies);
+    expect(f.calls.map(({ url, method }) => `${method} ${url.pathname}`)).toEqual([
+      "GET /api/v1/me", `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/deletion-preview`, `DELETE /api/v1/projects/${projectId}`,
+    ]);
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(path.join(repo, ".daynight", "project.yml"), "utf8")).toBe(binding);
   });
   it("does not write on incorrect literal", async () => {
     const f = await fixture({ answer: JSON.stringify(name.trim()) });
