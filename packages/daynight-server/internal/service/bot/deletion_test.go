@@ -1,0 +1,101 @@
+package bot
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+)
+
+type deletionScope struct {
+	store.SessionScope
+	dao *deletionDAO
+	bot *deletionBotDAO
+}
+
+func (s deletionScope) SessionDAO() store.SessionDAO { return s.dao }
+func (s deletionScope) BotDAO() store.BotWriteDAO    { return s.bot }
+
+type deletionDAO struct {
+	store.SessionDAO
+	calls *[]string
+}
+
+func (d *deletionDAO) LockCredential(context.Context, model.Principal, time.Time) error {
+	*d.calls = append(*d.calls, "credential")
+	return nil
+}
+func (d *deletionDAO) LockBotSessions(context.Context, string) ([]store.BotSession, error) {
+	*d.calls = append(*d.calls, "sessions")
+	return []store.BotSession{{ID: "session"}}, nil
+}
+func (d *deletionDAO) RevokeBotSessions(context.Context, string) error {
+	*d.calls = append(*d.calls, "revoke")
+	return nil
+}
+
+type deletionBotDAO struct {
+	store.BotWriteDAO
+	calls *[]string
+	bot   model.Bot
+}
+
+func (d *deletionBotDAO) Bot(context.Context, string) (model.Bot, error) {
+	*d.calls = append(*d.calls, "bot")
+	return d.bot, nil
+}
+func (d *deletionBotDAO) SaveBotDeletion(_ context.Context, _ string, value *model.BotDeletion) (model.Bot, error) {
+	*d.calls = append(*d.calls, "barrier")
+	d.bot.Deletion = value
+	return d.bot, nil
+}
+
+type deletionWriter struct {
+	scope   deletionScope
+	outcome store.TransactionOutcome
+	err     error
+}
+
+func (w deletionWriter) WriteSession(_ context.Context, fn func(store.SessionScope) error) (store.Completion, error) {
+	if err := fn(w.scope); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return store.Completion{Outcome: w.outcome}, w.err
+}
+
+type discardedSessions struct{ ids []string }
+
+func (d *discardedSessions) DiscardBotSession(id string) { d.ids = append(d.ids, id) }
+
+func TestDeletionPublishesRevocationOnlyForCommittedOutcome(t *testing.T) {
+	for _, outcome := range []store.TransactionOutcome{store.TransactionCommitted, store.TransactionNotCommitted, store.TransactionUnknown} {
+		t.Run(string(outcome), func(t *testing.T) {
+			var calls []string
+			p := model.Principal{Kind: model.PATCredential, UserID: "owner"}
+			id := "5f80e445-5595-4d89-a209-0f868b8dd10c"
+			request := store.DeleteBot{Version: 1, DeletionID: "3469e571-cc04-45c1-9b73-796d0c85fabe"}
+			dao := &deletionDAO{calls: &calls}
+			bots := &deletionBotDAO{calls: &calls, bot: model.Bot{ID: id, OwnerUserID: p.UserID, Version: 1}}
+			cleanupErr := errors.New("cleanup failed")
+			live := &discardedSessions{}
+			s := NewDeletions(deletionWriter{scope: deletionScope{dao: dao, bot: bots}, outcome: outcome, err: cleanupErr}, nil, live)
+			_, err := s.DeleteBot(context.Background(), p, id, request)
+			if !errors.Is(err, cleanupErr) {
+				t.Fatalf("cleanup error lost: %v", err)
+			}
+			if !reflect.DeepEqual(calls, []string{"credential", "bot", "sessions", "revoke", "barrier", "credential"}) {
+				t.Fatalf("lock and barrier order: %v", calls)
+			}
+			if outcome == store.TransactionCommitted && !reflect.DeepEqual(live.ids, []string{"session"}) {
+				t.Fatalf("committed barrier did not revoke live state: %v", live.ids)
+			}
+			if outcome != store.TransactionCommitted && len(live.ids) != 0 {
+				t.Fatalf("unconfirmed barrier revoked live state: %v", live.ids)
+			}
+		})
+	}
+}

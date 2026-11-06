@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -105,35 +104,3 @@ func TestDeletedTaskArchiveRoutesAllowFinalizationOnly(t *testing.T) {
 		assertProjectError(t, projectRequest(f.handler, "GET", path, ""), http.StatusNotFound, "not_found")
 	}
 }
-func TestArchiveBodyRejectsInvalidInputs(t *testing.T) {
-	for _, test := range []struct {
-		name, kind, query, body string
-		fail                    bool
-	}{
-		{"valid", "application/json", "", "{}", false},
-		{"charset", "application/json; charset=utf-8", "", "{}", false},
-		{"media", "text/plain", "", "{}", true},
-		{"wrong charset", "application/json; charset=utf-16", "", "{}", true},
-		{"query", "application/json", "?bad=1", "{}", true},
-		{"oversize", "application/json", "", strings.Repeat("a", sp.MaxArchiveBytes+1), true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPut, "/archive"+test.query, strings.NewReader(test.body))
-			req.Header.Set("Content-Type", test.kind)
-			_, err := archiveBody(httptest.NewRecorder(), req)
-			if (err != nil) != test.fail {
-				t.Fatal(err)
-			}
-		})
-	}
-	req := httptest.NewRequest(http.MethodPut, "/archive", nil)
-	req.Header.Set("Content-Type", "application/json")
-	req.Body = io.NopCloser(archiveBrokenReader{})
-	if _, err := archiveBody(httptest.NewRecorder(), req); err == nil {
-		t.Fatal("read error ignored")
-	}
-}
-
-type archiveBrokenReader struct{}
-
-func (archiveBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }

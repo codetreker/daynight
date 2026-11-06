@@ -23,6 +23,10 @@ members for matching. Filtering precedes pagination, and changing either
 condition resets both task lists to their first page. Overview navigation adjusts
 conditions that hide its target.
 
+The status control keeps its native select and label, but replaces the browser's
+arrow with the same symmetric SVG shape used by the adjacent assignee picker.
+The icon does not intercept pointer input and the select reserves space for it.
+
 The full index continues to own chain progress, readiness, dependencies,
 statistics and graph context. The [recent browsing decision](2026-10-27-recent-task-pages.md)
 retains the seven-local-day Overview projection and pagination rationale, but
@@ -47,6 +51,10 @@ reading unrelated rows. Separate switches also make the two categories diverge.
 would obscure chain context or alter progress and readiness. Filtering the
 complete component as one top-level item preserves those facts while allowing
 matching tasks to determine visibility.
+
+**Keep the browser's native arrow.** Its rendering differs from the adjacent
+picker and can appear skewed; a fixed icon provides consistent geometry while
+retaining the native control's selection and keyboard behavior.
 
 ## Consequences
 

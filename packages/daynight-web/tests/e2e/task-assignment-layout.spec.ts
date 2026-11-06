@@ -1,3 +1,4 @@
+import { expectTaskStatusLayout } from './task-status-layout';
 import { decodeMembersJson, parseMembers } from "../../src/api/auth-parse";
 import { stringifyApiJson } from "../../src/api/json";
 import type { Locator, Page, Response, TestInfo } from '@playwright/test';
@@ -35,6 +36,7 @@ const picture = async (page: Page, info: TestInfo, name: string): Promise<void> 
   await info.attach('scenario-screenshot', { path, contentType: 'image/png' });
 };
 const expectRowGeometry = async (page: Page): Promise<void> => {
+  await expectTaskStatusLayout(detail(page));
   await expect.poll(() => detail(page).evaluate((surface) => {
     const row = surface.querySelector<HTMLElement>('.task-detail-status-row')!;
     const pair = row.querySelector<HTMLElement>('.task-detail-status-assignee')!;
@@ -62,6 +64,7 @@ const expectMenuGeometry = async (page: Page): Promise<void> => {
 const layouts = [
   { locale: 'zh-CN', width: 1366 }, { locale: 'en', width: 1366 },
   { locale: 'zh-CN', width: 390 }, { locale: 'en', width: 390 },
+  { locale: 'zh-CN', width: 375 }, { locale: 'en', width: 375 },
   { locale: 'zh-CN', width: 320 }, { locale: 'en', width: 320 },
 ] as const;
 
@@ -263,6 +266,36 @@ test('task-assignment-layout', scenario, async ({ page, api, playwright }, info)
         const statusBounds = await status.boundingBox();
         expect(Math.abs(ownerBounds!.y + ownerBounds!.height / 2 - statusBounds!.y - statusBounds!.height / 2)).toBeLessThanOrEqual(2);
       }
+      for (const value of ['all', 'todo', 'in_progress', 'done']) {
+        await status.selectOption(value);
+        expect(await status.evaluate((select) => {
+          const box = select.getBoundingClientRect();
+          const svg = select.parentElement!.querySelector('svg')!;
+          const arrow = svg.getBoundingClientRect();
+          const path = svg.querySelector('path')!;
+          const shape = path.getBBox();
+          const style = getComputedStyle(select);
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d')!;
+          context.font = `${style.fontSize} ${style.fontFamily}`;
+          const textWidth = context.measureText((select as HTMLSelectElement).selectedOptions[0]!.text).width;
+          return style.appearance === 'none' && path.getAttribute('d') === 'm2 4 3 3 3-3'
+            && shape.x === 2 && shape.y === 4 && shape.width === 6 && shape.height === 3
+            && Math.abs(arrow.top + arrow.height / 2 - box.top - box.height / 2) <= .5
+            && Math.abs(box.right - arrow.right - 9) <= .5
+            && box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) + textWidth < arrow.left
+            && arrow.right < box.right && box.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
+        })).toBe(true);
+      }
+      await status.selectOption('all');
+      const arrowBox = await status.locator('..').locator('svg').boundingBox();
+      await page.mouse.click(arrowBox!.x + arrowBox!.width / 2, arrowBox!.y + arrowBox!.height / 2);
+      await expect(status).toBeFocused(); await page.keyboard.press('Escape');
+      await page.locator('.task-assignee-filter .assignee-trigger').focus(); await page.keyboard.press('Tab');
+      await expect(status).toBeFocused(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+      await expect(status).toHaveValue('todo');
+      await picture(page, info, `status-filter-${locale}-${width}`);
+      await status.selectOption('all');
       await chooseFilter(page, locale === 'en' ? 'Everyone' : '所有负责人');
       const row = page.locator(`#standalone-task-${assigned.id}`);
       await expect(row.locator('.task-assignee-identity')).toHaveAccessibleName(`${locale === 'en' ? 'Assignee: ' : '负责人：'}${longName}`);

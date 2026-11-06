@@ -40,7 +40,7 @@ const install = async (page: Page): Promise<State> => {
   return state;
 };
 const selected = (page: Page) => page.evaluate((k) => localStorage.getItem(k), key);
-const openCreate = async (page: Page) => { await page.locator('details.team-selector summary').click(); await page.getByRole('button', { name: 'Create Team', exact: true }).click(); };
+const openCreate = async (page: Page) => { await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: 'Create Team', exact: true }).click(); };
 const settings = async (page: Page) => { await page.getByRole('link', { name: 'Team settings' }).click(); await expect(page.getByRole('heading', { name: 'Team settings' })).toBeVisible(); };
 
 test('copies the displayed Team ID with accessible feedback and responsive layout', async ({ page, context }, testInfo) => {
@@ -205,7 +205,7 @@ test('cancel and Escape submit nothing; dialogs retain focus on narrow screens i
   await page.setViewportSize({ width: 375, height: 667 });
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
   const toggle = page.getByRole('button', { name: /展开侧栏/ });
-  await toggle.click(); await page.locator('details.team-selector summary').click(); await page.getByRole('button', { name: '创建 Team', exact: true }).click();
+  await toggle.click(); await page.locator('.team-selector .team-switch').click(); await page.getByRole('menuitem', { name: '创建 Team', exact: true }).click();
   await expect(dialog.getByLabel('Team 名称')).toBeFocused();
   await expect(dialog.getByRole('combobox', { name: '语言 / Language' })).toHaveCount(0);
   await expect(dialog.getByRole('heading', { name: '创建 Team' })).toBeVisible();

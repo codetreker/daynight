@@ -30,8 +30,10 @@ At viewport heights up to 500px, fullscreen allocates space through compact
 chrome: the header shares its row between title and actions; the complete focusable
 title has a one-line-height scrolling window; the task action-menu trigger and
 attachment popout icons retain accessible names. The body metadata controls group
-the compact status menu and platform select before readiness, with automatic
-execution at the right and wrapping within the left group when needed. Tabs/panels
+the compact status/assignee group and platform select before readiness, with
+automatic execution at the right. At widths up to 600px, the
+[phone status flow](../bug-fix/2026-11-06-phone-task-status-flow.md) shares the
+wrapping layout across controls and keeps automatic execution on the final line. Tabs/panels
 use tighter spacing, and the informational footer is hidden. The attachment preview
 header keeps path/metadata context and actions in one row; context may ellipsize
 with its full DOM/title strings preserved, Download retains text, and Open in

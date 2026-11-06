@@ -1,3 +1,4 @@
+import { useMemberProjectName } from "./useMemberProjectName";
 import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAccess";
 import { useEffect, useRef, useState } from 'react';
 import { createInvitation, listInvitations, listMembers, removeProjectGrant, revokeInvitation, setProjectGrant, type CurrentUser, type CreatedProjectInvitation, type ProjectInvitation, type ProjectParticipant } from '../../api/auth';
@@ -23,7 +24,6 @@ const sameInvitation = (a: ProjectInvitation, b: ProjectInvitation) =>
 
 type MembersPanelProps = {
   readonly projectId: string;
-  readonly projectName: string;
   readonly active?: boolean;
   readonly onRoute?: boolean;
   readonly onGuardChange?: (guarded: boolean) => void;
@@ -35,9 +35,10 @@ type MembersPanelProps = {
 
 export const MembersPanel = (props: MembersPanelProps) => <ProjectAccessBoundary projectId={props.projectId} initialRead active={props.active ?? true}><MembersContent key={`${props.user.id}:${props.projectId}`} {...props} /></ProjectAccessBoundary>;
 
-const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable, onMembershipChange, active = true, onRoute = true, onGuardChange }: MembersPanelProps) => {
+const MembersContent = ({ projectId, user, onRemoved, onUnavailable, onMembershipChange, active = true, onRoute = true, onGuardChange }: MembersPanelProps) => {
   const { locale, messages: { auth: { management: { members: m, common } }, common: globalCommon }, format } = useI18n();
   const access = useProjectAccess(projectId);
+  const projectName = useMemberProjectName(projectId, active);
   const [members, setMembers] = useState<readonly ProjectParticipant[] | null>(null);
   const [invitations, setInvitations] = useState<readonly ProjectInvitation[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -422,7 +423,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
   const roleText = (role: 'admin' | 'member' | null) => role === null ? m.noGrant : role === 'admin' ? common.roleAdmin : common.roleMember;
   const confirm = dialog?.kind === 'role' ? m.saveRole : dialog?.kind === 'remove' ? m.removeConfirm : dialog?.kind === 'revoke' ? m.revokeConfirm : m.createInvite;
   return <>
-    <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle">{m.subtitle({ projectName })}</p></div>{admin && <button className="button primary" type="button" disabled={loading || access.status !== 'ready' || invitationIssue !== null && !invitationIssue.observed} onClick={() => open({ kind: 'invite' })}>{m.invite}</button>}</div>
+    <div className="page-heading members-page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1 tabIndex={-1}>{m.title}</h1><p className="subtitle members-project-name">{projectName.name === null ? <span className="members-project-name-placeholder" aria-hidden="true">&nbsp;</span> : m.subtitle({ projectName: projectName.name })}</p></div>{admin && <button className="button primary" type="button" disabled={loading || access.status !== 'ready' || invitationIssue !== null && !invitationIssue.observed} onClick={() => open({ kind: 'invite' })}>{m.invite}</button>}</div>
+    {projectName.error !== null && <ManagementError error={projectName.error} retry={projectName.retry} />}
     {grantIssue !== null && <div className="notice warning" role="alert"><p>{grantIssue.observed ? m.grantObserved : m.grantUnknown}</p>{grantIssue.error instanceof ApiError && grantIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{grantIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal).then((observed) => { if (observed && grantIssueRef.current !== null) { const issue = { ...grantIssueRef.current, observed: true }; grantIssueRef.current = issue; setGrantIssue(issue); } }); }}>{m.readCurrentMembers}</button></div>}
     {invitationIssue !== null && <div className="notice warning" role="alert"><p>{invitationIssue.observed ? m.invitationObserved : m.invitationUnknown}</p>{!invitationIssue.observed && (access.status === 'unavailable' || access.status === 'ready' && !admin) && <p>{m.invitationUnreadable}</p>}{invitationIssue.error instanceof ApiError && invitationIssue.error.requestId !== null && <p className="request-id">{globalCommon.requestId}<code>{invitationIssue.error.requestId}</code></p>}<button className="button" type="button" disabled={loading || pending} onClick={() => { void load(controller.current!.signal, true).then((observed) => { if (observed && invitationIssueRef.current !== null) { const issue = { ...invitationIssueRef.current, observed: true }; invitationIssueRef.current = issue; setInvitationIssue(issue); } }); }}>{m.readCurrentInvitations}</button></div>}
     {hasHeldGrant && !pending && <div className="notice" role="status">{locale === 'zh-CN' ? '变更已确认；确认当前访问权限后可查看详情。' : 'The change was confirmed; its details are available after access is verified.'}</div>}

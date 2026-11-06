@@ -24,7 +24,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   standalone tasks. Explore interactive dependency graphs with upstream context,
   task details and fullscreen reading.
 - **Keep the working material with the task.** Upload designs, screenshots and
-  other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
+  other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
 - **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
   post and reply as your account, with persistent history independent of Sessions.
@@ -438,10 +438,13 @@ full application validation. See the
 ## Validation
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
-installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. Routine CI suites exclude stress
-workloads. Run the corresponding explicit local command when full-scale evidence
-is required:
+installed package. CLI tests use private home and configuration environments
+and guard real Daynight state (`~/.daynight` and the inherited `DN_CONFIG_DIR`)
+against filesystem and SQLite writes or cleanup. The [CLI test isolation guide](docs/development.md#cli-test-isolation)
+owns child-process propagation, symbolic-link checks and protection limits. Server and Web checks have
+separate commands and require statement coverage strictly greater than 90%.
+Routine CI suites exclude stress workloads. Run the corresponding explicit local
+command when full-scale evidence is required:
 
 | Local workload | Command from the repository root |
 |---|---|

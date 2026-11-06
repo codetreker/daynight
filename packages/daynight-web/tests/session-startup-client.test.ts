@@ -58,15 +58,21 @@ describe('startup observations and live history admission', () => {
 
   it('updates blocked observations over a healthy browser channel and resumes only after a newer report permits history', async () => {
     vi.useFakeTimers();
-    const f = fixture(), blocked = report(f.s);
+    const f = fixture(), blocked: SessionStartupReport = { ...report(f.s), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'blocked', reasonCode: 'recovery_limit' } };
     f.current({ status: 'registered', session: f.s, startupReport: blocked });
     await f.client.start(); f.receive(f.s);
+    f.client.setDraft('retain input while the Worker reconciles its report');
     expect(f.api.timeline).not.toHaveBeenCalled();
+    await expect(f.client.send('connected does not bypass a recovery block')).rejects.toThrow();
     f.current({ status: 'registered', session: f.s, startupReport: { ...blocked, revision: '2', startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'none', reasonCode: null } } });
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } } });
+    expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } }, draft: { text: 'retain input while the Worker reconciles its report' } });
     expect(f.api.timeline).toHaveBeenCalledOnce();
     expect(f.api.channel).toHaveBeenCalledOnce();
+    f.current({ status: 'registered', session: f.s, startupReport: blocked });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.client.snapshot()).toMatchObject({ connected: true, startupReport: { revision: '2', recovery: { state: 'none' } } });
+    expect(f.api.command).not.toHaveBeenCalled();
   });
 
   it('does not regress a newer report revision or retry the same offline history refusal', async () => {

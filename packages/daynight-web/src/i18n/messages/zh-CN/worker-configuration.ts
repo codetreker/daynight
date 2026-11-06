@@ -1,6 +1,8 @@
 import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
+  leaveQuestion: '离开此 Worker 的配置并放弃未保存的修改吗？',
+  leaveExplanation: '未保存的修改将丢失。已提交到服务端的配置不会撤销。',
   overview: '运行概况', configuration: '配置', sections: 'Worker 页面', loading: '正在读取配置', unavailable: 'Worker 配置不可用',
   uninitialized: '尚未接入配置管理', uninitializedDetail: '运行支持配置管理的 Worker，导入本机设置。',
   readFailed: '读取配置失败。', saveFailed: '保存配置失败。', networkError: '请检查网络连接后重试。', protocolError: '服务返回了无效的配置响应。',

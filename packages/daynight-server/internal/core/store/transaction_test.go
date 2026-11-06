@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestTransactRollbackSurvivesCancellation(t *testing.T) {
@@ -32,6 +33,35 @@ func TestTransactRollbackSurvivesCancellation(t *testing.T) {
 	var count int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM rollback_marker").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("canceled write persisted: %d, %v", count, err)
+	}
+	assertMigrationPoolReusable(t, pool)
+}
+
+func TestReadOnlySnapshotWaitsForCanceledConnectionCleanup(t *testing.T) {
+	pool := emptyPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err := ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, "SELECT pg_sleep(30)"); return err })
+	var failure *TransactionError
+	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) {
+		t.Fatalf("canceled read snapshot: %#v %v", failure, err)
+	}
+	assertMigrationPoolReusable(t, pool)
+}
+
+func TestReadOnlySnapshotPreservesAdditionalCleanupFailure(t *testing.T) {
+	pool := emptyPool(t)
+	tx, err := pool.BeginTx(context.Background(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	cleanup := errors.New("extra cleanup failure")
+	err = transactReadOnly(ctx, &rollbackFailureTx{Tx: tx, failure: cleanup}, func(tx pgx.Tx) error { _, err := tx.Exec(ctx, "SELECT pg_sleep(30)"); return err })
+	var failure *TransactionError
+	if !errors.As(err, &failure) || failure.Phase != "cleanup" || !failure.CleanupFailed || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) || !errors.Is(err, cleanup) {
+		t.Fatalf("additional cleanup failure lost: %#v %v", failure, err)
 	}
 	assertMigrationPoolReusable(t, pool)
 }

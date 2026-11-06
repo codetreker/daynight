@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
 )
 
@@ -113,7 +113,7 @@ func TestStartupReportGenerationSwitchFiltersOldEvidence(t *testing.T) {
 	previous := "1"
 	nextInstance := uuid.NewString()
 	grant := sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: nextInstance, ExecutionGeneration: "2", Kind: "reconnect", PreviousGeneration: &previous, StopProof: &sp.StopProof{RecordID: uuid.NewString(), PreviousControllerInstanceID: f.registration.ControllerInstanceID, StoppedAt: time.Now().UTC().Format(time.RFC3339Nano)}}
-	decodeResponse[sessionrelay.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, grant)), http.StatusOK)
+	decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, grant)), http.StatusOK)
 	current := decodeResponse[map[string]any](t, startupRequest(f, http.MethodGet, f.base+"/current", ""), http.StatusOK)
 	if current["startupReport"] != nil {
 		t.Fatal("new generation displays previous startup evidence")
@@ -203,7 +203,7 @@ func TestStartupReportConcurrentGenerationGrantKeepsCurrentFence(t *testing.T) {
 		reported <- startupRequest(f, http.MethodPatch, taskPath(f.task)+"/worker-claim", reportBody)
 	}()
 	close(start)
-	decodeResponse[sessionrelay.GrantResult](t, <-granted, http.StatusOK)
+	decodeResponse[sessioncore.GrantResult](t, <-granted, http.StatusOK)
 	result := <-reported
 	if result.Code != http.StatusOK && result.Code != http.StatusConflict {
 		t.Fatalf("unexpected report result: %d %s", result.Code, result.Body)

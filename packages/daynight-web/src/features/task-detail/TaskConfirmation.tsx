@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { dialogFocusables } from './focus';
 import '../../styles/auth.css';
 
-export const TaskConfirmation = ({ title, question, explanation, content, taskTitle, confirmLabel, cancelLabel, closeLabel, destructive = false, owner, fallbackFocus, onCancel, onConfirm }: {
+export const TaskConfirmation = ({ title, question, explanation, content, taskTitle, confirmLabel, cancelLabel, closeLabel, destructive = false, owner, fallbackFocus, onRestoreFocus, onCancel, onConfirm }: {
   readonly title: string;
   readonly question: string;
   readonly explanation: string;
@@ -15,6 +15,7 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
   readonly destructive?: boolean;
   readonly owner: RefObject<HTMLElement | null>;
   readonly fallbackFocus: RefObject<HTMLElement | null>;
+  readonly onRestoreFocus?: () => void;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
 }) => {
@@ -23,8 +24,8 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
   const dialog = useRef<HTMLElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const restoreOpener = useRef(true);
-  const callbacks = useRef({ onCancel });
-  callbacks.current = { onCancel };
+  const callbacks = useRef({ onCancel, onRestoreFocus });
+  callbacks.current = { onCancel, onRestoreFocus };
   useLayoutEffect(() => {
     const parent = owner.current!;
     const opener = document.activeElement;
@@ -48,7 +49,8 @@ export const TaskConfirmation = ({ title, question, explanation, content, taskTi
     return () => {
       document.removeEventListener('keydown', keydown, true);
       if (!wasInert) parent.removeAttribute('inert');
-      if (restoreOpener.current && opener instanceof HTMLElement && opener.isConnected && !opener.matches(':disabled, [inert] *')) opener.focus();
+      if (callbacks.current.onRestoreFocus !== undefined) callbacks.current.onRestoreFocus();
+      else if (restoreOpener.current && opener instanceof HTMLElement && opener.isConnected && !opener.matches(':disabled, [inert] *')) opener.focus();
       else fallbackFocus.current?.focus();
     };
   }, [owner, fallbackFocus]);

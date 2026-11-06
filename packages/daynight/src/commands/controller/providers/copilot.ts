@@ -52,11 +52,14 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     for (const waiter of cancelWaiters) waiter.resolve(); cancelWaiters.clear(); state();
   };
   let todoRead: Promise<void> = Promise.resolve();
+  // Resumed history may already contain the stable todo entry and still needs clearing.
+  let todoProjected = options.resumeNativeSessionId !== null;
   const refreshTodos = () => {
     todoRead = todoRead.then(async () => {
       if (!native || closed || disconnected) return;
       const { rows } = await call(native.rpc.plan.readSqlTodos(), "Copilot todo read");
       if (closed || disconnected) return;
+      if (rows.length === 0 && !todoProjected) return;
       options.onTimeline({ entryId: nativeEntryId(nativeId, "todos"), revision: "1", kind: "todo", items: rows.flatMap(row => {
         const text = row.title || row.description, id = row.id;
         const status = row.status === "done" || row.status === "completed" ? "completed" : row.status === "in_progress" ? "in_progress" : row.status === "pending" ? "pending" : null;
@@ -65,6 +68,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
         }
         return [{ id, text, status }];
       }) });
+      todoProjected = true;
     }).catch(() => { options.onDiagnostic?.("Copilot todo state is unavailable."); });
   };
   const seen = new Set<string>();

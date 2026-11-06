@@ -1,3 +1,4 @@
+import { expectTaskStatusLayout } from './task-status-layout';
 import { selectTaskList } from './project-view';
 import type { Locator, Page } from '@playwright/test';
 import { startTask, createTask, expect, test, updateTask, type Task } from './fixtures';
@@ -26,13 +27,7 @@ const geometry = async (page: Page): Promise<void> => {
   await expectCenteredTaskDetail(page, detail(page));
   await expect(automatic(page)).toHaveCount(1);
   expect(await detail(page).locator('.task-detail-panel-overview [role=switch], .task-detail-heading .task-agent-permission').count()).toBe(0);
-  expect(await detail(page).locator('.task-detail-status-row').evaluate((row) => {
-    const bounds = row.getBoundingClientRect();
-    const left = row.querySelector('.task-detail-badges')!.getBoundingClientRect();
-    const right = row.querySelector('.task-automation-control')!.getBoundingClientRect();
-    return Math.abs(bounds.right - right.right) < .5 && (left.right <= right.left || left.bottom <= right.top)
-      && row.scrollWidth <= row.clientWidth;
-  })).toBe(true);
+  await expectTaskStatusLayout(detail(page));
 };
 
 test('task-agent-permission', scenario, async ({ page, api, allowBrowserWrites, controlProject }, info) => {
