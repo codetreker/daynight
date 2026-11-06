@@ -7,16 +7,23 @@
 
 行为要求由[附件需求](../spec/daynight-task-attachments.md)拥有；本文解释通用存储接口、
 附件元数据及各端集成机制。
-[附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
-[项目分片决策](../../.agents/notes/archived/architecture/2026-10-24-project-sharded-attachment-layout.md)与
-[附件变更与 Task 删除串行决策](../../.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)和
-[附件目标 gate 决策](../../.agents/notes/implemented/architecture/2026-11-06-attachment-target-gate.md)
+[附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)、
+[项目分片决策](../../.agents/notes/archived/architecture/2026-10-24-project-sharded-attachment-layout.md)、
+[附件变更与 Task 删除串行决策](../../.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)、
+[附件准入锁决策](../../.agents/notes/implemented/bug-fix/2026-11-06-attachment-admission-locks.md)、
+[附件目标 gate 决策](../../.agents/notes/implemented/architecture/2026-11-06-attachment-target-gate.md)及
+[附件路径限制决策](../../.agents/notes/implemented/feature/2026-11-06-attachment-path-limit.md)
 保存选择依据、已接受的限制及重新评估条件。
 
 [鉴权架构](daynight-auth.md)通过当前会话或 PAT 与项目成员权限保护所有附件
 请求；行为见[鉴权需求](../spec/daynight-auth.md)。`Attachments` 方法显式接收 principal。
-读取在文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属。上传、覆盖和删除使用持有 Task SHARE 锁的事务，在获取锁后重新检查项目授权和 Task 删除状态，然后检查路径、执行文件操作并通过同一事务写入元数据，直至事务完成才释放锁。授权来源也保持锁定直至事务完成；权限检查先于暴露 Task 删除状态，此顺序不在 Task 锁之后获取 Project 锁。凭据在 HTTP 准入
-时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
+读取在文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属。上传、覆盖和删除使用持有
+Task SHARE 锁的事务，在获取锁后通过 `pg.ReadProjectAccess` 以单条语句重新读取当前项目授权，
+再检查 Task 删除状态、路径，执行文件操作并通过同一事务写入元数据，直至事务完成才释放 Task 锁。
+该准入查询不锁定 ownership、owner Team member 或 direct grant 来源行，也不在 Task 锁之后获取
+Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
+已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
+凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
 相对资源、键盘机制和单 gateway 部署继续保留；单文件操作和 K1 边界继续有效。
 
 ## 目标与操作单位

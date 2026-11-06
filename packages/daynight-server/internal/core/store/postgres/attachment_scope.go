@@ -19,7 +19,8 @@ func (s *Store) DeleteAttachment(ctx context.Context, projectID, taskID, path st
 	return attachment.NewWriter(s.Pool).DeleteAttachment(ctx, projectID, taskID, path)
 }
 
-// WriteAttachmentMutation retains the Task and authorization locks until commit.
+// WriteAttachmentMutation retains the Task lock until commit. Authorization is
+// checked at admission without holding its source rows across file IO.
 func (s *Store) WriteAttachmentMutation(ctx context.Context, operation func(store.AttachmentMutationScope) error) (store.Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {

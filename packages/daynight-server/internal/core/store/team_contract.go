@@ -20,6 +20,7 @@ type TeamCreationDAO interface {
 
 type TeamWriteDAO interface {
 	Team(context.Context, string) (model.Team, error)
+	TeamBounded(context.Context, string, int) (model.Team, bool, error)
 	Rename(context.Context, string, string) (model.Team, error)
 	HasProjects(context.Context) (bool, error)
 	Delete(context.Context) error

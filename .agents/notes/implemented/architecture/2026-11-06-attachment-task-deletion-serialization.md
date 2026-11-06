@@ -20,6 +20,11 @@ The driver-independent store contract exposes the scoped DAOs; PostgreSQL owns
 locking and transaction completion. The [attachment design](../../../../docs/design/daynight-task-attachments.md)
 describes the resulting behavior.
 
+Fresh project authorization reads both access sources without locking them.
+The [attachment admission decision](../bug-fix/2026-11-06-attachment-admission-locks.md)
+narrows the authorization locks used by the original implementation while
+retaining this Task deletion boundary and its lock-order rationale.
+
 The [Task deletion decision](../../archived/feature/2026-10-25-task-soft-deletion.md)
 retains the data and the distinct authorized deletion response. This decision
 extends its guarantee to attachment mutations already in flight.

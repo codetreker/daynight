@@ -40,3 +40,34 @@ type TaskPage struct {
 	Items   []model.Task
 	HasMore bool
 }
+
+// TaskListFence covers every task header in a project, including deleted rows.
+type TaskListFence struct{ Count, VersionSum string }
+
+type TaskPriorityPosition struct {
+	Group     int
+	CreatedAt time.Time
+	ID        string
+}
+
+// TaskPriorityQuery applies all filters before priority ordering and limiting.
+type TaskPriorityQuery struct {
+	AssignedTo         model.TaskAssignmentFilter
+	Status             *model.TaskStatus
+	ExcludeDone        bool
+	Ready, AllowAgents *bool
+	CompatiblePlatform *model.TaskPlatform
+	After              *TaskPriorityPosition
+	Limit              int
+}
+
+type TaskPriorityItem struct {
+	Task           model.Task
+	BlockedByCount int
+	TitleTruncated bool
+}
+
+type TaskPriorityPage struct {
+	Items   []TaskPriorityItem
+	HasMore bool
+}
