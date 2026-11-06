@@ -19,6 +19,7 @@ import (
 	coreproject "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
@@ -133,7 +134,7 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logs := &invitationLog{}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	handler, err := New(Dependencies{Store: database, Files: files}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestMCPInvitationWorkflow(t *testing.T) {
 	server.Config.Handler = httpx.RequestLogging(logger, handler)
 	server.Start()
 	t.Cleanup(server.Close)
-	identityClient, err := config.identityClient()
+	identityClient, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}

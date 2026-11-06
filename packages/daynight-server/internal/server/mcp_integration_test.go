@@ -18,6 +18,7 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -61,7 +62,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	newApp := func() *sessionApplication {
 		t.Helper()
-		h, err := New(Dependencies{Store: database, Files: files}, config, logger)
+		h, err := newTestHandler(Dependencies{Store: database, Files: files}, config, logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +85,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	testauth.Login(t, alice, origin, "alice")
 	testauth.Login(t, bob, origin, "bob")
 	tokens := []string{testauth.CreatePAT(t, alice, origin), testauth.CreatePAT(t, bob, origin)}
-	client, err := config.identityClient()
+	client, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,6 +258,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
 		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
 		"invitation_inspect": true, "invitation_accept": true,
+		"bot_list": true, "bot_show": true, "bot_create": true, "bot_delete": true,
 		"task_thread_read": true, "task_thread_post": true,
 		"task_step_list": true, "task_step_show": true, "task_step_add": true, "task_step_update": true,
 		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,

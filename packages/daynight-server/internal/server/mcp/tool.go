@@ -340,8 +340,10 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 		if !ok {
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInternalError, Message: "request scope unavailable"}
 		}
+		if !e.beginWork() {
+			return nil, context.Canceled
+		}
 		scope.begin()
-		e.active.Add(1)
 		defer e.active.Done()
 		defer scope.end()
 		ctx, cancel := context.WithCancel(sdkctx)
