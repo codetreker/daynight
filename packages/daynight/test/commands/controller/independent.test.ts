@@ -28,11 +28,13 @@ import { SESSION_PROTOCOL } from "../../../src/session/protocol.js";
 import type { CliContext } from "../../../src/cli/context.js";
 const id = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];
+const socketDirectories = new Set<string>();
 afterEach(async () => {
   const requested = polling.requested.splice(0);
   vi.restoreAllMocks(); vi.unstubAllGlobals();
+  for (const directory of socketDirectories) await rm(directory, { recursive: true, force: true });
+  socketDirectories.clear();
   for (const root of roots.splice(0)) {
-    if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(root, id)), { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
   vi.unstubAllEnvs();
@@ -62,6 +64,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   // Keep the native socket below the platform limit even inside a task worktree.
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(`${base}${path.sep}`); roots.push(home);
+  if (process.platform !== "win32") socketDirectories.add(path.dirname(resolveControllerIpcEndpoint(home, id)));
   const out: string[] = [], err: string[] = [], requests: { url: string; body: any }[] = [];
   const context: CliContext = { version: "test", packageDirectory: "/package", homeDirectory: () => home, workingDirectory: () => home, stdout: text => out.push(text), stderr: text => err.push(text), stdoutBytes: async () => {} };
   let registration: any, session: any;
@@ -575,6 +578,7 @@ test("archive-only retry marks pending before stop and tolerates metadata public
 test("isolates standalone state and child root without changing native home", async () => {
   const v = await setup(null), root = path.join(v.home, "dev-state");
   vi.stubEnv("DN_CONFIG_DIR", root);
+  if (process.platform !== "win32") socketDirectories.add(path.dirname(resolveControllerIpcEndpoint(v.home, id)));
   vi.stubEnv("HOME", "/real/user/home");
   vi.stubEnv("USERPROFILE", "/real/user/profile");
   vi.stubEnv("CODEX_HOME", undefined);

@@ -7,9 +7,11 @@ import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/p
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 const roots: string[] = [];
+const socketDirectories = new Set<string>();
 afterEach(async () => {
+  for (const directory of socketDirectories) await rm(directory, { recursive: true, force: true });
+  socketDirectories.clear();
   for (const root of roots.splice(0)) {
-    if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(root, randomUUID())), { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   }
   vi.unstubAllEnvs();
@@ -18,6 +20,7 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "cp-")); roots.push(home);
   vi.stubEnv("DN_CONFIG_DIR", explicit ? path.join(home, "dev-state") : undefined);
+  if (process.platform !== "win32") socketDirectories.add(path.dirname(resolveControllerIpcEndpoint(home, randomUUID())));
   vi.stubEnv("COPILOT_HOME", explicit ? path.join(home, "native") : undefined);
   vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(home, "other-provider"));
   const store = openWebExecutionStore(path.join(home, "worker.sqlite"));
