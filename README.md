@@ -396,10 +396,12 @@ only a CLI manifest version change may skip application jobs as described in
 the [development guide](docs/development.md#ci-selection).
 
 CLI validation includes ordinary and installed phases on Linux, Windows and
-macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go and Web
-have separate module jobs. The final gate rejects failed or cancelled jobs and
-requires a selected Web quality job to succeed. A newer PR run cancels its older
-run; main runs queue without cancelling an active run.
+macOS ARM64, a Node runtime matrix, and real-shell completion checks. Go has its
+own module job. Web selection starts independent quality and browser jobs; the
+quality job runs the harness and coverage gate, while the browser job runs its
+Playwright regressions. The final gate rejects failed or cancelled jobs and
+requires both selected Web jobs to succeed. A newer PR run cancels its older run;
+main runs queue without cancelling an active run.
 
 ## Validation
 
