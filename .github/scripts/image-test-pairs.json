@@ -1,1 +1,26 @@
-{"schemaVersion":1,"pairs":[]}
+{
+  "schemaVersion": 1,
+  "pairs": [
+    {
+      "base": "9a875d316e05d0b2d2676ceec1a75cc0d1472728",
+      "implementation": {
+        "pr": 661,
+        "sha": "91fd862554ecc5aafc5c65aaffcd79f62b31e60b",
+        "reviews": [
+          5798752355
+        ]
+      },
+      "tests": {
+        "pr": 705,
+        "sha": "e9df980a80890c9d1efd281e937ed376f042d67f",
+        "reviews": [
+          5798769801
+        ]
+      },
+      "productionTree": "0d9249704f15c321442b1e929cb8e11b07025fb3",
+      "allowPaths": [
+        "packages/daynight/test/ci/image-test-pair-input.test.ts"
+      ]
+    }
+  ]
+}
