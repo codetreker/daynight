@@ -119,6 +119,24 @@ func TestTaskAssignmentNoOpsAndExecutionLocks(t *testing.T) {
 	_, err := tasks.Update(ctx, admin, project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&outsider.UserID)})
 	requireFault(t, err, "invalid_input")
 	assertTaskUnchanged(t, tasks, admin, before)
+	before = setStatusTask(t, tasks, admin, before, model.TaskInProgress)
+	_, err = tasks.Update(ctx, admin, project.ID, before.ID, taskcore.UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&outsider.UserID), Description: pointer("Must not save")})
+	requireFault(t, err, "invalid_transition")
+	assertTaskUnchanged(t, tasks, admin, before)
+}
+
+func TestTaskAssignmentPreservesCombinedChanges(t *testing.T) {
+	tasks, database, project, _, admin := taskService(t)
+	alice := workerMember(t, database, project.ID)
+	before := createAssignedTask(t, tasks, admin, project.ID, nil)
+	after := updateTask(t, tasks, admin, before, taskcore.UpdateTask{
+		AssignedTo: assignmentChange(&alice.UserID), AllowAgents: pointer(true),
+		Title: pointer("Updated title"), Description: pointer("Updated description"),
+		RequiredPlatform: platformChange(pointer(model.PlatformLinux)),
+	})
+	if !model.EqualOptional(after.AssignedTo, &alice.UserID) || after.AllowAgents || after.Version != before.Version+1 || after.Title != "Updated title" || after.Description != "Updated description" || after.RequiredPlatform == nil || *after.RequiredPlatform != model.PlatformLinux {
+		t.Fatalf("combined assignment update: %#v", after)
+	}
 }
 
 func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
