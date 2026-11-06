@@ -22,13 +22,11 @@ through an admitted attachment use case. Private capacity and a namespace gate
 protect temporary objects, and a target gate serializes publication with other
 attachment operations. Target file and metadata remain separate side effects.
 
-An admitted commit holds no business transaction during the content stream.
-Its permit owns internal renewal and completion of that operation even if task
-access or the task itself is subsequently removed. Later external requests are
-rechecked and cannot access a deleted task. Consequently a task may be deleted
-before its already admitted upload finishes; its retained attachment is not
-accessible through ordinary task operations. Ordinary attachment mutations keep
-their [Task deletion serialization](2026-11-06-attachment-task-deletion-serialization.md).
+The original design admitted a commit without holding a business transaction
+for its stream and allowed that operation to finish after Task deletion. This
+avoided long-lived database locks, at the cost of allowing a retained attachment
+to change after deletion. The [upload deletion barrier](2026-11-06-upload-deletion-barrier.md)
+replaces that lifecycle ordering while retaining admitted identity behavior.
 The [private transfer lifecycle](2026-11-06-private-transfer-lifecycle.md) and
 [attachment design](../../../../docs/design/daynight-task-attachments.md)
 own cleanup, capacity and current transport details.
@@ -41,7 +39,7 @@ not satisfy the upload streaming requirement.
 
 **Serialize Task deletion with a separate cross-process gate.** This adds a gate
 to every deletion and introduces deployment coordination for mixed versions.
-The accepted admission rule allows a deleted task's already admitted upload to
+The original admission rule allowed a deleted task's already admitted upload to
 finish without that shared lock.
 
 ## Consequences
@@ -49,7 +47,6 @@ finish without that shared lock.
 A client can reconcile an accepted transfer and its original operation without
 replaying an unknown commit. Cleanup waits for private I/O to quiesce and cannot
 remove the target attachment. Removed access prevents later status reads even
-when an already admitted operation finishes. Deleting a task while a commit is
-in flight can retain an inaccessible attachment, consistent with soft deletion's
-retention of existing attachments. Cross-store failures still may leave content
+when an already admitted operation finishes. A later deletion barrier serializes the final publication with Task and Project
+deletion. Cross-store failures still may leave content
 and metadata inconsistent.

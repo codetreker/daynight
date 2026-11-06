@@ -1,3 +1,4 @@
+import { fixtureTaskEpoch } from "./taskSync";
 import { readTaskPaused } from "../../src/api/task-properties";
 import type { TaskDetail, TaskGraph } from '../../src/api/types';
 import { stringifyWireJson } from './wireJson';
@@ -32,7 +33,11 @@ export const snapshotFixture = (details: readonly TaskDetail[], revision = 1): G
   const graph = graphFixture(details);
   return { graph, index: buildGraphIndex(graph), workerMachines: new Map(), pausedTaskIds: new Set(details.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), revision, observedAt: graph.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now() };
 };
-export const resourceResponse = (body: unknown, viewerId?: string): Response => new Response(stringifyWireJson(body), { headers: viewerId === undefined ? { 'Content-Type': 'application/json' } : viewerHeaders(viewerId, { 'Content-Type': 'application/json' }) });
+export const resourceResponse = (body: unknown, viewerId?: string): Response => {
+  const headers = viewerId === undefined ? new Headers({ 'Content-Type': 'application/json' }) : viewerHeaders(viewerId, { 'Content-Type': 'application/json' });
+  if (typeof body === 'object' && body !== null && 'projectId' in body && 'version' in body && typeof body.projectId === 'string') headers.set('Daynight-Task-Epoch', fixtureTaskEpoch(body.projectId));
+  return new Response(stringifyWireJson(body), { headers });
+};
 export const withDetailResources = (projectId: string, taskId: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>, changes: Partial<TaskDetail> = {}, viewer: string | (() => string) = TEST_VIEWER_ID) =>
   (url: string, options?: RequestInit): Response | Promise<Response> => {
     const task = detailFixture(projectId, taskId, changes);

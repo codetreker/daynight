@@ -660,16 +660,13 @@ After identity verification, a project publishes its validated local summary
 snapshot while task-sync runs in the background. Valid empty snapshots render
 normally; missing or invalid baselines retain loading until synchronization.
 Recoverable sync failures retain visible summaries and expose Retry. Summary
-publication does not authorize detail bodies or task writes: those still require
-this mount's successful online project sync. A local-only detail mount keeps its
+publication does not authorize detail bodies or task writes: summary-backed details require this mount's successful online project sync. A direct opening instead requires a current, principal-bound Task observation and does not depend on a graph. A local-only detail mount keeps its
 visibility gate local and leaves shared session observation unchanged, so an
 already accepted operation can finish preparation in its original authorized
 history; this mount's first live receipt still requires its own opening GET. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
 mutation responses. A verified different principal synchronously releases old content
 and starts identity verification. Headerless or malformed-principal errors retain
-valid cached content. Project-sync not_found, a trusted not_found for a task known
-when GET started, or a trusted task-write not_found immediately withdraw matching
-project admission. Unknown task IDs remain local errors. Captured ticket checks
+valid cached content. Project-sync not_found withdraws matching project admission. A trusted Task GET or write not_found withdraws that detail and revalidates project access; Task absence alone does not establish project denial. Captured ticket checks
 prevent an old-generation response from clearing a replacement generation. Scope invalidation aborts current work and releases memory before its
 user-specific persistent purge; ordinary disposal closes resources and preserves
 the durable base. Foreground gating covers durable reads and positive publication;
@@ -708,8 +705,7 @@ owns the algorithm, schema, failure rules and detail integration.
 
 ## Persistent task details
 
-`TaskDetailSessions(scope)` uses the same authenticated scope and schema-6 details
-store as project summaries. `detail-cache.ts` validates intrinsic bodies against
+`TaskDetailSessions(scope)` uses the same authenticated scope and details store as project summaries for summary-backed details. Direct openings retain validated Task observations only in memory and do not write the details store. `detail-cache.ts` validates intrinsic bodies against
 the current summary and guarded lifecycle ticket, then materializes readiness and
 blockers from the complete local graph. Full current properties preserve actual
 present keys: an absent worker means no retained ownership, while a present
@@ -724,7 +720,7 @@ considered, recording an in-memory opening generation that its live GET must
 satisfy. Pending/unknown operations delay the GET without losing that demand;
 disk, mutation results, same-version no-ops/refusals and reconciliation begun
 before reopening cannot grant later-opening authority. Duplicate polling receipts
-do not create openings. Project-generation changes immediately clear the old body,
+do not create openings. For summary-backed details, project-generation changes immediately clear the old body,
 PR data and loadedRevision, cancel old reads/pending bodies and reset freshness
 and committed-version floors. Render-time generation checks suppress old content
 before effects, even when the replacement GET hangs or fails. Operation intent
@@ -782,8 +778,7 @@ name displays a short UUID, failed images use an identity placeholder, and only
 an explicit hasProjectAccess=false result marks a former member. Long names
 retain accessible full text and narrow layouts keep controls within the viewport.
 
-The shared picker uses the complete qualified-person manifest from task-sync and
-loads only missing or changed profiles. Ordinary reopening reuses matching
+The summary-backed picker uses the complete qualified-person manifest from task-sync and loads only missing or changed profiles. A direct detail reads the member catalogue independently under its current Task observation. Ordinary reopening reuses matching
 content and in-flight work; explicit Retry recovers failed or missing items.
 Search accepts names and UUIDs; assignment choices contain current members and
 clearing, while filters can retain former assignees. Loading and failure keep
@@ -852,6 +847,15 @@ index. Overview positioning adjusts filters that hide its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+Project task search submits the original expression to the server, including
+completed Tasks and chain members. Its draft, filters and cursor pages are
+independent of the ordinary lists. Clearing the search restores the ordinary
+view and its scroll position. Search results open a live Task detail, including
+when project graph synchronization fails. Errors and empty results remain
+distinct; the server owns matching, ordering and context. The
+[requirements](../../docs/spec/daynight-web.md#项目任务搜索) and
+[design](../../docs/design/daynight-web.md) own the interaction and lifecycle.
+
 ## Steps reading and writing
 
 Task details always expose Steps after Overview, in both the dialog and standalone
@@ -862,8 +866,7 @@ Markdown and timestamps through the same attachment controller as Overview.
 
 `TaskDetailSessions` owns a separate lazy Steps resource in memory. Summary,
 parent-detail and confirmed mutation versions invalidate it; identity, cache
-generation and version admission fence late responses. An ahead resource waits
-for summary admission and requests parent/project refresh, while stale responses
+generation and version admission fence late responses. An ahead summary-backed resource waits for summary admission and requests parent/project refresh. Direct Steps use the current live parent version and bounded parent/collection rereads; stale responses
 are reread against the highest verified floor, including pending parent details.
 Refresh and reader release retain that scalar floor within the same cache
 generation. Confirmed parent deletion fences in-flight reads and asynchronous
@@ -1819,21 +1822,7 @@ keeps the shared surface and attachment controller mounted, retaining directory
 disclosure, sidebar scroll and upload drafts. Task and authenticated-identity
 changes preserve the existing cancellation and state-isolation rules.
 
-The page owns a real `useTaskGraph` snapshot for relationship titles, successors
-and freshness, then composes the shared detail session. Initial loading, initial
-failure and retained-snapshot refresh errors stay distinct; failure cannot become
-an empty graph. Retained-snapshot errors use the shared floating layer inside
-the detail surface, as do the page language selector's preference-storage notices,
-preserving tab and reading geometry. Matching persistent detail content is
-available only after this mount's successful project sync, and opening still
-performs a live GET before writes. Task business versions, project generations
-and recovery needs drive later reads; clock-only graph receipts do not reread
-unchanged details. Same-identity foreground auth
-revalidation retains ordinary page visibility, interaction and component identity.
-Unchanged detail refreshes retain focus, inputs, preview and heading/panel geometry.
-Each window reads its own resources; task objects, snapshots and confirmations
-are not transferred from the opener. Existing precise-version writes, conflicts
-and unknown-outcome reconciliation remain owned by `TaskDetailSession`.
+The page opens its complete Task through a direct live observation. A separate local task-chain graph supplies available relation titles and ordinary successors; graph failure does not block the rest of the detail. External successors may lie outside that projection. Each window reads its own resources and opening, with no Task objects or confirmations transferred from the opener. Visible direct details refresh every fifteen seconds and pause while hidden. A successful write remains confirmed but cannot enable another write until a fresh Task observation reaches its committed version; failed refreshes remain visible and retryable without replay. Same-identity foreground verification retains existing page interaction, while history or access retirement unmounts the reading resources.
 
 The [inspection requirements](../../docs/spec/daynight-task-inspection.md#独立完整任务详情),
 [design](../../docs/design/daynight-task-inspection.md#独立完整任务详情) own
@@ -2022,6 +2011,17 @@ and [Session](../../docs/design/bot-session-view.md) validation responsibilities
 The Web quality command does not run a cross-product acceptance suite. Controlled
 browser fixtures establish only their stated frontend scope. A real-service result
 requires its own source-bound execution and cleanup evidence.
+
+`pnpm web:acceptance` runs the project task search browser checks against a
+production Web build embedded in a locally built Go server, a disposable
+PostgreSQL 18.6 Docker container and the pinned UniAuth fixture. It requires
+Node.js 24, pnpm 11.28.6, Go 1.27.2, Docker with Linux host networking and a
+Playwright Chromium installation. By default Chromium is read from the
+worktree's `.tmp/playwright-browsers`; set `PLAYWRIGHT_BROWSERS_PATH` to use an
+existing installation. The result under `.tmp/task-search-acceptance/` records
+the source fingerprint, server binary and browser asset hashes and observed
+checks. The runner removes its own server, fixture and database resources.
+This focused result does not replace complete cross-product acceptance.
 
 ## Dependency declarations
 

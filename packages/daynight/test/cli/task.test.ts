@@ -527,6 +527,39 @@ describe("compiled task commands", () => {
     } finally { await f.close(); }
   }, 60_000);
 
+  it("round-trips Markdown bytes through creation, replacement and status changes", async () => {
+    const f = await fixture();
+    const original = "# 需求 中文😀\r\n\r\n- [ ] one\r\n\r\n```ts\r\nconst a = '<&>';\r\n```\r\n[链接](docs/plan.md)\r\n";
+    const replacement = "# Revised\n\n> 引用 😀\n\n| A | B |\n| - | - |\n| 1 | 2 |\n";
+    try {
+      let current = task({ version: 9_007_199_254_740_993n });
+      const { requests } = await f.serve((request, response) => {
+        const body = request.body as { description?: string; title?: string; status?: Task["status"]; version?: bigint } | null;
+        if (request.method === "POST") current = { ...current, title: body!.title!, description: body!.description!, assignedTo: accountId };
+        if (request.method === "PATCH") current = { ...current, description: body!.description!, version: current.version + 1n };
+        if (request.method === "PUT") current = { ...current, status: body!.status!, ready: body!.status === "todo", version: current.version + 1n };
+        respond(response, current, request.method === "POST" ? 201 : 200);
+      });
+      const created = await f.invoke(["create", "--title", "Markdown", "--description", original, ...explicit]);
+      expect(created.code, created.stderr).toBe(0);
+      expect(requests.at(-1)!.body).toEqual({ title: "Markdown", description: original, assignedTo: accountId });
+      const readOriginal = await f.invoke(["show", taskId, "--json", ...explicit]);
+      expect(readOriginal.code, readOriginal.stderr).toBe(0);
+      expect(Buffer.from((parseApiJson(readOriginal.stdout) as Task).description)).toEqual(Buffer.from(original));
+      const changed = await f.invoke(["update", taskId, "--description", replacement, ...explicit]);
+      expect(changed.code, changed.stderr).toBe(0);
+      expect(requests.at(-1)!.body).toEqual({ version: 9_007_199_254_740_993n, description: replacement });
+      for (const status of ["in_progress", "done"] as const) {
+        const before = current.version;
+        const result = await f.invoke(["set-status", taskId, status, ...explicit]);
+        expect(result.code, result.stderr).toBe(0); expect(requests.at(-1)!.body).toEqual({ version: before, status });
+        const read = await f.invoke(["show", taskId, "--json", ...explicit]);
+        expect(read.code, read.stderr).toBe(0);
+        expect(Buffer.from((parseApiJson(read.stdout) as Task).description)).toEqual(Buffer.from(replacement));
+      }
+    } finally { await f.close(); }
+  }, 30_000);
+
   it("lists unfinished tasks in stable global priority order and includes done tasks with --all", async () => {
     const f = await fixture();
     try {

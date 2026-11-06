@@ -18,6 +18,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
@@ -235,9 +236,14 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 		return nil, e
 	}
 	var prior model.UploadChunk
+	var receiptMissing bool
 	e = s.lifecycle.admittedUpload(p.Context, p, func(dao store.PrivateTransferDAO, current model.PrivateTransfer) error {
 		var err error
+		if err = dao.LockProjectLifecycle(p.Context, current.ProjectID, current.TaskID); err != nil {
+			return projectcore.LookupError(err)
+		}
 		prior, err = dao.UploadChunk(p.Context, current.ID, in.ChunkID)
+		receiptMissing = errors.Is(err, model.ErrNotFound)
 		return err
 	})
 	if e == nil {
@@ -246,7 +252,9 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 		}
 		return chunkResult(r, prior, "already_accepted"), nil
 	}
-	if !errors.Is(e, model.ErrNotFound) {
+	facts := operation.CompletionFacts(e)
+	databaseFailure, _ := store.DatabaseErrorFacts(e)
+	if !receiptMissing || databaseFailure || facts.Outcome != store.TransactionNotCommitted || facts.CleanupFailed {
 		return nil, e
 	}
 	if off != d.NextOffset || off > int64(^uint64(0)>>1)-int64(len(b)) {
@@ -261,13 +269,16 @@ func (s *Uploads) chunk(ctx context.Context, a transfer.Actor, project, task str
 		return nil, e
 	}
 	chunk := model.UploadChunk{TransferID: in.TransferID, ChunkID: in.ChunkID, ObjectID: uuid.NewString(), Offset: off, Size: int64(len(b)), SHA256: hash}
-	if _, e = s.files.PutTransfer(p.Context, namespace, chunk.ObjectID, bytes.NewReader(b)); e != nil {
-		return nil, e
-	}
 	e = s.lifecycle.admittedUpload(p.Context, p, func(dao store.PrivateTransferDAO, current model.PrivateTransfer) error {
 		var err error
+		if err = dao.LockProjectLifecycle(p.Context, current.ProjectID, current.TaskID); err != nil {
+			return projectcore.LookupError(err)
+		}
 		if current.State != "receiving" || current.Version != r.Version || !transfer.Live(current, time.Now()) {
 			return transfer.ErrState
+		}
+		if _, err = s.files.PutTransfer(p.Context, namespace, chunk.ObjectID, bytes.NewReader(b)); err != nil {
+			return err
 		}
 		next, err := transfer.AcceptUploadChunk(current, chunk, time.Now().UTC())
 		if err != nil {
@@ -300,6 +311,7 @@ type chunkStream struct {
 	ctx           context.Context
 	service       *Uploads
 	permit        *Permit
+	lookup        func(context.Context, int64) (model.UploadChunk, error)
 	namespace     filestorage.TransferNamespace
 	offset, total int64
 	current       io.ReadCloser
@@ -340,7 +352,13 @@ func (s *chunkStream) Read(b []byte) (int, error) {
 		if s.offset > s.total {
 			return 0, errors.New("upload receipt exceeds total")
 		}
-		c, e := s.service.lifecycle.uploadChunkAt(s.ctx, s.permit, s.offset)
+		var c model.UploadChunk
+		var e error
+		if s.lookup != nil {
+			c, e = s.lookup(s.ctx, s.offset)
+		} else {
+			c, e = s.service.lifecycle.uploadChunkAt(s.ctx, s.permit, s.offset)
+		}
 		if e != nil {
 			return 0, e
 		}
@@ -487,16 +505,18 @@ func (s *Uploads) commit(ctx context.Context, a transfer.Actor, project, task st
 	if e != nil {
 		return map[string]any{"transferId": in.TransferID, "writeOutcome": "not_committed"}, e
 	}
-	reader, e = s.stream(opCtx, p, r.ID, total)
 	var item model.Attachment
 	var created bool
-	if e == nil {
-		item, created, e = admission.Put(opCtx, reader)
-		closeErr := reader.Close()
-		if e != nil {
-			e = errors.Join(e, closeErr)
+	item, created, e = admission.PutFrom(opCtx, func(scope store.AttachmentMutationScope) (io.ReadCloser, error) {
+		reader, err := s.stream(opCtx, p, r.ID, total)
+		if err != nil {
+			return nil, err
 		}
-	}
+		reader.lookup = func(ctx context.Context, offset int64) (model.UploadChunk, error) {
+			return scope.UploadChunkAt(ctx, r.ID, offset)
+		}
+		return reader, nil
+	})
 	renewErr := stop()
 	if e == nil || (attachmentservice.FileEffectPossible(e) && operation.CompletionFacts(e).Outcome == store.TransactionCommitted) {
 		d.WriteOutcome = "confirmed"

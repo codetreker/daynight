@@ -941,9 +941,18 @@ describe("minimal worker resource reconciliation", () => {
 
   it("does not clean or launch from a failed inventory", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const old = f.store.listTasks()[0]!;
+    f.grants.clear(); f.candidates.splice(0);
     vi.mocked(f.remote.ownInventory).mockRejectedValueOnce(new Error("page 2 failed"));
     await expect(f.coordinator.tick()).rejects.toThrow("page 2 failed");
     expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(f.store.getTask(old)).toEqual(old);
+    expect(f.resources.has(old.claimId)).toBe(true); expect(f.worktrees.has(old.claimId)).toBe(true);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.getTask(old)?.status).toBe("done"));
+    expect(f.resources.has(old.claimId)).toBe(false); expect(f.worktrees.has(old.claimId)).toBe(false);
+    expect(f.order.slice(-3)).toEqual(["notify", "stop-close", "remove-worktree"]);
   });
 
   it("does not infer claim absence for a project registered after inventory began", async () => {
@@ -1001,22 +1010,27 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.remote.claim).toHaveBeenCalledOnce();
   });
 
-  it("cold-resumes a recorded native session with current configuration", async () => {
+  it("cold-resumes a recorded native session with its frozen native configuration", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const old = f.store.listTasks()[0]!; f.resources.clear();
     const current = { ...configuration, model: "updated-model" }; const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current });
     await restarted.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
-    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId, configuration: current });
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId, configuration });
     expect(f.store.getTask(old)?.sessionId).toBe(old.sessionId);
   });
 
-  it("starts fresh after an interrupted active NULL-session launch", async () => {
+  it.each([false, true])("starts fresh after an interrupted NULL-session launch with frozen native settings=%s", async frozen => {
     const f = await fixture(); f.candidates.splice(0);
     const granted = f.grant(task(f.project.projectId, uuid(200)), { claimId: uuid(201), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(202) });
     f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201), agent: "codex" });
     const active = f.store.activateTask({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201) });
-    await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    if (frozen) f.store.freezeNativeConfiguration(active, configuration);
+    const current = { ...configuration, model: "updated-model" };
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current });
+    await restarted.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     expect(f.tasks.start.mock.calls[0]![2]).not.toHaveProperty("resumeSessionId");
+    expect(f.tasks.start.mock.calls[0]![2].configuration).toEqual({ ...(frozen ? configuration : current), agentControlMode: "herdr" });
+    expect(f.store.getNativeConfiguration(active)?.model).toBe(frozen ? configuration.model : current.model);
     expect(f.events).toContainEqual({ kind: "info", task: active, message: "Starting a new native conversation in the task worktree." });
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });
@@ -1060,6 +1074,39 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.store.getTask({ projectId: newer.projectId, taskId: newer.id, claimId: uuid(400) })?.status).toBe("active");
   });
 
+  it("starts the next project's task only after the previous task releases its sole slot", async () => {
+    const f = await fixture(1);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.splice(1, 1, task(second.projectId, uuid(200)));
+    f.coordinator.updateConfiguration(f.options);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const first = f.store.listTasks()[0]!;
+    expect(first.projectId).toBe(f.project.projectId);
+    let release!: () => void;
+    const stopped = new Promise<void>(resolve => { release = resolve; });
+    const stop = f.tasks.stopAndClose.getMockImplementation()!;
+    f.tasks.stopAndClose.mockImplementation(async (...args) => { await stopped; return stop(...args); });
+    try {
+      f.grants.clear(); f.candidates.shift();
+      await f.coordinator.tick();
+      await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledOnce());
+      await f.coordinator.tick();
+      expect(f.remote.claim).toHaveBeenCalledOnce();
+      expect(f.tasks.start).toHaveBeenCalledOnce();
+      expect(f.worktrees.has(first.claimId)).toBe(true);
+      release();
+      await eventually(() => expect(f.store.getTask(first)?.status).toBe("done"));
+      await f.coordinator.tick();
+      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.projectId)).toEqual([f.project.projectId, second.projectId]);
+      expect(f.order.indexOf("remove-worktree")).toBeLessThan(f.order.lastIndexOf("start"));
+      expect(f.worktrees.has(first.claimId)).toBe(false);
+    } finally { release(); await f.coordinator.shutdown(); }
+  });
+
   it("keeps positive grants but treats a resource observation failure as an error", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     f.grants.clear(); vi.mocked(f.herdr.tasks.listResources).mockRejectedValueOnce(new Error("snapshot failed"));
@@ -1084,6 +1131,25 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
     expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId });
     expect(f.store.getTask(old)).toEqual(old);
+  });
+
+  it.each([null, uuid(900)])("retains the original claim across shutdown and resume when assignedTo becomes %s", async (assignedTo) => {
+    const f = await fixture();
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const old = f.store.listTasks()[0]!;
+    const original = f.grants.get(old.claimId)!;
+    f.grants.set(old.claimId, { ...original, assignedTo });
+    await expect(f.coordinator.shutdown()).resolves.toBe(true);
+    expect(f.store.getTask(old)).toEqual(old);
+    expect(f.worktrees.has(old.claimId)).toBe(true);
+    await createWorkerCoordinator(f.options).tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId });
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(f.store.getTask(old)).toEqual(old);
+    expect(f.grants.get(old.claimId)?.assignedTo).toBe(assignedTo);
   });
 
   it("cancels terminal cleanup before a pending reporter join and preserves its resources for shutdown", async () => {

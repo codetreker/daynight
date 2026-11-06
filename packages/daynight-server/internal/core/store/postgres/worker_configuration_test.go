@@ -28,8 +28,16 @@ func TestWorkerConfigurationMigrationPreservesWorkersAndTasks(t *testing.T) {
 	stamp := time.Now().UTC()
 	userID, workerID := queryID(1), queryID(2)
 	original := putWorkerSnapshot(t, database, workerSnapshotFixture(userID, workerID, stamp))
-	project := queryProject(t, database, 10)
-	queryTask(t, database, project.ID, 20, model.TaskInProgress)
+	// Construct the pre-034 graph directly; current Project and Task DAOs expect
+	// lifecycle columns that are intentionally absent in this source schema.
+	projectID, taskID, ownerID, teamID := queryID(10), queryID(20), queryID(30), queryID(31)
+	mustQueryExec(t, database, `INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, ownerID, "migration-owner:"+ownerID)
+	mustQueryExec(t, database, `INSERT INTO teams(id,personal_user_id) VALUES($1,$2)`, teamID, ownerID)
+	mustQueryExec(t, database, `INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, teamID, ownerID)
+	mustQueryExec(t, database, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Project','host:repo')`, projectID)
+	mustQueryExec(t, database, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, projectID, teamID)
+	mustQueryExec(t, database, `INSERT INTO project_grants(project_id,user_id,role) VALUES($1,$2,'admin')`, projectID, ownerID)
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,description,status) VALUES($1,$2,'Task','Description','in_progress')`, taskID, projectID)
 	before := currentTaskFactsFixture(t, database)
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)

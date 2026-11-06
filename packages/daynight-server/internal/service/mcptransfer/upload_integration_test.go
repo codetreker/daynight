@@ -167,7 +167,7 @@ func TestUploadAdmissionSurvivesAccessRevocation(t *testing.T) {
 	}
 }
 
-func TestUploadAdmissionSurvivesTaskDeletion(t *testing.T) {
+func TestUploadAdmissionSerializesTaskDeletion(t *testing.T) {
 	f, s, _ := uploadFixture(t)
 	ctx := t.Context()
 	id := uuid.NewString()
@@ -201,15 +201,23 @@ func TestUploadAdmissionSurvivesTaskDeletion(t *testing.T) {
 		_, err := f.db.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=clock_timestamp() WHERE id=$1`, f.binding.TaskID)
 		deleted <- err
 	}()
-	select {
-	case err := <-deleted:
-		if err != nil {
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		var waiting bool
+		if err := f.db.Pool.QueryRow(waitCtx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE 'UPDATE tasks SET deleted_at%')`).Scan(&waiting); err != nil {
 			close(gate.release)
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
-		close(gate.release)
-		t.Fatal("task deletion waited for the content stream")
+		if waiting {
+			break
+		}
+		select {
+		case <-waitCtx.Done():
+			close(gate.release)
+			t.Fatal("task deletion did not wait for the content stream")
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 	close(gate.release)
 	select {
@@ -219,6 +227,14 @@ func TestUploadAdmissionSurvivesTaskDeletion(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("commit did not terminate after task deletion")
+	}
+	select {
+	case err := <-deleted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-waitCtx.Done():
+		t.Fatal("task deletion did not finish")
 	}
 	if _, err := s.Execute(ctx, f.actor, f.binding.ProjectID, f.binding.TaskID, UploadInput{Action: "status", TransferID: id}); err == nil {
 		t.Fatal("new request accessed deleted task")
@@ -579,12 +595,22 @@ func TestAdmittedUploadRenewalAndLateReceipt(t *testing.T) {
 			if err = f.lifecycle.keepAdmittedUpload(t.Context(), p, uuid.NewString()); err == nil {
 				t.Fatal("different operation renewed the lease")
 			}
-			if err = f.lifecycle.keepAdmittedUpload(t.Context(), p, opID); err != nil {
-				t.Fatalf("admitted operation renewal: %v", err)
+			err = f.lifecycle.keepAdmittedUpload(t.Context(), p, opID)
+			if revoked == "credential" && err != nil {
+				t.Fatalf("admitted credential renewal: %v", err)
+			}
+			if revoked == "task" && err == nil {
+				t.Fatal("deleted task renewed lease")
 			}
 			var lease time.Time
-			if err = f.db.Pool.QueryRow(t.Context(), `SELECT lease_until FROM private_transfers WHERE id=$1`, r.ID).Scan(&lease); err != nil || time.Until(lease) < 40*time.Second {
-				t.Fatalf("lease was not extended: %v %v", lease, err)
+			if err = f.db.Pool.QueryRow(t.Context(), `SELECT lease_until FROM private_transfers WHERE id=$1`, r.ID).Scan(&lease); err != nil {
+				t.Fatal(err)
+			}
+			if revoked == "credential" && time.Until(lease) < 40*time.Second {
+				t.Fatalf("credential renewal did not extend lease: %v", lease)
+			}
+			if revoked == "task" && time.Until(lease) > 10*time.Second {
+				t.Fatalf("deleted task extended lease: %v", lease)
 			}
 			if _, err = f.lifecycle.startAdmittedCommit(t.Context(), p, data); err == nil {
 				t.Fatal("commit replay accepted")

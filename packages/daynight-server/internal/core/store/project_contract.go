@@ -2,11 +2,15 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 )
+
+// ErrProjectDeleted distinguishes retained tombstones from live inaccessible Projects.
+var ErrProjectDeleted = fmt.Errorf("project deleted: %w", model.ErrNotFound)
 
 // ProjectWriter runs a write after locking the existing Project. Scope DAOs
 // share its transaction and are valid only until the callback returns.

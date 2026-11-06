@@ -20,10 +20,9 @@ run as part of the check. Package concurrency is limited to two because the
 isolated schemas share the database-wide migration advisory lock. Stress
 workloads remain a separate local entry.
 
-Snapshot cancellation tests observe the database query before triggering or
-awaiting cancellation. The operation deadline still belongs to the snapshot
-context, so cleanup and error classification are tested after the transaction
-has actually begun.
+The [snapshot cancellation decision](2026-11-06-snapshot-cancellation-observation.md)
+records how database query observation separates operation cancellation from
+connection and transaction startup.
 
 The server's HTTP and database tests own service behavior, while the independent
 product journey owns normal connections between products. The

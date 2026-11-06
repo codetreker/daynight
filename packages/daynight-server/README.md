@@ -325,15 +325,24 @@ The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 `2026-07-28` and `2025-11-25`. Configure a client with the service's HTTPS URL
 ending in `/mcp` and an `Authorization: Bearer <PAT>` header. The entry also
 accepts MCP OAuth access credentials for its exact resource and `daynight:mcp`
-scope. OAuth authorization and token endpoints are not yet exposed. Each request
-validates its own credential; browser cookies are not accepted. Requests carrying
+scope. Standard clients can discover the OAuth authorization server from the
+unauthenticated challenge and authorize through the existing browser account.
+Each request validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
+The [OAuth requirements](../../docs/spec/daynight-mcp-oauth.md) and
+[architecture](../../docs/design/daynight-mcp-oauth.md) describe the browser
+journey and protocol composition.
 The endpoint advertises Team lifecycle, membership and scoped Project tools,
 Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, Task discussion reads and posts, and attachment listing and removal.
+and writes, Task discussion reads and posts, and attachment listing, removal and
+bounded reads. Attachment open creates a private immutable snapshot for ranged
+reads; each request rechecks access. Inspection returns metadata by default,
+explicit reads default to 8 KiB, and binary content requires base64 selection.
+Inspect and open results are limited to 16 KiB; exceptionally oversized MIME or
+paths are rejected explicitly. Close and expiry reclaim only the private snapshot.
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
@@ -368,19 +377,22 @@ ID. Revocation invalidates access rows in the same transaction, and Thread and
 Bot credential checks recheck expiry after lock waits. OAuth credentials do not
 authenticate ordinary REST or private Worker endpoints.
 
-The authorization use cases and unmounted HTTP adapters support browser-bound
-requests, account-checked decisions and one-time S256 code exchange. A valid
+The OAuth public profile supports browser-bound requests, account-checked
+decisions and one-time S256 code exchange. A valid
 exchange consumes the code and issues its credential family in one transaction;
 a correctly bound replay revokes that family. Incorrect bindings leave the code
 usable. Decision and token responses cannot be recovered after loss: inspect the
-request state and start a new authorization when necessary. Production consent,
-discovery and the complete token endpoint are not yet mounted.
+request state and start a new authorization when necessary. Approval alone does
+not confirm that the client received the code or connected.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control
 operations have a separate 16-slot budget. A saturated budget returns
-`resource_busy`. Permits remain held until the handler and response delivery
-finish. The opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
+`resource_busy`. Attachment inspection and new download snapshots use a separate
+four-slot content budget; repeated open and transfer control calls remain on the
+control budget. A new open releases its control slot only after acquiring a content
+slot. Permits remain held until the handler and response delivery finish. The
+opt-in `TestStressMCPStepsCapacityAndConcurrentSummaryHeap` verifies
 the 64 MiB Step collection and concurrent summary write admission with sampled
 Go heap. After preparing the isolated database and UniAuth fixture, run it
 separately from CI:
@@ -460,6 +472,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; case-sensitive on Linux, ordinary directories supported for native macOS development | Required |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
+| `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` | JSON object mapping client IDs to public client metadata documents with matching `client_id` | Empty |
 | `DAYNIGHT_MCP_TEMP_BUDGET_BYTES` | Positive decimal byte budget shared by private MCP transfer content across instances | `8589934592` (8 GiB) |
 | `DAYNIGHT_MCP_RESERVED_FREE_BYTES` | Nonnegative decimal bytes kept available for ordinary storage when reserving transfer capacity | `1073741824` (1 GiB) |
 | `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin | Required |
@@ -1220,6 +1233,10 @@ matching and final pagination. No bounded output page hides later matches, and
 opaque PR strings are not converted through PostgreSQL JSON types. Account-Worker
 cursors stay at version 1; old version-1 task cursors are refused.
 The assignee filter is explicit and does not change automatic worker eligibility.
+
+## Task observation
+
+`GET /api/v1/projects/{projectId}/tasks/{taskId}` returns the complete Task body and a required `Daynight-Task-Epoch` UUID header on success. Project permission, the Task and epoch are read in one read-only repeatable-read snapshot; a failed epoch query or transaction does not publish a success. The endpoint retains its existing authentication, 404/410 and `no-store` semantics. Unauthorized responses do not disclose the epoch.
 
 ## Task-chain graph
 

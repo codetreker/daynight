@@ -18,6 +18,8 @@ import { compareTaskStatus } from "./task-order";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { useProjectAssigneeReceipt } from "../task-assignees/TaskAssignees";
 import { TaskAssigneeFilter, matchesAssignee, type AssigneeFilter } from "../task-assignment/TaskAssigneeFilter";
+import { TaskSearchWorkspace, assigneeValue } from "../task-search/TaskSearchWorkspace";
+import { useTaskSearch } from "../task-search/useTaskSearch";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -48,13 +50,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const { messages: { workspace: { project: m, projects, app, preferences, overview } }, format } = useI18n();
   const { section, onSectionChange, issue: sectionIssue } = useProjectSection(projectId);
   const [tasksMounted, setTasksMounted] = useState(false);
-  const [detailSelection, setDetailSelection] = useState<{ readonly id: string; readonly revision: number } | null>(null);
+  const [detailSelection, setDetailSelection] = useState<{ readonly id: string; readonly source: "summary"; readonly revision: number } | { readonly id: string; readonly source: "direct" } | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
+  const searchActive = search.applied !== null;
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
   const [pageNavigation, setPageNavigation] = useState<"overview" | TaskView | null>(null);
   const [overviewTarget, setOverviewTarget] = useState<OverviewTaskTarget | null>(null);
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
+  const searchTrigger = useRef(false);
   const openChain = useRef<string | null>(null);
   const [openChainWitness, setOpenChainWitness] = useState<string | null>(null);
   const currentView = useRef<TaskView>("chains");
@@ -64,7 +70,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const snapshot = graph.snapshot;
   const snapshotReady = snapshot !== null;
   const { activeView, onViewChange, issue: tabIssue } = useTaskView(projectId);
-  const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks");
+  const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks" && !searchActive);
   useLayoutEffect(() => {
     if (!snapshotReady) setTasksMounted(false);
     else if (section === "tasks") setTasksMounted(true);
@@ -128,12 +134,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [openChainWitness, openChainId, section, activeView]);
   const onOpenChain = useCallback((id: string) => { setOpenChainWitness(id); }, []);
   const onCloseChain = useCallback(() => { setOpenChainWitness(null); }, []);
-  const detailTaskId = detailSelection !== null && snapshot !== null &&
-    (detailSelection.revision === snapshot.revision || snapshot.index.nodes.has(detailSelection.id)) ? detailSelection.id : null;
+  const detailTaskId = detailSelection?.id ?? null;
 
   useEffect(() => {
     if (snapshot === null) return;
-    if (detailSelection !== null && detailSelection.revision !== snapshot.revision && !snapshot.index.nodes.has(detailSelection.id)) {
+    if (detailSelection !== null && detailSelection.source === "summary" && detailSelection.revision !== snapshot.revision && !snapshot.index.nodes.has(detailSelection.id)) {
       setDetailSelection(null);
       setNotice({ kind: "selected-task-removed" });
     }
@@ -141,18 +146,26 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
 
   const onOpenTask = useCallback((id: string, trigger: HTMLElement) => {
     originalTrigger.current = trigger;
+    searchTrigger.current = false;
     setNotice(null);
-    setDetailSelection({ id, revision: snapshot!.revision });
+    setDetailSelection({ id, source: "summary", revision: snapshot!.revision });
   }, [snapshot]);
+  const onOpenSearchTask = useCallback((id: string, trigger: HTMLElement) => {
+    originalTrigger.current = trigger;
+    searchTrigger.current = true;
+    setNotice(null);
+    setDetailSelection({ id, source: "direct" });
+  }, []);
   const onOpenSession = useCallback((id: string) => {
     navigate(taskDetailUrl(projectId, id, { tab: "session", path: null }));
   }, [projectId]);
   const onSelectRelation = useCallback((id: string) => {
-    setDetailSelection({ id, revision: snapshot!.revision });
+    setDetailSelection((current) => current?.source === "direct" || snapshot === null ? { id, source: "direct" } : { id, source: "summary", revision: snapshot.revision });
   }, [snapshot]);
   const onClose = useCallback(() => { setDetailSelection(null); }, []);
   const restoreFocus = useCallback(() => {
     if (focusVisible(originalTrigger.current)) return;
+    if (searchTrigger.current && focusVisible(searchInput.current)) return;
     const chainClose = currentView.current !== "chains" || openChain.current === null ? null : document.getElementById(`task-graph-${openChain.current}`)
       ?.querySelector<HTMLButtonElement>('.task-chain-close');
     if (focusVisible(chainClose)) return;
@@ -186,6 +199,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   useEffect(() => clearTargetHighlight, [clearTargetHighlight]);
 
   const onOverviewNavigate = useCallback((target: OverviewTaskTarget) => {
+    if (search.applied !== null) search.clear();
     setNotice(null);
     if (snapshot !== null) {
       const ids = target.kind === "standalone" ? progress.recentStandaloneIds
@@ -208,7 +222,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     setOverviewTarget(target);
     selectView(target.kind === "chain" ? "chains" : "standalone");
     selectSection("tasks");
-  }, [selectSection, selectView, snapshot, progress.recentStandaloneIds, assigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange]);
+  }, [selectSection, selectView, snapshot, progress.recentStandaloneIds, assigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear]);
 
   useLayoutEffect(() => {
     if (overviewTarget === null || section !== "tasks") return;
@@ -293,7 +307,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} active={section === "tasks"}
+            <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
+            <div hidden={searchActive} inert={searchActive}>
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
               unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
@@ -301,10 +317,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }} />}
+            </div>
           </section>
         </div>
       </div>
-      {snapshot !== null && detailTaskId !== null && <TaskDetailDialog projectId={projectId} taskId={detailTaskId} snapshot={snapshot} onSelectTask={onSelectRelation}
+      {detailTaskId !== null && <TaskDetailDialog projectId={projectId} taskId={detailTaskId} snapshot={snapshot} observation={detailSelection?.source === "direct" ? { kind: "direct" } : { kind: "project-summary", revision: snapshot?.revision ?? 0, task: snapshot?.index.nodes.get(detailTaskId) }} onSelectTask={onSelectRelation}
         onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} />}
     </>
   );

@@ -42,11 +42,13 @@ const version = (value: unknown): string => {
   return value;
 };
 const parseConfiguration = (value: unknown): FrozenExecutionConfiguration => {
-  const data = record(value, ["agent", "agentControlMode", "model", "args", "recoveryLimit"], "Frozen execution configuration");
+  const selection = typeof value === "object" && value !== null && Object.hasOwn(value, "validateNativeSelection");
+  const data = record(value, ["agent", "agentControlMode", "model", "args", "recoveryLimit", ...(selection ? ["validateNativeSelection"] : [])], "Frozen execution configuration");
+  if (selection && data.validateNativeSelection !== true) throw new Error("Native selection validation must be enabled when present.");
   if (!Array.isArray(data.args)) throw new Error("Agent arguments must be an array.");
   const agentControlMode = oneOf(data.agentControlMode, ["web"], "Web agent control mode");
   return { agent: oneOf(data.agent, ["copilot", "codex", "claude"], "Web execution agent"), agentControlMode, model: nullable(data.model, (entry) => text(entry, "Model")),
-    args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit") };
+    args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit"), ...(selection ? { validateNativeSelection: true as const } : {}) };
 };
 const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");

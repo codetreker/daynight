@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,78 +14,54 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func cancelSnapshotDuringQuery(t *testing.T, pool *pgxpool.Pool, waitForDeadline bool, run func(context.Context, func(pgx.Tx) error) error) error {
+// interruptObservedQuery verifies that the request context interrupts an actual
+// database operation, rather than expiring during pool acquisition or BEGIN.
+// A nil cancel waits for ctx's deadline; otherwise cancel is called only after
+// PostgreSQL reports the query as active.
+func interruptObservedQuery(t *testing.T, ctx context.Context, cancel context.CancelFunc, observer *pgxpool.Conn, tx pgx.Tx) error {
 	t.Helper()
-	deadline, stop := context.WithTimeout(context.Background(), 25*time.Second)
-	defer stop()
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if waitForDeadline {
-		ctx, cancel = context.WithTimeout(deadline, 10*time.Second)
-	} else {
-		ctx, cancel = context.WithCancel(deadline)
-	}
-	defer cancel()
-	pids := make(chan uint32, 1)
-	result := make(chan error, 1)
+	pid := tx.Conn().PgConn().PID()
+	observed := make(chan error, 1)
 	go func() {
-		result <- run(ctx, func(tx pgx.Tx) error {
-			pids <- tx.Conn().PgConn().PID()
-			_, err := tx.Exec(ctx, "SELECT pg_sleep(30)")
-			return err
-		})
-	}()
-	consumed := false
-	defer func() {
-		cancel()
-		if !consumed {
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			var active bool
+			err := observer.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND state='active' AND query='SELECT pg_sleep(30)')`, pid).Scan(&active)
+			if err != nil {
+				observed <- fmt.Errorf("observe running query: %w", err)
+				return
+			}
+			if active {
+				if cancel != nil {
+					cancel()
+				}
+				observed <- nil
+				return
+			}
 			select {
-			case <-result:
-			case <-time.After(5 * time.Second):
-				t.Error("canceled snapshot did not finish cleanup")
+			case <-ticker.C:
+			case <-ctx.Done():
+				observed <- fmt.Errorf("query was not observed before interruption: %w", ctx.Err())
+				return
 			}
 		}
 	}()
-	var pid uint32
-	select {
-	case pid = <-pids:
-	case err := <-result:
-		consumed = true
-		t.Fatalf("snapshot ended before query admission: %v", err)
-	case <-deadline.Done():
-		t.Fatal("snapshot did not reach query admission")
+	_, err := tx.Exec(ctx, "SELECT pg_sleep(30)")
+	if observeErr := <-observed; observeErr != nil {
+		t.Fatal(observeErr)
 	}
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var active bool
-		err := pool.QueryRow(deadline, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND state='active' AND query='SELECT pg_sleep(30)')`, pid).Scan(&active)
-		if err != nil {
-			t.Fatalf("observe snapshot query: %v", err)
-		}
-		if active {
-			break
-		}
-		select {
-		case err := <-result:
-			consumed = true
-			t.Fatalf("snapshot ended before query was active: %v", err)
-		case <-deadline.Done():
-			t.Fatal("snapshot query did not become active")
-		case <-ticker.C:
-		}
+	return err
+}
+
+func cancellationObserver(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *pgxpool.Conn {
+	t.Helper()
+	observer, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !waitForDeadline {
-		cancel()
-	}
-	select {
-	case err := <-result:
-		consumed = true
-		return err
-	case <-deadline.Done():
-		t.Fatal("snapshot did not return after cancellation")
-		return nil
-	}
+	t.Cleanup(observer.Release)
+	return observer
 }
 
 func TestTransactRollbackSurvivesCancellation(t *testing.T) {
@@ -116,11 +93,15 @@ func TestTransactRollbackSurvivesCancellation(t *testing.T) {
 
 func TestReadOnlySnapshotWaitsForCanceledConnectionCleanup(t *testing.T) {
 	pool := emptyPool(t)
-	err := cancelSnapshotDuringQuery(t, pool, true, func(ctx context.Context, operation func(pgx.Tx) error) error {
-		return ReadOnlySnapshot(ctx, pool, operation)
-	})
+	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stop()
+	observer := cancellationObserver(t, bounded, pool)
+	ctx, cancel := context.WithCancel(bounded)
+	defer cancel()
+	err := ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error { return interruptObservedQuery(t, ctx, cancel, observer, tx) })
+	observer.Release()
 	var failure *TransactionError
-	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) {
+	if !errors.As(err, &failure) || failure.Phase != "operation" || failure.CommitAttempted || failure.CleanupFailed || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.Canceled) || !errors.Is(err, pgconn.ErrConnClosed) {
 		t.Fatalf("canceled read snapshot: %#v %v", failure, err)
 	}
 	if failed, state := DatabaseErrorFacts(err); failed {
@@ -131,16 +112,20 @@ func TestReadOnlySnapshotWaitsForCanceledConnectionCleanup(t *testing.T) {
 
 func TestReadOnlySnapshotPreservesAdditionalCleanupFailure(t *testing.T) {
 	pool := emptyPool(t)
-	tx, err := pool.BeginTx(context.Background(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stop()
+	observer := cancellationObserver(t, bounded, pool)
+	tx, err := pool.BeginTx(bounded, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(bounded, 3*time.Second)
+	defer cancel()
 	cleanup := errors.New("extra cleanup failure")
-	err = cancelSnapshotDuringQuery(t, pool, false, func(ctx context.Context, operation func(pgx.Tx) error) error {
-		return transactReadOnly(ctx, &rollbackFailureTx{Tx: tx, failure: cleanup}, operation)
-	})
+	err = transactReadOnly(ctx, &rollbackFailureTx{Tx: tx, failure: cleanup}, func(tx pgx.Tx) error { return interruptObservedQuery(t, ctx, nil, observer, tx) })
+	observer.Release()
 	var failure *TransactionError
-	if !errors.As(err, &failure) || failure.Phase != "cleanup" || !failure.CleanupFailed || !errors.Is(err, context.Canceled) || !errors.Is(err, pgconn.ErrConnClosed) || !errors.Is(err, cleanup) {
+	if !errors.As(err, &failure) || failure.Phase != "cleanup" || !failure.CleanupFailed || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) || !errors.Is(err, cleanup) {
 		t.Fatalf("additional cleanup failure lost: %#v %v", failure, err)
 	}
 	if failed, _ := DatabaseErrorFacts(err); !failed {
@@ -151,10 +136,16 @@ func TestReadOnlySnapshotPreservesAdditionalCleanupFailure(t *testing.T) {
 
 func TestReadOnlySnapshotRetainsDatabaseFailureAfterCanceledConnection(t *testing.T) {
 	pool := emptyPool(t)
+	bounded, stop := context.WithTimeout(context.Background(), 30*time.Second)
+	defer stop()
+	observer := cancellationObserver(t, bounded, pool)
+	ctx, cancel := context.WithCancel(bounded)
+	defer cancel()
 	driver := &pgconn.PgError{Code: "23505", Message: "private"}
-	err := cancelSnapshotDuringQuery(t, pool, false, func(ctx context.Context, operation func(pgx.Tx) error) error {
-		return ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error { return errors.Join(operation(tx), driver) })
+	err := ReadOnlySnapshot(ctx, pool, func(tx pgx.Tx) error {
+		return errors.Join(interruptObservedQuery(t, ctx, cancel, observer, tx), driver)
 	})
+	observer.Release()
 	var failure *TransactionError
 	failed, state := DatabaseErrorFacts(err)
 	if !failed || state != driver.Code || !errors.As(err, &failure) || failure.Phase != "operation" || failure.CleanupFailed || failure.Outcome != TransactionNotCommitted || !errors.Is(err, context.Canceled) || !errors.Is(err, pgconn.ErrConnClosed) || !errors.Is(err, driver) {

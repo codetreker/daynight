@@ -160,9 +160,9 @@ describe("API bearer authentication", () => {
   });
 
   it.each(["valid JSON", "malformed JSON", "non-JSON"])("gives login guidance for a 401 with %s and never retries", async (body) => {
-    let requests = 0;
-    const url = await server((_request, response) => {
-      requests++;
+    const authorizations: (string | undefined)[] = [];
+    const url = await server((request, response) => {
+      authorizations.push(request.headers.authorization);
       if (body === "valid JSON") json(response, { error: { code: "unauthorized", message: "Authentication required.", requestId: "req-401" } }, 401);
       else {
         response.writeHead(401, { "Content-Type": body === "malformed JSON" ? "application/json" : "text/plain" });
@@ -175,7 +175,7 @@ describe("API bearer authentication", () => {
     expect(error).toMatchObject({ status: 401, message: expect.stringContaining("daynight login") });
     expect((error as Error).message).not.toContain(token);
     if (body === "valid JSON") expect(error).toMatchObject({ code: "unauthorized", requestId: "req-401", confirmedRefusal: true, outcomeUnconfirmed: false });
-    expect(requests).toBe(1);
+    expect(authorizations).toEqual([`Bearer ${token}`]);
   });
 
   it.each([{ status: 403, code: "forbidden" }, { status: 404, code: "not_found" }, { status: 409, code: "version_conflict" }])("preserves the $status API refusal without authentication guidance or retry", async ({ status, code }) => {

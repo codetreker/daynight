@@ -20,12 +20,13 @@ type contentReply struct {
 	err      error
 }
 type pendingContent struct {
-	fence   sp.ControllerFence
-	epoch   string
-	request map[string]any
-	kind    string
-	sent    bool
-	reply   chan contentReply
+	projectID string
+	fence     sp.ControllerFence
+	epoch     string
+	request   map[string]any
+	kind      string
+	sent      bool
+	reply     chan contentReply
 }
 type contentBroker struct {
 	mu      sync.Mutex
@@ -139,7 +140,7 @@ func (s *Execution) localContent(ctx context.Context, p model.Principal, project
 		if fields["kind"] == "timeline" {
 			msg["historyEpoch"] = r.Snapshot.HistoryEpoch
 		}
-		pending = &pendingContent{fence: r.Snapshot.ControllerFence, epoch: r.Snapshot.HistoryEpoch, request: msg, kind: fields["kind"].(string), reply: make(chan contentReply, 1)}
+		pending = &pendingContent{projectID: project, fence: r.Snapshot.ControllerFence, epoch: r.Snapshot.HistoryEpoch, request: msg, kind: fields["kind"].(string), reply: make(chan contentReply, 1)}
 		return nil
 	})
 	if err != nil {

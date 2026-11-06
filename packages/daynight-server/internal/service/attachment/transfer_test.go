@@ -31,7 +31,7 @@ func transferNamespace(t *testing.T) filestorage.TransferNamespace {
 	return n
 }
 
-func TestPutTransferAdmissionSurvivesDeletionAndRevocation(t *testing.T) {
+func TestPutTransferAdmissionSurvivesRevocationAndBlocksDeletion(t *testing.T) {
 	attachments, tasks, database, files, task, owner := attachmentService(t)
 	member := testsupport.ServicePrincipal(t, database)
 	memberships := projectservice.NewMemberships(database)
@@ -84,9 +84,15 @@ func TestPutTransferAdmissionSurvivesDeletionAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("revoke during stream: %v", err)
 	}
-	if err := tasks.Delete(ctx, owner, task.ProjectID, task.ID, taskcore.DeleteTask{Version: task.Version}); err != nil {
-		t.Fatalf("delete during stream: %v", err)
+	var blocker int32
+	if err := database.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND query LIKE '%task_attachments%' LIMIT 1),0)`).Scan(&blocker); err != nil || blocker == 0 {
+		t.Fatalf("upload transaction: %d %v", blocker, err)
 	}
+	deleted := make(chan error, 1)
+	go func() {
+		deleted <- tasks.Delete(ctx, owner, task.ProjectID, task.ID, taskcore.DeleteTask{Version: task.Version})
+	}()
+	waitAttachmentBlocked(t, ctx, database, blocker)
 	blocked, stop := context.WithTimeout(ctx, 100*time.Millisecond)
 	_, _, err = attachments.Open(blocked, owner, task.ProjectID, task.ID, "file")
 	stop()
@@ -101,6 +107,9 @@ func TestPutTransferAdmissionSurvivesDeletionAndRevocation(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	if err := attachmentWaitResult(t, ctx, deleted); err != nil {
+		t.Fatalf("delete after stream: %v", err)
 	}
 	if _, _, err := admission.Put(ctx, strings.NewReader("again")); err == nil {
 		t.Fatal("admission accepted a second publication")

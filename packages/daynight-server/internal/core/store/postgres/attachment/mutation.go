@@ -49,3 +49,24 @@ func (s *scope) ProjectAuthorization(ctx context.Context, principal model.Princi
 }
 
 func (s *scope) AttachmentDAO() store.AttachmentMutationDAO { return s }
+
+// ProjectLive checks the deletion barrier after the caller has locked the Task.
+func (s *scope) ProjectLive(ctx context.Context, projectID string) error {
+	var live bool
+	if err := s.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND deleted_at IS NULL)`, projectID).Scan(&live); err != nil {
+		return pg.QueryError("check attachment project lifecycle", err)
+	}
+	if !live {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
+func (s *scope) UploadChunkAt(ctx context.Context, transferID string, offset int64) (model.UploadChunk, error) {
+	var c model.UploadChunk
+	err := s.tx.QueryRow(ctx, `SELECT transfer_id::text,chunk_id::text,object_id::text,byte_offset,byte_size,sha256 FROM private_upload_chunks WHERE transfer_id=$1 AND byte_offset=$2`, transferID, offset).Scan(&c.TransferID, &c.ChunkID, &c.ObjectID, &c.Offset, &c.Size, &c.SHA256)
+	if err != nil {
+		return model.UploadChunk{}, pg.QueryError("read admitted upload chunk", err)
+	}
+	return c, nil
+}
