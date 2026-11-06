@@ -146,9 +146,9 @@ func TestBotToolHTTPContract(t *testing.T) {
 	if result.IsError || ops.createInput.ID != botTestID || ops.createInput.Name != "new" || ops.createInput.Overrides.WorkerID != nil || ops.createInput.Overrides.Cwd != nil || ops.createInput.Overrides.Provider != nil {
 		t.Fatalf("default create input %+v, output %+v", ops.createInput, structured(t, result))
 	}
-	result = call("bot_create", map[string]any{"name": "new", "workerId": testTargetID, "cwd": "/work", "agent": "claude"})
+	result = call("bot_create", map[string]any{"name": "new", "workerId": testTargetID, "cwd": "/work", "agent": "claude", "model": "model-a", "reasoningEffort": "high"})
 	in := ops.createInput
-	if result.IsError || in.ID == "" || in.Overrides.WorkerID == nil || *in.Overrides.WorkerID != testTargetID || in.Overrides.Cwd == nil || *in.Overrides.Cwd != "/work" || in.Overrides.Provider == nil || *in.Overrides.Provider != "claude" || object(t, structured(t, result)["data"])["id"] != in.ID {
+	if result.IsError || in.ID == "" || in.Overrides.WorkerID == nil || *in.Overrides.WorkerID != testTargetID || in.Overrides.Cwd == nil || *in.Overrides.Cwd != "/work" || in.Overrides.Provider == nil || *in.Overrides.Provider != "claude" || in.Overrides.Model == nil || *in.Overrides.Model != "model-a" || in.Overrides.ReasoningEffort == nil || *in.Overrides.ReasoningEffort != "high" || object(t, structured(t, result)["data"])["id"] != in.ID {
 		t.Fatalf("override create %+v output %+v", in, structured(t, result))
 	}
 	relay.bot.Deletion = &model.BotDeletion{DeletionID: deletionTestID, RequestedVersion: bot.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "completed"}}
@@ -435,6 +435,23 @@ func TestBotReadErrorsDoNotClaimWriteOutcome(t *testing.T) {
 					t.Fatalf("wrong service calls: %+v", ops)
 				}
 			})
+		}
+	}
+}
+
+func TestBotCreateBodySizeIncludesNativeOnlyOverrides(t *testing.T) {
+	modelValue, effort := "model-a", "high"
+	for _, overrides := range []model.BotOverrides{{Model: &modelValue}, {ReasoningEffort: &effort}, {Model: &modelValue, ReasoningEffort: &effort}} {
+		raw, err := json.Marshal(struct {
+			ID        string             `json:"id"`
+			Name      string             `json:"name"`
+			Overrides model.BotOverrides `json:"overrides"`
+		}{botTestID, "bot", overrides})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := botCreateBodySize(botTestID, "bot", overrides); got != len(raw) {
+			t.Fatalf("size %d != %d: %s", got, len(raw), raw)
 		}
 	}
 }

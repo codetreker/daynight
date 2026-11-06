@@ -21,7 +21,7 @@ class InputStream implements AsyncIterable<SDKUserMessage> {
 const deadline = <T>(promise: Promise<T>, message: string, ms = 30_000): Promise<T> => new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new NativeRpcTimeoutError(message)), ms); promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); }); });
 type PendingInteraction = { interaction: SessionInteraction; resolve(response: InteractionResponse): void; reject(error: Error): void; nativeToolId: string | null; turnId: string | null; submitted: boolean; confirm?: () => void; rejectConfirmation?: (error: Error) => void };
 export const openClaudeProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
-  const config = parseProviderArguments("claude", options.args), input = new InputStream();
+  const config = parseProviderArguments("claude", options.args, options.validateNativeSelection), input = new InputStream();
   const nativeId = options.resumeNativeSessionId ?? randomUUID();
   const capabilities = { send: true, steer: false, cancel: true, respond: true };
   let currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, verified = false, disconnected = false;

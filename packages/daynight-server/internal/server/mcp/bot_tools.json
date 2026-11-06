@@ -260,6 +260,16 @@
         "requestId": {
           "type": "string",
           "format": "uuid"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Explicit native model ID for this assistant; omit to use defaults."
+        },
+        "reasoningEffort": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Explicit native reasoning effort for the selected model; omit to use defaults."
         }
       },
       "required": [

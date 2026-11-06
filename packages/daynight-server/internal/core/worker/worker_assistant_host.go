@@ -15,7 +15,7 @@ func validateWorkerAssistantHost(host *model.WorkerAssistantHost, platform model
 	if host == nil {
 		return nil
 	}
-	if host.ProtocolVersion != 1 || !workerReportTime(host.ObservedAt) || !host.DefaultProvider.Valid() || !AssistantAbsolutePath(host.DefaultCwd, platform) || len(host.Providers) != 3 {
+	if (host.CreationConfigurationVersion != 0 && host.CreationConfigurationVersion != 1) || host.ProtocolVersion != 1 || !workerReportTime(host.ObservedAt) || !host.DefaultProvider.Valid() || !AssistantAbsolutePath(host.DefaultCwd, platform) || len(host.Providers) != 3 {
 		return invalidInput("Assistant host requires protocol v1, an observation time, an absolute directory, a default provider and all three providers.")
 	}
 	seen := make(map[model.WorkerAgent]bool, 3)

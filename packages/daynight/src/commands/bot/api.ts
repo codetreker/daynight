@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { array, fields, id, malformed, text, timestamp } from "../../api/validation.js";
 
-export type BotOverrides = { readonly workerId?: string; readonly cwd?: string; readonly provider?: "codex" | "claude" | "copilot" };
+export type BotOverrides = { readonly workerId?: string; readonly cwd?: string; readonly provider?: "codex" | "claude" | "copilot"; readonly model?: string; readonly reasoningEffort?: string };
+export type BotSelectionSource = "explicit" | "preference" | "local" | "cloud" | "native" | "unknown";
+export type BotSelection = { readonly schemaVersion: 1; readonly modelSource: BotSelectionSource; readonly reasoningEffortSource: BotSelectionSource; readonly configurationGeneration?: string; readonly catalogGeneration?: string };
+export type BotConfiguration = { readonly workerId: string; readonly cwd: string; readonly provider: "codex" | "claude" | "copilot"; readonly model: string | null; readonly args: readonly string[]; readonly reasoningEffort?: string | null; readonly selection?: BotSelection };
 export type BotResult = { readonly state: "pending" | "ready" | "failed"; readonly code: string | null };
 export type CleanupResult = { readonly state: "pending" | "completed" | "failed"; readonly code: string | null };
 export type BotDeletion = { readonly deletionId: string; readonly requestedVersion: string; readonly workerCleanup: CleanupResult; readonly serverCleanup: CleanupResult };
@@ -10,7 +13,7 @@ type BotIdentity = { readonly id: string; readonly workerId: string; readonly ve
 export type ActiveBot = BotIdentity & {
   readonly deletion: null; readonly ownerUserId: string; readonly name: string; readonly creationOrder: string;
   readonly requestedOverrides: BotOverrides;
-  readonly resolvedConfiguration: { readonly workerId: string; readonly cwd: string; readonly provider: "codex" | "claude" | "copilot"; readonly model: string | null; readonly args: readonly string[] };
+  readonly resolvedConfiguration: BotConfiguration;
   readonly roleConfiguration: { readonly instructions: string; readonly revision: string; readonly digest: string } | null;
   readonly sessionId: string | null; readonly testExecutionId: string | null;
   readonly startupResult: BotResult; readonly createdAt: string; readonly updatedAt: string;
@@ -33,6 +36,25 @@ export const botCwd = (value: unknown): string => {
   return cwd;
 };
 export const botProvider = (value: unknown): "codex" | "claude" | "copilot" => value === "codex" || value === "claude" || value === "copilot" ? value : malformed();
+export const botNativeChoice = (value: unknown, limit: number): string => {
+  const parsed = text(value, true);
+  return !/\p{Cc}/u.test(parsed) && Buffer.byteLength(parsed) <= limit ? parsed : malformed();
+};
+export const botOverrides = (value: unknown): BotOverrides => {
+  const data = fields(value, ["workerId", "cwd", "provider", "model", "reasoningEffort"]);
+  return { ...(data.workerId === undefined ? {} : { workerId: id(data.workerId) }), ...(data.cwd === undefined ? {} : { cwd: botCwd(data.cwd) }), ...(data.provider === undefined ? {} : { provider: botProvider(data.provider) }), ...(data.model === undefined ? {} : { model: botNativeChoice(data.model, 256) }), ...(data.reasoningEffort === undefined ? {} : { reasoningEffort: botNativeChoice(data.reasoningEffort, 64) }) };
+};
+const selection = (value: unknown, model: string | null, effort: string | null): BotSelection => {
+  const data = fields(value, ["schemaVersion", "modelSource", "reasoningEffortSource", "configurationGeneration", "catalogGeneration"]);
+  if (data.schemaVersion !== 1) return malformed();
+  const source = (value: unknown, selected: string | null): BotSelectionSource => {
+    if (typeof value !== "string" || !["explicit", "preference", "local", "cloud", "native", "unknown"].includes(value) || value === "unknown" && selected !== null || value !== "native" && value !== "unknown" && selected === null) return malformed();
+    return value as BotSelectionSource;
+  };
+  const configurationGeneration = data.configurationGeneration === undefined ? undefined : text(data.configurationGeneration);
+  if (configurationGeneration !== undefined && !/^[a-f0-9]{64}$/.test(configurationGeneration)) return malformed();
+  return { schemaVersion: 1, modelSource: source(data.modelSource, model), reasoningEffortSource: source(data.reasoningEffortSource, effort), ...(configurationGeneration === undefined ? {} : { configurationGeneration }), ...(data.catalogGeneration === undefined ? {} : { catalogGeneration: id(data.catalogGeneration) }) };
+};
 const nullableText = (value: unknown): string | null => value === null ? null : text(value, true);
 const result = <T extends string>(value: unknown, states: readonly T[]): { state: T; code: string | null } => {
   const data = fields(value, ["state", "code"]);
@@ -52,11 +74,14 @@ export const parseBot = (value: unknown, expectedId?: string, ownerId?: string):
     if (BigInt(parsed.requestedVersion) >= BigInt(identity.version)) return malformed();
     return { ...identity, deletion: parsed };
   }
-  const overrides = fields(data.requestedOverrides, ["workerId", "cwd", "provider"]);
-  const requestedOverrides: BotOverrides = { ...(overrides.workerId === undefined ? {} : { workerId: id(overrides.workerId) }), ...(overrides.cwd === undefined ? {} : { cwd: botCwd(overrides.cwd) }), ...(overrides.provider === undefined ? {} : { provider: botProvider(overrides.provider) }) };
-  const config = fields(data.resolvedConfiguration, ["workerId", "cwd", "provider", "model", "args"]);
-  const resolvedConfiguration = { workerId: id(config.workerId), cwd: botCwd(config.cwd), provider: botProvider(config.provider), model: nullableText(config.model), args: array(config.args, (item) => text(item)) };
-  if (resolvedConfiguration.workerId !== identity.workerId || requestedOverrides.workerId !== undefined && requestedOverrides.workerId !== identity.workerId || requestedOverrides.cwd !== undefined && requestedOverrides.cwd !== resolvedConfiguration.cwd || requestedOverrides.provider !== undefined && requestedOverrides.provider !== resolvedConfiguration.provider) return malformed();
+  const requestedOverrides = botOverrides(data.requestedOverrides);
+  const config = fields(data.resolvedConfiguration, ["workerId", "cwd", "provider", "model", "args", "reasoningEffort", "selection"]);
+  const model = config.model === null ? null : config.selection === undefined ? nullableText(config.model) : botNativeChoice(config.model, 256);
+  const reasoningEffort = config.reasoningEffort === undefined ? undefined : config.reasoningEffort === null ? null : botNativeChoice(config.reasoningEffort, 64);
+  if ((config.selection === undefined) !== (reasoningEffort === undefined)) return malformed();
+  const resolvedConfiguration: BotConfiguration = { workerId: id(config.workerId), cwd: botCwd(config.cwd), provider: botProvider(config.provider), model, args: array(config.args, (item) => text(item)), ...(reasoningEffort === undefined ? {} : { reasoningEffort, selection: selection(config.selection, model, reasoningEffort) }) };
+  if (resolvedConfiguration.workerId !== identity.workerId || Object.entries(requestedOverrides).some(([key, value]) => resolvedConfiguration[key as keyof BotOverrides] !== value)) return malformed();
+  if (requestedOverrides.model !== undefined && resolvedConfiguration.selection?.modelSource !== "explicit" || requestedOverrides.reasoningEffort !== undefined && resolvedConfiguration.selection?.reasoningEffortSource !== "explicit") return malformed();
   let roleConfiguration: ActiveBot["roleConfiguration"] = null;
   if (data.roleConfiguration !== null) {
     const role = fields(data.roleConfiguration, ["instructions", "revision", "digest"]);

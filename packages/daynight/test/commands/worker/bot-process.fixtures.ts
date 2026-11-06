@@ -5,19 +5,19 @@ import { expect, vi } from "vitest";
 import { openBotStore } from "../../../src/commands/worker/bots/store.js";
 import { openBotExecutionStore } from "../../../src/commands/worker/bots/execution-store.js";
 import { createBotProcess } from "../../../src/commands/worker/bots/process.js";
-import type { BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
+import type { BotConfiguration, BotDefinition, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 export const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
 const cleanups: (()=>void)[] = [];
 export const cleanupBotProcesses = () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) cleanup(); };
-export const fixture = (provider: "codex"|"claude"|"copilot" = "codex") => {
+export const fixture = (provider: "codex"|"claude"|"copilot" = "codex", configuration: Partial<BotConfiguration> = {}) => {
   const root=path.resolve(import.meta.dirname,"../../../../../.tmp/bot-process"); mkdirSync(root,{recursive:true});
   const home=mkdtempSync(path.join(root,"h-")); cleanups.push(()=>rmSync(home,{recursive:true,force:true})); vi.stubEnv("DN_CONFIG_DIR",path.join(home,"state"));
   const database=createMemoryDatabase(),store=openBotStore(database,{onMigration:()=>{}}),executions=openBotExecutionStore(database,{onMigration:()=>{}}); cleanups.push(()=>store.close(),()=>executions.close());
   const owner={serverOrigin:"https://daynight.example",ownerUserId:id(1),workerId:id(2)};
-  let bot:BotDefinition={id:id(3),workerId:id(2),ownerUserId:id(1),version:"1",name:"Only a name",creationOrder:"1",requestedOverrides:{},resolvedConfiguration:{workerId:id(2),cwd:home,provider,model:null,args:[]},roleConfiguration:null,sessionId:null,testExecutionId:null,startupResult:{state:"pending",code:null},deletion:null,createdAt:"2026-11-05T00:00:00Z",updatedAt:"2026-11-05T00:00:00Z"};
+  let bot:BotDefinition={id:id(3),workerId:id(2),ownerUserId:id(1),version:"1",name:"Only a name",creationOrder:"1",requestedOverrides:{},resolvedConfiguration:{workerId:id(2),cwd:home,provider,model:null,args:[],...configuration},roleConfiguration:null,sessionId:null,testExecutionId:null,startupResult:{state:"pending",code:null},deletion:null,createdAt:"2026-11-05T00:00:00Z",updatedAt:"2026-11-05T00:00:00Z"};
   store.observe(owner,bot,1);
   const current=()=>store.get(owner,bot.id)!;
   const snapshot=(ticket:ControllerLaunchTicket):ControllerSnapshot=>({executionId:ticket.executionId,testExecutionId:ticket.executionId,sessionId:ticket.sessionId,executionGeneration:ticket.executionGeneration,controllerInstanceId:ticket.controllerInstanceId,lifecycle:"ready",nativeSessionId:id(9),initialInputState:"not_required",activity:"idle",currentTurnId:null,capabilities:{send:true,steer:false,cancel:false,respond:true},controllerProcess:null,nativeProcesses:[],nativeStopped:false,stoppedAt:null,error:null,startup:{state:"ready",reasonCode:"ready"}});

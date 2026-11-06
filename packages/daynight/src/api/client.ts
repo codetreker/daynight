@@ -5,7 +5,7 @@ import { jsonObjectSources } from "./json-source.js";
 import { randomUUID } from "node:crypto";
 import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRevoke } from "./team-invitations.js";
 import { sameStartupReport } from "../session/startup.js";
-import { parseBot, botName, botVersion } from "../commands/bot/api.js";
+import { parseBot, botName, botOverrides, botVersion } from "../commands/bot/api.js";
 import type { Bot, CreateBotInput, DeleteBotInput } from "../commands/bot/api.js";
 import { parseWorkerPage, parseWorkerDetail } from "../commands/worker/query-api.js";
 import type { WorkerList, WorkerDetailResponse, WorkerSummary } from "../commands/worker/query-api.js";
@@ -666,15 +666,16 @@ export const createApiClient = (options: {
     createBot: (input) => {
       const target = resourceId(input.id), principal = accountPrincipal();
       const name = botName(input.name);
+      const overrides = input.overrides === undefined ? undefined : botOverrides(input.overrides);
       return exchange({ operation: "bot.create" }, "/me/bots", "POST", { kind: "json", requirePrincipal: true, parse: (value, metadata) => {
         const bot = parseBot(value, target, principal(metadata));
-        if (input.overrides?.workerId !== undefined && bot.workerId !== input.overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
-        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider"].some((key) => {
+        if (overrides?.workerId !== undefined && bot.workerId !== overrides.workerId) throw new ProtocolError("Bot creation response does not match the submitted Worker.");
+        if (bot.deletion === null && (bot.name !== name || ["workerId", "cwd", "provider", "model", "reasoningEffort"].some((key) => {
           const field = key as keyof NonNullable<CreateBotInput["overrides"]>;
-          return bot.requestedOverrides[field] !== input.overrides?.[field];
+          return bot.requestedOverrides[field] !== overrides?.[field];
         }))) throw new ProtocolError("Bot creation response does not match the submitted request.");
         return bot;
-      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { ...input, id: target, name } });
+      }, confirmMutation: (bot) => bot.id }, [200], { kind: "json", value: { id: target, name, ...(overrides === undefined ? {} : { overrides }) } });
     },
     deleteBot: (botId, input) => {
       const target = resourceId(botId), principal = accountPrincipal();

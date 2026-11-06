@@ -17,7 +17,7 @@ import type { NativeProvider, ProviderOptions, ProviderReceipt, ProviderState } 
 
 type Pending = { nativeId: unknown; interaction: SessionInteraction; result(response: InteractionResponse): unknown; settled?: () => void; rejected?: (error: Error) => void };
 export const openCodexProvider = async (options: ProviderOptions): Promise<NativeProvider> => {
-  const config = parseProviderArguments("codex", options.args);
+  const config = parseProviderArguments("codex", options.args, options.validateNativeSelection);
   const executable = options.executable ?? "codex";
   const child: ChildProcessWithoutNullStreams = spawn(/\.[cm]?js$/i.test(executable) ? process.execPath : executable, [...(/\.[cm]?js$/i.test(executable) ? [executable] : []), "app-server", "--stdio"], { cwd: options.cwd, env: options.env ?? process.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));

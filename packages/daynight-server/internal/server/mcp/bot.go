@@ -42,11 +42,13 @@ type botShowInput struct {
 	BotID string `json:"botId"`
 }
 type botCreateInput struct {
-	Name      string  `json:"name"`
-	WorkerID  *string `json:"workerId"`
-	Cwd       *string `json:"cwd"`
-	Agent     *string `json:"agent"`
-	RequestID *string `json:"requestId"`
+	Name            string  `json:"name"`
+	WorkerID        *string `json:"workerId"`
+	Cwd             *string `json:"cwd"`
+	Agent           *string `json:"agent"`
+	Model           *string `json:"model"`
+	ReasoningEffort *string `json:"reasoningEffort"`
+	RequestID       *string `json:"requestId"`
 }
 type botDeleteInput struct {
 	BotID     string  `json:"botId"`
@@ -71,7 +73,7 @@ func RegisterBotTools(e *Entry, bots botOperations, relay botDeletion) error {
 	if err := registerTypedReadTool(e, byName["bot_show"], BudgetLarge, h.show, "botId"); err != nil {
 		return err
 	}
-	if err := RegisterTypedTool(e, byName["bot_create"], BudgetLarge, h.create, "name", "workerId", "cwd", "agent", "requestId"); err != nil {
+	if err := RegisterTypedTool(e, byName["bot_create"], BudgetLarge, h.create, "name", "workerId", "cwd", "agent", "model", "reasoningEffort", "requestId"); err != nil {
 		return err
 	}
 	return RegisterTypedTool(e, byName["bot_delete"], BudgetLarge, h.delete, "botId", "ifVersion", "requestId")
@@ -152,7 +154,7 @@ func (h *botTools) create(ctx context.Context, actor RequestActor, in botCreateI
 		return ToolResult{}, err
 	}
 	refs := map[string]any{"botId": id}
-	overrides := model.BotOverrides{WorkerID: in.WorkerID, Cwd: in.Cwd, Provider: in.Agent}
+	overrides := model.BotOverrides{WorkerID: in.WorkerID, Cwd: in.Cwd, Provider: in.Agent, Model: in.Model, ReasoningEffort: in.ReasoningEffort}
 	if botCreateBodySize(id, in.Name, overrides) > httpx.MaxJSONBody {
 		return ToolResult{Refs: refs}, &model.Fault{Code: "invalid_input", Message: "Bot creation input exceeds the JSON body limit."}
 	}
@@ -182,14 +184,14 @@ func botCreateBodySize(id, name string, overrides model.BotOverrides) int {
 		return size
 	}
 	size := len(`{"id":,"name":}`) + stringSize(id) + stringSize(name)
-	if overrides.WorkerID != nil || overrides.Cwd != nil || overrides.Provider != nil {
+	if overrides.WorkerID != nil || overrides.Cwd != nil || overrides.Provider != nil || overrides.Model != nil || overrides.ReasoningEffort != nil {
 		size += len(`,"overrides":{}`)
 		first := true
 		for _, field := range []struct {
 			name  string
 			value *string
 		}{
-			{"workerId", overrides.WorkerID}, {"cwd", overrides.Cwd}, {"provider", overrides.Provider},
+			{"workerId", overrides.WorkerID}, {"cwd", overrides.Cwd}, {"provider", overrides.Provider}, {"model", overrides.Model}, {"reasoningEffort", overrides.ReasoningEffort},
 		} {
 			if field.value == nil {
 				continue

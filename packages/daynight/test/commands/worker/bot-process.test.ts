@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
+import type { BotConfiguration, BotRecord } from "../../../src/commands/worker/bots/types.js";
 import { BotEnvironmentCleanupError } from "../../../src/commands/worker/bots/environment.js";
 import { BotCliProbeCleanupError } from "../../../src/commands/worker/bots/cli-probe.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
@@ -74,8 +74,8 @@ test("retains an explicit OS rejection across failed reporting and never spawns 
   expect(f.launch).toHaveBeenCalledTimes(1);expect(f.observe).not.toHaveBeenCalled();
 });
 
-const recoveryFixture = async () => {
-  const f = fixture(), signal = new AbortController().signal;
+const recoveryFixture = async (configuration: Partial<BotConfiguration> = {}) => {
+  const f = fixture("codex", configuration), signal = new AbortController().signal;
   const proof = { pid: 123, parentPid: 12, processGroupId: 123, startedAt: "original", commandHash: "a".repeat(64) };
   await f.process.advance(f.current(), signal);
   let saved: ControllerSnapshot = { ...f.executions.get(f.current())!.snapshot!, controllerProcess: proof };
@@ -379,4 +379,52 @@ test("freezes the current recovery limit only when preparing the original Bot in
   limit = 1; await process.advance(f.current(), signal);
   expect(f.current().intent!.recoveryLimit).toBe(7);
   expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+
+test.each(["codex", "claude", "copilot"] as const)("maps frozen %s selection into one validated launch configuration", async provider => {
+  const f = fixture(provider, { model: "chosen-model", args: ["--effort", "low", "--effort", "medium"], reasoningEffort: "native-new-level",
+    selection: { schemaVersion: 1, modelSource: "explicit", reasoningEffortSource: "explicit" } });
+  await f.process.advance(f.current(), new AbortController().signal);
+  expect(f.getTicket().configuration).toEqual({ agent: provider, agentControlMode: "web", model: "chosen-model", args: ["--effort", "native-new-level"], recoveryLimit: 3, validateNativeSelection: true });
+  expect(f.register.mock.calls[0]![0].definition?.resolvedConfiguration).toEqual(f.getBot().resolvedConfiguration);
+  await f.createProcess().advance(f.current(), new AbortController().signal);
+  expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+test("keeps a frozen native effort delegation clear of inherited argument defaults", async () => {
+  const f = fixture("codex", { model: null, args: ["--model", "stale", "--effort", "high", "--sandbox", "read-only"], reasoningEffort: null,
+    selection: { schemaVersion: 1, modelSource: "native", reasoningEffortSource: "native" } });
+  await f.process.advance(f.current(), new AbortController().signal);
+  expect(f.getTicket().configuration).toEqual({ agent: "codex", agentControlMode: "web", model: null, args: ["--sandbox", "read-only"], recoveryLimit: 3 });
+});
+
+
+test("rejects removal of the frozen selection validation from a new Bot ticket", async () => {
+  const f = fixture("copilot", { model: "chosen-model", args: [], reasoningEffort: "none", selection: { schemaVersion: 1, modelSource: "explicit", reasoningEffortSource: "explicit" } });
+  const signal = new AbortController().signal;
+  await f.process.advance(f.current(), signal);
+  const ticket = f.getTicket(), { validateNativeSelection: _validation, ...configuration } = ticket.configuration;
+  writeFileSync(f.current().intent!.ticketPath, JSON.stringify({ ...ticket, configuration }), { mode: 0o600 });
+  await expect(f.createProcess().advance(f.current(), signal)).rejects.toThrow(/selection validation/);
+  expect(f.launch).toHaveBeenCalledTimes(1);
+});
+
+
+test.each([
+  { model: "chosen-model", reasoningEffort: null, modelSource: "explicit", reasoningEffortSource: "native", args: [] },
+  { model: null, reasoningEffort: "high", modelSource: "native", reasoningEffortSource: "explicit", args: ["--effort", "high"] },
+] as const)("preserves independent frozen selection %j", async selection => {
+  const f = fixture("codex", { model: selection.model, reasoningEffort: selection.reasoningEffort, selection: { schemaVersion: 1, modelSource: selection.modelSource, reasoningEffortSource: selection.reasoningEffortSource } });
+  await f.process.advance(f.current(), new AbortController().signal);
+  expect(f.getTicket().configuration).toMatchObject({ model: selection.model, args: selection.args, validateNativeSelection: true });
+});
+
+test("keeps new frozen model and effort through original-session recovery", async () => {
+  const f = await recoveryFixture({ model: "chosen-model", args: ["--effort", "low"], reasoningEffort: "high", selection: { schemaVersion: 1, modelSource: "explicit", reasoningEffortSource: "explicit" } });
+  const original = f.getTicket();
+  await f.manager.shutdown(f.current(), f.signal);
+  await f.restart().advance(f.current(), f.signal);
+  expect(f.getTicket()).toMatchObject({ resumeNativeSessionId: id(9), executionGeneration: "2", sessionId: original.sessionId, configuration: original.configuration });
+  expect(f.register).toHaveBeenCalledTimes(1);
 });

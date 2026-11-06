@@ -93,3 +93,29 @@ func TestKnownFaultSuppressesJoinedDatabaseFailure(t *testing.T) {
 		t.Fatalf("valid search refusal lost: %#v %v", got, ok)
 	}
 }
+
+func TestNativeSelectionFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path"} {
+		t.Run(code, func(t *testing.T) {
+			fault := &model.Fault{Code: code, Message: "Native selection refused"}
+			for _, safe := range []error{fault, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}} {
+				if got, ok := KnownFault(safe); !ok || got != fault {
+					t.Fatalf("confirmed native refusal was suppressed: %#v %v", got, ok)
+				}
+			}
+			for _, unsafe := range []error{
+				&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault},
+				&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: fault},
+				errors.Join(fault, &store.Error{DatabaseFailure: true, Cause: errors.New("database failure")}),
+				&model.BotOperationError{Operation: "create", Cause: fault},
+			} {
+				if got, ok := KnownFault(unsafe); ok {
+					t.Fatalf("uncertain operation exposed native fault: %#v", got)
+				}
+			}
+		})
+	}
+	if _, ok := KnownFault(&model.Fault{Code: "unregistered_native_error", Message: "private"}); ok {
+		t.Fatal("unregistered faults became public")
+	}
+}
