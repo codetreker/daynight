@@ -591,11 +591,11 @@ owns the rationale and proof boundary.
 
 ### Race instrumentation
 
-The checked-in `.go-cov.toml` currently sets `test.race = false`; the check
-script does not select race instrumentation by event. Repository validation
-requires race instrumentation locally and on main CI, and disables it in PR CI;
-the current check does not enforce that policy. `bash scripts/stress.sh` uses
-`-race` for its local-only stress tests.
+The checked-in `.go-cov.toml` sets `test.race = false`; the default check does
+not enable race instrumentation. PR and main CI run without it. Repository
+validation requires race instrumentation locally, but the default check does
+not enforce that requirement. `bash scripts/stress.sh` uses `-race` for its
+local-only stress tests.
 
 ### Coverage
 
