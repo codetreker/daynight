@@ -42,5 +42,6 @@ frontend behavior only; they do not prove a real service or cross-product flow.
 A forced termination cannot prove cleanup of an arbitrary detached process that
 has neither the invocation marker nor its browser profile. Windows orphan cleanup
 is refused when identity cannot be verified.
-CI's current Web quality job separately runs its configured assistant browser
-suite; final cross-module CI integration has its own owner.
+CI's independent Web browser job runs its configured assistant browser suite;
+the [Web validation decision](2026-11-06-web-quality-validation.md) owns its
+separation from quality validation and the required final gate.

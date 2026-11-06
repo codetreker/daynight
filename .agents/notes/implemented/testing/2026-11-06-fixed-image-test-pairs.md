@@ -115,9 +115,12 @@ and its shard report to preserve their clean-source assertions. The independent
 [Web validation change](https://github.com/codetreker/daynight/commit/6a85f84cc7777e8a849618e533d11224284bc176)
 removed that runner and both shards from main. The subsequent
 [Go validation change](https://github.com/codetreker/daynight/commit/093e82b2126f580ad8f8a8c43b3d08bf6ee7d407)
-removed the separate Go E2E job. Pair validation follows the remaining module jobs,
-including Go and Web quality with their current coverage gates; it does not
-restore either removed cross-product runner. The final gate expects 13 pairing
+removed the separate Go E2E job. Pair validation follows the current module jobs,
+including Go and Web quality with their current coverage gates. The independent
+[Web job separation](https://github.com/codetreker/daynight/commit/903d6ab9e8f2bbb28fa76ed10b3d7e3e0cd4e335)
+places the frontend Playwright regressions in their own job. Both Web jobs verify
+the fixed input before installation and publish distinct receipts; neither
+restores a removed cross-product runner. The final gate expects 14 pairing
 receipts when all modules are selected.
 
 ## Alternatives
