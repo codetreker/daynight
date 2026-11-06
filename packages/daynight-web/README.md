@@ -1887,8 +1887,8 @@ its Node tooling tests, including the coverage checker and asset publication.
 `scripts/ci.mts quality` runs the tooling suite, Vitest coverage with four workers,
 and the statement checker with respective process limits of 3, 15 and 1 minutes.
 Each limit includes process startup, reporting and exit.
-The shared Vitest setup suppresses successful `Task sync` debug messages before
-console capture; failure diagnostics and other console output remain visible.
+Vitest suppresses console output from passing tests, including diagnostics from
+expected failure scenarios, and retains console output from failing tests.
 `test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
 model and geometry workloads live in `.stress.ts` files and run only through
 `pnpm test:stress` from this package (`pnpm web:test:stress` from the repository

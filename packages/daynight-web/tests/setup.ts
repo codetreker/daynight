@@ -49,10 +49,6 @@ const trackStorageOperation = (target: EventTarget, events: readonly string[]) =
 };
 
 beforeEach(() => {
-  const debug = console.debug;
-  vi.spyOn(console, "debug").mockImplementation((...args: unknown[]) => {
-    if (args[0] !== "Task sync") debug(...args);
-  });
   window.history.replaceState(null, "", "/projects");
   cleaningStorage = false;
   mockSidebarMediaQuery();
