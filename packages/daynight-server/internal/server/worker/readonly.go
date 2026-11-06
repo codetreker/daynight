@@ -151,19 +151,32 @@ func readOnlyWrite(ctx context.Context, c *websocket.Conn, m ro.Message) error {
 	defer cancel()
 	return c.Write(write, websocket.MessageText, raw)
 }
+
+// Refused upgrades must not drain a caller-controlled HTTP body before closing.
+func (h *ReadOnlyRoutes) refuseChannel(w http.ResponseWriter, r *http.Request, err error) {
+	r.Close = true
+	w.Header().Set("Connection", "close")
+	controller := http.NewResponseController(w)
+	_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = controller.Flush(); _ = controller.SetWriteDeadline(time.Time{}) }()
+	h.failure(w, r, err)
+}
 func (h *ReadOnlyRoutes) channel(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	id, err := readOnlyWorker(r)
+	if err == nil && (r.ContentLength != 0 || len(r.TransferEncoding) != 0) {
+		err = httpx.InvalidInput("Worker read-only channels do not accept request bodies.")
+	}
 	if err == nil && p.Kind != model.PATCredential {
 		err = &model.Fault{Code: "permission_denied", Message: "Worker channels require a personal access token."}
 	}
 	if err != nil {
-		h.failure(w, r, err)
+		h.refuseChannel(w, r, err)
 		return
 	}
 	h.mu.Lock()
 	if h.closing || h.reserved >= 1024 {
 		h.mu.Unlock()
-		h.failure(w, r, &model.Fault{Code: "busy", Message: "Worker read-only channels are unavailable."})
+		h.refuseChannel(w, r, &model.Fault{Code: "busy", Message: "Worker read-only channels are unavailable."})
 		return
 	}
 	h.active.Add(1)

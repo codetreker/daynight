@@ -284,3 +284,48 @@ func TestReadOnlyHTTPEarlyRefusalsBoundUnreadBodies(t *testing.T) {
 		})
 	}
 }
+
+func TestReadOnlyChannelRefusalsBoundUnreadBodies(t *testing.T) {
+	f := newReadOnlyFixture(t)
+	for _, test := range []struct {
+		name, suffix   string
+		capacity, body bool
+		status         int
+	}{
+		{"invalid_query", "?invalid=true", false, true, 400},
+		{"body", "", false, true, 400},
+		{"capacity_with_body", "", true, true, 400},
+		{"capacity", "", true, false, 429},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.capacity {
+				f.routes.mu.Lock()
+				f.routes.reserved = 1024
+				f.routes.mu.Unlock()
+				defer func() { f.routes.mu.Lock(); f.routes.reserved = 0; f.routes.mu.Unlock() }()
+			}
+			conn, err := net.Dial("tcp", strings.TrimPrefix(f.server.URL, "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			body := ""
+			if test.body {
+				body = "Content-Length: 100\r\n"
+			}
+			_, err = fmt.Fprintf(conn, "GET /api/v1/me/workers/%s/readonly/channel%s HTTP/1.1\r\nHost: fixture\r\nAuthorization: Bearer %s\r\n%s\r\n{", f.worker, test.suffix, f.token, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatal("channel refusal retained unread body", err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != test.status || !response.Close {
+				t.Fatalf("channel refusal status=%d close=%v", response.StatusCode, response.Close)
+			}
+		})
+	}
+}
