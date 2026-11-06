@@ -62,12 +62,14 @@ export const normalizeWorkerNative = (native: WorkerCloudNative, mode: AgentCont
 export const workerRuntimeConfigurationReport = (effective: {
   native: WorkerCloudNative | null;
   projects: readonly { projectId: string; native: WorkerCloudNative | null }[];
-}, mode: AgentControlMode, local: WorkerLocalNativeOverrides): WorkerRuntimeConfiguration | undefined => {
+}, mode: AgentControlMode, local: WorkerLocalNativeOverrides, configurationSource: "local" | "cloud" = "cloud"): WorkerRuntimeConfiguration | undefined => {
   if (effective.projects.length > 1024) return undefined;
   const report = (native: WorkerCloudNative | null): WorkerRuntimeNative | null => {
     if (native === null) return null;
     const value = normalizeWorkerNative(native, mode, local).report;
-    return value.model.value !== null && Buffer.byteLength(value.model.value) > 256 ? null : value;
+    if (value.model.value !== null && Buffer.byteLength(value.model.value) > 256) return null;
+    const provenance = (field: WorkerConfigurationValue): WorkerConfigurationValue => configurationSource === "local" && field.source === "cloud" ? { ...field, source: "local" } : field;
+    return { ...value, model: provenance(value.model), reasoningEffort: provenance(value.reasoningEffort) };
   };
   return { schemaVersion: 1, native: report(effective.native), projects: effective.projects.map(project => ({ projectId: project.projectId, native: report(project.native) })) };
 };

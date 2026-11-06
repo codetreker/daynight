@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	oauthcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
@@ -25,6 +26,7 @@ import (
 type Application struct {
 	Identity       *identity.Identity
 	OAuth          *oauth.Authenticator
+	OAuthGrants    *oauthcore.GrantLifecycle
 	Memberships    *project.Memberships
 	Projects       *project.Projects
 	Teams          *team.Teams
@@ -47,6 +49,7 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 	return &Application{
 		Identity:     identity.New(database, client, callbackURL),
 		OAuth:        oauth.NewAuthenticator(database),
+		OAuthGrants:  oauthcore.NewGrantLifecycle(database),
 		Memberships:  project.NewMemberships(database),
 		Projects:     project.NewProjects(database),
 		Teams:        team.NewTeams(database),

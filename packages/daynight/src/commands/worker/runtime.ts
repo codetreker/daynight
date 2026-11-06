@@ -20,12 +20,14 @@ import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOperation } from "../../api/operation.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
+import { repositoryIdentity } from "../../repository/identity.js";
 import { ApiError } from "../../api/client.js";
+import { ProtocolError } from "../../api/parse.js";
 import type { WorkerCloudNative, WorkerCloudResource, WorkerCloudValue } from "../../api/worker-configuration.js";
 import { probeNativeAgentVersion } from "./herdr/version-probe.js";
 import { createWorkerConfigurationManager } from "./configuration.js";
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
-import { parseWorkerCloudBootstrap, readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForProject } from "./configuration-source.js";
+import { parseWorkerCloudBootstrap, readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
 import type { WorkerProject } from "./types.js";
 import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations } from "./config.js";
@@ -100,6 +102,8 @@ const throwFailures = (failures: readonly unknown[]): void => {
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, "Worker operation and resource cleanup failed.");
 };
+
+const projectUnavailable = (error: unknown): boolean => error instanceof ApiError && error.phase === "response" && error.status === 404 && error.code === "not_found";
 
 
 const prepareWorkerAgentEnvironment = async (paths: WorkerPaths, emit: (event: WorkerEvent) => void, signal: AbortSignal) => {
@@ -214,6 +218,8 @@ export const runWorker = async (options: {
   let bots: WorkerBotHost | undefined;
   let botRun: Promise<void> | undefined;
   let initialRemovalReconciliation: Promise<void> | undefined;
+  const localMappingJobs = new Map<string, Promise<void>>();
+  const localMappingRetryAt = new Map<string, number>();
   const failures: unknown[] = [];
   const selectionVerifier = createNativeSelectionVerifier();
   try {
@@ -228,6 +234,17 @@ export const runWorker = async (options: {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     const emit = diagnostics.emit;
     const remote = createWorkerRemote({ serverUrl, serverToken });
+    const invalidateUnavailable = (projectId?: string): void => {
+      reporter?.publishInventory(null);
+      if (projectId !== undefined) coordinator?.invalidateProject?.(projectId);
+    };
+    const resolveProject: typeof remote.resolveProject = async (repository, operationSignal) => {
+      try { return await remote.resolveProject(repository, operationSignal); }
+      catch (error) {
+        if (projectUnavailable(error)) invalidateUnavailable(repository.projectId ?? (error instanceof ApiError ? error.projectId : undefined));
+        throw error;
+      }
+    };
     const userId = await remote.currentUserId(signal);
     const readCloudConfiguration = async (readSignal: AbortSignal): Promise<WorkerCloudResource> => {
       try { return await remote.configuration(workerId, readSignal); }
@@ -239,41 +256,88 @@ export const runWorker = async (options: {
     const resource = await readCloudConfiguration(signal);
     const machine = machineDescription(platform);
     const prepared = new Map<string, WorkerProject>();
+    const locallyKnownIds = new Set(workerLocalExplicitProjectIds(local, paths));
+    const unboundMappings = new Map<string, number>(workerLocalUnboundRepositoryIndexes(local, paths).map(index => [`legacy:${index}`, index]));
+    // Local mappings can retain Git-only owners even after cloud selection changes.
+    const unobservedLocalMappings = new Set([...locallyKnownIds, ...unboundMappings.keys()]);
+    const confirmedNoLocalMapping = new Set<string>();
     const getStore = (): ReturnType<typeof openWorkerStore> => store === undefined ? (store = openWorkerStore(paths.databaseFile)) : store;
     const getGit = (): ReturnType<typeof createWorkerGitManager> => git === undefined ? (git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory })) : git;
     const { admit: admitRepository } = createWorkerRepositoryAdmission({ paths, store: getStore });
+    const admitLocalBinding = async (binding: WorkerProject, operationSignal: AbortSignal): Promise<WorkerProject> => {
+      unobservedLocalMappings.add(binding.projectId);
+      try {
+        const existing = getStore().getProject(binding);
+        if (existing !== null && (existing.repoUrl !== binding.repoUrl || existing.localPath !== binding.localPath)) throw new Error(`Project ${binding.projectId} has a different retained repository binding.`);
+        const admitted = await admitRepository(binding, operationSignal);
+        unobservedLocalMappings.delete(binding.projectId);
+        return admitted;
+      } catch (error) { reporter?.publishInventory(null); throw error; }
+    };
     const reservations = new Map<string, string>();
     let reservationTail: Promise<void> = Promise.resolve();
     const reserveRepository = (binding: WorkerProject, applicationSignal: AbortSignal): Promise<void> => {
       const reservation = reservationTail.then(async () => {
         applicationSignal.throwIfAborted();
+        if (reservations.has(binding.projectId)) throw new Error(`Project ${binding.projectId} already has a repository preparation in progress.`);
         const retained = getStore().listProjects().filter(project => project.projectId !== binding.projectId);
-        await validateWorkerRepositoryLocations([...retained.map(value => ({ path: value.localPath })), ...[...reservations.values()].map(value => ({ path: value })), { path: binding.localPath }], paths, applicationSignal);
+        const retainedIds = new Set(retained.map(project => project.projectId));
+        await validateWorkerRepositoryLocations([...retained.map(value => ({ path: value.localPath })), ...[...reservations].filter(([projectId]) => !retainedIds.has(projectId)).map(([, value]) => ({ path: value })), { path: binding.localPath }], paths, applicationSignal);
         applicationSignal.throwIfAborted();
         reservations.set(binding.projectId, binding.localPath);
       });
       reservationTail = reservation.then(() => undefined, () => undefined);
       return reservation;
     };
-    const bindingJobs = new Map<string, Promise<WorkerProject>>();
+    const bindingJobs = new Map<string, { signal: AbortSignal; job: Promise<WorkerProject> }>();
     const resolveBinding = (projectId: string, applicationSignal: AbortSignal): Promise<WorkerProject> => {
       const existing = bindingJobs.get(projectId);
-      if (existing !== undefined) return existing;
+      if (existing !== undefined && existing.signal === applicationSignal && !existing.signal.aborted) return existing.job;
       const job = (async () => {
-        const project = await remote.project(projectId, applicationSignal);
         const currentStore = getStore();
-        const previous = currentStore.getProject({ projectId });
+        let previous = currentStore.getProject({ projectId });
+        if (previous === null) {
+          unobservedLocalMappings.add(projectId);
+          let localMapping;
+          try { localMapping = await workerLocalRepositoryForId(local, paths, projectId); }
+          catch (error) { unobservedLocalMappings.add(projectId); reporter?.publishInventory(null); throw error; }
+          applicationSignal.throwIfAborted();
+          if (localMapping !== undefined) previous = await admitLocalBinding({ projectId, repoUrl: localMapping.remote, localPath: localMapping.path }, applicationSignal);
+          else if (![...unboundMappings.keys()].some(key => unobservedLocalMappings.has(key))) {
+            confirmedNoLocalMapping.add(projectId);
+            unobservedLocalMappings.delete(projectId);
+          }
+        }
+        let project;
+        try { project = await remote.project(projectId, applicationSignal); }
+        catch (error) { if (projectUnavailable(error)) invalidateUnavailable(projectId); throw error; }
         const mapped = previous === null ? await workerLocalRepositoryForProject(local, paths, project) : undefined;
-        if (previous !== null) await remote.resolveProject({ repoUrl: previous.repoUrl, projectId }, applicationSignal);
+        applicationSignal.throwIfAborted();
+        if (previous === null && mapped !== undefined) previous = await admitLocalBinding({ projectId, repoUrl: mapped.remote, localPath: mapped.path }, applicationSignal);
+        else if (previous === null) {
+          confirmedNoLocalMapping.add(projectId);
+          unobservedLocalMappings.delete(projectId);
+        }
+        if (previous !== null) await resolveProject({ repoUrl: previous.repoUrl, projectId }, applicationSignal);
         const root = resolveRepositoryRoot(local.repositoryRoot, paths, options.homeDirectory, "worker.repositoryRoot");
         return previous ?? { projectId, repoUrl: mapped?.remote ?? project.repoUrl, localPath: mapped?.path ?? repositoryLocation(project.repoUrl, root) };
       })();
-      bindingJobs.set(projectId, job);
-      void job.finally(() => { if (bindingJobs.get(projectId) === job) bindingJobs.delete(projectId); }).catch(() => undefined);
+      bindingJobs.set(projectId, { signal: applicationSignal, job });
+      void job.finally(() => { if (bindingJobs.get(projectId)?.job === job) bindingJobs.delete(projectId); }).catch(() => undefined);
       return job;
     };
     const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.workingDirectory, mode: local.agentControlMode, overrides: local, signal, emit });
+    let fallback: Awaited<ReturnType<typeof validateWorkerConfigurationSource>> | null = null;
+    let fallbackRepositories: WorkerRepositoryAssignment[] = [];
+    let fallbackTargets: string[] = [];
+    let fallbackComplete = true;
+    const discovered = new Map<string, string>();
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
+      if (snapshot.desired === null && fallback !== null) return {
+        repositories: fallbackRepositories, targetProjectIds: fallbackTargets,
+        readyProjectIds: fallbackRepositories.map(repository => repository.project.projectId),
+        globalConfiguration: fallback, maxConcurrent: fallback.maxConcurrent,
+      };
       const effective = snapshot.effective;
       if (effective.maxConcurrent === null || effective.recoveryLimit === null) return null;
       const repositories: WorkerRepositoryAssignment[] = [];
@@ -291,8 +355,11 @@ export const runWorker = async (options: {
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal,
       applyNative: nativeApplication.apply,
       onChange: snapshot => {
+        for (const project of snapshot.desired?.value.projects ?? []) {
+          if (getStore().getProject({ projectId: project.projectId }) === null && !confirmedNoLocalMapping.has(project.projectId)) unobservedLocalMappings.add(project.projectId);
+        }
         const signature = JSON.stringify(snapshot.effective);
-        if (signature !== effectiveSignature) { effectiveSignature = signature; configurationChanged.abort(); }
+        if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); configurationChanged.abort(); }
         const current = view(snapshot);
         coordinator?.updateConfiguration(current ?? { repositories: [], targetProjectIds: snapshot.desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1 });
         scheduleInitialRemovals?.();
@@ -307,8 +374,126 @@ export const runWorker = async (options: {
     });
     await configuration.receive(resource.desired, resource.observationRevision);
     let bootstrap: WorkerCloudValue | null = null;
-    if (resource.desired === null) bootstrap = await parseWorkerCloudBootstrap(local.source, paths, remote.resolveProject, signal);
+    if (resource.desired === null) {
+      try { bootstrap = await parseWorkerCloudBootstrap(local.source, paths, resolveProject, signal); }
+      catch (error) {
+        if (signal.aborted || !projectUnavailable(error)) throw error;
+        emit({ kind: "warning", message: "Worker configuration bootstrap could not be verified; retaining local project selection.", error });
+        fallback = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
+      }
+    }
     const manager = configuration;
+    const scheduleLocalMappingChecks = (): void => {
+      for (const projectId of unobservedLocalMappings) {
+        if (localMappingJobs.has(projectId) || (localMappingRetryAt.get(projectId) ?? 0) > Date.now()) continue;
+        const unboundIndex = unboundMappings.get(projectId);
+        if (unboundIndex === undefined && !locallyKnownIds.has(projectId) && manager.current().desired?.value.projects.some(project => project.projectId === projectId)) continue;
+        const job = (async () => {
+          if (unboundIndex !== undefined) {
+            const mapping = await workerLocalUnboundRepository(local, paths, unboundIndex);
+            signal.throwIfAborted();
+            const matches = getStore().listProjects().filter(project => repositoryIdentity(project.repoUrl) === repositoryIdentity(mapping.remote));
+            if (matches.length > 1) throw new Error("An unbound local repository matches multiple retained project bindings.");
+            if (matches.length === 1) {
+              if (matches[0]!.localPath !== mapping.path) throw new Error("An unbound local repository conflicts with its retained project binding.");
+            } else {
+              try { await lstat(mapping.path); }
+              catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") { unobservedLocalMappings.delete(projectId); return; }
+                throw error;
+              }
+              if (mapping.invalidProjectId) {
+                const operation = createOperation({ signal });
+                try {
+                  const worktrees = await getGit().listWorktrees({ projectId: "00000000-0000-4000-8000-000000000000", repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
+                  if (worktrees.length > 0) throw new Error("A local repository with an invalid Project ID contains managed resources.");
+                } finally { operation.dispose(); }
+                unobservedLocalMappings.delete(projectId);
+                return;
+              }
+              const project = await resolveProject({ repoUrl: mapping.remote }, signal);
+              const operation = createOperation({ signal });
+              try {
+                const worktrees = await getGit().listWorktrees({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, operation, false, true);
+                if (worktrees.some(({ owner }) => owner.projectId !== project.id)) throw new Error("An unbound local repository contains resources owned by another Project.");
+              } finally { operation.dispose(); }
+              await admitLocalBinding({ projectId: project.id, repoUrl: mapping.remote, localPath: mapping.path }, signal);
+            }
+            unobservedLocalMappings.delete(projectId);
+          } else if (locallyKnownIds.has(projectId)) {
+            const mapping = await workerLocalRepositoryForId(local, paths, projectId);
+            signal.throwIfAborted();
+            if (mapping === undefined) throw new Error(`The local repository mapping for ${projectId} disappeared.`);
+            await admitLocalBinding({ projectId, repoUrl: mapping.remote, localPath: mapping.path }, signal);
+          } else await resolveBinding(projectId, signal);
+        })().catch(error => {
+          if (!signal.aborted) {
+            localMappingRetryAt.set(projectId, Date.now() + 5_000);
+            emit({ kind: "warning", message: `Local resource mapping for project ${projectId} remains unobserved.`, error });
+          }
+        }).finally(() => { localMappingJobs.delete(projectId); });
+        localMappingJobs.set(projectId, job);
+      }
+    };
+    const refreshFallback = async (): Promise<void> => {
+      if (fallback === null || manager.current().desired !== null) return;
+      bootstrap = null;
+      const current = fallback;
+      const repositories: WorkerRepositoryAssignment[] = [];
+      const targets = new Set(current.repositories.flatMap(repository => {
+        const id = repository.projectId ?? discovered.get(repository.remote);
+        return id === undefined ? [] : [id];
+      }));
+      fallbackTargets = [...targets];
+      for (const id of targets) if (getStore().getProject({ projectId: id }) === null) unobservedLocalMappings.add(id);
+      let allAccessible = true;
+      let allIdentified = true;
+      for (const repository of current.repositories) {
+        signal.throwIfAborted();
+        let projectId = repository.projectId ?? discovered.get(repository.remote);
+        let resolving = false;
+        if (projectId !== undefined) targets.add(projectId);
+        try {
+          if (projectId !== undefined && getStore().getProject({ projectId }) === null) {
+            await admitLocalBinding({ projectId, repoUrl: repository.remote, localPath: repository.path }, signal);
+          }
+          resolving = true;
+          const project = await resolveProject({ repoUrl: repository.remote, ...(projectId === undefined ? {} : { projectId }) }, signal);
+          resolving = false;
+          projectId = project.id;
+          discovered.set(repository.remote, projectId);
+          targets.add(projectId);
+          fallbackTargets = [...targets];
+          const binding = await resolveBinding(projectId, signal);
+          if (!prepared.has(projectId)) {
+            await reserveRepository(binding, signal);
+            try {
+              const operation = createOperation({ signal });
+              try { await getGit().prepareRepository(binding, operation); }
+              finally { operation.dispose(); }
+              await nativeApplication.apply({ agent: repository.agent, model: repository.model, args: repository.args }, signal);
+              prepared.set(projectId, await admitRepository(binding, signal));
+            } finally { reservations.delete(projectId); }
+          }
+          repositories.push({ project: prepared.get(projectId)!, configuration: repository });
+        } catch (error) {
+          if (signal.aborted || error instanceof ProtocolError || error instanceof ApiError && !projectUnavailable(error) || resolving && !projectUnavailable(error)) {
+            reporter?.publishInventory(null);
+            throw error;
+          }
+          if (projectUnavailable(error)) allAccessible = false;
+          if (projectId === undefined) allIdentified = false;
+          emit({ kind: "warning", message: `Worker repository ${projectId ?? repository.remote} could not be prepared.`, error });
+        }
+      }
+      fallbackTargets = [...targets];
+      fallbackRepositories = repositories;
+      fallbackComplete = allIdentified;
+      if (allAccessible && allIdentified) {
+        try { bootstrap = await parseWorkerCloudBootstrap(local.source, paths, resolveProject, signal); }
+        catch (error) { if (signal.aborted || !projectUnavailable(error)) throw error; emit({ kind: "warning", message: "Worker configuration bootstrap could not be verified.", error }); }
+      }
+    };
     let initialRemovalsComplete = false;
     let initialRemovalsJob: Promise<void> | undefined;
     const ensureInitialRemovals = (): Promise<void> => {
@@ -345,8 +530,13 @@ export const runWorker = async (options: {
     const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots });
     reporter = createWorkerReporter({ signal, collect: async operation => {
       const sample = await telemetry.collect(operation);
-      const effective = manager.current().effective;
-      const runtimeConfiguration = workerRuntimeConfigurationReport(effective, local.agentControlMode, local);
+      const snapshot = manager.current();
+      const localFallback = snapshot.desired === null && fallback !== null;
+      const effective = localFallback ? {
+        native: fallback,
+        projects: fallbackRepositories.map(repository => ({ projectId: repository.project.projectId, native: repository.configuration })),
+      } : snapshot.effective;
+      const runtimeConfiguration = workerRuntimeConfigurationReport(effective, local.agentControlMode, local, localFallback ? "local" : "cloud");
       return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
     }, send: (report, operation) => remote.report(workerId, report, operation), emit,
       configuration: {
@@ -360,7 +550,14 @@ export const runWorker = async (options: {
         capture: () => manager.report(manager.current().desired === null ? bootstrap : null),
         send: async (report, captured, operation) => {
           try { return await remote.reportConfiguration(workerId, report, captured, operation); }
-          catch (error) { if (!(error instanceof ApiError) || error.outcomeUnconfirmed) reconcileReport = true; throw error; }
+          catch (error) {
+            if (!(error instanceof ApiError) || error.outcomeUnconfirmed) reconcileReport = true;
+            if (error instanceof ApiError && error.status === 404 && error.code === "not_found" && manager.current().desired === null && captured.bootstrap !== null) {
+              bootstrap = null;
+              fallback ??= await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, operation.signal);
+            }
+            throw error;
+          }
         },
         accept: async (sent, receipt) => { await manager.acknowledge(sent, receipt); if (receipt.desired !== null) bootstrap = null; },
       },
@@ -390,7 +587,12 @@ export const runWorker = async (options: {
           availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
           onInventory: inventory => {
             const desired = manager.current().desired;
-            if (desired !== null && desired.value.projects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null)) reporter!.publishInventory(inventory);
+            const complete = unobservedLocalMappings.size === 0 && (desired === null ? fallbackComplete : desired.value.projects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null));
+            reporter!.publishInventory(complete ? inventory : null);
+          },
+          configurationComplete: () => {
+            const desired = manager.current().desired;
+            return (desired !== null || fallbackComplete) && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
           buildPrompt: web.buildPrompt, emit, signal });
@@ -424,6 +626,8 @@ export const runWorker = async (options: {
     let attachmentShown = false, started = false;
     while (!signal.aborted) {
       try {
+        scheduleLocalMappingChecks();
+        await refreshFallback();
         await ensureInitialRemovals();
         const current = view(manager.current());
         if (current !== null) {
@@ -445,7 +649,7 @@ export const runWorker = async (options: {
       }
       await diagnostics.flush();
       if (signal.aborted) break;
-      const interval = manager.current().effective.pollIntervalMs;
+      const interval = manager.current().effective.pollIntervalMs ?? (manager.current().desired === null ? fallback?.pollIntervalMs ?? null : null);
       const changed = configurationChanged;
       try {
         if (!changed.signal.aborted) await delay(interval === null ? 1_000 : interval, undefined, { signal: AbortSignal.any([signal, changed.signal]) });
@@ -456,6 +660,7 @@ export const runWorker = async (options: {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
+    await Promise.allSettled([...localMappingJobs.values()]);
     await renewal;
     try { await reporter?.stop(); } catch (error) { failures.push(error); }
     try { await initialRemovalReconciliation; } catch { /* The reconciliation failure was reported when it occurred. */ }
@@ -519,6 +724,8 @@ export const runWorkerControl = async (options: {
     const nativeApplication = nativeConfigurationApplication({ paths, homeDirectory: options.homeDirectory, workingDirectory: options.homeDirectory, mode: local.agentControlMode, overrides: local, signal, emit: diagnostics.emit });
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1 };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
+    if (sources.length > 1) throw new Error("The source claim is ambiguous; supply --project.");
+    const targetProjectId = sources[0]?.projectId ?? options.request.projectId;
     const frozenRetry = options.request.kind === "retry" && sources.length === 1 && sources[0]!.agentControlMode === "web";
     if (options.request.kind !== "release" && !frozenRetry) {
       let resource: WorkerCloudResource;
@@ -530,10 +737,18 @@ export const runWorkerControl = async (options: {
       if (resource.desired === null) {
         const initial = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
         const repositories: WorkerRepositoryAssignment[] = [];
+        if (targetProjectId === undefined && initial.repositories.length > 1) throw new Error("This claim has no local execution; supply --project to resume it explicitly.");
         for (const repository of initial.repositories) {
-          const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
-          const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
-          repositories.push({ project: binding, configuration: repository });
+          if (targetProjectId !== undefined && repository.projectId !== undefined && repository.projectId !== targetProjectId) continue;
+          try {
+            const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
+            if (targetProjectId !== undefined && project.id !== targetProjectId) continue;
+            const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
+            repositories.push({ project: binding, configuration: repository });
+          } catch (error) {
+            if (signal.aborted || repository.projectId === targetProjectId || targetProjectId === undefined || error instanceof ProtocolError || error instanceof ApiError && !projectUnavailable(error)) throw error;
+            diagnostics.emit({ kind: "warning", message: "An unrelated worker repository could not be resolved for management.", error });
+          }
         }
         coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent };
       } else {

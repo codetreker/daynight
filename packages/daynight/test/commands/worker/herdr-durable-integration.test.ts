@@ -1041,7 +1041,7 @@ it("releases a deleted claim with an unacknowledged stopped ledger for the next 
   const candidate: Task = { ...originalTask, status: "todo", ready: true, properties: { pullRequests: [] } };
   const granted: Task[] = [];
   const remote: Pick<WorkerRemote, "currentUserId" | "ownInventory" | "candidates" | "readTask" | "claim"> = {
-    currentUserId: async () => uuid(5), ownInventory: async () => granted, candidates: async function* () { yield candidate; }, readTask: f.readTask,
+    currentUserId: async () => uuid(5), ownInventory: async () => ({ tasks: granted, coveredProjectIds: [project.projectId], unavailableProjectIds: [] }), candidates: async function* () { yield candidate; }, readTask: f.readTask,
     claim: async (_candidate, descriptor) => {
       const task: Task = { ...originalTask, properties: { ...originalTask.properties, worker: { ...readWorkerClaim(originalTask.properties)!, ...descriptor } } };
       granted.push(task); f.changeTask(task); return task;

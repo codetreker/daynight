@@ -239,8 +239,10 @@ source .tmp/shell-completion/environment.sh
 pnpm completion:acceptance
 ```
 
-The preparation helper downloads a SHA-256-pinned GNU Bash 4.2 release and builds
-its executable in `.tmp/shell-completion/`. It requires standard build tools,
+The preparation helper builds the SHA-256-pinned GNU Bash 4.2 release in
+`.tmp/shell-completion/`. It tries GNU's archive and independent GNU mirrors,
+verifies each download before caching it, and fails if none matches the pinned
+digest. It requires standard build tools,
 `curl`, `sha256sum`, `tar` and `timeout`. It uses an existing zsh when available;
 otherwise it downloads Debian packages with `apt-get download` and extracts them
 locally with `dpkg-deb`. It installs no global packages. First-time preparation

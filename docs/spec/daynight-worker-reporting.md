@@ -68,7 +68,7 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 报告复用 coordinator 的成功完整自有清单，不增加 inventory 请求或 SQLite 字段。清单只传不可变的 `{projectId,taskId,claimId}` 引用与原 observedAt，服务端提供权威标题、项目名、状态、阶段和 agent。
 
-首次完整清单成功前为 `taskInventory:null`；成功观察到无任务为 `{observedAt,claims:[]}`。清单同步失败保留最近一次成功清单及其时刻，不把失败解释为空闲。恢复清单不按 maxConcurrent 截断。
+首次完整清单成功前为 `taskInventory:null`；成功观察到无任务为 `{observedAt,claims:[]}`。清单同步错误或项目不可用造成覆盖不完整时清除完整清单，继续报告 telemetry 和 `taskInventory:null`，不把失败解释为空闲；恢复全部项目覆盖后才再次发布完整清单。恢复清单不按 maxConcurrent 截断。
 
 确认新 claim 后立即触发；已有完整观测时，按 taskId 将确认的引用加入该观测，并保留完整清单原 observedAt。完整观测尚未知时仍保持 null，新 claim 不构造未经完整同步的清单。
 

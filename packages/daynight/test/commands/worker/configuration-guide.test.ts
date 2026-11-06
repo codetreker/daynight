@@ -160,12 +160,20 @@ describe("worker repository commands", () => {
     expect(saved.worker.repositories).toHaveLength(kind === "add" ? 1 : 0);
   });
 
-  it.each(["add", "remove"] as const)("rejects inaccessible Project IDs for %s without writing", async (kind) => {
+  it("rejects inaccessible Project IDs for addition without writing", async () => {
     const f = await fixture(stringify({ worker: { repositories: [configuredRepository] } }));
     f.dependencies.readProjects.mockResolvedValueOnce([projects[1]!]);
-    await expect(runWorkerRepositoryCommand({ kind, projectId: firstId }, f.context, f.dependencies)).rejects.toThrow("does not exist or is not accessible");
+    await expect(runWorkerRepositoryCommand({ kind: "add", projectId: firstId }, f.context, f.dependencies)).rejects.toThrow("does not exist or is not accessible");
     expect(f.dependencies.change).not.toHaveBeenCalled();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
+
+  it.each([true, false])("removes a configured unavailable Project (explicit: %s)", async (explicit) => {
+    const f = await fixture(stringify({ worker: { repositories: [configuredRepository] } }));
+    f.dependencies.readProjects.mockResolvedValueOnce([]);
+    await runWorkerRepositoryCommand({ kind: "remove", ...(explicit ? { projectId: firstId } : {}) }, f.context, f.dependencies);
+    if (!explicit) expect(f.questions).toEqual([expect.objectContaining({ choices: [{ name: `Unavailable · ${firstId} · ${configuredRepository.remote}`, value: firstId }] })]);
+    expect((await readWorkerConfiguration(f.paths)).repositories).toEqual([]);
   });
 
   it("offers only configured remote Projects for interactive removal", async () => {

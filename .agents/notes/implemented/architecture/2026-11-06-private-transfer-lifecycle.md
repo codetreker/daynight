@@ -29,6 +29,10 @@ still holds the gate. The [attachment design](../../../../docs/design/daynight-t
 owns the current lifecycle and operational bounds. The shared gate's original
 [decision](2026-11-06-attachment-target-gate.md) remains in force.
 
+`core/mcptransfer` owns transfer state, operation identity and admission rules.
+The service coordinates current authority, ledger transactions and file permits;
+the DAO executes locked data operations without owning the state graph.
+
 ## Alternatives
 
 **Database leases as cleanup authority.** A lost connection can release a lease
@@ -38,6 +42,10 @@ publication.
 **Count only confirmed object receipts.** A crash after publication and before
 receipt persistence leaves an object without a reclaimable owner or capacity
 charge. A namespace and reservation created first retain responsibility.
+
+**Keep the transfer state graph in the integration service.** This leaves the
+domain rules mixed with credential and file coordination, making independent
+state transitions difficult to maintain consistently.
 
 ## Consequences
 

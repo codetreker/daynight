@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -40,11 +41,8 @@ func (s *Runtime) Run(ctx context.Context, p model.Principal, workerID, id strin
 		if err != nil {
 			return err
 		}
-		if bot.OwnerUserID != p.UserID || bot.WorkerID != workerID {
-			return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
-		}
-		if bot.Deletion != nil {
-			return &model.Fault{Code: "resource_conflict", Message: "Bot is deleted."}
+		if err = botcore.AuthorizeRuntime(bot, p.UserID, workerID); err != nil {
+			return err
 		}
 		if prepare != nil {
 			if err = prepare(bot); err != nil {
