@@ -123,6 +123,15 @@ Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
 and the total length.
+
+Attachment request-deadline tests control both the deadline timers and the
+`node:perf_hooks` monotonic clock. The blocked-sink fixture observes entry into
+its consumer before advancing to the deadline, then checks the timeout, sink
+abort and response cancellation. This keeps setup time from exercising an
+earlier timeout stage. The
+[attachment deadline decision](../.agents/notes/implemented/testing/2026-11-07-attachment-sink-deadline.md)
+records the assertion and clock boundaries.
+
 Controller IPC admission tests keep real sockets, assert the production timeout
 and its cancellation, and accelerate the incomplete socket's native expiry;
 virtual time separately exercises the authenticated response wait. The
