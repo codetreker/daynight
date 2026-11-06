@@ -551,55 +551,37 @@ PostgreSQL database, then run:
 bash scripts/check.sh
 ```
 
-The complete entrypoint prepares real embedded Web assets and the pinned UniAuth
-fixture, then runs coverage and E2E validation in sequence. Select either
-responsibility independently with `bash scripts/check.sh --coverage` or
-`bash scripts/check.sh --e2e`; each prepares its own required inputs and installed
-CLI. Both require PostgreSQL, whose absence fails validation.
+The module check builds real embedded Web assets and the Go executable, runs
+`go vet`, prepares the pinned UniAuth fixture and clears Go test-result caches.
+It runs module tests through `go-cov` v0.1.4 and checks the raw profile using an
+unrounded overall statement threshold strictly greater than 90%; exactly 90%
+fails. The checked-in configuration retains the 85% package and 80% function
+thresholds. See the [server validation guide](../packages/daynight-server/README.md#validate)
+for the configured gates and their exact scope.
 
-Coverage validation builds the binary, runs vet and `go-cov`, and enforces total
-statement coverage strictly greater than 90%, package coverage of
-at least 85%, and function coverage of at least 80%, with critical-block checks
-enabled. The raw profile supplies an exact strict comparison; exactly 90% fails
-independently of display rounding. No production files or functions are excluded.
-Only the test-only `cmd/e2e_tests` package is removed from coverage execution;
-a recursive source check rejects non-test Go files there before validation.
+The Go module test `TestAttachmentGrantRevocationWithFreshProcess` freshly builds
+and runs the service with real authentication, HTTP and isolated PostgreSQL.
+It verifies that member removal and new-access refusal occur while an admitted
+1 MiB upload is incomplete, followed by its successful completion, matching bytes
+and cleanup. The child build uses the test's race mode and verifies the binary's
+build information; an explicit source overlay must be supplied through `GOFLAGS`
+for the child to inherit it. It is not an installed-CLI or cross-product browser test.
+
+The checked-in go-cov configuration sets `race = false`; the default module
+check and current server CI do not establish race coverage. Repository rules
+requiring local/main race validation still apply; run the applicable module tests
+separately with `go test -race` after
+preparing Web assets, `DAYNIGHT_TEST_DATABASE_URL` and
+`DAYNIGHT_TEST_UNIAUTH_FIXTURE`. Record the actual command, source and outcome;
+a normal coverage pass does not replace that evidence.
 
 TaskGraph exact-limit fixtures collect planner statistics after their complete
 bulk graph load. Their real PostgreSQL traversal, 1000-node backbone, 5000
 references and independent overflow assertions remain part of ordinary validation;
 the [server fixture guide](../packages/daynight-server/README.md#task-graph-boundary-fixtures)
-owns the preparation boundary.
-
-The coverage installation supports the authentication package's installed-CLI
-assertions and its normally issued PAT handoff to two public-command deadline
-probes. These probes run outside Go's ten-minute timer. Test-only mocks use a
-1-second request and 3-second operation budget while separately asserting the
-installed production defaults of 30 seconds and five minutes. The four 128 MiB
-single-response and 256 MiB cumulative decoded-byte probes run only through the
-explicit local stress entrypoint, preserving real exact-limit and +1-byte tests.
-Each receipt identifies actual deadlines and mock status.
-
-E2E validation runs the complete `cmd/e2e_tests` package with `-count=1` and a
-ten-minute timeout, including its freshly built server and independent installed
-CLI. E2E owns built-process scenarios, source/artifact provenance, concurrency,
-refusal and cleanup assertions. It does not consume the coverage installation or
-run deadline probes.
-
-Both modes use `DAYNIGHT_TEST_RACE`: absent means enabled locally, while the
-workflow sets `false` for PR events and `true` for main pushes. Only literal
-`true` and `false` are valid. Coverage and E2E commands receive the selected mode
-explicitly, and the E2E server matches its test binary's actual instrumentation.
-The [server race policy](../packages/daynight-server/README.md#race-instrumentation)
-owns commands and receipt interpretation.
-
-When [CI selection](#ci-selection) selects the server, `verify-server` and
-`verify-server-e2e` run concurrently on separate runners, each with its own
-PostgreSQL and a 20-minute bound; both contribute to the final `checks` job.
-The [server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
-owns receipt paths, resource ownership and requirement-to-test mappings, and the
-[CI split decision](../.agents/notes/archived/testing/2026-11-04-server-e2e-ci-jobs.md)
-records the execution boundary and retained gates.
+owns that preparation boundary. The former `cmd/e2e_tests` package and its
+installed-CLI orchestration were removed; prior results remain tied to their
+actual tested source.
 
 ## Web development
 
@@ -679,7 +661,6 @@ archive, rendering and decoded-byte workloads use explicit local entrypoints:
 | Workload | Repository-root command | Prerequisites and output |
 |---|---|---|
 | CLI rendering and full Session-v2 archives | `pnpm test:stress` | Builds the CLI and selects `.stress.ts` files with `vitest.stress.config.ts` |
-| Installed CLI production byte budgets | `pnpm test:stress:budgets` | Requires the server validation prerequisites and isolated `DAYNIGHT_TEST_DATABASE_URL`; writes `.tmp/project-task-stress-evidence.json` |
 | Go query, archive and repeated-write checks | `pnpm server:test:stress` | Requires isolated PostgreSQL and the server test environment; invokes the explicit stress-tagged packages with race detection |
 | Web graph/model/geometry scale checks | `pnpm web:test:stress` | Selects Web `.stress.ts` files with `vitest.stress.config.ts` |
 
@@ -689,15 +670,12 @@ omits files with the `stress` build tag; ordinary Vitest discovery omits
 `.stress.ts` files. Independent browser configurations select their own fixtures.
 The package-local commands are documented by their owners. From the server
 module, `bash scripts/stress.sh` runs its query, archive and repeated-write
-workloads; `bash scripts/check.sh --stress-budgets` selects the installed CLI's
-four full-byte probes in coverage validation and then runs the complete E2E suite.
+workloads. The removed installed-CLI budget orchestration is not a current
+entrypoint.
 
-Default CLI service acceptance retains two bounded deadline probes and
-`.tmp/project-task-service-evidence.json`. The separate stress receipt preserves
-the unchanged 128 MiB/256 MiB exact-limit and +1-byte observations without
-claiming CI execution. Web graph stress remains local and does not provide a
-production browser capacity result. Local measurements prove only their recorded
-source and host; they do not establish hosted PR latency.
+Web graph stress remains local and does not provide a production browser
+capacity result. Local measurements prove only their recorded source and host;
+they do not establish hosted PR latency.
 
 The [local stress decision](../.agents/notes/archived/testing/2026-11-03-local-stress-suites.md)
 records the workload split and retained correctness guarantees.
@@ -861,9 +839,9 @@ artifact validation remain in the existing publication workflow. The
 records the rationale and retained publication responsibilities.
 
 The exact build/configuration and acceptance-script inputs in
-[the selector](../.github/scripts/ci-modules.mts) select CLI and both server jobs.
-Web source and its Dagre/XYFlow patches select both server jobs because those jobs
-build embedded Web assets. Documentation exclusions apply after CLI source
+[the selector](../.github/scripts/ci-modules.mts) select CLI and the server job.
+Web source and its Dagre/XYFlow patches select the server job because it builds
+embedded Web assets. Documentation exclusions apply after CLI source
 ownership. The `.gitignore` exclusion matches only the repository root; nested
 ignore files retain their module ownership or the unclassified-path fallback.
 An excluded path does not suppress jobs selected by other changed files. New
@@ -873,8 +851,8 @@ records the dependency boundary and its maintenance cost.
 
 Selected jobs retain their functional checks, coverage thresholds, timeouts and
 cleanup requirements. Stress workloads use explicit local-only entrypoints.
-The Go coverage and E2E jobs each build real Web assets and install the CLI,
-using independent PostgreSQL and UniAuth resources. The Web selector enables
+The Go server job builds real Web assets and uses isolated PostgreSQL and
+UniAuth resources. The Web selector enables
 `verify-web-quality`; independent Playwright fixtures are not a selected CI
 browser matrix. The Ubuntu shell-completion job selects the official HTTPS
 Ubuntu archive and security services before package preparation. The
@@ -896,9 +874,9 @@ The [worker capacity decision](../.agents/notes/archived/testing/2026-10-28-web-
 calibrates that setting for the dedicated public standard Linux runner's four
 CPUs; it does not change inputs, assertions or coverage gates.
 
-The Go server E2E suite owns
-`TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation`.
-Its built-binary fixture uses real authenticated HTTP and isolated PostgreSQL to
+The Go module test
+`TestAttachmentGrantRevocationWithFreshProcess` owns the admission race.
+Its fresh built-binary fixture uses real authenticated HTTP and isolated PostgreSQL to
 verify that member removal and new-access refusal occur while an admitted 1 MiB
 upload remains incomplete, followed by its successful completion and cleanup.
 Standalone Web Playwright fixtures exercise UI behavior against controlled API
@@ -907,9 +885,10 @@ The previous native/container Web combined runner and browser CI matrix were
 removed. Their results remain evidence only for their recorded sources and do not
 prove the current revision.
 
-The Go coverage and E2E jobs restore module and compiler caches keyed by the
-server `go.sum`. Coverage invalidates Go test-result caches; E2E uses `-count=1`.
-Race instrumentation follows the PR/main/local policy described above. The
+The Go server job restores module and compiler caches keyed by the server
+`go.sum` and invalidates Go test-result caches before coverage. The checked-in
+coverage configuration has race instrumentation disabled; any required race
+evidence must be obtained separately. The
 final `checks` job uses `always()` and accepts only `success` or `skipped` from
 preceding jobs; selected Web quality must succeed. Missing or failed selected
 checks remain failures.
@@ -949,11 +928,11 @@ job uploads `.tmp/validation-environment.json`, `.tmp/e2e-evidence.json`,
 tested source and platform, scenario outcomes and owned-resource cleanup. Shell
 completion has a separate `.tmp/completion-evidence.json` receipt. Match each
 receipt to its tested revision and execution scope; local or controlled receipts
-do not establish a successful current-source hosted run. Packed-CLI source records require `source.gitTreeSha` from actual
-`git rev-parse HEAD^{tree}`; Go acceptance records the same tree as root
-`gitTreeSha` and verifies it against the installed CLI. Commit, tree, dirty state,
-package and artifact identities must agree at handoff and recovery. Missing or
-mismatched tree data fails validation. Tree equality identifies committed content;
+do not establish a successful current-source hosted run. Packed-CLI source records
+require `source.gitTreeSha` from actual `git rev-parse HEAD^{tree}`. Current Go
+process tests record their own source and binary identities. Commit, tree, dirty
+state, package and artifact identities must agree at handoff and recovery.
+Missing or mismatched tree data fails validation. Tree equality identifies committed content;
 it does not fingerprint dirty changes or prove an executed gate, platform result
 or reviewer decision. A failed scenario or cleanup remains a failure even when
 other results pass.

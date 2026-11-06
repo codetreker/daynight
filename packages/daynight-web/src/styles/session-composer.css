@@ -93,6 +93,9 @@
   .session-composer-footer-default:has(> .session-composer-activity) .session-controls-toolbar { grid-column: auto; }
   .session-composer-footer-default .session-composer-activity { justify-self: end; }
 }
+@container session-composer-surface (min-width: 600px) {
+  .session-composer-footer-default:has(> .session-composer-activity) { grid-template-columns: minmax(180px, 1fr) minmax(0, max-content) auto; }
+}
 @media (pointer: coarse) {
   .session-composer-footer-default .session-control-trigger,
   .session-composer-footer-default .session-interrupt,

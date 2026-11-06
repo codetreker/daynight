@@ -1026,8 +1026,8 @@ Worker 请求沿用 requestId 和当前账号/资源身份。页面取消请求�
 
 Web 模块测试验证生产轮询默认值、可见性恢复、失败与取消。独立 Playwright 配置
 使用受控响应验证浏览器交互；它们不证明真实服务、安装 CLI 或原生/容器组合结果。
-Go built-binary E2E 使用隔离 PostgreSQL 和真实认证 HTTP 验证服务合同，其中
-`TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation` 验证
+Go 模块新构建二进制测试使用隔离 PostgreSQL 和真实认证 HTTP 验证服务合同，其中
+`TestAttachmentGrantRevocationWithFreshProcess` 验证
 1 MiB 上传正文未完成时撤权 204、新访问 404，随后已准入上传 201、字节和资源清理。
 [附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 记录服务与 Web 的分工。原 combined/full-stack runner 已移除；先前结果只属于其实际
@@ -1040,17 +1040,17 @@ Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖
 1. Go：真实 PostgreSQL 测试任务链图与统计一致性、孤立任务、分叉汇合、一层外部前置与反向外部引用排除、原始依赖保留、目标缺失/删除、返回集合规模边界、长文本预览、并发写期间的一致快照、取消与数据库失败；增加静态资源、深链接、API 优先级、缺失资源与方法测试。
 2. web：Vitest + Testing Library，重点测本地自然日边界、午夜无快照推进、时区与夏令时、Goal 最后成员及未知时间证据、20/21/40/41 条分页、汇总行和 Goal 子任务计数、跨页定位、独立页码恢复/筛选重置/缩页钳位、完整图独立分类、页签未完成任务数与默认/恢复、普通多起点合为唯一分量、筛选计数稳定、全部完成归零及刷新后的状态/分类计数、独立任务直接详情、分类迁移、独立筛选与浏览位置、普通起点/代表识别、闭包、菱形去重、显式外部边与链外前置、统计口径、请求取消/晚到、失败重试和居中详情焦点。项目列表必须覆盖续页游标、末页隐藏加载按钮、去重及下一页失败重试，证明所有项目可访问。断言可见行为，不依赖框架内部坐标。
 3. 覆盖率：保留 Go go-cov 和原始 profile 的严格 `covered * 10 > total * 9`。web job 使用 Vitest V8 provider 输出的 `coverage-final.json`，按产品文件的语句命中表汇总计数并用整数执行同样严格比较。显式设置 `coverage.include` 为 `src/**/*.{ts,tsx}`；检查脚本另行枚举同一源码清单并逐文件核对报告，含未被测试导入的产品文件，缺失即失败。纯类型文件只有在确认没有运行语句时允许零语句；API、图算法和入口没有排除项。拒绝空、畸形报告，测试恰好 90%、舍入、未导入文件和遗漏文件等失败边界。第三方库与构建产物不属于产品源码。
-4. 两个模块分别大于 90%，因此加权总体也大于 90%；不能靠 Go 的高覆盖率掩盖 web 缺口。现有 Go package/function/critical-block 与所有 CLI 原生平台门槛保持。
-5. 独立 Playwright 配置验证受控响应下的浏览器布局、焦点和交互；对应结果不代表真实服务或安装 CLI 的组合验收。真实服务事务行为由 Go built-binary E2E 单独验证。
+4. 两个模块分别大于 90%，因此加权总体也大于 90%；不能靠 Go 的高覆盖率掩盖 web 缺口。现有 Go package/function 和 CLI 原生平台门槛保持；关键代码块验证要求仍需核对，当前 Go 配置不以 critical blocks 阻断，默认通过不能证明该要求已满足。
+5. 独立 Playwright 配置验证受控响应下的浏览器布局、焦点和交互；对应结果不代表真实服务或安装 CLI 的组合验收。真实服务事务行为由 Go 模块新构建二进制测试单独验证。
 
-6. PR 按[仓库 CI 路由](../../README.md#ci-selection)选择受影响模块，main push 执行全量应用检查。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。Go 覆盖率和 Go E2E 在干净 checkout 中生成真实 UI 产物并完成所属验证；Web 质量作业检查当前 Web 源码。模块路由覆盖各自实际使用的 CLI 和 Web 构建输入。依赖变更遵守现有 workspace 与 PR 的 CLI 版本检查规则。
+6. PR 按[仓库 CI 路由](../../README.md#ci-selection)选择受影响模块，main push 执行全量应用检查。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。Go 服务检查在干净 checkout 中生成真实 UI 产物并完成所属验证；Web 质量作业检查当前 Web 源码。模块路由覆盖各自实际使用的 CLI 和 Web 构建输入。依赖变更遵守现有 workspace 与 PR 的 CLI 版本检查规则。
 7. 1,000 任务/5,000 边的支持目标与 `openMs ≤ 3000`、选择/详情/缩放/平移反馈各 `≤ 300ms` 的验证要求保持；原生产浏览器容量矩阵入口已移除，其运行结果只属于原源码。Web 的独立图/几何压力测试保留在 `web:test:stress`，不证明生产浏览器时延。
 
 ## 实施与验收边界
 
 各组件保留有效测试与覆盖率。设计预览不是实际 API、覆盖率、Docker 或集成完成证据。
 组件与状态测试覆盖附件交互；独立浏览器配置验证其受控场景下的真实布局和焦点，
-JSDOM 不提供可见性证据。Go built-binary E2E 与 Web 测试分别提供服务和界面证据，
+JSDOM 不提供可见性证据。Go 模块新构建二进制测试与 Web 测试分别提供服务和界面证据，
 不能将它们等同于已移除的完整原生/容器组合旅程。
 
 ## 风险与重审条件

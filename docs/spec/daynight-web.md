@@ -541,8 +541,8 @@ Worker 观测验证 online 优先及组内创建时间升序、相同创建时�
 
 Web 模块通过 `pnpm web:typecheck`、`pnpm web:test` 和 `pnpm web:build` 检查源码、
 组件和构建产物；独立 Playwright 配置使用受控响应验证浏览器交互，其结果不证明真实
-服务、安装 CLI 或完整生产路径。Go `TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation`
-通过 built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL 验证 1 MiB 上传正文未完成时
+服务、安装 CLI 或完整生产路径。Go `TestAttachmentGrantRevocationWithFreshProcess`
+在模块测试中新构建并运行服务，以真实认证 HTTP 与隔离 PostgreSQL 验证 1 MiB 上传正文未完成时
 成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对字节和资源清理。
 服务端证据与 Web UI 证据分别报告，不以任何单项推导完整组合交付。
 
@@ -556,6 +556,6 @@ fit 或等待改变测量。`web:test:stress` 检查独立图与几何工作负�
 结果与固定输入只属于各自源码和环境，不构成当前源码的自动检查或成功结论。
 
 PR 根据[CI 路由](../../README.md#ci-selection)选择模块；选中的 Web 质量作业必须成功，
-Go coverage/E2E 与 CLI 按各自选择规则执行，失败、取消或资源清理失败不能算通过。
+Go 模块检查与 CLI 按各自选择规则执行，失败、取消或资源清理失败不能算通过。
 证据应标明实际源码、产物、环境、测试范围和清理结果；受控浏览器 fixture 不冒充
 生产或 hosted-CI 结果。真实上游账号登录另行留证。

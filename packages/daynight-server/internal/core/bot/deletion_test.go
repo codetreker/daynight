@@ -41,3 +41,17 @@ func TestDeletionRequestPreservesOriginalIdentityAndObligations(t *testing.T) {
 		t.Fatalf("unexpected initial deletion: %+v", deletion)
 	}
 }
+
+func TestDeletionOwnerAllowsOwner(t *testing.T) {
+	if err := RequireDeletionOwner(model.Bot{OwnerUserID: "owner"}, model.Principal{UserID: "owner"}); err != nil {
+		t.Fatalf("owner was refused: %v", err)
+	}
+}
+
+func TestDeletionVersionAllowsLastAdvance(t *testing.T) {
+	for _, version := range []int64{1, math.MaxInt64 - 1} {
+		if err := CheckDeletionVersion(model.Bot{Version: version}); err != nil {
+			t.Fatalf("version %d cannot advance: %v", version, err)
+		}
+	}
+}

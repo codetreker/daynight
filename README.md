@@ -378,16 +378,16 @@ from all changed paths, including deletions and both sides of renames:
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/test/fixtures/installed-cli.ts` | CLI and Go server coverage/E2E |
-| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server coverage/E2E and Web quality |
+| `packages/daynight/test/fixtures/installed-cli.ts` | CLI and Go server validation |
+| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI, Go server validation and Web quality |
 | Implementation and resources under CLI `commands/worker/`, `controller/`, `review/`, `skill/`, `update/` or `completion/`, except `definition.ts` | CLI |
-| Other `packages/daynight/src/` paths, including command definitions | CLI and Go server coverage/E2E |
+| Other `packages/daynight/src/` paths, including command definitions | CLI and Go server validation |
 | A PR changing only the CLI `package.json` top-level `version`, with unchanged regular-file mode and other parsed fields | No application jobs |
 | Other CLI `package.json` changes limited to top-level `version`, JSON formatting or object key order | CLI |
-| Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server coverage/E2E |
+| Other CLI `package.json` changes; TypeScript build configuration, example configuration, build/resource scripts and service-acceptance scripts | CLI and Go server validation |
 | Other `packages/daynight/` paths | Complete ordinary and installed CLI phases on Linux, macOS ARM64 and Windows; runtime compatibility and shell completion |
-| `packages/daynight-server/` | Go server coverage and E2E |
-| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server coverage/E2E and Web quality |
+| `packages/daynight-server/` | Go server validation |
+| `packages/daynight-web/` and current Dagre and XYFlow patches | Go server validation and Web quality |
 | Runtime files under `deployment/` | Web quality |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
 | Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
@@ -400,7 +400,7 @@ Their `definition.ts` files are loaded at startup and retain server selection.
 Other CLI source remains a conservative server input. The manifest comparison
 uses committed merge-base and head contents, ignoring only the top-level
 `version` field. Manifest additions, deletions and file-type changes select both
-server jobs; malformed modified manifests fail detection. A PR with exactly one
+the server job; malformed modified manifests fail detection. A PR with exactly one
 modified path skips application jobs only when that path is the CLI manifest,
 its regular-file mode is unchanged, its version string changes, and all other
 parsed fields are equal. Formatting-only changes and any additional changed
@@ -420,8 +420,8 @@ the runtime package; runtime jobs depend only on the Linux/Windows ordinary
 producer matrix, while final `checks` still requires macOS. The
 [single-allocation decision](.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
 owns macOS failure, evidence and budget handling. The Web selector enables the
-Web quality job. The server selector enables parallel coverage and E2E jobs,
-each bounded to 20 minutes. The final `checks` job uses `always()` and accepts
+Web quality job. The server selector enables one Go validation job with a
+20-minute bound. The final `checks` job uses `always()` and accepts
 only `success` or `skipped` from preceding jobs; selected Web quality must
 succeed. Standalone Web browser checks are available locally with controlled
 fixtures; they do not establish full-stack or hosted-CI acceptance. A newer PR run cancels the older run for that PR.
@@ -447,7 +447,6 @@ command when full-scale evidence is required:
 | Local workload | Command from the repository root |
 |---|---|
 | CLI rendering and Session-v2 archive limits | `pnpm test:stress` |
-| Installed CLI production decoded-byte budgets | `pnpm test:stress:budgets` |
 | Go query, archive and repeated-write workloads | `pnpm server:test:stress` |
 | Web graph and geometry workloads | `pnpm web:test:stress` |
 

@@ -663,8 +663,8 @@ docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_
 
 验证按 AU-V1–AU-V12 映射。Web 模块使用 typecheck、组件测试和严格覆盖率；独立
 浏览器 fixture 可验证受控响应下的界面交互，不能代替真实服务或安装 CLI 授权证据。
-Go 服务的 `TestAttachmentGrantRevocationAcceptance/attachment_upload_grant_revocation`
-使用 `cmd/e2e_tests` built-binary fixture、真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB
+Go 服务的 `TestAttachmentGrantRevocationWithFreshProcess`
+在 `cmd/daynight-server` 中新构建并运行服务，使用真实认证 HTTP 与隔离 PostgreSQL，验证 1 MiB
 上传正文未完成时成员撤销先返回 204、新访问返回 404，已准入上传再以 201 完成，并核对
 字节与清理。[附件准入验收归属决策](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 记录服务与 Web 的验证边界。原 native/container 浏览器 combined runner 已移除；其
