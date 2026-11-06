@@ -19,9 +19,9 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
+import { canonicalId, parsePage, parseTaskSearchPage, parseProject, parseCreatedProject, parseProjectAccess, parseProjectParticipants, parseProjectTransferPreview, parseProjectTransferReceipt, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseTeam, parseTeamDeleteReceipt, parseTeamMembers, parseTeamMemberRoleReceipt, parseRemoveTeamMemberReceipt, parseUser, parseWorkerReportReceipt, parseProjectInvitationInspection, parseProjectInvitationAcceptance, parseTeamInvitationInspection, parseTeamInvitationAcceptance, ProtocolError, validateAttachmentPath } from "./parse.js";
 import type { ProjectTransferPreview, ProjectTransferReceipt, Team, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, InvitationScope, InvitationInspection, InvitationAcceptance, TeamInvitation, CreatedTeamInvitation, TeamInvitationRevokeReceipt } from "./types.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
+import type { TaskSearchInput, TaskSearchItem, TaskSearchPage, AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectAccess, ProjectParticipant, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string; readonly stepId?: string; readonly sentRequestId?: string; readonly workerConfiguration?: true };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -180,6 +180,7 @@ export type ApiClient = {
   setTaskProperty(projectId: string, taskId: string, name: string, input: SetTaskPropertyInput): Promise<TaskPropertyResource>;
   removeTaskProperty(projectId: string, taskId: string, name: string, input: RemoveTaskPropertyInput): Promise<TaskPropertyResource>;
   listTasks(projectId: string, filters?: TaskFilters): Promise<readonly Task[]>;
+  searchTasks(projectId: string, input: TaskSearchInput): Promise<readonly TaskSearchItem[]>;
   listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
   updateTask(projectId: string, taskId: string, input: UpdateTaskInput): Promise<Task>;
@@ -1113,6 +1114,85 @@ export const createApiClient = (options: {
         if ((result.version !== input.version && result.version !== input.version + 1n) || Object.hasOwn(result.properties, name)) throw new ProtocolError("Task does not confirm the requested property removal.");
         return result;
       } }, [200], { kind: "json", value: { version: input.version } }, true);
+    },
+    searchTasks: async (projectId, input) => {
+      const project = resourceId(projectId);
+      if (!isNonemptyText(input.query)) throw new Error("Search query must be nonempty text without NUL characters.");
+      const normalized = taskFilterQuery(input);
+      const filters = {
+        ...(normalized.assignedTo === undefined ? {} : { assignedTo: normalized.assignedTo }),
+        ...(input.status === undefined ? {} : { status: input.status }),
+        ...(input.ready === undefined ? {} : { ready: input.ready }),
+        ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
+        ...(input.compatiblePlatform === undefined ? {} : { compatiblePlatform: input.compatiblePlatform }),
+      };
+      const context: Context = { operation: "task.search", projectId: project };
+      const items: TaskSearchItem[] = [];
+      const seen = new Set<string>(), cursors = new Set<string>();
+      let cursor: string | null = null, total: number | undefined, principal: string | undefined;
+      try {
+        do {
+          operation.check();
+          const page: TaskSearchPage = await exchange(context, resourcePath("projects", project, "tasks", "search"), "POST", {
+            kind: "json", readOnly: true, requirePrincipal: true, checkPrincipalOnError: true,
+            onPrincipal: (actual) => {
+              if (principal !== undefined && principal !== actual) throw new ProtocolError("The authenticated response principal changed during the operation.");
+              principal = actual;
+            },
+            decodeJsonSource: (source, metadata) => {
+              const sources = jsonObjectSources(source);
+              const value = parseApiJson(source);
+              if (metadata.success) {
+                if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get("total") ?? "")) throw new ProtocolError("Search total must be an integer.");
+              } else {
+                const error = parseServerError(value);
+                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_context_limit_exceeded: 400, search_timeout: 504 };
+                if (expectedStatus[error.code] !== undefined && expectedStatus[error.code] !== metadata.status) throw new ProtocolError("Search error status is invalid.");
+                // Search-specific refusals originate after authentication. Generic
+                // authentication failures can precede the principal header.
+                if (expectedStatus[error.code] !== undefined && metadata.principalId === undefined) throw new ProtocolError("Search error principal is missing.");
+                if (error.code === "invalid_search_expression" || error.code === "search_context_limit_exceeded") {
+                  const errorSources = jsonObjectSources(sources.get("error") ?? "");
+                  const detailsSources = jsonObjectSources(errorSources.get("details") ?? "");
+                  const integerFields = error.code === "invalid_search_expression" ? ["position", "length"] : ["nodeCount", "edgeCount", "maxNodes", "maxEdges"];
+                  const allowedFields = error.code === "invalid_search_expression" ? ["reason", ...integerFields] : integerFields;
+                  if (detailsSources.size !== allowedFields.length || [...detailsSources.keys()].some((field) => !allowedFields.includes(field))) throw new ProtocolError("Search error details contain unexpected fields.");
+                  if (integerFields.some((field) => !/^(?:0|[1-9][0-9]*)$/.test(detailsSources.get(field) ?? ""))) throw new ProtocolError("Search error details must use integers.");
+                }
+                if (error.code === "invalid_search_expression") {
+                  const position = error.details!.position!, length = error.details!.length!, queryLength = Array.from(input.query).length;
+                  if (position > queryLength + 1 || position - 1 + length > queryLength) throw new ProtocolError("Search error position is invalid.");
+                }
+              }
+              return value;
+            },
+            parse: (value) => {
+              const parsed = parseTaskSearchPage(value, project);
+              const raw = value as { items: { assignedTo: string | null }[] };
+              const assignment = filters.assignedTo === "me" ? principal : filters.assignedTo === "unassigned" ? null : filters.assignedTo;
+              if (parsed.items.some((item, index) => filters.status !== undefined && item.status !== filters.status || assignment !== undefined && raw.items[index]!.assignedTo !== assignment)) throw new ProtocolError("Search result does not match the requested filters.");
+              return parsed;
+            },
+          }, [200], { kind: "json", value: { query: input.query, ...filters, limit: 100, ...(cursor === null ? {} : { cursor }) } }, true);
+          if (total !== undefined && page.total !== total) throw new ProtocolError("Search total changed across pages.");
+          total = page.total;
+          for (const item of page.items) {
+            if (seen.has(item.id)) throw new ProtocolError("Duplicate task identity across search pages.");
+            seen.add(item.id); items.push(item);
+          }
+          cursor = page.nextCursor;
+          if (items.length > page.total || cursor !== null && items.length >= page.total || cursor === null && items.length !== page.total) throw new ProtocolError("Search page count does not match total.");
+          if (cursor !== null) {
+            if (cursors.has(cursor)) throw new ProtocolError("Repeated search cursor.");
+            cursors.add(cursor);
+          }
+        } while (cursor !== null);
+        operation.check();
+        return items;
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "pagination", { cause });
+      }
     },
     listTasks: (projectId, filters = {}) => {
       const project = resourceId(projectId);

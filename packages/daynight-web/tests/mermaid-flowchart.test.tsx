@@ -1,11 +1,11 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownContent } from '../src/features/task-detail/MarkdownContent';
-import { MermaidFlowchart } from '../src/features/task-detail/MermaidFlowchart';
-import { MermaidSourceError, renderMermaidFlowchart } from '../src/features/task-detail/MermaidRenderer';
+import { MermaidDiagram } from '../src/features/task-detail/MermaidDiagram';
+import { MermaidSourceError, renderMermaidDiagram } from '../src/features/task-detail/MermaidRenderer';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
-const engine = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn(), mermaidAPI: { getDiagramFromText: vi.fn() } }));
+const engine = vi.hoisted(() => ({ initialize: vi.fn(), detectType: vi.fn(), render: vi.fn(), mermaidAPI: { getDiagramFromText: vi.fn() } }));
 vi.mock('mermaid', () => ({ default: engine }));
 
 const render = createLocaleRender('zh-CN');
@@ -22,8 +22,9 @@ const revokeObjectURL = vi.fn();
 
 beforeEach(() => {
   engine.initialize.mockReset();
+  engine.detectType.mockReset().mockImplementation((text: string) => text.trimStart().startsWith('mindmap') ? 'mindmap' : 'flowchart-v2');
   engine.render.mockReset().mockResolvedValue(result);
-  engine.mermaidAPI.getDiagramFromText.mockReset().mockResolvedValue({ type: 'flowchart-v2', db: { getVertices: () => new Map() } });
+  engine.mermaidAPI.getDiagramFromText.mockReset().mockResolvedValue({ type: 'flowchart-v2', db: { getVertices: () => new Map(), getData: () => ({ nodes: [], edges: [] }) } });
   createObjectURL.mockReset().mockReturnValue('blob:flowchart');
   revokeObjectURL.mockReset();
   vi.stubGlobal('URL', Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL }));
@@ -34,15 +35,15 @@ describe('Markdown Mermaid flowcharts', () => {
     const bindFunctions = vi.fn();
     engine.render.mockResolvedValue({ ...result, bindFunctions });
     const view = render(<MarkdownContent className="test-markdown" resolveUrl={(value) => value} text={`# Heading\n\n| A | B |\n| --- | --- |\n| C | D |\n\n\`inline\`\n\n\`\`\`typescript\nconst value = 1;\n\`\`\`\n\n\`\`\`mermaid\n${source}\n\`\`\``} />);
-    expect(screen.getByRole('status')).toHaveTextContent('正在渲染流程图');
+    expect(screen.getByRole('status')).toHaveTextContent('正在渲染图表');
     expect(screen.getByRole('heading')).toHaveTextContent('Heading');
     expect(screen.getByRole('table')).toHaveTextContent('CD');
     expect(view.container.querySelector('pre > code.language-typescript')).toHaveTextContent('const value = 1;');
     expect(screen.getByText('inline').tagName).toBe('CODE');
-    await waitFor(() => expect(screen.getByRole('img', { name: '流程图' })).toHaveAttribute('src', 'blob:flowchart'));
-    expect(screen.getByRole('region', { name: '流程图' })).toHaveAttribute('tabindex', '0');
+    await waitFor(() => expect(screen.getByRole('img', { name: '图表' })).toHaveAttribute('src', 'blob:flowchart'));
+    expect(screen.getByRole('region', { name: '图表' })).toHaveAttribute('tabindex', '0');
     expect(screen.getByText('查看 Mermaid 源码').closest('details')).not.toHaveAttribute('open');
-    expect(engine.render).toHaveBeenCalledWith(expect.stringMatching(/^daynight-flowchart-/), `${source}\n`, expect.any(HTMLDivElement));
+    expect(engine.render).toHaveBeenCalledWith(expect.stringMatching(/^daynight-diagram-/), `${source}\n`, expect.any(HTMLDivElement));
     expect(createObjectURL.mock.calls[0]?.[0]).toBeInstanceOf(Blob);
     expect(view.container.querySelector('svg')).toBeNull();
     expect(document.querySelector('.mermaid-render-staging')).toBeNull();
@@ -57,8 +58,8 @@ describe('Markdown Mermaid flowcharts', () => {
       return result;
     });
     render(<MarkdownContent className="test-markdown" resolveUrl={(value) => value} text={`正文\n\n\`\`\`mermaid\nflowchart TD\nbroken\n\`\`\`\n\n\`\`\`mermaid\n${source}\n\`\`\``} />);
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('无法渲染此流程图'));
-    await waitFor(() => expect(screen.getByRole('img', { name: '流程图' })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('无法渲染此图表'));
+    await waitFor(() => expect(screen.getByRole('img', { name: '图表' })).toBeInTheDocument());
     expect(screen.getByText('正文')).toBeVisible();
     expect(screen.getByText(/flowchart TD\s+broken/)).toBeVisible();
     expect(document.querySelector('.mermaid-render-staging')).toBeNull();
@@ -66,8 +67,8 @@ describe('Markdown Mermaid flowcharts', () => {
 
   it('shows empty Mermaid fences as unsupported source without changing empty ordinary fences', async () => {
     const view = render(<MarkdownContent className="test-markdown" resolveUrl={(value) => value} text={'```mermaid\n```\n\n```text\n```'} />);
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('仅支持 Mermaid 流程图'));
-    expect(view.container.querySelectorAll('.mermaid-flowchart')).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('不支持此 Mermaid 图表类型'));
+    expect(view.container.querySelectorAll('.mermaid-chart')).toHaveLength(1);
     expect(view.container.querySelector('pre > code.language-text')).toBeInTheDocument();
     expect(engine.render).not.toHaveBeenCalled();
   });
@@ -75,9 +76,9 @@ describe('Markdown Mermaid flowcharts', () => {
   it('discards an older in-flight render after source replacement before allocating an image URL', async () => {
     const old = deferred<typeof result>();
     engine.render.mockReturnValueOnce(old.promise);
-    const view = render(<MermaidFlowchart source={source} />);
+    const view = render(<MermaidDiagram source={source} />);
     await waitFor(() => expect(engine.render).toHaveBeenCalledOnce());
-    view.rerender(<MermaidFlowchart source={'flowchart LR\nCurrent --> Content'} />);
+    view.rerender(<MermaidDiagram source={'flowchart LR\nCurrent --> Content'} />);
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.getByRole('status')).toBeInTheDocument();
     await act(async () => { old.resolve(result); });
@@ -88,12 +89,12 @@ describe('Markdown Mermaid flowcharts', () => {
   });
 
   it('removes a ready image immediately on replacement and revokes its previous URL', async () => {
-    const view = render(<MermaidFlowchart source={source} />);
+    const view = render(<MermaidDiagram source={source} />);
     await waitFor(() => expect(screen.getByRole('img')).toBeInTheDocument());
     const previousImage = screen.getByRole('img');
     const next = deferred<typeof result>();
     engine.render.mockReturnValueOnce(next.promise);
-    view.rerender(<MermaidFlowchart source={'graph LR\nNew --> Diagram'} />);
+    view.rerender(<MermaidDiagram source={'graph LR\nNew --> Diagram'} />);
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.getByRole('status')).toBeInTheDocument();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:flowchart');
@@ -107,26 +108,26 @@ describe('Markdown Mermaid flowcharts', () => {
   it('disposes pending work on unmount and exposes image-decoding failure with current-language source', async () => {
     const pending = deferred<typeof result>();
     engine.render.mockReturnValueOnce(pending.promise);
-    const first = render(<MermaidFlowchart source={source} />);
+    const first = render(<MermaidDiagram source={source} />);
     await waitFor(() => expect(engine.render).toHaveBeenCalledOnce());
     first.unmount();
     await act(async () => { pending.resolve(result); });
     expect(createObjectURL).not.toHaveBeenCalled();
-    const next = render(<MermaidFlowchart source={source} />);
+    const next = render(<MermaidDiagram source={source} />);
     await waitFor(() => expect(screen.getByRole('img')).toBeInTheDocument());
     fireEvent.error(screen.getByRole('img'));
-    expect(screen.getByRole('alert')).toHaveTextContent('无法渲染此流程图');
+    expect(screen.getByRole('alert')).toHaveTextContent('无法渲染此图表');
     expect(next.container.querySelector('pre > code')?.textContent).toBe(source);
     expect(next.container.querySelector('pre > code')).toBeVisible();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:flowchart');
     next.setLocale('en');
-    expect(screen.getByRole('alert')).toHaveTextContent('Unable to render this flowchart');
+    expect(screen.getByRole('alert')).toHaveTextContent('Unable to render this diagram');
   });
 
   it.each([{ img: '/held.svg' }, { type: 'imageSquare' }])('explains image-node refusal locally while keeping its source inspectable: %o', async (vertex) => {
-    engine.mermaidAPI.getDiagramFromText.mockResolvedValueOnce({ type: 'flowchart-v2', db: { getVertices: () => new Map([['A', vertex]]) } });
+    engine.mermaidAPI.getDiagramFromText.mockResolvedValueOnce({ type: 'flowchart-v2', db: { getVertices: () => new Map([['A', vertex]]), getData: () => ({ nodes: [], edges: [] }) } });
     const imageSource = 'flowchart TD\nA@{ img: "/held.svg" } --> B';
-    const view = render(<MermaidFlowchart source={imageSource} />);
+    const view = render(<MermaidDiagram source={imageSource} />);
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('不支持图片节点'));
     expect(view.container.querySelector('pre > code')?.textContent).toBe(imageSource);
     expect(engine.render).not.toHaveBeenCalled();
@@ -138,12 +139,11 @@ describe('Mermaid rendering ownership', () => {
     { text: '---\nconfig:\n  securityLevel: loose\n---\nflowchart TD\nA --> B', issue: 'configuration' },
     { text: '%%{init: {"securityLevel":"loose"}}%%\nflowchart TD\nA --> B', issue: 'configuration' },
     { text: 'flowchart TD\n%%{init: {"theme":"dark"}}%%\nA --> B', issue: 'configuration' },
-    { text: 'sequenceDiagram\nAlice->>Bob: Hello', issue: 'unsupported' },
+    { text: 'mindmap\n root', issue: 'unsupported' },
     { text: '', issue: 'unsupported' },
     { text: `flowchart TD\n${'A'.repeat(50_000)}`, issue: 'tooLarge' },
   ])('refuses $issue before allowing source to configure or enter Mermaid', async ({ text, issue }) => {
-    await expect(renderMermaidFlowchart(text, new AbortController().signal)).rejects.toMatchObject({ issue });
-    expect(engine.initialize).not.toHaveBeenCalled();
+    await expect(renderMermaidDiagram(text, new AbortController().signal)).rejects.toMatchObject({ issue });
     expect(engine.render).not.toHaveBeenCalled();
     expect(document.querySelector('.mermaid-render-staging')).toBeNull();
   });
@@ -151,8 +151,8 @@ describe('Mermaid rendering ownership', () => {
   it('serializes configuration and rendering, uses fixed safety settings and cleans staging on success', async () => {
     const pending = deferred<typeof result>();
     engine.render.mockReturnValueOnce(pending.promise);
-    const first = renderMermaidFlowchart(source, new AbortController().signal);
-    const second = renderMermaidFlowchart('%% comment\n\ngraph LR\nA --> B', new AbortController().signal);
+    const first = renderMermaidDiagram(source, new AbortController().signal);
+    const second = renderMermaidDiagram('%% comment\n\ngraph LR\nA --> B', new AbortController().signal);
     await waitFor(() => expect(engine.render).toHaveBeenCalledOnce());
     expect(engine.initialize).toHaveBeenCalledOnce();
     expect(engine.initialize).toHaveBeenCalledWith(expect.objectContaining({ startOnLoad: false, securityLevel: 'strict', htmlLabels: false, suppressErrorRendering: true, layout: 'dagre', maxTextSize: 50_000, maxEdges: 500, flowchart: { htmlLabels: false, useMaxWidth: false } }));
@@ -167,12 +167,22 @@ describe('Mermaid rendering ownership', () => {
     expect(document.querySelector('.mermaid-render-staging')).toBeNull();
   });
 
+  it('selects ELK only for its explicit flowchart entry', async () => {
+    engine.detectType.mockReturnValueOnce('flowchart-elk');
+    engine.mermaidAPI.getDiagramFromText.mockResolvedValueOnce({ type: 'flowchart-elk', db: { getVertices: () => new Map(), getData: () => ({ nodes: [], edges: [] }) } });
+    engine.render.mockResolvedValueOnce({ ...result, diagramType: 'flowchart-elk' });
+    await renderMermaidDiagram('flowchart-elk LR\nA --> B', new AbortController().signal);
+    expect(engine.initialize).toHaveBeenNthCalledWith(2, expect.objectContaining({ layout: 'elk' }));
+    await renderMermaidDiagram(source, new AbortController().signal);
+    expect(engine.initialize).toHaveBeenLastCalledWith(expect.objectContaining({ layout: 'dagre' }));
+  });
+
   it('skips an aborted queued diagram and preserves renderer errors without poisoning later work', async () => {
     const pending = deferred<typeof result>();
     engine.render.mockReturnValueOnce(pending.promise);
-    const first = renderMermaidFlowchart(source, new AbortController().signal);
+    const first = renderMermaidDiagram(source, new AbortController().signal);
     const controller = new AbortController();
-    const second = renderMermaidFlowchart(source, controller.signal);
+    const second = renderMermaidDiagram(source, controller.signal);
     const aborted = expect(second).rejects.toMatchObject({ name: 'AbortError' });
     controller.abort();
     pending.resolve(result);
@@ -181,20 +191,20 @@ describe('Mermaid rendering ownership', () => {
     expect(engine.render).toHaveBeenCalledOnce();
     const cause = new Error('render failed');
     engine.render.mockRejectedValueOnce(cause);
-    await expect(renderMermaidFlowchart(source, new AbortController().signal)).rejects.toBe(cause);
+    await expect(renderMermaidDiagram(source, new AbortController().signal)).rejects.toBe(cause);
     expect(document.querySelector('.mermaid-render-staging')).toBeNull();
-    await expect(renderMermaidFlowchart(source, new AbortController().signal)).resolves.toBe(svg);
+    await expect(renderMermaidDiagram(source, new AbortController().signal)).resolves.toBe(svg);
   });
 
   it('refuses unexpected engine diagram types and preserves typed source errors', async () => {
     engine.render.mockResolvedValueOnce({ ...result, diagramType: 'error' });
-    await expect(renderMermaidFlowchart(source, new AbortController().signal)).rejects.toBeInstanceOf(MermaidSourceError);
+    await expect(renderMermaidDiagram(source, new AbortController().signal)).rejects.toBeInstanceOf(MermaidSourceError);
     expect(document.querySelector('.mermaid-render-staging')).toBeNull();
   });
 
   it('stops after asynchronous module loading when the reader is disposed before initialization', async () => {
     const controller = new AbortController();
-    const pending = renderMermaidFlowchart(source, controller.signal);
+    const pending = renderMermaidDiagram(source, controller.signal);
     queueMicrotask(() => controller.abort());
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(engine.initialize).not.toHaveBeenCalled();
@@ -203,16 +213,16 @@ describe('Mermaid rendering ownership', () => {
   });
 
   it('disposes an in-flight parser before it can create staging or render a stale diagram', async () => {
-    const parsed = deferred<{ type: string; db: { getVertices: () => Map<string, never> } }>();
+    const parsed = deferred<{ type: string; db: { getVertices: () => Map<string, never>; getData: () => { nodes: never[]; edges: never[] } } }>();
     engine.mermaidAPI.getDiagramFromText.mockReturnValueOnce(parsed.promise);
     const controller = new AbortController();
-    const pending = renderMermaidFlowchart(source, controller.signal);
+    const pending = renderMermaidDiagram(source, controller.signal);
     await waitFor(() => expect(engine.mermaidAPI.getDiagramFromText).toHaveBeenCalledOnce());
     controller.abort();
-    parsed.resolve({ type: 'flowchart-v2', db: { getVertices: () => new Map<string, never>() } });
+    parsed.resolve({ type: 'flowchart-v2', db: { getVertices: () => new Map<string, never>(), getData: () => ({ nodes: [], edges: [] }) } });
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(engine.render).not.toHaveBeenCalled();
     expect(document.querySelector('.mermaid-render-staging')).toBeNull();
-    await expect(renderMermaidFlowchart(source, new AbortController().signal)).resolves.toBe(svg);
+    await expect(renderMermaidDiagram(source, new AbortController().signal)).resolves.toBe(svg);
   });
 });

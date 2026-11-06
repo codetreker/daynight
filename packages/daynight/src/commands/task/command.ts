@@ -67,6 +67,11 @@ export const runTaskCommand = async (
     await runTaskAttachmentCommand(command, context, dependencies);
     return;
   }
+  if (command.path[2] === "search") {
+    const { runTaskSearchCommand } = await import("./search.js");
+    await runTaskSearchCommand(command, context, dependencies);
+    return;
+  }
   if (["properties", "set-property", "remove-property"].includes(command.command.name)) {
     const { runTaskPropertyCommand } = await import("./property.js");
     await runTaskPropertyCommand(command, context, dependencies);

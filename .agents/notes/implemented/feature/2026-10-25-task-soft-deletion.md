@@ -15,6 +15,8 @@ and bytes, and excludes the task from normal reads, graphs, statistics, executio
 candidates and new dependency references. A version-bound DELETE uses the existing
 project lock and member authorization. Strict deletion remains the default and
 refuses any undeleted incoming reference.
+[Attachment mutation serialization](../architecture/2026-11-06-attachment-task-deletion-serialization.md)
+also protects retained files from mutations admitted before deletion.
 [Explicit incoming reference removal](2026-10-25-task-delete-remove-depends.md)
 now permits an optional combined operation that removes all incoming edges and
 updates their source versions atomically; the target's own prerequisites remain.

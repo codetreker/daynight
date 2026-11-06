@@ -2,6 +2,7 @@ import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback, type 
 import { flushSync } from 'react-dom';
 import type { SessionComposerPresentation } from './session-presentation-slots';
 import type { SessionDraft, SessionSettingIntent } from './client';
+import { operationPresentation, type SessionOperationProgress } from './operation-presentation';
 import type { SessionNativeCommand } from '../../../../daynight/src/session/controls';
 import { SessionControlsPanel, type ControlsView } from './SessionControlsPanel';
 import { SessionActivity } from './SessionActivity';
@@ -21,11 +22,12 @@ function classifySubmission(text: string, commands: readonly SessionNativeComman
   return { kind: 'command', command, args: parsed?.[2] ?? '' } as const;
 }
 
-export function SessionComposer({ state, connected, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
+export function SessionComposer({ state, connected, sessionNoticeOwned = false, statusDescriptionId, authPaused = false, active = true, suppressKeyboardHint = false, draft, onDraftChange, onSend, onCancel, operationProgress = new Map(), settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls, presentation, inputRef: suppliedInputRef }: {
   readonly presentation?: SessionComposerPresentation; readonly inputRef?: RefObject<HTMLTextAreaElement | null>;
   readonly sessionNoticeOwned?: boolean; readonly statusDescriptionId?: string;
   readonly state: SessionState; readonly connected: boolean; readonly authPaused?: boolean; readonly active?: boolean; readonly suppressKeyboardHint?: boolean;
   readonly draft?: SessionDraft; readonly onDraftChange?: (text: string) => void;
+  readonly operationProgress?: SessionOperationProgress;
   readonly settingIntents?: ReadonlyMap<string, SessionSettingIntent>;
   readonly onUpdateSetting?: (id: string, value: string, revision: string) => Promise<void>;
   readonly onExecuteCommand?: (id: string, args: string, revision: string, draftText?: string) => Promise<void>;
@@ -268,11 +270,13 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
   const cancelAllowed = cancelReady && !authPaused && !interruptRequested;
   const latest = useRef({ sendAllowed, pending, cancelAllowed, cancelling }); latest.current = { sendAllowed, pending, cancelAllowed, cancelling };
   let notice: string | null = null;
-  if (sessionNoticeOwned) notice = null;
+  const unknownInput = [...state.operations.values()].some(operation => ['send_message', 'execute_command'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown');
+  const unknownControl = [...state.operations.values()].some(operation => ['update_setting', 'refresh_controls'].includes(operation.kind) && operationPresentation(operation, operationProgress) === 'unknown');
+  if (unknownInput) notice = m.operationUnknown;
+  else if (unknownControl) notice = m.settingUnknown;
+  else if (sessionNoticeOwned) notice = null;
   else if (!connected || state.recoveryRequired || !snapshot?.synchronized) notice = m.sessionSynchronizing;
-  else if (hasPendingControls(state)) notice = m.settingPending;
-  else if (hasPendingOperation(state, 'execute_command')) notice = m.operationUnknown;
-  else if (hasPendingOperation(state, 'send_message')) notice = m.operationUnknown;
+  else if (hasPendingControls(state) || hasPendingOperation(state, 'execute_command') || hasPendingOperation(state, 'send_message')) notice = null;
   else if (snapshot.initialInputState === 'unknown') notice = m.initialUnknown;
   else if (snapshot.initialInputState === 'failed') notice = m.initialFailed;
   else if (!['not_required', 'provider_accepted', 'confirmed'].includes(snapshot.initialInputState)) notice = m.initialPending;
@@ -385,7 +389,7 @@ export function SessionComposer({ state, connected, sessionNoticeOwned = false, 
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
     event.preventDefault(); closeControls();
   }}>
-    <SessionControlsPanel controls={controls} state={state} intents={settingIntents} view={controlView} disabled={!controlsAllowed} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
+    <SessionControlsPanel controls={controls} state={state} intents={settingIntents} operationProgress={operationProgress} view={controlView} disabled={!controlsAllowed} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
     {showCommands ? <div className="session-command-menu">
       <div className="session-command-heading"><strong>{m.nativeCommands}</strong><div className="session-command-actions"><button type="button" className="inline-link" disabled={!controlsAllowed || refreshing || !onRefreshControls} aria-busy={refreshing} onClick={() => void refreshCommands()}>{refreshing ? m.refreshingCommands : controls?.commandsError ? m.reloadCommands : m.refreshCommands}</button><button type="button" className="inline-link session-command-close" onClick={closeControls}>{m.close}</button></div></div>
       <div className="session-command-body" ref={commandBodyRef}>

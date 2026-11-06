@@ -8,6 +8,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -79,10 +80,19 @@ func (s *Reader) AttachmentPathConflict(ctx context.Context, projectID, taskID s
 	return conflict, nil
 }
 
+type mutationQueries interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
 func (s *Writer) PutAttachment(ctx context.Context, attachment model.Attachment) (model.Attachment, bool, error) {
+	return putAttachment(ctx, s.pool, attachment)
+}
+
+func putAttachment(ctx context.Context, db mutationQueries, attachment model.Attachment) (model.Attachment, bool, error) {
 	var result model.Attachment
 	var created bool
-	err := s.pool.QueryRow(ctx, `INSERT INTO task_attachments (project_id, task_id, path, content_type, size_bytes)
+	err := db.QueryRow(ctx, `INSERT INTO task_attachments (project_id, task_id, path, content_type, size_bytes)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (task_id, path) DO UPDATE SET content_type = EXCLUDED.content_type,
 			size_bytes = EXCLUDED.size_bytes, updated_at = statement_timestamp()
@@ -101,7 +111,11 @@ func (s *Writer) PutAttachment(ctx context.Context, attachment model.Attachment)
 }
 
 func (s *Writer) DeleteAttachment(ctx context.Context, projectID, taskID, path string) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM task_attachments WHERE project_id = $1 AND task_id = $2 AND path = $3`, projectID, taskID, path)
+	return deleteAttachment(ctx, s.pool, projectID, taskID, path)
+}
+
+func deleteAttachment(ctx context.Context, db mutationQueries, projectID, taskID, path string) error {
+	result, err := db.Exec(ctx, `DELETE FROM task_attachments WHERE project_id = $1 AND task_id = $2 AND path = $3`, projectID, taskID, path)
 	if err != nil {
 		return pg.QueryError("delete attachment", err)
 	}

@@ -12,5 +12,6 @@ type Transactions interface {
 	SessionWriter
 	ThreadWriter
 	AttachmentWriter
+	AttachmentMutationWriter
 	TaskSearchReader
 }

@@ -38,7 +38,7 @@ func TestAttachmentCaseDistinctPaths(t *testing.T) {
 func TestAttachmentFilesystemNameConflictPreservesMetadataAndBytes(t *testing.T) {
 	attachments, _, database, files, task, principal := attachmentService(t)
 	original := putAttachment(t, attachments, principal, task, "Case", "original")
-	failed := NewAttachments(database, attachmentFaultStorage{Storage: files, put: errors.Join(filestorage.ErrPathConflict)})
+	failed := newAttachmentService(database, attachmentFaultStorage{Storage: files, put: errors.Join(filestorage.ErrPathConflict)})
 	_, created, err := failed.Put(context.Background(), principal, task.ProjectID, task.ID, "case", "text/plain", strings.NewReader("rejected"))
 	requireFault(t, err, "path_conflict")
 	if created || !errors.Is(err, filestorage.ErrPathConflict) {

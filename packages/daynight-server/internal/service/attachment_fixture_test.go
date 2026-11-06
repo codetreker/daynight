@@ -24,7 +24,7 @@ func attachmentService(t *testing.T) (*attachmentservice.Attachments, *taskservi
 			t.Error(err)
 		}
 	})
-	return attachmentservice.NewAttachments(database, files), tasks, database, files, createTask(t, tasks, principal, project.ID, "Attachments"), principal
+	return attachmentservice.NewAttachments(database, database, files), tasks, database, files, createTask(t, tasks, principal, project.ID, "Attachments"), principal
 }
 
 func putAttachment(t *testing.T, attachments *attachmentservice.Attachments, principal model.Principal, task model.Task, path, content string) model.Attachment {

@@ -15,8 +15,8 @@ agreement with the existing attachment panel.
 
 `MarkdownContent` shares CommonMark/GFM rendering and styles between task
 descriptions and Markdown attachments. It also delegates Mermaid fences to the
-shared static flowchart renderer; the
-[flowchart decision](../feature/2026-10-24-markdown-flowcharts.md) owns diagram
+shared static diagram renderer; the
+[diagram decision](../feature/2026-11-05-stable-mermaid-diagrams.md) owns diagram
 security, rendering lifetime and local failure handling. Raw HTML remains text
 and the existing URL/protocol policy is preserved. The caller supplies URL
 conversion and activation.

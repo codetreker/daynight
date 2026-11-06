@@ -37,6 +37,14 @@ export const taskDefinition: CommandDefinition = {
       details: "By default, exclude done tasks. Use --all for every status or --status for a specific status.\nCombine --assigned-to, --ready, --allow-agents and --compatible-platform with the selected statuses using AND. --assigned-to accepts a user UUID, me or unassigned; me uses the authenticated response principal. Platform compatibility includes unrestricted tasks and exact matches, without changing readiness. All filters apply before pagination; read every page before printing.\nOrder in_progress first, then ready todo, blocked todo, and done tasks; preserve server order within each group.\nText lists omit description, version, and timestamps. --json omits description and preserves every other task field with the same filtering and ordering.",
     },
     {
+      name: "search",
+      description: "Search task titles and descriptions in one project",
+      arguments: [{ name: "expression", description: "Complete search expression" }],
+      options: [statusOption, assignedToFilterOption, { names: ["--ready"], description: "Include only tasks ready to start" }, allowAgentsOption, compatiblePlatformOption, projectOption, { names: ["--json"], description: "Print search results as a JSON array" }, helpOption],
+      allowOptionsTerminator: true,
+      details: "Pass the complete expression as one argument; use -- before an expression starting with a dash. Supports AND, OR, NOT, parentheses, quoted phrases, title: and description:.\nAll statuses, including done, are searched by default. Filters combine with the expression. Every page is read before output, preserving server order. Search output omits assignee and update time; use task show for complete details.",
+    },
+    {
       name: "ready",
       description: "Show the first ready tasks in the project",
       options: [{ names: ["--limit"], description: "Maximum number of tasks to return, from 1 to 100 (default: 10)", value: { name: "count", kind: "text" } }, allowAgentsOption, compatiblePlatformOption, projectOption, jsonOption, helpOption],
