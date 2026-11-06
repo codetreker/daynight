@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -125,5 +126,39 @@ func assertAttachmentStoreError(t *testing.T, err error) {
 	var databaseError *Error
 	if !errors.As(err, &postgresError) || postgresError.Code != "42P01" || !errors.As(err, &databaseError) || errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing table error lost: %v", err)
+	}
+}
+
+func TestAttachmentBoundedProjectionPreservesPageBoundary(t *testing.T) {
+	db := isolatedStore(t)
+	ctx := t.Context()
+	projectID, taskID := uuid.NewString(), uuid.NewString()
+	for _, item := range []model.Attachment{
+		{ProjectID: projectID, TaskID: taskID, Path: "a", ContentType: "short"},
+		{ProjectID: projectID, TaskID: taskID, Path: "b", ContentType: strings.Repeat("x", 1000000)},
+		{ProjectID: projectID, TaskID: taskID, Path: "long-path", ContentType: "short"},
+	} {
+		if _, _, err := db.PutAttachment(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		page, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, MaxPathBytes: 5, MaxFieldBytes: 5})
+		if err != nil || len(page.Items) != 2 || !page.HasMore || page.Items[0].Path != "a" || page.Items[0].ContentType != "short" || page.Oversized[0] || page.Items[1].Path != "b" || page.Items[1].ContentType != "" || !page.Oversized[1] {
+			t.Fatalf("bounded first page: %+v %v", page, err)
+		}
+		after := page.Items[1].Path
+		page, err = snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, After: &after, MaxPathBytes: 5, MaxFieldBytes: 5})
+		if err != nil || len(page.Items) != 1 || page.Items[0].Path != "" || !page.Oversized[0] {
+			t.Fatalf("bounded long path: %+v %v", page, err)
+		}
+		full, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2})
+		if err != nil || full.Items[1].ContentType != strings.Repeat("x", 1000000) || full.Oversized != nil {
+			t.Fatalf("unbounded contract changed: %+v %v", full, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
