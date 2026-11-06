@@ -495,11 +495,11 @@ func (m *stressTeamItemPrivateMemory) finish() int64 {
 		if output, err := exec.CommandContext(ctx, "docker", "exec", m.container, "kill", "-TERM", m.processID).CombinedOutput(); err != nil && !m.t.Failed() {
 			m.t.Errorf("stop memory observer: %v %s", err, output)
 		}
-		if err := m.command.Wait(); err != nil && !m.t.Failed() {
-			m.t.Errorf("memory observer exit: %v", err)
-		}
 		if err := <-m.done; err != nil && !m.t.Failed() {
 			m.t.Errorf("memory observer scan: %v", err)
+		}
+		if err := m.command.Wait(); err != nil && !m.t.Failed() {
+			m.t.Errorf("memory observer exit: %v", err)
 		}
 	})
 	return max(0, m.peak.Load()-m.baseline)
