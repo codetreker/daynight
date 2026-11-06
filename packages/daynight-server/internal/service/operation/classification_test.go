@@ -1,0 +1,63 @@
+package operation
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+)
+
+func TestCompletionFactsPreservesTransactionAndCleanup(t *testing.T) {
+	refusal := &model.Fault{Code: "invalid_input", Message: "invalid"}
+	cases := []struct {
+		name string
+		err  error
+		want Facts
+	}{
+		{"ordinary refusal", refusal, Facts{}},
+		{"cancellation", context.Canceled, Facts{}},
+		{"known rollback", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: refusal}, Facts{Outcome: store.TransactionNotCommitted, Phase: "operation"}},
+		{"commit lost", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: context.Canceled}, Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
+		{"committed cleanup failure", &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true}, Facts{Outcome: store.TransactionCommitted, Phase: "cleanup", CleanupFailed: true}},
+		{"thread unknown", &store.ThreadTransactionError{Phase: "commit", CommitAttempted: true, OutcomeUnknown: true}, Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
+		{"thread cleanup", &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true}, Facts{Phase: "rollback", CleanupFailed: true}},
+		{"conflicting facts", errors.Join(&store.TransactionError{Outcome: store.TransactionCommitted}, &store.TransactionError{Outcome: store.TransactionNotCommitted}), Facts{Outcome: store.TransactionUnknown}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CompletionFacts(fmt.Errorf("operation: %w", tc.err)); got != tc.want {
+				t.Fatalf("got %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
+	fault := &model.Fault{Code: "invalid_input", Message: "invalid"}
+	if got, ok := KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
+		t.Fatalf("known rollback: %v %v", got, ok)
+	}
+	for _, failure := range []*store.TransactionError{
+		{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault},
+		{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: fault},
+	} {
+		if got, ok := KnownFault(failure); ok {
+			t.Fatalf("exposed nested fault %#v", got)
+		}
+	}
+}
+
+func TestKnownFaultRejectsUnsafeJoinedTransaction(t *testing.T) {
+	fault := &model.Fault{Code: "invalid_input", Message: "invalid"}
+	failure := errors.Join(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}, &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true})
+	if _, ok := KnownFault(failure); ok {
+		t.Fatal("unsafe joined result exposed as refusal")
+	}
+	facts := CompletionFacts(failure)
+	if facts.Outcome != store.TransactionUnknown || !facts.CleanupFailed {
+		t.Fatalf("lost completion facts: %#v", facts)
+	}
+}

@@ -43,12 +43,30 @@ type sessionRoutes struct {
 	terminalViewers map[string]*websocket.Conn
 	active          sync.WaitGroup
 }
+type mcpLifecycle interface {
+	BeginShutdown()
+	Shutdown(context.Context) error
+}
+
 type sessionApplication struct {
 	http.Handler
 	relay *sessionRoutes
+	mcp   mcpLifecycle
 }
 
-func (a *sessionApplication) Shutdown(ctx context.Context) error { return a.relay.shutdown(ctx) }
+func (a *sessionApplication) BeginShutdown() {
+	if a.mcp != nil {
+		a.mcp.BeginShutdown()
+	}
+}
+func (a *sessionApplication) Shutdown(ctx context.Context) error {
+	if a.mcp != nil {
+		if err := a.mcp.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	return a.relay.shutdown(ctx)
+}
 
 func newSessionRoutes(s *sessionrelay.Service, auth *authhttp.Authentication, logger *slog.Logger) *sessionRoutes {
 	if s != nil && auth != nil {

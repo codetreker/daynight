@@ -190,7 +190,7 @@ func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) 
 }
 
 func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
-	for _, callbackPath := range []string{"/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
+	for _, callbackPath := range []string{"/mcp", "/mcp/callback", "/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback", "/teams", "/teams/callback", "/shared-projects", "/shared-projects/callback", "/workers", "/workers/callback", "/workers/nested/callback", "/bots", "/bots/callback", "/bots/nested/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config := configuredTestConfig()
 			config.UniAuthCallbackURL = config.PublicOrigin + callbackPath
@@ -236,5 +236,19 @@ func TestPublicPageCallbackReservationPreservesDistinctPaths(t *testing.T) {
 				t.Fatalf("distinct callback path failed route composition: %v", err)
 			}
 		})
+	}
+}
+
+func TestMCPAllowedOriginsConfiguration(t *testing.T) {
+	config, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_ALLOWED_ORIGINS": "https://client.example, https://second.example:8443"}))
+	if err != nil || len(config.MCPAllowedOrigins) != 2 || config.MCPAllowedOrigins[1] != "https://second.example:8443" {
+		t.Fatalf("allowed origins: %#v %v", config.MCPAllowedOrigins, err)
+	}
+	for _, value := range []string{"https://client.example/path", "https://client.example?", "null", "https://client.example,", "https://user@client.example"} {
+		_, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_ALLOWED_ORIGINS": value}))
+		var failure *configpkg.ConfigurationError
+		if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_MCP_ALLOWED_ORIGINS" {
+			t.Errorf("invalid origin %q: %v", value, err)
+		}
 	}
 }

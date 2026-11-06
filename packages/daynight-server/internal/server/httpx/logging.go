@@ -14,7 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 
-	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -76,52 +76,8 @@ func ErrorKind(err error) string {
 	}
 }
 
-func KnownFault(err error) (*model.Fault, bool) {
-	var transaction *store.TransactionError
-	if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
-		return nil, false
-	}
-	var botOperation *model.BotOperationError
-	if errors.As(err, &botOperation) {
-		return nil, false
-	}
-	var validation *taskproperties.ValidationError
-	if errors.As(err, &validation) && onlyPropertyValidation(err) {
-		return &model.Fault{Code: "invalid_input", Message: validation.Error(), Cause: err}, true
-	}
-	var fault *model.Fault
-	if errors.As(err, &fault) {
-		switch fault.Code {
-		case "configuration_not_initialized":
-			return fault, true
-		case "personal_team_immutable", "team_not_empty", "write_outcome_unknown", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "permission_denied", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "unsupported_protocol", "unsupported_content_kind", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "invalid_payload", "controller_offline", "relay_instance_unavailable", "content_unavailable", "rate_limited", "unauthenticated", "forbidden", "last_admin", "identity_mismatch", "invitation_unavailable", "task_deleted", "invalid_input", "not_found", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "payload_too_large", "message_not_found", "clock_not_advanced", "message_outcome_unknown":
-			return fault, true
-		}
-	}
-	return nil, false
-}
-
-func onlyPropertyValidation(err error) bool {
-	if _, ok := err.(*taskproperties.ValidationError); ok {
-		return true
-	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
-		children := joined.Unwrap()
-		if len(children) == 0 {
-			return false
-		}
-		for _, child := range children {
-			if !onlyPropertyValidation(child) {
-				return false
-			}
-		}
-		return true
-	}
-	if wrapped := errors.Unwrap(err); wrapped != nil {
-		return onlyPropertyValidation(wrapped)
-	}
-	return false
-}
+// KnownFault returns only faults whose completion and cleanup remain reliable.
+func KnownFault(err error) (*model.Fault, bool) { return operation.KnownFault(err) }
 
 func LogFailure(logger *slog.Logger, ctx context.Context, component, phase string, err error) {
 	diagnostic := "operation failed"

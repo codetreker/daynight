@@ -31,6 +31,7 @@ type Runtime struct {
 	shutdownTimeout time.Duration
 	cancelRequests  context.CancelFunc
 	shutdownHandler func(context.Context) error
+	beginShutdown   func()
 }
 
 func Start(ctx context.Context, config Config, logger *slog.Logger, handler func(Dependencies) (http.Handler, error)) (*Runtime, error) {
@@ -72,6 +73,9 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 			BaseContext:       func(net.Listener) context.Context { return requests },
 		},
 	}
+	if starter, ok := application.(interface{ BeginShutdown() }); ok {
+		runtime.beginShutdown = starter.BeginShutdown
+	}
 	if graceful, ok := application.(interface{ Shutdown(context.Context) error }); ok {
 		runtime.shutdownHandler = graceful.Shutdown
 	}
@@ -81,7 +85,6 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 func (r *Runtime) Address() string { return r.listener.Addr().String() }
 
 func (r *Runtime) Run(ctx context.Context) error {
-	defer r.Store.Close()
 	defer r.cancelRequests()
 	result := make(chan error, 1)
 	go func() { result <- r.http.Serve(r.listener) }()
@@ -95,6 +98,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), r.shutdownTimeout)
 	defer cancel()
+	if r.beginShutdown != nil {
+		r.beginShutdown()
+	}
 	err := r.http.Shutdown(shutdown)
 	if err != nil {
 		r.cancelRequests()
@@ -110,9 +116,16 @@ func (r *Runtime) Run(ctx context.Context) error {
 	// relay and await its database work before closing shared dependencies.
 	r.cancelRequests()
 	if r.shutdownHandler != nil {
-		err = errors.Join(err, r.shutdownHandler(shutdown))
+		shutdownErr := r.shutdownHandler(shutdown)
+		err = errors.Join(err, shutdownErr)
+		if errors.Is(shutdownErr, context.DeadlineExceeded) || errors.Is(shutdownErr, context.Canceled) {
+			// Preserve borrowed resources until the unfinished application work stops.
+			go func() { _ = r.shutdownHandler(context.Background()); _ = r.files.Close(); r.Store.Close() }()
+			return &httpx.RuntimeError{Phase: "shutdown", Cause: err}
+		}
 	}
 	err = errors.Join(err, r.files.Close())
+	r.Store.Close()
 	if err != nil {
 		return &httpx.RuntimeError{Phase: "shutdown", Cause: err}
 	}

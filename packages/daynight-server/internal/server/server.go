@@ -3,11 +3,10 @@ package server
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
-	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
-	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -22,10 +21,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
-	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
-	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 )
 
 func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Handler, error) {
@@ -36,24 +32,33 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	if err != nil {
 		return nil, err
 	}
-	identity := identityservice.New(dependencies.Store, client, config.UniAuthCallbackURL)
-	auth, err := authhttp.NewAuthentication(identity, configpkg.AuthSettings{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, logger)
+	app := application.New(dependencies.Store, dependencies.Files, client, config.UniAuthCallbackURL, config.TaskSyncOverlap)
+	auth, err := authhttp.NewAuthentication(app.Identity, configpkg.AuthSettings{PublicOrigin: config.PublicOrigin, AllowHTTPTestOrigin: config.AllowHTTPTestOrigin}, logger)
 	if err != nil {
 		return nil, err
 	}
+	endpoint, err := mcphttp.New(app.Identity, config.PublicOrigin, config.MCPAllowedOrigins, logger)
+	if err != nil {
+		return nil, err
+	}
+	if err := registerMCPTools(app, endpoint); err != nil {
+		endpoint.BeginShutdown()
+		return nil, err
+	}
 	mux := http.NewServeMux()
+	mux.Handle("/mcp", endpoint)
 	auth.RegisterRoutes(mux)
-	projecthttp.NewMembershipRoutes(projectservice.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
-	projecthttp.RegisterRoutes(mux, projectservice.NewProjects(dependencies.Store), auth, logger)
-	teamhttp.RegisterRoutes(mux, teamservice.NewTeams(dependencies.Store), auth, logger)
-	workersRoutes(mux, service.NewWorkers(dependencies.Store), auth, logger)
-	taskhttp.TaskRoutes(mux, taskservice.NewTasks(dependencies.Store), auth, logger)
-	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(dependencies.Store), auth, logger)
-	taskhttp.TaskThreadRoutes(mux, taskservice.NewTaskThreads(dependencies.Store), auth, logger)
-	taskhttp.TaskSyncRoutes(mux, taskservice.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
-	attachmentRoutes(mux, service.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
-	relay := newSessionRoutes(sessionrelay.New(dependencies.Store, dependencies.Files), auth, logger)
-	botsRoutes(mux, service.NewBots(dependencies.Store), relay.service, auth, logger)
+	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
+	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
+	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
+	workersRoutes(mux, app.Workers, auth, logger)
+	taskhttp.TaskRoutes(mux, app.Tasks, auth, logger)
+	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
+	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
+	taskhttp.TaskSyncRoutes(mux, app.TaskSync, auth, logger, config.TaskSyncOverlap)
+	attachmentRoutes(mux, app.Attachments, auth, logger)
+	relay := newSessionRoutes(app.Relay, auth, logger)
+	botsRoutes(mux, app.Bots, relay.service, auth, logger)
 	relay.register(mux)
 	healthRoutes(mux, dependencies.Store, logger)
 	web := webhttp.New(webresources.New())
@@ -62,7 +67,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmentPathGuard(mux, logger), relay: relay}, nil
+	return &sessionApplication{Handler: attachmentPathGuard(mux, logger), relay: relay, mcp: endpoint}, nil
 }
 
 func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger) {
@@ -92,3 +97,7 @@ func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger
 		})
 	}
 }
+
+// registerMCPTools is the composition point for complete domain adapters.
+// The entry starts with an empty discovery list until such adapters are registered.
+func registerMCPTools(_ *application.Application, _ *mcphttp.Entry) error { return nil }
