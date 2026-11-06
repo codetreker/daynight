@@ -19,7 +19,7 @@ export function useBotCreationModels(enabled: boolean, workerId: string | null, 
     setState(old => ({ key, value: old.key === key ? old.value : null, error: null, busy: true }));
     try {
       await scope.ready(signal);
-      const input: WorkerModelInput = { provider, ...(cwd === null ? {} : { cwd }), ...(model === null ? {} : { model }), limit: 100 };
+      const input: WorkerModelInput = { provider, ...(cwd === null ? {} : { cwd }), ...(model === null ? {} : { model }), includeHidden: true, limit: 100 };
       let complete: WorkerModelResult | null = null, binding: WorkerReadonlyBinding | undefined;
       const cursors = new Set<string>(), ids = new Set<string>(), options: WorkerModelOption[] = [];
       do {
