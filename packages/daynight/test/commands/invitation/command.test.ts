@@ -87,6 +87,13 @@ describe("invitation command", () => {
     expect(f.readLink).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
     expect(JSON.stringify(f.context.stderr.mock.calls)).not.toContain(secret);
   });
+  it("rejects a token flag without exposing its value or making requests", async () => {
+    const f = fixture();
+    expect(await f.run(["inspect", "--token", secret])).toBe(2);
+    expect(f.readLink).not.toHaveBeenCalled(); expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(JSON.stringify(f.context.stderr.mock.calls)).not.toContain(secret);
+  });
   it("does not accept after the user declines the displayed preview", async () => {
     const f = fixture({ interactive: true, answer: "no" });
     expect(await f.run(["accept", "--stdin"])).toBe(1);

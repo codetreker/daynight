@@ -45,6 +45,16 @@ const fixture = (failure?: "lost" | "malformed" | "wrong-principal" | "malicious
 };
 
 describe("Team invitation command", () => {
+  it("documents the one-time link and rejects repeated confirmation before requests", async () => {
+    const f = fixture();
+    expect(await f.run(["invitation", "create", "--help"])).toBe(0);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("printed once");
+    expect(f.fetch).not.toHaveBeenCalled();
+    f.context.stdout.mockClear();
+    expect(await f.run(["invitation", "create", "--team", teamId, "--confirm", "--confirm"])).toBe(2);
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
   it("reports the second revoke as unchanged in text without replay", async () => {
     const f = fixture();
     expect(await f.run(["invitation", "revoke", invitationId, "--team", teamId, "--confirm", "--json"])).toBe(0);

@@ -50,12 +50,15 @@ it.each([
   } finally { f.operation.dispose(); }
 });
 
-it("rejects the exact fractional Thread count before any request", async () => {
+it.each(["0", "101", "1.5"])("rejects Thread count %s without a cause or request", async count => {
   const fetch = vi.fn<typeof globalThis.fetch>(); const f = fixture(fetch);
   try {
-    expect(await f.run(["read", taskId, "--count=1.5"])).toBe(2);
+    expect(await f.run(["read", taskId, `--count=${count}`])).toBe(2);
     expect(fetch).not.toHaveBeenCalled(); expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
     expect(f.context.stderr).toHaveBeenCalledOnce();
+    const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
+    expect(diagnostic).toContain("--count must be a decimal integer from 1 to 100.");
+    expect(diagnostic).not.toContain("Caused by:");
   } finally { f.operation.dispose(); }
 });
 
