@@ -560,13 +560,16 @@ pnpm web:dev
 pnpm web:typecheck
 pnpm web:build
 pnpm web:test
+pnpm web:test:browser
 ```
 
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes them into the Go embed directory. A production Go build
 requires generated assets. Web quality runs the module harness, Vitest/V8 suite
 and a statement gate strictly greater than 90%; it does not start the Go service
-or an installed CLI. The CI Web quality job contributes its result to the final
+or an installed CLI. `pnpm web:test:browser` separately runs the controlled
+module browser fixtures after Playwright Chromium is installed; see the
+[Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
 `checks` gate when selected.
 
 For a disposable full-stack HTTP target, run a command through

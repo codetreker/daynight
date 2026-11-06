@@ -761,42 +761,14 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 
-Go 的 `installed_cli_task_attachment_workflow` 使用既有安装回执与实际服务，比较文本、
-空内容及超过 1 MiB 的二进制；覆盖多级/特殊路径、同 basename、覆盖、超过 100 条
-列表、删除和 requestId。实际进程重启复用同一存储根，核对 metadata、bytes 和完整
-任务资源。回执保存附件 path/size/SHA-256 与分页数量，所有 fixture 的清理 gate
-必须确认 `storageRootRemoved`。
-
-Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上让同一次安装的 CLI
-与页面操作同一批数据；图功能场景属于常规 CI，完整原生容量/超限矩阵由显式本地压力验收保留。
-完整上下文交付另加入 `capacity-external`，原生容量/超限共五个场景；机制与统计
-由[看板设计](daynight-web.md#验证与-ci)拥有。
-另有 `project-view-tabs` 验证项目内任务视图；[双语界面](daynight-web-i18n.md)增加三个功能场景，
-[三状态架构](daynight-task-status.md)拥有当前状态设置。状态、冲突、恢复与组合场景只允许
-登记资源和精确次数的 PUT status；附件写入保持自己的 fixture-scoped allowlist。
-当前常规严格 inventory 为原生、容器各 29 个功能场景，共 58 个；显式本地压力模式另加五项原生容量/超限，共 63 个结果。任务描述阅读、鉴权、设置、
-许可和计时场景仍保有独立的写入边界。
-
-附件场景与
-`language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE，后者分别验证
-语言切换时的浏览状态保持及挂起写入的状态和次数；组件测试以受控语言变化验证在途
-操作的状态和唯一请求。`refresh-staleness` 仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态与几何保留。描述阅读、其他图场景、任务视图及其他语言场景继续 GET/HEAD。
-完整 Chromium channel `chromium` 对 PDF 的证明来自 iframe 实际
-compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通区域分组，独立计算
-各个实心色块的像素数、边界和密度，并在延伸到 frame 右半区的页面候选中检查
-最大的色块。此位置规则基于 fixture 与固定查看器布局，排除仅缩略图已绘制的情形；
-独立边界也使单独绘制的缩略图不会稀释页面色块的密度。成功 PNG 与区域指标保留在绘制回执中，
-匹配阈值的选择依据记录在[组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。成功状态、load 和固定等待均不能代替绘制。独立阅读验收另以真实滚轮、
-键盘及多页 PDF 的末页专用绘制标记证明内容可读至末尾；私有查看器 DOM 只提供
-只读偏移诊断，不能替代真实输入和绘制。实际故障来自隔离数据库与存储文件，
-请求屏障仅控制时序，不伪造服务响应。判定与环境限制见
-[Web 验证说明](../../packages/daynight-web/README.md#production-browser-acceptance)。
-
-运行回执校验 Git SHA/dirty 标记及实际 tarball/entry 摘要；dirty 标记不是脏源码内容
-指纹。CI 继续要求干净 checkout 等于 `GITHUB_SHA`。浏览器、CLI 和辅助子进程/组均
-归本次 run 管理，失败或取消也必须清理。Web CI 完成功能生产浏览器及恢复后，
-再运行一次既有真实部署附件检查，保留配套备份恢复回执。所有通过结论须绑定
-对应实际运行的源码、产物及环境回执。
+Go、CLI 和 Web 分别验证附件存储、协议与界面行为；独立产品组合验证正常同数据
+读写，部署验证拥有持久化和备份恢复。Web 的受控浏览器 fixture 使用完整 Chromium
+检查 PDF iframe compositor 中的专用色块；按连通区域、边界及密度区分页面绘制和
+缩略图，成功状态、load 或固定等待不能代替绘制。多页阅读使用真实滚轮、键盘和末页
+绘制标记，不能以私有查看器 DOM 偏移代替可见结果。
+[Web 验证说明](../../packages/daynight-web/README.md#validation-and-build)拥有模块入口与
+范围。实际验证结果须绑定源码和环境，失败或取消时回收所属资源；受控 API 不证明
+真实数据库或部署行为。
 
 MCP 入口提供附件上传、列表和删除工具。列表使用有界数据库投影及完整项边界分页；首项超过摘要预算时返回路径、续页游标及 REST 附件列表的读取指引，REST 需要 PAT 或浏览器会话，MCP OAuth 凭据不能用于 REST。删除沿用共享附件用例的授权与副作用语义。上传提供有界 inline 内容和下述分块提交；当前 MCP 入口尚不提供内容读取工具。
 

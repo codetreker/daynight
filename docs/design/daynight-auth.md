@@ -672,15 +672,11 @@ URL query、body、Cookie、Authorization、code、App Secret 或身份 origin p
 docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_id == "REQUEST_ID") | {request_id,user_id,team_id,project_id,component,phase,error_code,cause}'
 ```
 
-验证按 AU-V1–AU-V12 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
-生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)记录了实际领取结果后 TCP 断连的历史取舍，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
-重启、撤销、已准入上传和 socket 中断证明。两目标各有一份额外必需回执，当前
-26+26+5 共 57 项 Playwright inventory 与容量门槛保持；项目设置旅程单独拥有阈值读写与未知结果核对。
-
-统一启用的源码绑定结果保留其原始范围，不作为新增代码的完整门禁证明。每次组合
-结果核对当前源码、安装包、进程/镜像与清理；真实上游人工联调单独留证，缺少时
-不宣称全部完成。模型工具预算不适用：不新增 MCP；CLI 不增加认证预检往返，沿用
-既有 request/operation/response/累计预算和 stdout 合同。
+验证按 AU-V1–AU-V12 映射：服务模块验证真实 PostgreSQL 并发、SDK 与受控 UniAuth，
+CLI 和 Web 分别验证客户端协议、错误、状态隔离及恢复。独立产品组合验证真实服务与
+客户端的正常连接。[组合验收决策](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md)
+记录原有断连、撤销及同数据验证的历史取舍。结果绑定实际源码、产物和环境，真实上游
+人工联调单独留证；缺少证据时不宣称完成。CLI 保持既有 request/operation/response/累计预算和 stdout 合同。
 
 ## 交付边界
 

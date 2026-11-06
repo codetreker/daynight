@@ -31,15 +31,11 @@ cases; management and member cases
 retain 30 seconds. Preview startup retains its 90-second limit, strict port 4194
 and refusal to reuse an existing server. A new run owns and stops its preview.
 
-Browser CI shard 2 invokes the shared configuration once after editor navigation
-and before Bot viewport checks. The command keeps a 540-second aggregate budget,
-the sum of the three former 180-second command limits. Cases still enforce their
-own original deadlines, while the combined command no longer enforces separate
-three-minute group boundaries. Projects remain independent: after a case fails,
-other Team cases can finish in their fresh contexts before Playwright returns a
-failed command. That failure or cancellation prevents later Bot and full-stack
-acceptance work. The outer job retains its 20-minute limit and the final required
-checks retain their existing gates.
+The [Web module browser entry](2026-11-06-web-module-browser-entry.md) invokes
+this configuration once in its serial sequence. Cases enforce their own deadlines
+and can finish in their fresh contexts after another case fails; the resulting
+failed command stops later configurations. The former full-stack browser shard
+was removed when module and product responsibilities were separated.
 
 ## Alternatives
 
@@ -67,7 +63,5 @@ a particular whole-job speedup.
 
 Fixture state must remain local to each test's browser context and API routes.
 Introducing mutable server state would require reviewing whether the preview
-can still be shared. The command's combined deadline preserves its former total
-budget, so individual groups can consume time that another group leaves unused;
-performance measurements must identify that budget composition separately from
-preparation savings.
+can still be shared. Individual projects retain their test deadlines; performance measurements must
+separate browser work from shared preparation.

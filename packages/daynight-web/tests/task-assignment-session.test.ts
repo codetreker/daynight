@@ -57,6 +57,21 @@ describe('assignment mutation ownership', () => {
     expect(writes.mock.calls[0]![4].aborted).toBe(false); expect(reads).toHaveBeenCalledOnce(); const saved = assigned(); await synchronize(sessions, saved); pending.resolve(saved);
     await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed')); expect(writes).toHaveBeenCalledOnce();
   });
+  it('reads a 409 conflict without replay and uses the newly reviewed version for another assignment', async () => {
+    const sessions = createSessions(); await open(sessions);
+    const current = assigned(initial, otherPerson); const saved = assigned(current, person);
+    const error = new ApiError('server', 409, 'version_conflict', 'assignment-conflict');
+    writes.mockRejectedValueOnce(error).mockResolvedValueOnce(saved); reads.mockResolvedValueOnce(current);
+    sessions.setAssignedTo(project, task, person, initial.version); await synchronize(sessions, current);
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('conflict'));
+    await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(current)); expect(sessions.snapshot(project, task).mutation.error).toBe(error);
+    expect(writes).toHaveBeenCalledOnce();
+    sessions.setAssignedTo(project, task, person, initial.version); expect(writes).toHaveBeenCalledOnce();
+    sessions.setAssignedTo(project, task, person, current.version); await synchronize(sessions, saved);
+    await waitFor(() => expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'));
+    expect(writes).toHaveBeenCalledTimes(2); expect(writes.mock.calls[1]![3]).toBe(current.version);
+    expect(sessions.snapshot(project, task).detail).toEqual(saved);
+  });
   it.each([
     { version: initial.version }, { version: initial.version + 2n }, { allowAgents: true }, { status: 'done' as const }, { requiredPlatform: 'macos' as const },
     { startedAt: stamp }, { completedAt: stamp }, { title: 'Unreviewed title' }, { description: 'Unreviewed content' }, { createdAt: nextStamp },

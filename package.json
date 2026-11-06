@@ -16,6 +16,7 @@
     "web:dev": "pnpm --filter @codetreker/daynight-web dev",
     "web:typecheck": "pnpm --filter @codetreker/daynight-web typecheck",
     "web:test": "pnpm --filter @codetreker/daynight-web test",
+    "web:test:browser": "pnpm --filter @codetreker/daynight-web test:browser",
     "web:build": "pnpm --filter @codetreker/daynight-web build && pnpm --filter @codetreker/daynight-web exec node scripts/publish-assets.mts",
     "completion:acceptance": "pnpm --filter @codetreker/daynight completion:acceptance",
     "dev:install": "node scripts/dev-install.mjs",

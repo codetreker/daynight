@@ -1878,6 +1878,7 @@ records the original complete Task Detail composition choices.
 pnpm web:typecheck
 pnpm web:build
 pnpm web:test
+pnpm web:test:browser
 ```
 
 The build typechecks the package and emits production HTML and hashed assets to
@@ -1901,7 +1902,21 @@ root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
 excludes those files while retaining compact correctness and boundary cases. Either command can be
 run directly with `pnpm --filter @codetreker/daynight-web test:harness` or
 `pnpm --filter @codetreker/daynight-web test:coverage`; `pnpm web:test` remains the
-complete local test gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
+unit and tooling gate. `pnpm web:test:browser` separately runs every module
+browser configuration serially, each with its own Vite host and controlled API
+fixture. Install Playwright Chromium first; a failed or cancelled suite fails the
+command. The runner requests Playwright cleanup, checks its own preview processes
+and isolated browser profiles, and reports cleanup failures. If a forced stop
+leaves ownership uncertain, the command fails without claiming cleanup. Windows
+uses its process-tree terminator; orphaned browsers whose identity cannot be
+verified are reported rather than terminated.
+
+The attachment and task-reading fixtures exercise native frames, relative HTML
+resources, PDF page pixels, selection, focus and narrow reading layouts. Graph
+fixtures check rendered dependency geometry and retained viewports. Step and task
+controls exercise browser history, keyboard focus and short viewport menus. These
+controlled responses establish frontend behavior; they cannot establish a server
+commit or authorization decision. All `src/**/*.ts` and `src/**/*.tsx` files belong
 to the product manifest, including the browser entry. Tests live outside `src`.
 The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
@@ -1970,9 +1985,9 @@ remains a separate mandatory check; classification is not a substitute for it.
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
 The Web selector runs `verify-web-quality`; the final gate requires it to succeed
 when selected. The quality command runs the harness, Vitest/V8 collection and
-coverage checker serially with bounded stages. The navigation and Team browser
-fixtures above run independently; the assistant browser suite below also runs in
-the selected Web CI job.
+coverage checker serially with bounded stages. The module browser entry runs the navigation, Team, assistant and other
+fixture configurations independently; the assistant browser suite below also runs
+in the selected Web CI job.
 
 ### Assistant browser validation
 

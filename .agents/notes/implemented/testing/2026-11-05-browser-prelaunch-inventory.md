@@ -33,8 +33,9 @@ This partially supersedes the second-sampling allowance in the
 That decision correctly refused to authorize a replacement from a mismatched
 receipt. Moving the refusal before persistence preserves its safety rationale
 while avoiding a durable record known to disagree with recovery's inventory.
-The [Web design](../../../../docs/design/daynight-web.md#生产浏览器验收工具)
-owns the driver and recovery mechanisms.
+The former full-stack acceptance runner has since been removed. The
+[Web module browser entry](2026-11-06-web-module-browser-entry.md) runs controlled
+frontend fixtures and does not recreate its inventory or recovery mechanisms.
 
 ## Alternatives
 
