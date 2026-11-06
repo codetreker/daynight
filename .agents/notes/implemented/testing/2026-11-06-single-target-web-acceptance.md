@@ -115,14 +115,16 @@ changes. Navigation and functional branches overlap: a shorter navigation comman
 does not imply the same reduction in the complete job. Branch completion, resource
 competition and the final join must be measured independently.
 
-The [case-shard decision](2026-11-04-web-ci-case-shards.md) retains partition and
-aggregate ownership. This decision replaces the dual-target scheduling in the
-[functional overlap decision](2026-11-04-web-functional-target-overlap.md), while
-preserving its phase-private browser ownership and CLI cleanup constraints.
+The archived [case-shard decision](../../archived/testing/2026-11-04-web-ci-case-shards.md)
+records the original partition and aggregate-gate rationale. This note owns the
+current single-target shard contract and replaces the dual-target scheduling
+recorded by the archived [functional overlap decision](../../archived/testing/2026-11-04-web-functional-target-overlap.md),
+retaining phase-private browser ownership and CLI cleanup constraints.
 The [navigation overlap decision](2026-11-06-web-browser-job-overlap.md) retains
 its stable-network boundary; the permission handoff it previously joined no
-longer exists. The [local stress decision](2026-11-03-local-stress-suites.md)
-continues to own the separation between routine and scale workloads.
+longer exists. The archived [local stress decision](../../archived/testing/2026-11-03-local-stress-suites.md)
+records the original separation of routine and scale workloads; the selected
+native stress contract is defined above.
 
 ## Alternatives
 

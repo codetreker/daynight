@@ -8,3 +8,9 @@ type TeamPage struct {
 	Items   []model.Team
 	HasMore bool
 }
+
+// TeamInvitationPage is bounded by the requested page size.
+type TeamInvitationPage struct {
+	Items   []model.TeamInvitation
+	HasMore bool
+}

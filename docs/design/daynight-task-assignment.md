@@ -1,6 +1,6 @@
 # Task 负责人设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 6 持久资料缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 负责人命令、Web 负责人写入/展示/筛选和 schema 6 持久资料缓存，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/archived/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -40,7 +40,7 @@ Tasks.write 在明确 no-op/删除路径之后，只对真正 create/update 的�
 
 完整 Task、task-sync 和图各自的 projection/scanner/assembler 直接读取 assigned_to::text；字段、版本、依赖和属性属于同一既有读取快照。summary 与图携带轻量 UUID，不嵌入可变用户资料。
 
-锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；released/completed 历史继续保留，新的负责人不因此获得旧执行的控制权。[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有领取资格与原执行授权分离的取舍。
+锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；released/completed 历史继续保留，新的负责人不因此获得旧执行的控制权。[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)拥有领取资格与原执行授权分离的取舍。
 
 ## 原生任务筛选与游标
 
@@ -100,7 +100,7 @@ TaskAssigneesProvider 在认证 TaskCache 边界中提供按项目共享的人�
 
 profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 userFence 和 profile {userId,version,name,avatarUrl}，不存 hasProjectAccess。持久读取与写入经过当前 ticket 的 userFence/cacheGeneration 校验，发布前再次检查认证 scope、项目历史及所有权。缓存事件与读取捕获先采用当前 userFence/cacheGeneration，再判断当前在线清单是否存在；generation 更替立即使旧请求失效。当前投影为 assigneeVersions:null 或已无授权投影时，撤回 people、资格清单、unresolved、临时例外及目录 ready 状态；目录已请求则回到 loading，否则为 idle。跨标签页先安装新历史而本页同步仍在途时也遵守这一规则，不能因缺少新清单跳过撤回。相同 userFence 的原始 profiles 和待保存内容独立保留，只有新在线清单匹配后才恢复显示；userFence 改变清除旧内容。页面卸载关闭连接并保留内容，注销/换号/会话失效及项目撤权清除所属资料。GET 成功后可在当前 scope 显示资料；持久写入失败保留 dirty 内容与可恢复错误，Retry 先重试保存，不重传已有内容。损坏资料在事务内定向清除当前项目 profiles，保留 Task 记录并暴露错误，后续 Retry 按当前清单重新读取。错误和清理故障保留原状态与原因，不制造失权资料。
 
-可信同用户 404 先由 scope.canRevokeProject 核验捕获 ticket，再沿 scope.signal 撤权；菜单关闭或需求变化不丢失父项目失权，旧 E1 不能清新 E2。[请求复用决策](../../.agents/notes/implemented/bug-fix/2026-11-04-task-view-request-reuse.md)保存内容版本、持久复用和元数据扫描成本的取舍。
+可信同用户 404 先由 scope.canRevokeProject 核验捕获 ticket，再沿 scope.signal 撤权；菜单关闭或需求变化不丢失父项目失权，旧 E1 不能清新 E2。[请求复用决策](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md)保存内容版本、持久复用和元数据扫描成本的取舍。
 
 TaskAssigneeIdentity 显示真实 nullable 姓名/头像，name 缺失显示短 UUID，图片失败使用当前身份首字形态；不生成 email。TaskAssigneeSelect 紧邻状态 24px 成组，TaskAssigneeFilter 拥有 all/me/unassigned/user 显示状态。AssigneePicker 的 fixed 菜单在 surface 的焦点所有者子树内，尺寸和 12px 边界按视口计算，随 scroll/resize/fullscreen 及进入动画稳定定位；键盘与 Escape/Tab/外部点击保留现有详情层级和焦点。
 

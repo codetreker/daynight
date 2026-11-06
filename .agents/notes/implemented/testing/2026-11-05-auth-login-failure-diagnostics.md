@@ -23,8 +23,7 @@ contains only its operation label, status, duration and optional error name.
 Labels describe fixed test actions and layout cases; they contain no service URL,
 OAuth query, credential or response body. The attachment complements the existing
 source-qualified Playwright report and does not change scenario selection or
-acceptance thresholds. The [journey timing decision](2026-11-04-web-journey-timing.md)
-owns the existing use of named steps for other journeys.
+acceptance thresholds. The [journey timing decision](../../archived/testing/2026-11-04-web-journey-timing.md) records the rationale for the existing use of named steps for other journeys.
 
 The journey retains its body error while attempting every owned cleanup action.
 Each cleanup action has an independent five-second limit, including removal and
@@ -40,8 +39,8 @@ not leave their rejection unhandled. The provider timer and listener are removed
 during cleanup. Raw CDP interception remains necessary: the provider request
 follows real application and gateway redirects, which Playwright's user routing
 does not intercept as independent requests. The
-[authentication activation decision](../architecture/2026-10-22-authentication-activation.md)
-continues to own the fixture and trace privacy policy.
+[authentication activation decision](../../archived/architecture/2026-10-22-authentication-activation.md)
+records the rationale for the existing fixture and trace privacy policy.
 
 ## Alternatives
 

@@ -10,8 +10,8 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 [决策记录](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)及
 [创建预检决策](../../.agents/notes/archived/bug-fix/2026-10-21-project-create-repository-discovery.md)，
 有界 ready 选择的取舍见[选择决策](../../.agents/notes/archived/feature/2026-10-21-bounded-ready-task-selection.md)，
-列表默认值与文本输出见[列表决策](../../.agents/notes/implemented/feature/2026-10-22-task-list-defaults.md)，
-JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplification/2026-10-22-task-list-json-description.md)。
+列表默认值与文本输出见[列表决策](../../.agents/notes/archived/feature/2026-10-22-task-list-defaults.md)，
+JSON 列表字段见[描述省略决策](../../.agents/notes/archived/simplification/2026-10-22-task-list-json-description.md)。
 任务起止字段与图时钟的读取机制由[执行计时架构](daynight-task-timing.md)扩展；
 CLI 同步保留 `startedAt`、`completedAt`、`observedAt`、Project.ownership 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
@@ -30,8 +30,8 @@ task list 的 JSON 仅省略 `description`，task search 使用独立精简投�
 流传输及输出辅助进程的选择。
 
 CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设备授权自动取得的凭据，
-共享 HTTP Bearer 传输与显式 PAT 配置继续复用；机制由
-[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)拥有。
+共享 HTTP Bearer 传输与显式 PAT 配置继续复用；机制的历史取舍见
+[设备登录决策](../../.agents/notes/archived/architecture/2026-10-25-cli-device-login.md)。
 [鉴权架构](daynight-auth.md)和[需求](../spec/daynight-auth.md)拥有完整项目授权机制与行为；生产服务对全部
 项目、任务、图和附件业务请求强制鉴权。设备登录复用现有 UniAuth 浏览器会话批准，
 取得的凭据进入正常配置与 Bearer 请求通道；既有真实服务及预算验收的 PAT bootstrap 继续用于其独立验证。仓库关联不保存凭据、
@@ -463,7 +463,7 @@ request ID 和读取当前状态的提示，避免递归格式化原始响应及
 选择 Project 或 Team API；秘密只进入请求 body，不进入参数、配置和诊断。解析失败在
 构造可递归输出的 cause 之前丢弃秘密原文。读取 `/me` 绑定真实用户，响应须核对主体；
 预览不消费，确认后 accept 只提交一次。非交互无确认不写；未知结果不能自动重发，也
-不能根据后续关系读取声称已找回原回执。[CLI 邀请接收决策](../../.agents/notes/implemented/architecture/2026-11-04-cli-invitation-receiver.md)
+不能根据后续关系读取声称已找回原回执。[CLI 邀请接收决策](../../.agents/notes/archived/architecture/2026-11-04-cli-invitation-receiver.md)
 记录输入与身份边界，服务端关系及消费规则由[鉴权架构](daynight-auth.md#数据与并发)拥有。
 
 项目转移按现有仓库解析规则只读选择 Project，不持久化绑定，也不解析默认 Team。
@@ -533,7 +533,7 @@ create/update 的 --required-platform 设置枚举，update --clear-required-pla
 省略保留。list/ready --compatible-platform 与许可、状态、ready共同投影到服务查询并绑定cursor，
 先于分页/上限，客户端验证响应匹配并暴露协议错，不本地删项。平台不改变ready或人工setter。
 
-负责人选项属于普通任务元数据。create/update 的 --assigned-to 接受自由UUID文本并规范化；update 的 --clear-assigned-to 发送null，与设置冲突。update 省略时不生成 key，不把 null 当作 undefined；AssignedTo 也参与至少一个更新字段判断。create 省略负责人时，在同一 ServerSession 中复用 getCurrentUser() 取得认证账号 id，并在创建请求中显式提交 assignedTo。显式 UUID 跳过身份查询；身份读取后再次检查取消，失败或取消不调用 createTask。这个默认值属于 CLI，ApiClient 和服务端的可空创建输入保持原有语义。[CLI 创建默认负责人决策](../../.agents/notes/implemented/process/2026-11-04-cli-create-default-assignee.md)保存取舍。写入仅UUID，list另接受小写me/unassigned并传到每页。ready命令不增加该字段；用户可用task list --ready组合查询。worker 新候选使用 me，而完整既有 claim 库存仍省略该条件；[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有运行时资格规则，CLI 元数据命令保留独立职责。
+负责人选项属于普通任务元数据。create/update 的 --assigned-to 接受自由UUID文本并规范化；update 的 --clear-assigned-to 发送null，与设置冲突。update 省略时不生成 key，不把 null 当作 undefined；AssignedTo 也参与至少一个更新字段判断。create 省略负责人时，在同一 ServerSession 中复用 getCurrentUser() 取得认证账号 id，并在创建请求中显式提交 assignedTo。显式 UUID 跳过身份查询；身份读取后再次检查取消，失败或取消不调用 createTask。这个默认值属于 CLI，ApiClient 和服务端的可空创建输入保持原有语义。[CLI 创建默认负责人决策](../../.agents/notes/archived/process/2026-11-04-cli-create-default-assignee.md)保存取舍。写入仅UUID，list另接受小写me/unassigned并传到每页。ready命令不增加该字段；用户可用task list --ready组合查询。worker 新候选使用 me，而完整既有 claim 库存仍省略该条件；[本人领取决策](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md)记录了运行时资格规则的历史取舍，CLI 元数据命令保留独立职责。
 
 `task ready` 将常见的下一项工作选择限制为前 N 项，避免项目积累任务后每次
 选择都读取完整 ready 集合。命令校验 `--limit` 为十进制整数 `1..100`，省略时
@@ -818,7 +818,7 @@ CI 将覆盖率与 E2E 放在两个并行的 20 分钟作业中，二者使用�
 E2E 作业保留真实进程、安装产物溯源及全部场景清理。race instrumentation 在 PR CI 关闭、
 main CI 和本地默认开启，两个阶段及 E2E 服务 binary 使用一致模式，具体选择与回执由
 [服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。分工见
-[独立作业决策](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)。
+[独立作业决策](../../.agents/notes/archived/testing/2026-11-04-server-e2e-ci-jobs.md)。
 根目录 `.tmp/project-task-service-evidence.json` 拥有常规期限证据，
 `.tmp/project-task-stress-evidence.json` 拥有本地完整字节证据；schema 1 中的 `suite`
 和精确场景名集合验证所选工作负载。回执记录所属阶段的安装身份、Go 命令/覆盖率

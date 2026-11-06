@@ -4,7 +4,7 @@
 
 ## 运行时结构
 
-语言目录、React Context 和原生 `Intl` 共同提供展示能力，两个目录随 Web 构建一同发布。运行时没有翻译服务、语言资源请求、模板字符串解析器或通用状态框架。选型的比较、成本及重审条件见[决策记录](../../.agents/notes/implemented/architecture/2026-10-22-web-locale-runtime.md)。
+语言目录、React Context 和原生 `Intl` 共同提供展示能力，两个目录随 Web 构建一同发布。运行时没有翻译服务、语言资源请求、模板字符串解析器或通用状态框架。选型的比较、成本及重审条件见[决策记录](../../.agents/notes/archived/architecture/2026-10-22-web-locale-runtime.md)。
 
 ```text
 packages/daynight-web/

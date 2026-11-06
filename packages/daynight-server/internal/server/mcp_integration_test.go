@@ -99,9 +99,10 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	list, err := productionClient.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
-		t.Fatalf("production tools: %#v, %v", list, err)
+	if err != nil {
+		t.Fatalf("list production tools: %v", err)
 	}
+	assertMCPProductionTools(t, list.Tools)
 
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
@@ -190,7 +191,31 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
 	list, err = bobProduction.ListTools(ctx, nil)
 	cancel()
-	if err != nil || len(list.Tools) != 0 {
+	if err != nil {
 		t.Fatalf("remaining PAT discovery: %#v, %v", list, err)
+	}
+	assertMCPProductionTools(t, list.Tools)
+}
+
+func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
+	t.Helper()
+	want := map[string]bool{
+		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
+		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
+		"invitation_inspect": true, "invitation_accept": true,
+		"task_step_list": true, "task_step_show": true, "task_step_add": true, "task_step_update": true,
+		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,
+		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
+		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
+	}
+	for _, tool := range tools {
+		if !want[tool.Name] {
+			t.Errorf("unexpected or duplicate production tool %s", tool.Name)
+			continue
+		}
+		delete(want, tool.Name)
+	}
+	for name := range want {
+		t.Errorf("missing production tool %s", name)
 	}
 }

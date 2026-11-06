@@ -23,7 +23,7 @@ calls; a version-scoped pnpm patch limits actual Gantt calendar steps across a
 complete `getTasks()` compilation. The [design](../../../../docs/design/daynight-task-inspection.md#mermaid-图表)
 owns the counts, reset boundaries and fixed-SDK integration.
 
-The [original flowchart decision](2026-10-24-markdown-flowcharts.md) retains its
+The [original flowchart decision](../../archived/feature/2026-10-24-markdown-flowcharts.md) retains its
 static image, shared queue, image-node refusal and lifecycle rationale. This
 decision extends its type and budget policy. Output uses a positive finite root
 viewBox to set intrinsic SVG image dimensions. Event Modeling's XHTML labels
