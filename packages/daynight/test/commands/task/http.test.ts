@@ -57,6 +57,22 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
+  it("keeps assigned responsibility and complete active worker ownership through a same-assignee update", async () => {
+    const active = { ...task, status: "in_progress", ready: false, startedAt: time, allowAgents: true, assignedTo: accountId, properties: { worker: { ...worker, userId: accountId }, pullRequests: [] } } as const;
+    const f = await fixture((_request, response) => respond(response, active));
+    await f.run(["show", taskId, "--json"]);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(active);
+    await f.run(["update", taskId, "--assigned-to", accountId.toUpperCase(), "--if-version", String(active.version)]);
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: active.version, assignedTo: accountId });
+    expect(f.context.stdout.mock.calls[1]![0]).toContain(`Assigned to: ${accountId}\n`);
+    await f.run(["show", taskId, "--json"]);
+    expect(parseApiJson(f.context.stdout.mock.calls[2]![0])).toEqual(active);
+    expect(f.requests.map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([
+      `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
+      `GET /api/v1/projects/${projectId}`, `PATCH /api/v1/projects/${projectId}/tasks/${taskId}`,
+      `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}`,
+    ]);
+  });
   it("reports a stale property removal without retrying or printing success", async () => {
     const f = await fixture((_request, response) => respond(response, { error: { code: "version_conflict", message: "Property version changed", requestId: "stale-property" } }, 409));
     const exit = await runCli(["task", "remove-property", taskId, "pullRequests", "--if-version", "9007199254740993", "--project", projectId], f.context, [{ name: "task", description: "Manage tasks", load: async () => ({ run: (args, current) => runTaskCommand(args, current, f.dependencies) }) }]);

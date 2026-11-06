@@ -45,6 +45,17 @@ const fixture = (failure?: "lost" | "malformed" | "wrong-principal" | "malicious
 };
 
 describe("Team invitation command", () => {
+  it("reports the second revoke as unchanged in text without replay", async () => {
+    const f = fixture();
+    expect(await f.run(["invitation", "revoke", invitationId, "--team", teamId, "--confirm", "--json"])).toBe(0);
+    f.context.stdout.mockClear();
+    expect(await f.run(["invitation", "revoke", invitationId, "--team", teamId, "--confirm"])).toBe(0);
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Invitation ${invitationId} was not changed.\n`);
+    const writes = f.fetch.mock.calls.filter(([, init]) => init!.method === "DELETE");
+    expect(writes).toHaveLength(2);
+    for (const [, init] of writes) expect(JSON.parse(String(init!.body))).toEqual({ expectedUserId: userId });
+    expect(f.context.stderr).not.toHaveBeenCalled();
+  });
   it("creates a link once, lists metadata, then preserves both revoke outcomes", async () => {
     const f = fixture();
     expect(await f.run(["invitation", "create", "--team", teamId, "--confirm"])).toBe(0);

@@ -21,7 +21,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
 const json = (body: unknown) => new Response(stringifyApiJson(body), { headers: { "content-type": "application/json", "Daynight-User-ID": userId } });
 
-const fixture = (options: { lost?: boolean; interactive?: boolean; answer?: string } = {}) => {
+const fixture = (options: { lost?: boolean; interactive?: boolean; answer?: string; realInput?: boolean } = {}) => {
   const operation = createOperation(); cleanups.push(() => operation.dispose());
   const fetch = vi.fn<typeof globalThis.fetch>(async (url) => {
     const pathname = new URL(String(url)).pathname;
@@ -40,12 +40,25 @@ const fixture = (options: { lost?: boolean; interactive?: boolean; answer?: stri
     const result = await command({ api, operation, serverUrl: "http://localhost:8787", serverConfiguration: { serverUrl: "http://localhost:8787" } });
     if (typeof result === "string") current.stdout(result); else if (result !== undefined) current.stdout(result.output);
   };
-  const readLink = vi.fn<typeof readInvitationLink>(async () => link);
+  const readLink = vi.fn<typeof readInvitationLink>(options.realInput ? readInvitationLink : async () => link);
   const run = (args: readonly string[]) => runCli(["invitation", ...args], context, [{ ...invitationDefinition, load: async () => ({ run: (rest, current) => runInvitationCommand(rest, current, { runServerCommand: runServer, readLink }) }) }]);
   return { context, fetch, readLink, run };
 };
 
 describe("invitation command", () => {
+  it("inspects CRLF stdin and prints the complete response without exposing or accepting its secret", async () => {
+    const original = Object.getOwnPropertyDescriptor(process, "stdin")!; const input = new PassThrough();
+    Object.defineProperty(process, "stdin", { configurable: true, value: input });
+    try {
+      const f = fixture({ realInput: true });
+      const running = f.run(["inspect", "--stdin", "--json"]); input.end(`${link}\r\n`);
+      expect(await running).toBe(0);
+      expect(JSON.parse(f.context.stdout.mock.calls[0]![0])).toEqual({ team, membership: null });
+      expect(f.fetch.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(["/api/v1/me", "/api/v1/team-invitations/inspect"]);
+      expect(JSON.parse(String(f.fetch.mock.calls[1]![1]!.body))).toEqual({ token: secret });
+      expect(JSON.stringify([...f.context.stdout.mock.calls, ...f.context.stderr.mock.calls])).not.toContain(secret);
+    } finally { Object.defineProperty(process, "stdin", original); input.destroy(); }
+  });
   it("inspects and accepts the selected team as the current principal without exposing the link", async () => {
     const f = fixture();
     expect(await f.run(["accept", "--stdin", "--confirm", "--json"])).toBe(0);
