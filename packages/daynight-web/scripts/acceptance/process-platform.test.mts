@@ -36,12 +36,14 @@ test('native identity includes precise stable platform/start identity and detach
     assert.equal(identity.sameProcess({ ...first, group: first.group + 1 }, first), false);
     assert.equal(identity.sameProcess({ ...first, platform: 'other' } as unknown as identity.ProcessIdentity, first), false);
     await assert.rejects(identity.requireStopped(first), /still running/);
-    identity.requireGroupStopped(first.group + 10_000_000);
+    assert.equal(identity.isGroupStopped(first.group), false);
     assert.throws(() => identity.requireGroupStopped(first.group), /still running/);
     await stop(child);
     assert.equal(await identity.processIdentity(first.pid), null);
     await identity.requireStopped(first);
+    assert.equal(identity.isGroupStopped(first.group), true);
     identity.requireGroupStopped(first.group);
+    identity.requireGroupStopped(first.group + 10_000_000);
   } finally { await stop(child); }
 });
 

@@ -49,9 +49,7 @@ const scenario = (name: string): Scenario => ({ name, title: name, durationMs: 1
 
 test('keeps functional and explicit local stress inventory totals distinct', () => {
   assert.equal(functionalNames.length, 41);
-  assert.equal(functionalNames.length * 2, 82);
   assert.equal(stressNativeNames.length, 46);
-  assert.equal(stressNativeNames.length + functionalNames.length, 87);
 });
 
 test('verifies the complete functional inventory for the container target', () => {

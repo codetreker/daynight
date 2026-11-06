@@ -34,7 +34,7 @@ const fixture = async (run: (directory: string, source: (path: string, text?: st
 test('counts all nested product statements exactly and ignores nonproduct entries', async () => {
   await fixture(async (directory, source) => {
     const first = await source('main.ts');
-    const second = await source('nested/view.tsx', 'export const view = <p>Task</p>;');
+    await source('nested/view.tsx', 'export const view = <p>Task</p>;');
     const declaration = await source('types.d.ts', 'export interface Task { title: string }');
     const result = await analyzeCoverage({
       [first]: entry(first, [1, 0]),
@@ -52,7 +52,6 @@ test('counts all nested product statements exactly and ignores nonproduct entrie
       { path: 'src/types.d.ts', runtime: false },
     ]);
     assert.doesNotThrow(() => requireCoverageAbove90(result));
-    assert.equal(second, join(directory, 'src/nested/view.tsx'));
   });
 });
 

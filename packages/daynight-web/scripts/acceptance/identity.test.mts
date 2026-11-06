@@ -13,21 +13,6 @@ test('native identity records executable and start time and rejects an active ow
   await assert.rejects(requireStopped(identity!), /still running/);
   await assert.rejects(requireStopped({ ...identity!, executable: '/different-executable' }), /still running/);
 });
-test('process group recovery refuses an active owned group and accepts its completed group', async () => {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
-  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-  try {
-    await new Promise<void>((resolve, reject) => { child.once('spawn', () => resolve()); child.once('error', reject); });
-    const identity = await processIdentity(child.pid!);
-    assert.notEqual(identity, null);
-    assert.equal(isGroupStopped(child.pid!), false);
-    assert.throws(() => requireGroupStopped(child.pid!), /still running/);
-    child.kill('SIGTERM'); await exited;
-    await requireStopped(identity!);
-    assert.equal(isGroupStopped(child.pid!), true);
-    requireGroupStopped(child.pid!);
-  } finally { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; } }
-});
 test('invalid process identities fail before process operations', async () => {
   for (const pid of [0, 1, -1, 1.5, NaN]) {
     await assert.rejects(processIdentity(pid));
