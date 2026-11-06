@@ -6,6 +6,7 @@ import type { TaskSessionClient } from './client';
 import type { SessionPresentationSlots } from './session-presentation-slots';
 import { useSessionDisplayPreference } from './useSessionDisplayPreference';
 import { useSessionFullscreen } from './useSessionFullscreen';
+import { useSessionColumnLayout } from './useSessionColumnLayout';
 import { SessionDisplayMenu } from './SessionDisplayMenu';
 import { SessionComposer } from './SessionComposer';
 import { SessionTimeline, type SessionTimelineReading } from './SessionTimeline';
@@ -50,6 +51,7 @@ export function SessionView({ client, userId, active, current, reading, fullscre
   const available = s !== null && view.status !== 'unavailable';
   const operations = [...view.state.operations.values()].filter(operation => operationNeedsAttention(operation, view.operationProgress));
   const readOnly = s?.lifecycle !== 'active';
+  useSessionColumnLayout(fullscreen.sectionRef, available && !readOnly ? `${userId}/${sessionFenceKey(s)}` : null);
   const archiveLabel = view.archiveState === 'ready' ? m.archived : view.archiveState === 'failed' ? m.archiveFailed : view.archiveState === 'unavailable' ? (s?.lifecycle === 'draining' ? m.archivePreparing : m.archiveUnavailable) : view.archiveState === 'pending' ? m.archivePending : m.archiveLoading;
   const presentation = s ? selectSessionPresentation({ snapshot: s, report: view.startupReport, connected, error: view.error, errorCode: view.errorCode, now: Math.max(now, Date.now()), previouslyConnected: view.environmentConnected }) : null;
   const runtimeReady = presentation?.operational === true;
