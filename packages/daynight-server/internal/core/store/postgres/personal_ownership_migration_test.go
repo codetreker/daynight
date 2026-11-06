@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -50,7 +49,13 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 	result := map[string]string{}
 	for _, table := range []string{"users", "projects", "tasks", "task_attachments", "project_invitations", "personal_access_tokens", grants} {
 		var value string
-		if err := s.Pool.QueryRow(context.Background(), `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb)::text FROM `+table+` t`).Scan(&value); err != nil {
+		projection := `to_jsonb(t)`
+		if table == "projects" {
+			// Later lifecycle migrations add a nullable field; compare all original
+			// columns while checking that field separately after the full upgrade.
+			projection = `(to_jsonb(t)-'deleted_at')`
+		}
+		if err := s.Pool.QueryRow(context.Background(), `SELECT coalesce(jsonb_agg(`+projection+` ORDER BY `+projection+`::text),'[]'::jsonb)::text FROM `+table+` t`).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
 		key := table
@@ -80,11 +85,21 @@ func TestPersonalOwnershipMigrationPreservesFactsAndSequence(t *testing.T) {
 			if err := s.Pool.QueryRow(ctx, `SELECT last_value,is_called FROM project_member_versions`).Scan(&highBefore, &calledBefore); err != nil {
 				t.Fatal(err)
 			}
-			if err := migrate(ctx, s.Pool, schemaMigrations); err != nil {
+			if err := migrate(ctx, s.Pool, schemaMigrations[:32]); err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(before, ownershipMigrationFacts(t, s, "project_grants")) {
 				t.Fatal("migration changed grants, invitations, identity or project content")
+			}
+			if err := migrate(ctx, s.Pool, schemaMigrations); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, ownershipMigrationFacts(t, s, "project_grants")) {
+				t.Fatal("later migrations changed retained grants, invitations, identity or project content")
+			}
+			var allLive bool
+			if err := s.Pool.QueryRow(ctx, `SELECT bool_and(deleted_at IS NULL) FROM projects`).Scan(&allLive); err != nil || !allLive {
+				t.Fatalf("existing projects are not live after lifecycle migration: %v %v", allLive, err)
 			}
 			var catalogValid bool
 			if err := s.Pool.QueryRow(ctx, `SELECT to_regclass('project_member_versions') IS NULL

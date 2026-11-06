@@ -180,7 +180,8 @@ type TransferAdmission struct {
 
 // AdmitTransfer validates the current Task and authority once. The caller must
 // hold the private permit until Close and reserve staged bytes before Put.
-// Later Task deletion or access revocation does not cancel the admitted call.
+// Revocation after admission does not cancel the admitted identity. Publication
+// still serializes with Task and Project deletion.
 func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Principal, projectID, taskID, path, contentType string, namespace filestorage.TransferNamespace) (*TransferAdmission, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return nil, err
@@ -225,6 +226,13 @@ func (s *Attachments) AdmitTransfer(ctx context.Context, principal model.Princip
 // Put consumes an admission at most once and leaves cleanup of staged objects
 // to the owning transfer namespace.
 func (a *TransferAdmission) Put(ctx context.Context, content io.Reader) (model.Attachment, bool, error) {
+	return a.PutFrom(ctx, func(store.AttachmentMutationScope) (io.ReadCloser, error) { return io.NopCloser(content), nil })
+}
+
+// PutFrom constructs and closes its reader within the Task lifecycle scope. A
+// transfer reader must hold its private permit and use only scope-bound receipt
+// reads, avoiding a Task-to-transfer lock inversion during Project deletion.
+func (a *TransferAdmission) PutFrom(ctx context.Context, source func(store.AttachmentMutationScope) (io.ReadCloser, error)) (model.Attachment, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed || a.used {
@@ -235,16 +243,34 @@ func (a *TransferAdmission) Put(ctx context.Context, content io.Reader) (model.A
 	if err != nil {
 		return model.Attachment{}, false, fmt.Errorf("generate staged attachment ID: %w", err)
 	}
-	info, err := a.private.PutTransfer(ctx, a.namespace, object.String(), content)
-	if err != nil {
-		return model.Attachment{}, false, fmt.Errorf("stage attachment content: %w", err)
-	}
 	var attachment model.Attachment
 	var created, fileStarted bool
 	completion, err := a.service.mutations.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+		presence, err := scope.LockTaskPresence(ctx, a.address.ProjectID, a.address.TaskID)
+		if err != nil {
+			return err
+		}
+		if err := scope.ProjectLive(ctx, a.address.ProjectID); err != nil {
+			return projectcore.LookupError(err)
+		}
+		if !presence.Found {
+			return taskcore.NotFound(model.ErrNotFound)
+		}
+		if presence.DeletedAt != nil {
+			return taskcore.NotFound(model.ErrTaskDeleted)
+		}
 		dao := scope.AttachmentDAO()
 		if err := attachmentcore.CheckPathConflict(ctx, dao, a.address); err != nil {
 			return err
+		}
+		content, err := source(scope)
+		if err != nil {
+			return err
+		}
+		info, stageErr := a.private.PutTransfer(ctx, a.namespace, object.String(), content)
+		closeErr := content.Close()
+		if stageErr != nil || closeErr != nil {
+			return fmt.Errorf("stage attachment content: %w", errors.Join(stageErr, closeErr))
 		}
 		fileStarted = true
 		if err := a.publisher.PublishTransferAttachment(ctx, a.namespace, object.String(), a.target); err != nil {

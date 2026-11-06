@@ -187,6 +187,12 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 登录/项目 writer 与双来源计算。Project 点读 LEFT JOIN 归属并校验必需事实，缺行明确失败；
 不存在业务读取时补 owner 的分支。
 
+`044_project_soft_delete.sql` 为 Project 增加可空删除时间和活跃列表索引，并为 Project 内历史 Task 和 Session 的 UUID 锁扫描建立索引。Project 读取和准入先排除删除标记，再校验活跃 owner Team 的完整性；保留的历史 ownership 因此可以指向后来删除的 Team。Team 非空检查、邀请和 Worker 投影使用同一活跃语义。
+
+Project 删除在 Read Committed 事务内先锁活跃 Project，再按 UUID 锁全部 Task，包括已删除 Task；锁等待后以新语句锁定并复核 owner Team admin、规范解码每个已有 Worker 属性，任一 active claim 阻止删除。标记、缓存 epoch 轮换和 Session 撤回同事务提交。附件、Thread 和 Session 在 Task 锁后以新语句复核活跃 Project，避免等待语句保留旧快照；附件文件变更与元数据在该锁保护下完成，删除项目不删除文件。Session 按 UUID、每批至多 128 行生成撤回计划，提交后按对象身份撤回本实例有界 relay 条目，其他实例通过既有轮询退出。实际数据库 Completion 与已产生的删除候选共同决定回执；未知提交不能推断为回滚。
+
+删除预览在同一只读快照验证权限、计数并扫描 Worker 事实；按 Task UUID 分页，并以响应字节预算限制返回内容。Worker 连通性取关联报告时间，不扩展账号级权限。预览不产生删除前提；DELETE 仍以锁内当前状态决定。
+
 项目与任务相关表不建立 foreign key。引用存在性、同 project 限制和图规则由获得 project 写锁后的
 service 写入路径校验；所有写入都必须经过该路径。`017_task_soft_delete.sql` 增加可空
 `deleted_at`，删除保留任务与附件。removeDepends 省略/false 时，存在未删除引用者即拒绝；true 明确解除全部传入引用，包括已删除源历史边，受影响源版本各增加一次，目标自己的前置保持。新依赖不能引用已删除任务，两种删除模式均保持活动图完整。[软删除设计](daynight-task-deletion.md)拥有事务保护、可见性和缓存失效。
@@ -281,8 +287,7 @@ PATCH 的语义空操作仍检查版本及输入，返回当前资源，保持 `
 
 业务校验先生成候选变更计划，完成全部检查后才执行写入。预期拒绝保留为业务结果，
 callback 不执行写入并正常结束；只有外层事务成功后才返回业务 Fault，提交或清理失败
-优先暴露为内部失败。Project 没有删除 API，锁前确认过的 project 存在性不会由合法 API
-操作撤回。Task 软删除在同一项目锁内先检查成员、目标精确版本和目标 active worker；严格模式再保护未删除引用者，显式 removeDepends=true 则在执行阶段解除全部传入引用并更新源版本。准备阶段不能有副作用，避免等待外层事务结束才返回的 Fault 提交修改；解除引用、目标标记和一次项目缓存 epoch 轮换原子执行。任务和边不能分次提交。响应资源在同一事务快照内构造，提交成功后再返回，避免提交后
+优先暴露为内部失败。Project 写入锁定时排除删除标记，并在等待后重新检查权限。Task 软删除在同一项目锁内先检查成员、目标精确版本和目标 active worker；严格模式再保护未删除引用者，显式 removeDepends=true 则在执行阶段解除全部传入引用并更新源版本。准备阶段不能有副作用，避免等待外层事务结束才返回的 Fault 提交修改；解除引用、目标标记和一次项目缓存 epoch 轮换原子执行。任务和边不能分次提交。响应资源在同一事务快照内构造，提交成功后再返回，避免提交后
 分次重读混合不同状态。事务内不执行网络访问、Git、子进程或其他外部操作。
 
 该设计以同 project 写入吞吐量换取明确的串行规则。采用 `SERIALIZABLE` 可以提供
@@ -300,6 +305,8 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `POST /api/v1/projects` | 创建 project |
 | `GET /api/v1/projects` | 分页列出 project |
 | `GET /api/v1/projects/{projectId}` | 获取 project |
+| `GET /api/v1/projects/{projectId}/deletion-preview` | 当前 owner Team admin 的有界影响及阻塞观察 |
+| `DELETE /api/v1/projects/{projectId}` | 锁内复核权限和全部 claim，提交删除屏障并返回回执 |
 | `PATCH /api/v1/projects/{projectId}/settings` | 管理员按观察设置版本保存分钟阈值，返回完整 Project |
 | `POST /api/v1/projects/{projectId}/tasks` | 创建 `todo` task |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |

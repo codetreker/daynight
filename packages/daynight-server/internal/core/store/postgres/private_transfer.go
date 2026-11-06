@@ -95,6 +95,23 @@ func (d *privateTransferDAO) Authorize(ctx context.Context, principal model.Prin
 	return d.recheckAuthority(ctx)
 }
 
+// LockProjectLifecycle follows the transfer row lock and retains the Task lock
+// through the bounded private object and receipt write.
+func (d *privateTransferDAO) LockProjectLifecycle(ctx context.Context, projectID, taskID string) error {
+	presence, err := pg.TaskPresence(ctx, d.tx, projectID, taskID, " FOR SHARE")
+	if err != nil {
+		return err
+	}
+	var live bool
+	if err = d.tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND deleted_at IS NULL)`, projectID).Scan(&live); err != nil {
+		return pg.QueryError("check transfer project lifecycle", err)
+	}
+	if !live || !presence.Found || presence.DeletedAt != nil {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
 // Recheck after the callback as ledger and filesystem-capacity waits can outlast
 // the credential even though the locked authority rows did not change.
 func (d *privateTransferDAO) recheckAuthority(ctx context.Context) error {

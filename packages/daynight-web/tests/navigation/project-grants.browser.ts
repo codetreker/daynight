@@ -31,6 +31,7 @@ const install = async (page: Page): Promise<State> => {
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ ...personal, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: actorId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send({ id: projectId, name: 'Grant project', repoUrl: 'https://github.com/example/project', ownership: { teamId, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time });
     if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess !== null) await state.holdAccess; return state.actorLost ? send(error('not_found'), 404) : send(actorAccess); }
     if (path === `/api/v1/projects/${projectId}/members`) { if (state.holdMembers !== null) await state.holdMembers; return send(members()); }
     if (path === `/api/v1/projects/${projectId}/invitations`) {
@@ -214,3 +215,35 @@ for (const width of [700, 768, 800, 1280]) {
     expect(externalRequests).toEqual([]);
   });
 }
+
+test('a conflicting grant requires a fresh confirmation and exact reread version', async ({ page }) => {
+  const state = await install(page);
+  state.targetGrant = grant(targetId, 'member', initialVersion);
+  await page.route(`**/api/v1/projects/${projectId}/grants/${targetId}`, async route => {
+    const request = route.request();
+    if (request.method() !== 'PUT') return route.fallback();
+    state.writes.push({ method: request.method(), path: new URL(request.url()).pathname, body: request.postData()! });
+    if (state.writes.length === 1) {
+      state.targetGrant = grant(targetId, 'admin', initialVersion + 1n);
+      return route.fulfill({ status: 409, json: error('version_conflict'), headers: { 'Daynight-User-ID': actorId } });
+    }
+    state.targetGrant = grant(targetId, 'member', initialVersion + 2n);
+    return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Daynight-User-ID': actorId }, body: JSON.stringify({ grant: state.targetGrant, actorAccess }, (_key, value: unknown) => typeof value === 'bigint' ? rawJson.rawJSON(value.toString()) : value) });
+  });
+  await start(page);
+  const select = page.getByLabel('Direct grant for Bob', { exact: true });
+  await expect(select).toHaveValue('member'); await select.selectOption('admin');
+  await page.getByRole('dialog').getByRole('button', { name: 'Save role' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Member details have changed' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(select).toHaveValue('admin');
+  expect(state.writes).toHaveLength(1);
+  expect(state.writes[0]!.body).toBe(`{"version":${initialVersion},"role":"admin","expectedUserId":"${actorId}"}`);
+  await select.selectOption('member');
+  const dialog = page.getByRole('dialog'); await expect(dialog).toContainText('Administrator → Member');
+  expect(state.writes).toHaveLength(1);
+  await dialog.getByRole('button', { name: 'Save role' }).click();
+  await expect(select).toHaveValue('member');
+  expect(state.writes).toHaveLength(2);
+  expect(state.writes[1]!.body).toBe(`{"version":${initialVersion + 1n},"role":"member","expectedUserId":"${actorId}"}`);
+});

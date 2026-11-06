@@ -12,15 +12,16 @@ import (
 
 // ProjectAccessRelation keeps raw source user IDs so profile consumers detect
 // missing users, and combines roles before any caller applies pagination.
-const ProjectAccessRelation = `SELECT project_id,user_id,
-    CASE WHEN bool_or(role='admin') THEN 'admin' ELSE 'member' END AS role,
-    min(created_at) AS joined_at
+const ProjectAccessRelation = `SELECT sources.project_id,sources.user_id,
+    CASE WHEN bool_or(sources.role='admin') THEN 'admin' ELSE 'member' END AS role,
+    min(sources.created_at) AS joined_at
     FROM (
         SELECT project_id,user_id,role,created_at FROM project_grants
         UNION ALL
         SELECT o.project_id,m.user_id,m.role,m.created_at FROM project_ownership o
         JOIN team_members m ON m.team_id=o.team_id
-    ) sources GROUP BY project_id,user_id`
+    ) sources JOIN projects live_project ON live_project.id=sources.project_id
+    WHERE live_project.deleted_at IS NULL GROUP BY sources.project_id,sources.user_id`
 
 type NullableProjectGrant struct {
 	projectID, userID    *string
@@ -60,7 +61,7 @@ func ReadProjectAccess(ctx context.Context, tx pgx.Tx, userID, projectID string)
         LEFT JOIN (`+ProjectAccessRelation+`) a ON a.project_id=p.id AND a.user_id=$2
         LEFT JOIN users u ON u.id=a.user_id
         LEFT JOIN project_grants g ON g.project_id=p.id AND g.user_id=$2
-        WHERE p.id=$1`, projectID, userID).Scan(append(destinations, grant.Destinations()...)...)
+        WHERE p.id=$1 AND p.deleted_at IS NULL`, projectID, userID).Scan(append(destinations, grant.Destinations()...)...)
 	if err != nil {
 		return model.ProjectAccess{}, AuthQueryError("read project access", err)
 	}
@@ -92,17 +93,20 @@ func LockProjectAuthorization(ctx context.Context, tx pgx.Tx, userID, projectID 
 	var ownership model.ProjectOwnership
 	err := tx.QueryRow(ctx, `SELECT o.team_id::text,o.version,o.updated_at FROM project_ownership o
         WHERE o.project_id=$1 FOR SHARE OF o`, projectID).Scan(&teamID, &ownership.Version, &ownership.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1)`, projectID).Scan(&exists); err != nil {
-			return model.ProjectAccess{}, QueryError("read project presence", err)
-		}
-		if exists {
-			return model.ProjectAccess{}, QueryError("lock project authorization", fmt.Errorf("project ownership or owner Team is missing"))
-		}
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, QueryError("lock project authorization", err)
+	}
+	// This separate statement follows any ownership lock wait. A joined check
+	// in the lock statement could retain the snapshot from before that wait.
+	var live bool
+	if liveErr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND deleted_at IS NULL)`, projectID).Scan(&live); liveErr != nil {
+		return model.ProjectAccess{}, QueryError("read project presence", liveErr)
+	}
+	if !live {
+		return model.ProjectAccess{}, QueryError("lock project authorization", pgx.ErrNoRows)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.ProjectAccess{}, QueryError("lock project authorization", fmt.Errorf("project ownership or owner Team is missing"))
 	}
 	// The ownership lock may have waited for a transfer. Read its Team in a
 	// fresh statement snapshot, rather than retaining a join from before the wait.

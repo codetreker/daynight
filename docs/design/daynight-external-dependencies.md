@@ -311,11 +311,13 @@ jq -c --arg rid "$REQUEST_ID" \
 
 下表的容量、几何和性能规则固定于源码 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`；
 功能场景清单采用包含撤销批准、项目设置、执行耗时和自动执行许可场景的源码
-`d02994b22b744ae23eb67965679fb5d9edc84525`。Web 实现和独立整体验收共同引用这些基线。当前[看板验收](daynight-web.md#生产浏览器验收工具)另包含两个目标各自的 task-platform、task-detail-page、task-assignment、task-assignment-layout 与 task-pause 功能场景；下表保留固定源码的 59 场景基线，当前常规 inventory 为两目标各 32 个功能场景，共 64 个；显式本地压力验收另有五个原生容量场景，共 69 个（原生 37、容器 32）。两种模式都保留独立的 22 项 combined-auth 检查。下表的固定规模、预算和断言在本地压力入口保持，历史 59 场景基线不改写为当前 CI 结果。
+`d02994b22b744ae23eb67965679fb5d9edc84525`。这些固定来源记录当时的验证基线；
+旧跨产品 runner 已删除，当前模块浏览器验证见[Web 设计](daynight-web.md#验证与-ci)，
+产品组合验证另有独立职责。下表保留历史来源和原始数值，不能将其当作当前 CI 结果。
 实现需要按新普通分量和显式性质更新预期值，
-但不能通过减少场景、样本、输入规模、可见边断言或放宽阈值完成本目标。
+容量、几何及性能的有效保证和数值目标仍须按所属验证责任核对。
 
-| 基线 | 必须满足的具体条件与固定来源 |
+| 历史基线 | 当时的具体条件与固定来源 |
 |---|---|
 | 浏览器场景清单 | 保留 27 个 native 功能场景加 5 个 native 容量/超限场景，共 32 个 native；另有同一组 27 个 container 功能场景，总计 59 个。功能清单包含 `task-unapproval`、`project-settings`、`task-execution-time` 和 `task-agent-permission`。场景名由 [`functionalScenarios` / `capacityScenarios`](https://github.com/codetreker/daynight/blob/d02994b22b744ae23eb67965679fb5d9edc84525/packages/daynight-web/scripts/acceptance/runner.mts#L27-L33)拥有；[报告验证器](https://github.com/codetreker/daynight/blob/d02994b22b744ae23eb67965679fb5d9edc84525/packages/daynight-web/scripts/acceptance/report.mts#L13-L64)拒绝缺失、额外、重复、skipped、flaky 或重试结果，每个场景需要真实截图。 |
 | 独立认证组合回执 | 在 59 个场景之外，native 和 container 各有一个 `auth-combined` 回执；每份包含[既有 11 个检查](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/auth-combined.mts#L36-L38)，并通过[源码、目标、浏览器、安装 CLI、重启及清理身份验证](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/auth-combined.mts#L133-L146)。[聚合器](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/scripts/acceptance/runner.mts#L925-L936)要求两个目标均通过，不能以其中一个替代另一份。 |
@@ -327,9 +329,9 @@ jq -c --arg rid "$REQUEST_ID" \
 | 服务检查与覆盖率 | 运行[现有服务 gate](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/check.sh#L1-L27)，包括构建、vet、真实数据库及安装 CLI 验收。保留 [go-cov 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/.go-cov.toml)的 package 85%、function 80%、critical blocks 阻断和 10 分钟测试时限；race 采用[当前服务端验证策略](../../packages/daynight-server/README.md#race-instrumentation)的本地默认/main 开启、PR 关闭；[最终精确比较](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/scripts/coverage.mts#L53-L57)要求未舍入总语句覆盖率严格 `>90%`。 |
 | 执行和证据身份 | [Playwright 配置](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/playwright.config.ts#L11-L30)保留单 worker、零重试、单场景 180,000ms、总 900,000ms、断言 10,000ms、动作 15,000ms、导航 30,000ms；[回执约定](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-web/README.md#L899-L934)要求准确源码/tree、浏览器、安装产物、进程/容器身份和所有目标清理通过。局部或原型结果不替代这些回执。 |
 
-上述来源拥有完整的数值容差、数据集身份和字段校验。本设计保留其强度，
-只把与普通根可达性、上下文推断的旧预期替换为本文的普通分量和显式边性质预期。
-新增外部行为应扩充既有命名场景的步骤与数据断言，不能用较小的展示样本替代固定完整输入。
+上述固定来源记录当时的数值容差、数据集身份和字段校验。当前性能及界面行为要求由
+[Web 规范](../spec/daynight-web.md#验收)和[检查规范](../spec/daynight-task-inspection.md)拥有；
+模块测试与产品组合验证按各自职责承接，历史 runner 和场景清单不作为当前入口。
 
 ### 验收责任
 
