@@ -1,12 +1,15 @@
 package attachment
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,9 +21,128 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/testdata/testsupport"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+type pausedAttachmentReader struct {
+	io.Reader
+	ctx     context.Context
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *pausedAttachmentReader) Read(p []byte) (int, error) {
+	r.once.Do(func() { close(r.reached) })
+	select {
+	case <-r.release:
+		return r.Reader.Read(p)
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	}
+}
+
+func TestAdmittedAttachmentUploadDoesNotBlockGrantRevocation(t *testing.T) {
+	for _, overwrite := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overwrite=%t", overwrite), func(t *testing.T) {
+			attachments, _, database, files, task, owner := attachmentService(t)
+			member := testsupport.ServicePrincipal(t, database)
+			memberships := projectservice.NewMemberships(database)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			invitation, err := memberships.CreateInvitation(ctx, owner, task.ProjectID, owner.UserID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			joined, err := memberships.AcceptInvitation(ctx, member, invitation.Secret, member.UserID)
+			if err != nil || joined.Access.TeamRole != nil {
+				t.Fatalf("direct-only project membership: %#v %v", joined, err)
+			}
+			var previous model.Attachment
+			if overwrite {
+				previous = putAttachment(t, attachments, member, task, "file", "before")
+			}
+			const prefix, suffix = "before revocation\x00", "after revocation\xff\n"
+			reader := &pausedAttachmentReader{Reader: strings.NewReader(suffix), ctx: ctx, reached: make(chan struct{}), release: make(chan struct{})}
+			type uploadResult struct {
+				metadata model.Attachment
+				created  bool
+				err      error
+			}
+			result, finished := make(chan uploadResult, 1), make(chan struct{})
+			var release sync.Once
+			unblock := func() { release.Do(func() { close(reader.release) }) }
+			go func() {
+				defer close(finished)
+				metadata, created, err := attachments.Put(ctx, member, task.ProjectID, task.ID, "file", "application/octet-stream", io.MultiReader(strings.NewReader(prefix), reader))
+				result <- uploadResult{metadata: metadata, created: created, err: err}
+			}()
+			defer func() {
+				cancel()
+				unblock()
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("attachment upload did not finish after cancellation")
+				}
+			}()
+			select {
+			case <-reader.reached:
+			case got := <-result:
+				t.Fatalf("upload did not reach its streamed body: %v", got.err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			// Reaching the suffix proves admission and file streaming have begun.
+			// Revocation must finish while that admitted stream remains paused.
+			revokeCtx, revokeCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer revokeCancel()
+			_, err = memberships.RemoveGrant(revokeCtx, owner, task.ProjectID, member.UserID, coreproject.RemoveProjectMember{Version: joined.DirectGrant.Version, ExpectedUserID: owner.UserID})
+			if err != nil {
+				t.Fatalf("grant revocation waited for the admitted attachment stream: %v", err)
+			}
+			select {
+			case got := <-result:
+				t.Fatalf("upload finished before releasing its body: %v", got.err)
+			default:
+			}
+			unblock()
+			var uploaded uploadResult
+			select {
+			case uploaded = <-result:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if uploaded.err != nil || uploaded.created == overwrite {
+				t.Fatalf("admitted upload: %#v", uploaded)
+			}
+			metadata, object, err := attachments.Open(ctx, owner, task.ProjectID, task.ID, "file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, readErr := io.ReadAll(object.Body)
+			closeErr := object.Body.Close()
+			if readErr != nil || closeErr != nil || !bytes.Equal(content, []byte(prefix+suffix)) || !reflect.DeepEqual(metadata, uploaded.metadata) || metadata.SizeBytes != int64(len(content)) || metadata.ContentType != "application/octet-stream" {
+				t.Fatalf("upload bytes/metadata changed across revocation: metadata=%#v uploaded=%#v content=%q read=%v close=%v", metadata, uploaded.metadata, content, readErr, closeErr)
+			}
+			if overwrite && !metadata.CreatedAt.Equal(previous.CreatedAt) {
+				t.Fatalf("overwrite changed creation time: before=%v after=%v", previous.CreatedAt, metadata.CreatedAt)
+			}
+			observed := &observedAttachmentStorage{Storage: files}
+			refused := newAttachmentService(database, observed)
+			_, _, err = refused.Put(ctx, member, task.ProjectID, task.ID, "file", "text/plain", strings.NewReader("must not replace"))
+			requireFault(t, err, "not_found")
+			requireFault(t, refused.Delete(ctx, member, task.ProjectID, task.ID, "file"), "not_found")
+			_, _, err = refused.Open(ctx, member, task.ProjectID, task.ID, "file")
+			requireFault(t, err, "not_found")
+			if observed.calls.Load() != 0 {
+				t.Fatalf("revoked request reached file mutation: %d", observed.calls.Load())
+			}
+		})
+	}
+}
 
 type observedAttachmentStorage struct {
 	filestorage.Storage
