@@ -1,6 +1,6 @@
 # Web 任务缓存与时间窗口增量同步架构
 
-状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch 和认证响应归属，以及浏览器 IndexedDB schema 8、本地图投影、15 秒增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，以摘要业务版本驱动内容读取。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
+状态：服务端时间窗口接口及完整属性、10s 配置、项目 epoch 和认证响应归属，以及浏览器 IndexedDB schema 8、本地图投影、15 秒增量读取和按需详情缓存已实现。详情会话复用任务写操作与未知结果核对，摘要来源以摘要业务版本驱动内容读取，direct 来源使用带 epoch 的实时观察。服务端摘要和浏览器自身字段、详情及图投影共同保留[负责人设计](daynight-task-assignment.md)定义的原生 nullable assignedTo。
 
 [需求](../spec/daynight-task-sync.md)拥有已确认行为。方案使用任务最大更新时间与默认 10 秒重叠窗口，沿用已有业务 version 去重。[服务端决策](../../.agents/notes/archived/architecture/2026-10-24-task-summary-window-api.md)和[浏览器摘要决策](../../.agents/notes/archived/architecture/2026-10-24-persistent-task-summary-cache.md)分别保存协议与本地存储的取舍；[完整属性同步决策](../../.agents/notes/archived/architecture/2026-10-30-task-property-sync.md)保存扩展摘要内容及缓存格式的原因与成本。
 
@@ -218,6 +218,12 @@ projectSummaries 显式从图节点投影剔除 version 与 properties，保留 
 
 摘要自身 version 变化使对应详情失效并读取新内容。相同 version 的前置变化直接从完整本地图重新物化 ready/blockedBy，不下载所有后继。description 或任意属性变化由业务 version 被发现，包含 PR 和 worker；普通属性变化不轮换 server epoch，也不使用属性 tombstone。收到 live GET/写响应时，先以原始服务端派生字段检查 isTaskStale，再物化本地派生值；`graphMismatch` 保存差异证据并继续提示、禁写和触发项目同步，不能用覆盖后的相同值消除它。成功读取或本地图收敛后才解除对应限制。重复 receipt 仅在读取错误、缺失新鲜观察、原始差异或核对未完成时提供必要恢复机会。
 
+### 图无关的实时详情
+
+Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完整 Task 与 `TaskCacheEpoch`；事务完成后才发布原完整正文与 `Daynight-Task-Epoch`。Web 的 `getTaskObservation` 严格验证主体、身份及 epoch。`TaskObservationInput` 区分摘要和 direct；后者由 `TaskCacheScope` 建立 userFence、项目 revision、history generation、Task、opening 和请求 generation 围栏，不要求 manifest。成功观察只属于当前 opening，不能写入持久详情或推进同步水位。摘要来源保留原完整摘要校验和持久化规则。
+
+图同步和 Task GET 使用同一 history 观察。有效 epoch 更替先退休旧投影、详情、Steps 与阅读子树并使旧 ticket 失效，再在新围栏下至多补读一次；缺失或 invalidated manifest 不是 epoch 更替证据。其他标签提交的 manifest 与当前实时 epoch 冲突时，先退休已有准入并触发实时补读；该持久结果可能来自更早的请求，不能单独证明历史先后或永久退休当前 epoch。重叠网络请求获得的不同 epoch 也不能按请求启动顺序判断快照先后，须在隔离旧投影后以新请求确认；不确定期间保守保留同历史可能存在的在途写锁，确认换代或撤权后退休。持久 manifest 与已知实时 epoch 不一致时不能作为项目预览发布，网络失败也不能恢复该旧投影。普通身份核验期间保留当前详情、关系、菜单、确认、Session 录像和本地输入，认证屏障仍阻止新的网络请求与写入；实际身份、项目或历史失效立即撤回内容。已接受写入在关闭详情后由原操作所有者和审阅围栏继续准备或核对，重开后的观察只能使过期意图失效，不能替代原准入。已确认写保留 committedVersion，实时 GET 达到下界才能重新可写；unknown 和 conflict 只读核对。来源资格、父版本与写前审阅由详情会话统一检查。direct 的关系、人员目录和 Session 记录各自读取并受同一 opening 资格约束，不用伪造摘要授权；局部关系不承诺完整外部后续。具体准入和替代方案由 [direct 观察决策](../../.agents/notes/implemented/architecture/2026-11-06-task-direct-observation.md)记录。
+
 ### 详情存储与预算
 
 `detail-cache.ts` 导出 `readCachedDetail`、`saveDetail`、`materializeDetail`、`validateDetailSummary` 和 `detailByteSize`。详情记录必须匹配所属用户/项目/任务、fence/generation、当前摘要业务版本和全部自身摘要字段；不能含 ready/blockedBy。精确正文 JSON 的 UTF-8 字节数必须与 byteSize 相同。单条与项目总量、记录数都验证，损坏不能作为成功命中。
@@ -236,21 +242,23 @@ projectSummaries 显式从图节点投影剔除 version 与 properties，保留 
 
 ## 7. 身份、错误与本地生命周期
 
-沿用 AuthenticatedApp 的 foreground /me gate，持久读取、网络和正向内容发布等待身份核验。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。可信已提交 404 的 scope 所有撤权路径先于普通 mutation 准入的暂停等待，按 `canRevokeProject(ticket)` 检查捕获历史，不读取受 gate 保护的正向投影。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
+沿用 AuthenticatedApp 的 foreground /me gate，持久读取、网络和正向内容发布等待身份核验。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。可信 Task 404 在身份暂停期间先撤回任务并安排项目访问重验；项目确认撤权的路径按捕获历史检查，不读取受 gate 保护的正向投影。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
 
-实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户使旧 scope 同步失效，再核验身份。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。详情 GET 仅在发起时摘要中已有该任务才把可信 not_found 视为项目访问撤回；任务写入的可信 not_found 使用同一撤权入口。未知任务地址的 404 保持任务局部错误，不触发项目重建循环。
+实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户使旧 scope 同步失效，再核验身份。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。可信 Task 404 先撤回该任务并触发项目访问重验；只有项目访问确认撤权才执行 scope 撤权，未知任务地址同样不能单独证明项目不可访问。
 
 `canRevokeProject(ticket)` 在会话清正文前检查当前用户 fence、投影和待处理拒绝是否仍匹配 ticket；同 scope 的在线准入序号还拒绝已被新历史准入取代、前驱不可比较的旧 ticket。旧 E1 的 GET/写 404 因而不能清 E2。`revokeProject(ticket,signal,broadcast=true,reason?)` 接收可选的原始可信 ApiError，来源页立即撤权事件因而保留 requestId；没有本地 HTTP 响应的 peer 使用通用 not_found。该方法同步记住被拒绝的 cacheGeneration，移除内存投影/授权并发出 accessRevoked 事件。详情会话清除所属项目正文/loadedRevision，useTaskGraph 清除快照；旧 revision 不能重新准入。applySync 与 detailTransaction 在事务前后检查被拒绝 generation，readProject 在物化前检查；清理失败或已提交的旧结果不能重新发布这些内容。
 
-访问撤回与持久清理归仍存活的 scope，超出详情 UI 和 `TaskDetailSessions` 的寿命。切换到 `/invitations` 等页面可以释放详情会话而保留认证 scope；已提交写入返回可信 not_found 时，先按原 ticket 执行 scope 撤权，再结束 disposed 会话的 UI 处理。已释放会话只保留操作拒绝意图/错误并清自身旧正文，不通知其 UI listener、不补 GET 或重发写入；scope 退出/账号替换仍优先使旧响应失效，旧 E1 仍不能撤 E2。共享缓存 RW 事务只在持久 userFence 和 manifest.cacheGeneration 仍等于捕获 ticket 时清除该项目 summaries/details/profiles/sessionHistory，并写新的 invalidated manifest；不同用户、项目或 generation 不在该 CAS 清理范围。清理失败保留内存拒绝与可见存储错误。beginSync 先重试待处理清理，再建立同步基线；只有新的在线项目同步成功才重新显示私有内容。摘要预览以 scope 的既有退役记录和在线授权判定：未观察过有效撤权时允许首次本地预览；观察后必须重新在线授权，不能因清理跳过了不同 generation 的较新持久集合就恢复预览。hook 在 readProject 前与异步读取后均检查 canPreviewProject；同 scope 的项目导航与重新挂载沿用该判断，普通提示与失败的 Retry/轮询不改变授权。成功 applySync 恢复授权但不清除旧 generation 的退役围栏。manifest 在 snapshot、失效与清理时同事务保存完整代际祖先，ticket 携带该链；它用于识别撤权影响的旧投影，不扩大持久清理的 CAS 范围。任何保留记录也不能代替在线准入。
+访问撤回与持久清理归仍存活的 scope，超出详情 UI 和 `TaskDetailSessions` 的寿命。切换到 `/invitations` 等页面可以释放详情会话而保留认证 scope；已提交写入返回可信 not_found 时按原历史发起项目访问重验，只有确认项目撤权才执行 scope 撤权。已释放会话只保留操作拒绝意图/错误并清自身旧正文，不通知其 UI listener、不补 GET 或重发写入；scope 退出/账号替换仍优先使旧响应失效，旧 E1 仍不能撤 E2。共享缓存 RW 事务只在持久 userFence 和 manifest.cacheGeneration 仍等于捕获 ticket 时清除该项目 summaries/details/profiles/sessionHistory，并写新的 invalidated manifest；不同用户、项目或 generation 不在该 CAS 清理范围。清理失败保留内存拒绝与可见存储错误。beginSync 先重试待处理清理，再建立同步基线；撤权后的持久摘要预览须等新的在线项目同步成功。direct 详情须在清理、身份与历史围栏允许后，通过新的实时 Task 观察准入。摘要预览以 scope 的既有退役记录和在线授权判定：未观察过有效撤权时允许首次本地预览；观察后必须重新在线授权，不能因清理跳过了不同 generation 的较新持久集合就恢复预览。hook 在 readProject 前与异步读取后均检查 canPreviewProject；同 scope 的项目导航与重新挂载沿用该判断，普通提示与失败的 Retry/轮询不改变授权。成功 applySync 恢复授权但不清除旧 generation 的退役围栏。manifest 在 snapshot、失效与清理时同事务保存完整代际祖先，ticket 携带该链；它用于识别撤权影响的旧投影，不扩大持久清理的 CAS 范围。任何保留记录也不能代替在线准入。
 
-负向 BroadcastChannel 提示携带 userId、projectId、userFence、revokedGeneration 及 ticket 的完整祖先。接收方同步封锁被撤代际及祖先，按其投影读取时捕获的历史撤回内容；新代际的撤权也能覆盖其先前投影，旧提示不能撤回可证明的后继。清理以实际持久 generation 为 CAS，不转发提示。损坏使前驱不可证明时标记 unknownAncestors；接收方核对持久 generation 或刚完成的清理记录后隔离无法比较的旧投影并重新读取。身份核验暂停时立即暂时隔离无法比较的内容；核对进行中发生的后续暂停也立即触发隔离。若恢复后核对确认提示过期，则恢复原准入并重新读取。存储无法核对时保守隔离并显示错误，可证明的后继保持准入。独立目录和 Worker 投影及存储故障行为由 [Web 设计](daynight-web.md#我的-worker-列表与详情)拥有。
+负向 BroadcastChannel 提示携带 userId、projectId、userFence、revokedGeneration 及 ticket 的完整祖先。接收方同步封锁被撤代际及祖先，按其投影读取时捕获的历史撤回内容；新代际的撤权也能覆盖其先前投影，旧提示不能撤回可证明的后继。清理以实际持久 generation 为 CAS，不转发提示。损坏使前驱不可证明时标记 unknownAncestors；接收方核对持久 generation 或刚完成的清理记录后隔离无法比较的旧投影并重新读取。身份核验暂停时立即暂时隔离无法比较的内容；核对进行中发生的后续暂停也立即触发隔离。若恢复后核对确认提示过期，则恢复原准入并重新读取。存储无法核对时保守隔离并显示错误，可证明的后继保持准入。独立目录和 Worker 投影及存储故障行为由 [Web 设计](daynight-web.md#我的-worker-列表与详情)拥有，相关代际决策见 [投影撤回记录](../../.agents/notes/implemented/architecture/2026-11-06-web-project-projection-withdrawal.md)。
+
+direct 详情的在线观察不持有项目快照代际，不能仅凭祖先链判断负向提示发生在观察之前。提示到达时先隔离对应 direct 内容并保留已派发写入的互斥所有权，再核验当前 Project 访问；确认仍可访问后重新读取 direct Task 和 Session，失败或离线保持隐藏。独立目录及 Worker 仍按各自代际接收撤回，Project 权威撤权和持久清理不因 direct 重验而跳过。历史清理不能覆盖已提交的访问撤权记录；未观察到的跨服务撤权与重新授权顺序仍遵循 direct 观察的服务端合同。
 
 持久数据不保存在线授权；身份通过核验且生命周期仍有效时，本地摘要允许先行显示，普通可恢复故障保留允许展示的同 generation 摘要及仍获准的详情。退出/换号/401 通过 invalidateScope 同步中止 scope、释放内存，再事务轮换 userFence、清除该用户内容并保留失效 manifest；dispose 仅关闭当前 scope，保留可重用持久记录。
 
 IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。用户记录缺失、归属错误或 userFence 畸形时，不再次依赖该损坏 fence 做项目失效。一个独立的共享缓存修复事务直接写新用户 fence、清除该用户摘要/详情/人员和 Session 目录内容，并把其可识别项目基线重建为失效记录；无法识别的项目键被清除。其他用户保持。修复提交前不修改内存绑定、退役 scope 或发送提示；修复失败原子回滚，检测它的 scope 保持可重试并显示存储错误。提交后，尚未绑定的冷 scope 绑定新 fence 再继续原读取；已经绑定旧 fence 的 scope 关闭并发起身份核验，不能采用替代 fence。其他标签页的旧 ticket 在后续事务中被新 fence 拒绝，已完成事务也须通过提交后的 scope 检查才可发布。不引入静默网络模式或新的产品布局。
 
-schema 升级时关闭旧连接；不兼容升级在事务中清除可重建缓存并轮换生命周期 fence，兼容升级保留已有内容。组件/身份释放关闭句柄、通道、timer 并取消读请求；已提交修改继续由身份级详情会话核对。保留现有筛选、焦点、视口、全屏、滚动和附件 frame，以及对话框、独立任务详情页、独立附件工作区的读取与操作。TaskDetailPage 也使用 useTaskGraph，必须接入相同缓存合同。
+schema 升级时关闭旧连接；不兼容升级在事务中清除可重建缓存并轮换生命周期 fence，兼容升级保留已有内容。组件/身份释放关闭句柄、通道、timer 并取消读请求；已提交修改继续由身份级详情会话核对。保留现有筛选、焦点、视口、全屏、滚动和附件 frame，以及对话框、独立任务详情页、独立附件工作区的读取与操作。TaskDetailPage 的完整详情使用 direct 观察，关系与项目图读取独立；图失败不能阻塞详情。
 
 ## 8. 历史替换与约束
 

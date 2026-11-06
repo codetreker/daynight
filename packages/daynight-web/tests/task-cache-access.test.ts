@@ -268,6 +268,35 @@ it('retains the predecessor when Session history marker cleanup rotates a projec
   await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, revokedGeneration: captured.get(projectId) })));
 });
 
+it('retains ancestry on a direct-history ticket when withdrawing a peer projection', async () => {
+  const owner = scope(); await apply(owner);
+  const peer = scope(), captured = await peer.prepareProjection(signal()), events: unknown[] = [];
+  peer.subscribeProjection(event => events.push(event));
+  await apply(owner, detail({ description: 'replacement history' }), true);
+  const graphTicket = await owner.beginSync(projectId, signal());
+  const fence = await owner.beginTaskRead(projectId, taskId, 1, 1, signal());
+  expect(await owner.observeHistory(fence, graphTicket.epoch!, signal())).toBe('current');
+  const ticket = await owner.getDirectHistoryTicket(fence, graphTicket.epoch!, signal());
+  expect(ticket?.generationAncestors).toContain(captured.get(projectId));
+  expect(ticket?.admissionRevision).toBe(owner.getAdmissionRevision(projectId));
+  expect(await owner.revokeProject(ticket!, signal())).toBe(true);
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true, revokedGeneration: captured.get(projectId) })));
+});
+
+it('cannot use an older direct-history ticket to revoke a newly admitted generation', async () => {
+  const owner = scope(); await apply(owner);
+  const graphTicket = await owner.beginSync(projectId, signal());
+  const fence = await owner.beginTaskRead(projectId, taskId, 1, 1, signal());
+  expect(await owner.observeHistory(fence, graphTicket.epoch!, signal())).toBe('current');
+  const old = await owner.getDirectHistoryTicket(fence, graphTicket.epoch!, signal());
+  expect(old).not.toBeNull();
+  await apply(owner, detail({ description: 'newly admitted history' }), true);
+  const current = owner.getAuthorizedProject(projectId);
+  expect(owner.canRevokeProject(old!)).toBe(false);
+  expect(await owner.revokeProject(old!, signal())).toBe(false);
+  expect(owner.getAuthorizedProject(projectId)).toBe(current);
+});
+
 it('retains the denied durable generation for retry when a peer displays its ancestor', async () => {
   const owner = scope(); await apply(owner);
   const peer = scope(); await apply(peer);
@@ -280,9 +309,17 @@ it('retains the denied durable generation for retry when a peer displays its anc
   await expect(owner.revokeProject(denied, signal())).rejects.toMatchObject({ category: 'storage' });
   await waitFor(() => expect(events.some(event => (event as { error?: { category?: string } }).error?.category === 'storage')).toBe(true));
   fault.mockRestore();
-  const fresh = await peer.beginSync(projectId, signal());
+  let fresh = await peer.beginSync(projectId, signal());
   expect(fresh.cacheGeneration).not.toBe(denied.cacheGeneration);
-  await expect(peer.applySync(fresh, taskSyncFromGraph(graphFixture([detail()]), { query: {}, versionForTask: () => 1n }), signal())).resolves.toBeDefined();
+  let observation = taskSyncFromGraph(graphFixture([detail()]), { query: fresh.epoch === null ? {} : { epoch: fresh.epoch }, versionForTask: () => 1n });
+  let history = await peer.observeHistory(fresh, observation.epoch, signal());
+  for (let attempt = 0; history !== 'current' && attempt < 2; attempt++) {
+    fresh = await peer.beginSync(projectId, signal());
+    observation = taskSyncFromGraph(graphFixture([detail()]), { query: fresh.epoch === null ? {} : { epoch: fresh.epoch }, versionForTask: () => 1n });
+    history = await peer.observeHistory(fresh, observation.epoch, signal());
+  }
+  expect(history).toBe('current');
+  await expect(peer.applySync(fresh, observation, signal())).resolves.toBeDefined();
 });
 
 it('treats a null ancestry as corruption and withdraws incomparable older projections', async () => {

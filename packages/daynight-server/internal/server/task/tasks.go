@@ -341,17 +341,18 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 		httpx.WriteError(w, request, logger, "task", "get", err)
 		return
 	}
-	task, err := h.tasks.Get(request.Context(), principal, projectID, id)
+	observation, err := h.tasks.Observe(request.Context(), principal, projectID, id)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "get", err)
 		return
 	}
 	logger.InfoContext(request.Context(), "task read", "type", "resource", "component", "task", "phase", "get", "request_id", httpx.RequestID(request.Context()))
-	response, err := taskResponse(task, request)
+	response, err := taskResponse(observation.Task, request)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "response", err)
 		return
 	}
+	w.Header().Set("Daynight-Task-Epoch", observation.Epoch)
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
 

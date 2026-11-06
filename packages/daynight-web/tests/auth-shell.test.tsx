@@ -1,6 +1,6 @@
 import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
-import { directAccessFixture, taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
+import { directAccessFixture, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
 import { openDB } from 'idb';
@@ -40,7 +40,11 @@ const createdProject = (name = "私有项目", repoUrl = "https://github.com/exa
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: "Alice", email: "alice@example.com", avatarUrl: null, role, version: 12, createdAt: now, updatedAt: now });
 const participant = (id = userId, role = "admin", name = "Alice") => ({ inheritedFrom: null, userId: id, profile: { name, email: "alice@example.com", avatarUrl: null }, effectiveRole: role, directGrant: { projectId, userId: id, role, version: 12, createdAt: now, updatedAt: now } });
 let serverUserId = userId;
-const json = (body: unknown, status = 200, principal = serverUserId) => new Response(stringifyWireJson(body), { status, headers: status === 401 ? { "Content-Type": "application/json" } : viewerHeaders(principal, { "Content-Type": "application/json" }) });
+const json = (body: unknown, status = 200, principal = serverUserId) => {
+  const headers = status === 401 ? new Headers({ "Content-Type": "application/json" }) : viewerHeaders(principal, { "Content-Type": "application/json" });
+  if (typeof body === 'object' && body !== null && 'projectId' in body && 'version' in body && typeof body.projectId === 'string') headers.set('Daynight-Task-Epoch', fixtureTaskEpoch(body.projectId));
+  return new Response(stringifyWireJson(body), { status, headers });
+};
 const isTaskSync = (url: string) => new URL(url, window.location.origin).pathname.endsWith('/task-sync');
 const graphResponse = (value: TaskGraph, url: string, version = 1n) => taskSyncResponse(value, { query: taskSyncQuery(new URL(url, window.location.origin)), versionForTask: () => version, propertiesForTask: () => ({ pullRequests: [] }), viewerId: serverUserId, actorAccess: directAccessFixture(value.project.id, serverUserId, "admin") });
 const withDetailResources = (project: string, task: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>) => withTestDetailResources(project, task, fallback, {}, () => serverUserId);
@@ -1209,7 +1213,7 @@ describe("authenticated application shell", () => {
       fireEvent.click(screen.getByRole("button", { name: /Lifecycle task/ }));
       dialog = screen.getByRole("dialog");
       expect(await within(dialog).findByRole("button", { name: "待处理" })).toBeDisabled();
-      expect(fetcher.mock.calls.filter(([url]) => url === taskUrl)).toHaveLength(1);
+      expect(fetcher.mock.calls.filter(([url]) => url === taskUrl).length).toBeGreaterThanOrEqual(2);
       expect(fetcher.mock.calls.filter(([url]) => url === `${taskUrl}/status`)).toHaveLength(1);
       started = true;
       await act(async () => finishStatus(json(detail())));

@@ -201,6 +201,7 @@ export class ProjectAccessSession {
     const unsubscribe = this.scope.subscribe((event) => {
       if (event.projectId !== this.projectId) return;
       if (event.accessRestored) { this.refreshVisible(); return; }
+      if (event.taskNotFound) { void this.revalidateAfterMutation(); return; }
       if (!event.accessRevoked) return;
       this.barrier = this.beginObservation();
       const previous = this.state.error;

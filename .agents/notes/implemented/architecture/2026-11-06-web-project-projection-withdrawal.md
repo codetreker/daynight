@@ -37,6 +37,13 @@ If the generation store is unavailable, project-bearing content stays hidden whi
 Worker identity and telemetry remain readable; a corrupt Project generation is
 isolated to that Project.
 
+Direct Task observations do not carry a Project snapshot generation. A negative
+hint therefore isolates direct content and fences its in-flight operations until
+Project access is checked and a fresh Task observation is obtained. A failed
+check keeps content hidden; independently captured directory and Worker generations
+still receive their own withdrawal events. A history purge preserves an existing
+access tombstone so it cannot erase the evidence needed to resolve a later hint.
+
 The directory removes the matching card and sidebar entry. Configuration retains
 selected IDs as unavailable and removable. Worker details remove matching task
 rows and recompute their visible count; Worker summaries discard counts whose

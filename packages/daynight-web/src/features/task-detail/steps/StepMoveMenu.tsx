@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { authRequestsPaused } from "../../../api/client";
 import type { TaskStep } from "../../../api/task-steps";
 import { useI18n } from "../../../i18n/LocaleProvider";
 
@@ -17,18 +18,19 @@ export const StepMoveMenu = ({ step, index, total, available, canAdd, canEdit, b
   const options = useRef<(HTMLButtonElement | null)[]>([]);
   const menuId = useId();
   const reasonId = useId();
-  const actions: { action: MoveAction; label: string; disabled: boolean }[] = [
-    { action: "up", label: m.moveUp, disabled: !available || index === 0 },
-    { action: "down", label: m.moveDown, disabled: !available || index === total - 1 },
-    { action: "first", label: m.moveFirst, disabled: !available || index === 0 },
-    { action: "last", label: m.moveLast, disabled: !available || index === total - 1 },
-    { action: "relative", label: m.moveRelative, disabled: !available || total < 2 },
-    { action: "addBefore", label: m.addBefore, disabled: !canAdd },
-    { action: "addAfter", label: m.addAfter, disabled: !canAdd },
-    { action: "edit", label: m.editStep, disabled: !canEdit },
-    { action: "delete", label: m.deleteStep, disabled: !available },
+  const paused = authRequestsPaused();
+  const actions: { action: MoveAction; label: string; disabled: boolean; fixedDisabled: boolean }[] = [
+    { action: "up", label: m.moveUp, disabled: !available || index === 0, fixedDisabled: index === 0 },
+    { action: "down", label: m.moveDown, disabled: !available || index === total - 1, fixedDisabled: index === total - 1 },
+    { action: "first", label: m.moveFirst, disabled: !available || index === 0, fixedDisabled: index === 0 },
+    { action: "last", label: m.moveLast, disabled: !available || index === total - 1, fixedDisabled: index === total - 1 },
+    { action: "relative", label: m.moveRelative, disabled: !available || total < 2, fixedDisabled: total < 2 },
+    { action: "addBefore", label: m.addBefore, disabled: !canAdd, fixedDisabled: !canAdd },
+    { action: "addAfter", label: m.addAfter, disabled: !canAdd, fixedDisabled: !canAdd },
+    { action: "edit", label: m.editStep, disabled: !canEdit, fixedDisabled: !canEdit },
+    { action: "delete", label: m.deleteStep, disabled: !available, fixedDisabled: false },
   ];
-  const enabled = actions.map((item, i) => item.disabled ? -1 : i).filter((i) => i >= 0);
+  const enabled = actions.map((item, i) => (paused ? item.fixedDisabled : item.disabled) ? -1 : i).filter((i) => i >= 0);
   const close = (restore: boolean) => { setOpen(false); if (restore) trigger.current?.focus(); };
   const menuAvailable = available || canAdd || canEdit;
   const show = (last = false) => { if (menuAvailable && enabled.length) { setActive(last ? enabled[enabled.length - 1]! : enabled[0]!); setOpen(true); } };
@@ -65,7 +67,7 @@ export const StepMoveMenu = ({ step, index, total, available, canAdd, canEdit, b
         setActive(event.key === "Home" ? enabled[0]! : event.key === "End" ? enabled[enabled.length - 1]! : enabled[(pos + (event.key === "ArrowDown" ? 1 : -1) + enabled.length) % enabled.length]!);
       } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (event.key === "Tab") close(false);
-    }}>{actions.map((item, i) => <button key={item.action} ref={(node) => { options.current[i] = node; }} type="button" role="menuitem" disabled={item.disabled} tabIndex={active === i ? 0 : -1}
-      className={`task-status-option${item.action === "delete" ? " step-delete-action" : ""}`} onFocus={() => setActive(i)} onClick={() => { close(true); onSelect(item.action); }}>{item.label}</button>)}</div>}
+    }}>{actions.map((item, i) => <button key={item.action} ref={(node) => { options.current[i] = node; }} type="button" role="menuitem" disabled={paused ? item.fixedDisabled : item.disabled} aria-disabled={paused || item.disabled} tabIndex={active === i ? 0 : -1}
+      className={`task-status-option${item.action === "delete" ? " step-delete-action" : ""}`} onFocus={() => setActive(i)} onClick={() => { if (!item.disabled && !authRequestsPaused()) { close(true); onSelect(item.action); } }}>{item.label}</button>)}</div>}
   </div>;
 };

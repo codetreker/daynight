@@ -141,7 +141,8 @@ describe("workspace localization", () => {
 
   it("retains task tabs, filters, rows and scroll state, and retranslates a semantic removed-task notice", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
+    const replacement = resetSnapshot(graph([]));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValue(replacement);
     const user = userEvent.setup();
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
@@ -173,11 +174,11 @@ describe("workspace localization", () => {
     await user.selectOptions(selector, "en");
     expect(screen.getByText(en.workspace.project.selectedTaskRemoved)).toBe(notice);
     expect(screen.getByRole("button", { name: "Dismiss notification" })).toBe(dismiss);
-    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(graphRequest).toHaveBeenCalledTimes(3);
     expect(screen.getByRole("heading", { name: "No tasks yet" })).toBeVisible();
     await user.click(dismiss);
     expect(screen.queryByText(en.workspace.project.selectedTaskRemoved)).toBeNull();
-    expect(graphRequest).toHaveBeenCalledTimes(2);
+    expect(graphRequest).toHaveBeenCalledTimes(3);
     await user.selectOptions(selector, "zh-CN");
     expect(screen.queryByRole("button", { name: "关闭提示" })).toBeNull();
   });
