@@ -117,6 +117,24 @@ describe("worker repositories and task worktrees", () => {
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
   });
 
+  it("can inspect managed worktrees belonging to another Project in the same repository", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const foreignProject = { ...f.project, projectId: "99999999-9999-4999-8999-999999999999" };
+    const foreignOwner = { ...f.owner, projectId: foreignProject.projectId };
+    const binding = await adapter.prepareWorktree(foreignProject, foreignOwner, operation());
+    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
+    expect(await adapter.listWorktrees(f.project, operation(), false, true)).toEqual([{ owner: foreignOwner, binding }]);
+  });
+
+  it("only treats an absent repository as empty when explicitly requested, rejecting a dangling link", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const absent = { ...f.project, localPath: path.join(f.root, "missing", "repo") };
+    await expect(adapter.listWorktrees(absent, operation())).rejects.toThrow("missing");
+    await expect(adapter.listWorktrees(absent, operation(), true)).resolves.toEqual([]);
+    const dangling = path.join(f.root, "dangling"); await symlink(path.join(f.root, "missing"), dangling);
+    await expect(adapter.listWorktrees({ ...f.project, localPath: dangling }, operation(), true)).rejects.toThrow(/symbolic link/);
+  });
+
   describe("claim resource discovery", () => {
     const prepare = async () => {
       const f = await fixture(); const adapter = manager(f.root);
