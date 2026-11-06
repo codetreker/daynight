@@ -229,15 +229,19 @@ describe("current-run process supervision", () => {
       await expect(supervisor.exclude(review(child.pid!))).resolves.toEqual({ processesExcluded: true });
     } catch (error) { primaryError = error; throw error; } finally {
       try {
-        if (stopping?.state.status !== "stopped") {
-          if (process.platform !== "win32") await killPosixFixture(child.pid!, closed);
-          else if (child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+        // A surviving descendant may hold the exited wrapper's output pipes.
+        // The observer terminates its retained identities before joining close.
+        if (observer !== undefined) await observer.finish(primaryError);
+        else {
+          if (stopping?.state.status !== "stopped") {
+            if (process.platform !== "win32") await killPosixFixture(child.pid!, closed);
+            else if (child.exitCode === null && child.signalCode === null) await supervisor.stop(child, { reviewId: "review", attempt: 1 });
+          }
+          await stopping?.settled;
+          await closed;
         }
-        await stopping?.settled;
-        await closed;
       } finally {
         clock?.mockRestore();
-        await observer?.finish(primaryError);
       }
     }
   }, 15_000);

@@ -30,8 +30,13 @@ even if that process exits before the original heartbeat assertion completes.
 
 Diagnostics are emitted from cleanup for both passing and failing cases. Cleanup
 may terminate only the parent and leaf identities already held by the observer
-and the original Node child. Failure to acquire identities, observe exits or
-release handles remains visible. Production termination behavior is unchanged.
+and the original Node child. It runs before any cleanup wait for Node closure:
+an exited wrapper can leave its inherited output streams open in a surviving
+parent, and awaiting that close would prevent the observer from terminating the
+parent. The observer bounds its own process-signal and root-close confirmation,
+releases held handles even on failure, and preserves the primary test failure
+when cleanup also fails. Failure to acquire identities, observe exits or release
+handles remains visible. Production termination behavior is unchanged.
 
 ## Alternatives
 
