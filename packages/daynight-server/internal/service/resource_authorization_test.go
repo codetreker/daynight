@@ -234,35 +234,19 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	go func() {
 		removed <- f.memberships.Remove(ctx, admin, project.ID, member.UserID, coreproject.RemoveProjectMember{Version: joined.Grant.Version, ExpectedUserID: admin.UserID})
 	}()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var waiting bool
-		if err := f.database.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
-			WHERE application_name=current_schema() AND wait_event_type='Lock' AND query LIKE '%project_grants%'
-			AND cardinality(pg_blocking_pids(pid)) > 0)`).Scan(&waiting); err != nil {
+	select {
+	case err := <-removed:
+		if err != nil {
 			close(probe.release)
-			t.Fatal(err)
+			t.Fatalf("member removal failed: %v", err)
 		}
-		if waiting {
-			break
-		}
-		select {
-		case err := <-removed:
-			close(probe.release)
-			t.Fatalf("removal did not wait for the admitted write: %v", err)
-		case <-ticker.C:
-		case <-ctx.Done():
-			close(probe.release)
-			t.Fatal(ctx.Err())
-		}
+	case <-ctx.Done():
+		close(probe.release)
+		t.Fatalf("member removal waited for admitted file IO: %v", ctx.Err())
 	}
 	close(probe.release)
 	if err := <-result; err != nil {
 		t.Fatalf("admitted write failed: %v", err)
-	}
-	if err := <-removed; err != nil {
-		t.Fatalf("member removal failed: %v", err)
 	}
 	_, _, err = attachments.Put(context.Background(), member, project.ID, task.ID, "later.txt", "text/plain", strings.NewReader("Later"))
 	requireFault(t, err, "not_found")
