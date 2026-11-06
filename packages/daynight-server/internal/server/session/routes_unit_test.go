@@ -159,6 +159,7 @@ func TestSessionRoutesFrameBounds(t *testing.T) {
 
 func TestActiveConnectionsTracksWebSocketLifecycle(t *testing.T) {
 	routes := NewRoutes(nil, nil, testLogger())
+	accepted := make(chan struct{})
 	closed := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, ctx, cleanup, err := routes.accept(w, r)
@@ -166,6 +167,7 @@ func TestActiveConnectionsTracksWebSocketLifecycle(t *testing.T) {
 			close(closed)
 			return
 		}
+		close(accepted)
 		<-conn.CloseRead(ctx).Done()
 		cleanup()
 		close(closed)
@@ -176,6 +178,13 @@ func TestActiveConnectionsTracksWebSocketLifecycle(t *testing.T) {
 	conn, _, err := websocket.Dial(ctx, server.URL, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	// The client handshake can finish before the server registers the connection.
+	select {
+	case <-accepted:
+	case <-ctx.Done():
+		t.Fatal("connection was not registered")
 	}
 	if count := routes.ActiveConnections(); count != 1 {
 		t.Fatalf("connected count = %d", count)
