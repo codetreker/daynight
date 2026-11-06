@@ -424,3 +424,40 @@ func TestGrantLifecycleReplayWaitsForBusinessCredentialLocks(t *testing.T) {
 		t.Fatalf("bot credential accepted: %v", err)
 	}
 }
+
+func TestAuthorizationCleanupFairAcrossOneRowBatches(t *testing.T) {
+	db := isolatedStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	now := time.Now().UTC()
+	for range 4 {
+		for _, status := range []string{"pending", "denied"} {
+			retain := now.Add(time.Hour)
+			if status == "denied" {
+				retain = now.Add(-time.Hour)
+			}
+			_, err := db.Pool.Exec(ctx, `INSERT INTO oauth_authorizations (id,binding_hash,client_snapshot,client_id,redirect_uri,resource,scope,challenge,state,state_present,status,created_at,expires_at,retain_until) VALUES ($1,$2,'{}','client','https://client.test/callback','https://server.test/mcp','daynight:mcp','challenge','',false,$3,$4,$5,$6)`, uuid.NewString(), make([]byte, 32), status, now.Add(-2*time.Hour), now.Add(-time.Hour), retain)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for range 2 {
+		count := 0
+		c, err := db.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
+			var e error
+			count, e = scope.AuthorizationDAO().PruneAuthorizations(ctx, now, 1)
+			return e
+		})
+		if err != nil || c.Outcome != store.TransactionCommitted || count != 1 {
+			t.Fatalf("prune: %d %v %v", count, c, err)
+		}
+	}
+	var pending, expired, denied int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'),count(*) FILTER (WHERE status='expired'),count(*) FILTER (WHERE status='denied') FROM oauth_authorizations`).Scan(&pending, &expired, &denied); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 3 || expired != 1 || denied != 3 {
+		t.Fatalf("unfair pruning: pending=%d expired=%d denied=%d", pending, expired, denied)
+	}
+}

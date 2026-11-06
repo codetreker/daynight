@@ -136,3 +136,102 @@ func TestTokenAdmissionAndDispatch(t *testing.T) {
 		t.Fatalf("revoke: %d", w.Code)
 	}
 }
+
+func TestPublicMethodsAndMalformedRequests(t *testing.T) {
+	d := &tokenRate{counts: map[string]int{}}
+	s := &tokenStub{}
+	h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+	for _, handler := range []http.HandlerFunc{h.Token, h.Revoke} {
+		for _, tc := range []struct {
+			method string
+			status int
+			allow  string
+		}{{http.MethodOptions, http.StatusNoContent, ""}, {http.MethodGet, http.StatusMethodNotAllowed, "POST, OPTIONS"}} {
+			r := httptest.NewRequest(tc.method, "https://server.test/oauth/token", nil)
+			w := httptest.NewRecorder()
+			handler(w, r)
+			if w.Code != tc.status || w.Header().Get("Allow") != tc.allow || w.Header().Get("Access-Control-Allow-Origin") != "*" || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("%s: %d %#v", tc.method, w.Code, w.Header())
+			}
+		}
+	}
+	valid := "grant_type=refresh_token&client_id=client&resource=https%3A%2F%2Fserver.test%2Fmcp&refresh_token=refresh"
+	for _, tc := range []struct {
+		name, target, contentType, body string
+	}{
+		{"query", "https://server.test/oauth/token?extra=1", "application/x-www-form-urlencoded", valid},
+		{"media type", "https://server.test/oauth/token", "application/json", valid},
+		{"charset", "https://server.test/oauth/token", "application/x-www-form-urlencoded; charset=latin-1", valid},
+		{"malformed encoding", "https://server.test/oauth/token", "application/x-www-form-urlencoded", valid + "&x=%zz"},
+		{"invalid UTF-8", "https://server.test/oauth/token", "application/x-www-form-urlencoded", valid + "&x=%ff"},
+		{"oversized", "https://server.test/oauth/token", "application/x-www-form-urlencoded", strings.Repeat("x", core.MetadataLimit+1)},
+		{"wrong resource", "https://server.test/oauth/token", "application/x-www-form-urlencoded", strings.Replace(valid, "server.test", "other.test", 1)},
+		{"wrong grant fields", "https://server.test/oauth/token", "application/x-www-form-urlencoded", valid + "&code=unexpected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, tc.target, strings.NewReader(tc.body))
+			r.RemoteAddr = "192.0.2.1:123"
+			r.Header.Set("Content-Type", tc.contentType)
+			w := httptest.NewRecorder()
+			h.Token(w, r)
+			if w.Code != http.StatusBadRequest || s.calls != 0 {
+				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), s.calls)
+			}
+		})
+	}
+	w := tokenRequest(h.Revoke, "client_id=client")
+	if w.Code != http.StatusBadRequest || s.calls != 0 {
+		t.Fatalf("missing revoke token: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTokenRateLimitsAndErrorResponses(t *testing.T) {
+	valid := "grant_type=refresh_token&client_id=client&resource=https%3A%2F%2Fserver.test%2Fmcp&refresh_token=refresh"
+	for _, tc := range []struct {
+		name, key string
+		count     int
+		calls     int
+	}{
+		{"global", "oauth:token:global", 1200, 0},
+		{"source", "oauth:token:source:192.0.2.1", 120, 0},
+		{"verified client", "oauth:token:client:verified", 240, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &tokenRate{counts: map[string]int{string(secret.Hash(tc.key)): tc.count}}
+			s := &tokenStub{}
+			h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+			w := tokenRequest(h.Token, valid)
+			if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "60" || s.calls != tc.calls {
+				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), s.calls)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{core.ErrInvalidGrant, http.StatusBadRequest, "invalid_grant"},
+		{core.ErrAuthorizationUnknown, http.StatusServiceUnavailable, "outcome_unknown"},
+		{errors.New("private storage detail"), http.StatusInternalServerError, "server_error"},
+	} {
+		d := &tokenRate{counts: map[string]int{}}
+		s := &tokenStub{fail: tc.err}
+		h := PublicTokens{Admission: core.PublicAdmission{Writer: tokenWriter{d}}, Resource: "https://server.test/mcp", Codes: s, Grants: s}
+		for _, handler := range []http.HandlerFunc{h.Token, h.Revoke} {
+			body := valid
+			if s.calls > 0 {
+				body = "token=value&client_id=client"
+			}
+			w := tokenRequest(handler, body)
+			if w.Code != tc.status || !strings.Contains(w.Body.String(), `"`+tc.code+`"`) || strings.Contains(w.Body.String(), "private storage detail") {
+				t.Fatalf("error %v: %d %s", tc.err, w.Code, w.Body.String())
+			}
+		}
+	}
+	missingStore := PublicTokens{Resource: "https://server.test/mcp"}
+	w := tokenRequest(missingStore.Token, valid)
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "server_error") {
+		t.Fatalf("admission store failure: %d %s", w.Code, w.Body.String())
+	}
+}

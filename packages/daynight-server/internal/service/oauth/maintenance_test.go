@@ -88,3 +88,58 @@ func TestMaintenanceStopJoinsStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type blockingAuthorizationPruner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingAuthorizationPruner) PruneAuthorizations(context.Context, int) (int, error) {
+	close(p.started)
+	<-p.release
+	return 0, nil
+}
+
+func TestMaintenanceStopTimeoutCanBeRetried(t *testing.T) {
+	p := &blockingAuthorizationPruner{started: make(chan struct{}), release: make(chan struct{})}
+	runner := StartMaintenance(Maintenance{Clients: maintenanceWriter{&maintenanceClients{}}, Authorizations: p, Credentials: &maintenancePruner{}}, nil)
+	select {
+	case <-p.started:
+	case <-time.After(5 * time.Second):
+		close(p.release)
+		t.Fatal("startup scan did not run")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runner.Stop(ctx); !errors.Is(err, context.Canceled) {
+		close(p.release)
+		t.Fatalf("stop should report cancellation: %v", err)
+	}
+	close(p.release)
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runner.Stop(ctx); err != nil {
+		t.Fatalf("retry stop: %v", err)
+	}
+}
+
+func TestMaintenanceReportsFailureAndContinuesOtherCleanup(t *testing.T) {
+	boom := errors.New("cleanup failed")
+	a := &maintenancePruner{err: boom}
+	g := &maintenancePruner{}
+	reported := make(chan error, 1)
+	runner := StartMaintenance(Maintenance{Clients: maintenanceWriter{&maintenanceClients{}}, Authorizations: a, Credentials: g, Now: func() time.Time { return time.Unix(1, 0) }}, func(err error) { reported <- err })
+	select {
+	case err := <-reported:
+		if !errors.Is(err, boom) || g.n != 700 {
+			t.Fatalf("report=%v credential budget=%d", err, g.n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("maintenance failure not reported")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runner.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
