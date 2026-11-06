@@ -29,8 +29,10 @@ the corresponding transaction and business admission guarantees.
 A startup scan and minute runner combine bounded client, authorization and
 credential cleanup. Each kind has a share of the 2000-row round budget, so a
 large backlog in one kind cannot starve the others; each transaction handles at
-most 100 candidates. Stop cancels and joins before stores are released. The
-browser integration owns mounting the public adapters and starting this runner.
+most 100 candidates. Persisted cursors share authorization expiry and terminal
+deletion, and credential cleanup classes, across instances and restarts. Stop
+cancels and joins before stores are released. Browser integration mounts the
+public adapters and starts this runner.
 
 ## Alternatives
 
