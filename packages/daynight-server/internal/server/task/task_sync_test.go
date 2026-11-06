@@ -165,7 +165,10 @@ func TestTaskSyncHTTPFullLimitAndDatabaseError(t *testing.T) {
 	}
 	response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+"?epoch="+baseline.Epoch+"&since=9999-12-31T23:59:59Z", "")
 	value := decodeResponse[api.ErrorResponse](t, response, http.StatusConflict)
-	if value.Error.Code != "graph_limit_exceeded" || value.Error.Details == nil || value.Error.Details.NodeCount == nil || *value.Error.Details.NodeCount != 1001 {
+	limits := value.Error.Details
+	if value.Error.Code != "graph_limit_exceeded" || limits == nil || limits.NodeCount == nil || *limits.NodeCount != 1001 ||
+		limits.EdgeCount == nil || *limits.EdgeCount != 0 || limits.MaxNodes == nil || *limits.MaxNodes != 1000 ||
+		limits.MaxEdges == nil || *limits.MaxEdges != 5000 || strings.Contains(response.Body.String(), `"tasks"`) {
 		t.Fatalf("capacity: %s", response.Body)
 	}
 	if _, err := database.Pool.Exec(context.Background(), "DROP TABLE tasks"); err != nil {

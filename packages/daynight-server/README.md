@@ -613,23 +613,23 @@ owns the rationale and proof boundary.
 
 ### Race instrumentation
 
-The checked-in `.go-cov.toml` sets `test.race = false`; the default check does
-not enable race instrumentation. PR and main CI run without it. Repository
-validation requires race instrumentation locally, but the default check does
-not enforce that requirement. `bash scripts/stress.sh` uses `-race` for its
-local-only stress tests.
+The check enables race instrumentation locally. PR and main CI run without it;
+the CI path also overrides an inherited `GOFLAGS=-race`. The separate
+`bash scripts/stress.sh` entry uses `-race` for local-only stress tests.
 
 ### Coverage
 
 `scripts/check.sh` builds the executable, runs `go vet`, clears cached Go test
 results and invokes `go-cov` v0.1.4 with the checked-in configuration. Its
 package and function thresholds are 85% and 80%; production packages, files and
-functions are not excluded. Repository validation requires critical-block checks;
-`critical_blocks.fail` is currently false, so this check does not enforce them. The raw
-`coverage.out` profile also passes an exact statement comparison strictly greater
-than 90%; exactly 90% fails. The check does not set `-coverpkg`; a package test does not attribute coverage
-to production code in other packages. Tests and their database state require the
-isolated PostgreSQL instance; preparation failures fail validation.
+functions are not excluded. `critical_blocks.fail` is false, so the check does
+not analyze or fail on critical blocks. The raw `coverage.out` profile passes
+an exact statement comparison strictly greater than 90%; exactly 90% fails.
+The check selects all listed production packages for `-coverpkg`, so a module
+test also attributes its calls to other production packages. Tests and their
+database state require the isolated PostgreSQL instance; preparation failures
+fail validation. The check limits package concurrency to two: schema-isolated
+fixtures still share the database-wide migration advisory lock.
 
 `scripts/env.sh` places Go tools, caches and temporary outputs under this
 module's `.tmp/`. The `verify-server` CI job uses its own PostgreSQL service,
