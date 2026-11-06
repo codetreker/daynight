@@ -17,6 +17,7 @@ type TeamReader interface {
 	TeamMembersPage(context.Context, string, Page) (TeamMemberPage, error)
 	TeamInvitation(context.Context, []byte) (model.TeamInvitation, error)
 	TeamInvitations(context.Context, string, time.Time) ([]model.TeamInvitation, error)
+	TeamInvitationPage(context.Context, string, time.Time, Page) (TeamInvitationPage, error)
 	InvitationTeam(context.Context, string) (model.TeamRef, error)
 	InvitationTeamMember(context.Context, string, string) (model.TeamMember, error)
 }

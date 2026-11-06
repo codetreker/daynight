@@ -19,7 +19,7 @@ bounded DAO query, and cursors bind the account and Team. List items remain
 complete; an item that exceeds the response budget returns an explicit error.
 Member profile fields are bounded before materialization.
 
-The [Team membership decision](2026-11-04-team-membership-management.md) owns
+The [Team membership decision](../../archived/architecture/2026-11-04-team-membership-management.md) owns
 write serialization and the last-administrator rule. The [MCP entry decision](2026-11-06-mcp-http-entry.md)
 owns authentication, result envelopes and resource admission.
 

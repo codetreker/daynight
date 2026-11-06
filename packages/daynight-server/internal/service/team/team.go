@@ -354,6 +354,21 @@ func (s *Teams) ListInvitations(ctx context.Context, p model.Principal, id strin
 	})
 	return result, err
 }
+
+func (s *Teams) ListInvitationPage(ctx context.Context, p model.Principal, id string, request model.PageRequest) (core.InvitationPage, error) {
+	id, err := core.ValidateRead(p, id)
+	if err != nil {
+		return core.InvitationPage{}, err
+	}
+	var result core.InvitationPage
+	err = s.reader.ReadSnapshot(ctx, func(sc store.SnapshotScope) error {
+		var err error
+		result, err = core.ListInvitationPage(ctx, sc.TeamDAO(), p, id, request, s.now)
+		return err
+	})
+	return result, err
+}
+
 func (s *Teams) RevokeInvitation(ctx context.Context, p model.Principal, id, inviteID, expected string) (bool, error) {
 	id, inviteID, err := core.ValidateInvitationRevoke(p, id, inviteID, expected)
 	if err != nil {
