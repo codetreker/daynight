@@ -26,6 +26,7 @@ type ProjectListRequest struct {
 type ProjectPage struct {
 	Items      []model.Project
 	NextCursor *string
+	Oversized  *model.Project
 }
 
 func invalidInput(message string) error { return &model.Fault{Code: "invalid_input", Message: message} }
@@ -208,8 +209,8 @@ func FinishList(p model.Principal, request ProjectListRequest, result store.Proj
 	if err != nil {
 		return ProjectPage{}, err
 	}
-	response := ProjectPage{Items: result.Items}
-	if result.HasMore {
+	response := ProjectPage{Items: result.Items, Oversized: result.Oversized}
+	if result.HasMore && result.Oversized == nil {
 		last := result.Items[len(result.Items)-1]
 		cursor, err := query.EncodeProjectCursor(last, p.UserID, scope)
 		if err != nil {

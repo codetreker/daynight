@@ -84,7 +84,8 @@ func (s *reader) TeamMembersPage(ctx context.Context, teamID string, page store.
 			result.HasMore = true
 			blocked = true
 			if len(result.Items) == 0 {
-				result.OversizedUserID = m.UserID
+				m.CreatedAt, m.UpdatedAt = m.CreatedAt.UTC(), m.UpdatedAt.UTC()
+				result.Oversized = m
 			}
 			continue
 		}

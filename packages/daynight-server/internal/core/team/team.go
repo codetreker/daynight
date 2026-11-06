@@ -23,6 +23,7 @@ type ChangeTeam struct {
 type TeamPage struct {
 	Items      []model.Team
 	NextCursor *string
+	Oversized  *model.Team
 }
 
 func invalidInput(message string) error { return &model.Fault{Code: "invalid_input", Message: message} }
@@ -103,8 +104,8 @@ func List(ctx context.Context, dao store.TeamReader, p model.Principal, request 
 	return response, nil
 }
 
-// GetBounded and ListBounded are protocol projections that reject oversized
-// names before materializing them. Ordinary Team reads keep their full contract.
+// Bounded reads keep oversized names out of memory. Single reads reject them;
+// pages preserve their identity and ordering position for separate retrieval.
 func GetBounded(ctx context.Context, dao store.TeamReader, p model.Principal, id string, limit int) (model.Team, error) {
 	t, oversized, err := dao.TeamBounded(ctx, p.UserID, id, limit)
 	if errors.Is(err, model.ErrNotFound) {
@@ -128,8 +129,8 @@ func ListBounded(ctx context.Context, dao store.TeamReader, p model.Principal, r
 	if err != nil {
 		return TeamPage{}, err
 	}
-	if result.OversizedTeamID != "" {
-		return TeamPage{}, &model.Fault{Code: "payload_too_large", Message: fmt.Sprintf("Team %s exceeds the list budget.", result.OversizedTeamID)}
+	if result.Oversized != nil {
+		return TeamPage{Items: result.Items, Oversized: result.Oversized}, nil
 	}
 	response := TeamPage{Items: result.Items}
 	if result.HasMore {

@@ -13,7 +13,7 @@ import (
 
 func TestTeamPageTruncatesOnlyAtItemBoundary(t *testing.T) {
 	items := []string{strings.Repeat("a", 8000), strings.Repeat("b", 8000), "third"}
-	page, _, err := fitTeamPage(items, nil, func(i int) (string, error) { return items[i][:1], nil }, func(i int) map[string]any { return nil })
+	page, _, err := fitTeamPage(RequestActor{}, items, nil, func(i int) (string, error) { return items[i][:1], nil }, func(i int, c string) map[string]any { return nil })
 	if err != nil || len(page.Items) != 1 || page.Items[0] != items[0] || page.NextCursor == nil || *page.NextCursor != "a" {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
@@ -35,8 +35,8 @@ func TestTeamOversizeItemReturnsUsefulMCPFailure(t *testing.T) {
 	if tool.Name == "" {
 		t.Fatal("team_list missing")
 	}
-	err := f.entry.RegisterTool(&tool, BudgetControl, func(_ context.Context, _ RequestActor, _ json.RawMessage) (ToolResult, error) {
-		_, facts, err := fitTeamPage([]string{strings.Repeat("x", teamListBudget)}, nil, func(int) (string, error) { return "", nil }, func(int) map[string]any { return map[string]any{"teamId": "example"} })
+	err := f.entry.RegisterTool(&tool, BudgetControl, func(_ context.Context, actor RequestActor, _ json.RawMessage) (ToolResult, error) {
+		_, facts, err := fitTeamPage(actor, []string{strings.Repeat("x", teamListBudget)}, nil, func(int) (string, error) { return "after-item", nil }, func(_ int, c string) map[string]any { return teamItemReadReference("team", unknownTeam, "", "", c) })
 		return facts, err
 	})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestTeamOversizeItemReturnsUsefulMCPFailure(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Error.Code != "payload_too_large" || !strings.Contains(got.Error.Message, "page cannot be returned") || got.Error.Refs["teamId"] != "example" {
+	if got.Error.Code != "payload_too_large" || !strings.Contains(got.Error.Message, "page cannot be returned") || got.Error.Refs["teamId"] != unknownTeam {
 		t.Fatalf("failure=%s", raw)
 	}
 }

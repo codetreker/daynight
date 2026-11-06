@@ -37,10 +37,9 @@ func TestBoundedScopedProjectsPreservePrefixAndAuthority(t *testing.T) {
 		t.Fatalf("bounded prefix: %#v %v", page, err)
 	}
 	req.Page.Cursor = page.NextCursor
-	_, err = projects.ListScopedBounded(ctx, owner, req, 16<<10)
-	fault := requireFault(t, err, "payload_too_large")
-	if !strings.Contains(fault.Message, ids[1]) {
-		t.Fatalf("missing oversized ID: %v", err)
+	blocked, err := projects.ListScopedBounded(ctx, owner, req, 16<<10)
+	if err != nil || blocked.Oversized == nil || blocked.Oversized.ID != ids[1] || blocked.Oversized.CreatedAt.IsZero() || blocked.Oversized.Name != "" || len(blocked.Items) != 0 || blocked.NextCursor != nil {
+		t.Fatalf("oversized Project descriptor: %#v %v", blocked, err)
 	}
 	req.Page.Cursor = nil
 	_, err = projects.ListScopedBounded(ctx, outsider, req, 16<<10)

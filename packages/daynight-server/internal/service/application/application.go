@@ -19,6 +19,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/teamitem"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
@@ -32,6 +33,7 @@ type Application struct {
 	Memberships    *project.Memberships
 	Projects       *project.Projects
 	Teams          *team.Teams
+	TeamItems      *teamitem.Service
 	Workers        *worker.Workers
 	WorkerReadOnly *workerreadonly.Broker
 	Bots           *bot.Bots
@@ -58,6 +60,7 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		Memberships:    project.NewMemberships(database),
 		Projects:       project.NewProjects(database, engine),
 		Teams:          team.NewTeams(database),
+		TeamItems:      teamitem.New(database),
 		Workers:        worker.NewWorkers(database),
 		WorkerReadOnly: worker.NewReadOnly(database),
 		Bots:           bot.New(database),

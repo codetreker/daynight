@@ -1,0 +1,486 @@
+[
+  {
+    "name": "team_item_read",
+    "description": "Read every field of a Team, member or Team-owned Project using bounded inspect/chunk calls. Inspect gives complete fixed metadata, nullable field sizes and a revision based on exact last-modified timestamps. Chunk defaults to UTF-8 text and 8KiB source bytes; maxBytes above8192 explicitly allows a larger response. On version_conflict discard this item and inspect again. Decode each base64 chunk separately before joining bytes. After reading a list boundary item, continue using its cursorAfterItem.",
+    "inputSchema": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "team"
+            },
+            "team": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "inspect",
+              "default": "inspect"
+            }
+          },
+          "required": [
+            "kind",
+            "team"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "team"
+            },
+            "team": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "chunk"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "field": {
+              "enum": [
+                "name"
+              ]
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 524288,
+              "default": 8192
+            },
+            "format": {
+              "enum": [
+                "text",
+                "base64"
+              ],
+              "default": "text"
+            }
+          },
+          "required": [
+            "kind",
+            "team",
+            "action",
+            "revision",
+            "field",
+            "offset"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "member"
+            },
+            "team": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "userId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "inspect",
+              "default": "inspect"
+            }
+          },
+          "required": [
+            "kind",
+            "team",
+            "userId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "member"
+            },
+            "team": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "userId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "chunk"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "field": {
+              "enum": [
+                "profile.name",
+                "profile.email",
+                "profile.avatarUrl"
+              ]
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 524288,
+              "default": 8192
+            },
+            "format": {
+              "enum": [
+                "text",
+                "base64"
+              ],
+              "default": "text"
+            }
+          },
+          "required": [
+            "kind",
+            "team",
+            "userId",
+            "action",
+            "revision",
+            "field",
+            "offset"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "project"
+            },
+            "team": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "inspect",
+              "default": "inspect"
+            }
+          },
+          "required": [
+            "kind",
+            "team",
+            "projectId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "project"
+            },
+            "team": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "chunk"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "field": {
+              "enum": [
+                "name",
+                "repoUrl"
+              ]
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 524288,
+              "default": 8192
+            },
+            "format": {
+              "enum": [
+                "text",
+                "base64"
+              ],
+              "default": "text"
+            }
+          },
+          "required": [
+            "kind",
+            "team",
+            "projectId",
+            "action",
+            "revision",
+            "field",
+            "offset"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "projection": {
+                  "const": "metadata"
+                },
+                "contentIncluded": {
+                  "const": false
+                },
+                "revision": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "header": {
+                  "type": "object"
+                },
+                "fields": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "field": {
+                        "enum": [
+                          "name",
+                          "repoUrl",
+                          "profile.name",
+                          "profile.email",
+                          "profile.avatarUrl"
+                        ]
+                      },
+                      "isNull": {
+                        "type": "boolean"
+                      },
+                      "sizeBytes": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]*)$"
+                      }
+                    },
+                    "required": [
+                      "field",
+                      "isNull",
+                      "sizeBytes"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "projection",
+                "contentIncluded",
+                "revision",
+                "header",
+                "fields"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "revision": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "field": {
+                  "enum": [
+                    "name",
+                    "repoUrl",
+                    "profile.name",
+                    "profile.email",
+                    "profile.avatarUrl"
+                  ]
+                },
+                "offset": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "readBytes": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "nextOffset": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "sizeBytes": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "eof": {
+                  "type": "boolean"
+                },
+                "encoding": {
+                  "enum": [
+                    "utf8",
+                    "base64"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "contentBase64": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "revision",
+                "field",
+                "offset",
+                "readBytes",
+                "nextOffset",
+                "sizeBytes",
+                "eof",
+                "encoding"
+              ],
+              "oneOf": [
+                {
+                  "properties": {
+                    "encoding": {
+                      "const": "utf8"
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ],
+                  "not": {
+                    "required": [
+                      "contentBase64"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "encoding": {
+                      "const": "base64"
+                    }
+                  },
+                  "required": [
+                    "contentBase64"
+                  ],
+                  "not": {
+                    "required": [
+                      "text"
+                    ]
+                  }
+                }
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  }
+]

@@ -105,6 +105,7 @@ func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, 
 	defer rows.Close()
 	items := []model.Project{}
 	stoppedAtOversized := false
+	var oversized *model.Project
 	for rows.Next() {
 		var project model.Project
 		var err error
@@ -113,7 +114,7 @@ func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, 
 			project, err = pg.ScanProject(row)
 			if err == nil && row.oversized {
 				if len(items) == 0 {
-					return store.ProjectPage{}, &model.Fault{Code: "payload_too_large", Message: "Project " + project.ID + " exceeds the list item budget."}
+					oversized = &project
 				}
 				stoppedAtOversized = true
 				break
@@ -133,5 +134,5 @@ func (s *reader) ScopedProjects(ctx context.Context, principal model.Principal, 
 	if len(items) > page.Limit {
 		items = items[:page.Limit]
 	}
-	return store.ProjectPage{Items: items, HasMore: more}, nil
+	return store.ProjectPage{Items: items, HasMore: more, Oversized: oversized}, nil
 }

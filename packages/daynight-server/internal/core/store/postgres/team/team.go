@@ -149,7 +149,7 @@ func (s *reader) TeamsBounded(ctx context.Context, userID string, page store.Pag
 		}
 		if oversized {
 			if len(result.Items) == 0 {
-				result.OversizedTeamID = t.ID
+				result.Oversized = &t
 			}
 			result.HasMore = true
 			break

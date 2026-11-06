@@ -361,15 +361,19 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "arguments must be an object"}
 		}
 		if err := validateJSON(input, raw); err != nil {
-			return e.errorResult(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
+			return e.errorResultFor(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}, resultPolicy(tool.Name, nil)), nil
+		}
+		policy := resultPolicy(tool.Name, raw)
+		fail := func(failure envelopeError) *sdk.CallToolResult {
+			return e.errorResultFor(output, actor, failure, policy)
 		}
 		class := budget(raw)
 		if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
-			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
+			return fail(envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
 		}
 		release, err := actor.Budget.Acquire(ctx, class)
 		if err != nil {
-			return e.errorResult(output, actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
+			return fail(envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
 		}
 		scope.hold(release)
 		if class == BudgetControl {
@@ -388,7 +392,8 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			}
 		}
 		result, err := handler(ctx, actor, raw)
-		logger := e.logger.With(threadLogReferences(tool.Name, result.Refs)...)
+		references := append(threadLogReferences(tool.Name, result.Refs), teamLogReferences(tool.Name, result.Refs)...)
+		logger := e.logger.With(references...)
 		if err != nil {
 			failure := envelopeError{Code: "internal_error", Message: "The tool could not complete.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: result.Phase, Refs: result.Refs}
 			facts := operation.CompletionFacts(err)
@@ -415,24 +420,26 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 				failure.Message = fault.Message
 			}
 			logger.ErrorContext(ctx, "MCP tool failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
-			return e.errorResult(output, actor, failure), nil
+			return fail(failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
 		encoded, err := json.Marshal(value)
-		if err == nil && len(encoded) <= 128<<20 {
+		var response *sdk.CallToolResult
+		if err == nil {
 			err = validateJSON(output, encoded)
-		} else if err == nil {
-			err = errors.New("encoded output exceeds limit")
+		}
+		if err == nil {
+			response, err = policy.encodeJSON(encoded, false)
 		}
 		if err != nil {
 			if result.WriteOutcome == "" && (result.Outcome == "changed" || result.Outcome == "unchanged") {
 				result.WriteOutcome = "confirmed"
 			}
 			logger.ErrorContext(ctx, "MCP output construction failed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
-			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool result could not be constructed.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: "output", Refs: result.Refs}), nil
+			return fail(envelopeError{Code: "internal_error", Message: "The tool result could not be constructed.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: "output", Refs: result.Refs}), nil
 		}
 		logger.InfoContext(ctx, "MCP tool completed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "user_id", actor.Principal.UserID, "credential_id", actor.Principal.CredentialID, "outcome", result.Outcome, "write_outcome", result.WriteOutcome)
-		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "Completed."}}, StructuredContent: json.RawMessage(encoded)}, nil
+		return response, nil
 	})
 	return nil
 }

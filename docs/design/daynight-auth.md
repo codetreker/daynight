@@ -164,6 +164,12 @@ version 后才接受相同原文。真实改名只更新 Team 名称、元数据
 不确定提交遵守相同的 unknown 合同。详细取舍见
 [成员管理决策](../../.agents/notes/archived/architecture/2026-11-04-team-membership-management.md)。
 
+Team、成员关系、用户资料和 Project 相关可见内容实际改变时，数据库同一行更新保证 updated_at
+严格前进，至少超过旧值一微秒；晚于此值的赋入时间原样保留。成员与元数据的既有业务版本不变，
+MCP 分块读取复用各所属记录的原始修改时间元组识别变化。它的内容快照后还执行独立的当前授权核对，
+覆盖凭据撤销、Team 资格、目标成员关系与 Project 删除/归属；固定授权事实不会加载完整 Team 名称。
+该读取边界与时间精度由[MCP Team 列表项设计](daynight-mcp-team-items.md)拥有。
+
 删除在取得 Team 锁后，另发一条不加行锁的活跃 Project 与 ownership `EXISTS` 查询。Read Committed 的新语句
 快照能看见取锁等待期间已提交的 ownership 和 Project 删除标记；把检查合并进最初的锁定查询会使用等待前的快照。
 检查使用既有 `project_ownership(team_id,project_id)` 索引并排除已删除 Project。非空返回 team_not_empty，空集才在

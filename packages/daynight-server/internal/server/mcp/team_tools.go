@@ -76,31 +76,51 @@ type teamListData[T any] struct {
 // teamListBudget bounds the encoded default result without cutting an item.
 const teamListBudget = 16 << 10
 
-func fitTeamPage[T any](items []T, next *string, cursor func(int) (string, error), refs func(int) map[string]any) (teamListData[T], ToolResult, error) {
+func fitTeamPage[T any](actor RequestActor, items []T, next *string, cursor func(int) (string, error), refs func(int, string) map[string]any) (teamListData[T], ToolResult, error) {
 	page := teamListData[T]{Items: make([]T, 0, len(items)), NextCursor: next}
-	encodedBytes := 0
 	for i, item := range items {
-		encoded, err := json.Marshal(item)
-		if err != nil {
-			return page, ToolResult{}, err
-		}
-		// Reserve space for the envelope, cursor, punctuation and request ID.
-		size := encodedBytes + len(encoded) + len(page.Items)
-		if size > teamListBudget-1024 {
-			if i == 0 {
-				return page, ToolResult{Refs: refs(0)}, &model.Fault{Code: "payload_too_large", Message: "The first item exceeds the list response budget; the page cannot be returned. Resource identifiers are in refs."}
-			}
-			c, err := cursor(i - 1)
+		candidate := teamListData[T]{Items: append(page.Items, item), NextCursor: next}
+		if i < len(items)-1 {
+			c, err := cursor(i)
 			if err != nil {
 				return page, ToolResult{}, err
 			}
-			page.NextCursor = &c
+			candidate.NextCursor = &c
+		}
+		size, err := mirroredResultSize(envelope{Data: candidate, Meta: &envelopeMeta{RequestID: actor.RequestID}})
+		if err != nil {
+			return page, ToolResult{}, err
+		}
+		if size > teamListBudget {
+			if i == 0 {
+				c, err := cursor(i)
+				if err != nil {
+					return page, ToolResult{}, err
+				}
+				facts, err := oversizedTeamItem(refs(i, c))
+				return page, facts, err
+			}
 			return page, ToolResult{}, nil
 		}
-		page.Items = append(page.Items, item)
-		encodedBytes += len(encoded)
+		page = candidate
 	}
 	return page, ToolResult{}, nil
+}
+
+func oversizedTeamItem(refs map[string]any) (ToolResult, error) {
+	return ToolResult{Refs: refs}, &model.Fault{Code: "payload_too_large", Message: "The complete item exceeds the list response budget; the page cannot be returned. Read this item using refs before continuing."}
+}
+
+func teamItemReadReference(kind, team, user, project, cursor string) map[string]any {
+	arguments := map[string]any{"kind": kind, "team": team, "action": "inspect"}
+	refs := map[string]any{"teamId": team, "readTool": "team_item_read", "readArguments": arguments, "cursorAfterItem": cursor}
+	if kind == "member" {
+		arguments["userId"], refs["userId"] = user, user
+	}
+	if kind == "project" {
+		arguments["projectId"], refs["projectId"] = project, project
+	}
+	return refs
 }
 
 func checkTeamBody(value any) error {
@@ -194,14 +214,21 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		if err != nil {
 			return ToolResult{}, err
 		}
+		if t := result.Oversized; t != nil {
+			c, err := query.EncodeListCursor(query.ListScope{Kind: "teams", UserID: p.UserID}, t.CreatedAt, t.ID)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			return oversizedTeamItem(teamItemReadReference("team", t.ID, "", "", c))
+		}
 		items := make([]Team, 0, len(result.Items))
 		for _, t := range result.Items {
 			items = append(items, MapTeam(t))
 		}
-		page, facts, err := fitTeamPage(items, result.NextCursor, func(i int) (string, error) {
+		page, facts, err := fitTeamPage(actor, items, result.NextCursor, func(i int) (string, error) {
 			t := result.Items[i]
 			return query.EncodeListCursor(query.ListScope{Kind: "teams", UserID: p.UserID}, t.CreatedAt, t.ID)
-		}, func(i int) map[string]any { return map[string]any{"teamId": items[i].ID} })
+		}, func(i int, c string) map[string]any { return teamItemReadReference("team", items[i].ID, "", "", c) })
 		if err != nil {
 			return facts, err
 		}
@@ -269,31 +296,47 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		if err != nil {
 			return ToolResult{}, err
 		}
+		if project := result.Oversized; project != nil {
+			c, err := query.EncodeProjectCursor(*project, p.UserID, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: id})
+			if err != nil {
+				return ToolResult{}, err
+			}
+			return oversizedTeamItem(teamItemReadReference("project", id, "", project.ID, c))
+		}
 		items := make([]Project, 0, len(result.Items))
 		for _, project := range result.Items {
 			items = append(items, MapProject(project))
 		}
-		page, facts, err := fitTeamPage(items, result.NextCursor, func(i int) (string, error) {
+		page, facts, err := fitTeamPage(actor, items, result.NextCursor, func(i int) (string, error) {
 			return query.EncodeProjectCursor(result.Items[i], p.UserID, store.ProjectScope{Kind: store.ProjectScopeTeam, TeamID: id})
-		}, func(i int) map[string]any { return map[string]any{"projectId": items[i].ID} })
+		}, func(i int, c string) map[string]any { return teamItemReadReference("project", id, "", items[i].ID, c) })
 		if err != nil {
 			return facts, err
 		}
-		return ToolResult{Data: page}, nil
+		return ToolResult{Data: page, Refs: map[string]any{"teamId": id}}, nil
 	case "team_member_list":
 		result, err := teams.MembersPage(ctx, p, id, a.page())
 		if err != nil {
 			return ToolResult{}, err
 		}
+		if member := result.Oversized; member != nil {
+			c, err := coreteam.EncodeMemberCursor(p, id, model.TeamMemberProfile{Membership: *member})
+			if err != nil {
+				return ToolResult{}, err
+			}
+			return oversizedTeamItem(teamItemReadReference("member", id, member.UserID, "", c))
+		}
 		items := make([]teamMemberWithProfile, 0, len(result.Items))
 		for _, m := range result.Items {
 			items = append(items, teamMemberWithProfile{TeamMember: mapTeamMember(m.Membership), Profile: teamMemberProfile{Name: m.Profile.Name, Email: m.Profile.Email, AvatarURL: m.Profile.AvatarURL}})
 		}
-		page, facts, err := fitTeamPage(items, result.NextCursor, func(i int) (string, error) { return coreteam.EncodeMemberCursor(p, id, result.Items[i]) }, func(i int) map[string]any { return map[string]any{"teamId": id, "userId": items[i].UserID} })
+		page, facts, err := fitTeamPage(actor, items, result.NextCursor, func(i int) (string, error) { return coreteam.EncodeMemberCursor(p, id, result.Items[i]) }, func(i int, c string) map[string]any {
+			return teamItemReadReference("member", id, items[i].UserID, "", c)
+		})
 		if err != nil {
 			return facts, err
 		}
-		return ToolResult{Data: page}, nil
+		return ToolResult{Data: page, Refs: map[string]any{"teamId": id}}, nil
 	case "team_leave", "team_member_set_role", "team_member_remove":
 		target := a.UserID
 		if name == "team_leave" {

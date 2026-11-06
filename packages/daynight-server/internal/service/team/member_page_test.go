@@ -3,10 +3,10 @@ package team_test
 import (
 	"context"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	coreteam "github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	teamservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/google/uuid"
 )
@@ -75,7 +75,7 @@ func TestMemberPageBoundariesAndAccess(t *testing.T) {
 	teamFault(t, err, "invalid_input")
 }
 
-func TestMemberPageRejectsOversizedProfilesWithoutSkipping(t *testing.T) {
+func TestMemberPageDescribesOversizedProfilesWithoutSkipping(t *testing.T) {
 	_, db, _, actor := projectService(t)
 	teams := teamservice.NewTeams(db)
 	ctx := context.Background()
@@ -100,10 +100,17 @@ func TestMemberPageRejectsOversizedProfilesWithoutSkipping(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.Items[0].Membership.UserID != actor.UserID || page.NextCursor == nil {
 		t.Fatalf("expected prefix before oversized item: %#v %v", page, err)
 	}
-	_, err = teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10, Cursor: page.NextCursor})
-	teamFault(t, err, "payload_too_large")
-	if !strings.Contains(err.Error(), team.ID) || !strings.Contains(err.Error(), other.UserID) {
-		t.Fatalf("missing oversized item identifiers: %v", err)
+	blocked, err := teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10, Cursor: page.NextCursor})
+	if err != nil || blocked.Oversized == nil || blocked.Oversized.TeamID != team.ID || blocked.Oversized.UserID != other.UserID || blocked.Oversized.CreatedAt.IsZero() || len(blocked.Items) != 0 || blocked.NextCursor != nil {
+		t.Fatalf("oversized member descriptor: %#v %v", blocked, err)
+	}
+	continuation, err := coreteam.EncodeMemberCursor(actor, team.ID, model.TeamMemberProfile{Membership: *blocked.Oversized})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remainder, err := teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 10, Cursor: &continuation})
+	if err != nil || len(remainder.Items) != 1 || remainder.Items[0].Membership.UserID != last.UserID || remainder.Oversized != nil || remainder.NextCursor != nil {
+		t.Fatalf("continuation after described item: %#v %v", remainder, err)
 	}
 	full, err := teams.Members(ctx, actor, team.ID)
 	if err != nil || len(full) != 3 || full[1].Profile.Name == nil || len(*full[1].Profile.Name) != 9000 {
@@ -114,6 +121,8 @@ func TestMemberPageRejectsOversizedProfilesWithoutSkipping(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.NextCursor == nil {
 		t.Fatalf("one-item page: %#v %v", page, err)
 	}
-	_, err = teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 1, Cursor: page.NextCursor})
-	teamFault(t, err, "payload_too_large")
+	blocked, err = teams.MembersPage(ctx, actor, team.ID, model.PageRequest{Limit: 1, Cursor: page.NextCursor})
+	if err != nil || blocked.Oversized == nil || blocked.Oversized.UserID != other.UserID || len(blocked.Items) != 0 || blocked.NextCursor != nil {
+		t.Fatalf("next-page oversized descriptor: %#v %v", blocked, err)
+	}
 }

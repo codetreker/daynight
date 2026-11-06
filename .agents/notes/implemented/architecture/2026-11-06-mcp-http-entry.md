@@ -21,7 +21,10 @@ protocol versions.
 Registered tools use one low-level wrapper with precompiled input and output
 schemas, safe structured errors, and explicit completion facts. The production
 registry exposes registered business adapters. The [Team adapter decision](2026-11-06-mcp-team-management.md)
-records its oversized-item limitation.
+owns scoped directory reads; the [bounded item-read decision](2026-11-06-mcp-team-item-reads.md)
+owns oversized-item recovery and its four tools' complete serialized-text and
+structured result strategy. That strategy measures the complete CallToolResult;
+the SDK's outer JSON-RPC ID and HTTP batch framing remain separate.
 
 Separate control and large-object permits are selected by internal materialization,
 not the returned view. Permits remain held through handler and response delivery.

@@ -141,6 +141,9 @@ var uploadChunksSQL string
 //go:embed migrations/044_project_soft_delete.sql
 var projectSoftDeleteSQL string
 
+//go:embed migrations/045_team_item_bytes.sql
+var teamItemBytesSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -193,6 +196,7 @@ var schemaMigrations = []migration{
 	{version: 42, sql: oauthCleanupCursorSQL},
 	{version: 43, sql: uploadChunksSQL},
 	{version: 44, sql: projectSoftDeleteSQL},
+	{version: 45, sql: teamItemBytesSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

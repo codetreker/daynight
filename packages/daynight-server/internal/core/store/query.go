@@ -17,8 +17,9 @@ type Page struct {
 }
 
 type ProjectPage struct {
-	Items   []model.Project
-	HasMore bool
+	Items     []model.Project
+	HasMore   bool
+	Oversized *model.Project
 }
 
 type WorkerQuery struct {

@@ -50,10 +50,13 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 	for _, table := range []string{"users", "projects", "tasks", "task_attachments", "project_invitations", "personal_access_tokens", grants} {
 		var value string
 		projection := `to_jsonb(t)`
+		if table == "users" {
+			projection = `(to_jsonb(t)-'name_bytes'-'email_bytes'-'avatar_url_bytes')`
+		}
 		if table == "projects" {
-			// Later lifecycle migrations add a nullable field; compare all original
-			// columns while checking that field separately after the full upgrade.
-			projection = `(to_jsonb(t)-'deleted_at')`
+			// Compare original business fields; later lifecycle fields and derived
+			// byte projections have independent migration assertions.
+			projection = `(to_jsonb(t)-'deleted_at'-'name_bytes'-'repo_url_bytes')`
 		}
 		if err := s.Pool.QueryRow(context.Background(), `SELECT coalesce(jsonb_agg(`+projection+` ORDER BY `+projection+`::text),'[]'::jsonb)::text FROM `+table+` t`).Scan(&value); err != nil {
 			t.Fatal(err)

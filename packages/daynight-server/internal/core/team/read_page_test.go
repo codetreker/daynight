@@ -131,7 +131,7 @@ func TestListBoundedRejectsInvalidPagesAndReadFailures(t *testing.T) {
 	}{
 		{name: "invalid limit", request: model.PageRequest{Limit: 0}, code: "invalid_input"},
 		{name: "read failure", request: model.PageRequest{Limit: 1}, err: failure},
-		{name: "oversized team", request: model.PageRequest{Limit: 1}, page: store.TeamPage{OversizedTeamID: uuid.NewString()}, code: "payload_too_large"},
+		{name: "oversized team", request: model.PageRequest{Limit: 1}, page: store.TeamPage{Oversized: &model.Team{TeamRef: model.TeamRef{ID: uuid.NewString()}}}},
 		{name: "empty", request: model.PageRequest{Limit: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,7 +142,7 @@ func TestListBoundedRejectsInvalidPagesAndReadFailures(t *testing.T) {
 			} else if err != tc.err {
 				t.Fatalf("error=%v; want %v", err, tc.err)
 			}
-			if len(page.Items) != 0 || page.NextCursor != nil {
+			if len(page.Items) != 0 || page.NextCursor != nil || page.Oversized != tc.page.Oversized {
 				t.Fatalf("unexpected page: %#v", page)
 			}
 			if tc.request.Limit == 0 && len(r.calls) != 0 {
@@ -190,7 +190,7 @@ func TestMembersPageUsesScopedCursorAndAccessBeforePageRead(t *testing.T) {
 	}
 }
 
-func TestMembersPageRejectsAccessFailuresAndOversizedProfiles(t *testing.T) {
+func TestMembersPageRejectsAccessFailuresAndDescribesOversizedProfiles(t *testing.T) {
 	p := principal()
 	id := uuid.NewString()
 	failure := errors.New("read failed")
@@ -206,13 +206,21 @@ func TestMembersPageRejectsAccessFailuresAndOversizedProfiles(t *testing.T) {
 		{name: "missing Team", request: model.PageRequest{Limit: 1}, accessErr: model.ErrNotFound, code: "not_found", calls: []string{"access"}},
 		{name: "access error", request: model.PageRequest{Limit: 1}, accessErr: failure, calls: []string{"access"}},
 		{name: "page error", request: model.PageRequest{Limit: 1}, pageErr: failure, calls: []string{"access", "members"}},
-		{name: "oversized", request: model.PageRequest{Limit: 1}, oversized: uuid.NewString(), code: "payload_too_large", calls: []string{"access", "members"}},
+		{name: "oversized", request: model.PageRequest{Limit: 1}, oversized: uuid.NewString(), calls: []string{"access", "members"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &boundedReader{accessErr: tc.accessErr, pageErr: tc.pageErr, members: store.TeamMemberPage{OversizedUserID: tc.oversized}}
+			var oversized *model.TeamMember
+			if tc.oversized != "" {
+				oversized = &model.TeamMember{TeamID: id, UserID: tc.oversized}
+			}
+			r := &boundedReader{accessErr: tc.accessErr, pageErr: tc.pageErr, members: store.TeamMemberPage{Oversized: oversized}}
 			page, err := MembersPage(t.Context(), r, p, id, tc.request)
 			if tc.code != "" {
 				faultCode(t, err, tc.code)
+			} else if tc.oversized != "" {
+				if err != nil || page.Oversized != oversized {
+					t.Fatalf("oversized descriptor=%#v, err=%v", page.Oversized, err)
+				}
 			} else if err != failure {
 				t.Fatalf("error=%v; want original failure", err)
 			}

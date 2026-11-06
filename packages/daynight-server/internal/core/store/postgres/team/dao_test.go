@@ -99,11 +99,11 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 		t.Fatalf("bounded page: %+v %v", bp, err)
 	}
 	bp, err = reader.TeamsBounded(ctx, owner, store.Page{Limit: 10}, 2)
-	if err != nil || len(bp.Items) != 0 || bp.OversizedTeamID != first.ID || !bp.HasMore {
+	if err != nil || len(bp.Items) != 0 || (bp.Oversized == nil || bp.Oversized.ID != first.ID || !bp.Oversized.CreatedAt.Equal(after.CreatedAt)) || !bp.HasMore {
 		t.Fatalf("oversized first: %+v %v", bp, err)
 	}
 	bp, err = reader.TeamsBounded(ctx, owner, store.Page{Limit: 10}, 10)
-	if err != nil || len(bp.Items) != 1 || bp.OversizedTeamID != "" || !bp.HasMore {
+	if err != nil || len(bp.Items) != 1 || bp.Oversized != nil || !bp.HasMore {
 		t.Fatalf("oversized following: %+v %v", bp, err)
 	}
 	member, err := writer.AddInvitedMember(ctx, guest)
@@ -139,7 +139,7 @@ func TestTeamDAOReadsMembershipVersionsAndPagination(t *testing.T) {
 
 	execute(t, tx, `UPDATE users SET name=$2 WHERE id=$1`, guest, strings.Repeat("x", store.TeamMemberProfileByteLimit+1))
 	mp, err = reader.TeamMembersPage(ctx, first.ID, store.Page{Limit: 10})
-	if err != nil || len(mp.Items) != 1 || !mp.HasMore || mp.OversizedUserID != "" {
+	if err != nil || len(mp.Items) != 1 || !mp.HasMore || mp.Oversized != nil {
 		t.Fatalf("oversized following profile: %+v %v", mp, err)
 	}
 	if err := writer.RemoveMember(ctx, guest); err != nil {
@@ -246,7 +246,7 @@ func TestTeamDAORejectsMissingProfilesAndBoundsProfileBytes(t *testing.T) {
 	item := createTeam(t, tx, owner, "Profiles")
 	reader := team.NewReader(tx)
 	page, err := reader.TeamMembersPage(ctx, item.ID, store.Page{Limit: 10})
-	if err != nil || !page.HasMore || page.OversizedUserID != owner || len(page.Items) != 0 {
+	if err != nil || !page.HasMore || (page.Oversized == nil || page.Oversized.UserID != owner || page.Oversized.TeamID != item.ID || page.Oversized.CreatedAt.IsZero()) || len(page.Items) != 0 {
 		t.Fatalf("oversized profile: %+v %v", page, err)
 	}
 	execute(t, tx, `DELETE FROM users WHERE id=$1`, owner)

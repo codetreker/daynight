@@ -313,7 +313,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 	want := map[string]bool{
 		"project_create": true, "project_transfer": true, "project_list": true, "project_show": true,
 		"team_create": true, "team_rename": true, "team_delete": true, "team_leave": true,
-		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true,
+		"team_list": true, "team_show": true, "team_projects": true, "team_member_list": true, "team_item_read": true,
 		"team_member_set_role": true, "team_member_remove": true,
 		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
 		"invitation_inspect": true, "invitation_accept": true,

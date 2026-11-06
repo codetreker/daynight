@@ -257,10 +257,9 @@ func TestProjectPaginationScopesAndBudgets(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || !page.HasMore {
 		t.Fatalf("bounded page = %+v, %v", page, err)
 	}
-	_, err = r.ScopedProjects(ctx, principal(f.member), store.ProjectScope{Kind: store.ProjectScopeAll, MaxItemBytes: 1}, store.Page{Limit: 10})
-	var fault *model.Fault
-	if !errors.As(err, &fault) || fault.Code != "payload_too_large" {
-		t.Fatalf("oversized = %v", err)
+	oversized, err := r.ScopedProjects(ctx, principal(f.member), store.ProjectScope{Kind: store.ProjectScopeAll, MaxItemBytes: 1}, store.Page{Limit: 10})
+	if err != nil || oversized.Oversized == nil || oversized.Oversized.ID != f.project || oversized.Oversized.CreatedAt.IsZero() || oversized.Oversized.Name != "" || oversized.Oversized.RepoURL != "" || len(oversized.Items) != 0 || !oversized.HasMore {
+		t.Fatalf("oversized = %#v %v", oversized, err)
 	}
 	for _, scope := range []store.ProjectScope{{Kind: store.ProjectScopeAll, MaxItemBytes: -1}, {Kind: store.ProjectScopeAll, MaxItemBytes: 128<<20 + 1}, {Kind: store.ProjectScopeAll, TeamID: f.team}, {Kind: store.ProjectScopeShared, TeamID: f.team}, {Kind: store.ProjectScopeTeam}, {Kind: "unknown"}, {Kind: store.ProjectScopeTeam, TeamID: f.personal}} {
 		_, err := r.ScopedProjects(ctx, principal(f.member), scope, store.Page{Limit: 10})

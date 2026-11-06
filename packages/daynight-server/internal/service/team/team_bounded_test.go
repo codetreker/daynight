@@ -70,10 +70,9 @@ func TestBoundedTeamsStopBeforeOversizedItem(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.NextCursor == nil {
 		t.Fatalf("prefix: %#v %v", page, err)
 	}
-	_, err = teams.ListBounded(ctx, actor, model.PageRequest{Limit: 100, Cursor: page.NextCursor}, 16<<10)
-	teamFault(t, err, "payload_too_large")
-	if !strings.Contains(err.Error(), team.ID) {
-		t.Fatalf("missing Team ID: %v", err)
+	blocked, err := teams.ListBounded(ctx, actor, model.PageRequest{Limit: 100, Cursor: page.NextCursor}, 16<<10)
+	if err != nil || blocked.Oversized == nil || blocked.Oversized.ID != team.ID || blocked.Oversized.CreatedAt.IsZero() || len(blocked.Items) != 0 || blocked.NextCursor != nil {
+		t.Fatalf("oversized Team descriptor: %#v %v", blocked, err)
 	}
 	full, err := teams.List(ctx, actor, model.PageRequest{Limit: 100})
 	if err != nil || len(full.Items) != 2 {

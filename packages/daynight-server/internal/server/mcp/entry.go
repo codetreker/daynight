@@ -97,10 +97,14 @@ func New(auth Authenticator, publicOrigin string, allowedOrigins []string, logge
 		origins[origin] = true
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	server := sdk.NewServer(&sdk.Implementation{Name: "daynight", Version: "1"}, &sdk.ServerOptions{Logger: logger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
+	server := sdk.NewServer(serverImplementation(), &sdk.ServerOptions{Logger: logger, SupportedProtocolVersions: []string{"2026-07-28", "2025-11-25"}, SetCacheable: func(_ context.Context, _ sdk.Request, c *sdk.Cacheable) { c.CacheScope = "private"; c.TTLMs = 0 }})
 	e := &Entry{server: server, auth: auth, oauth: oauth, resource: publicOrigin + "/mcp", logger: logger, origins: origins, publicHost: mustOriginHost(publicOrigin), budget: NewBudget(), ctx: ctx, cancel: cancel}
 	e.http = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, MaxRequestBodyBytes: 4 << 20, Logger: logger, DisableLocalhostProtection: true})
 	return e, nil
+}
+
+func serverImplementation() *sdk.Implementation {
+	return &sdk.Implementation{Name: "daynight", Version: "1"}
 }
 
 func mustOriginHost(origin string) string { u, _ := url.Parse(origin); return u.Host }

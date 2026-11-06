@@ -357,9 +357,38 @@ deciding whether to send again. Bot creation resolves omitted settings from
 available Worker defaults and does not imply startup readiness. Bot deletion
 requires an explicit version and reports the separate Worker and server cleanup
 states. Team and membership versions are decimal strings, and list results use
-scoped cursors. An item in a Team, Team member or scoped Project list that
-exceeds its response budget produces an explicit error; complete MCP retrieval
-and continuation past that item are not yet available.
+scoped cursors. The Team, Team member and scoped Project lists return complete
+normal items. An oversized first item produces `payload_too_large` with a
+`team_item_read` invocation and `cursorAfterItem`. Read the complete item through
+its metadata and field chunks, then continue the list with that cursor.
+
+`team_item_read` supports Team names, member profile fields and Project names and
+repository URLs. Inspection distinguishes null from empty fields and returns an
+opaque revision built from exact modification timestamps. Chunks preserve source
+UTF-8 byte offsets; text ends at a character boundary, while base64 permits any
+valid byte position. A changed revision returns `version_conflict`: inspect again
+and discard that item's accumulated content. Every call checks current Team
+scope and credentials; a Project grant does not substitute for Team membership.
+The [requirements](../../docs/spec/daynight-mcp-team-items.md) and
+[design](../../docs/design/daynight-mcp-team-items.md) define reconstruction,
+permission and byte-range rules.
+
+These three lists and `team_item_read` return the same complete envelope in
+structured and serialized-text content, including errors. Their serialized
+`CallToolResult` is limited to 16 KiB by default; only a chunk request with an
+explicit `maxBytes` above 8192 uses the 8 MiB result limit. Chunks default to
+8192 source bytes and accept at most 524288. The actual returned bytes can be
+smaller to fit the result budget. SDK JSON-RPC IDs and HTTP batch framing are
+outside that per-result limit; other tools retain their own output strategy.
+
+The reader uses write-maintained UTF-8 bytea projections stored EXTERNAL, so
+metadata and range reads do not materialize complete source fields. Migration
+`045_team_item_bytes.sql` backfills those projections and installs maintenance
+and strictly advancing modification-time rules in one migration transaction.
+SQL batches do not commit independently or release DDL locks. Plan a migration
+window for backfill, locks, WAL and disk growth. The uncompressed projections add
+persistent storage; source conversion and equality checks can load full fields
+on writes, outside the bounded read-memory guarantee.
 
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and
@@ -406,6 +435,57 @@ the shared relay. A drain timeout cancels active requests, but the runtime waits
 for handlers, the relay and database cleanup within a separate five-second
 cleanup budget before closing shared storage. If cleanup times out, it retains
 resources and returns an error; a caller can retry close.
+
+### Team item capacity and SDK validation
+
+The Team item stress tests are local-only and reject a nonempty `CI` environment.
+Use an exclusive, disposable PostgreSQL **18.6-bookworm** container with role
+`daynight` and database `daynight_test`; its connection must be the one selected
+by `DAYNIGHT_TEST_DATABASE_URL`. Do not share that cluster with another validator:
+full capacity mode restarts the explicitly named container for each source.
+From this module, after preparing that isolated database, run:
+
+```bash
+source scripts/env.sh
+export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(GOFLAGS= node scripts/prepare-uniauth-fixture.mts)"
+export GOFLAGS='-overlay=scripts/unit-overlay.json'
+export DAYNIGHT_TEST_POSTGRES_CONTAINER='mcp-team-item-postgres'
+export DAYNIGHT_TEST_MCP_ITEM_CACHE_MODE=restart
+go test -race -p 1 -tags=stress ./internal/server -run '^TestStressMCPTeamItemCapacityAndReadMemory$' -count=1 -timeout=90m
+```
+
+Replace the container name with the explicit isolated instance. The test uses
+4, 129 and 900 MiB compressible and incompressible UTF-8 fields, streams byte
+verification through a separate Go SDK client process, checks text/structured
+parity, traverses oversized items and verifies modification-time conflicts.
+Server Go heap is measured separately from client allocations. PostgreSQL private
+memory is measured rather than RSS; a held-live slice MemoryContext probe
+supplements sampled private peaks and proves only that slice's allocation.
+`restart` measures PostgreSQL-cold and warm conditions; the host OS page cache is
+not flushed. `warm-only` is a smoke/debug subset and does not establish the full
+cache-condition acceptance. The Go client negotiates `2026-07-28`.
+
+The separate TypeScript interoperability test uses Node.js 24 and the official
+`@modelcontextprotocol/sdk@1.32.2`, whose latest supported protocol is `2025-11-25`.
+Install it only in project scratch, with its own private package/workspace and
+local package-manager storage; keep the Go environment and prepared fixture above:
+
+```bash
+export DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT="$(git rev-parse --show-toplevel)/.tmp/typescript-sdk"
+mkdir -p "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT"
+printf '%s\n' '{"name":"mcp-team-item-sdk-acceptance","private":true,"type":"module","dependencies":{"@modelcontextprotocol/sdk":"1.32.2"}}' > "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/package.json"
+printf 'packages:\n  - .\n' > "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/pnpm-workspace.yaml"
+pnpm --dir "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT" --config.store-dir="$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/store" --config.cache-dir="$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/cache" --config.state-dir="$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/state" install --ignore-scripts --no-frozen-lockfile
+go test -race -p 1 -tags=stress ./internal/server -run '^TestStressMCPTeamItemsTypeScriptSDK$' -count=1 -timeout=10m
+```
+
+This test runs the checked-in
+[`mcp-team-item-client.mts`](internal/server/testdata/mcp-team-item-client.mts)
+with the pinned SDK. It verifies all three directory kinds, text-only
+reconstruction and continuation, text/structured parity and timestamp conflicts.
+Both tests stay outside ordinary CI and do not add SDK packages to the product
+workspace. Remove the SDK scratch and dedicated PostgreSQL container after
+validation. Bind capacity conclusions to the tested source and actual run.
 
 ## Local Docker deployment
 
