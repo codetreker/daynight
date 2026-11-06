@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
@@ -58,5 +58,20 @@ describe("filename-ordered SQLite file migrations", () => {
     db.close();
     const reopened = openSqliteDatabase({ file, format, allowCreate: false, onMigration: () => {} }); connections.add(reopened);
     expect(reopened.prepare("SELECT value FROM records").get()).toEqual({ value: "baseline-second-third" });
+  });
+
+  it.each(["missing", "invalid filename"] as const)("rejects a %s sequence before changing existing database bytes", kind => {
+    const root = makeDirectory(), file = path.join(root, "state.sqlite"), resources = path.join(root, "sqlite");
+    const db = new Database(file); db.exec("CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES ('original'); PRAGMA user_version=1;"); db.close();
+    const original = readFileSync(file);
+    if (kind === "invalid filename") {
+      mkdirSync(resources); writeFileSync(path.join(resources, "001-baseline.sql"), "CREATE TABLE retained (value TEXT);");
+      writeFileSync(path.join(resources, "002-upgrade.SQL"), "ALTER TABLE retained ADD COLUMN changed TEXT;");
+    }
+    expect(() => loadSqliteSequence(pathToFileURL(resources))).toThrow(kind === "missing" ? /ENOENT/ : /Invalid SQLite SQL filename.*002-upgrade\.SQL/);
+    expect(readFileSync(file)).toEqual(original);
+    const reopened = new Database(file, { readonly: true }); connections.add(reopened);
+    expect(reopened.pragma("user_version", { simple: true })).toBe(1);
+    expect(reopened.prepare("SELECT * FROM retained").all()).toEqual([{ value: "original" }]);
   });
 });

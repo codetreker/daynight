@@ -470,6 +470,10 @@ jobs:
         run: sudo bash .github/scripts/use-ubuntu-archives.sh /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors.txt
       - name: Prepare isolated Bash 4.2 and zsh toolchains
         run: bash packages/daynight/scripts/prepare-completion-shells.sh
+      - name: Verify completion behavior in all supported shells
+        run: |
+          pnpm build
+          python3 -u packages/daynight/test/commands/completion/shell-module.py --shell all
       - name: Exercise actual Tab completion in Bash 4.2, modern Bash and zsh
         id: completion-validation
         run: pnpm completion:acceptance

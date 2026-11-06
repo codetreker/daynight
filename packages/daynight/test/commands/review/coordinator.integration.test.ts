@@ -1,7 +1,14 @@
 import path from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { GitCommandError } from "../../../src/commands/review/adapters/worktrees.js";
+import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
+import { createGitHubClient } from "../../../src/commands/review/adapters/github.js";
+import { createGitManager } from "../../../src/commands/review/adapters/worktrees.js";
+import { runCoordinator } from "../../../src/commands/review/coordinator.js";
 import { createProcessSupervisor } from "../../../src/commands/review/processes.js";
+import { runForegroundReview } from "../../../src/commands/review/runtime.js";
+import { prepareReviewSkill } from "../../../src/commands/review/skill.js";
 import { openStore } from "../../../src/commands/review/store.js";
 
 import { createCoordinatorFixtures } from "./coordinator-fixtures.js";
@@ -9,6 +16,50 @@ import { createCoordinatorFixtures } from "./coordinator-fixtures.js";
 const { proof, uuid, deferred, waitFor, observation, fixture } = createCoordinatorFixtures(false);
 
 describe("foreground review coordination", () => {
+  it("retains the captured skill while running and resumes the same session with the updated skill after restart", async () => {
+    const f = fixture(); f.update(1);
+    const packageDirectory = path.join(f.directory, "package");
+    const source = path.join(packageDirectory, "dist/commands/review/skills/daynight-review/SKILL.md");
+    await mkdir(path.dirname(source), { recursive: true });
+    const original = "---\nname: daynight-review\ndescription: Review pull requests\n---\n\nOriginal instructions.\n";
+    const updated = original.replace("Original instructions.", "Updated instructions.");
+    await writeFile(source, original);
+    const invocations: { session: string; digest: string; contents: string }[] = [];
+    const deps = {
+      prepareSkill: prepareReviewSkill, openStore, createClient: createGitHubClient, createGit: createGitManager,
+      createProcesses: createProcessSupervisor,
+      createRunner: vi.fn<typeof createCopilotRunner>(({ skill }) => ({ run: async (...args) => {
+        const review = args[0].getReview(args[1])!;
+        invocations.push({ session: args[0].getPullRequest(review)!.sessionId!, digest: skill.digest, contents: await readFile(skill.entrypoint, "utf8") });
+        return f.runner.run(...args);
+      } })),
+      coordinate: (options: Parameters<typeof runCoordinator>[0]) => runCoordinator({ ...options, client: f.client, git: f.git, processes: f.processes }),
+    };
+    const start = () => {
+      const controller = new AbortController();
+      return { controller, completion: runForegroundReview(f.configuration, f.paths, { packageDirectory, signal: controller.signal, dependencies: deps, log: () => {} }) };
+    };
+    const first = start(); let second: ReturnType<typeof start> | undefined;
+    try {
+      await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 1, "first captured skill review");
+      await writeFile(source, updated);
+      f.update(1, { headSha: "d".repeat(40) });
+      await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 2, "second review with captured skill");
+      expect(invocations).toHaveLength(2); expect(invocations.map(({ contents }) => contents)).toEqual([original, original]);
+      expect(invocations[1]!.digest).toBe(invocations[0]!.digest);
+      first.controller.abort(); await first.completion;
+      second = start(); f.update(1, { headSha: "e".repeat(40) });
+      await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 3, "resumed review with updated skill");
+      expect(invocations).toHaveLength(3); expect(invocations[2]!.contents).toBe(updated);
+      expect(invocations[2]!.digest).not.toBe(invocations[0]!.digest);
+      expect(invocations.map(({ session }) => session)).toEqual([invocations[0]!.session, invocations[0]!.session, invocations[0]!.session]);
+      expect(deps.createRunner).toHaveBeenCalledTimes(2);
+    } finally {
+      first.controller.abort(); await first.completion;
+      if (second !== undefined) { second.controller.abort(); await second.completion; }
+    }
+  }, 30_000);
+
   it.each([
     ["running", "APPROVED"], ["retry_wait", "APPROVED"], ["running", "COMMENTED"], ["retry_wait", "COMMENTED"],
   ] as const)("recovers schema1 %s marker loss with a prefixed legacy %s and adopts its historical actor", async (status, outcome) => {

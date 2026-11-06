@@ -125,6 +125,25 @@ describe("Step update and status write outcomes", () => {
     const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code: "version_conflict", message: "Stale version.", requestId: "conflict" } }, 409));
     const error = await failure(f, f.args(name, ["--if-version=1"])); expect(f.fetch).toHaveBeenCalledOnce(); expect(formatError(error)).toContain("outcome=refused"); expect(formatError(error)).toContain("version_conflict");
   });
+  it.each(["update", "set-status"] as const)("reports %s missing, stale or exhausted refusal near maximum version without retry", async (name) => {
+    const { taskDefinition } = await import("../../../src/commands/task/definition.js");
+    for (const [status, code, version] of [[404, "not_found", "9223372036854775807"], [409, "version_exhausted", "9223372036854775807"], [409, "version_conflict", "9223372036854775806"]] as const) {
+      const f = fixture();
+      f.fetch.mockResolvedValue(json({ error: { code, message: "Write refused.", requestId: "maximum-refusal" } }, status));
+      const registry = [{ ...taskDefinition, load: async () => ({ run: (args: readonly string[], context: CliContext) => runTaskCommand(args, context, f.dependencies) }) }];
+      const exit = await runCli(["task", ...f.args(name, [`--if-version=${version}`, "--json"])], f.context, registry);
+      expect(exit).toBe(1);
+      expect(f.context.stdout).not.toHaveBeenCalled(); expect(f.context.stdoutBytes).not.toHaveBeenCalled();
+      const diagnostic = f.context.stderr.mock.calls.map(([text]) => text).join("");
+      expect(diagnostic).toContain(`code=${code}`); expect(diagnostic).toContain("outcome=refused");
+      expect(diagnostic.toLowerCase()).not.toContain("outcome is unknown");
+      expect(f.fetch).toHaveBeenCalledOnce();
+      const [url, options] = f.fetch.mock.calls[0]!;
+      expect(options!.method).toBe(method(name));
+      expect(new URL(String(url)).pathname).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}/steps/${target.id}${name === "set-status" ? "/status" : ""}`);
+      expect(parseApiJson(String(options!.body))).toMatchObject({ version: BigInt(version) });
+    }
+  });
   it.each(["update", "set-status"] as const)("keeps %s authentication guidance", async (name) => {
     const f = fixture(); f.fetch.mockResolvedValue(json({ error: { code: "unauthenticated", message: "Sign in.", requestId: "auth" } }, 401));
     const error = await failure(f, f.args(name, ["--if-version=1"])); expect(f.fetch).toHaveBeenCalledOnce(); expect(formatError(error)).toContain("daynight login"); expect(formatError(error)).toContain("outcome=refused");

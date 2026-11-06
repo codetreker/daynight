@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApiClient, createOperation, stringifyApiJson } from "../../../src/api/index.js";
+import { createApiClient, createOperation, parseApiJson, stringifyApiJson } from "../../../src/api/index.js";
 import type { Project } from "../../../src/api/types.js";
 import { runCli } from "../../../src/cli/application.js";
 import type { CliContext } from "../../../src/cli/context.js";
@@ -24,27 +24,29 @@ const project: Project = { id: projectId, name: "private-project-name\n\u001b[31
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-const fixture = async (count: 0 | 2) => {
+const fixture = async (count: 0 | 1 | 2) => {
   const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/step-discovery-tests");
   await mkdir(temporary, { recursive: true });
   const root = await mkdtemp(path.join(temporary, "resolver-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
-  execFileSync("git", ["init", "-q", root]);
-  execFileSync("git", ["-C", root, "remote", "add", "origin", "git@git.example:Org/Repo.git"]);
+  execFileSync("git", ["init", "-q", root], { timeout: 10_000 });
+  execFileSync("git", ["-C", root, "remote", "add", "origin", "git@git.example:Org/Repo.git"], { timeout: 10_000 });
   const operation = createOperation(); cleanups.push(() => operation.dispose());
   const calls: string[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, options) => {
     const url = new URL(String(input)); calls.push(`${options?.method} ${url.pathname}${url.search}`);
+    if (count === 1 && url.pathname === `/api/v1/projects/${projectId}`) return new Response(stringifyApiJson(project), { headers: { "Content-Type": "application/json" } });
+    if (count === 1 && url.pathname === `/api/v1/projects/${projectId}/tasks/${taskId}/steps`) return new Response(stringifyApiJson({ projectId, taskId, version: 9_007_199_254_740_993n, steps: [{ id: "00abcdef", title: "Discovered", description: "Complete description", status: "todo", createdAt: time, updatedAt: time }] }), { headers: { "Content-Type": "application/json", "Daynight-User-ID": unrelatedId } });
     if (url.pathname !== "/api/v1/projects") throw new Error("private-unexpected-resource-token");
     const second = url.searchParams.has("cursor");
     const items = count === 0 ? second ? [] : [{ ...project, id: unrelatedId, repoUrl: "https://git.example/Other/Repo.git" }]
-      : [{ ...project, id: second ? otherId : projectId }];
+      : count === 1 && second ? [] : [{ ...project, id: second ? otherId : projectId }];
     return new Response(stringifyApiJson({ items, nextCursor: second ? null : "second-page" }), { headers: { "Content-Type": "application/json" } });
   });
   const api = createApiClient({ serverUrl, operation, fetch });
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: vi.fn(() => { throw new Error("private-configuration-path-token"); }), workingDirectory: vi.fn(() => root),
-    stdout: vi.fn<(text: string) => void>(), stderr: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn(async () => {}),
+    stdout: vi.fn<(text: string) => void>(), stderr: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn<CliContext["stdoutBytes"]>(async () => {}),
   } satisfies CliContext;
   const dependencies: TaskCommandDependencies = {
     resolveProject,
@@ -57,7 +59,15 @@ const fixture = async (count: 0 | 2) => {
   return { root, context, dependencies, registry, fetch, calls };
 };
 
-describe("Steps expected project discovery failures", () => {
+describe("Steps project discovery", () => {
+  it("reads complete Steps JSON after successful real Git project discovery", async () => {
+    const f = await fixture(1);
+    const exit = await runCli(["task", "step", "list", taskId, "--json"], f.context, f.registry);
+    expect(exit, f.context.stderr.mock.calls.map(([text]) => text).join("")).toBe(0);
+    expect(parseApiJson(Buffer.from(f.context.stdoutBytes.mock.calls[0]![0]).toString("utf8"))).toEqual({ projectId, taskId, version: 9_007_199_254_740_993n, steps: [{ id: "00abcdef", title: "Discovered", description: "Complete description", status: "todo", createdAt: time, updatedAt: time }] });
+    expect(f.calls).toEqual(["GET /api/v1/projects?limit=100", "GET /api/v1/projects?limit=100&cursor=second-page", `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}/steps`]);
+    expect(f.context.stderr).not.toHaveBeenCalled();
+  });
   it.each([0, 2] as const)("keeps real paginated discovery recovery for %i matches in list and show", async (count) => {
     for (const name of ["list", "show"] as const) {
       const f = await fixture(count);
