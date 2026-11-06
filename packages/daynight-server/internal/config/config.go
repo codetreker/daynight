@@ -9,23 +9,33 @@ import (
 )
 
 type Config struct {
-	PublicOrigin        string
-	MCPAllowedOrigins   []string
-	UniAuthURL          string
-	UniAuthAppID        string
-	UniAuthAppSecret    string
-	UniAuthCallbackURL  string
-	AllowHTTPTestOrigin bool
-	AllowLoopbackHTTP   bool
-	DatabaseURL         string
-	StorageRoot         string
-	ListenAddress       string
-	StartupTimeout      time.Duration
-	ShutdownTimeout     time.Duration
-	TaskSyncOverlap     time.Duration
+	PublicOrigin         string
+	MCPAllowedOrigins    []string
+	MCPTempBudgetBytes   int64
+	MCPReservedFreeBytes int64
+	UniAuthURL           string
+	UniAuthAppID         string
+	UniAuthAppSecret     string
+	UniAuthCallbackURL   string
+	AllowHTTPTestOrigin  bool
+	AllowLoopbackHTTP    bool
+	DatabaseURL          string
+	StorageRoot          string
+	ListenAddress        string
+	StartupTimeout       time.Duration
+	ShutdownTimeout      time.Duration
+	TaskSyncOverlap      time.Duration
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
+	tempBudget, err := loadBytes(getenv, "DAYNIGHT_MCP_TEMP_BUDGET_BYTES", 8<<30, false)
+	if err != nil {
+		return Config{}, err
+	}
+	reservedFree, err := loadBytes(getenv, "DAYNIGHT_MCP_RESERVED_FREE_BYTES", 1<<30, true)
+	if err != nil {
+		return Config{}, err
+	}
 	startupTimeout, err := loadDuration(getenv, "DAYNIGHT_STARTUP_TIMEOUT")
 	if err != nil {
 		return Config{}, err
@@ -51,22 +61,40 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		address = "127.0.0.1:8787"
 	}
 	config := Config{
-		PublicOrigin:        getenv("DAYNIGHT_PUBLIC_ORIGIN"),
-		MCPAllowedOrigins:   splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
-		UniAuthURL:          getenv("DAYNIGHT_UNIAUTH_URL"),
-		UniAuthAppID:        getenv("DAYNIGHT_UNIAUTH_APP_ID"),
-		UniAuthAppSecret:    getenv("DAYNIGHT_UNIAUTH_APP_SECRET"),
-		UniAuthCallbackURL:  getenv("DAYNIGHT_UNIAUTH_CALLBACK_URL"),
-		AllowHTTPTestOrigin: allowHTTP,
-		AllowLoopbackHTTP:   allowLoopback,
-		DatabaseURL:         getenv("DAYNIGHT_DATABASE_URL"),
-		StorageRoot:         getenv("DAYNIGHT_STORAGE_ROOT"),
-		ListenAddress:       address,
-		StartupTimeout:      startupTimeout,
-		ShutdownTimeout:     shutdownTimeout,
-		TaskSyncOverlap:     taskSyncOverlap,
+		PublicOrigin:         getenv("DAYNIGHT_PUBLIC_ORIGIN"),
+		MCPAllowedOrigins:    splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
+		MCPTempBudgetBytes:   tempBudget,
+		MCPReservedFreeBytes: reservedFree,
+		UniAuthURL:           getenv("DAYNIGHT_UNIAUTH_URL"),
+		UniAuthAppID:         getenv("DAYNIGHT_UNIAUTH_APP_ID"),
+		UniAuthAppSecret:     getenv("DAYNIGHT_UNIAUTH_APP_SECRET"),
+		UniAuthCallbackURL:   getenv("DAYNIGHT_UNIAUTH_CALLBACK_URL"),
+		AllowHTTPTestOrigin:  allowHTTP,
+		AllowLoopbackHTTP:    allowLoopback,
+		DatabaseURL:          getenv("DAYNIGHT_DATABASE_URL"),
+		StorageRoot:          getenv("DAYNIGHT_STORAGE_ROOT"),
+		ListenAddress:        address,
+		StartupTimeout:       startupTimeout,
+		ShutdownTimeout:      shutdownTimeout,
+		TaskSyncOverlap:      taskSyncOverlap,
 	}
 	return config, config.Validate()
+}
+
+func loadBytes(getenv func(string) string, field string, fallback int64, allowZero bool) (int64, error) {
+	value := getenv(field)
+	if value == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n < 0 || (!allowZero && n == 0) || strconv.FormatInt(n, 10) != value {
+		rule := "must be a nonnegative decimal byte count"
+		if !allowZero {
+			rule = "must be a positive decimal byte count"
+		}
+		return 0, &ConfigurationError{Field: field, Rule: rule}
+	}
+	return n, nil
 }
 
 func splitMCPOrigins(value string) []string {
@@ -104,6 +132,9 @@ func loadDuration(getenv func(string) string, field string) (time.Duration, erro
 }
 
 func (c Config) Validate() error {
+	if c.MCPTempBudgetBytes < 0 || c.MCPReservedFreeBytes < 0 {
+		return &ConfigurationError{Field: "MCP temporary capacity", Rule: "must not be negative"}
+	}
 	if strings.TrimSpace(c.DatabaseURL) == "" {
 		return &ConfigurationError{Field: "DAYNIGHT_DATABASE_URL", Rule: "is required"}
 	}
