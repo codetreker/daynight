@@ -182,7 +182,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         warnings.set(JSON.stringify([category, owner.projectId, owner.taskId, owner.claimId, owner.worktreeId]), message);
       };
       let worktrees: Awaited<ReturnType<WorkerGitManager["listWorktrees"]>>;
-      try { worktrees = await workerOperation((operation) => options.git.listWorktrees(project, operation, unavailable.has(project.projectId), true), signal); }
+      const target = configuration.targetProjectIds === undefined
+        ? configuration.repositories.some(repository => repository.project.projectId === project.projectId)
+        : configuration.targetProjectIds.includes(project.projectId);
+      try { worktrees = await workerOperation((operation) => options.git.listWorktrees(project, operation, unavailable.has(project.projectId) || !target, true), signal); }
       catch (error) {
         if (isWorkerCancellation(error, signal ?? normalSignal)) throw error;
         unavailableProjects.add(project.projectId);
@@ -694,6 +697,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     const { tasks: inventory, covered: coveredProjects, unavailable } = observation;
     activeCoverage = { covered: coveredProjects, unavailable };
+    // A 404 can arrive after ownInventory resolves but before this continuation runs.
+    for (const projectId of coveredProjects) {
+      if ((projectInvalidations.get(projectId) ?? 0) === (initialInvalidations.get(projectId) ?? 0)) continue;
+      coveredProjects.delete(projectId);
+      unavailable.add(projectId);
+      for (const [identity, task] of inventory) if (task.projectId === projectId) inventory.delete(identity);
+    }
     const projectObserved = (id: string): boolean => coveredProjects.has(id) || unavailable.has(id);
     const configurationObserved = (): boolean => configuration === inventoryConfiguration && (options.configurationComplete?.() ?? true)
       && (configuration.targetProjectIds ?? []).every(projectObserved)

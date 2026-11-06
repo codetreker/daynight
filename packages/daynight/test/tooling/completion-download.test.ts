@@ -10,7 +10,7 @@ const payload = "verified fixture archive\n";
 const checksum = createHash("sha256").update(payload).digest("hex");
 
 const fixture = async () => {
-  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/completion-download-tests");
+  const base = path.resolve(import.meta.dirname, "../../../../.tmp/completion-download-tests");
   await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "case-")); roots.push(root);
   const bin = path.join(root, "bin"); await mkdir(bin);

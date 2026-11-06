@@ -19,7 +19,7 @@ import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
-import { WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
+import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
@@ -260,6 +260,34 @@ describe("worker report publication boundaries", () => {
       expect(vi.mocked(f.remote.claim).mock.calls[1]![0].projectId).toBe(f.project.projectId);
     } finally { release(); await tick; }
   });
+  it("fences a 404 delivered after inventory processing but before its caller resumes", async () => {
+    const f = await fixture(2), publish = vi.fn();
+    const second = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.splice(0, f.candidates.length, task(second.projectId, uuid(102)));
+    const original = await f.remote.claim(task(f.project.projectId, uuid(120)), {
+      claimId: uuid(121), workerId, worktreeId: uuid(122), machine: { id: uuid(4), name: "fixture" }, platform: "linux", agent: "codex",
+    }, new AbortController().signal);
+    vi.mocked(f.remote.claim).mockClear();
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory: publish });
+    const register = f.store.registerPending.bind(f.store);
+    let injected = false;
+    vi.spyOn(f.store, "registerPending").mockImplementation(input => {
+      const local = register(input);
+      if (input.projectId === f.project.projectId && !injected) {
+        injected = true;
+        queueMicrotask(() => coordinator.invalidateProject(f.project.projectId));
+      }
+      return local;
+    });
+    await coordinator.tick();
+    expect(injected).toBe(true);
+    expect(publish.mock.calls.every(([value]) => value === null)).toBe(true);
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(vi.mocked(f.remote.claim).mock.calls[0]![0].projectId).toBe(second.projectId);
+    expect(f.store.getTask({ projectId: original.projectId, taskId: original.id, claimId: uuid(121) })?.status).toBe("pending");
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  });
   it("invalidates an otherwise complete inventory when project preparation observes 404 before claiming another project", async () => {
     const f = await fixture();
     const other = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "other") };
@@ -375,6 +403,28 @@ describe("worker report publication boundaries", () => {
     await f.coordinator.tick();
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "warning", message: expect.stringContaining("Could not inspect Git worktrees") }));
     expect(f.remote.claim).not.toHaveBeenCalled();
+  });
+
+  it.each(["unselected-absent", "unselected-invalid", "selected-absent"] as const)("checks a retained repository before admitting another Project: %s", async situation => {
+    const f = await fixture(2);
+    const retained = { ...f.project, projectId: uuid(11), localPath: path.join(f.root, "retained") };
+    f.store.registerProject(retained);
+    if (situation === "unselected-invalid") await mkdir(retained.localPath);
+    const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary") });
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementation((project, operation, allowMissing, includeOtherProjects) => project.projectId === retained.projectId
+      ? manager.listWorktrees(project, operation, allowMissing, includeOtherProjects)
+      : list(project, operation, allowMissing, includeOtherProjects));
+    const coordinator = createWorkerCoordinator({ ...f.options,
+      targetProjectIds: situation === "selected-absent" ? [f.project.projectId, retained.projectId] : [f.project.projectId],
+      readyProjectIds: [f.project.projectId],
+    });
+    try {
+      await coordinator.tick();
+      if (situation === "unselected-absent") expect(f.remote.claim).toHaveBeenCalledOnce();
+      else expect(f.remote.claim).not.toHaveBeenCalled();
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    } finally { await manager.dispose(); }
   });
 
   it("invalidates and cancels an active project if its candidate page returns 404", async () => {
