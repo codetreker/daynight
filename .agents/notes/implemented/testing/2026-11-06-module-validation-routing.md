@@ -4,53 +4,48 @@ Status: implemented
 
 ## Problem
 
-The PR selector schedules Go validation for Web changes even though the Go
-module job no longer builds the Web application. It also omits Go when shared
-Session fixtures change, despite Go tests reading that corpus. Routing by stale
-dependencies spends time on unrelated validation and can skip actual consumers.
+Per-file cross-module routing couples PR scheduling to imports and fixture
+readers. Those lists grow as implementation details change and make a change
+inside one module trigger unrelated module jobs. Treating every Node workspace
+input as a Go input adds validation without a Go dependency on that tooling.
 
 ## Decision
 
-PR routing follows the inputs consumed by the current module jobs. Web files
-and selected JavaScript patches select Web. CLI implementation imported by Web
-selects CLI and Web. Neither input family selects Go solely because production
-builds embed the Web bundle.
+PR application jobs follow module directories. `packages/daynight/` and installer
+tooling in `scripts/` select CLI; `packages/daynight-server/` selects Go;
+`packages/daynight-web/` and `deployment/` select Web. Implementations, fixtures
+and test tooling follow the same ownership, without cross-module file lists.
 
-The [Go job](https://github.com/codetreker/daynight/blob/47d9262c84bedf3d96dd1298f764f6ba5b201aaf/.github/workflows/checks.yml#L350-L412)
-runs the module check with a
-[fixed Web resource overlay](https://github.com/codetreker/daynight/blob/47d9262c84bedf3d96dd1298f764f6ba5b201aaf/packages/daynight-server/scripts/check.sh#L17-L21).
-The [Go coverage boundary](2026-11-06-go-module-coverage-boundary.md) owns that
-module validation. Production Web embedding retains its build requirements.
+Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` and the
+`patches/` directory select CLI and Web. Selection accumulates across paths, so
+those inputs combined with a Go-directory change select all three modules.
 
-The entire `packages/daynight/test/session/fixtures/` directory selects CLI,
-Web and Go. Go reads
-[non-v2 command fixtures](https://github.com/codetreker/daynight/blob/47d9262c84bedf3d96dd1298f764f6ba5b201aaf/packages/daynight-server/internal/core/session/protocol/command_test.go#L12-L25),
-[manifest-selected v2 cases](https://github.com/codetreker/daynight/blob/47d9262c84bedf3d96dd1298f764f6ba5b201aaf/packages/daynight-server/internal/core/session/protocol/v2/contract_test.go#L53-L72)
-and [responsibility digest vectors](https://github.com/codetreker/daynight/blob/47d9262c84bedf3d96dd1298f764f6ba5b201aaf/packages/daynight-server/internal/core/session/protocol/v2/responsibility_test.go#L10-L29).
-Directory ownership preserves those consumers as manifests gain cases.
+Documentation, repository instructions, the root `.gitignore` and manual
+publication workflow retain their exclusions. Bundled CLI source Markdown
+retains CLI selection. The strict version-only CLI manifest exception remains.
+CI workflow, routing and unknown paths select every module. Complete merge-base
+diffs retain deletions and both sides of renames; every main push runs all
+modules and final gates retain their existing requirements.
 
-The [README routing table](../../../../README.md#ci-selection) owns the input
-families. This replaces the production-embedding assumptions in the archived
-[module-scoped CI decision](../../archived/process/2026-10-21-module-scoped-pr-ci.md).
-Complete merge-base diffs, deletion and rename handling, shared root inputs,
-unknown-path selection, full main-push validation and final checks retain their
-existing behavior.
+The [README routing table](../../../../README.md#ci-selection) owns the directory
+map, and the [development guide](../../../../docs/development.md#ci-selection)
+owns execution details. This replaces the cross-module scheduling assumptions in
+the archived [module-scoped CI decision](../../archived/process/2026-10-21-module-scoped-pr-ci.md).
 
 ## Alternatives
 
-**Keep the production dependency graph as the PR job graph.** This schedules Go
-for Web changes without exercising those changed files in the Go module job.
+**Maintain per-file consumer lists.** Import and fixture readers require ongoing
+updates to the selector and make a single-module edit schedule other modules.
 
-**Remove every Go dependency on CLI-owned files.** This skips Go tests when their
-shared Session protocol inputs change.
+**Select Go for Node workspace inputs.** Go module validation owns its toolchain
+and does not consume the Node workspace configuration or dependency patches.
 
-**List individual fixture files.** Direct archive reads cover only part of the
-corpus. Dynamic manifest and digest-vector readers make a per-file list brittle
-when a new case is added.
+**Run all modules for every PR.** This repeats unrelated validation for each
+module change; full main-push validation remains the shared integration point.
 
 ## Consequences
 
-Web-only PRs run Web validation, while shared Session fixture changes retain all
-three module consumers. Mixed changes select the union of their consumers.
-Future module input changes require updating the selector and its regressions;
-production relationships alone do not establish module-job consumption.
+Directory ownership gives existing and new files the same scheduling rule.
+Cross-module consumers are validated on main unless their own module directory
+also changes in the PR. Mixed module changes still select every affected module,
+and unknown inputs retain full validation until their ownership is defined.
