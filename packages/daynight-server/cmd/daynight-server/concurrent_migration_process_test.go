@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -182,12 +183,31 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 	if err := observer.QueryRow(ctx, `SELECT array_agg(version ORDER BY version) FROM schema_migrations`).Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	wantVersions := make([]int64, 43)
-	for index := range wantVersions {
-		wantVersions[index] = int64(index + 1)
+	migrationRoot := filepath.Join("..", "..", "internal", "core", "store", "postgres")
+	var wantVersions []int64
+	for _, directory := range []string{filepath.Join(migrationRoot, "migrations"), filepath.Join(migrationRoot, "internal", "migration026", "migrations")} {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+				continue
+			}
+			prefix, _, found := strings.Cut(entry.Name(), "_")
+			version, err := strconv.ParseInt(prefix, 10, 64)
+			if !found || err != nil || version < 1 {
+				t.Fatalf("invalid migration filename %q", entry.Name())
+			}
+			wantVersions = append(wantVersions, version)
+		}
 	}
+	slices.Sort(wantVersions)
 	if !slices.Equal(versions, wantVersions) {
 		t.Fatalf("concurrent processes did not share the complete migration ledger: %v", versions)
+	}
+	if len(versions) < 39 || versions[37] != 38 || versions[38] != 39 {
+		t.Fatalf("OAuth migrations missing from ledger: %v", versions)
 	}
 	var grants, access, refresh, clients int
 	if err := observer.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants), (SELECT count(*) FROM oauth_access_tokens), (SELECT count(*) FROM oauth_refresh_tokens), (SELECT count(*) FROM oauth_clients)`).Scan(&grants, &access, &refresh, &clients); err != nil || grants != 0 || access != 0 || refresh != 0 || clients != 0 {

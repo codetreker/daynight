@@ -3,6 +3,7 @@ package task_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"reflect"
 	"strings"
@@ -34,7 +35,9 @@ func TestStepsHTTPReadResourcesAndRefusals(t *testing.T) {
 	var logs bytes.Buffer
 	database, handler, task := stepsHTTPFixture(t, &logs)
 	path := "/api/v1/projects/" + task.ProjectID + "/tasks/" + task.ID + "/steps"
-	empty := decodeResponse[api.StepsResource](t, projectRequest(handler, "GET", path, ""), 200)
+	emptyResponse := projectRequest(handler, "GET", path, "")
+	empty := decodeResponse[api.StepsResource](t, emptyResponse, 200)
+	assertStepsWireFields(t, emptyResponse.Body.Bytes(), false, 0)
 	if empty.Steps == nil || len(empty.Steps) != 0 || empty.Version != task.Version {
 		t.Fatalf("empty: %+v", empty)
 	}
@@ -135,11 +138,55 @@ func TestStepsHTTPReadPreservesEveryStateAndTimestamp(t *testing.T) {
 	path := "/api/v1/projects/" + strings.ToUpper(task.ProjectID) + "/tasks/" + strings.ToUpper(task.ID) + "/steps"
 	response := projectRequest(handler, "GET", path, "")
 	resource := decodeResponse[api.StepsResource](t, response, 200)
+	assertStepsWireFields(t, response.Body.Bytes(), false, len(rows))
 	if resource.ProjectID != task.ProjectID || resource.TaskID != task.ID || resource.Version != version || !reflect.DeepEqual(resource.Steps, rows) || !bytes.Contains(response.Body.Bytes(), []byte(`"version":9007199254740993`)) {
 		t.Fatalf("complete seeded collection: %+v", resource)
 	}
-	item := decodeResponse[api.StepResource](t, projectRequest(handler, "GET", path+"/ABCDEF01", ""), 200)
+	itemResponse := projectRequest(handler, "GET", path+"/ABCDEF01", "")
+	item := decodeResponse[api.StepResource](t, itemResponse, 200)
+	assertStepsWireFields(t, itemResponse.Body.Bytes(), true, 1)
 	if item.ProjectID != task.ProjectID || item.TaskID != task.ID || item.Version != version || item.Step != rows[0] {
 		t.Fatalf("complete scoped item: %+v", item)
+	}
+}
+
+func assertStepsWireFields(t *testing.T, data []byte, item bool, count int) {
+	t.Helper()
+	assertObject := func(fields map[string]json.RawMessage, names ...string) {
+		t.Helper()
+		if len(fields) != len(names) {
+			t.Fatalf("unexpected resource field count: got %d want %d", len(fields), len(names))
+		}
+		for _, name := range names {
+			value, exists := fields[name]
+			if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				t.Fatalf("missing or null resource field %q", name)
+			}
+		}
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal("resource is not valid JSON")
+	}
+	key := "steps"
+	if item {
+		key = "step"
+	}
+	assertObject(fields, "projectId", "taskId", "version", key)
+	var rows []map[string]json.RawMessage
+	if item {
+		var row map[string]json.RawMessage
+		if err := json.Unmarshal(fields[key], &row); err != nil {
+			t.Fatal("Step is not a JSON object")
+		}
+		rows = []map[string]json.RawMessage{row}
+	} else if err := json.Unmarshal(fields[key], &rows); err != nil || rows == nil {
+		t.Fatal("Steps is not a JSON array")
+	}
+	if len(rows) != count {
+		t.Fatalf("unexpected Step count: got %d want %d", len(rows), count)
+	}
+	for _, row := range rows {
+		assertObject(row, "id", "title", "description", "status", "createdAt", "updatedAt")
 	}
 }
