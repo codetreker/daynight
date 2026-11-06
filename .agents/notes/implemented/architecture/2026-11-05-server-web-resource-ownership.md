@@ -13,7 +13,8 @@ build publisher and container also need to agree with the Go embed location.
 `service/webui` owns the embedded filesystem and resource reads, including
 missing files, directories and I/O errors. `server/webui` registers the exact
 page and asset routes and owns HTTP headers, cancellation and response errors.
-The root server assembles these instances and retains its attachment path guard.
+The root server assembles these instances and applies the guard owned by
+`server/attachment` before the mux.
 The publisher and container place real Web output in `service/webui/dist`.
 
 ## Alternatives

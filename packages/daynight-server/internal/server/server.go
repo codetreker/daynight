@@ -2,11 +2,18 @@ package server
 
 import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
+	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
+	workerhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/worker"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
+	sessionservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	webresources "github.com/codetreker/daynight/packages/daynight-server/internal/service/webui"
 
 	configpkg "github.com/codetreker/daynight/packages/daynight-server/internal/config"
@@ -14,6 +21,7 @@ import (
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
 
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -21,7 +29,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	teamhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 )
 
 func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Handler, error) {
@@ -51,15 +58,20 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
-	workersRoutes(mux, app.Workers, auth, logger)
+	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
 	taskhttp.TaskRoutes(mux, app.Tasks, auth, logger)
+	taskhttp.TaskSearchRoutes(mux, app.TaskSearch, auth, logger)
 	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
 	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
 	taskhttp.TaskSyncRoutes(mux, app.TaskSync, auth, logger, config.TaskSyncOverlap)
-	attachmentRoutes(mux, app.Attachments, auth, logger)
-	relay := newSessionRoutes(app.Relay, auth, logger)
-	botsRoutes(mux, app.Bots, relay.service, auth, logger)
-	relay.register(mux)
+	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
+	engine := app.Engine
+	sessions := app.Sessions
+	deletions := app.BotDeletions
+	relay := sessionhttp.NewRoutes(sessions, auth, logger)
+	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
+	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
+	relay.RegisterRoutes(mux)
 	healthRoutes(mux, dependencies.Store, logger)
 	web := webhttp.New(webresources.New())
 	web.RegisterRoutes(mux, logger)
@@ -67,7 +79,29 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: attachmentPathGuard(mux, logger), relay: relay, mcp: endpoint}, nil
+	return &sessionApplication{Handler: attachmenthttp.PathGuard(mux, logger), relay: relay, service: sessions, engine: engine, mcp: endpoint}, nil
+}
+
+type sessionApplication struct {
+	http.Handler
+	relay   *sessionhttp.Routes
+	service *sessionservice.Service
+	engine  *sessioncore.Engine
+	mcp     *mcphttp.Entry
+}
+
+func (a *sessionApplication) BeginShutdown() {
+	if a.mcp != nil {
+		a.mcp.BeginShutdown()
+	}
+}
+func (a *sessionApplication) Shutdown(ctx context.Context) error {
+	if a.mcp != nil {
+		if err := a.mcp.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+	return errors.Join(a.relay.Shutdown(ctx), a.engine.Stop(ctx))
 }
 
 func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger) {
@@ -99,5 +133,4 @@ func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger
 }
 
 // registerMCPTools is the composition point for complete domain adapters.
-// The entry starts with an empty discovery list until such adapters are registered.
 func registerMCPTools(_ *application.Application, _ *mcphttp.Entry) error { return nil }

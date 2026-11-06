@@ -1,11 +1,11 @@
 # daynight-web
 
 The React/TypeScript Web app provides a public product introduction and a private
-workspace. The workspace implements Team creation and settings, project browsing, account-owned Worker
-observations and cloud configuration, cursor pagination, request cancellation,
-runtime API decoding, native browser routing and a pure dependency graph model
-with horizontal layout. Project task views use an IndexedDB summary cache and the
-authenticated task-sync endpoint.
+workspace. The workspace implements Team creation and settings, project browsing,
+account-owned Worker observations and cloud configuration, cursor pagination,
+request cancellation, runtime API decoding, native browser routing and a pure
+dependency graph model with horizontal and vertical layouts. Project task views
+use an IndexedDB summary cache and the authenticated task-sync endpoint.
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -140,7 +140,10 @@ list/detail with private project creation, account/token pages, member/invitatio
 project execution-warning settings and explicit invitation acceptance.
 
 `WorkspaceSidebar` provides a Team selector, the selected Team's project links,
-Shared with me and My Workers in its scrollable upper region. On a fresh
+Shared with me and My Workers in its scrollable upper region. The Team trigger
+opens a viewport-constrained popover in desktop, rail and mobile drawer layouts
+without shifting navigation or changing the sidebar state. It preserves native
+Team links, keyboard access, pagination and recoverable errors. On a fresh
 workspace entry, the account-scoped Team preference restores independently of
 the current project or global page. Explicit Team routes use their URL's Team;
 ordinary in-page navigation keeps the current choice, including a failed save.
@@ -491,7 +494,8 @@ new preview and confirmation. Direct grants and invitations remain intact.
 
 A validated receipt determines success. Retained access is installed in the
 Project access session; loss of access revokes the matching Task cache generation
-and clears open private views. The source Team is checked by ID for navigation:
+and clears open private views, including unsubmitted transfer previews. A dispatched
+transfer retains its result and a private-data-free unknown check. The source Team is checked by ID for navigation:
 a confirmed 404 goes to Personal, while network errors preserve the success
 notice and offer a retry. A lost response remains unknown, even if a later read
 returns 404; checking current state never replays the transfer. See the
@@ -519,13 +523,21 @@ replaying PATCH; missing access clears private Project data and the draft.
 
 Network, protocol or 5xx failure after PATCH leaves the write unconfirmed. The
 form reconciles Project and membership before enabling another mutation. Failed
-reconciliation leaves Save blocked and exposes a read retry. Navigation aborts
-obsolete client work without claiming that a committed write was rolled back;
-returning to the page loads authoritative state before editing. The existing
+reconciliation leaves Save blocked and exposes a read retry. Leaving the settings
+route cancels an undispatched save; a dispatched save and its result remain owned
+by the original user and Project for presentation on return. Unresolved outcomes
+remain retained until read-only reconciliation or scope invalidation. Returning
+reads authoritative settings without overwriting a draft; a changed version
+shows the current saved value and blocks saving until the user cancels the draft.
+An equal current value needs no write and does not establish an unknown outcome.
+Confirmed Project revocation hides private data and invalidates reads without
+cancelling a dispatched save; its result waits for renewed access. Identity scope
+termination rejects old results, and cancellation never proves that a committed
+write was rolled back. The existing
 foreground identity guard preserves same-user drafts and focus. Ordinary access
 checks do not reload the settings resource; Save waits for the current check and
-verifies the role, ownership and observed settings version before dispatch. Identity
-or project replacement invalidates old requests and results.
+verifies the role, ownership and observed settings version before dispatch. Ending
+the original identity or Project scope invalidates its requests and results.
 
 Project resources include required `settings.version`,
 `settings.executionWarningMinutes` and `ownership:{teamId,version}`. The resource
@@ -1206,7 +1218,7 @@ members stays visible. External prerequisite context does not contribute to
 chain progress or status. The former shared-membership badge is removed: a task
 can recur as context while its actual component membership remains unique.
 
-Each category retains its own completed visibility. Both share the current
+Both categories share assignee and status filters and the current
 task-list page position; category switching does not restore an older offset. Chain
 ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The
@@ -1330,8 +1342,12 @@ without changing task state. The [Session status design](../../docs/design/task-
 owns precedence, visibility, refresh limits and stable annotation geometry.
 
 The explicit View dependencies / 查看依赖关系 action opens one centered
-horizontal-graph dialog at a time without changing any disclosure state.
-Desktop geometry is `80vw × 80dvh`; at widths of 740px or less the dialog fills
+dependency-graph dialog at a time without changing any disclosure state.
+The toolbar selects horizontal or vertical direction and remembers it locally per
+project and representative task, defaulting to horizontal. Read, invalid-value
+and write failures are visible while direction changes remain usable. Switching
+preserves visible tasks and inspection, and reframes the current graph. Desktop
+geometry is `80vw × 80dvh`; at widths of 740px or less the dialog fills
 the viewport except for 12px gutters. The title shows the chain name, status
 and progress. Closing with the explicit button, backdrop or Escape restores the
 original graph button or an available Goal disclosure, filter or list control
@@ -1382,8 +1398,9 @@ persist. Locale translates controls without adding business reads. The
 separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
-category, one shared task-list page offset and each category's completed-item choice. Graph
-dialog opening, witness, Goal disclosure, fullscreen, details and graph viewport are temporary;
+category and one shared task-list page offset. Graph direction is saved per project
+and representative task. Filters, graph dialog opening, witness, Goal disclosure,
+fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
 written. The outer section uses the independent
 `daynight:project-section:${projectId}` record with the JSON string `"overview"`
@@ -1544,8 +1561,8 @@ records mode, scroll and keyboard ownership.
 Task descriptions render CommonMark and GFM using the same `MarkdownContent`
 renderer and styles as Markdown attachments: headings, paragraphs, lists,
 checkboxes, quotes, fenced code, tables, links and images. Mermaid fences render
-static flowcharts under the
-[shared diagram requirements](../../docs/spec/daynight-task-inspection.md#markdown-流程图).
+static diagrams under the
+[shared diagram requirements](../../docs/spec/daynight-task-inspection.md#markdown-图表).
 Raw HTML remains text;
 URL protocols retain the renderer's existing policy. Empty descriptions use the
 current interface language. Markdown and localized messages do not change the
@@ -1571,27 +1588,31 @@ close and existing authentication invalidation release its requests and state.
 Same-path overwrite and explicit attachment refresh retain the existing revision
 and preview reload behavior.
 
-Mermaid 12.2.0 loads on demand for `mermaid` fenced blocks. `flowchart` and `graph`
-provide nodes, arrows, branches, Chinese labels and TD/LR directions. A block
-accepts at most 50,000 UTF-16 code units and 500 edges; limits use the same local
-error/source presentation. Each diagram has independent loading/error feedback and inspectable source; an invalid block
-does not interrupt the document or other diagrams. Before drawing, the pinned
-Mermaid parser identifies image nodes, including escaped metadata keys. A node
-with an image resource or `imageSquare` type receives an explicit localized
-refusal and visible source, without occupying the rendering queue. Ordinary
-shape metadata and literal `@{` labels keep their normal Mermaid meaning.
-Supporting image nodes requires an interruptible isolated rendering context;
-a timeout alone cannot interrupt Mermaid's internal image decoding or release
-its shared state. Successful diagrams are inert SVG images. Diagram directives
-and frontmatter cannot override application security or theme configuration.
-Custom style resources and ordinary Markdown images retain normal browser
-resource behavior; flowchart rendering is not network-isolated. The current
-light palette matches Markdown;
-wide diagrams retain readable labels in a focusable local scroll region at
-320px. Task/attachment changes and unmount invalidate obsolete render results
-and release owned rendering resources. The
-[flowchart design](../../docs/design/daynight-task-inspection.md#mermaid-流程图)
-owns staging, serialization and image lifetime.
+Mermaid 12.2.0 loads on demand for `mermaid` fenced blocks. The reader supports
+15 stable types: flowchart (`flowchart`, `graph`, `flowchart-elk`), sequence,
+class, state, ER, Gantt, journey, pie, quadrant, requirement, XY, block,
+packet, kanban and event modeling. Experimental types and third-party plugins
+are not accepted. Each block keeps independent loading/error feedback and
+inspectable source. A source may contain at most 50,000 UTF-16 code units;
+per-type structural budgets limit each counted category to 500. Block expansion
+is checked before parsing; before rendering, its actual tree is also limited to
+50,000 estimated SDK sizing calls. A deeply nested block can exceed this budget
+even with fewer than 500 nodes. A pinned SDK patch limits Gantt calendar work to
+50,000 actual steps per task compilation. The
+[diagram design](../../docs/design/daynight-task-inspection.md#mermaid-图表)
+owns the counts and implementation constraints.
+
+The pinned parser identifies image nodes before drawing, including escaped
+metadata keys. A refused image node cannot occupy the rendering queue; ordinary
+shape metadata and literal `@{` labels retain their meaning. Supporting image
+nodes requires an interruptible isolated renderer; a timeout alone cannot
+interrupt Mermaid's internal image decoding. Successful diagrams are inert SVG
+images with intrinsic dimensions derived from their viewBox. Directives and
+frontmatter cannot override application security or theme. Custom style resources
+and ordinary Markdown images retain normal browser resource behavior, so diagram
+rendering is not network-isolated. Wide diagrams scroll in a focusable local
+region at 320px. Source changes and unmount invalidate obsolete results and
+release owned rendering resources.
 
 ## Task attachments
 
@@ -1665,7 +1686,7 @@ Its source, build, browser and cleanup receipts retain the scope of that result;
 a local browser override does not establish hosted-CI browser behavior.
 
 Markdown uses `react-markdown` 10.1.0 with `remark-gfm` 4.0.1 for CommonMark and GFM
-including tables, plus the shared static Mermaid flowcharts described above.
+including tables, plus the shared static Mermaid diagrams described above.
 The embedded preview and standalone reader retain the same per-diagram error,
 source, lifecycle and narrow-layout behavior. Raw HTML remains escaped. Relative
 images and links resolve
@@ -1837,12 +1858,25 @@ The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
 were never imported by a test. Empty, malformed and incomplete reports fail.
 
+Status, platform and automatic-permission API tests distinguish strict decoder
+inputs, target-specific write confirmation and shared transport failures. Complete
+detail/graph malformed-field matrices retain their input boundaries; representative
+HTTP cases check decoder admission and protocol classification. The
+[API proof decision](../../.agents/notes/implemented/testing/2026-11-06-web-api-proof-owners.md)
+owns that separation and its limits.
+
 The platform, pause, status and assignment controller session tests use
 `tests/helpers/waitForState.ts` for non-DOM state changes. It delegates to
 Testing Library with a 5ms default polling interval, preserving immediate
 checks, timeouts, errors and explicit options. DOM tests keep their existing
 waits. The [state polling decision](../../.agents/notes/implemented/testing/2026-11-04-web-controller-state-polling.md)
 records the cadence and its limits.
+
+Step panel DOM tests retain the full pagination fixtures and resolve visible
+controls by role and accessible name within their current row, form, toolbar,
+pagination or confirmation dialog. Whole-page counts retain document-wide scope.
+The [query ownership decision](../../.agents/notes/implemented/testing/2026-11-05-step-panel-query-owners.md)
+records the retained accessibility, draft and focus proof and its cost boundary.
 
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft
@@ -1854,11 +1888,27 @@ shard 2 runs all 28 cases before its full-stack acceptance. Its results and fail
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
-The Team management browser suite exercises the production settings page against
-controlled API responses. It checks name and action geometry, wrapping, text
-selection and rename interactions. Run `pnpm --filter @codetreker/daynight-web
-exec playwright test --config tests/navigation/team-management-playwright.config.ts`.
-Browser CI shard 2 runs this suite before full-stack acceptance.
+The Team navigation browser suite builds one production application preview for
+four Playwright projects: `team-preference` covers Team selection and Worker
+configuration identity, `team-management` covers settings and rename interactions,
+`team-members` covers membership and self-exit, and `session-record-layout` covers
+responsive execution-record selection, keyboard and touch input, history loading,
+errors and pagination. Each case owns its browser
+context and controlled API responses; the preview serves only static assets.
+Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
+tests/navigation/team-playwright.config.ts`; add `--project team-management` to
+focus on settings geometry, wrapping, text selection and rename interactions.
+Browser CI shard 2 runs the complete suite between editor navigation and Bot
+viewport checks before full-stack acceptance. One worker and zero retries remain
+in effect. Preference and Session layout cases use 45-second deadlines, while
+management and members retain 30 seconds; preview startup retains 90 seconds.
+CI gives the grouped command a 540-second aggregate deadline, equal to the three
+former 180-second command budgets. Its output remains separated under the existing
+`.tmp/team-preference-results`, `.tmp/team-management-results` and
+`.tmp/team-members-results` directories; Session layout results use
+`.tmp/session-selector/results`, and members retain failure traces. The
+[shared preview decision](../../.agents/notes/implemented/testing/2026-11-05-shared-team-navigation-preview.md)
+owns preparation sharing, isolation and deadline handling.
 
 The Bot viewport suite runs the production application, Session host and timeline
 against controlled HTTP and Session API responses. It checks long-history
@@ -1904,7 +1954,7 @@ independent native/container services, databases, private credentials and cleanu
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
 still executes one browser worker serially. The current canonical inventory is
-39 scenarios, divided into disjoint sets of 20 and 19. Default file-level partitioning
+41 scenarios, divided into disjoint sets of 21 and 20. Default file-level partitioning
 does not provide this case-level balance.
 
 Before preparing services, the runner collects the complete canonical functional
@@ -2032,6 +2082,16 @@ the measured `caseSensitive` capability and each browser phase records
 non-colliding attachment fixture path; Linux and container phases retain the
 case-sensitive fixture. A normal Mac pass does not claim native case-coexistence
 coverage. Windows native Web acceptance is unsupported.
+
+Native select keyboard scenarios use character typeahead on macOS and direction
+keys on other browser platforms. They retain value, focus and persistence checks,
+and platform changes still require an explicit confirmation with no write before
+confirmation. Modified-link scenarios use the browser platform's new-tab
+modifier. Combined authentication viewport changes also synchronize macOS native
+browser content dimensions with the requested layout viewport so wheel input
+can reach its full reading area. Layout dimensions and scrolling assertions stay
+unchanged. The [macOS browser acceptance decision](../../.agents/notes/implemented/testing/2026-11-05-macos-browser-acceptance.md)
+records these input and recovery boundaries.
 
 Routine `pnpm web:test` does not attach disk images on macOS. It checks storage
 receipts and refusal paths without requesting disk authorization. Run the explicit
@@ -2264,7 +2324,7 @@ visible-task selection and the highlighted sequence; each metric uses the worse
 state with independent network timing, and no close-to-zoom reset/fit/wait.
 Independent API/P/S topology derives compact/expandable heights from hidden direct
 neighbors inside P; unrelated outside-P successors cannot create a footer.
-Actual DOM fixed ports, cubic horizontal tangency, card avoidance,
+Actual DOM fixed ports, cubic tangency in the selected direction, card avoidance,
 body/marker coverage and independently integrated curved dash phase cover every visible edge.
 Stable owner transforms are graph-relative real root/owner CTMs; raw screen,
 page-scroll and canvas diagnostics stay separate from reset equality.
@@ -2304,8 +2364,8 @@ zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
 are checked in both runtime targets.
 
-The selected inventory (78 ordinary cases; local stress adds five native cases
-for 44 native / 39 container, 83 total), current manual/periodic refresh,
+The selected inventory (82 ordinary cases; local stress adds five native cases
+for 46 native / 41 container, 87 total), current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2354,7 +2414,7 @@ the remaining functional scenarios.
 | TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |
 | TT1–TT2, TT4–TT6 | `task-execution-time`: real PostgreSQL crossing with graph deliveries held and an incorrect client wall clock, one-second local progress, stable focus/DOM/geometry/edges/viewport, real saved-threshold changes, installed-CLI completion and frozen polling, unknown legacy starts, sub-minute/multi-day/shared/external cards and standalone rows, bilingual 320px/390px layout; browser GET/HEAD only, with fixture mutations through authenticated API or installed CLI |
 | FA1–FA12 | `task-attachments`: installed CLI and production UI share real task/files on native and container targets; exact bytes, file mutations, detail tabs, shared full attachment panel, unique preview scroll owners, rendered formats, standalone address/history and embedded-local selection. Independent real-service probes add end-of-document wheel/keyboard, native PDF final-page paint, fault/retry and unchanged task/graph proof |
-| TI8–TI9, TI15 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; TD/LR/Chinese flowcharts, independent failures/source, static image safety, content switches and standalone reload share the three Markdown entries; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
+| TI8–TI9, TI15 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; the stable diagram matrix, TD/LR/Chinese flowcharts, independent failures/source, static image safety, content switches and standalone reload share the three Markdown entries; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
 | TP-V1, TP-V7, TP-V8 | `detail-navigation`, `refresh-staleness`, `keyboard-focus`, `narrow-layout`: real API round trips for empty/NUL/control/long/HTML-looking values and duplicates, complete locally paged lists with bounded row counts, page/collection reset and focus, plain-text unsafe addresses, isolated HTTP(S) navigation, rereading properties and compact graph responses |
 | L1–L4 | `language-startup-preferences`: browser default, saved override, reload, route metadata, shared selectors and unchanged user data |
 | L2, L4–L5 | `language-state-preservation`: graph geometry/viewport and selection across fullscreen changes, fullscreen and modal focus, and PR page, file input and iframe identity across detail tab switches; separately held upload, overwrite and deletion retain pending state and execute once. Component tests cover controlled locale changes in mounted graphs and during pending operations |
@@ -2492,7 +2552,20 @@ recorded phases in reverse order: optional `native/capacity`, then `container`
 and `native/functional`.
 A still-running native Go process also requires its recorded binary
 hash before targeted termination. Browser recovery checks its recorded executable,
-process group and profile marker; ambiguous startup processes, orphan-only groups
+process group and profile marker. On macOS, the inventory also freezes the selected
+main executable's device and inode. A recorded hard-link alias can identify that
+same file, including Chromium's code-signing clone; a copy or a familiar path
+name cannot. Active recovery rechecks the file and original process identity;
+helper and companion executable paths retain exact membership checks. A browser
+installation replaced between launch inventory and ownership recording is
+rejected before its profile marker or process receipt is written. Combined
+authentication passes its saved receipt inventory; the Playwright fixture reads
+the runner's prelaunch inventory from the same phase's `target.json`. Recording
+requires that inventory, including macOS file identities; missing or invalid
+input fails without resampling or path-only trust. The caller still closes the
+launched browser. Once that browser has stopped and its profile is gone, the
+rejected recording leaves no new receipt to obstruct repeated recovery. Existing
+valid records remain intact. Ambiguous startup processes, orphan-only groups
 or unknown new profiles cause failure and remain for diagnosis. It does not kill
 unidentified processes or remove unidentified profiles. Dev-ci recovery uses the
 same recorded project identity and bounded cleanup entry.
@@ -2557,7 +2630,7 @@ chain membership; `externalIds` identifies additional ancestors. Complete projec
 S and all real edges with both endpoints in S; external classification still
 depends on source membership in P−M. It derives distinct root progress and aggregate chain status from main
 tasks in the same traversal, and marks shared tasks. The Dagre
-adapter returns finite left-to-right node positions and routed edge points for
+adapter returns finite left-to-right or top-to-bottom node positions and routed edge points for
 220px-wide visible cards with 96px compact or 136px expandable heights. The
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
@@ -2566,13 +2639,10 @@ ViewportPortal renders every planned M/L/C path, with stable edge identity,
 arrowheads, external-context dashes and accessibility semantics. It shares the viewport's
 transform, so selection/pan/zoom reuse geometry without per-edge reactive state.
 Canonical routes retain native arrow markers and the full planned geometry.
-Different-height passages use cubic Bézier curves entirely within empty column
-gaps, with both controls on the gap midpoint at the respective endpoint heights.
-Horizontal tangents join these curves to free rows through intermediate columns,
-which retain sixteen units of clearance from cards. The
+Passages use cubic Bézier curves entirely within empty rank gaps, with controls on the gap midpoint at the respective endpoint cross-axis coordinates. Tangents follow the selected direction and join free passages through intermediate ranks, which retain sixteen units of clearance from cards. The
 [Bézier routing decision](../../.agents/notes/implemented/architecture/2026-10-25-bezier-task-dependency-routing.md)
 owns the shape and avoidance mechanism. Dashed body paint uses `routes.ts` to
-derive locally horizontal rotated lines and exact cubic subcurves, with the
+derive locally rotated lines and exact cubic subcurves, with the
 original 5/4 pattern and continuous positive arc-length phase. Every paint piece
 has at most 8,192 graph units of arc length; internal cuts fall at global dash-gap
 midpoints to bound GPU work without removing route geometry. Cumulative phase

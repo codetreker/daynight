@@ -275,7 +275,7 @@ operationId、phase、step 及适用的 projectId/taskId 关联。失败日志�
 保持停写直至核验和切换结束。PG advisory lock 只串行同一数据库的维护调用，不能阻止普通业务写入。
 备份及回退的命令由[部署说明](../../deployment/localhost/README.md#attachment-layout-upgrade)拥有。
 
-维护编排位于附件业务包，复用相同的 project/shard/task 前缀函数。普通文件接口保持 Put/Open/Delete，
+维护入口由 `service/attachment` 取得专用维护连接和根句柄；`core/attachment/migration` 拥有记录、清点、校验和恢复状态机，并复用相同的 project/shard/task 前缀函数。根 store 的维护合同提供数据库身份及有序元数据快照，应用组装侧的维护工厂选择具体后端。专用连接从获取 advisory lock 到操作结束始终保持，同一连接执行全部快照。普通文件接口保持 Put/Open/Delete，
 不增加通用 Rename 或让适配器理解 task。维护过程显式打开配置的 os.Root，所有操作相对于该根句柄。
 根内独占 operation 目录、UUID、当前数据库身份与归属/元数据摘要，以及完整文件树共同绑定续作；
 不另造平台 inode 身份要求，也不根据目录名猜测布局已经迁移。
@@ -524,16 +524,16 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 
 | 类型 | 预览机制 |
 |---|---|
-| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 流程图组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
+| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 图表组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
 | 图片 | 原生 img 的加载、错误和重试状态 |
 | PDF | HEAD 检查后交给浏览器原生 iframe |
 | 文本、JSON、源码 | 原始文本节点与 pre，保留换行 |
 | HTML | HEAD 检查后在普通同源 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
-`MarkdownContent` 负责 CommonMark/GFM、Mermaid 流程图及样式，URL 转换与链接激活由
-调用方提供。流程图的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
-隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[流程图设计](daynight-task-inspection.md#mermaid-流程图)，
+`MarkdownContent` 负责 CommonMark/GFM、Mermaid 图表及样式，URL 转换与链接激活由
+调用方提供。图表的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
+隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[图表设计](daynight-task-inspection.md#mermaid-图表)，
 内嵌及独立完整详情不建立第二套渲染机制。`MarkdownAttachmentBase` 区分 `document` 与 `root`：附件调用方使用
 当前文件的目录作为资源基准，描述调用方使用任务附件根；不虚构描述文件名。路径解析逐段处理 URL 编码和 parent 段，拒绝
 越过任务根，保留 query/hash。独立 `#fragment` 保持原值，不改成文件请求。绝对、

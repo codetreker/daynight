@@ -2,6 +2,7 @@ package service
 
 import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
 	"context"
@@ -27,7 +28,7 @@ import (
 func TestResourceServicesRejectAbsentPrincipals(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.NewString()
-	projects, tasks, attachments := projectservice.NewProjects(nil), taskservice.NewTasks(nil), NewAttachments(nil, nil)
+	projects, tasks, attachments := projectservice.NewProjects(nil), taskservice.NewTasks(nil), attachmentservice.NewAttachments(nil, nil)
 	for _, principal := range []model.Principal{{}, {UserID: id, CredentialID: id, Kind: "unknown"}} {
 		calls := []func() error{
 			func() error { _, err := projects.Get(ctx, principal, id); return err },
@@ -83,7 +84,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 		}
 	})
 	probe := &authorizationStorage{Storage: files}
-	attachments := NewAttachments(f.database, probe)
+	attachments := attachmentservice.NewAttachments(f.database, probe)
 	putAttachment(t, attachments, admin, task, "secret.html", "<h1>same-origin</h1>")
 	ctx := context.Background()
 	readAndWrite := func(principal model.Principal) []func() error {
@@ -213,7 +214,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 		}
 	})
 	probe := &authorizationStorage{Storage: files, admitted: make(chan struct{}), release: make(chan struct{})}
-	attachments := NewAttachments(f.database, probe)
+	attachments := attachmentservice.NewAttachments(f.database, probe)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
@@ -241,7 +242,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	if probe.count() != 1 {
 		t.Fatal("later write reached filesystem")
 	}
-	read := NewAttachments(f.database, files)
+	read := attachmentservice.NewAttachments(f.database, files)
 	_, object, err := read.Open(context.Background(), admin, project.ID, task.ID, "admitted.txt")
 	if err != nil {
 		t.Fatal(err)

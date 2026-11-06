@@ -23,7 +23,7 @@ Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设
 [附件架构](daynight-task-attachments.md)中的 `task attachment put/list/read/remove`
 及二进制传输通道已实现，行为见[附件需求](../spec/daynight-task-attachments.md)。
 Web 文件管理亦已实现。元数据查询按操作输出 JSON；
-task list 的 JSON 仅省略 `description`，其他元数据查询保留各自完整资源。
+task list 的 JSON 仅省略 `description`，task search 使用独立精简投影，其他元数据查询保留各自完整资源。
 文本输出选择列表摘要或完整资源，创建和更新输出完整文本资源；原始内容逐段写入
 字节通道。
 [CLI 决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)记录
@@ -129,6 +129,22 @@ review 配置可始终省略，其业务字段不参与服务校验。YAML 错�
 `White_Space` 之外的字符。该规则与 Go 服务一致，U+FEFF 可以单独构成名称，
 U+0085 则不能。验证保留字符串原值，不修剪空白，也不拒绝服务允许的其他控制字符。
 Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受的资源阻断完整列表。属性内的 PR 字符串是独立的 opaque JSON 内容，不应用此文本限制。CLI/Web 的 api/task-properties.ts 保留通用 JSON map，readTaskPaused/readPullRequests/readWorkerClaim 在各自业务处返回明确的缺失状态；sameTaskProperties 比较完整属性对象，不能因当前业务仅消费部分属性就丢弃其它键。
+
+## Task 搜索
+
+`commands/task/search.ts` 在普通列表的项目读取和状态重排之前分派搜索；显式项目
+直接使用该 ID，省略时复用仓库解析。共享 commandTree 同时提供参数校验、帮助和
+补全。CLI 将表达式原样传给[搜索接口](../spec/daynight-task-search.md)，只在本地
+检查空白、UUID 和筛选值，不复制解析、匹配或排序。POST 是只读 exchange，期待
+200；每页显式请求 100 项，使用同一操作的五分钟总期限、30 秒单请求期限、128 MiB
+单响应与 256 MiB 总读取预算，并保留取消。它校验主体、项目、响应字段、总数、
+重复 ID 和 cursor，全部页面成功后才输出；`search_changed` 不自动重放。
+
+文本与 JSON 共用 `id/projectId/title/status/context/match` 显式投影，避免服务端
+新增字段自动泄入输出。标题和链代表标题完整保留，文本使用终端可见转义；描述
+只使用服务端提供的正向命中摘要。搜索不是完整 Task 读取，也不复用普通列表的
+默认状态过滤或重排。[搜索需求](../spec/daynight-project-task.md#项目任务搜索)拥有
+CLI 的行为与错误，服务端机制由[搜索设计](daynight-task-search.md)拥有。
 
 ## 服务地址与 HTTP 客户端
 
@@ -428,6 +444,8 @@ Team 生命周期写入复用当前用户和目标解析，确认阶段不持配
 typed mutation API 绑定 `/me` 主体并校验响应主体、资源与删除回执；已确认成功直接
 消费回执，不追加读取判断提交。拒绝、取消和未知提交保留各自结果；网络中断、取消
 等待、无效成功响应或未知提交不能证明回滚，也不能自动重发。后续读取只描述当前事实。
+Team 未确认写入使用 `PublicDiagnosticError` 保留内部 cause，顶层仅输出安全的结果说明、
+request ID 和读取当前状态的提示，避免递归格式化原始响应及传输错误。
 
 邀请管理只输出经过验证的同服务一次性链接，列表只接受并渲染元数据；撤销消费有限
 回执，`changed:false` 是确认的未变更结果，但不能区分已撤销、已消费或不存在。创建响应可能含秘密，因此解析和错误

@@ -178,11 +178,13 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	}
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 {
+		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
 	parts := strings.Fields(values[0])
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
@@ -192,6 +194,7 @@ func (e *Entry) ServeHTTP(writer http.ResponseWriter, r *http.Request) {
 	defer stop()
 	p, err := e.auth.Authenticate(ctx, model.PATCredential, parts[1])
 	if err != nil {
+		w.Header().Set("WWW-Authenticate", "Bearer")
 		httpx.WriteError(w, r, e.logger, "mcp", "authenticate", err)
 		return
 	}

@@ -17,7 +17,7 @@ import (
 func runtimeStoredBot(t *testing.T, database *Store) model.Bot {
 	t.Helper()
 	bot, _ := storedBotCandidate(t, database)
-	if err := database.WriteBot(context.Background(), func(tx *BotTx) error {
+	if err := writeBotTest(database, context.Background(), func(tx *botTx) error {
 		return tx.InsertBot(context.Background(), bot)
 	}); err != nil {
 		t.Fatal(err)
@@ -38,17 +38,17 @@ func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 	sessionID, executionID := uuid.NewString(), uuid.NewString()
 	role := model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: strings.Repeat("a", 64)}
 	failure := errors.New("reject complete registration")
-	bind := func(tx *BotTx) (model.Bot, error) {
-		current, err := ReadBotForUpdate(ctx, tx.tx, bot.ID)
+	bind := func(tx *botTx) (model.Bot, error) {
+		current, err := tx.Bot(ctx, bot.ID)
 		if err != nil {
 			return model.Bot{}, err
 		}
 		if err := insertBotSession(ctx, tx.tx, current, sessionID, executionID); err != nil {
 			return model.Bot{}, err
 		}
-		return BindBotSession(ctx, tx.tx, bot.ID, current.Version, sessionID, role)
+		return tx.BindBotSession(ctx, bot.ID, current.Version, sessionID, role)
 	}
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
 		if _, err := bind(tx); err != nil {
 			return err
 		}
@@ -69,7 +69,7 @@ func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
 		current, err := bind(tx)
 		if err == nil && (current.Version != 2 || current.SessionID == nil || *current.SessionID != sessionID || current.TestExecutionID == nil || *current.TestExecutionID != executionID || !reflect.DeepEqual(current.RoleConfiguration, &role)) {
 			t.Fatalf("invalid committed binding: %+v", current)
@@ -79,8 +79,8 @@ func TestBotSessionBindingAndRoleFreezeAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, version := range []int64{1, 2} {
-		if err := database.WriteBot(ctx, func(tx *BotTx) error {
-			_, err := BindBotSession(ctx, tx.tx, bot.ID, version, sessionID, role)
+		if err := writeBotTest(database, ctx, func(tx *botTx) error {
+			_, err := tx.BindBotSession(ctx, bot.ID, version, sessionID, role)
 			return err
 		}); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("binding was rewritten at version %d: %v", version, err)
@@ -92,15 +92,15 @@ func TestBotStartupRejectsUnboundStaleDeletedAndExhaustedWrites(t *testing.T) {
 	database := isolatedStore(t)
 	bot := runtimeStoredBot(t, database)
 	ctx := context.Background()
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
-		_, err := SetBotStartup(ctx, tx.tx, bot.ID, 1, model.BotStartupResult{State: "ready"})
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
+		_, err := tx.SetBotStartup(ctx, bot.ID, 1, model.BotStartupResult{State: "ready"})
 		return err
 	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("unbound Bot became ready: %v", err)
 	}
 	code := "directory_missing"
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
-		current, err := SetBotStartup(ctx, tx.tx, bot.ID, 1, model.BotStartupResult{State: "failed", Code: &code})
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
+		current, err := tx.SetBotStartup(ctx, bot.ID, 1, model.BotStartupResult{State: "failed", Code: &code})
 		if err == nil && (current.Version != 2 || current.StartupResult.State != "failed" || current.StartupResult.Code == nil || *current.StartupResult.Code != code) {
 			t.Fatalf("failure result was lost: %+v", current)
 		}
@@ -108,8 +108,8 @@ func TestBotStartupRejectsUnboundStaleDeletedAndExhaustedWrites(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
-		_, err := SetBotStartup(ctx, tx.tx, bot.ID, 1, model.BotStartupResult{State: "pending"})
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
+		_, err := tx.SetBotStartup(ctx, bot.ID, 1, model.BotStartupResult{State: "pending"})
 		return err
 	}); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("stale startup write succeeded: %v", err)
@@ -124,8 +124,8 @@ func TestBotStartupRejectsUnboundStaleDeletedAndExhaustedWrites(t *testing.T) {
 				version = math.MaxInt64
 				mustQueryExec(t, database, `UPDATE bots SET version=$2 WHERE id=$1`, candidate.ID, version)
 			}
-			if err := database.WriteBot(ctx, func(tx *BotTx) error {
-				_, err := SetBotStartup(ctx, tx.tx, candidate.ID, version, model.BotStartupResult{State: "failed", Code: &code})
+			if err := writeBotTest(database, ctx, func(tx *botTx) error {
+				_, err := tx.SetBotStartup(ctx, candidate.ID, version, model.BotStartupResult{State: "failed", Code: &code})
 				return err
 			}); !errors.Is(err, model.ErrNotFound) {
 				t.Fatalf("invalid startup update: %v", err)
@@ -139,8 +139,8 @@ func TestBotReadyAndSuccessfulPreferencesShareOneTransaction(t *testing.T) {
 	bot := runtimeStoredBot(t, database)
 	ctx := context.Background()
 	mustQueryExec(t, database, `UPDATE bots SET requested_overrides=jsonb_build_object('workerId',worker_id::text) WHERE id=$1`, bot.ID)
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
-		current, err := ReadBotForUpdate(ctx, tx.tx, bot.ID)
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
+		current, err := tx.Bot(ctx, bot.ID)
 		if err != nil {
 			return err
 		}
@@ -148,23 +148,23 @@ func TestBotReadyAndSuccessfulPreferencesShareOneTransaction(t *testing.T) {
 		if err := insertBotSession(ctx, tx.tx, current, id, uuid.NewString()); err != nil {
 			return err
 		}
-		_, err = BindBotSession(ctx, tx.tx, bot.ID, 1, id, model.BotRoleConfiguration{Instructions: "Frozen role", Revision: "1", Digest: strings.Repeat("a", 64)})
+		_, err = tx.BindBotSession(ctx, bot.ID, 1, id, model.BotRoleConfiguration{Instructions: "Frozen role", Revision: "1", Digest: strings.Repeat("a", 64)})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	failure := errors.New("reject ready report after preferences")
-	ready := func(tx *BotTx) error {
-		current, err := SetBotStartup(ctx, tx.tx, bot.ID, 2, model.BotStartupResult{State: "ready"})
+	ready := func(tx *botTx) error {
+		current, err := tx.SetBotStartup(ctx, bot.ID, 2, model.BotStartupResult{State: "ready"})
 		if err != nil {
 			return err
 		}
 		if current.Version != 3 || current.StartupResult.State != "ready" {
 			t.Fatalf("ready result: %+v", current)
 		}
-		return CommitBotPreferences(ctx, tx.tx, bot.ID)
+		return tx.CommitBotPreferences(ctx, bot.ID)
 	}
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
 		if err := ready(tx); err != nil {
 			return err
 		}
@@ -184,7 +184,7 @@ func TestBotReadyAndSuccessfulPreferencesShareOneTransaction(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteBot(ctx, ready); err != nil {
+	if err := writeBotTest(database, ctx, ready); err != nil {
 		t.Fatal(err)
 	}
 	if input := readBotDefaults(t, database, bot.OwnerUserID); input.PreferredWorkerID == nil || *input.PreferredWorkerID != bot.WorkerID {
@@ -196,7 +196,7 @@ func TestBotSessionConstraintsRejectCrossOwnerAndDuplicateBinding(t *testing.T) 
 	database := isolatedStore(t)
 	bot := runtimeStoredBot(t, database)
 	ctx := context.Background()
-	if err := database.WriteBot(ctx, func(tx *BotTx) error {
+	if err := writeBotTest(database, ctx, func(tx *botTx) error {
 		return insertBotSession(ctx, tx.tx, bot, uuid.NewString(), uuid.NewString())
 	}); err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestBotSessionConstraintsRejectCrossOwnerAndDuplicateBinding(t *testing.T) 
 			if entry.name == "cross_owner" {
 				mustQueryExec(t, database, `DELETE FROM task_sessions WHERE bot_id=$1`, bot.ID)
 			}
-			err := database.WriteBot(ctx, func(tx *BotTx) error {
+			err := writeBotTest(database, ctx, func(tx *botTx) error {
 				return insertBotSession(ctx, tx.tx, entry.candidate, uuid.NewString(), uuid.NewString())
 			})
 			var postgres *pgconn.PgError
@@ -255,13 +255,13 @@ func TestBotRuntimeStorageFailuresAreNotSuccessfulWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, operation := range []func() error{
-		func() error { _, err := ReadBotForUpdate(ctx, tx, bot.ID); return err },
+		func() error { _, err := BotTransaction(tx).Bot(ctx, bot.ID); return err },
 		func() error {
-			_, err := BindBotSession(ctx, tx, bot.ID, 1, uuid.NewString(), model.BotRoleConfiguration{})
+			_, err := BotTransaction(tx).BindBotSession(ctx, bot.ID, 1, uuid.NewString(), model.BotRoleConfiguration{})
 			return err
 		},
 		func() error {
-			_, err := SetBotStartup(ctx, tx, bot.ID, 1, model.BotStartupResult{State: "failed"})
+			_, err := BotTransaction(tx).SetBotStartup(ctx, bot.ID, 1, model.BotStartupResult{State: "failed"})
 			return err
 		},
 	} {

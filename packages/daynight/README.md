@@ -10,9 +10,13 @@ and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
 See the [project overview](../../README.md) for the browser workspace and service,
 and the [development guide](../../docs/development.md) for source builds,
-validation, package versions and npm publication. Ordinary test and installed
-acceptance suites exclude stress workloads. From this package, `pnpm test:stress`
-builds the CLI and runs the rendering and full Session-v2 `.stress.ts` suites;
+validation, package versions and npm publication. The
+[CLI test isolation guide](../../docs/development.md#cli-test-isolation) describes
+the private test home and parent/child protection of real Daynight state
+(`~/.daynight` and the inherited `DN_CONFIG_DIR`) against writes and cleanup,
+including symbolic-link aliases. Ordinary test and installed acceptance suites exclude stress
+workloads. From this package, `pnpm test:stress` builds the CLI and runs the
+rendering and full Session-v2 `.stress.ts` suites;
 `pnpm test:stress:budgets` runs the server validation gate with the four full
 128 MiB/256 MiB installed-CLI byte probes. The latter requires an isolated
 `DAYNIGHT_TEST_DATABASE_URL` and the [server validation prerequisites](../daynight-server/README.md#validate).
@@ -186,6 +190,7 @@ daynight bot delete <bot-id> --if-version <version> [--request-id <uuid>] [--jso
 daynight task
 daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
+daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
 daynight task step
@@ -710,6 +715,36 @@ receipt. Use `--json` for the validated preview or acceptance receipt.
 
 ## Task management
 
+`daynight task search <expression>` searches complete Task titles and Markdown
+descriptions in one project, including completed Tasks by default. Supply the
+entire expression as one shell argument; `--` permits an expression beginning
+with a dash. For example:
+
+```bash
+daynight task search 'title:缓存 AND NOT description:废弃' --status done
+daynight task search -- '-worker'
+```
+
+Words and quoted phrases match literal substrings, with ASCII case folding.
+Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `title:`
+and `description:` fields form expressions. Inside quotes, `\"` and `\\`
+escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
+`--allow-agents`, and `--compatible-platform` intersect the expression; search
+does not accept `--all`. Explicit `--project` searches that project directly;
+otherwise the current repository resolves the project.
+
+Search reads and validates every page before producing output, preserving the
+server's order. Text shows the full Task ID and title, status, chain representative
+or `none`, positive match fields, and a description snippet when present. A
+negative-only match is identified as such; text escapes terminal controls.
+`--json` emits one newline-terminated array whose entries contain only `id`,
+`projectId`, `title`, `status`, `context`, and `match`. Both formats omit the
+assignee and update time; use `task show` for complete Task details. An empty
+result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
+expression syntax exit 2; read, permission, protocol, cancellation, budget and
+`search_changed` failures exit 1. Errors go to stderr, and a failed search emits
+no partial results on stdout. A changed search must be started again.
+
 Task commands use the same `serverUrl` configuration as project commands:
 
 ```bash
@@ -977,7 +1012,8 @@ starting with a dash are rejected. Directory options, switches and help reject
 inline assignment. Attachment `put` declares its `--path` as text, accepting
 `--path=value`; attachment `put/read/remove` also accept `--` before positional
 paths starting with a dash. Property set/remove also accept this terminator for
-literal property/value positionals; other operations retain their declared syntax.
+literal property/value positionals; search accepts it for an expression beginning with a dash.
+Other operations retain their declared syntax.
 
 The internal typed ApiClient accepts optional `assignedTo` and `workerId` on
 TaskFilters and TaskPageQuery. Assignment selectors accept `me`, `unassigned` or
@@ -2311,13 +2347,30 @@ Session URL. Open the task's Session tab for messages, tools, model and permissi
 settings, supported slash commands, native steer, interrupt and current approvals.
 Unsupported native controls remain unavailable.
 
-Copilot Web bundles SDK 1.0.11 and the `@github/copilot` 1.0.83 package, with token-authenticated loopback
+Copilot Web bundles SDK 1.0.11 and the `@github/copilot` 1.0.105 package, with token-authenticated loopback
 transport to its private runtime. `COPILOT_HOME` chooses the native profile;
 `model: null` and `args: []` preserve native defaults. Web arguments accept
 `--effort low|medium|high|xhigh`. Plan approval supports exit-only, interactive
 or reject with optional feedback. Unknown send results are not replayed or
 resolved by matching historical text. Provider-specific runtime evidence is
 required separately from protocol tests.
+
+The pinned macOS arm64 package includes the native MSAL broker addon and its
+runtime library for Entra authentication. Authentication still belongs to the
+native Copilot profile and requires a valid login and organization access.
+Worker capability probes and Web launches use the bundled executable with
+`--no-auto-update`; installing or updating a Copilot executable on `PATH` does
+not change this runtime.
+
+Update Daynight to a release containing the dependency change with `daynight
+update`, or install a package built from the desired revision. An existing
+installation and its running Worker/Controller processes do not switch merely
+because repository dependencies changed. Restart the Worker after its active
+work has reached an appropriate stopping point, retaining its local records and
+native profile so sessions can resume. To verify an installed package, resolve
+its `@github/copilot` platform dependency and run that executable with
+`--no-auto-update --version`; a plain `copilot --version` can report an automatic
+update cache or another installation.
 
 The primary worker database retains its claim and native-session index. Web
 execution state lives separately in `~/.daynight/worker/web-executions.sqlite`

@@ -2,7 +2,9 @@ package service
 
 import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
 	"context"
 	"io"
@@ -84,7 +86,7 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	attachments := NewAttachments(f.database, files)
+	attachments := attachmentservice.NewAttachments(f.database, files)
 	putAttachment(t, attachments, owner, task, "inherited.txt", "Inherited attachment")
 	if page, err := attachments.List(ctx, owner, project.ID, task.ID, model.PageRequest{Limit: 10}); err != nil || len(page.Items) != 1 {
 		t.Fatalf("inherited attachment metadata: %#v %v", page, err)
@@ -109,7 +111,7 @@ func TestInheritedOnlyOwnerUsesEveryProjectResourceFamily(t *testing.T) {
 
 	descriptor := workerDescriptor()
 	claimed := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), descriptor)
-	workers := NewWorkers(f.database)
+	workers := workerservice.NewWorkers(f.database)
 	report := serviceWorkerReport()
 	report.TaskInventory = &model.WorkerTaskInventory{ObservedAt: time.Now().UTC(), Claims: []model.WorkerTaskReference{{ProjectID: project.ID, TaskID: claimed.ID, ClaimID: descriptor.ClaimID}}}
 	if _, err := workers.Report(ctx, owner, descriptor.WorkerID, report); err != nil {

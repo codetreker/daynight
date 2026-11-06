@@ -2,7 +2,10 @@ package service
 
 import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
+	workerservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 
 	"context"
 	"errors"
@@ -80,16 +83,16 @@ func TestSnapshotCommitFailureDominatesReadResults(t *testing.T) {
 			return taskservice.NewTasks(db).Assignees(ctx, principal, missing, taskservice.TaskAssigneesRequest{})
 		}},
 		{"attachment task missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewAttachments(db, nil).List(ctx, principal, project.ID, missing, page)
+			return attachmentservice.NewAttachments(db, nil).List(ctx, principal, project.ID, missing, page)
 		}},
 		{"worker missing", true, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewWorkers(db).Get(ctx, principal, missing)
+			return workerservice.NewWorkers(db).Get(ctx, principal, missing)
 		}},
 		{"project success", false, func(ctx context.Context, db *store.Store) (any, error) {
 			return projectservice.NewProjects(db).Get(ctx, principal, project.ID)
 		}},
 		{"bot list success", false, func(ctx context.Context, db *store.Store) (any, error) {
-			return NewBots(db).List(ctx, principal, page)
+			return botservice.New(db).List(ctx, principal, page)
 		}},
 		{"thread success", false, func(ctx context.Context, db *store.Store) (any, error) {
 			return taskservice.NewTaskThreads(db).List(ctx, principal, project.ID, task.ID, taskservice.ThreadListRequest{})

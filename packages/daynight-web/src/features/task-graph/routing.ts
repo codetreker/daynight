@@ -1,4 +1,4 @@
-import type { CanvasEdge, CanvasPoint } from './layout';
+import type { CanvasEdge, CanvasPoint, GraphDirection } from './layout';
 
 export type RoutingNode = {
   readonly id: string;
@@ -19,17 +19,17 @@ const buildIndex = (nodes: readonly RoutingNode[]) => {
     if (![node.left, node.right, node.top, node.bottom].every(Number.isFinite) || node.left >= node.right || node.top >= node.bottom) {
       throw new Error('Task dependency routing received invalid node bounds.');
     }
-    const column = groups.get(node.left);
-    if (column === undefined) groups.set(node.left, [node]);
+    const center = middle(node.left, node.right);
+    const column = groups.get(center);
+    if (column === undefined) groups.set(center, [node]);
     else column.push(node);
   }
   const located = new Map<string, LocatedNode>();
-  const columns: Column[] = [...groups.values()].sort((first, second) => first[0]!.left - second[0]!.left).map((members, column) => {
+  const columns: Column[] = [...groups.values()].sort((first, second) => middle(first[0]!.left, first[0]!.right) - middle(second[0]!.left, second[0]!.right)).map((members, column) => {
     const sorted = members.sort((first, second) => first.top - second.top);
-    const first = sorted[0]!;
     const occupied: RowInterval[] = [];
     for (const [position, rectangle] of sorted.entries()) {
-      if (rectangle.right !== first.right || position > 0 && rectangle.top < sorted[position - 1]!.bottom) {
+      if (position > 0 && rectangle.top < sorted[position - 1]!.bottom) {
         throw new Error('Task dependency routing requires nonoverlapping node columns.');
       }
       if (located.has(rectangle.id)) throw new Error('Task dependency routing received duplicate node identities.');
@@ -40,7 +40,8 @@ const buildIndex = (nodes: readonly RoutingNode[]) => {
       if (previous !== undefined && start < previous.end) previous.end = Math.max(previous.end, end);
       else occupied.push({ start, end });
     }
-    return { left: first.left, right: first.right, occupied };
+    return { left: members.reduce((value, node) => Math.min(value, node.left), Infinity),
+      right: members.reduce((value, node) => Math.max(value, node.right), -Infinity), occupied };
   });
   for (let column = 1; column < columns.length; column++) {
     if (columns[column]!.left <= columns[column - 1]!.right) {
@@ -71,7 +72,14 @@ const append = (points: CanvasPoint[], point: CanvasPoint) => {
 // Each changing row is bounded by the empty rank gap. Cubic control points stay
 // in that gap, so their convex hull cannot enter a card. Horizontal passages
 // cross intermediate columns with sixteen units of clearance.
-export const planDependencyRoutes = (nodes: readonly RoutingNode[], edges: readonly CanvasEdge[]): readonly CanvasEdge[] => {
+const transposePoint = (point: CanvasPoint): CanvasPoint => ({ x: point.y, y: point.x });
+
+export const planDependencyRoutes = (nodes: readonly RoutingNode[], edges: readonly CanvasEdge[], direction: GraphDirection = 'horizontal'): readonly CanvasEdge[] => {
+  if (direction === 'vertical') {
+    const transposedNodes = nodes.map(({ id, left, right, top, bottom }) => ({ id, left: top, right: bottom, top: left, bottom: right }));
+    const transposedEdges = edges.map((edge) => ({ ...edge, points: edge.points.map(transposePoint) }));
+    return planDependencyRoutes(transposedNodes, transposedEdges).map((edge) => ({ ...edge, points: edge.points.map(transposePoint) }));
+  }
   const { columns, located } = buildIndex(nodes);
   return edges.map((edge) => {
     const source = located.get(edge.source);

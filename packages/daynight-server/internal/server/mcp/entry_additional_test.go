@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -232,6 +233,95 @@ func TestMCPRejectsOutputSchemaWithoutCommonErrorEnvelope(t *testing.T) {
 	}
 	if len(list.Tools) != 0 {
 		t.Fatalf("invalid tool discoverable: %#v", list.Tools)
+	}
+}
+
+func standardOutputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"data": map[string]any{"type": "object"},
+			"meta": map[string]any{"type": "object"},
+			"error": map[string]any{"type": "object", "properties": map[string]any{
+				"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"},
+				"requestId": map[string]any{"type": "string"}, "writeOutcome": map[string]any{"enum": []any{"confirmed", "not_committed", "unknown"}},
+				"phase": map[string]any{"type": "string"}, "refs": map[string]any{"type": "object"},
+			}, "required": []any{"code", "message", "requestId"}},
+		},
+		"oneOf": []any{
+			map[string]any{"required": []any{"data", "meta"}, "not": map[string]any{"required": []any{"error"}}},
+			map[string]any{"required": []any{"error"}, "not": map[string]any{"required": []any{"data"}}},
+		},
+	}
+}
+
+func TestMCPRejectsUnprovenErrorSchemaConstraints(t *testing.T) {
+	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, tc := range []struct {
+		name   string
+		change func(map[string]any, map[string]any, map[string]any)
+	}{
+		{"limited codes", func(_, _ map[string]any, fields map[string]any) {
+			fields["code"] = map[string]any{"enum": []any{"invalid_input", "forbidden", "message_outcome_unknown", "internal_error"}}
+		}},
+		{"limited message", func(_, _ map[string]any, fields map[string]any) {
+			fields["message"] = map[string]any{"type": "string", "maxLength": 40}
+		}},
+		{"limited phase", func(_, _ map[string]any, fields map[string]any) {
+			fields["phase"] = map[string]any{"type": "string", "pattern": "^output$"}
+		}},
+		{"limited refs", func(_, _ map[string]any, fields map[string]any) {
+			fields["refs"] = map[string]any{"type": "object", "additionalProperties": false}
+		}},
+		{"limited outcome", func(_, _ map[string]any, fields map[string]any) {
+			fields["writeOutcome"] = map[string]any{"enum": []any{"confirmed", "unknown"}}
+		}},
+		{"requires refs", func(_, failure map[string]any, _ map[string]any) {
+			failure["required"] = []any{"code", "message", "requestId", "refs"}
+		}},
+		{"root conditional", func(root, _ map[string]any, _ map[string]any) {
+			root["if"] = map[string]any{"required": []any{"error"}}
+			root["then"] = false
+		}},
+		{"root property limit", func(root, _ map[string]any, _ map[string]any) { root["maxProperties"] = 0 }},
+		{"extra error branch", func(root, _ map[string]any, _ map[string]any) {
+			root["oneOf"] = append(root["oneOf"].([]any), map[string]any{"required": []any{"error"}})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := standardOutputSchema()
+			failure := schema["properties"].(map[string]any)["error"].(map[string]any)
+			fields := failure["properties"].(map[string]any)
+			tc.change(schema, failure, fields)
+			err := e.RegisterTool(simpleTestTool("rejected", testObjectSchema(), schema), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) { return ToolResult{}, nil })
+			if err == nil {
+				t.Fatal("accepted output schema with unproven error coverage")
+			}
+		})
+	}
+}
+
+func TestMCPCommonOutputSchemaPreservesOtherBusinessErrors(t *testing.T) {
+	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	err := e.RegisterTool(simpleTestTool("conflict", testObjectSchema(), standardOutputSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		return ToolResult{WriteOutcome: "not_committed", Refs: map[string]any{"nested": map[string]any{"id": "original"}}}, &model.Fault{Code: "version_conflict", Message: "Version differs."}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpx.RequestLogging(slog.New(slog.NewTextHandler(io.Discard, nil)), e))
+	t.Cleanup(server.Close)
+	fixture := &entryFixture{entry: e, server: server}
+	c := fixture.client(t, "2026-07-28", "alice")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r, err := c.CallTool(ctx, &sdk.CallToolParams{Name: "conflict", Arguments: map[string]any{}})
+	if err != nil || !r.IsError {
+		t.Fatalf("expected structured error: %#v %v", r, err)
+	}
+	failure := object(t, structured(t, r)["error"])
+	if failure["code"] != "version_conflict" || failure["writeOutcome"] != "not_committed" || object(t, object(t, failure["refs"])["nested"])["id"] != "original" {
+		t.Fatalf("business error changed: %#v", failure)
 	}
 }
 

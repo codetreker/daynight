@@ -24,10 +24,12 @@ describe('strict task automatic execution contract', () => {
     expect(parseTaskDetail({ ...task, allowAgents }, projectId, taskId)).toMatchObject({ allowAgents, ready: true });
     expect(parseTaskGraph(graph(allowAgents), projectId).tasks[0]).toMatchObject({ allowAgents, ready: true });
   });
-  it.each([undefined, null, 'false', 'true', 0, 1, {}, []])('rejects invalid or missing permission %#', async (allowAgents) => {
+  it.each([undefined, null, 'false', 'true', 0, 1, {}, []])('rejects invalid or missing permission %#', (allowAgents) => {
     expect(() => parseTaskDetail({ ...task, allowAgents }, projectId, taskId)).toThrow('invalid response');
     expect(() => parseTaskGraph(graph(allowAgents), projectId)).toThrow('invalid response');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...task, allowAgents })));
+  });
+  it('classifies a malformed permission in an HTTP response as a protocol error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ ...task, allowAgents: 'true' })));
     await expect(getTask(projectId, taskId, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
   });
   it.each([false, true])('sends one exact numeric-wire PATCH for %s', async (allowAgents) => {

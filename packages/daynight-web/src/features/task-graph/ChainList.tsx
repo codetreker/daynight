@@ -170,6 +170,6 @@ export const ChainList = ({ projectId, index, workerMachines, representativeIds,
       : representativeIds.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
         : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} projectId={projectId} index={index} workerMachines={workerMachines} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
-    {openChainId !== null && <TaskChainDialog index={index} rootId={openChainId} onOpenTask={onOpenTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
+    {openChainId !== null && <TaskChainDialog projectId={projectId} index={index} rootId={openChainId} onOpenTask={onOpenTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
   </section>;
 };

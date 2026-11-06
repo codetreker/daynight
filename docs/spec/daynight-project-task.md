@@ -269,7 +269,8 @@ Unicode、不能包含 NUL 或全为 Unicode `White_Space`。Personal Team 不�
 
 写入携带当前真实用户 ID，并验证响应主体、目标和回执；成功直接使用已确认回执。
 冲突须重新读取并重新确认，未知结果不得自动重放。读取当前事实不能证明丢失的
-回执，未知结果须以非零退出报告，并在可用时提供安全请求标识。`--json` 输出已确认的
+回执，未知结果须以非零退出报告，并在可用时提供安全请求标识。公开诊断不输出原始
+响应片段或底层错误的内容，内部仍保留错误原因。`--json` 输出已确认的
 资源或删除回执。回执已确认后，即使本地输出或清理失败也保留该确认事实。
 
 ## Team 邀请管理
@@ -319,6 +320,7 @@ member grant。失效、到期、撤销、已消费或目标删除的邀请不�
 daynight task create --title "实现登录" --description "支持 OAuth 登录"
 daynight task create --title "实现登录页面" --depends-on <task-id>
 daynight task list
+daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--json] [--project <project-id>]
 daynight task ready
 daynight task ready --limit 5 --json
 daynight task ready --allow-agents true --json
@@ -431,6 +433,23 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 附件 `put/list/read/remove` 继承相同的 project 选择，逐文件处理完整相对路径。
 目标 basename、MIME 推导、目录拒绝与原始内容输出的完整要求由
 [附件需求](daynight-task-attachments.md#cli)拥有。
+
+### 项目任务搜索
+
+`task search <expression>` 在选定项目中搜索完整标题和 Markdown 描述，默认包含
+`done`；表达式、筛选、排序及服务错误由[搜索接口需求](daynight-task-search.md)拥有。
+表达式作为一个原样位置参数传递，支持 `--`，空白表达式在读取前拒绝。可组合
+`--status`、`--assigned-to`、`--ready`、`--allow-agents` 和 `--compatible-platform`，
+不提供 `--all`。显式 `--project` 直接搜索，省略时解析当前仓库项目。
+
+CLI 自动读取并校验全部分页，保留服务顺序，所有页成功前不输出 stdout。文本显示
+完整 ID、标题、状态、真实链代表及正向命中字段；纯否定显示 `negative condition`，
+仅在正向描述命中时显示摘要，终端控制字符可见转义。JSON 为以换行结束的完整有序
+数组，每项仅包含 `id`、`projectId`、`title`、`status`、`context` 和 `match`；
+两种格式均不显示负责人和更新时间。无命中文本显示 `No matching tasks.`，JSON 为
+`[]`，退出 0。参数和表达式语法错误退出 2；`search_changed`、读取、权限、协议、
+取消及预算失败退出 1。失败写 stderr，JSON 模式也不向 stdout 写错误或部分结果。
+完整详情通过 `task show` 读取。
 
 ## PT8. 输出、分页与错误
 

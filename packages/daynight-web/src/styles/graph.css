@@ -30,6 +30,9 @@
 .task-agent-permission-compact { padding: 0 3px; font-size: 8px; line-height: 14px; }
 .task-row-status { flex-wrap: wrap; justify-content: flex-end; }
 
+.graph-orientation{display:inline-flex;border:1px solid #dce0e8;border-radius:6px;background:#fff;overflow:hidden;flex:none}.graph-orientation button{font-size:10px;padding:5px 9px;border:0;background:#fff;color:#68758c;display:inline-flex;align-items:center;gap:4px;white-space:nowrap}.graph-orientation button+button{border-left:1px solid #dce0e8}.graph-orientation button[aria-checked=true]{background:#eeedff;color:#5550ad}.graph-orientation button:focus-visible{outline-offset:-3px}.graph-preference-notice{margin:0;padding:6px 12px}.task-chain-dialog .graph-toolbar-actions{flex-wrap:wrap;min-width:0;max-width:100%}
+@media(max-width:600px){.graph-orientation button{font-size:9px;padding:5px 8px}}
+
 .goal-task-assignee { display: inline-flex; min-width: 0; max-width: 100%; }
 .goal-task-assignee .task-assignee-identity { max-width: 100%; }
 .goal-task-machine { min-width: 0; max-width: 100%; color: #5c687b; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }

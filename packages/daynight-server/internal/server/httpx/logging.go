@@ -44,6 +44,11 @@ func ValidRequestID(value string) bool {
 }
 
 func ErrorKind(err error) string {
+	if fault, ok := err.(*model.Fault); ok && fault.Code == "search_timeout" {
+		if _, known := KnownFault(err); known {
+			return fault.Code
+		}
+	}
 	var databaseError *pgconn.PgError
 	var storeError *store.Error
 	var networkError *net.OpError
@@ -82,6 +87,12 @@ func KnownFault(err error) (*model.Fault, bool) { return operation.KnownFault(er
 func LogFailure(logger *slog.Logger, ctx context.Context, component, phase string, err error) {
 	diagnostic := "operation failed"
 	kind, code := ErrorKind(err), "internal_error"
+	if component == "task_search" {
+		var transaction *store.TransactionError
+		if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
+			kind = "database"
+		}
+	}
 	var configurationError *config.ConfigurationError
 	var databaseError *store.Error
 	var runtimeFailure *RuntimeError
@@ -98,6 +109,10 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 		diagnostic = databaseError.Error()
 	case errors.As(err, &runtimeFailure):
 		diagnostic = runtimeFailure.Error()
+	}
+	if component == "task_search" {
+		// Search failures may contain query parameters or driver diagnostics.
+		diagnostic = "search operation failed"
 	}
 	upstreamID := ""
 	var protocolFailure *uniauth.ProtocolError

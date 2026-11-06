@@ -43,10 +43,11 @@ func TestAttachmentStoreUpsertPaginationAndDelete(t *testing.T) {
 			t.Fatalf("final page: %#v, %v", page, err)
 		}
 		for _, test := range []struct {
-			path     string
-			conflict bool
-		}{{"docs", true}, {"docs/a.md/child", true}, {"docs/a.md", false}, {"docs2", false}} {
-			got, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, projectID, taskID, test.path)
+			path      string
+			ancestors []string
+			conflict  bool
+		}{{"docs", []string{}, true}, {"docs/a.md/child", []string{"docs", "docs/a.md"}, true}, {"docs/a.md", []string{"docs"}, false}, {"docs2", []string{}, false}} {
+			got, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, projectID, taskID, AttachmentConflictQuery{Ancestors: test.ancestors, DescendantPrefix: test.path + "/"})
 			if err != nil || got != test.conflict {
 				t.Fatalf("prefix %q: %v, %v", test.path, got, err)
 			}
@@ -96,7 +97,7 @@ func TestAttachmentSchemaConstraintsAndStoreFailures(t *testing.T) {
 			return err
 		},
 		func(snapshot SnapshotScope) error {
-			_, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, input.ProjectID, input.TaskID, input.Path)
+			_, err := snapshot.AttachmentDAO().AttachmentPathConflict(ctx, input.ProjectID, input.TaskID, AttachmentConflictQuery{Ancestors: []string{}, DescendantPrefix: input.Path + "/"})
 			return err
 		},
 	} {

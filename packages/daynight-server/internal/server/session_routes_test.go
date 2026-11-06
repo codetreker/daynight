@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -22,8 +21,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 	"github.com/google/uuid"
 )
 
@@ -73,10 +72,10 @@ type sessionHTTPFixture struct {
 	base         string
 	registration sp.Registration
 	snapshot     sp.Snapshot
-	grant        sessionrelay.GrantResult
+	grant        sessioncore.GrantResult
 }
 
-func sessionHTTPSetup(t *testing.T, configureRoutes ...func(*sessionRoutes)) *sessionHTTPFixture {
+func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	t.Helper()
 	f := &sessionHTTPFixture{db: projectTestStore(t)}
 	f.handler = projectTestHandler(t, f.db, io.Discard)
@@ -99,9 +98,6 @@ func sessionHTTPSetup(t *testing.T, configureRoutes ...func(*sessionRoutes)) *se
 		t.Fatal(err)
 	}
 	f.application = application.(*sessionApplication)
-	for _, configure := range configureRoutes {
-		configure(f.application.relay)
-	}
 	// Live relay state is process-local: HTTP control and WebSocket traffic share the same application.
 	f.handler.Handler = httpx.RequestLogging(testLogger(), application)
 	extendedWorkerTestHandler(f.handler)
@@ -116,9 +112,9 @@ func sessionHTTPSetup(t *testing.T, configureRoutes ...func(*sessionRoutes)) *se
 	})
 	return f
 }
-func (f *sessionHTTPFixture) mint(t *testing.T, kind string) sessionrelay.GrantResult {
+func (f *sessionHTTPFixture) mint(t *testing.T, kind string) sessioncore.GrantResult {
 	t.Helper()
-	return decodeResponse[sessionrelay.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, ExecutionGeneration: f.snapshot.ExecutionGeneration, Kind: kind})), http.StatusOK)
+	return decodeResponse[sessioncore.GrantResult](t, projectRequest(f.handler, http.MethodPost, f.base+"/"+f.snapshot.SessionID+"/controller-grant", jsonBody(t, sp.Grant{Protocol: sp.Protocol, ClaimID: f.snapshot.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, ExecutionGeneration: f.snapshot.ExecutionGeneration, Kind: kind})), http.StatusOK)
 }
 func sessionDial(t *testing.T, serverURL, path, token string, extra http.Header) *websocket.Conn {
 	t.Helper()
@@ -380,72 +376,6 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 	}
 }
 
-func TestSessionRoutesBrowserRespondsToPingAndContinuesReceivingEvents(t *testing.T) {
-	f := sessionHTTPSetup(t, func(routes *sessionRoutes) {
-		if routes.pingInterval != 10*time.Second {
-			t.Fatal("browser ping period differs from the production default")
-		}
-		routes.pingInterval = 10 * time.Millisecond
-	})
-	pingSeen := make(chan struct{})
-	var firstPing sync.Once
-	sourceEpoch := uuid.NewString()
-	controller, snapshot := f.controller(t, sourceEpoch)
-	path := f.base + "/" + snapshot.SessionID + "/channel"
-	browser := sessionDialOptions(t, f.server.URL, path, f.handler.token, nil, websocket.DialOptions{
-		OnPingReceived: func(context.Context, []byte) bool {
-			firstPing.Do(func() { close(pingSeen) })
-			return true
-		},
-	})
-	sessionWSKind(t, browser, "snapshot")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	result := make(chan readResult, 1)
-	go func() {
-		// Read handles ping control frames and sends pong while waiting for the
-		// next application event on this same connection.
-		_, data, err := browser.Read(ctx)
-		result <- readResult{data: data, err: err}
-	}()
-	select {
-	case early := <-result:
-		t.Fatalf("idle browser closed or received unexpected data before ping: %s, %v", early.data, early.err)
-	case <-pingSeen:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	entryID := uuid.NewString()
-	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: sourceEpoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{
-		{SourceSeq: "1", Kind: "timeline_upsert", Payload: json.RawMessage(jsonBody(t, map[string]any{"entryId": entryID, "revision": "1", "kind": "reasoning", "text": "Output after the browser answered the server ping"}))},
-	}})
-	sessionWSKind(t, controller, "events_ack")
-	select {
-	case received := <-result:
-		if received.err != nil {
-			t.Fatalf("browser could not receive after ping: %v", received.err)
-		}
-		var frame map[string]json.RawMessage
-		if err := json.Unmarshal(received.data, &frame); err != nil || string(frame["type"]) != `"event"` {
-			t.Fatalf("expected an application event after ping: %s, %v", received.data, err)
-		}
-		event, err := sp.DecodeEvent(frame["event"])
-		if err != nil || event.Kind != "timeline_upsert" || event.HistoryEpoch != snapshot.HistoryEpoch {
-			t.Fatalf("invalid event after ping: %+v, %v", event, err)
-		}
-		entry, err := sp.DecodeTimeline(event.Payload)
-		if err != nil || entry.EntryID != entryID {
-			t.Fatalf("wrong entry after ping: %+v, %v", entry, err)
-		}
-	case <-ctx.Done():
-		t.Fatal("browser did not receive an event after ping: ", ctx.Err())
-	}
-}
-
 func TestSessionRoutesBrowserHistoryResetClosesOldCursorAndRecovers(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	sourceEpoch := uuid.NewString()
@@ -568,9 +498,6 @@ func TestSessionRoutesCookieOriginResetAndShutdown(t *testing.T) {
 			t.Fatal("shutdown retained a websocket")
 		}
 	}
-	if f.application.relay.closing != true {
-		t.Fatal("shutdown did not stop upgrades")
-	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
 	defer cancel2()
 	conn, response, err := websocket.Dial(ctx2, strings.Replace(f.server.URL, "http://", "ws://", 1)+path, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": []string{"Bearer " + f.handler.token}}})
@@ -670,15 +597,6 @@ func TestSessionRoutesControllerRejectsInvalidHandshakesAndFences(t *testing.T) 
 	f.application.ServeHTTP(response, request)
 	if response.Code != 429 {
 		t.Fatal("closing controller accepted")
-	}
-}
-
-func TestSessionRoutesFrameBounds(t *testing.T) {
-	if err := relayWrite(context.Background(), nil, make(chan int)); err == nil {
-		t.Fatal("serialized unsupported response")
-	}
-	if err := relayWrite(context.Background(), nil, map[string]any{"body": strings.Repeat("x", sp.MaxFrameBytes)}); err == nil {
-		t.Fatal("sent oversized frame")
 	}
 }
 

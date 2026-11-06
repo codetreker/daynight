@@ -77,6 +77,10 @@ and report revisions reject obsolete observations, including after grant rotatio
 that does not advance the task version. Reconciliation failures preserve local
 facts and native recovery budgets.
 
+The [orchestration block decision](2026-11-05-worker-orchestration-blocks.md)
+keeps ordinary worktree failures out of native recovery reports and defines the
+verified correction of legacy misclassification.
+
 The report is not a heartbeat or an authority to retry. UI presentation remains a
 separate consumer of the contract. Old local records remain readable as unknown;
 older binaries do not support downgrading a local JSON record containing the new

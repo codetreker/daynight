@@ -83,7 +83,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   const draftKey = useRef(0);
   const [deleting, setDeleting] = useState<{ step: TaskStep; version: bigint } | null>(null);
   const [deleteChanged, setDeleteChanged] = useState(false);
-  const [submittedDelete, setSubmittedDelete] = useState<{ requestId: string; stepId: string; version: bigint; draftKey: number | null; next: readonly Pick<TaskStep, "id" | "createdAt">[]; previous: readonly Pick<TaskStep, "id" | "createdAt">[]; confirmed: boolean } | null>(null);
+  const [submittedDelete, setSubmittedDelete] = useState<{ requestId: string; stepId: string; version: bigint; draftKey: number | null; next: readonly Pick<TaskStep, "id" | "createdAt">[]; previous: readonly Pick<TaskStep, "id" | "createdAt">[] } | null>(null);
   const [preview, setPreview] = useState(false);
   const [discard, setDiscard] = useState(false);
   const [switchTarget, setSwitchTarget] = useState<string | null>(null);
@@ -119,10 +119,6 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   useLayoutEffect(() => { if (!available) { setDiscard(false); onConfirmationChange?.(false); } }, [available, onConfirmationChange]);
   useLayoutEffect(() => sessions.subscribe(projectId, taskId, () => {
     const mutation = sessions.snapshot(projectId, taskId).mutation;
-    if (mutation.phase === "confirmed" && mutation.operation?.action === "stepDelete") {
-      const requestId = mutation.operation.requestId;
-      setSubmittedDelete((current) => current?.requestId === requestId && !current.confirmed ? { ...current, confirmed: true } : current);
-    }
     if ((mutation.phase === "confirmed" && !mutation.reconciling && mutation.reconciliationError === null || mutation.phase === "unknown") && (mutation.operation?.action === "stepAdd" || mutation.operation?.action === "stepEdit")) {
       const requestId = mutation.operation.requestId;
       setDraft((current) => current !== null && current.requestId === requestId ? { ...current, confirmed: current.confirmed || mutation.phase === "confirmed", uncertain: current.uncertain || mutation.phase === "unknown" } : current);
@@ -204,11 +200,13 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
   }, [active, available, resource, deleting, onConfirmationChange]);
   useEffect(() => {
     if (submittedDelete === null) return;
-    if (!submittedDelete.confirmed) {
-      if (mutation.operation?.action === "stepDelete" && mutation.operation.requestId === submittedDelete.requestId && ["refused", "conflict", "reconciled"].includes(mutation.phase)) setSubmittedDelete(null);
+    const current = mutation.operation?.action === "stepDelete" && mutation.operation.requestId === submittedDelete.requestId;
+    if (!current || mutation.phase !== "confirmed") {
+      if (current && ["refused", "conflict", "reconciled"].includes(mutation.phase)) setSubmittedDelete(null);
       return;
     }
-    if (resource === null || resource.version <= submittedDelete.version || state.stale || state.error !== null) return;
+    // A replacement cache history can retract a validated receipt while admission is pending.
+    if (mutation.reconciling || mutation.reconciliationError !== null || resource === null || resource.version <= submittedDelete.version || state.stale || state.error !== null) return;
     const matchingDraft = draft !== null && draft.key === submittedDelete.draftKey;
     const editingOther = draft !== null && !matchingDraft && document.activeElement instanceof HTMLElement && document.activeElement.closest(".step-add-form") !== null;
     if (matchingDraft) closeDraft();
@@ -413,7 +411,7 @@ export const TaskStepsPanel = ({ projectId, taskId, active, renderMarkdown, conf
       if (resource === null || !state.canDelete || resource.version !== deleting.version || !resource.steps.some((step) => step.id === deleting.step.id && step.createdAt === deleting.step.createdAt)) { setDeleteChanged(true); return; }
       const index = resource.steps.findIndex((step) => step.id === deleting.step.id);
       const requestId = state.remove(deleting.step.id, deleting.version);
-      if (requestId !== null) setSubmittedDelete({ requestId, stepId: deleting.step.id, version: resource.version, draftKey: draft?.kind === "edit" && draft.id === deleting.step.id && draft.originalCreatedAt === deleting.step.createdAt ? draft.key : null, next: resource.steps.slice(index + 1).map(({ id, createdAt }) => ({ id, createdAt })), previous: resource.steps.slice(0, index).reverse().map(({ id, createdAt }) => ({ id, createdAt })), confirmed: false });
+      if (requestId !== null) setSubmittedDelete({ requestId, stepId: deleting.step.id, version: resource.version, draftKey: draft?.kind === "edit" && draft.id === deleting.step.id && draft.originalCreatedAt === deleting.step.createdAt ? draft.key : null, next: resource.steps.slice(index + 1).map(({ id, createdAt }) => ({ id, createdAt })), previous: resource.steps.slice(0, index).reverse().map(({ id, createdAt }) => ({ id, createdAt })) });
       else setDeleteChanged(true);
     }} />}
     {navigationDecision === null && moving !== null && resource !== null && <StepMoveDialog step={moving} steps={resource.steps} available={state.canMove} onCancel={() => { setMovingId(null); requestAnimationFrame(() => workspace.current?.querySelector<HTMLButtonElement>(`[data-step-id="${moving.id}"] .step-more`)?.focus()); }} onConfirm={(target, placement) => { setMovingId(null); submitMove(moving.id, placement === "before" ? { before: target } : { after: target }); }} />}

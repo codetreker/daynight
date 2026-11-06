@@ -74,6 +74,212 @@ func validateJSON(schema *jsonschema.Schema, raw []byte) error {
 	return schema.Validate(v)
 }
 
+// acceptsErrorEnvelope proves compatibility for a deliberately bounded subset
+// of JSON Schema. Unknown constraints are rejected: testing examples cannot
+// prove that all error codes, messages, phases and references remain valid.
+// The supported oneOf shape is the shared tools.json success/error contract.
+func acceptsErrorEnvelope(value any) bool {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	var root map[string]any
+	if json.Unmarshal(raw, &root) != nil || root == nil || !onlySchemaKeys(root, "type", "properties", "required", "additionalProperties", "oneOf") {
+		return false
+	}
+	if typ, ok := root["type"]; ok && typ != "object" {
+		return false
+	}
+	if !requiredSubset(root["required"], "error") {
+		return false
+	}
+	properties, ok := schemaProperties(root["properties"])
+	if !ok {
+		return false
+	}
+	errorSchema, hasError := properties["error"]
+	if hasError {
+		if !acceptsErrorObject(errorSchema) {
+			return false
+		}
+	} else if extra, exists := root["additionalProperties"]; exists && !acceptsAny(extra) {
+		return false
+	}
+	if branches, exists := root["oneOf"]; exists && !commonEnvelopeBranches(branches) {
+		return false
+	}
+	return true
+}
+
+// Annotation keywords do not change validation. All other unlisted keywords
+// are refused instead of guessing at their interaction with the envelope.
+func onlySchemaKeys(schema map[string]any, permitted ...string) bool {
+	allowed := map[string]bool{"title": true, "description": true, "$comment": true, "default": true, "examples": true, "deprecated": true, "readOnly": true, "writeOnly": true}
+	for _, key := range permitted {
+		allowed[key] = true
+	}
+	for key := range schema {
+		if !allowed[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func schemaProperties(value any) (map[string]any, bool) {
+	if value == nil {
+		return map[string]any{}, true
+	}
+	properties, ok := value.(map[string]any)
+	return properties, ok
+}
+
+func requiredSubset(value any, guaranteed ...string) bool {
+	if value == nil {
+		return true
+	}
+	values, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	allowed := make(map[string]bool, len(guaranteed))
+	for _, key := range guaranteed {
+		allowed[key] = true
+	}
+	for _, v := range values {
+		key, ok := v.(string)
+		if !ok || !allowed[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func acceptsAny(value any) bool {
+	if b, ok := value.(bool); ok {
+		return b
+	}
+	s, ok := value.(map[string]any)
+	return ok && onlySchemaKeys(s)
+}
+
+func acceptsType(value any, kind string) bool {
+	if acceptsAny(value) {
+		return true
+	}
+	s, ok := value.(map[string]any)
+	return ok && onlySchemaKeys(s, "type") && s["type"] == kind
+}
+
+func acceptsOutcome(value any) bool {
+	if acceptsType(value, "string") {
+		return true
+	}
+	s, ok := value.(map[string]any)
+	if !ok || !onlySchemaKeys(s, "enum", "type") {
+		return false
+	}
+	if typ, exists := s["type"]; exists && typ != "string" {
+		return false
+	}
+	values, ok := s["enum"].([]any)
+	if !ok {
+		return false
+	}
+	needed := map[string]bool{"confirmed": false, "not_committed": false, "unknown": false}
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			if _, present := needed[text]; present {
+				needed[text] = true
+			}
+		}
+	}
+	return needed["confirmed"] && needed["not_committed"] && needed["unknown"]
+}
+
+func acceptsErrorObject(value any) bool {
+	if acceptsAny(value) {
+		return true
+	}
+	s, ok := value.(map[string]any)
+	if !ok || !onlySchemaKeys(s, "type", "properties", "required", "additionalProperties") {
+		return false
+	}
+	if typ, exists := s["type"]; exists && typ != "object" {
+		return false
+	}
+	if !requiredSubset(s["required"], "code", "message", "requestId") {
+		return false
+	}
+	properties, ok := schemaProperties(s["properties"])
+	if !ok {
+		return false
+	}
+	for _, field := range []string{"code", "message", "requestId", "writeOutcome", "phase", "refs"} {
+		property, present := properties[field]
+		if !present {
+			if extra, exists := s["additionalProperties"]; exists && !acceptsAny(extra) {
+				return false
+			}
+			continue
+		}
+		switch field {
+		case "writeOutcome":
+			if !acceptsOutcome(property) {
+				return false
+			}
+		case "refs":
+			if !acceptsType(property, "object") {
+				return false
+			}
+		default:
+			if !acceptsType(property, "string") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func commonEnvelopeBranches(value any) bool {
+	branches, ok := value.([]any)
+	if !ok || len(branches) != 2 {
+		return false
+	}
+	seenSuccess, seenError := false, false
+	for _, branch := range branches {
+		s, ok := branch.(map[string]any)
+		if !ok || !onlySchemaKeys(s, "required", "not") {
+			return false
+		}
+		not, ok := s["not"].(map[string]any)
+		if !ok || !onlySchemaKeys(not, "required") {
+			return false
+		}
+		switch {
+		case requiredExactly(s["required"], "data", "meta") && requiredExactly(not["required"], "error"):
+			seenSuccess = true
+		case requiredExactly(s["required"], "error") && requiredExactly(not["required"], "data"):
+			seenError = true
+		default:
+			return false
+		}
+	}
+	return seenSuccess && seenError
+}
+
+func requiredExactly(value any, keys ...string) bool {
+	values, ok := value.([]any)
+	if !ok || len(values) != len(keys) || !requiredSubset(value, keys...) {
+		return false
+	}
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		seen[value.(string)] = true
+	}
+	return len(seen) == len(keys)
+}
+
 // RegisterTool validates the exact schemas advertised to clients before a tool
 // becomes discoverable. Class must describe the largest internal materialization.
 func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHandler) error {
@@ -94,18 +300,8 @@ func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHand
 	if err != nil {
 		return fmt.Errorf("output schema: %w", err)
 	}
-	for _, failure := range []envelopeError{
-		{Code: "invalid_input", Message: "Invalid input.", RequestID: "request"},
-		{Code: "forbidden", Message: "Forbidden.", RequestID: "request"},
-		{Code: "invalid_input", Message: "Invalid input.", RequestID: "request", WriteOutcome: "not_committed"},
-		{Code: "message_outcome_unknown", Message: "Unknown.", RequestID: "request", WriteOutcome: "unknown"},
-		{Code: "internal_error", Message: "The tool could not complete.", RequestID: "request"},
-		{Code: "internal_error", Message: "The tool could not complete.", RequestID: "request", WriteOutcome: "confirmed", Phase: "output", Refs: map[string]any{"id": "id"}},
-	} {
-		raw, _ := json.Marshal(envelope{Error: &failure})
-		if err := validateJSON(output, raw); err != nil {
-			return errors.New("output schema must accept the common error envelope")
-		}
+	if !acceptsErrorEnvelope(tool.OutputSchema) {
+		return errors.New("output schema must accept the common error envelope")
 	}
 	e.server.AddTool(tool, func(sdkctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		scope, ok := sdkctx.Value(scopeKey{}).(*requestScope)

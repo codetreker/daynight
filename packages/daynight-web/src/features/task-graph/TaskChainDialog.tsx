@@ -5,9 +5,11 @@ import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from './model';
 import { TaskGraph } from './TaskGraph';
+import { useGraphDirection } from '../projects/useProjectViewPreferences';
 import '../../styles/graph.css';
 
 type TaskChainDialogProps = {
+  readonly projectId: string;
   readonly index: GraphIndex;
   readonly rootId: string;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
@@ -15,8 +17,9 @@ type TaskChainDialogProps = {
   readonly onRestoreFocus: () => void;
 };
 
-export const TaskChainDialog = ({ index, rootId, onOpenTask, onClose, onRestoreFocus }: TaskChainDialogProps) => {
+export const TaskChainDialog = ({ projectId, index, rootId, onOpenTask, onClose, onRestoreFocus }: TaskChainDialogProps) => {
   const { messages: { graph: m, common } } = useI18n();
+  const { direction, onDirectionChange, issue } = useGraphDirection(projectId, rootId);
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
   const progress = component.progress;
@@ -98,7 +101,7 @@ export const TaskChainDialog = ({ index, rootId, onOpenTask, onClose, onRestoreF
         </div>
         <button className="task-chain-close" type="button" ref={close} aria-label={m.closeDialog} title={m.closeDialog} onClick={onClose}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
       </header>
-      <TaskGraph index={index} rootId={rootId} onOpenTask={onOpenTask} fullscreen={fullscreenControl} />
+      <TaskGraph direction={direction} onDirectionChange={onDirectionChange} directionIssue={issue?.kind} index={index} rootId={rootId} onOpenTask={onOpenTask} fullscreen={fullscreenControl} />
     </section>
   </div>;
 };

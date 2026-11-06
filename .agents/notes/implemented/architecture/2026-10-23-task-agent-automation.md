@@ -38,9 +38,11 @@ and switch at the right of the status row below the title. Status, readiness
 and the platform selector occupy the left group. The combination
 provides both the confirmed state and its operation; the detail has no separate
 automation badge or lower Overview switch. List status badges retain their
-own purpose. Long titles remain above this row, and narrow layouts may wrap
-the compact platform control only within the left group. The control stays right
-aligned with the first status line at its top. Locked controls explain their reason through hover/focus tooltips; error,
+own purpose. Long titles remain above this row. With sufficient width, the
+control aligns with the first status line at its top. The
+[phone status flow](../bug-fix/2026-11-06-phone-task-status-flow.md) places all
+controls in one wrapping layout up to 600px, retaining automatic execution at
+the final line's right edge. Locked controls explain their reason through hover/focus tooltips; error,
 unknown-result and human-waiting feedback uses the shared floating layer owned
 by the [notification decision](../bug-fix/2026-10-24-task-detail-notifications.md),
 without allocating reading height or causing horizontal overflow. A newly observed successful submission uses a

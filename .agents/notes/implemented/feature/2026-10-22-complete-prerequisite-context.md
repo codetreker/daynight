@@ -44,10 +44,12 @@ Context nodes retain dashed borders and the “外部前置” label. Edge dashe
 only the persisted external marker, independently of node role; ordinary edges
 between context tasks remain solid. Full/visible counts distinguish data from
 display. The initial viewport fits the visible layout at 0.8–1 zoom when possible;
-otherwise it anchors the leftmost rank at 0.8. A representative already in that
-rank retains vertical centering; when context extends further left, the topmost
-upstream task begins at a 32px inset. Pan, zoom, Fit and keyboard reveal keep
-other cards accessible. Selection never reruns initialization.
+otherwise it anchors the upstream rank at 0.8. A representative already in that
+rank is centered on the cross axis; otherwise the outermost upstream task starts
+at a 32px inset. Folded graphs anchor the representative. The [graph direction
+decision](2026-11-05-task-graph-direction.md) applies this policy to both horizontal
+and vertical layouts. Pan, zoom, Fit and keyboard reveal keep other cards
+accessible. Selection never reruns initialization.
 
 This partially supersedes the direct-boundary projection in the
 [projection and layout decision](../../archived/feature/2026-10-20-task-graph-projection.md). That earlier

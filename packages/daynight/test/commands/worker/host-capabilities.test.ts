@@ -21,6 +21,21 @@ const collect = async (overrides: Partial<Parameters<typeof createAssistantHostC
 };
 
 describe("assistant host observations", () => {
+  it("probes the bundled Copilot version without forwarding to an automatic update", async () => {
+    const commands: HerdrCommand[] = [];
+    const { assistantHost } = await collect({ runCommand: async command => {
+      commands.push(command);
+      return output(command);
+    } });
+    expect(assistantHost.providers[2]!.available).toBe(true);
+    expect(commands.filter(command => command.file === "copilot").map(command => command.args)).toEqual([
+      ["--no-auto-update", "--version"],
+      ["--headless", "--no-auto-update", "--help"],
+    ]);
+    expect(commands.find(command => command.file === "codex")!.args).toEqual(["--version"]);
+    expect(commands.find(command => command.file === "claude")!.args).toEqual(["--version"]);
+  });
+
   it("reports the global default independently of task mode and isolates other provider settings", async () => {
     const { assistantHost } = await collect();
     expect(assistantHost.defaultProvider).toBe("copilot");

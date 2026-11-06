@@ -22,9 +22,11 @@ trigger uses normal line height to match native select text metrics; the
 platform's authored line height remains 1.55. Readiness follows the pair. The select offers Any platform, Windows, Linux and macOS;
 Any platform represents the existing null requirement. The former detail badge
 and Overview editor are removed. List and graph platform badges stay read-only.
-The control remains available on either detail tab. The left group can wrap at
-narrow widths while the automatic-execution control remains right aligned with
-the first status line.
+The control remains available on either detail tab. With sufficient width, the automatic-execution control aligns with the first
+status line. At widths up to 600px, the
+[phone status flow](../bug-fix/2026-11-06-phone-task-status-flow.md) lets the
+controls share one wrapping layout, with automatic execution at the final
+line's right edge.
 
 Choosing the saved value does nothing. A different selection opens confirmation
 showing the current and target platforms, retaining the confirmed select value.

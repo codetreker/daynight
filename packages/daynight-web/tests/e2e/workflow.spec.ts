@@ -15,6 +15,7 @@ import { expectStableAutomaticDetailRefresh } from './detail-refresh';
 import { panPoint } from './graph-pan';
 import { verifyPublicExternalDependencyWrites } from './external-dependency-writes';
 import { verifySessionStatus } from './session-status';
+import { verifyStandaloneLayout } from './standalone-layout';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const card = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] .task-node`);
@@ -200,18 +201,19 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
   await expect(stat(page, '任务总数')).toHaveText('0');
 
   await test.step('browses a Team and creates a project in its captured context', async () => {
-    const selector = page.locator('details.team-selector');
-    await selector.locator('summary').click();
+    const selector = page.locator('.team-selector');
+    await selector.locator('.team-switch').click();
     await expect(selector.getByRole('status')).toHaveCount(0);
     const teamLink = selector.locator(`a[href="/teams/${team.id}"]`);
     for (let count = 0; count < 200 && !await teamLink.isVisible(); count++) {
-      const more = selector.getByRole('button', { name: '加载更多 Team', exact: true });
+      const more = selector.getByRole('menuitem', { name: '加载更多 Team', exact: true });
       await expect(more).toBeVisible();
       await more.click();
-      await expect(selector.getByRole('status')).toHaveCount(0);
+      const continuation = selector.locator('.menu-more button');
+      await expect.poll(async () => await teamLink.isVisible() || await continuation.count() === 0 || await continuation.isEnabled()).toBe(true);
     }
     await expect(teamLink).toBeVisible();
-    expect(await teamLink.textContent()).toBe(teamName);
+    expect(await teamLink.locator('.menu-name').textContent()).toBe(teamName);
     await teamLink.click();
     await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
     const teamHeading = page.getByRole('main').locator('h1');
@@ -246,7 +248,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
     const shared = page.getByRole('link', { name: '与我共享', exact: true });
     await expect(shared).toHaveAttribute('href', '/shared-projects');
     const opened = page.context().waitForEvent('page');
-    await shared.click({ modifiers: ['Control'] });
+    await shared.click({ modifiers: ['ControlOrMeta'] });
     const tab = await opened;
     try {
       await expect(tab).toHaveURL(`${baseURL}/shared-projects`);
@@ -255,8 +257,16 @@ test('project-list', scenario('project-list'), async ({ page, api: request, allo
       await expect(page).toHaveURL(`${baseURL}/teams/${team.id}`);
     } finally { await tab.close(); }
     await page.setViewportSize({ width: 320, height: 700 });
-    await page.getByRole('button', { name: /切换 Team/ }).click();
+    const teamTrigger = page.getByRole('button', { name: /切换 Team/ });
+    await teamTrigger.click();
     const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+    await expect(drawer).toHaveCount(0);
+    await expect(teamTrigger).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.team-options').getByRole('menuitemradio', { name: '个人', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(teamTrigger).toBeFocused();
+    await expect(teamTrigger).toHaveAttribute('aria-expanded', 'false');
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
     await expect(drawer.getByRole('link', { name: '与我共享', exact: true })).toBeVisible();
     await drawer.getByRole('link', { name: '与我共享', exact: true }).click();
     await expect(page).toHaveURL(`${baseURL}/shared-projects`);
@@ -397,6 +407,28 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     expect(await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => ({ id: (node as HTMLElement).dataset.id!, height: (node as HTMLElement).style.height })).sort((a, b) => a.id.localeCompare(b.id))), 'Every visible card uses its API-derived compact or expandable height').toEqual(heights);
     expect(await checkDependencyGeometry(page, expected, info), 'Every visible API dependency preserves complete native geometry').toEqual({ total: 0, examples: [] });
   };
+  await test.step('switches real graph geometry while retaining inspection and visible tasks', async () => {
+    const horizontal = page.getByRole('radio', { name: '水平', exact: true });
+    const vertical = page.getByRole('radio', { name: '垂直', exact: true });
+    await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+    const visible = await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id).sort());
+    await inspectTask(page, f.id).click();
+    await expect(inspectTask(page, f.id)).toHaveAttribute('aria-pressed', 'true');
+    await horizontal.focus(); await page.keyboard.press('ArrowRight');
+    await expect(vertical).toBeFocused(); await expect(vertical).toHaveAttribute('aria-checked', 'true');
+    await expect(inspectTask(page, f.id)).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id).sort())).toEqual(visible);
+    expect(await checkDependencyGeometry(page, expectedDependencyTopology(graphSnapshot.tasks, a.id), info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    await page.getByRole('button', { name: '全屏查看', exact: true }).click();
+    await expect(vertical).toHaveAttribute('aria-checked', 'true');
+    expect(await checkDependencyGeometry(page, expectedDependencyTopology(graphSnapshot.tasks, a.id), info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+    await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+    await horizontal.click();
+    await expect(horizontal).toHaveAttribute('aria-checked', 'true');
+    await expect(inspectTask(page, f.id)).toHaveAttribute('aria-pressed', 'true');
+    await inspectTask(page, f.id).click();
+    await checkEdges(a.id);
+  });
   await test.step('keeps every static dependency aligned with task nodes through zoom and pan', async () => {
     await checkEdges(a.id);
     const viewport = page.locator('.react-flow__viewport');
@@ -500,6 +532,14 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
       await expect(page.locator(`.task-dependency-edge[data-id="${ancestor.id}->${prerequisite.id}"]`)).toHaveAttribute('data-external', 'false');
       await expect(page.locator(`.task-dependency-edge[data-id="${prerequisite.id}->${sink.id}"]`)).toHaveAttribute('data-external', 'true');
       await expect(page.locator('.task-node-external')).toHaveCount(2);
+      const { graph: contextGraph } = await readProjectSnapshot(request, contextProject.id);
+      const topology = expectedDependencyTopology(contextGraph.tasks, source.id);
+      await page.getByRole('radio', { name: '垂直', exact: true }).click();
+      await expect(page.getByRole('radio', { name: '垂直', exact: true })).toHaveAttribute('aria-checked', 'true');
+      expect(await checkDependencyGeometry(page, topology, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.getByRole('radio', { name: '水平', exact: true }).click();
+      await expect(page.getByRole('radio', { name: '水平', exact: true })).toHaveAttribute('aria-checked', 'true');
       expect(await page.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).style.height))).toEqual(['96px', '96px', '96px', '96px']);
       await expect(card(page, prerequisite.id).locator('.task-node-expansions')).toHaveCount(0);
       await expect(page.getByText('链内 2 · 外部 2 · 任务 4/4 · 依赖 3/3')).toBeVisible();
@@ -761,6 +801,79 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect(standalone(page, consumer.id)).toBeFocused();
     await screenshot(page, info, 'external-only-blocked-task');
     await page.clock.resume();
+  });
+
+  await test.step('persists independent Goal directions and exposes storage failures', async () => {
+    await page.setViewportSize({ width: 1100, height: 800 });
+    const preferenceProject = await createProject(request, { name: `Direction preferences ${randomUUID()}` });
+    const goalA = await createTask(request, preferenceProject.id, { title: '方向偏好 A' });
+    await createTask(request, preferenceProject.id, { title: 'A 后续', dependsOn: [goalA.id] });
+    const goalB = await createTask(request, preferenceProject.id, { title: '方向偏好 B' });
+    await createTask(request, preferenceProject.id, { title: 'B 后续', dependsOn: [goalB.id] });
+    const otherProject = await createProject(request, { name: `Other direction preferences ${randomUUID()}` });
+    const otherGoal = await createTask(request, otherProject.id, { title: '其他项目目标' });
+    await createTask(request, otherProject.id, { title: '其他项目后续', dependsOn: [otherGoal.id] });
+    const keyA = `daynight:graph-direction:${JSON.stringify([preferenceProject.id, goalA.id])}`;
+    const horizontal = () => page.getByRole('radio', { name: '水平', exact: true });
+    const vertical = () => page.getByRole('radio', { name: '垂直', exact: true });
+    await openTaskProject(page, preferenceProject.id, preferenceProject.name);
+    await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await vertical().click();
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    expect(await page.evaluate((key) => localStorage.getItem(key), keyA)).toBe('"vertical"');
+    await closeChain(page); await openChain(page, goalB.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await page.reload(); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page); await openChain(page, goalB.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page);
+    await openTaskProject(page, otherProject.id, otherProject.name);
+    await openChain(page, otherGoal.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await openTaskProject(page, preferenceProject.id, preferenceProject.name);
+    await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await inspectTask(page, goalA.id).click();
+    await expect(inspectTask(page, goalA.id)).toHaveAttribute('aria-pressed', 'true');
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 60_000));
+    const beforeRefresh = (await page.evaluate(captureStableDependencyGeometry)).geometry;
+    expect(await nextAutomaticRefresh(page, preferenceProject.id)).toBe(200);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await expect(inspectTask(page, goalA.id)).toHaveAttribute('aria-pressed', 'true');
+    expect((await page.evaluate(captureStableDependencyGeometry)).geometry).toEqual(beforeRefresh);
+    await page.clock.resume();
+    await horizontal().click(); await closeChain(page); await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+
+    await closeChain(page);
+    await page.evaluate((key) => localStorage.setItem(key, '"diagonal"'), keyA);
+    await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('.graph-preference-notice')).toHaveText('已保存的图方向无效，默认使用水平布局。');
+    await vertical().click(); await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await closeChain(page);
+    await page.evaluate((key) => {
+      const get = Storage.prototype.getItem;
+      Storage.prototype.getItem = function (name) { if (name === key) throw new Error('test read failure'); return get.call(this, name); };
+    }, keyA);
+    await openChain(page, goalA.id);
+    await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('.graph-preference-notice')).toHaveText('无法读取已保存的图方向，仍可切换方向。');
+    await vertical().click(); await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await page.reload(); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
+    await page.evaluate((key) => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (name, value) { if (name === key) throw new Error('test write failure'); set.call(this, name, value); };
+    }, keyA);
+    await horizontal().click(); await expect(horizontal()).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('.graph-preference-notice')).toHaveText('无法保存图方向，重新加载后可能无法恢复。');
+    await page.reload(); await openChain(page, goalA.id);
+    await expect(vertical()).toHaveAttribute('aria-checked', 'true');
   });
 
   await test.step('writes external classifications through the installed CLI and public API into the same production Web', async () => {
@@ -1935,6 +2048,9 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
   const a = await createTask(request, project.id, { title: `窄屏根 ${'很长的任务标题😀'.repeat(30)}`, description: '长描述 <img src=x>\n'.repeat(40), properties: { pullRequests } });
   await createTask(request, project.id, { title: '后续任务', dependsOn: [a.id] });
   const independent = await createTask(request, project.id, { title: `窄屏独立任务 ${'很长的独立任务标题😀'.repeat(30)}` });
+  await createTask(request, project.id, { title: 'Paused standalone task with a long English title for readable wrapping', requiredPlatform: 'macos', properties: { paused: true } });
+  const blockedStandalone = await createTask(request, project.id, { title: '被阻塞的独立任务 · External prerequisite', dependsOn: [a.id] });
+  await seedExternalDependencies(request, project.id, blockedStandalone, [a.id]);
   await page.setViewportSize({ width: 320, height: 800 });
   await openTaskProject(page, project.id, project.name);
   await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeVisible();
@@ -1984,6 +2100,17 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
       const menu = page.getByRole('menu');
       const item = menu.getByRole('menuitem', { name: '账户设置', exact: true });
       await expect(item).toBeFocused();
+      await expect(page.locator('.topbar').getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
+      await expect(menu.getByRole('separator')).toHaveCount(1);
+      const signOut = menu.getByRole('menuitem', { name: '退出登录', exact: true });
+      await page.keyboard.press('ArrowDown');
+      await expect(signOut).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(item).toBeFocused();
+      await page.keyboard.press('End');
+      await expect(signOut).toBeFocused();
+      await page.keyboard.press('Home');
+      await expect(item).toBeFocused();
       const bounds = await menu.boundingBox();
       expect(bounds).not.toBeNull();
       expect(bounds!.x).toBeGreaterThanOrEqual(0);
@@ -2009,6 +2136,24 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await expect(page.locator('#main-content')).toBeFocused();
     expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    for (const width of [1360, 768]) {
+      await page.setViewportSize({ width, height: 900 });
+      const account = page.getByRole('button', { name: /^账户菜单：/ });
+      await expect(page.locator('.topbar').getByRole('button', { name: '退出登录', exact: true })).toHaveCount(0);
+      await account.focus();
+      await page.keyboard.press('ArrowUp');
+      const menu = page.getByRole('menu');
+      await expect(menu.getByRole('menuitem', { name: '退出登录', exact: true })).toBeFocused();
+      const bounds = await menu.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      expect(bounds!.y).toBeGreaterThanOrEqual(0);
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(900);
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      await expect(account).toBeFocused();
+    }
     await page.getByRole('button', { name: /^账户菜单：/ }).click();
     await page.getByRole('menuitem', { name: '账户设置', exact: true }).click();
     await expect(page).toHaveURL(/\/account$/);
@@ -2066,6 +2211,7 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
   await screenshot(page, info, 'narrow-standalone');
   await page.keyboard.press('Escape');
   await expect(standalone(page, independent.id)).toBeFocused();
+  await verifyStandaloneLayout(page, info);
   await test.step('shows startup storage failures and preserves an explicit save retry on narrow screens', async () => {
     await page.addInitScript(() => {
       const state = window as unknown as { sidebarStorageBlocked: { read: boolean; write: boolean } };

@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import type { BotDefinition, BotDefaults } from '../../src/api/bots';
 import { createProject, createTask, expect, test } from './fixtures';
 import { openBotController, reportBotWorker } from './bot-controller';
-import { expectBotHeading } from './bot-heading';
+import { botCreationForm, botDetailsOpener, closeBotConversation, expectBotDetailsMode, expectBotDetailText, expectBotHeading } from './bot-heading';
 
 test.use({ locale: 'en-US' });
 
@@ -26,8 +26,8 @@ test('assistant navigation composes creation, shared conversations and authorita
   const pane = () => page.locator('.bot-session-pane:not([hidden])');
   const message = () => pane().getByRole('textbox', { name: 'Message', exact: true });
   const choose = async (bot: BotDefinition) => {
-    if (await page.getByRole('link', { name: 'Close conversation', exact: true }).isVisible()) await page.getByRole('link', { name: 'Close conversation', exact: true }).click();
-    await page.locator('.bot-list').getByRole('link', { name: new RegExp(`^${bot.name} `) }).click();
+    if (await page.locator('.bot-conversation').getByRole('textbox', { name: 'Message', exact: true }).isVisible()) await closeBotConversation(page);
+    await page.locator('.bot-list').getByRole('link').filter({ hasText: bot.name }).click();
     await expect(message()).toBeEnabled();
   };
   try {
@@ -37,12 +37,16 @@ test('assistant navigation composes creation, shared conversations and authorita
     await expect(page).toHaveURL(`${baseURL}/bots`); await expect(navigation).toHaveAttribute('aria-current', 'page');
     for (const name of ['UI audit mobile 20261105', `Acceptance B ${randomUUID().slice(0, 8)}`]) {
       await page.getByRole('button', { name: 'Create assistant', exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: 'Create assistant', exact: true });
-      await expect(dialog.locator('details')).not.toHaveAttribute('open', '');
-      await expect(dialog.locator('.bot-create-host strong')).toHaveText('Assistant acceptance host');
-      await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill(name);
+      const form = botCreationForm(page);
+      await expect(form.getByRole('textbox', { name: 'Name', exact: true })).toBeFocused();
+      await expect(form.getByRole('textbox', { name: 'Working directory', exact: true })).not.toBeVisible();
+      await form.getByText('Advanced settings', { exact: true }).click();
+      await expect(form.getByRole('textbox', { name: 'Working directory', exact: true })).toHaveValue('/assistant-acceptance');
+      await expect(form.getByRole('combobox', { name: 'Worker', exact: true })).toContainText('Assistant acceptance host');
+      await form.getByText('Advanced settings', { exact: true }).click();
+      await form.getByRole('textbox', { name: 'Name', exact: true }).fill(name);
       const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/me/bots' && response.request().method() === 'POST');
-      await dialog.getByRole('button', { name: 'Create assistant', exact: true }).click();
+      await form.getByRole('button', { name: 'Create assistant', exact: true }).click();
       const response = await responsePromise; expect(response.status()).toBe(200);
       const bot = await response.json() as BotDefinition; created.push(bot);
       expect(response.request().postDataJSON()).toEqual({ id: bot.id, name });
@@ -76,15 +80,16 @@ test('assistant navigation composes creation, shared conversations and authorita
       await page.setViewportSize({ width, height: 1000 });
       for (const locale of ['en', 'zh-CN']) {
         await page.locator('.topbar').getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
-        const opener = page.getByRole('button', { name: a.name, exact: true });
+        const opener = botDetailsOpener(page, a.name);
         await expect(opener).toHaveAttribute('aria-expanded', 'false');
-        const bounds = await expectBotHeading(page);
+        const bounds = await expectBotHeading(page, a.name);
         headings.push({ width, locale, bounds });
-        await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText(locale === 'en' ? 'Started' : '已启动');
-        await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText('Assistant acceptance host');
         await opener.focus(); await page.keyboard.press('Enter');
         await expect(opener).toHaveAttribute('aria-expanded', 'true');
-        const details = page.getByRole(width <= 1000 ? 'dialog' : 'complementary', { name: locale === 'en' ? 'Assistant details' : '助手详情', exact: true });
+        const details = await expectBotDetailsMode(page, width <= 390 ? 'modal' : undefined);
+        await expectBotDetailText(details, a.name);
+        await expectBotDetailText(details, locale === 'en' ? 'Started' : '已启动');
+        await expectBotDetailText(details, 'Assistant acceptance host');
         await expect(details).toContainText('/assistant-acceptance');
         await expect(details.getByRole('button', { name: locale === 'en' ? 'Close assistant details' : '关闭助手详情', exact: true })).toBeFocused();
         await page.keyboard.press('Escape'); await expect(details).not.toBeVisible(); await expect(opener).toBeFocused();
@@ -98,14 +103,22 @@ test('assistant navigation composes creation, shared conversations and authorita
     await page.setViewportSize({ width: 1440, height: 1000 });
     for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
-      const opener = page.getByRole('button', { name: a.name, exact: true });
+      const opener = botDetailsOpener(page, a.name);
       await opener.click();
-      const details = page.getByRole(viewport.width === 390 ? 'dialog' : 'complementary', { name: 'Assistant details', exact: true });
+      const details = await expectBotDetailsMode(page, viewport.width === 390 ? 'modal' : 'nonmodal');
       await expect(details).toContainText('/assistant-acceptance'); await expect(details).toContainText('Codex');
       await page.keyboard.press('Escape'); await expect(details).not.toBeVisible(); await expect(opener).toBeFocused();
       expect(await message().evaluate((node, original) => node === original, original)).toBe(true);
-      await pane().getByRole('button', { name: 'Enter Session fullscreen', exact: true }).click();
-      await opener.click(); await page.keyboard.press('Escape');
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.locator('.bot-conversation').getByRole('button', { name: 'Enter Session fullscreen', exact: true }).click();
+      await page.setViewportSize(viewport);
+      await expect(page.locator('.bot-conversation')).toHaveAttribute('data-session-fullscreen', 'true');
+      expect(await message().evaluate((node, original) => node === original, original)).toBe(true);
+      expect(await page.locator('.bot-session-host').evaluate((node, original) => node === original, shell)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await opener.click();
+      await expectBotDetailsMode(page, viewport.width === 390 ? 'modal' : 'nonmodal');
+      await page.keyboard.press('Escape');
       await expect(page.locator('.bot-conversation')).toHaveAttribute('data-session-fullscreen', 'true');
       await page.keyboard.press('Escape'); await expect(page.locator('.bot-conversation')).not.toHaveAttribute('data-session-fullscreen');
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -119,11 +132,11 @@ test('assistant navigation composes creation, shared conversations and authorita
     expect(controllers[0]!.commands).toEqual([]);
     expect(controllers[1]!.commands[0]).toMatchObject({ sessionId: controllers[1]!.sessionId, kind: 'send_message', payload: { content: [{ type: 'text', text: 'Send only to assistant B' }] } });
     await expect(message()).toHaveValue('');
-    await page.getByRole('link', { name: 'Close conversation', exact: true }).click();
+    await closeBotConversation(page);
     expect((await page.reload())?.status(), 'Assistant list reload serves the production application').toBe(200);
     await choose(a); await expect(message()).toHaveValue('Draft A retained');
     expect(controllers[0]!.commands).toEqual([]); expect(controllers[1]!.commands).toHaveLength(1);
-    await page.getByRole('link', { name: 'Close conversation', exact: true }).click();
+    await closeBotConversation(page);
     allowBrowserWrites([{ method: 'DELETE', url: new URL(`/api/v1/me/bots/${a.id}`, baseURL).href, count: 1 }]);
     await page.getByRole('button', { name: `More actions for ${a.name}`, exact: true }).click();
     await page.getByRole('menuitem', { name: 'Delete assistant', exact: true }).click();

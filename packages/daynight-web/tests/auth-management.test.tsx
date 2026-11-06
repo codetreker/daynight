@@ -1,3 +1,5 @@
+import { getProject } from '../src/api/project-settings';
+import type { Project } from '../src/api/types';
 import { directAccessFixture } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +11,8 @@ import { AccountPage } from '../src/features/management/AccountPage';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
 import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
+
+vi.mock('../src/api/project-settings', () => ({ getProject: vi.fn() }));
 
 vi.mock('../src/api/auth', () => ({
   listTokens: vi.fn(), createToken: vi.fn(), revokeToken: vi.fn(), updateTokenExpiry: vi.fn(),
@@ -45,7 +49,7 @@ const clickWhenReady = async (name: string) => {
 };
 const dialogClick = async (name: string) => { const button = within(screen.getByRole('dialog')).getByRole('button', { name }); await waitFor(() => expect(button).not.toBeDisabled()); fireEvent.click(button); };
 const account = () => render(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
-const members = (props: Partial<Parameters<typeof MembersPanel>[0]> = {}) => render(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} {...props} />);
+const members = (props: Partial<Parameters<typeof MembersPanel>[0]> = {}) => render(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" user={user} onRemoved={vi.fn()} {...props} />);
 const tokensTab = async () => { click('访问令牌'); await waitFor(() => expect(screen.queryByText('正在加载访问令牌…')).toBeNull()); };
 const readyMembers = async () => { await waitFor(() => expect(screen.queryByText('正在加载项目成员…')).toBeNull()); };
 const createForm = async (name = 'new device', expiry: string | null = null) => {
@@ -60,6 +64,7 @@ const createForm = async (name = 'new device', expiry: string | null = null) => 
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(getProject).mockImplementation(async (id) => ({ id, name: "Very long project name" } as Project));
   actorRole = 'admin';
   vi.mocked(auth.getProjectAccess).mockImplementation(async (projectId) => directAccessFixture(projectId, user.id, actorRole));
   vi.mocked(auth.listTokens).mockResolvedValue([]);
@@ -244,7 +249,7 @@ describe('authoritative project management', () => {
 
   it('keeps the existing roster and invitations during an active route recovery read', async () => {
     vi.mocked(auth.listInvitations).mockResolvedValue([invitation]);
-    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Very long project name', user, onRemoved: vi.fn() };
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn() };
     const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
     const row = screen.getByText('Alice').closest('.grant-row');
     const revoke = screen.getByRole('button', { name: '撤销邀请 invitation-a' });
@@ -263,7 +268,7 @@ describe('authoritative project management', () => {
 
   it('cancels a not-yet-dispatched grant when the user leaves the route', async () => {
     const guard = vi.fn();
-    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Very long project name', user, onRemoved: vi.fn(), onGuardChange: guard };
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn(), onGuardChange: guard };
     const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
     const check = deferred<auth.ProjectAccess>();
     vi.mocked(auth.getProjectAccess).mockReturnValueOnce(check.promise);
@@ -508,7 +513,7 @@ describe('authoritative project management', () => {
   it('retains a confirmed invitation secret across navigation until explicitly closed', async () => {
     const link = 'https://daynight.test/invitations#once-secret';
     vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
-    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn() };
     const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
     await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
     await screen.findByDisplayValue(link);
@@ -646,7 +651,7 @@ describe('authoritative project management', () => {
   it('discards a retained invitation secret when its identity owner unmounts', async () => {
     const link = 'https://daynight.test/invitations#once-secret';
     vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
-    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn() };
     const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
     await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
     await screen.findByDisplayValue(link);
@@ -678,10 +683,10 @@ describe('authoritative project management', () => {
     const view = members({ active: true, onRoute: true, onGuardChange: guard }); await readyMembers();
     await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
     await waitFor(() => expect(auth.createInvitation).toHaveBeenCalledOnce());
-    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} active={false} onRoute={false} onGuardChange={guard} />);
+    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" user={user} onRemoved={vi.fn()} active={false} onRoute={false} onGuardChange={guard} />);
     await act(async () => result.reject(new ApiError('network')));
     expect(guard).toHaveBeenCalledWith(true);
-    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Very long project name" user={user} onRemoved={vi.fn()} active onRoute onGuardChange={guard} />);
+    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" user={user} onRemoved={vi.fn()} active onRoute onGuardChange={guard} />);
     await screen.findByText(/邀请变更结果尚未确认/);
     expect(screen.getByRole('button', { name: '邀请成员' })).toBeDisabled();
     expect(auth.createInvitation).toHaveBeenCalledOnce();
@@ -690,7 +695,7 @@ describe('authoritative project management', () => {
   it('keeps an unknown invitation unresolved when admin access is lost and requires an authorized catalogue read after restoration', async () => {
     const result = deferred<import('../src/api/auth').CreatedProjectInvitation>();
     vi.mocked(auth.createInvitation).mockImplementation(async (_project, _user, _signal, _mismatch, dispatched) => { dispatched?.(); return result.promise; });
-    const props = { projectId: '00000000-0000-4000-8000-000000000101', projectName: 'Project', user, onRemoved: vi.fn() };
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn() };
     const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
     await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
     await waitFor(() => expect(auth.createInvitation).toHaveBeenCalledOnce());
@@ -822,7 +827,7 @@ describe('authoritative project management', () => {
     const earlierReads = vi.mocked(auth.listMembers).mock.calls.length;
     const earlierInvitations = vi.mocked(auth.listInvitations).mock.calls.length;
     const late = deferred<ProjectParticipants>(); vi.mocked(auth.listMembers).mockReturnValueOnce(late.promise);
-    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000102" projectName="Different" user={user} onRemoved={vi.fn()} />);
+    view.rerender(<MembersPanel projectId="00000000-0000-4000-8000-000000000102" user={user} onRemoved={vi.fn()} />);
     expect(screen.queryByText('Alice')).toBeNull();
     await waitFor(() => expect(auth.listMembers).toHaveBeenCalledTimes(earlierReads + 1));
     const signal = vi.mocked(auth.listMembers).mock.calls.at(-1)![1]; view.unmount(); expect(signal.aborted).toBe(true);
@@ -930,7 +935,7 @@ describe('participant grants and unconfirmed writes', () => {
     vi.mocked(auth.setProjectGrant).mockImplementation(async (_projectId, _userId, _input, _signal, onMismatch) => {
       onMismatch(); throw new ApiError('server', 409, 'identity_mismatch');
     });
-    render(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" projectName="Private" user={user} onRemoved={vi.fn()} />, { taskCache: { viewerId: user.id, onIdentityMismatch: mismatch } });
+    render(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" user={user} onRemoved={vi.fn()} />, { taskCache: { viewerId: user.id, onIdentityMismatch: mismatch } });
     await readyMembers();
     fireEvent.change(screen.getByRole('combobox', { name: 'Alice 的单独授权' }), { target: { value: 'admin' } });
     await dialogClick('保存角色');

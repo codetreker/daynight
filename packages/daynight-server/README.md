@@ -140,6 +140,14 @@ The [activation decision](../../.agents/notes/implemented/architecture/2026-10-2
 owns composition and credential-private validation; current delivery results
 require receipts bound to the tested source.
 
+The [project Task search requirements](../../docs/spec/daynight-task-search.md)
+and [design](../../docs/design/daynight-task-search.md) define the read-only
+`POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
+titles and Markdown descriptions using literal expressions, returns ranked
+pages with real ordinary-dependency context, and rejects continuation when the
+project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
+include successful pages and typed failures.
+
 The [task-summary synchronization requirements](../../docs/spec/daynight-task-sync.md)
 and [architecture](../../docs/design/daynight-task-sync.md) define the implemented
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
@@ -494,6 +502,17 @@ sequence. Use `bash scripts/check.sh --coverage` or `bash scripts/check.sh --e2e
 to run either responsibility independently. Each mode prepares its required Web,
 UniAuth and installed CLI inputs after the caller supplies the isolated
 `DAYNIGHT_TEST_DATABASE_URL`.
+
+### Task Graph boundary fixtures
+
+The TaskGraph boundary regression keeps a 1000-node backbone with 5000 dependency
+references, plus independent node and edge overflow cases. Its connected fixture
+runs `ANALYZE tasks, task_dependencies` after all links are loaded and before the
+real graph queries. These private tables can be queried before autovacuum collects
+statistics; explicit collection gives the planner the loaded graph's cardinality
+without changing its rows, topology, SQL or snapshot assertions. Preparation
+failures fail the test. The [fixture statistics decision](../../.agents/notes/implemented/testing/2026-11-06-task-graph-fixture-statistics.md)
+owns the rationale and proof boundary.
 
 ### Race instrumentation
 

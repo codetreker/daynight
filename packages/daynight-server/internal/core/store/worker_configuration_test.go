@@ -93,31 +93,31 @@ func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
 	database := isolatedStore(t)
 	userID, workerID := queryID(1), queryID(2)
 	putWorkerSnapshot(t, database, workerSnapshotFixture(userID, workerID, time.Now().UTC()))
-	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
+	if err := writeWorkerForTest(database, ctx, func(tx WorkerScope) error {
 		bad := storeWorkerConfiguration()
 		bad.Projects = append(bad.Projects, model.WorkerProjectConfiguration{ProjectID: queryID(3), NativeOverrides: map[string]json.RawMessage{"args": json.RawMessage(`invalid`)}})
-		if _, err := tx.SetWorkerConfiguration(ctx, userID, workerID, 1, bad); err == nil {
+		if _, err := tx.WorkerDAO().SetWorkerConfiguration(ctx, userID, workerID, 1, bad); err == nil {
 			t.Fatal("invalid native JSON encoding hidden")
 		}
 		observation := model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{{AppliedValue: json.RawMessage(`invalid`)}}}
-		if err := tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, observation); err == nil {
+		if err := tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, observation); err == nil {
 			t.Fatal("invalid application JSON encoding hidden")
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
-		if err := tx.tx.Rollback(ctx); err != nil {
+	if err := writeWorkerForTest(database, ctx, func(tx WorkerScope) error {
+		if err := tx.(*workerTx).tx.Rollback(ctx); err != nil {
 			return err
 		}
-		if _, err := tx.WorkerConfiguration(ctx, userID, workerID); !errors.Is(err, pgx.ErrTxClosed) {
+		if _, err := tx.WorkerDAO().WorkerConfiguration(ctx, userID, workerID); !errors.Is(err, pgx.ErrTxClosed) {
 			t.Fatalf("closed lock failure lost: %v", err)
 		}
-		if _, err := tx.SetWorkerConfiguration(ctx, userID, workerID, 1, storeWorkerConfiguration()); !errors.Is(err, pgx.ErrTxClosed) {
+		if _, err := tx.WorkerDAO().SetWorkerConfiguration(ctx, userID, workerID, 1, storeWorkerConfiguration()); !errors.Is(err, pgx.ErrTxClosed) {
 			t.Fatalf("closed update failure lost: %v", err)
 		}
-		if err := tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{}); !errors.Is(err, pgx.ErrTxClosed) {
+		if err := tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{}); !errors.Is(err, pgx.ErrTxClosed) {
 			t.Fatalf("closed observation clock failure lost: %v", err)
 		}
 		return sentinelConfigurationRollback
@@ -139,8 +139,8 @@ func TestWorkerConfigurationStoreFailuresRetainCauses(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `ALTER TABLE workers RENAME COLUMN configuration_observation TO missing_observation`); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
-		return tx.SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{}})
+	if err := writeWorkerForTest(database, ctx, func(tx WorkerScope) error {
+		return tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{}})
 	}); err == nil {
 		t.Fatal("observation database update failure hidden")
 	}
@@ -155,18 +155,18 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 	putWorkerSnapshot(t, database, workerSnapshotFixture(admin.UserID, workerID, time.Now().UTC()))
 	value := storeWorkerConfiguration()
 	var desired model.WorkerDesiredConfiguration
-	if err := database.WriteWorker(ctx, func(tx *WorkerTx) error {
-		current, err := tx.WorkerConfiguration(ctx, admin.UserID, workerID)
+	if err := writeWorkerForTest(database, ctx, func(tx WorkerScope) error {
+		current, err := tx.WorkerDAO().WorkerConfiguration(ctx, admin.UserID, workerID)
 		if err != nil || current.Desired != nil || current.ObservationRevision != "0" {
 			t.Fatalf("initial configuration lock: %+v %v", current, err)
 		}
-		if err := tx.ConfigurationProjectAccess(ctx, admin.UserID, project.ID); err != nil {
+		if err := tx.WorkerDAO().ConfigurationProjectAccess(ctx, admin.UserID, project.ID); err != nil {
 			t.Fatalf("owner Project access rejected: %v", err)
 		}
-		if err := tx.ConfigurationProjectAccess(ctx, member.UserID, project.ID); !errors.Is(err, model.ErrNotFound) {
+		if err := tx.WorkerDAO().ConfigurationProjectAccess(ctx, member.UserID, project.ID); !errors.Is(err, model.ErrNotFound) {
 			t.Fatalf("inaccessible Project exposed: %v", err)
 		}
-		desired, err = tx.SetWorkerConfiguration(ctx, admin.UserID, workerID, 1, value)
+		desired, err = tx.WorkerDAO().SetWorkerConfiguration(ctx, admin.UserID, workerID, 1, value)
 		if err != nil {
 			return err
 		}
@@ -174,7 +174,7 @@ func TestWorkerConfigurationStoreReadWriteAndProjectAccess(t *testing.T) {
 			t.Fatalf("stored target result: %+v", desired)
 		}
 		observation := model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "1", Items: []model.WorkerConfigurationItem{}}
-		return tx.SetWorkerConfigurationObservation(ctx, admin.UserID, workerID, 1, observation)
+		return tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, admin.UserID, workerID, 1, observation)
 	}); err != nil {
 		t.Fatal(err)
 	}

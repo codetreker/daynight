@@ -164,7 +164,7 @@ export const runTeamCommand = async (args: readonly string[], context: CliContex
 
 const throwMutationFailure = (cause: unknown, action: string, requestId: string, resource = "Team"): never => {
   if (cause instanceof ApiError && cause.confirmedMutationId !== undefined) throw new PublicDiagnosticError(`Team ${action} was confirmed for ${resource} ${cause.confirmedMutationId}, but local request cleanup failed.`, 1, { cause });
-  if (cause instanceof ApiError && cause.outcomeUnconfirmed) throw new Error(`Team ${action} outcome is unknown (requestId=${requestId}); read current state before deciding on a new operation.`, { cause });
+  if (cause instanceof ApiError && cause.outcomeUnconfirmed) throw new PublicDiagnosticError(`Team ${action} outcome is unknown (requestId=${requestId}); read current state before deciding on a new operation.`, 1, { cause });
   throw cause;
 };
 

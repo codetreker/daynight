@@ -106,7 +106,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	// A separate production router with an explicitly test-only tool exposes the
 	// authenticated request actor without adding a discoverable production tool.
 	instrumented := newApp()
-	entry := instrumented.mcp.(*mcphttp.Entry)
+	entry := instrumented.mcp
 	input := map[string]any{"type": "object"}
 	output := map[string]any{"type": "object"}
 	err = entry.RegisterTool(&sdk.Tool{Name: "test_actor", InputSchema: input, OutputSchema: output}, mcphttp.BudgetControl, func(_ context.Context, actor mcphttp.RequestActor, _ json.RawMessage) (mcphttp.ToolResult, error) {

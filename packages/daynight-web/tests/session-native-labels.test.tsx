@@ -18,7 +18,7 @@ const controls: SessionControls = { revision: '3', settings: [{ id: 'permissions
 const composer = (s = snapshot({ controls })) => ({ state: state(s), connected: true, onSend: vi.fn(async () => {}), onCancel: vi.fn(async () => {}), onExecuteCommand: vi.fn(async () => {}), onUpdateSetting: vi.fn(async () => {}), onRefreshControls: vi.fn(async () => {}) });
 const operation = (s: SessionSnapshot): SessionOperation => ({ protocol: s.protocol, sessionId: s.sessionId, claimId: 'claim', executionGeneration: s.executionGeneration, operationId: 'unknown', kind: 'send_message', state: 'unknown', providerResult: null, error: null });
 function viewClient(s: SessionSnapshot, connected = true, operations = new Map<string, SessionOperation>()) {
-  const view: SessionViewState = { startupReport: null, errorCode: null, environmentConnected: true, historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...state(s), operations }, archiveState: 'ready', settingIntents: new Map(), draft: { text: '', revision: '1', submission: null }, status: 'ready', connected, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
+  const view: SessionViewState = { operationProgress: new Map(), startupReport: null, errorCode: null, environmentConnected: true, historyReady: true, historyRevision: 1, connectionGeneration: 1, state: { ...state(s), operations }, archiveState: 'ready', settingIntents: new Map(), draft: { text: '', revision: '1', submission: null }, status: 'ready', connected, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set() };
   return { snapshot: () => view, subscribe: () => () => {}, refresh: vi.fn(), checkOperation: vi.fn(), respond: vi.fn(), loadOlder: vi.fn(), resource: vi.fn(), setDraft: vi.fn(), send: vi.fn(), cancel: vi.fn(), updateSetting: vi.fn(), executeCommand: vi.fn(), refreshControls: vi.fn() } as unknown as TaskSessionClient;
 }
 const activities = [ ['idle', 'Ready'], ['working', 'Working'], ['waiting_input', 'Waiting for an answer'], ['stopped', 'Stopped'], ['unknown', 'Outcome unknown'] ] as const;
@@ -47,12 +47,12 @@ it.each([
     expect(view.container.querySelector('.session-composer-activity [aria-live]')).toBeNull();
   }
 });
-it('keeps the archived header English while its body follows the locale', () => {
+it('keeps the ready archive status only in the English header across locales', () => {
   const view = render(<SessionView userId="00000009-1111-4111-8111-111111111111" client={viewClient(snapshot({ lifecycle: 'archived' }))} active current />);
   expect(view.container.querySelector('.session-header .session-status')).toHaveTextContent('Completed · Read-only history');
-  expect(screen.getByText('已结束 · 只读历史')).toBeVisible();
+  expect(screen.queryByText('已结束 · 只读历史')).toBeNull();
   view.setLocale('en');
-  expect(screen.getAllByText('Completed · Read-only history')).toHaveLength(2);
+  expect(screen.getAllByText('Completed · Read-only history')).toHaveLength(1);
   expect(screen.queryByRole('textbox')).toBeNull();
 });
 it('keeps unknown operation receipts localized independently of the activity label', () => {

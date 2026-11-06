@@ -14,7 +14,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
+	"github.com/google/uuid"
 	"github.com/jackc/puddle/v2"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -32,7 +32,10 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	var releaseOnce sync.Once
 	releaseWork := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseWork)
-	var routes *sessionRoutes
+	fixture := sessionHTTPSetup(t)
+	controller, _ := fixture.controller(t, uuid.NewString())
+	routes := fixture.application.relay
+	engine := fixture.application.engine
 	runtime, err := Start(context.Background(), config, testLogger(), func(deps Dependencies) (http.Handler, error) {
 		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
 		if err != nil {
@@ -50,8 +53,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 			}); err != nil {
 			return nil, err
 		}
-		routes = newSessionRoutes(sessionrelay.New(deps.Store, deps.Files), nil, testLogger())
-		return &sessionApplication{Handler: endpoint, relay: routes, mcp: endpoint}, nil
+		return &sessionApplication{Handler: endpoint, relay: routes, engine: engine, mcp: endpoint}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -105,20 +107,30 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	if _, err := runtime.Files.Put(probe, "runtime", "shutdown.txt", strings.NewReader("active")); err != nil {
 		t.Fatalf("files closed while MCP work remained active: %v", err)
 	}
-	routes.mutex.Lock()
-	closing := routes.closing
-	routes.mutex.Unlock()
-	if closing {
-		t.Fatal("relay stopped before the active MCP handler exited")
+	if routes.ActiveConnections() != 1 {
+		t.Fatal("relay stopped its controller before the active MCP handler exited")
 	}
+	operation, err := engine.BeginOperation()
+	if err != nil {
+		t.Fatalf("session engine stopped before the active MCP handler exited: %v", err)
+	}
+	operation.Close()
 
 	releaseWork()
 	await(t, clientDone)
+	read, stopRead := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopRead()
+	if _, _, err := controller.Read(read); err == nil {
+		t.Fatal("relay retained controller connection after shutdown")
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		routes.mutex.Lock()
-		closing = routes.closing
-		routes.mutex.Unlock()
+		closing := routes.ActiveConnections() == 0
+		op, operationErr := engine.BeginOperation()
+		if operationErr == nil {
+			op.Close()
+		}
+		engineClosed := operationErr != nil
 		probe, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		databaseClosed := errors.Is(runtime.Store.Pool.Ping(probe), puddle.ErrClosedPool)
 		object, openErr := runtime.Files.Open(probe, "runtime", "shutdown.txt")
@@ -127,11 +139,11 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 		}
 		cancel()
 		filesClosed := errors.Is(openErr, os.ErrClosed)
-		if closing && databaseClosed && filesClosed {
+		if closing && engineClosed && databaseClosed && filesClosed {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("resources not released after MCP and relay stop: relay=%v databaseClosed=%v filesClosed=%v", closing, databaseClosed, filesClosed)
+			t.Fatalf("resources not released after MCP and relay stop: relay=%v engine=%v databaseClosed=%v filesClosed=%v", closing, engineClosed, databaseClosed, filesClosed)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

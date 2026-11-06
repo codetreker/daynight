@@ -24,7 +24,7 @@ or run your own service. The interface supports English and Simplified Chinese.
   standalone tasks. Explore interactive dependency graphs with upstream context,
   task details and fullscreen reading.
 - **Keep the working material with the task.** Upload designs, screenshots and
-  other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
+  other files; read Markdown with stable Mermaid diagrams, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
 - **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
   post and reply as your account, with persistent history independent of Sessions.
@@ -438,10 +438,13 @@ full application validation. See the
 ## Validation
 
 `pnpm check` covers CLI type checking and tests; `pnpm acceptance` exercises the
-installed package. Server and Web checks have separate commands and require
-statement coverage strictly greater than 90%. Routine CI suites exclude stress
-workloads. Run the corresponding explicit local command when full-scale evidence
-is required:
+installed package. CLI tests use private home and configuration environments
+and guard real Daynight state (`~/.daynight` and the inherited `DN_CONFIG_DIR`)
+against filesystem and SQLite writes or cleanup. The [CLI test isolation guide](docs/development.md#cli-test-isolation)
+owns child-process propagation, symbolic-link checks and protection limits. Server and Web checks have
+separate commands and require statement coverage strictly greater than 90%.
+Routine CI suites exclude stress workloads. Run the corresponding explicit local
+command when full-scale evidence is required:
 
 | Local workload | Command from the repository root |
 |---|---|
@@ -471,9 +474,11 @@ delivery. This repository manages concrete work in Daynight; load
 before executing a task. Use
 [`dispatch-small-change`](.agents/skills/dispatch-small-change/SKILL.md) to turn
 a bounded change request into a clear task, choose its required operating
-system, and hand it off to a Worker. See the [repository skills](.agents/skills/)
-for decision notes, scope choices and prose, and
-[Agent Notes](.agents/notes/README.md) for decision history.
+system, and hand it off to a Worker. Use
+[`optimize-unit-tests`](.agents/skills/optimize-unit-tests/SKILL.md) to reduce test
+runtime, resource use and CI completion time while preserving defect detection.
+See the [repository skills](.agents/skills/) for decision notes, scope choices
+and prose, and [Agent Notes](.agents/notes/README.md) for decision history.
 
 ## Documentation conventions
 

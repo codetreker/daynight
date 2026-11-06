@@ -279,6 +279,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
         const receipt = journal.recordOperation(operationId, "confirmed", { disposition: "handled" });
         publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
       }),
+      hasTimelineEntry: entryId => journal.hasTimelineEntry(entryId),
       onTimeline: entry => nativeEvent(() => {
         journal.projectTimeline(providerDisplayEntry(entry));
         if (entry.kind === "interaction") {

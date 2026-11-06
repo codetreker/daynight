@@ -5,46 +5,56 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/worker"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 )
 
-// Application owns one set of use cases and the relay shared by all adapters.
+// Application owns one set of use cases and the session engine shared by adapters.
 // Store and files are borrowed and are closed by the outer runtime.
 type Application struct {
-	Identity    *identity.Identity
-	Memberships *project.Memberships
-	Projects    *project.Projects
-	Teams       *team.Teams
-	Workers     *service.Workers
-	Bots        *service.Bots
-	Tasks       *task.Tasks
-	TaskSteps   *task.TaskSteps
-	TaskThreads *task.TaskThreads
-	TaskSync    *task.TaskSync
-	Attachments *service.Attachments
-	Relay       *sessionrelay.Service
+	Identity     *identity.Identity
+	Memberships  *project.Memberships
+	Projects     *project.Projects
+	Teams        *team.Teams
+	Workers      *worker.Workers
+	Bots         *bot.Bots
+	BotDeletions *bot.Deletions
+	Tasks        *task.Tasks
+	TaskSearch   store.TaskSearchReader
+	TaskSteps    *task.TaskSteps
+	TaskThreads  *task.TaskThreads
+	TaskSync     *task.TaskSync
+	Attachments  *attachment.Attachments
+	Engine       *sessioncore.Engine
+	Sessions     *session.Service
 }
 
 func New(database *store.Store, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration) *Application {
+	engine := sessioncore.NewEngine(files)
 	return &Application{
-		Identity:    identity.New(database, client, callbackURL),
-		Memberships: project.NewMemberships(database),
-		Projects:    project.NewProjects(database),
-		Teams:       team.NewTeams(database),
-		Workers:     service.NewWorkers(database),
-		Bots:        service.NewBots(database),
-		Tasks:       task.NewTasks(database),
-		TaskSteps:   task.NewTaskSteps(database),
-		TaskThreads: task.NewTaskThreads(database),
-		TaskSync:    task.NewTaskSync(database, overlap),
-		Attachments: service.NewAttachments(database, files),
-		Relay:       sessionrelay.New(database, files),
+		Identity:     identity.New(database, client, callbackURL),
+		Memberships:  project.NewMemberships(database),
+		Projects:     project.NewProjects(database),
+		Teams:        team.NewTeams(database),
+		Workers:      worker.NewWorkers(database),
+		Bots:         bot.New(database),
+		BotDeletions: bot.NewDeletions(database, files, engine),
+		Tasks:        task.NewTasks(database),
+		TaskSearch:   task.NewTaskSearch(database),
+		TaskSteps:    task.NewTaskSteps(database),
+		TaskThreads:  task.NewTaskThreads(database),
+		TaskSync:     task.NewTaskSync(database, overlap),
+		Attachments:  attachment.NewAttachments(database, files),
+		Engine:       engine,
+		Sessions:     session.New(database, engine),
 	}
 }

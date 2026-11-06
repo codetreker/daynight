@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type BotTx struct{ tx pgx.Tx }
+type botTx struct{ tx pgx.Tx }
 
 type BotPage struct {
 	Items   []model.Bot
@@ -17,18 +17,22 @@ type BotPage struct {
 
 // WriteBot serializes existing definitions by their Bot row. Callers must lock
 // this row before a related Session or archive record in the same transaction.
-func (s *Store) WriteBot(ctx context.Context, operation func(*BotTx) error) error {
+func (s *Store) WriteBot(ctx context.Context, operation func(BotScope) error) (Completion, error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return queryError("begin bot", err)
+		return Completion{Outcome: TransactionNotCommitted}, queryError("begin bot", err)
 	}
-	if err := transact(ctx, tx, func(tx pgx.Tx) error { return operation(&BotTx{tx: tx}) }); err != nil {
-		return queryError("write bot", err)
-	}
-	return nil
+	err = transact(ctx, tx, func(tx pgx.Tx) error { return operation(&botTx{tx: tx}) })
+	return teamCompletion("write bot", err)
 }
 
-func (b *BotTx) Credential(ctx context.Context, principal model.Principal) error {
+func (b *botTx) BotDAO() BotWriteDAO { return b }
+
+// BotTransaction binds Bot operations to an existing lifecycle transaction.
+// The caller owns transaction completion and must not retain the DAO afterwards.
+func BotTransaction(tx pgx.Tx) BotWriteDAO { return &botTx{tx: tx} }
+
+func (b *botTx) Credential(ctx context.Context, principal model.Principal) error {
 	_, err := threadCredential(ctx, b.tx, principal, " FOR SHARE")
 	return err
 }
@@ -41,7 +45,7 @@ func botWorker(ctx context.Context, tx pgx.Tx, ownerID, workerID, lock string) e
 	return nil
 }
 
-func (b *BotTx) Worker(ctx context.Context, ownerID, workerID string) error {
+func (b *botTx) Worker(ctx context.Context, ownerID, workerID string) error {
 	return botWorker(ctx, b.tx, ownerID, workerID, " FOR KEY SHARE")
 }
 
@@ -94,7 +98,7 @@ func readBot(ctx context.Context, tx pgx.Tx, id, lock string) (model.Bot, error)
 	return bot, nil
 }
 
-func (b *BotTx) Bot(ctx context.Context, id string) (model.Bot, error) {
+func (b *botTx) Bot(ctx context.Context, id string) (model.Bot, error) {
 	return readBot(ctx, b.tx, id, " FOR UPDATE")
 }
 
@@ -104,7 +108,7 @@ func (s *Snapshot) Bot(ctx context.Context, id string) (model.Bot, error) {
 
 // InsertBot leaves a conflicting identity untouched. Read the row in a separate
 // ReadCommitted statement to observe a concurrent creator's committed result.
-func (b *BotTx) InsertBot(ctx context.Context, bot model.Bot) error {
+func (b *botTx) InsertBot(ctx context.Context, bot model.Bot) error {
 	overrides, err := json.Marshal(bot.RequestedOverrides)
 	if err != nil {
 		return queryError("encode bot overrides", err)
@@ -122,7 +126,7 @@ func (b *BotTx) InsertBot(ctx context.Context, bot model.Bot) error {
 	return nil
 }
 
-func (b *BotTx) DeleteBot(ctx context.Context, id string, version int64, deletion model.BotDeletion) (model.Bot, error) {
+func (b *botTx) DeleteBot(ctx context.Context, id string, version int64, deletion model.BotDeletion) (model.Bot, error) {
 	data, err := json.Marshal(deletion)
 	if err != nil {
 		return model.Bot{}, queryError("encode bot deletion", err)
@@ -133,6 +137,19 @@ func (b *BotTx) DeleteBot(ctx context.Context, id string, version int64, deletio
 		return model.Bot{}, queryError("record bot deletion", err)
 	}
 	return bot, nil
+}
+
+// SaveBotDeletion advances the deletion state while the caller holds the Bot
+// lock, including the cleanup receipt and obligations in the caller's transaction.
+func (b *botTx) SaveBotDeletion(ctx context.Context, id string, deletion *model.BotDeletion) (model.Bot, error) {
+	data, err := json.Marshal(deletion)
+	if err != nil {
+		return model.Bot{}, err
+	}
+	if _, err := b.tx.Exec(ctx, `UPDATE bots SET deletion=$2,version=version+1,updated_at=statement_timestamp() WHERE id=$1`, id, data); err != nil {
+		return model.Bot{}, err
+	}
+	return b.Bot(ctx, id)
 }
 
 // Bots includes pending cleanup only for a specific Worker's expected inventory.
