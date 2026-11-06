@@ -48,7 +48,10 @@ func TestThreadPostRetainsActualCompletionOnFailure(t *testing.T) {
 			threads := NewTaskThreads(failedThreadWriter{completion: store.Completion{Outcome: outcome}, err: cause})
 			_, err := threads.Post(context.Background(), principal, "00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000004", CreateThreadMessage{Body: "test"})
 			var failure *ThreadMessageError
-			if !errors.As(err, &failure) || failure.Outcome != outcome || !errors.Is(err, cause) {
+			var completion interface {
+				TransactionOutcome() store.TransactionOutcome
+			}
+			if !errors.As(err, &failure) || failure.Outcome != outcome || !errors.As(err, &completion) || completion.TransactionOutcome() != outcome || !errors.Is(err, cause) {
 				t.Fatalf("lost completion or cause: %#v %v", failure, err)
 			}
 		})
