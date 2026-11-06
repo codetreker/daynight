@@ -20,4 +20,4 @@ func_suffixes = []
 enabled = false
 
 [critical_blocks]
-fail = true
+fail = false

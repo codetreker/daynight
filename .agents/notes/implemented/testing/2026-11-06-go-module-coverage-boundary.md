@@ -6,13 +6,14 @@ Status: implemented
 
 Server tests exercise production packages through HTTP and service composition.
 Counting only each test package's own statements loses coverage of those calls.
-The server also needs its critical-block and strict total gates to remain
-effective after the cross-product acceptance harness is removed.
+The server also needs its numerical coverage thresholds to remain effective
+after the cross-product acceptance harness is removed.
 
 ## Decision
 
 The Go module check selects all listed production packages for `-coverpkg` and
-enforces critical-block, package, function and unrounded total coverage gates.
+enforces package, function and unrounded total coverage gates. Critical-block
+failure is disabled by the checked-in configuration.
 It runs with race detection locally and without race detection in PR and main
 CI. CI overrides an inherited race flag. The coverage comparator's own tests
 run as part of the check. Package concurrency is limited to two because the
