@@ -108,7 +108,8 @@ describe('standalone full task details', () => {
       });
       await waitFor(() => {
         expect(screen.queryByText(detail.description)).toBeNull();
-        expect(screen.getByRole('heading', { name: '任务详情加载失败' })).toBeVisible();
+        expect(screen.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
+        expect(screen.getByRole('link', { name: '返回项目列表' })).toHaveAttribute('href', '/projects');
       });
       expect(screen.queryByText(detail.description)).toBeNull();
       expect(cold.getAuthorizedProject(projectId)).toBeNull();

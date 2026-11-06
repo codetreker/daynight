@@ -471,3 +471,9 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
   .grant-row .actions { justify-content: flex-start; margin-left: 0; }
   .grant-status-notice { margin-inline: 14px; }
 }
+
+.project-deletion-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .5rem 1rem; padding: 1rem; border: 1px solid var(--border, #e1e4ea); border-radius: .5rem; background: var(--surface-muted, #f8f9fb); }
+.project-deletion-details dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.project-deletion-details dt { font-weight: 600; }
+@media (max-width: 480px) { .project-deletion-details { grid-template-columns: minmax(0, 1fr); gap: .25rem; } }
+.project-deletion-challenge { overflow-wrap: anywhere; white-space: pre-wrap; font-weight: 600; }
