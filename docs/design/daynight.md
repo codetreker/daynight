@@ -567,18 +567,14 @@ zsh 目录选择、重复安装及启动后的注册与 Tab；使用任务内的
 GitHub Actions 保留原生 Linux、macOS、Windows 的普通测试与既有 review/update
 安装验收，并在独立 Linux 作业中执行补全的真实 shell 验收。独立
 project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
-文件行为；真实 Go/PostgreSQL 流程复用独立 Go 测试包 `cmd/e2e_tests` 的 fresh
-binary，instrumentation 与测试进程的实际 race mode 匹配。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
-直接调用内部函数的测试，两边各自管理测试辅助设施。
-服务验证分为并行的覆盖率与 E2E 作业，各自准备安装后的 CLI；本地完整入口依次运行
-两部分。覆盖率作业保留生产包的 build/vet 与严格 coverage gate，race 在 PR CI 关闭、
-main CI 和本地默认开启，选择与回执由[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。随后在 Go 默认
-10 分钟计时器之外运行预算套件；E2E 作业独立执行完整 `cmd/e2e_tests`。常规 CI
-运行两个期限场景，通过测试侧 preload 使用
-1 秒单次、3 秒总期限，生产默认 30 秒/5 分钟单独断言；四个完整字节场景通过
-显式本地 `pnpm test:stress:budgets` 运行，保留真实 128/256 MiB 边界和 +1 字节拒绝，
-并在 CI 环境中拒绝。职责与证据见
-[project/task 设计](daynight-project-task.md#验证与交付证据)。
+文件行为。Go 模块验证独立执行服务端 build、vet、模块测试与严格 coverage gate，
+不安装或运行 CLI。其真实 Web assets 是可执行程序的编译输入；认证、事务、
+生命周期和并发属于服务端模块测试，客户端请求、输出、期限与未知结果属于 CLI
+模块测试。race 在 PR CI 关闭、main CI 和本地默认开启，具体策略由
+[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。
+产品间正常连接的 E2E 与各模块边界测试分别承担责任；历史 Go 安装/预算回执
+不代表当前模块入口已验证这些链路。职责选择见
+[Go 模块验证边界](../../.agents/notes/implemented/testing/2026-11-06-go-module-validation-boundary.md)。
 [仓库验证说明](../../README.md#validation)定义本地及原生 receipt 的源码身份、
 受控 GitHub/Copilot 行为与真实服务验收的证据边界。运行结果随对应 PR 与 CI 保存；
 历史通过记录不能代替当前源码的验证结果。

@@ -16,11 +16,9 @@ the private test home and parent/child protection of real Daynight state
 (`~/.daynight` and the inherited `DN_CONFIG_DIR`) against writes and cleanup,
 including symbolic-link aliases. Ordinary test and installed acceptance suites exclude stress
 workloads. From this package, `pnpm test:stress` builds the CLI and runs the
-rendering and full Session-v2 `.stress.ts` suites;
-`pnpm test:stress:budgets` runs the server validation gate with the four full
-128 MiB/256 MiB installed-CLI byte probes. The latter requires an isolated
-`DAYNIGHT_TEST_DATABASE_URL` and the [server validation prerequisites](../daynight-server/README.md#validate).
-Both commands are explicit local-only validation and refuse CI. The
+rendering and full Session-v2 `.stress.ts` suites. This explicit local-only
+validation refuses CI. CLI validation does not forward byte-budget probes
+through the Go module gate. The
 [local stress guide](../../docs/development.md#local-stress-validation) owns
 selection and receipt interpretation. Each command's `--help` owns its exact usage. Review execution additionally requires Git, an authenticated
 GitHub CLI and Copilot CLI on `PATH`.
@@ -1169,12 +1167,11 @@ output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
 Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add/update/set-status/move/delete commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
-maps the real-service installed Node-entry read case, separate maximum-resource
-check and their normal fixture prerequisites. The packed CLI acceptance runner
-checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
-Manual copy/byte checks establish package resource fidelity separately from
-these complementary runtime and launcher checks.
+list/show/add/update/set-status/move/delete commands. CLI module tests own
+request, decoding and output behavior. Installed-package checks exercise the
+literal `daynight`/`dn` launchers on native platforms; manual copy/byte checks
+establish package resource fidelity. The [Go validation guide](../daynight-server/README.md#go-module-validation-and-ci-evidence)
+describes service-module tests independently of CLI installation.
 
 ### Add a Step
 

@@ -16,36 +16,28 @@ production interval is not part of that protocol assertion.
 
 ## Decision
 
-The two Go workflow jobs set `DAYNIGHT_TEST_RACE` explicitly from the event:
-`false` for PR validation and `true` for main pushes. The Node orchestrator accepts
-only literal `true` and `false`; an absent value retains the enabled local default.
-Invalid values fail before fixture preparation. It passes explicit race values to
-both `go-cov` and `go test`, preserving the checked-in coverage configuration's
-race-enabled local default.
+The Go workflow sets `DAYNIGHT_TEST_RACE` explicitly from the event: `false` for
+PR validation and `true` for main pushes. The module check accepts only literal
+`true` and `false`; an absent value retains the enabled local default. Invalid
+values fail before fixture preparation. It passes explicit race values to
+`go-cov`, preserving the checked-in race-enabled local configuration.
 
 The [pinned go-cov implementation](https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/run.go#L159-L169)
 adds a child `go test -race` flag only when enabled; `--race=false` omits it.
-Disabled coverage therefore appends `-race=false` to that command's inherited
-`GOFLAGS`, preserving the other flags while overriding an ambient `-race`.
-Enabled and default modes leave inherited `GOFLAGS` unchanged: the tool's
-explicit child flag selects target-test instrumentation without newly
-instrumenting the go-cov runner itself. E2E and its embedded server already pass
-explicit race values to their Go commands.
+Disabled coverage appends `-race=false` to inherited `GOFLAGS`, preserving other
+flags while overriding ambient `-race`. Enabled/default modes let the tool's
+explicit child flag select test instrumentation without instrumenting the
+coverage runner itself. Build, vet, module functional/concurrency checks and all
+coverage thresholds retain their responsibilities in either mode.
 
-The E2E test package derives its server build mode from the actual parent test
-binary's race build tag. A direct local `go test -race` therefore builds a matching
-server without relying on an environment claim. The process receipt records
-`raceEnabled`, and the orchestration receipts retain their explicit command
-arguments. Both modes keep build, vet, complete functional and concurrency
-scenarios, installed artifact provenance, cleanup and atomic statement coverage.
-The package/function/critical-block gates and strict total coverage greater than
-90% retain their existing semantics.
-
-This policy partially supersedes the always-race CI execution retained by the
-[independent jobs decision](2026-11-04-server-e2e-ci-jobs.md) and
-[E2E package decision](2026-11-03-server-e2e-package.md). Their resource, coverage
-and scenario boundaries remain. Main CI and ordinary local validation retain
-race instrumentation; PR feedback uses uninstrumented execution.
+The original two-job implementation also applied explicit race values to E2E and
+built its child service from the parent test binary's actual race build tag.
+Its process receipt recorded `raceEnabled`, and orchestration receipts recorded
+command arguments. The [Go module boundary](2026-11-06-go-module-validation-boundary.md)
+removes that process package and its receipts while retaining this event policy.
+The [independent jobs](2026-11-04-server-e2e-ci-jobs.md) and
+[package extraction](2026-11-03-server-e2e-package.md) records preserve the earlier
+always-race context and the reasons for matching child instrumentation.
 
 The ping case injects a short private interval before opening the connection,
 observes an actual incoming ping through the client's protocol callback, and
@@ -82,7 +74,7 @@ period.
 PR validation still executes the same workloads and thresholds, with race
 instrumentation deferred to main and ordinary local execution. A passing PR check
 does not by itself establish race-detector coverage. The mode is explicit in the
-commands and process receipt rather than inferred from a job name.
+module command rather than inferred from a job name.
 
 Short ping timing removes a known observation delay while retaining the real
 connection. Package execution overlaps, and compilation, database preparation and

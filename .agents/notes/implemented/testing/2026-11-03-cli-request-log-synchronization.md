@@ -21,27 +21,27 @@ adds an event only after parsing its complete newline-terminated JSON record.
 
 ## Decision
 
-The [external-dependency write fixture](../../../../packages/daynight-server/cmd/e2e_tests/acceptance_external_dependency_write_cli_test.go)
-waits for both `external-flags-only` and `external-flags-noop` before invoking the
-stale CLI refusal. A small `acceptanceCLIWaitSuccessfulPatchLogs` helper in the
-[existing CLI acceptance owner](../../../../packages/daynight-server/cmd/e2e_tests/acceptance_cli_test.go)
-composes the existing `acceptanceEventually` and `acceptanceLogs.matches`
-functions. All specified IDs must have parsed `http_request` records with method
-PATCH and status 200. The caller supplies the existing eight-second log-wait
-budget; context cancellation and deadline errors remain visible.
+The historical [external-dependency write fixture](https://github.com/codetreker/daynight/blob/32e218a1014c2824c4a5fb0e9f345c66707b294b/packages/daynight-server/cmd/e2e_tests/acceptance_external_dependency_write_cli_test.go)
+waited for `external-flags-only` and `external-flags-noop` before taking the stale
+CLI refusal baseline. Its [acceptance owner](https://github.com/codetreker/daynight/blob/32e218a1014c2824c4a5fb0e9f345c66707b294b/packages/daynight-server/cmd/e2e_tests/acceptance_cli_test.go)
+composed the existing eventual/log matching functions: each named ID needed a
+parsed `http_request` record with method PATCH and status 200. The existing
+eight-second wait budget, cancellation and deadline failures remained visible.
 
-Preparation identity and refusal count remain separate guarantees. After the
-CLI process exits, `cli.refuse` still uses `acceptanceCLIWaitMutations` to wait
-for the additional write log, then requires exactly one new request with status
-409 and a nonempty request ID present in stderr. Exit status, empty stdout,
-error code, applicable task ID and unchanged task material remain independent
-checks. Correlation failures report the count, status and identity conditions
-needed to distinguish a later failure's cause.
+After CLI exit, the fixture waited for an additional mutation log, then required
+exactly one new request with status 409 and a nonempty ID present in stderr.
+Exit status, empty stdout, error code, task identity and unchanged material were
+independent assertions. Correlation failures reported count, status and identity
+separately so a later failure could be diagnosed without guessing which predicate
+failed.
 
-The [server validation guide](../../../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
-owns the current acceptance inventory. The original installed-package and real
-service evidence responsibilities remain recorded by the immutable
-[installation decision](../../archived/testing/2026-10-20-installed-project-task-acceptance.md).
+The [Go module validation boundary](2026-11-06-go-module-validation-boundary.md)
+removes that cross-product package and preserves this record's historical source
+links. The synchronization principle remains: an HTTP response does not imply a
+separate log reader has consumed the corresponding complete record. Current Go
+commands belong to the [server guide](../../../../packages/daynight-server/README.md#go-module-validation-and-ci-evidence).
+The immutable [installation decision](../../archived/testing/2026-10-20-installed-project-task-acceptance.md)
+records the original installed-package and real-service proof boundaries.
 
 ## Alternatives
 
@@ -56,15 +56,13 @@ so the wait remains at that boundary.
 
 ## Consequences
 
-The preparation pair is observable before the refusal snapshots its count.
-Strict refusal checks continue to expose actual retries, duplicate writes,
-wrong statuses and missing response identity. Production HTTP and CLI behavior,
-coverage gates and existing wait budgets retain their original contracts.
+The fix made both preparation records observable before refusal accounting.
+Strict checks exposed retries, duplicate writes, wrong status and absent response
+identity without changing production HTTP/CLI behavior or wait budgets.
 
-Focused regression cases exercise the helper with unrelated counts, missing or
-repeated IDs, wrong fields and a withheld final newline, paired with the complete
-valid set under the existing condition-first polling semantics. The real
-installed CLI scenario still exercises the built service and isolated
-PostgreSQL, including rejection, material preservation and restart persistence.
-These checks constrain the synchronization mechanism; they do not reconstruct
-the unretained predicate values from the original CI failure.
+Historical focused regression cases covered unrelated counts, missing/repeated
+IDs, wrong fields and a withheld final newline, paired with a complete valid set.
+The original real-process scenario also checked rejection, material preservation
+and restart persistence. Those results remain source-bound; they do not
+reconstruct the unretained predicate values from the original CI failure or
+claim that the removed scenario executes in current module validation.

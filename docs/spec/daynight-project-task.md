@@ -542,26 +542,24 @@ JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用�
 | V17 | 安装后 Step list/show 与真实持久服务完整互读；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册宣告实际 list/show/add 能力 |
 | V18 | 安装 Add 的选项、ID/请求 UUID、显式一次 POST/默认 GET+POST、严格完整确认、容量 details 与安全未知结果成立；真实提交后丢响应仅核对当前事实，无自动重放/换 ID/脱离读取，确认后本地失败保持已确认，帮助/补全/手册与实际能力一致 |
 
-配置、HTTP、仓库关联基础及 Project 命令已提供对应模块验证；Project 的实际编译
-入口已在受控 HTTP 条件下验证创建、完整分页、详情、参数错误、服务拒绝、
-取消、原始 JSON 与依赖隔离。Task 已通过参数、操作、渲染、仓库选择及实际编译
-入口的受控 HTTP 验证；共享补全保留既有场景，并在真实 Bash/zsh 验证 Task 语法。
-V1–V16 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安装 CLI 受控 HTTP/Git
-验收，以及实际安装 CLI 与真实 Go 1.27.2/PostgreSQL 18.6 的完整流程、重启和版本
-竞争。生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和
-累计响应 256 MiB，并由测试单独断言。期限行为通过公开安装命令与流式 HTTP
-验证；测试应仅对期限注入合理的较小值，覆盖响应开始后停顿，以及每页均在单次
-期限内且 cursor 持续推进仍耗尽总期限。回执必须标明实际期限与 mock 状态。
-响应和累计解码字节的完整规模验证使用显式本地 `pnpm test:stress:budgets`，保留真实
-生产上限、精确边界成功及增加 1 字节拒绝的配对证据，使用合法 gzip JSON 和空白
-补齐以保留小型结果输出。常规 CI 排除这些压力探针，继续验证两个有界期限场景、
-正常错误处理与生产默认值。既有 review/update 安装验收和 Go 覆盖率门槛全部保留；
-Go 工作负载与所选预算套件分别运行，后者不占用 Go 默认 10 分钟计时器。
+配置、HTTP、仓库关联、Project/Task 的参数、操作、渲染、仓库选择及错误行为
+由 CLI 模块验证；实际编译入口的受控 HTTP/Git 验证与跨产品运行有不同证据范围。
+V1–V18 继续约束完整 CLI 交付。CLI 安装、launcher 和原生环境验证归 CLI 产物，
+服务端的事务、迁移、权限裁决、边界和并发归 Go 模块。产品 E2E 只验证安装 CLI、
+生产页面和真实 Go/PostgreSQL 的正常同数据主流程，不承担边界或竞争矩阵。
 
-原生安装结果写入仓库根 `.tmp/project-task-evidence.json`，服务及常规期限结果写入
-`.tmp/project-task-service-evidence.json`，本地完整字节预算结果写入
-`.tmp/project-task-stress-evidence.json`；每份证据标识源码、pack/安装身份、所选套件、
-精确场景和清理。本地压力入口必须在 CI 环境中拒绝。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
-空间。[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
-[CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)，
-逐次结果随对应 PR 与 CI 保存。受控 HTTP、真实服务与原生平台证据分别证明其对应要求，不能互相替代。
+生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和累计
+响应 256 MiB，并由测试独立断言。CLI 期限测试应覆盖响应开始后停顿，以及每页
+均在单次期限内且 cursor 持续推进仍耗尽总期限；可注入合理的较短期限，证据应
+标明实际期限和 mock 状态。响应及累计解码字节验证保留精确上限成功和 +1 字节
+拒绝，正常规模边界归客户端单测；完整规模压力验证使用独立本地入口并拒绝 CI。
+这组要求不能通过改变生产上限、Go 覆盖率门槛或隐去失败满足。
+
+原生安装证据保留源码、包与 launcher 身份、精确场景和资源清理，受控 HTTP、
+真实服务与原生平台证明各自范围，不能互相替代。Go 当前模块入口与原始 coverage
+profile 由[服务验证说明](../../packages/daynight-server/README.md#go-module-validation-and-ci-evidence)
+拥有，不再产生安装 CLI/PAT/deadline 联合回执。CLI 要求编号继续使用 `PT.V*`。
+[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及
+真实默认预算的历史源码验证结果；期限 mock 的历史成本取舍记录在
+[CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)。
+逐次运行结果随对应源码、PR 与 CI 保存，历史通过不代表当前实现状态。

@@ -13,13 +13,11 @@ const command = gate.match(/^        run: (.+)$/m)![1]!;
 test("the final gate waits for every independent validation stage", () => {
   assert.match(gate, /^    if: \$\{\{ always\(\) \}\}$/m);
   assert.deepEqual(new Set(required), new Set([...jobs.keys()].filter((name) => name !== "checks")));
-  for (const [name, mode] of [["verify-server", "coverage"], ["verify-server-e2e", "e2e"]]) {
-    const job = jobs.get(name!)!;
-    assert.match(job, /^    needs: detect-changes$/m);
-    assert.match(job, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
-    assert.ok(job.includes(`run: bash scripts/check.sh --${mode}`));
-    assert.ok(job.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
-  }
+  const server = jobs.get("verify-server")!;
+  assert.match(server, /^    needs: detect-changes$/m);
+  assert.match(server, /^    if: \$\{\{ needs.detect-changes.outputs.server == 'true' \}\}$/m);
+  assert.ok(server.includes("run: bash scripts/check.sh"));
+  assert.ok(server.includes("DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}"));
   assert.match(gate, /JOB_RESULTS: \$\{\{ toJSON\(needs\.\*\.result\) \}\}/);
 });
 
@@ -36,11 +34,11 @@ const runGate = (results: Record<string, string>): number | null => {
 
 const success = Object.fromEntries(required.map((name) => [name, "success"]));
 
-test("both successful server jobs pass the actual workflow gate", () => {
+test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-macos", "verify-server", "verify-server-e2e"]) {
+for (const name of ["verify", "verify-installed", "verify-macos", "verify-server"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);

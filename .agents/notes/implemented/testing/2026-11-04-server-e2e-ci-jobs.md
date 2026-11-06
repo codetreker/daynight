@@ -4,98 +4,70 @@ Status: implemented
 
 ## Problem
 
-Built-process acceptance and production package coverage share a Go validation
-job even though they have separate execution and resource lifetimes. The E2E
-package starts real service and CLI processes, while coverage tests run production
-packages against PostgreSQL. Their overlapping CPU, database and build demand
-can increase validation latency. Package durations already overlap within Go's
-test runner, so removing one package from a job does not imply a corresponding
-reduction in elapsed time.
+Built-process acceptance and production package coverage shared one Go job despite
+separate execution and resource lifetimes. Service and CLI processes overlapped
+with production-package PostgreSQL tests, competing for build, CPU and database
+resources. Go already overlapped package execution, so moving one package could
+not be assumed to save its entire reported duration.
 
 ## Decision
 
-The server selector enables two independent jobs in
-[the checks workflow](../../../../.github/workflows/checks.yml):
-`verify-server` runs `bash scripts/check.sh --coverage`, and
-`verify-server-e2e` runs `bash scripts/check.sh --e2e`. Both have a 20-minute bound
-and prepare their own PostgreSQL, pinned UniAuth, embedded Web build and installed
-CLI. The final `checks` job waits for both and rejects failed or cancelled jobs.
-The initial split conservatively treated all CLI source and packaging inputs as
-shared server dependencies because both jobs build and install the CLI. The
-[server input-selection decision](2026-11-04-server-ci-input-selection.md)
-partially supersedes that routing choice: lazy command implementations and
-resources outside server acceptance, and CLI manifest changes limited to version
-or JSON representation, omit server jobs. Independent command changes retain
-complete CLI validation; the later
-[version-only PR decision](2026-11-04-version-only-pr-ci.md) skips application
-checks for strict whole-PR version changes. Both server jobs keep one
-selector covering their actual CLI, preparation and embedded Web inputs.
-Documentation exclusions and unaffected-module skipping retain their existing
-semantics.
+The CI split originally created `verify-server` for coverage and
+`verify-server-e2e` for the test-only process package, with separate PostgreSQL,
+UniAuth, embedded Web build and installed CLI inputs. Both had 20-minute bounds
+and contributed to the final job-result gate. The full local entrypoint ran both
+modes sequentially. The [Go module validation boundary](2026-11-06-go-module-validation-boundary.md)
+replaces that current division: the dedicated process package/job and installed
+CLI/deadline orchestration are removed; the Go gate validates its own module.
 
-The complete local `bash scripts/check.sh` entrypoint runs coverage followed by
-E2E. Coverage owns build, vet, `go-cov`, critical-block enforcement,
-package/function thresholds and the exact total statement comparison. The Node
-orchestrator excludes only the full import path of the test-only `cmd/e2e_tests`
-package from `go-cov` execution. The pinned tool matches exclusions by substring,
-so `go list ./...` must show that the full-path match selects exactly that package;
-extended or nested matches fail. Before validation it also recursively rejects
-non-test Go source there. This preserves the
-[package separation](2026-11-03-server-e2e-package.md) without a production
-coverage exception. The checked-in coverage configuration keeps every production
-package, file and function in scope.
+The split preserved build, vet, pinned go-cov, critical-block and package/function
+thresholds and exact total coverage. It excluded only the complete import path
+of the test-only process package. Because the pinned tool used substring
+matching, an exact `go list` match and recursive test-only-source check prevented
+that exception from hiding production code. Those guards belonged to the removed
+package; the current production scope retains no package exception.
 
-The coverage installation also supports `internal/server` authentication
-assertions. That package produces the normally issued PAT consumed by the two
-installed-CLI deadline probes; their private credential handoff and cleanup stay
-with the producer. E2E has its own installation and runs the complete test-only
-package with `-count=1` and a ten-minute timeout, retaining fresh
-server builds, source and artifact provenance, refusal paths, concurrent writes
-and cleanup assertions. Neither job transfers credentials or live resources to
-the other. The [Go validation timing decision](2026-11-04-go-validation-timing.md)
-partially supersedes the original always-race CI policy: both jobs select race
-instrumentation explicitly, disabled for PR events and enabled for main pushes.
-Local validation enables it by default, and E2E child binaries match their test
-binary's actual instrumentation. Routine CI excludes stress tests; the explicit
-local stress-budget entrypoint still runs complete coverage and E2E validation with full-byte probes
-in the coverage phase.
+The original coverage installation supported authentication assertions inside
+`internal/server`. That package issued the normal PAT used by two installed-CLI
+deadline probes. Keeping producer, private handoff, consumers and cleanup in one
+job avoided transferring live credentials. E2E had its own installation,
+`-count=1`, ten-minute test timeout, fresh service build, source/artifact proof,
+refusals, competing writers and cleanup. The
+[event-specific timing policy](2026-11-04-go-validation-timing.md) later disabled
+race detection for PRs while retaining it locally and on main. The former local
+stress-budget mode selected full-byte probes in coverage and then process E2E.
 
-The server guide owns
-[commands and evidence](../../../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence).
-The coverage artifact retains its existing name and profile/deadline receipts;
-the E2E artifact owns process/scenario and installation receipts. Each orchestration
-receipt records the source revision, tree and dirty state and actual package list. Their failure
-uploads retain available diagnostics. The manual npm publication workflow keeps
-its existing CLI validation responsibilities.
+Initial routing conservatively selected both jobs for CLI source and packaging.
+The [input-selection decision](2026-11-04-server-ci-input-selection.md) narrowed
+lazy command inputs and semantic manifest equality; the
+[version-only decision](2026-11-04-version-only-pr-ci.md) later skipped application
+checks for strict whole-PR version changes. Current routing and commands belong
+to the [README](../../../../README.md#ci-selection) and
+[server guide](../../../../packages/daynight-server/README.md#go-module-validation-and-ci-evidence).
+The former orchestration receipts recorded source revision/tree/dirty state,
+actual packages, installation and cleanup; failure uploads preserved available
+diagnostics. npm publication retained its own CLI verification responsibility.
 
 ## Alternatives
 
-**Keep coverage and E2E in one job.** Go already executes package tests in
-parallel, avoiding a second runner's preparation cost. It also keeps the two
-resource workloads on one runner and requires waiting for both before the
-coverage job completes. Independent jobs let their full lifetimes overlap and
-make their durations and evidence separately observable.
+**Keep coverage and E2E in one job.** This avoided a second runner's preparation
+but kept both resource workloads on one machine and waited for their full
+lifetimes. Independent jobs made cost and evidence observable separately.
 
-**Move all installed CLI validation and deadline probes to E2E.** The installed
-authentication assertions exercise production HTTP handlers and contribute to
-production coverage. Their normally issued PAT is the deadline probes' required
-input. Moving the probes alone would require a cross-job credential handoff;
-moving their producer would alter production coverage ownership. Keeping this
-chain within coverage preserves both contracts without shared live resources.
+**Move all installed CLI validation and deadline probes to E2E.** Authentication
+assertions contributed handler coverage and produced the probes' PAT. Moving
+only the consumers required cross-job credentials; moving the producer changed
+coverage ownership. The original split kept that chain together. The replacement
+module boundary deliberately separates client and server assertions instead.
 
 ## Consequences
 
-E2E executes once across the two CI jobs, and all production coverage gates
-remain intact. Both jobs need their own Web, UniAuth and CLI preparation, so
-aggregate runner work can grow even when elapsed validation time falls. Cache
-state, preparation and queue delays affect comparisons. The slower of coverage
-and E2E remains the server completion path; existing expensive production package
-tests can still dominate it. Source-bound CI observations determine the actual
-benefit; the split does not establish a guaranteed speedup or remove other test
-bottlenecks.
+The split executed process E2E once and retained production gates, but duplicated
+Web, UniAuth and CLI preparation. Aggregate work could grow while wall-clock time
+fell; cache, queue and setup effects required source-bound measurements. The
+slower job still determined server completion, and package costs were not
+serially subtractable.
 
-Future production Go code placed under `cmd/e2e_tests` fails validation rather
-than silently disappearing from coverage. It must move to its production owner
-or require reconsidering the package boundary and execution selection together.
-The split needs no general CI scheduler or broader production-test rewrite;
-other bottlenecks can be evaluated independently using the separate durations.
+That optimization did not establish the final testing ownership. The replacement
+boundary removes the process job and client coupling; this record preserves why
+the original split kept them and why it made no guaranteed speedup claim.

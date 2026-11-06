@@ -29,7 +29,6 @@ owns commands and prerequisites:
 | Workload | Repository-root entry |
 |---|---|
 | CLI high-volume rendering and full Session-v2 archive limits | `pnpm test:stress` |
-| Installed CLI production decoded-byte limits | `pnpm test:stress:budgets` |
 | Go query sampling, full archives and repeated concurrent overwrites | `pnpm server:test:stress` |
 | Web complete graph/model/geometry proofs | `pnpm web:test:stress` |
 | Production browser capacity and timing matrix | `pnpm web:acceptance:stress` |
@@ -41,13 +40,13 @@ selects those packages with race detection. Ordinary Go tests retain compact
 archive and failure checks and a deterministic two-writer rendezvous proving
 complete same-address publication and cleanup. Repeated contention remains local.
 
-Installed CLI service acceptance selects exactly two bounded deadline probes.
-The local `--stress-budgets` option keeps the server setup and strict Go gate but
-selects four real 128 MiB/256 MiB exact-limit and +1-byte probes. The separate
-`.tmp/project-task-service-evidence.json` and
-`.tmp/project-task-stress-evidence.json` receipts identify the selected suite,
-source, installation, precise scenario inventory and cleanup. Production limits
-and full-size boundary assertions are unchanged.
+The earlier installed-CLI service runner paired two bounded deadline probes with
+a local full-byte suite containing four 128 MiB/256 MiB exact-limit/+1-byte
+cases. Separate receipts identified source, installation, selected workload and
+cleanup. The [Go module boundary](2026-11-06-go-module-validation-boundary.md)
+removes that runner, its server-coupled budget command and the receipts. Client
+budget guarantees retain their CLI ownership; this decision does not make a
+removed workload an executed current local stress check.
 
 Default browser acceptance requires thirty-six native and thirty-six container
 functional scenarios (72 total), both eleven-check combined-authentication

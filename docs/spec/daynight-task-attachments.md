@@ -345,8 +345,9 @@ Go 和 Web 既有覆盖率及原生 CLI 检查持续有效；Go race 按[服务�
 凭据，凭据只写私有夹具元数据。图场景保持只读，但 `refresh-staleness` 仅允许一次已登记 fixture task/file PUT，挂起真实上传响应并跨自动读取验证状态保留；附件场景和[双语需求](daynight-web-i18n.md)的 `language-state-preservation` 仅允许精确 fixture task/file 的 PUT/DELETE；后者检查语言切换的状态保持及挂起写入的状态和次数，组件测试另以受控语言变化验证在途操作。JSDOM 不具备布局，
 不能证明隐藏元素的浏览器焦点行为。
 
-Go 的独立安装 CLI 旅程覆盖超过一页的附件列表、原始内容、拒绝及 requestId、同根
-重启和完整 task 不变，并把附件根目录实际删除纳入清理 gate。Web 完整运行复用
+附件服务端的元数据、字节存储、分页、授权、事务及资源生命周期由 Go 模块测试
+负责；CLI 请求、内容和输出处理由客户端模块负责。Go 模块验证不安装或运行 CLI。
+Web 完整运行复用
 一次安装产物，保留源码、tarball/entry 摘要、浏览器、生产镜像和进程/组回收证据。
 组合机制与证据边界见[验证设计](../design/daynight-task-attachments.md#实现验证)，
 选择依据记录在[验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。

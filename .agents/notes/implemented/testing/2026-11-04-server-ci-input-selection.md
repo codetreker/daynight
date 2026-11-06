@@ -4,14 +4,13 @@ Status: implemented
 
 ## Problem
 
-Go coverage and E2E install the CLI to exercise authentication, project and task
-operations, and deadline behavior. Selecting both jobs for every CLI source
-change makes independent worker prompts and bundled skills pay for server
-validation. A release-only version change also selects those jobs even though
-the installed version and the fixture's expected version advance together.
-Those extra runs increase PR validation work without exercising the changed
-behavior. Removing every CLI dependency would miss changes to the commands and
-shared code that server acceptance actually uses.
+Go coverage and E2E originally installed the CLI to exercise authentication,
+project/task operations and deadlines. Selecting those jobs for every CLI source
+change made independent worker prompts and bundled skills pay for server
+validation. Release-only version changes also selected them while installed and
+expected versions advanced together. Those runs added work without exercising
+the changed behavior. At that time, removing every CLI dependency would have
+missed the commands and shared code used by installed-client acceptance.
 
 ## Decision
 
@@ -23,8 +22,9 @@ select CLI validation without selecting server jobs. Each command's
 startup, then loads only the selected command's implementation. All other CLI
 source remains a conservative server input, including startup, shared code and
 project/task/authentication command code. Existing API, Session and text inputs
-retain their Web selection, and embedded Web, build, acceptance and fixture
-inputs retain their server consumers.
+retain their Web selection. Web build inputs continue to select Go for embedded
+assets; the shared installed-CLI fixture now selects CLI and Web only. Deleted
+service/deadline helper inputs no longer have a Go consumer.
 
 Modified CLI manifests are compared as parsed JSON objects from the PR's
 merge-base and explicit head, with only top-level `version` removed. Equality
@@ -38,19 +38,20 @@ partially supersedes that choice by skipping application checks for a strict
 whole-PR version-only diff. Other manifest changes retain ordinary CLI selection.
 
 This decision partially supersedes the broad CLI routing adopted for the
-[independent coverage and E2E jobs](2026-11-04-server-e2e-ci-jobs.md). The jobs
-continue to share one server selector and retain their independent fixtures,
-complete tests, coverage thresholds, deadlines and final gate. The
+[independent coverage and E2E jobs](2026-11-04-server-e2e-ci-jobs.md). The [Go module validation boundary](2026-11-06-go-module-validation-boundary.md)
+removes the former process job and client installation. The remaining selector
+still conservatively selects Go module validation for the listed CLI inputs;
+that routing no longer implies CLI execution inside the Go gate. The
 [README routing table](../../../../README.md#ci-selection) owns current path
 selection, and the [development guide](../../../../docs/development.md#ci-selection)
 owns comparison and execution details.
 
 ## Alternatives
 
-**Select server jobs for all CLI source and manifests.** Both jobs prepare the
-whole CLI package, so this avoids maintaining command ownership. It also reruns
-all server validation for runtime code that the selected acceptance commands do
-not load, bundled instruction text and release-only metadata.
+**Select server jobs for all CLI source and manifests.** At the time both jobs
+prepared the whole CLI package. The broad rule avoided maintaining command
+ownership but reran validation for unloaded runtime code, bundled instructions
+and release-only metadata.
 
 **Derive a complete TypeScript import graph.** Automatic reachability could
 track new shared dependencies without manually assigning them. The detection
@@ -59,25 +60,22 @@ would need TypeScript syntax parsing, startup and command-specific dynamic impor
 semantics, runtime resources and both revisions for deleted or moved paths. The
 existing lazy-loading boundary gives a smaller explicit rule for this problem.
 
-**Split installed-CLI acceptance into another gate.** That could separate
-cross-client changes from production Go coverage, but authentication assertions
-contribute to production coverage and produce credentials for deadline probes.
-Moving them would change validation and resource ownership. Narrow routing can
-remove the unrelated work while preserving that ownership; a future split must
-reconsider coverage and credential production together.
+**Split installed-CLI acceptance into another gate.** Authentication assertions
+then contributed production coverage and generated deadline-probe credentials.
+Moving them changed both validation and resources. Narrow routing removed
+unrelated work without changing that ownership. The later module boundary
+revisits it by assigning client and service assertions to their actual owners.
 
 ## Consequences
 
 Independent command changes retain complete CLI checks while avoiding unrelated
-Go coverage and E2E. A strict version-only PR skips application checks as owned
-by the later decision. Real server acceptance dependencies, unknown CLI source,
-deletions, renames and unclassified inputs keep conservative selection. Main pushes still select every module, and the final gate still
+Go validation. A strict version-only PR skips application checks as owned
+by the later decision. Unknown CLI source, deletions, renames and unclassified
+inputs keep conservative selection even after the Go execution boundary changes. Main pushes still select every module, and the final gate still
 rejects failed or cancelled selected jobs.
 
-The explicit command exclusions depend on implementation modules remaining lazy
-and outside the server acceptance call graph. Moving code into startup or shared
-imports, adding an eager definition dependency, or extending acceptance to an
-excluded command requires updating the selector and its behavioral tests with
-that change. Keeping routing in one dependency-free selector leaves import-graph
-analysis or a separate acceptance gate possible without changing the current
-job contracts; neither mechanism is required by these exclusions.
+The original exclusions depended on implementations staying lazy and outside
+the acceptance call graph. Eager definitions and shared imports required selector
+updates with that relationship. The remaining conservative selector is separate
+from actual module execution; routing and its tests must change together when
+its declared input ownership changes.

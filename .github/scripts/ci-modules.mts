@@ -17,9 +17,6 @@ const serverCliInputs = new Set([
   "packages/daynight/config.example.yml",
   "packages/daynight/scripts/clean-dist.ts",
   "packages/daynight/scripts/copy-resources.ts",
-  "packages/daynight/scripts/project-task-acceptance.ts",
-  "packages/daynight/scripts/project-task-budgets.ts",
-  "packages/daynight/test/fixtures/installed-operation-limits.ts",
 ]);
 const webPatches = new Set([
   "patches/@dagrejs__dagre@3.1.1.patch",
@@ -30,7 +27,11 @@ export const selectModules = (paths: readonly string[], cliManifestRequiresServe
   const selected = { cli: false, server: false, web: false };
   for (const path of paths) {
     if (sharedInputs.has(path)) return { ...allModules };
-    if (path === "packages/daynight/test/fixtures/installed-cli.ts") return { ...allModules };
+    if (path === "packages/daynight/test/fixtures/installed-cli.ts") {
+      selected.cli = true;
+      selected.web = true;
+      continue;
+    }
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
       // Command definitions load at startup; their implementations load only when selected.

@@ -409,90 +409,15 @@ jobs:
           dest: ${{ github.workspace }}/.tmp/pnpm
       - name: Install frontend build dependencies
         run: pnpm --dir ../.. install --frozen-lockfile --store-dir "$GITHUB_WORKSPACE/.tmp/pnpm-store"
-      - name: Validate server coverage and installed project/task CLI behavior
+      - name: Validate Go server build, vet, tests and coverage
         id: server-validation
-        run: bash scripts/check.sh --coverage
-      - name: Upload server acceptance and coverage evidence
+        run: bash scripts/check.sh
+      - name: Upload Go server coverage evidence
         if: ${{ always() && steps.server-validation.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: daynight-server-acceptance
-          path: |
-            packages/daynight-server/.tmp/coverage.out
-            .tmp/project-task-service-evidence.json
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 30
-
-  verify-server-e2e:
-    name: verify (Go server E2E)
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.server == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      GOCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-cache
-      GOMODCACHE: ${{ github.workspace }}/packages/daynight-server/.tmp/go-mod
-      GOPATH: ${{ github.workspace }}/packages/daynight-server/.tmp/go
-      GOBIN: ${{ github.workspace }}/packages/daynight-server/.tmp/bin
-      TMPDIR: ${{ github.workspace }}/packages/daynight-server/.tmp/tmp
-      XDG_CONFIG_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/config
-      XDG_CACHE_HOME: ${{ github.workspace }}/packages/daynight-server/.tmp/cache
-      GOENV: "off"
-      GOTOOLCHAIN: go1.27.2
-      DAYNIGHT_TEST_RACE: ${{ github.event_name != 'pull_request' }}
-      DAYNIGHT_TEST_DATABASE_URL: postgres://daynight:daynight-test@127.0.0.1:5432/daynight?sslmode=disable
-    services:
-      postgres:
-        image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
-        env:
-          POSTGRES_USER: daynight
-          POSTGRES_PASSWORD: daynight-test
-          POSTGRES_DB: daynight
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U daynight -d daynight"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    defaults:
-      run:
-        working-directory: packages/daynight-server
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Prepare module-local tool directories
-        run: mkdir -p .tmp/go-cache .tmp/go-mod .tmp/go .tmp/bin .tmp/tmp .tmp/config .tmp/cache
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: 1.27.2
-          cache: true
-          cache-dependency-path: packages/daynight-server/go.sum
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          package-manager-cache: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 11.28.6
-          run_install: false
-          dest: ${{ github.workspace }}/.tmp/pnpm
-      - name: Install frontend build dependencies
-        run: pnpm --dir ../.. install --frozen-lockfile --store-dir "$GITHUB_WORKSPACE/.tmp/pnpm-store"
-      - name: Validate server E2E and installed project/task CLI behavior
-        id: server-validation
-        run: bash scripts/check.sh --e2e
-      - name: Upload server E2E acceptance evidence
-        if: ${{ always() && steps.server-validation.outcome != 'skipped' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daynight-server-e2e-acceptance
-          path: |
-            packages/daynight-server/.tmp/acceptance-evidence.json
-            .tmp/project-task-e2e-evidence.json
+          name: daynight-server-coverage
+          path: packages/daynight-server/.tmp/coverage.out
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
@@ -613,7 +538,7 @@ jobs:
           retention-days: 30
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-macos, verify-runtime, verify-completion, verify-server, verify-server-e2e, verify-web-quality, verify-web]
+    needs: [detect-changes, verify, verify-installed, verify-macos, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:

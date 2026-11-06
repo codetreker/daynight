@@ -35,14 +35,11 @@ for (const [path, expected] of [
   ["packages/daynight/config.example.yml", { ...none, cli: true, server: true }],
   ["packages/daynight/scripts/clean-dist.ts", { ...none, cli: true, server: true }],
   ["packages/daynight/scripts/copy-resources.ts", { ...none, cli: true, server: true }],
-  ["packages/daynight/scripts/project-task-acceptance.ts", { ...none, cli: true, server: true }],
-  ["packages/daynight/scripts/project-task-budgets.ts", { ...none, cli: true, server: true }],
   ["packages/daynight/scripts/check-runtime.mjs", { ...none, cli: true }],
   ["packages/daynight-web/scripts/publish-assets.mts", { ...none, server: true, web: true }],
   ["packages/daynight-web/package.json", { ...none, server: true, web: true }],
   ["packages/daynight/test/tooling/copy-resources.test.ts", { ...none, cli: true }],
-  ["packages/daynight/test/fixtures/installed-cli.ts", all],
-  ["packages/daynight/test/fixtures/installed-operation-limits.ts", { ...none, cli: true, server: true }],
+  ["packages/daynight/test/fixtures/installed-cli.ts", { ...none, cli: true, web: true }],
   ["packages/daynight-server/internal/server/tasks.go", { ...none, server: true }],
   ["packages/daynight-server/.gitignore", { ...none, server: true }],
   ["packages/daynight-web/src/App.vue", { ...none, server: true, web: true }],
@@ -100,8 +97,8 @@ test("the shared installed CLI fixture validates all of its consumers", () => {
   for (const paths of [
     ["packages/daynight/test/fixtures/installed-cli.ts"],
     ["docs/spec/daynight-task-attachments.md", "packages/daynight/test/fixtures/installed-cli.ts"],
-    ["packages/daynight-web/tests/e2e/attachments.spec.ts", "packages/daynight/test/fixtures/installed-cli.ts"],
-  ]) assert.deepEqual(selectModules(paths), all);
+  ]) assert.deepEqual(selectModules(paths), { ...none, cli: true, web: true });
+  assert.deepEqual(selectModules(["packages/daynight-web/tests/e2e/attachments.spec.ts", "packages/daynight/test/fixtures/installed-cli.ts"]), all);
 });
 
 test("root ignore rules do not change other paths' module selection", () => {

@@ -751,11 +751,10 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 
-Go 的 `installed_cli_task_attachment_workflow` 使用既有安装回执与实际服务，比较文本、
-空内容及超过 1 MiB 的二进制；覆盖多级/特殊路径、同 basename、覆盖、超过 100 条
-列表、删除和 requestId。实际进程重启复用同一存储根，核对 metadata、bytes 和完整
-任务资源。回执保存附件 path/size/SHA-256 与分页数量，所有 fixture 的清理 gate
-必须确认 `storageRootRemoved`。
+附件服务端的 metadata、bytes、授权、分页、事务与存储生命周期由 Go 模块测试
+负责，客户端路径、请求、读取和输出由 CLI 模块测试负责。Go 模块验证不再通过
+安装 CLI 编排附件旅程；历史跨层回执只对应其原始源码。产品 E2E 只承担普通附件
+两端同数据成功读写的连接证明，边界、拒绝和故障语义由责任模块验证。
 
 Web 新增 `task-attachments` 功能场景，在原生和实际生产容器上让同一次安装的 CLI
 与页面操作同一批数据；图功能场景属于常规 CI，完整原生容量/超限矩阵由显式本地压力验收保留。

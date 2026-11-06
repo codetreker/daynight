@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,11 +47,15 @@ func (logs *identityIntegrationLogs) contains(value string) bool {
 	return strings.Contains(logs.buffer.String(), value)
 }
 
+type identityHTTPRequests struct {
+	all, bearer, anonymous, authenticatedPAT, unauthorized atomic.Int64
+}
+
 type identityIntegration struct {
 	server        *httptest.Server
 	gateway       string
 	client        *uniauth.Client
-	requests      *identityCLIRequests
+	requests      *identityHTTPRequests
 	logs          *identityIntegrationLogs
 	sessionCookie string
 	callbackPath  string
@@ -86,7 +91,7 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	if err != nil {
 		t.Fatal(err)
 	}
-	requests := &identityCLIRequests{}
+	requests := &identityHTTPRequests{}
 	server.Config.Handler = httpx.RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		observed := request.URL.Path == "/api/v1/projects"
 		bearer := strings.HasPrefix(request.Header.Get("Authorization"), "Bearer ")

@@ -57,7 +57,7 @@ CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设�
 | [`api/projects.go`](../../packages/daynight-server/api/projects.go) | project、分页及含 request ID 的结构化错误 |
 | [`api/tasks.go`](../../packages/daynight-server/api/tasks.go) | task、派生字段、版本和字段可选的更新请求 |
 | [`api/task_graph.go`](../../packages/daynight-server/api/task_graph.go) | 任务链图、节点预览及 summary 响应 |
-| [`service/repository.go`](../../packages/daynight-server/internal/service/repository.go) | 服务接受通用 HTTPS、SSH、SCP 地址，保存原始地址 |
+| [`core/project/repository.go`](../../packages/daynight-server/internal/core/project/repository.go) | 服务接受通用 HTTPS、SSH、SCP 地址，保存原始地址 |
 
 现有 review 的 `remoteIdentity` 面向 GitHub 且把 owner/name 转小写，不能直接成为
 通用 project repo 比较规则。新正规化器单独拥有服务命令的 repo 身份，保持 review
@@ -757,83 +757,26 @@ fixture [`installed-cli.ts`](../../packages/daynight/test/fixtures/installed-cli
 保持，场景总墙钟预算的归属发生变化。重复私有安装采用 PNPM 支持的 POSIX executable
 symlink 偏好；独立 e2e 仍验证默认 PNPM shim，生产依赖与真实 npm 更新不变。
 
-服务路径的 Node 编排入口为
-`node packages/daynight/scripts/project-task-acceptance.ts`，由 Go 检查脚本调用；
-[`project-task-budgets.ts`](../../packages/daynight/scripts/project-task-budgets.ts)
-拥有期限与解码字节预算场景。
-完整入口先执行覆盖率阶段，再执行 E2E 阶段，`--coverage` 与 `--e2e` 可独立选择。
-两个阶段分别构建并安装 CLI，各自拥有 PostgreSQL、UniAuth 和真实 Web 构建输入。
-E2E 将自己的安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh binary、
-隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有跨进程验收的
-`TestMain` 与辅助设施，以 `go test -race=<value> -count=1 -timeout=10m ./cmd/e2e_tests`
-完整执行，`go test ./...` 也能发现它；主命令包保留直接调用内部函数的测试并
-独立管理临时资源。场景
-`installed_cli_project_task_workflow` 通过要求编号 `PT.V1`、`PT.V3`、`PT.V5`、
-`PT.V6`、`PT.V7`、`PT.V8`、`PT.V9`、`PT.V10` 与 CLI 验收对应，保留原有服务
-场景及所属 package 覆盖率。Go receipt 的 `installedCli` 保存共享 helper 的 schema、
-source、包版本、tarball/entry hash、Node 和 launcher 身份；场景记录 CLI 启停
-数量、workspace 回收、拒绝 request ID 及并发请求的 200/409 结果。混合未完成和已完成
-任务的 fixture 同时验证默认列表与 `--all` 的精确成员和顺序；JSON 数组与完整任务资源
-仅相差 `description`，其余字段逐字段相等，保留原始 PR 字符串、完整 int64 版本
-及时间戳。可读列表验证身份、状态、ready、依赖和 PR 字段，并确认省略 description、
-version 与时间戳；这些完整字段仍由详情输出验证。详情与全部状态文本列表均验证
-PR 控制字符可见转义及无原始终端控制字符输出。
+Go 服务的 `bash scripts/check.sh` 只执行 Go build、vet、模块测试和严格覆盖率，
+不再通过 CLI 所在目录的 Node 编排器构建或安装客户端。服务端认证授权、事务、
+版本裁决、边界及并发由 Go 模块测试负责；配置、请求构造、结果校验、输出、期限、
+未知结果与不重放由 CLI 模块测试负责。真实 Web 构建资源仍作为 Go embed 的编译输入。
+当前命令和 profile 归属由[服务验证说明](../../packages/daynight-server/README.md#go-module-validation-and-ci-evidence)
+拥有；职责选择见[Go 验证边界](../../.agents/notes/implemented/testing/2026-11-06-go-module-validation-boundary.md)。
 
-附件 `installed_cli_task_attachment_workflow` 复用同一服务安装及进程 fixture，覆盖
-原始字节、多页路径列表、拒绝、同根重启及完整 task 不变；清理 gate 同时要求存储
-根实际消失。共享安装 fixture 也供完整 Web run 使用，在原生与容器页面上复用一次
-安装来操作同组真实数据。机制与证据字段见[附件验证设计](daynight-task-attachments.md#实现验证)，
-其选择依据记录在
-[附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
-原有 PT 场景与两个常规期限探针保持；四个完整字节预算探针由显式本地压力入口拥有。
+CLI 的生产默认值仍为单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和累计
+响应 256 MiB。期限行为需要覆盖响应开始后停顿以及持续有效分页耗尽整体期限；
+测试侧可注入合理的短期限，但必须独立断言生产默认值。字节边界使用合法 JSON，
+精确上限成功、增加 1 字节拒绝，失败不输出局部成功结果。正常规模的边界属于
+客户端单测，完整规模压力工作负载只通过独立本地验证运行。这些行为要求不依赖
+Go 签发 PAT 或跨语言凭据文件。
 
-覆盖率阶段执行固定版本 go-cov，以 `--exclude-packages` 和完整 module import path
-排除纯测试包 `cmd/e2e_tests`，该包只在 E2E 阶段执行一次。固定工具按子串匹配，
-编排层先用 `go list ./...` 拒绝同名扩展或嵌套包，再递归拒绝 E2E 目录中的非
-`_test.go` Go 文件；该例外不能隐去生产语句。生产包及函数的覆盖率门槛、critical
-检查和原始 coverage profile 保持完整。覆盖率安装供 `internal/server` 鉴权断言
-使用，该包签发正常 PAT 并通过私有文件交给同阶段预算探针。E2E 不生产或消费此
-交接文件。strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行
-所选公开安装 CLI 预算套件。常规 `scripts/check.sh` 和 CI 选择 `deadlines` 的两个期限场景：
-持续推进 cursor 的总期限和响应开始后停顿的单次期限。
-显式本地 `scripts/check.sh --stress-budgets` 选择 `stress-budgets` 的四个 gzip 解码
-字节边界场景，并在覆盖率阶段后继续完整 E2E；CLI 包的 `test:stress:budgets` 和
-仓库根同名命令转发该入口。该选项与
-原始探针入口在非空 `CI` 环境下于压力准备之前拒绝。两个期限场景使用
-测试侧 Node.js `registerHooks` preload，只包装安装产物的 `api/operation.js` 导出，
-复用原有 `createOperation` 实现并注入 3 秒总期限和 1 秒单次期限。preload 先断言
-安装产物的生产默认值仍为 300,000/30,000 ms 和 128/256 MiB；测试不改写安装文件、
-生产源码、环境配置或 CLI 参数。preload 以编码后的 file URL 传给 Node `--import`，
-保留 Windows 驱动器字母、空格和 Unicode 路径的模块解析；原生模块错误类型及其
-身份保持一致。单响应精确
-128 MiB 和分页累计精确 256 MiB 均必须成功，各增加 1 字节必须拒绝。合法 JSON
-以空白补齐字节数；单响应成功结果为一个小型 project，累计成功结果为三个唯一
-project，各页均满足列表协议，失败 stdout 必须为空。
-累计场景的三页分别为 96、96、64 MiB，超限场景只在最后一页增加 1 字节，
-每页均低于单响应上限。常规套件的两种期限场景并行运行，本地压力套件的四个
-字节边界场景依次执行。四个字节场景使用完整生产默认值，不加载期限 mock；两个
-期限场景仍验证实际等待、正确错误分类、持续分页、空 stdout 和清理。
-CI 将覆盖率与 E2E 放在两个并行的 20 分钟作业中，二者使用同一 server selector
-并由最终 `checks` 汇总。覆盖率作业保留 build/vet 与严格 coverage gate，
-E2E 作业保留真实进程、安装产物溯源及全部场景清理。race instrumentation 在 PR CI 关闭、
-main CI 和本地默认开启，两个阶段及 E2E 服务 binary 使用一致模式，具体选择与回执由
-[服务验证说明](../../packages/daynight-server/README.md#race-instrumentation)拥有。分工见
-[独立作业决策](../../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)。
-根目录 `.tmp/project-task-service-evidence.json` 拥有常规期限证据，
-`.tmp/project-task-stress-evidence.json` 拥有本地完整字节证据；schema 1 中的 `suite`
-和精确场景名集合验证所选工作负载。回执记录所属阶段的安装身份、Go 命令/覆盖率
-结果、解码与传输字节、探针结果和进程/socket/目录清理。独立 E2E 编排回执为
-`.tmp/project-task-e2e-evidence.json`，记录自己的安装、Go 命令与安装树移除，探针集合
-为空；完整进程场景继续写入服务模块 `.tmp/acceptance-evidence.json`。各阶段编排
-回执还保存源码 revision/tree/dirty 与实际 package 清单。coverage artifact 保留
-`daynight-server-acceptance` 名称，E2E artifact 为 `daynight-server-e2e-acceptance`，
-均在失败路径上传已产生的诊断。每个预算场景的 `deadlines`
-记录实际 `totalMs`、`requestMs` 与 `mocked`，避免将短期限行为证据误解为实际等待了
-生产期限。本地 `c19b064` dirty receipt 与
-[PR #55](https://github.com/codetreker/daynight/pull/55) 的干净托管 receipt 保留真实
-30 秒/5 分钟预算的历史证据；它们不代表当前源码的运行结果。逐次结果随对应 PR 与 CI 保存；
-[仓库验证说明](../../README.md#validation)拥有 receipt 解释。
+CLI 与真实服务的正常同数据主流程应有独立产品 E2E，边界、冲突、竞争、
+丢响应和异常恢复不归产品 E2E。既有 Web 验收仍拥有自己的安装产物、原生/容器
+页面、同数据附件交互和清理；本次 Go 入口不宣称它们成为 Go 模块证明。
+原 [PR #55](https://github.com/codetreker/daynight/pull/55) 的真实服务与默认预算
+回执保留其历史源码身份和运行范围，不能当作当前源码的执行结果。
 
-源码、包元数据或构建输入交付时按既有版本策略提升 CLI 包版本，运行
+普通变更保持 CLI 包版本不变，发布使用独立版本流程；交付时运行
 `pnpm typecheck`、`pnpm test`、`pnpm build` 及相关安装验收。文档变更校验链接、
 归属、状态说明和 diff；这些静态检查不构成运行时验收证据。

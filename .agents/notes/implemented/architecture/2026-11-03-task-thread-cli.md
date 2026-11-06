@@ -77,12 +77,12 @@ Clients make explicit continuation decisions and retain their own read position.
 Canonical response identity checks add no current-user request, and explicit
 project selection avoids unrelated resource preflight calls.
 
-The text proof constrains future wrapper and label growth. The
-[installed Thread scenario](../../../../packages/daynight-server/cmd/e2e_tests/acceptance_thread_cli_test.go)
-owns service parity in the test-only `cmd/e2e_tests` package, sharing its process,
-authentication, source-bound artifact and cleanup evidence harness. Source-parser,
-service-parity and rendering tests must evolve together when fields or encoding
-change. Stronger submission identity, mutable messages or automatic dispatch
+The text proof constrains future wrapper and label growth. The historical
+[installed Thread scenario](https://github.com/codetreker/daynight/blob/32e218a1014c2824c4a5fb0e9f345c66707b294b/packages/daynight-server/cmd/e2e_tests/acceptance_thread_cli_test.go)
+provided real-service parity through the old Go process/authentication/artifact
+fixture. The [Go module boundary](../testing/2026-11-06-go-module-validation-boundary.md)
+removes that cross-product package. Parser, rendering and service semantics keep
+their respective module responsibilities when fields or encoding change. Stronger submission identity, mutable messages or automatic dispatch
 would require new requirements and API contracts; no dormant mechanisms are
 included for those capabilities.
 
