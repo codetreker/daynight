@@ -29,6 +29,9 @@ type BotWorkerDefaults struct {
 }
 
 func ResolveBotDefaults(input model.BotDefaultsInput, overrides model.BotOverrides) (BotDefaults, error) {
+	if err := NormalizeOverrides(overrides); err != nil {
+		return BotDefaults{}, err
+	}
 	result := BotDefaults{ObservedAt: input.ObservedAt, Workers: make([]BotWorkerDefaults, 0, len(input.Workers))}
 	for _, worker := range input.Workers {
 		result.Workers = append(result.Workers, resolveBotWorker(worker, input.ObservedAt, input.WorkerPreferences[worker.WorkerID], overrides))
@@ -107,8 +110,14 @@ func resolveBotWorker(worker model.WorkerSnapshot, now time.Time, preference mod
 			result.Reason = &reason
 			return result
 		}
-		// Model and arguments always come from this Worker's selected provider.
-		result.Configuration = &model.BotConfiguration{WorkerID: worker.WorkerID, Cwd: cwd, Provider: provider, Model: candidate.Model, Args: append([]string{}, candidate.Args...)}
+		if host.CreationConfigurationVersion != 1 && (overrides.Model != nil || overrides.ReasoningEffort != nil) {
+			reason := "unsupported_native_selection"
+			result.Reason = &reason
+			return result
+		}
+		// Freeze the selected Worker's effective configuration and field sources.
+		configuration := nativeConfiguration(worker, candidate, preference, overrides, model.BotConfiguration{WorkerID: worker.WorkerID, Cwd: cwd, Provider: provider, Model: candidate.Model, Args: append([]string{}, candidate.Args...)})
+		result.Configuration = &configuration
 		return result
 	}
 	reason := "provider_unavailable"
@@ -128,7 +137,7 @@ func resolveBotCreation(ctx context.Context, tx store.BotWriteDAO, principal mod
 	if resolved.Configuration == nil {
 		return model.BotConfiguration{}, botConflict(fmt.Sprintf("Bot configuration is unavailable: %s. Read current defaults before submitting a new request.", *resolved.Reason))
 	}
-	return *resolved.Configuration, nil
+	return ApplyCreationResolution(*resolved.Configuration, defaults.WorkerPreferences[resolved.Configuration.WorkerID].Native[resolved.Configuration.Provider], input.Resolution)
 }
 
 // Defaults reads current owner-scoped choices without recording a preference.
@@ -141,4 +150,26 @@ func Defaults(ctx context.Context, snapshot store.SnapshotScope, principal model
 		return BotDefaults{}, err
 	}
 	return ResolveBotDefaults(input, model.BotOverrides{WorkerID: workerID})
+}
+
+// WorkerNativeDefaults removes only native history, preserving the resolved
+// Worker, directory, Provider and current effective configuration sources.
+func WorkerNativeDefaults(input model.BotDefaultsInput, overrides model.BotOverrides, workerID string) (model.BotConfiguration, error) {
+	preferences := make(map[string]model.BotWorkerPreference, len(input.WorkerPreferences))
+	for id, value := range input.WorkerPreferences {
+		preferences[id] = value
+	}
+	preference := preferences[workerID]
+	preference.Native = nil
+	preferences[workerID] = preference
+	input.WorkerPreferences = preferences
+	overrides.WorkerID = &workerID
+	result, err := ResolveBotDefaults(input, overrides)
+	if err != nil {
+		return model.BotConfiguration{}, err
+	}
+	if result.Configuration == nil {
+		return model.BotConfiguration{}, botConflict("Worker native defaults are unavailable.")
+	}
+	return *result.Configuration, nil
 }

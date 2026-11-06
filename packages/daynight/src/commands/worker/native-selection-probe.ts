@@ -20,8 +20,8 @@ import { copilotExecutable } from "../controller/providers/copilot-runtime.js";
 
 /** Runs only inside the owned probe supervisor; no user input or persistent session is created. */
 const inspectCapabilities = async (native: WorkerCloudNative, mode: "web" | "herdr"): Promise<NativeModelObservation> => {
-  const normalized = normalizeWorkerNative(native, mode), effort = normalized.report.reasoningEffort.value;
-  const webArguments = mode === "web" ? parseProviderArguments(native.agent, normalized.native.args) : undefined;
+  const normalized = normalizeWorkerNative(native, mode, {}, true, true), effort = normalized.report.reasoningEffort.value;
+  const webArguments = mode === "web" ? parseProviderArguments(native.agent, normalized.native.args, true) : undefined;
   const requested = { model: normalized.native.model, ...(effort === null ? {} : { effort }) };
   let observation: NativeModelObservation;
   if (native.agent === "codex") {

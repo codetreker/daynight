@@ -26,7 +26,7 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		t.Fatalf("versions: %d, %v", count, err)
 	}
 	if err := database.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype = 'f'
-	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'private_upload_chunks'::regclass)
+	 AND conrelid NOT IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'private_upload_chunks'::regclass)
 	 AND NOT (conrelid='task_sessions'::regclass AND conname='session_bot_owner')`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
 		t.Fatalf("legacy tables gained foreign keys: %d, %v", foreignKeys, err)
 	}
@@ -42,6 +42,8 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		"bot_configuration_preferences": {
 			"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true,
 		},
+		"bot_model_preferences":  {"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true},
+		"bot_effort_preferences": {"FOREIGN KEY (user_id, worker_id) REFERENCES workers(user_id, worker_id)": true},
 		"task_sessions": {
 			"FOREIGN KEY (bot_id, owner_user_id) REFERENCES bots(id, owner_user_id)": true,
 		},
@@ -50,7 +52,7 @@ func TestMigrationsEmptyRepeatAndConstraints(t *testing.T) {
 		},
 	}
 	rows, err := database.Pool.Query(ctx, `SELECT conrelid::regclass::text,pg_get_constraintdef(oid) FROM pg_constraint
- WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass) AND contype='f'`)
+ WHERE conrelid IN ('bots'::regclass,'bot_worker_preferences'::regclass,'bot_configuration_preferences'::regclass,'bot_model_preferences'::regclass,'bot_effort_preferences'::regclass,'task_sessions'::regclass,'private_upload_chunks'::regclass) AND contype='f'`)
 	if err != nil {
 		t.Fatal(err)
 	}

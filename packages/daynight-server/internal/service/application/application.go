@@ -51,6 +51,7 @@ type Application struct {
 
 func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration) *Application {
 	engine := sessioncore.NewEngine(files)
+	workerReadOnly := worker.NewReadOnly(database)
 	return &Application{
 		Identity:       identity.New(database, client, callbackURL),
 		OAuth:          oauth.NewAuthenticator(database),
@@ -59,8 +60,8 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 		Projects:       project.NewProjects(database),
 		Teams:          team.NewTeams(database),
 		Workers:        worker.NewWorkers(database),
-		WorkerReadOnly: worker.NewReadOnly(database),
-		Bots:           bot.New(database),
+		WorkerReadOnly: workerReadOnly,
+		Bots:           bot.NewWithNativeDiscovery(database, workerReadOnly),
 		BotDeletions:   bot.NewDeletions(database, files, engine),
 		Tasks:          task.NewTasks(database),
 		TaskSearch:     database,

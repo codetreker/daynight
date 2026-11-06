@@ -1493,8 +1493,8 @@ daynight bot show <bot-id> --json
 daynight bot delete <bot-id> --if-version <observed-version> --json
 ```
 
-Creation needs only `--name`. Optional `--worker`, `--cwd` and `--agent` preserve
-explicit choices; the service resolves and freezes omitted settings. The
+Creation needs only `--name`. Optional `--worker`, `--cwd`, `--agent`, `--model` and
+`--reasoning-effort` preserve explicit choices; the service resolves and freezes omitted settings. The
 specified directory belongs to the target Worker, may be outside a repository,
 and must be an absolute path for that machine. The CLI does not create it or
 substitute the local working directory. An active response reports the actual
@@ -1503,6 +1503,15 @@ or ready assistant. An existing `ready` result is a startup observation, not a
 promise that its Worker is currently online. Replaying the original creation
 request after deletion returns the minimal deletion responsibility and its actual
 cleanup stages, without recreating the definition or claiming startup.
+
+Model and reasoning effort choices require a Worker that advertises creation
+configuration version 1. Use `--worker` to bind choices made from a machine-specific preview. Without it,
+the service selects and freezes the actual Worker during creation.
+The service validates the selected model and effort against that Worker's native
+capabilities. Unsupported explicit choices fail; stale successful preferences
+fall back to valid defaults. Successful first startup remembers only explicit
+fields, with separate creation-order watermarks. Existing assistants and native
+session model changes do not update these defaults.
 
 Creation and deletion accept `--request-id <uuid>`. When omitted, the CLI generates
 the UUID before sending the write. For creation it is the Bot ID; for deletion

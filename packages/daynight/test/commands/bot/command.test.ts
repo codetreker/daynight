@@ -43,6 +43,30 @@ const fixture = async (respond: (url: URL, init: RequestInit) => Response | Prom
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "Daynight-User-ID": id } });
 
 describe("public Bot commands", () => {
+  it.each([{}, { model: "native-model" }, { reasoningEffort: "none" }, { model: "native-model", reasoningEffort: "none" }])("preserves explicit native choices %j through the creation receipt", async (native) => {
+    const overrides = { workerId, ...native };
+    const config = { ...bot.resolvedConfiguration, model: native.model ?? null, reasoningEffort: native.reasoningEffort ?? null, selection: { schemaVersion: 1, modelSource: native.model ? "explicit" : "native", reasoningEffortSource: native.reasoningEffort ? "explicit" : "native" } };
+    const { run, requests } = await fixture(() => json({ ...bot, requestedOverrides: overrides, resolvedConfiguration: config }));
+    const result = await run(["create", "--name", "助手", "--worker", workerId, "--request-id", id, "--json", ...(native.model ? ["--model", native.model] : []), ...(native.reasoningEffort ? ["--reasoning-effort", native.reasoningEffort] : [])]);
+    expect(result.exit).toBe(0);
+    expect(JSON.parse(requests[0]!.init.body as string)).toEqual({ id, name: "助手", overrides });
+    expect(JSON.parse(result.out).resolvedConfiguration).toEqual(config);
+  });
+  it.each([["--model", ""], ["--model", "x".repeat(257)], ["--reasoning-effort", "x".repeat(65)], ["--reasoning-effort", "high\n"]])("rejects invalid native choice %j without HTTP", async (flag, value) => {
+    const { run, requests } = await fixture(() => json(bot));
+    expect((await run(["create", "--name", "助手", flag, value])).exit).toBe(2);
+    expect(requests).toHaveLength(0);
+  });
+  it.each(["missing", "different", "source"])("retains the original identity after a %s native selection receipt without replay", async failure => {
+    const overrides = { workerId, model: "chosen", reasoningEffort: "none" };
+    const config = { ...bot.resolvedConfiguration, model: "chosen", reasoningEffort: "none", selection: { schemaVersion: 1, modelSource: failure === "source" ? "cloud" : "explicit", reasoningEffortSource: "explicit" } };
+    const response = { ...bot, requestedOverrides: failure === "missing" ? { workerId } : failure === "different" ? { ...overrides, model: "other" } : overrides, resolvedConfiguration: config };
+    const { run, requests } = await fixture(() => json(response));
+    const result = await run(["create", "--name", "助手", "--worker", workerId, "--model", "chosen", "--reasoning-effort", "none", "--request-id", id, "--json"]);
+    expect(result.exit).toBe(1);
+    expect(JSON.parse(result.err).error).toMatchObject({ botId: id, outcomeUnconfirmed: true });
+    expect(requests).toHaveLength(1);
+  });
   it("creates with only a name and a pre-generated identity, preserving pending and exact decimal strings", async () => {
     const { run, requests } = await fixture((_url, init) => json({ ...bot, id: JSON.parse(init.body as string).id }));
     const result = await run(["create", "--name", "助手", "--json"]);

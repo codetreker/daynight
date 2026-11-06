@@ -75,6 +75,11 @@ describe("remote worker observed telemetry", () => {
     expect(output).toContain("Phase: paused");
     expect(output).toContain("Agent: claude");
   });
+  it("preserves the versioned creation capability and rejects unsupported versions", () => {
+    const withHost = (assistantHost: unknown) => ({ ...complete, worker: { ...complete.worker, telemetry: { ...complete.worker.telemetry, assistantHost } } });
+    expect(parseWorkerDetail(withHost({ ...host, creationConfigurationVersion: 1 }), workerId).worker.telemetry.assistantHost).toEqual({ ...host, creationConfigurationVersion: 1 });
+    for (const creationConfigurationVersion of [null, 0, 2, "1"]) expect(() => parseWorkerDetail(withHost({ ...host, creationConfigurationVersion }), workerId)).toThrow();
+  });
   it("marks an assistant report from the future stale", () => {
     const parsed = parseWorkerDetail({ ...complete, worker: { ...complete.worker, telemetry: { ...complete.worker.telemetry, assistantHost: { ...host, observedAt: "2026-11-04T10:00:01Z" } } } }, workerId);
     expect(renderWorkerDetail(parsed)).toContain("Assistant hosting: protocol 1; stale;");

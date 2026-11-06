@@ -233,6 +233,7 @@ export type WorkerAssistantProvider = {
 };
 export type WorkerAssistantHost = {
   readonly protocolVersion: 1;
+  readonly creationConfigurationVersion?: 1;
   readonly observedAt: string;
   readonly defaultCwd: string;
   readonly defaultProvider: WorkerAgent;

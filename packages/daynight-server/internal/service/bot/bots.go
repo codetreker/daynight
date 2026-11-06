@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
@@ -13,7 +14,10 @@ type botStore interface {
 	store.SnapshotReader
 	store.BotWriter
 }
-type Bots struct{ store botStore }
+type Bots struct {
+	store  botStore
+	models modelRequester
+}
 
 func New(database botStore) *Bots { return &Bots{store: database} }
 
@@ -30,6 +34,9 @@ func (s *Bots) create(ctx context.Context, principal model.Principal, input botc
 	input, fingerprint, err := botcore.NormalizeBotRequest(input)
 	if err != nil {
 		return model.Bot{}, err
+	}
+	if resolve {
+		input.Resolution, input.ResolutionError = s.prepareCreation(ctx, principal, input)
 	}
 	var result model.Bot
 	completion, err := s.store.WriteBot(ctx, func(scope store.BotScope) error {
@@ -94,24 +101,58 @@ func (s *Bots) list(ctx context.Context, principal model.Principal, workerID *st
 	return botcore.ListResult(principal, workerID, records)
 }
 func (s *Bots) Defaults(ctx context.Context, principal model.Principal, workerID *string) (botcore.BotDefaults, error) {
+	return s.DefaultsFor(ctx, principal, model.BotOverrides{WorkerID: workerID})
+}
+func (s *Bots) DefaultsFor(ctx context.Context, principal model.Principal, overrides model.BotOverrides) (botcore.BotDefaults, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return botcore.BotDefaults{}, err
 	}
-	if workerID != nil {
-		id, err := model.CanonicalID(*workerID)
+	if overrides.WorkerID != nil {
+		id, err := model.CanonicalID(*overrides.WorkerID)
 		if err != nil {
 			return botcore.BotDefaults{}, err
 		}
-		workerID = &id
+		overrides.WorkerID = &id
 	}
-	var result botcore.BotDefaults
+	if err := botcore.NormalizeOverrides(overrides); err != nil {
+		return botcore.BotDefaults{}, err
+	}
+	var defaults model.BotDefaultsInput
 	err := s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
+		if _, err := scope.CredentialDAO().Credential(ctx, principal); err != nil {
+			if errors.Is(err, model.ErrNotFound) {
+				return model.Unauthenticated(err)
+			}
+			return err
+		}
 		var err error
-		result, err = botcore.Defaults(ctx, scope, principal, workerID)
+		defaults, err = scope.BotDAO().BotDefaults(ctx, principal.UserID)
 		return err
 	})
 	if err != nil {
 		return botcore.BotDefaults{}, botcore.ResultError("defaults", err)
+	}
+	result, err := botcore.ResolveBotDefaults(defaults, overrides)
+	if err != nil || result.Configuration == nil {
+		return result, err
+	}
+	base := *result.Configuration
+	preference := defaults.WorkerPreferences[base.WorkerID].Native[base.Provider]
+	if botcore.RequiresNativeDiscovery(base) || base.Selection != nil && len(preference.Efforts) > 0 {
+		baseline, err := botcore.WorkerNativeDefaults(defaults, overrides, base.WorkerID)
+		if err != nil {
+			return botcore.BotDefaults{}, err
+		}
+		final, err := s.resolveNative(ctx, principal, base, overrides, preference, baseline)
+		if err != nil {
+			return botcore.BotDefaults{}, err
+		}
+		result.Configuration = &final
+		for index := range result.Workers {
+			if result.Workers[index].WorkerID == base.WorkerID {
+				result.Workers[index].Configuration = &final
+			}
+		}
 	}
 	return result, nil
 }
