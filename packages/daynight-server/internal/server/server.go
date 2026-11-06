@@ -144,12 +144,15 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error {
 			return mcphttp.RegisterInvitationTools(entry, app.Identity, app.Teams, app.Memberships, origin)
 		},
+		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks) },
 	)
 }
 
-func registerMCPAdapters(projects, invitations func() error) error {
-	if err := projects(); err != nil {
-		return err
+func registerMCPAdapters(adapters ...func() error) error {
+	for _, register := range adapters {
+		if err := register(); err != nil {
+			return err
+		}
 	}
-	return invitations()
+	return nil
 }
