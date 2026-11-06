@@ -31,6 +31,19 @@
 .bot-conversation-starters button { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 44px; padding: 13px 0; border: 0; border-bottom: 1px solid #e5e8ee; background: transparent; color: #535d72; font: inherit; font-size: 13px; line-height: 1.6; text-align: start; cursor: pointer; transition: color 150ms; }
 .bot-conversation-starters button:hover { color: #5555b6; }
 .bot-conversation-starters button:focus-visible { outline: 2px solid #6262ba; outline-offset: 3px; border-radius: 3px; }
+
+.bot-session-pane .session-presentation-assistant .session-composer { padding: 12px 36px max(20px, env(safe-area-inset-bottom)); background: #fdfdfe; }
+.bot-session-pane .session-presentation-assistant .session-composer > * { width: 100%; max-width: 760px; margin-inline: auto; }
+.bot-session-pane .session-presentation-assistant .session-composer-surface { padding: 10px 12px 12px; border-color: #dcdfe9; border-radius: 16px; background: #fefeff; transition: border-color 150ms; }
+.bot-session-pane .session-presentation-assistant .session-composer-surface:focus-within { border-color: #6262ba; box-shadow: 0 0 0 1px #6262ba; }
+.bot-session-pane .session-presentation-assistant .session-composer textarea { min-height: 68px; max-height: 180px; padding: 6px 4px; color: #303644; font-size: 16px; line-height: 1.8; }
+.bot-session-pane .session-presentation-assistant .session-composer textarea::placeholder { color: #737b8b; }
+.bot-session-pane .session-presentation-assistant .session-composer-footer { margin-top: 6px; }
+.bot-session-pane .session-presentation-assistant .session-control-trigger,
+.bot-session-pane .session-presentation-assistant .session-interrupt,
+.bot-session-pane .session-presentation-assistant .session-actions .button { min-height: 36px; border-radius: 8px; }
+.bot-session-pane .session-presentation-assistant .session-command-trigger { min-width: 36px; }
+.bot-session-pane .session-presentation-assistant .session-composer-surface button:focus-visible { outline-color: #6262ba; }
 @container bot-reading (max-width: 600px) {
   .bot-session-pane .session-presentation-assistant .session-timeline { padding: 24px 18px 18px; }
   .bot-session-pane .session-presentation-assistant .session-message,
@@ -38,5 +51,23 @@
   .bot-session-pane .session-presentation-assistant .session-message.user_message { padding: 11px 15px; }
   .bot-conversation-empty { padding: 35px 27px; }
   .bot-conversation-empty h3 { font-size: 25px; }
+  .bot-session-pane .session-presentation-assistant .session-composer { padding: 10px 18px max(12px, env(safe-area-inset-bottom)); }
+  .bot-session-pane .session-presentation-assistant .session-composer-surface { padding: 8px 10px 10px; }
+  .bot-session-pane .session-presentation-assistant .session-composer textarea { min-height: 56px; max-height: 120px; }
+  .bot-session-pane .session-presentation-assistant .session-control-trigger,
+  .bot-session-pane .session-presentation-assistant .session-interrupt,
+  .bot-session-pane .session-presentation-assistant .session-actions .button { min-height: 44px; }
+  .bot-session-pane .session-presentation-assistant .session-command-trigger { min-width: 44px; }
+  .bot-session-pane .session-presentation-assistant .session-controls-panel :is(button, select),
+  .bot-session-pane .session-presentation-assistant .session-command-menu button { min-height: 44px; }
 }
-@media (prefers-reduced-motion: reduce) { .bot-conversation-starters button { transition: none; } }
+@media (max-height: 500px) {
+  .bot-session-pane .session-presentation-assistant .session-composer { padding-block: 6px; }
+  .bot-session-pane .session-presentation-assistant .session-composer-surface { padding-block: 6px; }
+  .bot-session-pane .session-presentation-assistant .session-composer textarea { min-height: 44px; max-height: 72px; }
+  .bot-session-pane .session-presentation-assistant .session-composer-footer { margin-top: 4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bot-conversation-starters button,
+  .bot-session-pane .session-presentation-assistant .session-composer-surface { transition: none; }
+}
