@@ -540,7 +540,8 @@ HTTP 测试验证路由、DTO、错误映射、project 范围查找、分页筛�
 覆盖率不替代并发、回滚和调用方行为断言。PR 按[仓库 CI 路由](../../README.md#ci-selection)
 选择受影响模块，main push 执行全量应用检查。最终 `checks` 只接受所有前置 job 的
 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job 为 `skipped`。
-Go、web、CLI 和 shell completion 各自的检查内容及门槛保持。
+Go、web 和 CLI 按选中模块执行各自的检查与门槛；真实 shell 补全验收由本地命令执行，
+不属于 CI 门禁。
 统一验证入口为模块内的 `bash scripts/check.sh`，要求显式设置
 `DAYNIGHT_TEST_DATABASE_URL`，依次完成覆盖率与 E2E 两个阶段。干净 checkout 先从
 根目录 frozen 安装 Node 24/pnpm 11.28.6 依赖；`--coverage` 和 `--e2e` 可分别

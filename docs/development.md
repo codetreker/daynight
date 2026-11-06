@@ -230,7 +230,7 @@ and removes private trees before publishing successful cleanup receipts. The
 [hosted-runner and preparation decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
 records the platform, linking and lifecycle rationale.
 
-Shell completion has a separate real-shell acceptance command. It requires
+Shell completion has a separate local real-shell acceptance command. It requires
 Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
 isolated shell executables from the repository root:
 
@@ -257,10 +257,11 @@ Tab insertion in all three shells. It also installs setup into isolated startup
 files and checks real login and interactive shell loading, repeated installation
 and completion registration. It uses task-local fixtures, with no user
 configuration, review credentials or installed CLI changes.
-A dedicated Ubuntu 24.04 CI job runs this suite separately from the native CLI
-matrix; its result belongs to the tested revision. The
-[completion design](../docs/design/daynight-completion.md) owns its coverage and
-loading guarantees.
+This suite runs locally and is outside CI. Its receipt belongs to the tested
+revision and execution environment. The
+[completion design](design/daynight-completion.md) owns its coverage and loading
+guarantees; the [CI scope decision](../.agents/notes/implemented/testing/2026-11-06-local-shell-completion-acceptance.md)
+records the validation trade-off.
 
 Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
@@ -898,10 +899,10 @@ entrypoints and are excluded from routine CI selection. The Go coverage and E2E
 jobs each build real Web assets and install the CLI; each Web browser shard
 builds and exercises its own Go service and production deployment. Both server jobs use the
 same server selector and prepare independent PostgreSQL and UniAuth resources.
-The same Web selector enables quality and both browser matrix entries; all are required by the final gate. The Ubuntu shell-completion and Web
-browser jobs select the
-official HTTPS Ubuntu archive and security services before package preparation.
-Their shared command changes only the runner's referenced mirror list; signed
+The same Web selector enables quality and both browser matrix entries; all are
+required by the final gate. The Ubuntu Web browser jobs select the official HTTPS
+Ubuntu archive and security services before package preparation. Their shared
+command changes only the runner's referenced mirror list; signed
 source stanzas and package indices remain intact. An unexpected source layout
 fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/2026-10-22-ubuntu-package-mirrors.md)
 records the provisioning failure and the retained acceptance limits.

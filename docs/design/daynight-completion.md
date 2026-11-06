@@ -303,7 +303,9 @@ Task 场景
 Bash 4.2 是明确下限，需要真实 4.2 执行验证；现代 Bash 和 zsh 也必须有真实证据。
 Linux 准备脚本在仓库 `.tmp/` 中校验固定 SHA-256 的 GNU Bash 4.2 源码并构建所需
 程序；zsh 使用现有程序或仅下载、解包发行版软件包。该脚本不做系统安装，输出环境
-文件供本地和独立 CI 作业使用同一验收入口。
+文件供本地执行 `pnpm completion:acceptance` 使用。真实 shell 验收不属于 CI 门禁；
+[本地补全验收决策](../../.agents/notes/implemented/testing/2026-11-06-local-shell-completion-acceptance.md)
+记录其验证范围与取舍。
 
 解包的 zsh 在首次 ZLE 初始化前定位自身原生模块和补全函数。直接加载脚本的
 PTY 验收使用任务专属的 `ZDOTDIR/.zshenv`，通过 `zsh -d -i` 启动；该文件设置解包工具链的准确 `module_path`
@@ -322,8 +324,9 @@ POSIX 可解析性、zsh 未设置、绝对与相对目录规则、已有初始�
 
 测试不修改开发者启动文件，不依赖其配置、认证或全局安装；临时 shell、终端、探针
 和 fixture 均在任务 `.tmp/` 中，由创建者清理。完整验证命令由
-[README](../../README.md#cli-development)拥有。托管结果由对应源码版本的 CI 作业与
-补全 artifact 记录；本地通过记录不代替该版本的托管验收。
+[README](../../README.md#cli-development)拥有。本地验收回执只证明实际运行的源码版本、
+shell 与环境，不能推断其他版本或环境中的补全行为。CI 保留普通 CLI 测试，
+不生成真实 shell 补全验收 artifact。
 
 ## 依据
 

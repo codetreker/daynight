@@ -508,7 +508,7 @@ SQL 资源与来源检查的关系由 [SQLite 升级设计](cli-sqlite-migration
 CLI 命令、交互提示依赖和 SQLite，避免包元数据接受版本而实际依赖无法安装或运行。
 源码、包元数据、构建或依赖输入变化
 需要更高 SemVer；构建清理和资源复制脚本也属于发布输入。[CI 路由](../../README.md#ci-selection)
-选中 CLI 时，全部原生检查、运行时兼容检查和独立 shell completion 检查必须成功，
+选中 CLI 时，全部原生检查和运行时兼容检查必须成功；真实 shell 补全验收通过本地命令执行。
 PR 的 Linux CLI 任务还检查包版本；main push 保留全量应用门禁。最终 `checks` 只接受所有前置 job 的
 `success` 或 `skipped`，失败、取消及其他结果使汇总失败。
 发布在验证 CLI 与安装项目依赖前检查精确版本的 tag 和 npm 记录；任一存在则成功跳过。
@@ -565,8 +565,8 @@ zsh 目录选择、重复安装及启动后的注册与 Tab；使用任务内的
 操作者的 shell 配置或全局安装。
 
 GitHub Actions 保留原生 Linux、macOS、Windows 的普通测试与既有 review/update
-安装验收，并在独立 Linux 作业中执行补全的真实 shell 验收。独立
-project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
+安装验收。补全的真实 shell 验收保留为本地命令，其结果绑定实际验证的源码版本与环境，
+不属于 CI 门禁。独立 project/task 安装 suite 以受控 HTTP 和真实 Git 证明三个原生平台的仓库选择与
 文件行为；真实 Go/PostgreSQL 流程复用独立 Go 测试包 `cmd/e2e_tests` 的 fresh
 binary，instrumentation 与测试进程的实际 race mode 匹配。该包集中拥有跨进程验收、`TestMain` 和资源清理；服务主命令包保留
 直接调用内部函数的测试，两边各自管理测试辅助设施。

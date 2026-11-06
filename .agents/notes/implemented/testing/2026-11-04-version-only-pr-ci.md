@@ -5,10 +5,11 @@ Status: implemented
 ## Problem
 
 A CLI release can change only the package version after its application changes
-have already passed their own checks. The module selector still runs three
-platform suites, four Node compatibility jobs and shell completion for that
-metadata change. Those suites repeat application validation, and the publication
-workflow already validates the frozen release source and installed artifact.
+have already passed their own checks. At adoption, the module selector still ran
+three platform suites, four Node compatibility jobs and shell completion for that
+metadata change. Those suites repeated application validation, while the
+publication workflow already validated the frozen release source and installed
+artifact.
 
 ## Decision
 
@@ -47,10 +48,12 @@ owns version and artifact validation at the actual frozen release source.
 
 ## Consequences
 
-Strict version-only PRs skip the eight ordinary CLI verification jobs and retain
-only routing and final aggregation. Mixed changes and main pushes retain their
-existing workloads. A version rejected by publication validation remains a
-publication failure; this exception adds no earlier version-admission policy.
+Strict version-only PRs skip application verification jobs and retain only
+routing and final aggregation. Mixed changes and main pushes retain their
+ordinary selected workloads. The
+[local shell acceptance decision](2026-11-06-local-shell-completion-acceptance.md)
+owns the removal of the independent shell-completion job from those workloads.
+A version rejected by publication validation remains a publication failure; this exception adds no earlier version-admission policy.
 
 The exception depends on whole-PR evidence rather than a path exclusion. New
 manifest fields automatically participate in semantic comparison, and the

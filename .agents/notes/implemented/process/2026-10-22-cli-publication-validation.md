@@ -50,6 +50,9 @@ CLI package, as the observed publication failure demonstrates.
 
 A new npm release waits for its own CLI checks and package verification. Missing,
 running or failed mainline checks do not gate publication. The release does not
-claim successful server, Web, shell-completion or cross-platform acceptance;
-those results remain owned by their regular CI jobs. Retaining that separation
-allows their validation to evolve without changing the npm release gate.
+claim successful server, Web, shell-completion or cross-platform acceptance.
+Server, Web and cross-platform results remain owned by their regular CI jobs;
+real-shell acceptance runs locally under the
+[local shell acceptance decision](../testing/2026-11-06-local-shell-completion-acceptance.md).
+Retaining that separation allows their validation to evolve without changing
+the npm release gate.

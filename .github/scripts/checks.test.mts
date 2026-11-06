@@ -148,7 +148,7 @@ test("macOS termination diagnostics belong to ordinary validation and upload aft
 });
 
 test("unselected CLI stages may both skip while other selected modules succeed", () => {
-  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-macos": "skipped", "verify-runtime": "skipped", "verify-completion": "skipped" }), 0);
+  assert.equal(runGate({ ...success, verify: "skipped", "verify-installed": "skipped", "verify-macos": "skipped", "verify-runtime": "skipped" }), 0);
 });
 
 const macosSteps = [...macos.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);

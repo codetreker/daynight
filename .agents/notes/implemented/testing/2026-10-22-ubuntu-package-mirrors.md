@@ -20,7 +20,7 @@ and [APT configuration](https://github.com/actions/runner-images/blob/7e7dc1bcc0
 
 ## Decision
 
-The shell-completion and Web jobs use the shared
+The Web browser jobs use the shared
 `.github/scripts/use-ubuntu-archives.sh` preparation command before their APT
 consumers. It verifies that the Ubuntu Deb822 sources reference the supplied
 local mirror list, verifies the official HTTPS archive and security candidates,
@@ -37,10 +37,13 @@ loads that process's list on first use; the existing Playwright dependency
 installation retains its own normal update. A local isolated APT fixture also
 verified a download from a replacement mirror without a second update.
 
-All pinned shell/browser identities, package selection, native and container
-scenarios, zero browser retries, coverage thresholds, preparation deadlines,
-performance limits and cleanup checks remain required. Local developer setup
-and production deployments retain their existing host configuration. The
+The Web jobs retain their pinned browser identities, package selection, native
+and container scenarios, zero browser retries, coverage thresholds, preparation
+deadlines, performance limits and cleanup checks. The command originally served
+both shell-completion and Web acceptance; the
+[local shell acceptance decision](2026-11-06-local-shell-completion-acceptance.md)
+removes its shell-completion CI consumer. Local developer setup and production
+deployments retain their existing host configuration. The
 [README CI section](../../../../README.md#ci-selection) owns the workflow's
 validation scope.
 
@@ -68,7 +71,8 @@ Keeping the existing APT and Playwright entry points leaves that work additive.
 
 Hosted acceptance obtains Ubuntu packages through the official HTTPS services
 and no longer selects the Azure mirror. Network or package failures still fail
-the existing gates. The two jobs share one mirror-selection implementation,
-and a runner source-layout change becomes an explicit maintenance failure.
+the existing gates. The Web browser jobs share one mirror-selection
+implementation, and a runner source-layout change becomes an explicit
+maintenance failure.
 This repair adds no product behavior, package cache or alternative browser
 execution path.
