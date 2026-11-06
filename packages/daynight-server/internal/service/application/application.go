@@ -40,6 +40,7 @@ type Application struct {
 	TaskSync       *task.TaskSync
 	Attachments    *attachment.Attachments
 	PrivateContent *mcptransfer.Lifecycle
+	Uploads        *mcptransfer.Uploads
 	Engine         *sessioncore.Engine
 	Sessions       *session.Service
 }
