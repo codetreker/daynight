@@ -1,10 +1,47 @@
-import { test, expect } from "vitest";
+import { test, expect, beforeEach, afterEach, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
 import type { ProviderState } from "../../../src/commands/controller/providers/types.js";
+
+let nativeHome: string;
+beforeEach(async () => { const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true }); nativeHome = await mkdtemp(join(base, "codex-provider-home-")); vi.stubEnv("CODEX_HOME", nativeHome); });
+afterEach(async () => { vi.unstubAllEnvs(); await rm(nativeHome, { recursive: true, force: true }); });
+
+test("Codex startup waits past an empty settings acknowledgement until the matching native record is complete", async () => {
+  const log = join(nativeHome, "requests.jsonl"), rollout = join(nativeHome, "sessions", "rollout.jsonl"), states: ProviderState[] = [];
+  let resolved = false, provider: Awaited<ReturnType<typeof openCodexProvider>> | undefined;
+  let child: import("node:child_process").ChildProcess | undefined;
+  const opening = openCodexProvider({ cwd: process.cwd(), model: "selected-model", args: ["--effort", "high"], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, CODEX_TEST_ROLLOUT_PATH: rollout, CODEX_TEST_ROLLOUT_MODE: "deferred" },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: state => states.push(state), onSpawn: value => { child = value; } }).then(value => { resolved = true; provider = value; return value; });
+  void opening.catch(() => {});
+  try {
+    await vi.waitFor(async () => expect(await readFile(log, "utf8")).toContain('"method":"thread/settings/update"'));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(resolved).toBe(false); expect(states.some(state => state.activity === "idle")).toBe(false);
+    const event = JSON.stringify({ type: "event_msg", payload: { type: "thread_settings_applied", thread_id: "native-thread", thread_settings: { model: "selected-model", collaboration_mode: { settings: { reasoning_effort: "high" } } } } });
+    await appendFile(rollout, event);
+    await new Promise(resolve => setTimeout(resolve, 30)); expect(resolved).toBe(false);
+    await appendFile(rollout, "\n"); await opening;
+    expect(states.at(-1)?.activity).toBe("idle");
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => request.method === "thread/settings/update")).toHaveLength(1);
+    expect(requests.filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { if (!provider) { child?.kill(); await opening.catch(() => {}); } await provider?.close(); }
+});
+
+test("an incorrect startup model cannot become persistence evidence for a validated explicit selection", async () => {
+  const log = join(nativeHome, "requests.jsonl");
+  const opening = openCodexProvider({ cwd: process.cwd(), model: "selected-model", args: [], resumeNativeSessionId: null, validateNativeSelection: true,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log, CODEX_TEST_THREAD_SETTINGS: JSON.stringify({ model: "wrong-model" }), CODEX_TEST_MODELS: JSON.stringify([{ model: "wrong-model" }, { model: "selected-model" }]) },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  await expect(opening).rejects.toThrow("did not apply the requested model");
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(requests.filter(request => ["thread/settings/update", "turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+});
 
 const initialSelectionCases = [
   { name: "model and effort", model: "selected-model", args: ["--effort", "high"], patch: { model: "selected-model", effort: "high" } },
@@ -79,7 +116,7 @@ test("Codex resume preserves native settings without replaying frozen initial ch
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test.each(["reject", "disconnect", "null", "[]", "1", "missing"])("initial Codex settings %s closes the provider without retrying or losing its observed native identity", async mode => {
+test.each(["reject", "disconnect", "async-error", "null", "[]", "1", "missing"])("initial Codex settings %s closes the provider without retrying or losing its observed native identity", async mode => {
   const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true });
   const directory = await mkdtemp(join(base, "codex-settings-failure-")), log = join(directory, "requests.jsonl");
   const states: ProviderState[] = []; let child: import("node:child_process").ChildProcess | undefined;

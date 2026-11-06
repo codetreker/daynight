@@ -24,12 +24,36 @@ Other read errors stop initialization before updating settings. Calls without
 explicit selections retain the prior native-read compatibility behavior.
 
 A same-value update can acknowledge with `{}` without emitting a settings
-notification. Initialization therefore accepts a valid object RPC result and
-does not use the interactive controls path that waits for a changed-setting
-notification. Rejection, malformed results, timeout and disconnect prevent
-readiness and close the owned process. No update, input or new thread is
-automatically retried. The already observed native identity remains available
-to the existing recovery owner.
+notification, and the RPC reply precedes core processing and rollout writes.
+Initialization therefore validates the receipt and then waits for a new,
+complete `thread_settings_applied` record in the original native rollout.
+The reader binds the native-provided path, home, thread ID and real working
+directory before dispatch; only appended records after that baseline count.
+It compares explicit fields against the already validated effective model
+(or the explicit request when startup selection validation is disabled) and
+requested effort. It never writes history or promotes a display fallback.
+
+The reader uses one file handle, checks replacement and truncation, and bounds
+bytes and elapsed time. Partial records cannot confirm readiness. Native
+errors, disconnect, invalid records, unconfirmed persistence and timeouts
+close the owned process. No update, input or new thread is automatically
+retried. The already observed native identity remains available to the
+existing recovery owner.
+
+The protocol rationale is pinned to Codex commit
+`086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`: the
+[update handler](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/request_processors/turn_processor.rs#L973)
+acknowledges the queued operation before core processing;
+[notification deduplication](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/bespoke_event_handling.rs#L1300)
+suppresses unchanged settings; and
+[cold resume](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/request_processors/persisted_resume_settings.rs#L105)
+uses the latest persisted settings owned by that thread. The
+[settings operation handler](https://github.com/openai/codex/blob/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/session/handlers.rs#L626)
+produces the applied event; fresh startup does not independently submit this
+operation. The initializer owns the only settings write before returning the
+Provider handle, so a matching record after its baseline can acknowledge this
+single update without an operation ID. This assumption must be revisited if
+initialization gains another settings writer or the native event source changes.
 
 Omitted fields remain omitted. Resume continues to read the native settings
 without injecting frozen initial choices, preserving the authority described
@@ -54,13 +78,22 @@ write can be followed by a successful `{}` settings receipt, while a cold
 resume still fails because the rollout is missing. Broad read compatibility
 would therefore falsely confirm durable explicit settings.
 
+**Treat RPC acknowledgement or another live read as durable completion.**
+The native update is queued before the acknowledgement; a subsequent read can
+still return live configuration while the persisted settings event is absent.
+Waiting for the original rollout's new record establishes the evidence used by
+cold recovery without another write or a production restart.
+
 **Persist resolved defaults too.** That would freeze values the caller omitted
 and turn display fallbacks into user intent.
 
 ## Consequences
 
-Explicit fresh choices add one native RPC before readiness. Native versions
-that reject the operation fail visibly instead of claiming durable settings.
+Explicit fresh choices add one native RPC and a bounded read of the original
+rollout before readiness. Native versions that reject the operation or expose
+an unsupported persistence format fail visibly instead of claiming durable
+settings. The record barrier supports process-crash recovery, not a guarantee
+of durability across power loss.
 Fixture tests cover request ordering, omission, unchanged resume and failure
 cleanup; native-version evidence is still required to establish actual cold
 persistence. The change does not repair historical threads whose original

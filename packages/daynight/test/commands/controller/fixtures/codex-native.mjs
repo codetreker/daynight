@@ -1,11 +1,13 @@
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 const out = value => process.stdout.write(JSON.stringify(value) + '\n');
 let waiting = null, holdResponse = false, interruptUser = null, pendingSteer = null;
 const interruptCase = process.env.CODEX_TEST_INTERRUPT;
 const interruptedHistory = id => ({ id, status: 'interrupted', error: null, items: [], itemsView: 'full', rootTurnId: id, startedAt: 1, completedAt: 2, durationMs: 1000 });
 const sleep = { type: 'sleep', id: 'sleep-call', durationMs: 50000, startedAtMs: 1793708507841 };
 const completedSleep = { ...sleep, completedAtMs: 1793708557843 };
+let rollout;
 for await (const line of createInterface({input:process.stdin})) {
  const m=JSON.parse(line);
  if(process.env.CODEX_TEST_REQUEST_LOG)appendFileSync(process.env.CODEX_TEST_REQUEST_LOG, JSON.stringify(m)+'\n');
@@ -27,7 +29,11 @@ for await (const line of createInterface({input:process.stdin})) {
   if(process.env.CODEX_TEST_REJECT_ROLE && Object.hasOwn(m.params,'developerInstructions')) {
    out({id:m.id,error:{code:-32602,message:process.env.CODEX_TEST_REJECT_ROLE}});continue;
   }
-  out({id:m.id,result:{...JSON.parse(process.env.CODEX_TEST_THREAD_SETTINGS ?? '{}'),...(process.env.CODEX_TEST_APPLY_EFFORT ? {reasoningEffort:m.params.config?.model_reasoning_effort ?? 'low'} : {}),thread:{id:'native-thread',cwd:process.cwd()}}});
+  if(m.method==='thread/start'&&(m.params.model||m.params.config?.model_reasoning_effort)) {
+   if(!process.env.CODEX_HOME)throw Error('Explicit-setting fixtures require an isolated CODEX_HOME');
+   rollout=process.env.CODEX_TEST_ROLLOUT_PATH??join(process.env.CODEX_HOME,'sessions',`fixture-${process.pid}.jsonl`);
+  }
+  out({id:m.id,result:{...JSON.parse(process.env.CODEX_TEST_THREAD_SETTINGS ?? '{}'),...(process.env.CODEX_TEST_APPLY_EFFORT ? {reasoningEffort:m.params.config?.model_reasoning_effort ?? 'low'} : {}),thread:{id:'native-thread',cwd:process.cwd(),...(rollout?{path:rollout}:{})}}});
  }
  if(m.method==='thread/items/list') {
   if(interruptCase) {
@@ -56,6 +62,7 @@ for await (const line of createInterface({input:process.stdin})) {
   } else out({id:m.id,result:{data:interruptCase?[{...turn,items:interruptCase==='missing-user'?[]:[user]}]:[],nextCursor:null,backwardsCursor:null}});
  }
  if(m.method==='thread/read') {
+  if(rollout){mkdirSync(join(process.env.CODEX_HOME,'sessions'),{recursive:true});writeFileSync(rollout,JSON.stringify({type:'session_meta',payload:{id:'native-thread',cwd:process.cwd()}})+'\n');}
   if(process.env.CODEX_TEST_READ_ERROR)out({id:m.id,error:JSON.parse(process.env.CODEX_TEST_READ_ERROR)});
   else if(process.env.CODEX_TEST_EMPTY_READ_ERROR)out({id:m.id,error:{code:-32601,message:'list_turns is not supported yet'}});
   else out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});
@@ -64,8 +71,9 @@ for await (const line of createInterface({input:process.stdin})) {
   const mode=process.env.CODEX_TEST_INITIAL_SETTINGS;
   if(mode==='reject')out({id:m.id,error:{code:-32602,message:'Initial settings rejected'}});
   else if(mode==='disconnect')process.exit(0);
+  else if(mode==='async-error'){out({id:m.id,result:{}});out({method:'error',params:{threadId:'native-thread',error:{message:'Initial settings rejected asynchronously'}}});}
   else if(mode==='missing')out({id:m.id});
-  else out({id:m.id,result:mode?JSON.parse(mode):{}});
+  else {out({id:m.id,result:mode?JSON.parse(mode):{}});if(rollout&&!mode&&process.env.CODEX_TEST_ROLLOUT_MODE!=='deferred')appendFileSync(rollout,JSON.stringify({type:'event_msg',payload:{type:'thread_settings_applied',thread_id:'native-thread',thread_settings:{model:m.params.model??'default-model',collaboration_mode:{settings:{reasoning_effort:m.params.effort??'medium'}}}}})+'\n');}
  }
  if(m.method==='model/list')out({id:m.id,result:{data:JSON.parse(process.env.CODEX_TEST_MODELS ?? '[]'),nextCursor:null}});
  if(m.method==='configRequirements/read')out({id:m.id,result:{requirements:null}});
