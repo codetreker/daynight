@@ -13,8 +13,11 @@ failures, and the warning repeatedly displaced the conversation.
 
 Track the current page's delivery observation separately from protocol operations.
 The map contains only operation IDs and sending/waiting presentation states;
-its timers start at submission, reveal the original-operation query after ten
-seconds, and end progress after thirty seconds even if HTTP has not returned.
+its timers start at submission, mark slow waiting after ten seconds, and end
+progress after thirty seconds even if HTTP has not returned. The original
+decision displayed these normal stages and exposed a query after ten seconds
+to distinguish slow delivery from uncertainty. The [silent operations decision](2026-11-06-silent-session-operations.md) supersedes those display rules while
+retaining the observation mechanism.
 The existing response-relative query deadline, operation ledger, persistence,
 admission gates and draft revision ownership remain unchanged.
 
@@ -42,8 +45,9 @@ unknown and cannot distinguish restored operations from live ones.
 
 ## Consequences
 
-Routine delivery has a lightweight progress receipt without a warning. A slow
-request offers read-only reconciliation before the uncertainty warning appears.
+Routine delivery and slow waiting are now silent under the replacement display
+decision. The original progress receipt avoided false uncertainty warnings but
+still displaced the conversation during successful sends.
 All shared command kinds use the same presentation evidence. The thirty-second
 page timer is conservative and does not cancel requests, manufacture a protocol
 result, clear drafts or permit retries. Narrow composer layout remains governed
