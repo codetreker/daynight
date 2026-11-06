@@ -18,7 +18,7 @@ var workerReportTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2
 
 var workerRequiredReportFields = []string{"machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", "taskInventory"}
 
-var workerReportFields = append(append([]string{}, workerRequiredReportFields...), "assistantHost")
+var workerReportFields = append(append([]string{}, workerRequiredReportFields...), "assistantHost", "runtimeConfiguration")
 
 func workerReportInput(fields map[string]json.RawMessage) (model.WorkerReport, error) {
 	var input model.WorkerReport
@@ -83,6 +83,12 @@ func workerReportInput(fields map[string]json.RawMessage) (model.WorkerReport, e
 	}
 	if raw, present := fields["assistantHost"]; present {
 		input.Telemetry.AssistantHost, err = workerAssistantHostInput(raw)
+		if err != nil {
+			return input, err
+		}
+	}
+	if raw, present := fields["runtimeConfiguration"]; present {
+		input.Telemetry.RuntimeConfiguration, err = workerRuntimeConfigurationInput(raw)
 		if err != nil {
 			return input, err
 		}

@@ -238,7 +238,15 @@ export type WorkerAssistantHost = {
   readonly defaultProvider: WorkerAgent;
   readonly providers: readonly WorkerAssistantProvider[];
 };
+export type WorkerConfigurationValue = { readonly value: string; readonly source: "local" | "cloud" } | { readonly value: null; readonly source: "native" };
+export type WorkerRuntimeNative = { readonly agent: WorkerAgent; readonly model: WorkerConfigurationValue; readonly reasoningEffort: WorkerConfigurationValue };
+export type WorkerRuntimeConfiguration = {
+  readonly schemaVersion: 1;
+  readonly native: WorkerRuntimeNative | null;
+  readonly projects: readonly { readonly projectId: string; readonly native: WorkerRuntimeNative | null }[];
+};
 export type WorkerTelemetry = {
+  readonly runtimeConfiguration?: WorkerRuntimeConfiguration;
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
   readonly workingDirectory: string;
