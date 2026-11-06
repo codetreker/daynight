@@ -30,10 +30,11 @@ type unknownLifecycle struct{ lifecycle }
 type observedLifecycle struct {
 	items []store.OAuthGrant
 	now   time.Time
+	err   error
 }
 
 func (s observedLifecycle) ListSessionGrants(context.Context, model.Principal) ([]store.OAuthGrant, time.Time, error) {
-	return s.items, s.now, nil
+	return s.items, s.now, s.err
 }
 
 func (s observedLifecycle) RevokeSessionGrant(context.Context, model.Principal, string) (bool, error) {
@@ -56,6 +57,30 @@ func TestListUsesObservationTimeAndUTC(t *testing.T) {
 	}
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Grants) != 2 || page.Grants[0].Status != "expired" || page.Grants[1].Status != "revoked" || !strings.Contains(w.Body.String(), `"revokedAt":"`+now.Format(time.RFC3339Nano)+`"`) {
 		t.Fatalf("observation time or UTC: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestListRejectsInvalidRequestAndUnavailableData(t *testing.T) {
+	principal := model.Principal{UserID: uuid.NewString()}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, tc := range []struct {
+		name, path string
+		service    observedLifecycle
+		status     int
+	}{
+		{"query", "/api/v1/oauth/grants?extra=1", observedLifecycle{}, 400},
+		{"read failure", "/api/v1/oauth/grants", observedLifecycle{err: errors.New("storage unavailable")}, 500},
+		{"malformed snapshot", "/api/v1/oauth/grants", observedLifecycle{items: []store.OAuthGrant{{ClientID: "test", ClientSnapshot: []byte(`{`)}}}, 500},
+		{"different snapshot client", "/api/v1/oauth/grants", observedLifecycle{items: []store.OAuthGrant{{ClientID: "test", ClientSnapshot: []byte(`{"clientId":"other"}`)}}}, 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := routes{grants: tc.service, logger: logger}
+			w := httptest.NewRecorder()
+			h.list(w, httptest.NewRequest("GET", tc.path, nil), principal)
+			if w.Code != tc.status {
+				t.Fatalf("status: %d %s", w.Code, w.Body)
+			}
+		})
 	}
 }
 
