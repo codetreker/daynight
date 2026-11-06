@@ -11,6 +11,8 @@ export type ProviderOptions = {
   agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
   onTimeline(entry: ProviderEntry): void;
+  /** Whether this Session already durably owns a projected timeline identity. */
+  hasTimelineEntry?(entryId: string): boolean;
   onState(state: ProviderState): void;
   onSpawn(child: ChildProcess): void;
   onDiagnostic?(line: string): void;

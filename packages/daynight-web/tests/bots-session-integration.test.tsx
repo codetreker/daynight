@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import * as sessions from '../src/api/sessions';
 import { pauseAuthRequests } from '../src/api/client';
 import { BotsPage } from '../src/features/bots/BotsPage';
@@ -7,6 +7,9 @@ import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-ca
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { botBinding, botFixture, botOwner } from './helpers/bot-session';
 import { botDefaults, botDefinition, botResponse } from './helpers/bots';
+import { assistantDetailsOpener, mockWideAssistantWorkspace } from './helpers/assistant-ui';
+
+beforeEach(mockWideAssistantWorkspace);
 
 it('keeps real shared Session nodes and drafts across list selection and close/reopen without commands',async()=>{
  const fixtures=[botFixture(botBinding(1)),botFixture(botBinding(2))];
@@ -20,7 +23,7 @@ it('keeps real shared Session nodes and drafts across list selection and close/r
   const a=await screen.findByRole('textbox',{name:'Message'});await waitFor(()=>expect(a).toBeEnabled());fireEvent.change(a,{target:{value:'draft A'}});
   const host=view.container.querySelector('.bot-session-host');
   const session=a.closest('.task-agent-session'), channels=vi.mocked(fixtures[0]!.api.channel).mock.calls.length;
-  fireEvent.click(screen.getByRole('button',{name:'Assistant 1'}));
+  fireEvent.click(assistantDetailsOpener('Assistant 1'));
   expect(screen.getByRole('complementary',{name:'Assistant details'})).toBeVisible();
   fireEvent.keyDown(screen.getByRole('button',{name:'Close assistant details'}),{key:'Escape'});
   expect(screen.getByRole('textbox',{name:'Message'})).toBe(a);
@@ -28,10 +31,10 @@ it('keeps real shared Session nodes and drafts across list selection and close/r
   expect(vi.mocked(fixtures[0]!.api.channel).mock.calls.length).toBe(channels);
   fireEvent.click(screen.getByRole('button',{name:'Enter Session fullscreen'}));
   expect(view.container.querySelector('.bot-conversation')).toHaveAttribute('data-session-fullscreen','true');
-  fireEvent.click(screen.getByRole('button',{name:'Assistant 1'}));
+  fireEvent.click(assistantDetailsOpener('Assistant 1'));
   fireEvent.keyDown(screen.getByRole('button',{name:'Close assistant details'}),{key:'Escape'});
   expect(view.container.querySelector('.bot-conversation')).toHaveAttribute('data-session-fullscreen','true');
-  fireEvent.keyDown(screen.getByRole('button',{name:'Assistant 1'}),{key:'Escape'});
+  fireEvent.keyDown(assistantDetailsOpener('Assistant 1'),{key:'Escape'});
   expect(view.container.querySelector('.bot-conversation')).not.toHaveAttribute('data-session-fullscreen');
   expect(screen.getByRole('textbox',{name:'Message'})).toBe(a);
   view.rerender(node(definitions[1]!.id));await waitFor(()=>expect(screen.getByRole('textbox',{name:'Message'})).not.toBe(a));

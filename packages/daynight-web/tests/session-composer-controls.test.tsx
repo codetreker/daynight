@@ -22,7 +22,7 @@ describe('command candidate reverse navigation', () => {
     const props = base(); render(<SessionComposer {...props} />);
     const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value } });
     expect(fireEvent.keyDown(input, { key: 'Tab' })).toBe(false);
-    if (value === '/model') expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+    if (value === '/model') expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible();
     else if (value === '/permissions') expect(screen.getByRole('combobox', { name: 'Approval policy' })).toBeVisible();
     else if (value === '/rev') expect(input).toHaveValue('/review ');
     else await waitFor(() => expect(props.onExecuteCommand).toHaveBeenCalledExactlyOnceWith('compact', '', '3', '/compact'));
@@ -116,7 +116,7 @@ describe('composer provider controls', () => {
     const props = base(); render(<SessionComposer {...props} />);
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft' } });
     fireEvent.click(screen.getByRole('button', { name: 'Model' }));
-    fireEvent.change(screen.getByRole('combobox', { name: 'Model selection' }), { target: { value: 'native-b' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), { target: { value: 'native-b' } });
     await waitFor(() => expect(props.onUpdateSetting).toHaveBeenCalledWith('model', 'native-b', '3'));
     expect(screen.getByRole('textbox')).toHaveValue('draft');
     fireEvent.click(screen.getByRole('button', { name: 'Permissions' }));
@@ -145,7 +145,7 @@ describe('composer provider controls', () => {
   it('opens local slash settings and sends unknown slash input normally', async () => {
     const props = base(); render(<SessionComposer {...props} />);const input = screen.getByRole('textbox');
     fireEvent.change(input, { target: { value: '/model' } });fireEvent.keyDown(input, { key: 'Enter' });
-    expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible();
     fireEvent.keyDown(input, { key: 'Escape' });
     fireEvent.change(input, { target: { value: '/made-up' } });fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/made-up'));
@@ -155,7 +155,7 @@ describe('composer provider controls', () => {
     const props = base(); props.state = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commandsError: 'Native discovery failed' } } };
     render(<SessionComposer {...props} />);const input = screen.getByRole('textbox');fireEvent.change(input, { target: { value: '/' } });
     fireEvent.keyDown(input, { key: 'ArrowDown' });expect(screen.getByRole('option', { name: /\/permissions/ })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('Native discovery failed')).toBeVisible();fireEvent.click(screen.getByRole('button', { name: 'Retry commands' }));
+    expect(screen.getByText('Native discovery failed')).toBeVisible();fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
     await waitFor(() => expect(props.onRefreshControls).toHaveBeenCalledOnce());expect(props.onSend).not.toHaveBeenCalled();
   });
   it('retains controls and draft while identity is paused, but cannot mutate', () => {
@@ -208,6 +208,23 @@ it('keeps input, controls, activity, actions, and keyboard help inside one chatb
   expect(screen.getByRole('textbox')).toBe(input);
   expect(within(surface as HTMLElement).getByRole('button', { name: 'Permissions' })).toBe(buttons[1]);
   expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it('groups interruption with submission while preserving the custom footer activity contract', () => {
+  const props = base();
+  props.state = { ...props.state, snapshot: { ...props.state.snapshot!, activity: 'working', currentTurnId: 'turn', turnStartedAt: new Date().toISOString(), operations: { canSend: true, canCancel: true, canRespond: true } } };
+  const view = render(<SessionComposer {...props} />);
+  const interrupt = screen.getByRole('button', { name: 'Interrupt' });
+  const actions = interrupt.closest('.session-primary-actions');
+  expect(actions).not.toBeNull();
+  expect(actions).toContainElement(screen.getByRole('button', { name: 'Add to current turn' }));
+  expect(screen.getByLabelText('Agent activity')).not.toContainElement(interrupt);
+  fireEvent.mouseEnter(interrupt);
+  expect(screen.getByRole('button', { name: 'Add to current turn' }).parentElement).not.toHaveAttribute('data-hint-open');
+  view.rerender(<SessionComposer {...props} presentation={{ renderFooter: ({ settings, activity, submit }) => <>{settings}<section aria-label="Custom activity">{activity}</section>{submit}</> }} />);
+  expect(screen.getByLabelText('Custom activity')).toContainElement(screen.getByRole('button', { name: 'Interrupt' }));
+  expect(screen.getByLabelText('Custom activity')).toHaveTextContent('Working');
+  expect(screen.getAllByRole('button', { name: 'Interrupt' })).toHaveLength(1);
 });
 
 it('keeps failed submission details with the draft inside the same chatbox', async () => {
@@ -323,7 +340,7 @@ it.each(['ready', 'unavailable', 'failed', 'empty', 'disabled', 'refreshing'] as
   const draft = mode === 'empty' ? '/not-a-command' : 'Keep\nthis draft';
   fireEvent.change(input, { target: { value: draft } });
   if (mode !== 'empty') fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
-  if (mode === 'refreshing') fireEvent.click(screen.getByRole('button', { name: 'Retry commands' }));
+  if (mode === 'refreshing') fireEvent.click(screen.getByRole('button', { name: 'Refresh commands' }));
   const close = screen.getByRole('button', { name: 'Close' });
   expect(close).toBeEnabled();
   fireEvent.click(close);
@@ -338,7 +355,7 @@ it.each(['retry', 'option', 'close'] as const)('dismisses the command menu from 
   const props = base(), outer = vi.fn();
   render(<div onKeyDown={outer}><SessionComposer {...props} /></div>);
   const input = screen.getByRole('textbox'); fireEvent.change(input, { target: { value: '/compact' } });
-  const element = target === 'option' ? screen.getByRole('option') : screen.getByRole('button', { name: target === 'close' ? 'Close' : 'Retry commands' });
+  const element = target === 'option' ? screen.getByRole('option') : screen.getByRole('button', { name: target === 'close' ? 'Close' : 'Refresh commands' });
   element.focus(); fireEvent.keyDown(element, { key: 'Escape' });
   expect(screen.queryByRole('listbox')).toBeNull(); expect(outer).not.toHaveBeenCalled();
   expect(input).toHaveFocus(); expect(input).toHaveValue('/compact');
@@ -425,10 +442,12 @@ it('uses the current revision for a selected command and preserves a newer draft
 it('requires an explicit arrow selection before Enter completes a prefix and resets it on edits and catalog refresh', async () => {
   const props = base(); const view = render(<SessionComposer {...props} />); const input = screen.getByRole('textbox');
   fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' }); fireEvent.keyDown(input, { key: 'Enter' });
-  expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible(); fireEvent.keyDown(input, { key: 'Escape' });
+  expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible(); fireEvent.keyDown(input, { key: 'Escape' });
   fireEvent.change(input, { target: { value: '/m' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
   fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'Enter' });
   await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/mo'));
+  // The callback is recorded before its async submission clears the draft.
+  await waitFor(() => expect(input).toHaveValue(''));
   fireEvent.change(input, { target: { value: '/mo' } }); fireEvent.keyDown(input, { key: 'ArrowDown' });
   view.rerender(<SessionComposer {...props} state={{ ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, revision: '4' } } }} />);
   fireEvent.keyDown(input, { key: 'Enter' }); await waitFor(() => expect(props.onSend).toHaveBeenCalledTimes(2));
@@ -523,7 +542,7 @@ it.each(['equivalent', 'activity', 'settings'] as const)('preserves explicit com
   const nextSnapshot: SessionSnapshot = mode === 'activity' ? { ...next, sessionRevision: '13', activity: 'working', currentTurnId: 'turn' } : mode === 'settings' ? { ...next, controls: { ...next.controls!, settings: next.controls!.settings.map(setting => ({ ...setting, value: 'native-b' })) } } : next;
   view.rerender(<SessionComposer {...props} state={hydrateSession(props.state, nextSnapshot, [])} />);
   fireEvent.keyDown(input, { key: 'Enter' });
-  expect(screen.getByRole('combobox', { name: 'Model selection' })).toBeVisible();
+  expect(screen.getByRole('combobox', { name: 'Model' })).toBeVisible();
   expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
 });
 
@@ -536,4 +555,121 @@ it.each(['revision', 'description', 'availability', 'id', 'error'] as const)('re
   fireEvent.keyDown(input, { key: 'Enter' });
   await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/rev'));
   expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+
+it.each([
+  ['en', 'Open chat commands', 'Refresh commands', 'Refreshing…', 'Reload'],
+  ['zh-CN', '打开会话命令', '刷新命令', '正在刷新…', '重新加载'],
+] as const)('presents catalog refresh, busy and failure states in %s without duplicate discovery', async (locale, open, refresh, refreshing, reload) => {
+  const props = base();
+  let finish!: () => void;
+  props.onRefreshControls.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+  const view = createLocaleRender(locale)(<SessionComposer {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: open }));
+  const button = screen.getByRole('button', { name: refresh });
+  expect(button).toBeEnabled(); expect(button).toHaveAttribute('aria-busy', 'false');
+  const user = userEvent.setup();
+  button.focus(); await user.keyboard('{Enter}');
+  expect(screen.getByRole('button', { name: refreshing })).toBeDisabled();
+  expect(button).toHaveAttribute('aria-busy', 'true');
+  fireEvent.click(button); expect(props.onRefreshControls).toHaveBeenCalledOnce();
+  await act(async () => finish());
+  expect(button).toHaveAccessibleName(refresh); expect(button).toHaveAttribute('aria-busy', 'false');
+  const failed = { ...props.state, snapshot: { ...props.state.snapshot!, controls: { ...controls, commandsError: 'Native discovery failed' } } };
+  view.rerender(<SessionComposer {...props} state={failed} />);
+  expect(screen.getByRole('alert')).toHaveTextContent('Native discovery failed');
+  expect(button).toHaveAccessibleName(reload);
+  fireEvent.click(button);
+  expect(button).toHaveAccessibleName(refreshing); expect(button).toBeDisabled();
+  await act(async () => finish());
+  expect(button).toHaveAccessibleName(reload);
+  view.rerender(<SessionComposer {...props} />);
+  expect(button).toHaveAccessibleName(refresh); expect(screen.queryByRole('alert')).toBeNull();
+  expect(props.onSend).not.toHaveBeenCalled(); expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+
+it('shows only the highlighted command hint while retaining full accessible descriptions and argument completion', () => {
+  const props = base(); render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/' } });
+  const review = screen.getByRole('option', { name: /Review changes/ });
+  expect(screen.queryByText('Review instructions')).toBeNull();
+  fireEvent.pointerMove(review, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(review).toHaveAttribute('aria-selected', 'true');
+  expect(input).toHaveAttribute('aria-activedescendant', review.id);
+  expect(screen.getByText('Review instructions')).toBeVisible();
+  fireEvent.keyDown(input, { key: 'ArrowDown' });
+  expect(screen.queryByText('Review instructions')).toBeNull();
+  fireEvent.keyDown(input, { key: 'ArrowUp' });
+  fireEvent.keyDown(input, { key: 'Tab' });
+  expect(input).toHaveValue('/review ');
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it('keeps touch movement from expanding rows before a tap chooses a command', () => {
+  const props = base(); render(<SessionComposer {...props} />);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '/' } });
+  const review = screen.getByRole('option', { name: /Review changes/ });
+  fireEvent.pointerMove(review, { pointerType: 'touch', clientX: 20, clientY: 40 });
+  expect(review).toHaveAttribute('aria-selected', 'false');
+  fireEvent.click(review);
+  expect(screen.getByRole('textbox')).toHaveValue('/review ');
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+it('anchors pointer highlighting when the previous expanded row collapses above it', () => {
+  render(<SessionComposer {...base()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const body = screen.getByRole('listbox').parentElement!;
+  const options = screen.getAllByRole('option');
+  const review = options[2]!;
+  Object.defineProperty(body, 'clientHeight', { value: 180 });
+  Object.defineProperties(review, {
+    offsetTop: { get: () => options[0]!.getAttribute('aria-selected') === 'true' ? 350 : 150 },
+    offsetHeight: { value: 250 },
+  });
+  body.scrollTop = 300;
+  fireEvent.pointerMove(review, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(body.scrollTop).toBe(100);
+  expect(review.offsetTop - body.scrollTop).toBe(50);
+  // Layout changes under a stationary pointer must not highlight a different row.
+  fireEvent.pointerMove(options[3]!, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(review).toHaveAttribute('aria-selected', 'true');
+});
+
+it('does not turn a hovered prefix into explicit Enter selection', async () => {
+  const props = base(); render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: '/rev' } });
+  fireEvent.pointerMove(screen.getByRole('option'), { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(props.onSend).toHaveBeenCalledWith('/rev'));
+  expect(props.onExecuteCommand).not.toHaveBeenCalled();
+});
+
+
+it.each(['top', 'bottom'] as const)('preserves pointer targets at the %s scroll boundary and clears space for keyboard navigation', edge => {
+  render(<SessionComposer {...base()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open chat commands' }));
+  const list = screen.getByRole('listbox'), body = list.parentElement!;
+  const options = within(list).getAllByRole('option'), review = options[2]!;
+  let scrollTop = edge === 'top' ? 0 : 100;
+  const padding = (side: 'paddingTop' | 'paddingBottom') => parseFloat(list.style[side]) || 0;
+  Object.defineProperties(body, {
+    clientHeight: { value: 180 },
+    scrollTop: { get: () => scrollTop, set: value => { scrollTop = Math.max(0, Math.min(value, 100 + padding('paddingBottom'))); } },
+  });
+  Object.defineProperties(review, {
+    offsetTop: { get: () => (review.getAttribute('aria-selected') === 'true' ? edge === 'top' ? 150 : 450 : 350) + padding('paddingTop') },
+    offsetHeight: { value: 250 },
+  });
+  const originalTop = review.offsetTop - body.scrollTop;
+  fireEvent.pointerMove(review, { pointerType: 'mouse', clientX: 20, clientY: 40 });
+  expect(review.offsetTop - body.scrollTop).toBe(originalTop);
+  expect(padding(edge === 'top' ? 'paddingTop' : 'paddingBottom')).toBe(edge === 'top' ? 200 : 100);
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'ArrowDown' });
+  expect(list.style.paddingTop).toBe('');
+  expect(list.style.paddingBottom).toBe('');
 });

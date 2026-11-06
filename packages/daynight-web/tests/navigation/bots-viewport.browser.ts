@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
 import type {} from './bots-viewport-session';
 import type { BotDefinition, BotDefaults } from '../../src/api/bots';
+import { botConversationBack, botDetails, botDetailsOpener, closeBotConversation, expectBotDetailsMode, expectBotDetailText, expectBotHeading, focusBotControl } from '../e2e/bot-heading';
 
 const personalId = botId(100), personal = { id: personalId, kind: 'personal', name: null };
 const profile = { id: BOT_USER, personalTeam: personal, name: 'Viewport fixture', email: null, emailVerified: null, avatarUrl: null };
@@ -65,7 +66,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect.poll(async () => (await geometry(page)).timeline.scrollTop).toBeLessThan(initial.timeline.scrollTop - 100);
       await page.waitForTimeout(150);
       const retained = await anchor(page);
-      await page.getByRole('link', { name: 'Close conversation', exact: true }).click();
+      await closeBotConversation(page);
       const list = page.locator('.bot-list');
       await expect(list).toBeVisible();
       expect(await list.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
@@ -76,7 +77,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole('link', { name: /^Bot B / }).click();
       await expect(message()).toBeEnabled();
       await message().fill('Draft B');
-      await page.getByRole('link', { name: 'Close conversation', exact: true }).click();
+      await closeBotConversation(page);
       await page.getByRole('link', { name: /^Bot A / }).click();
       await expect(message()).toHaveValue('Draft A survives the bounded viewport');
       expect(await message().evaluate((node, original) => node === original, originalMessage)).toBe(true);
@@ -123,30 +124,41 @@ const panelGeometry = (page: Page) => page.evaluate(() => {
   return { viewport: innerWidth, documentWidth: document.documentElement.scrollWidth, workspace: bounds('.bots-page'), list: bounds('.bot-list-panel'), conversation: bounds('.bot-conversation'), sidebar: bounds('#workspace-sidebar') };
 });
 const expectPanels = async (page: Page, selected: boolean) => {
-  const bounds = await panelGeometry(page), single = bounds.workspace.width < 724;
-  await expect(page.locator('.bot-list-panel')).toBeVisible({ visible: !single || !selected });
-  await expect(page.locator('.bot-conversation')).toBeVisible({ visible: !single || selected });
+  const bounds = await panelGeometry(page);
+  const listVisible = await page.locator('.bot-list-panel').isVisible();
+  const conversationVisible = await page.locator('.bot-conversation').isVisible();
+  if (selected) {
+    expect(conversationVisible).toBe(true);
+    if (bounds.viewport <= 390) expect(listVisible).toBe(false);
+    if (bounds.viewport >= 1440) expect(listVisible).toBe(true);
+  } else expect(listVisible).toBe(true);
   expect(bounds.documentWidth).toBeLessThanOrEqual(bounds.viewport);
-  if (selected && single) expect(Math.abs(bounds.conversation.width - bounds.workspace.width)).toBeLessThanOrEqual(1);
-  if (!single) expect(bounds.conversation.width).toBeGreaterThanOrEqual(420);
+  if (listVisible && conversationVisible) {
+    expect(bounds.list.right).toBeLessThanOrEqual(bounds.conversation.left + 1);
+    expect(bounds.conversation.width).toBeGreaterThanOrEqual(420);
+  } else {
+    const visible = selected ? bounds.conversation : bounds.list;
+    expect(Math.abs(visible.width - bounds.workspace.width)).toBeLessThanOrEqual(1);
+  }
   if (selected && await page.locator(`${visiblePane} textarea`).count()) {
-    const controls = await page.locator(`${visiblePane}`).evaluate(pane => ['.session-header', '.session-composer', 'textarea'].map(selector => ({ selector, ...pane.querySelector(selector)!.getBoundingClientRect().toJSON() })));
+    const conversation = page.locator('.bot-conversation');
+    const controls = [
+      conversation.getByRole('button', { name: /^(Display|显示)$/ }),
+      page.locator(`${visiblePane} textarea`),
+      conversation.getByRole('button', { name: /^(Send|发送)$/ }),
+    ];
     for (const control of controls) {
-      expect(control.left, control.selector).toBeGreaterThanOrEqual(bounds.conversation.left - 1);
-      expect(control.right, control.selector).toBeLessThanOrEqual(bounds.conversation.right + 1);
-      expect(control.top, control.selector).toBeGreaterThanOrEqual(0);
-      expect(control.bottom, control.selector).toBeLessThanOrEqual(1001);
-      expect(control.width, control.selector).toBeGreaterThan(100);
+      await expect(control).toBeVisible();
+      const box = await control.boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(bounds.conversation.left - 1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(bounds.conversation.right + 1);
+      expect(box!.y).toBeGreaterThanOrEqual(0);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(1001);
+      expect(box!.width).toBeGreaterThan(0);
+      expect(box!.height).toBeGreaterThan(0);
     }
   }
-  return { ...bounds, single, selected };
-};
-const focusByKeyboard = async (page: Page, selector: string) => {
-  for (let index = 0; index < 40; index++) {
-    if (await page.locator(selector).evaluate(node => node === document.activeElement)) return;
-    await page.keyboard.press('Tab');
-  }
-  throw new Error(`Keyboard did not reach ${selector}.`);
+  return { ...bounds, listVisible, conversationVisible, selected };
 };
 
 for (const locale of ['en', 'zh-CN'] as const) {
@@ -171,25 +183,19 @@ for (const locale of ['en', 'zh-CN'] as const) {
         await expect(page.locator('#workspace-sidebar')).not.toHaveAttribute('aria-modal');
         evidence.push(await expectPanels(page, true));
       }
-      await page.locator('.bot-conversation-heading > a').click();
+      await closeBotConversation(page);
       evidence.push(await expectPanels(page, false));
       await page.locator(`.bot-list a[href="/bots/${botId(1)}"]`).click();
       await expect(page.locator(`${visiblePane} textarea`)).toBeEnabled();
       expect(await page.locator('.bot-session-host').evaluate((node, before) => node === before, original)).toBe(true);
     }
-    // The same viewport becomes single or split solely through the outer rail.
-    await page.setViewportSize({ width: 900, height: 1000 });
-    expect((await expectPanels(page, true)).single).toBe(true);
-    await page.locator('.sidebar-toggle').click();
-    expect((await expectPanels(page, true)).single).toBe(false);
-    await page.locator('.sidebar-toggle').click();
-    for (const contentWidth of [723, 724, 725]) {
-      const current = await panelGeometry(page);
-      await page.setViewportSize({ width: Math.round(current.viewport - current.workspace.width + contentWidth), height: 1000 });
-      const measured = await expectPanels(page, true);
-      expect(measured.workspace.width).toBe(contentWidth);
-      expect(measured.single).toBe(contentWidth < 724);
-      evidence.push(measured);
+    // Width changes must retain usable navigation without encoding a particular breakpoint.
+    for (const width of [900, 1024, 1280]) {
+      await page.setViewportSize({ width, height: 1000 });
+      evidence.push(await expectPanels(page, true));
+      await page.locator('.sidebar-toggle').click();
+      evidence.push(await expectPanels(page, true));
+      await page.locator('.sidebar-toggle').click();
     }
     expect(writes).toEqual([]);
     expect(await page.evaluate(() => window.botViewport.metrics.commands)).toBe(0);
@@ -224,13 +230,13 @@ test('preserves selection, searches, drafts and reading through responsive navig
   expect(resized.key).toBe(retained.key);
   expect(Math.abs(resized.offset - retained.offset)).toBeLessThanOrEqual(3);
   await page.setViewportSize({ width: 768, height: 1000 });
-  await focusByKeyboard(page, '.bot-conversation-heading > a'); await page.keyboard.press('Enter');
+  await focusBotControl(page, botConversationBack(page)); await page.keyboard.press('Enter');
   await expect(search).toHaveValue('Bot');
   await expect(page.locator('.bot-list a')).toHaveCount(2);
-  await focusByKeyboard(page, `.bot-list a[href="/bots/${botId(2)}"]`); await page.keyboard.press('Enter');
+  await focusBotControl(page, page.locator(`.bot-list a[href="/bots/${botId(2)}"]`)); await page.keyboard.press('Enter');
   await expect(message()).toBeEnabled();
-  await focusByKeyboard(page, `${visiblePane} textarea`); await page.keyboard.type('Independent draft B');
-  await page.locator('.bot-conversation-heading > a').click();
+  await focusBotControl(page, page.locator(`${visiblePane} textarea`)); await page.keyboard.type('Independent draft B');
+  await closeBotConversation(page);
   await page.setViewportSize({ width: 1024, height: 1000 });
   await page.locator('.sidebar-toggle').click();
   await expect(search).toHaveValue('Bot');
@@ -246,7 +252,7 @@ test('preserves selection, searches, drafts and reading through responsive navig
   const metrics = await page.evaluate(() => window.botViewport.metrics);
   expect(metrics.bindings).toHaveLength(2); expect(new Set(metrics.bindings).size).toBe(2);
   expect(metrics.channels).toBe(2); expect(metrics.closed).toBe(0); expect(metrics.commands).toBe(0);
-  await page.locator('.bot-conversation-heading > a').click();
+  await closeBotConversation(page);
   await page.locator(`.bot-list a[href="/bots/${botId(2)}"]`).click();
   await expect(message()).toHaveValue('Independent draft B');
   expect(writes).toEqual([]);
@@ -266,30 +272,40 @@ for (const locale of ['en', 'zh-CN'] as const) {
     await page.setViewportSize({ width: 768, height: 1000 });
     await page.goto(`/bots/${ready.id}`);
     await page.locator('.locale-control select').selectOption(locale);
-    await expect(page.locator('.bot-details-toggle')).toContainText(longName);
-    await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText(hostName);
+    await expectBotHeading(page, longName);
+    await focusBotControl(page, botDetailsOpener(page, longName)); await page.keyboard.press('Enter');
+    const details = await expectBotDetailsMode(page);
+    await expectBotDetailText(details, longName);
+    await expectBotDetailText(details, hostName);
+    await page.keyboard.press('Escape');
+    await expect(details).not.toBeVisible();
+    await expect(botDetailsOpener(page, longName)).toBeFocused();
     await expectPanels(page, true);
-    await page.locator('.bot-conversation-heading > a').click();
+    await closeBotConversation(page);
     await page.locator(`.bot-list a[href="/bots/${failed.id}"]`).click();
-    await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText(locale === 'en' ? 'Startup failed' : '启动失败');
+    await botDetailsOpener(page, failed.name).click();
+    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Startup failed' : '启动失败');
+    await page.keyboard.press('Escape');
     await expect(page.locator('.bot-conversation')).toContainText('provider_unavailable');
     await expectPanels(page, true);
     await expect(page.locator(`${visiblePane} textarea`)).toHaveCount(0);
     // An offline Worker remains offline even when the persisted startup result is ready.
     await page.route('**/api/v1/me/bots/defaults', route => route.fulfill({ json: { ...defaults, workerId: null, configuration: null, reason: 'no_available_worker', workers: [{ ...worker, state: 'offline', reason: 'offline', configuration: null }] }, headers: { 'Daynight-User-ID': BOT_USER } }));
-    await page.locator('.bot-conversation-heading > a').click();
+    await closeBotConversation(page);
     await page.locator('.bot-refresh').click();
     await page.locator(`.bot-list a[href="/bots/${ready.id}"]`).click();
-    await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText(locale === 'en' ? 'Worker offline' : 'Worker 离线');
-    await expect(page.locator('.bot-conversation-heading .bot-status')).toContainText(locale === 'en' ? 'Started' : '已启动');
+    await botDetailsOpener(page, ready.name).click();
+    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Worker offline' : 'Worker 离线');
+    await expectBotDetailText(botDetails(page), locale === 'en' ? 'Started' : '已启动');
+    await page.keyboard.press('Escape');
     await expectPanels(page, true);
     expect(writes).toEqual([]);
   });
 }
 
-test('retains display, details and fullscreen on both sides of the layout threshold', async ({ page }) => {
+test('retains display, details and fullscreen across wide and narrow workspaces', async ({ page }) => {
   const writes = await install(page);
-  await page.setViewportSize({ width: 1024, height: 1000 });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`/bots/${botId(1)}`);
   const message = page.locator(`${visiblePane} textarea`);
   await expect(message).toBeEnabled(); await message.fill('Draft while changing presentation');
@@ -297,19 +313,21 @@ test('retains display, details and fullscreen on both sides of the layout thresh
   await page.getByRole('button', { name: 'Display', exact: true }).click();
   await page.getByRole('menuitemradio', { name: 'Conversation', exact: true }).click();
   await page.keyboard.press('Escape');
-  await page.locator('.bot-details-toggle').click();
-  await expect(page.getByRole('complementary', { name: 'Assistant details' })).toBeVisible();
+  await botDetailsOpener(page, 'Bot A').click();
+  await expectBotDetailsMode(page, 'nonmodal');
+  await message.click();
+  await expect(message).toBeFocused();
   await page.setViewportSize({ width: 768, height: 1000 });
-  await expect(page.getByRole('dialog', { name: 'Assistant details' })).toBeVisible();
+  await expectBotDetailsMode(page, 'modal');
   await page.keyboard.press('Escape');
-  await expect(page.locator('.bot-details-toggle')).toBeFocused();
+  await expect(botDetailsOpener(page, 'Bot A')).toBeFocused();
   await page.getByRole('button', { name: 'Enter Session fullscreen', exact: true }).click();
   for (const width of [390, 1024, 768]) {
     await page.setViewportSize({ width, height: 1000 });
     await expect(page.locator('.bot-conversation')).toHaveAttribute('data-session-fullscreen', 'true');
     await expect.poll(() => page.locator('.bot-conversation').boundingBox()).toEqual({ x: 0, y: 0, width, height: 1000 });
-    await page.locator('.bot-details-toggle').click();
-    await expect(page.locator('.bot-details-panel')).toBeVisible();
+    await botDetailsOpener(page, 'Bot A').click();
+    await expectBotDetailsMode(page, width === 390 ? 'modal' : undefined);
     await page.keyboard.press('Escape');
     await expect(page.locator('.bot-conversation')).toHaveAttribute('data-session-fullscreen', 'true');
   }

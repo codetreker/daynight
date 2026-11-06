@@ -1,3 +1,4 @@
+import { expectTaskStatusLayout } from './task-status-layout';
 import { selectTaskList } from './project-view';
 import { navigateNativeSelect } from './native-select';
 import type { Locator, Page } from '@playwright/test';
@@ -34,19 +35,7 @@ const open = async (page: Page, id: string): Promise<void> => {
 };
 const geometry = async (page: Page): Promise<void> => {
   await expectCenteredTaskDetail(page, detail(page));
-  expect(await detail(page).locator('.task-detail-status-row').evaluate((row) => {
-    const bounds = row.getBoundingClientRect();
-    const left = row.querySelector('.task-detail-badges')!.getBoundingClientRect();
-    const right = row.querySelector('.task-automation-control')!.getBoundingClientRect();
-    const select = row.querySelector('select')!.getBoundingClientRect();
-    const status = row.querySelector('.task-status-trigger')!.getBoundingClientRect();
-    const controls = row.querySelector('.task-detail-state-controls')!.getBoundingClientRect();
-    const separated = left.right <= right.left || left.bottom <= right.top;
-    const adjacent = status.right <= select.left || status.bottom <= select.top;
-    return Math.abs(bounds.right - right.right) < .5 && separated && adjacent
-      && status.left >= controls.left && status.right <= controls.right
-      && select.left >= controls.left && select.right <= controls.right && row.scrollWidth <= row.clientWidth;
-  })).toBe(true);
+  await expectTaskStatusLayout(detail(page));
   expect(await detail(page).evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
 };
 

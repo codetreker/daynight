@@ -8,7 +8,8 @@ A command catalog can contain enough long skill descriptions to push the input,
 send action and command toggle beyond a clipped Session container. A limit based
 on the browser viewport does not account for task headers, receipts, multiline
 drafts or the Session's actual height. Scrolling the entire menu also moves its
-header out of reach, while a keyboard-only dismissal path leaves touch users
+header out of reach. An unconditional retry label also suggests discovery failed
+when the catalog loaded successfully. A keyboard-only dismissal path leaves touch users
 without an accessible escape. The task detail layout also reserved only 120px
 for every tab, although Session headers and input controls can require more.
 Shrinking the command list alone cannot repair that ancestor constraint. The
@@ -23,11 +24,17 @@ sizes preserve the menu heading, a 36px minimum catalog body, and the input's
 minimum editable height, footer and errors. Reserving only the heading would
 allow the catalog to collapse to zero height and leave no clickable command
 area. Multiline drafts scroll inside the textarea as it shrinks; the
-menu body owns catalog scrolling. Its heading, retry action and explicitly named
+menu body owns catalog scrolling. Its heading, refresh action and explicitly named
 close control remain outside that scroll area. The heading wraps its action
 group onto a separate row when needed while retaining the title's natural width.
 Keyboard selection adjusts only
 the menu body's scroll position and accounts for layout scaling.
+
+The catalog action uses localized refresh wording when no catalog error is
+visible, and reload wording only when `controls.commandsError` displays a real
+discovery error. During refresh it says "Refreshing…", is disabled and exposes
+`aria-busy`. This presentation uses the existing refresh lifetime and control
+gates; unrelated composer errors do not imply that catalog discovery failed.
 
 For an embedded Session, measured minimum controls, Session siblings and task
 Tabs determine how much height the task detail body must reserve. The visible
@@ -90,6 +97,10 @@ the input in document order, so retaining the menu can move focus into a
 candidate. Asynchronous dismissal can also leave outer focus handlers inspecting
 controls that will disappear. Synchronous removal preserves the existing browser
 and modal navigation without introducing a separate focus traversal algorithm.
+
+**Keep a retry label for every catalog state.** This suggests the loaded list is
+incomplete even when discovery succeeded. Catalog-specific refresh and reload
+labels describe the action without reusing operation-reconciliation wording.
 
 ## Consequences
 

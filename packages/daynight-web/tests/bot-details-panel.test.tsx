@@ -4,6 +4,7 @@ import { expect, it, vi } from 'vitest';
 import { BotDetailsPanel } from '../src/features/bots/BotDetailsPanel';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { botDefinition, botWorkerDefaults } from './helpers/bots';
+import { mockWideAssistantWorkspace } from './helpers/assistant-ui';
 
 function Harness() {
   const opener = useRef<HTMLButtonElement>(null), [open, setOpen] = useState(false);
@@ -24,7 +25,7 @@ it('keeps keyboard focus in the narrow drawer and closes only its own layer', ()
   expect(document.body.style.overflow).not.toBe('hidden');
 });
 it('changes responsive modality in place and releases the body lock on cancel',()=>{
-  vi.stubGlobal('innerWidth',1440);
+  mockWideAssistantWorkspace();
   renderWithLocale(<Harness />,{locale:'en'});
   fireEvent.click(screen.getByRole('button',{name:'Assistant'}));
   const panel=screen.getByRole('complementary',{name:'Assistant details'});

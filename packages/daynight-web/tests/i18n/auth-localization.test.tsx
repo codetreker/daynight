@@ -36,6 +36,7 @@ const defaults = (url: string): Response => {
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url === "/api/v1/projects" || url.startsWith("/api/v1/projects?")) return json({ items: [], nextCursor: null });
   if (url === "/api/v1/me/tokens") return json({ items: [] });
+  if (url === `/api/v1/projects/${projectId}`) return json({ id: projectId, name: "Raw project", repoUrl: "https://example.test/repo", createdAt: timestamp, updatedAt: timestamp, settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: user.personalTeam.id, version: 1n } });
   if (url === `/api/v1/projects/${projectId}/access`) {
     const { email: _email, name: _name, avatarUrl: _avatarUrl, ...directGrant } = member();
     return json({ ...directAccessFixture(projectId, userId), effectiveRole: directGrant.role, directGrant });
@@ -288,7 +289,7 @@ describe("authentication language changes", () => {
     const pending = deferred<Response>();
     const fetcher = install((url, init) => url === `/api/v1/projects/${projectId}/grants/${memberId}` && init?.method === "PUT" ? pending.promise : defaults(url));
     const interaction = userEvent.setup();
-    const view = renderWithLocale(<MembersPanel projectId={projectId} projectName="项目 Raw" user={user} onRemoved={vi.fn()} />, { locale: "en", taskCache: { viewerId: userId } });
+    const view = renderWithLocale(<MembersPanel projectId={projectId} user={user} onRemoved={vi.fn()} />, { locale: "en", taskCache: { viewerId: userId } });
     const role = await screen.findByRole("combobox", { name: en.auth.management.members.roleLabel({ name: "协作者 Raw" }) });
     await interaction.selectOptions(role, "admin");
     const dialog = screen.getByRole("dialog", { name: en.auth.management.members.roleTitle({ name: "协作者 Raw" }) });
@@ -326,7 +327,7 @@ describe("authentication language changes", () => {
       await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.tokensTab }));
       await interaction.click(await screen.findByRole("button", { name: en.auth.management.account.revokeLabel({ name: "Raw 令牌" }) }));
     } else {
-      view = renderWithLocale(<MembersPanel projectId={projectId} projectName="项目 Raw" user={user} onRemoved={vi.fn()} />, { locale: "en", taskCache: { viewerId: userId } });
+      view = renderWithLocale(<MembersPanel projectId={projectId} user={user} onRemoved={vi.fn()} />, { locale: "en", taskCache: { viewerId: userId } });
       await interaction.click(await screen.findByRole("button", { name: kind === "member" ? en.auth.management.members.removeLabel({ name: "协作者 Raw" }) : en.auth.management.members.revokeLabel({ id: invitationId }) }));
     }
     const dialog = screen.getByRole("dialog");

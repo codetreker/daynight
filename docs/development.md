@@ -69,6 +69,56 @@ that normal chain. The package's existing `files: ["dist"]` rule publishes these
 `daynight` and `dn` keep the same stable JavaScript entry. The
 [SQLite design](design/cli-sqlite-migrations.md#sql-资源与参考结构) owns SQL loading,
 reference metadata and execution ordering.
+
+### CLI test isolation
+
+The ordinary, installed-acceptance and stress Vitest configurations load
+`packages/daynight/scripts/test-bootstrap.ts` before test modules. The shared
+CommonJS preload is `packages/daynight/scripts/test-isolation.cts`.
+`pnpm dev:test` first runs a standalone sentinel regression, then runs the
+development-installer tests with that preload. `pnpm completion:acceptance`
+starts a preloaded Node runner, which passes the test environment to Python and
+its shell/CLI children.
+
+The bootstrap records the original homes' `~/.daynight` directories and inherited
+`DN_CONFIG_DIR` before changing the test environment. It clears that inherited
+override and creates a private baseline home and temporary directories under the
+checkout's `.tmp/cli-tests-*`. Individual tests retain their fixture homes and
+explicit configuration overrides; unrelated provider, cache and application
+settings remain available. Child-process and native-PTY launches propagate the
+isolation metadata and append the preload to `NODE_OPTIONS`, including when a
+fixture constructs a restricted environment. A child with an explicit safe
+`DN_CONFIG_DIR` retains its supplied home. If its default `.daynight` path would
+reach protected state, the launcher supplies the isolated baseline home.
+
+Before a mutation or cleanup, the guard protects both the selected Daynight
+root entries and their physical targets. POSIX paths retain their string or
+`Buffer` components and are traversed in filesystem order: existing prefixes and
+symbolic-link targets are resolved before subsequent `..` components. Missing directories retain virtual
+components so recursive creation receives the same protection. Cleanup preserves
+trailing separators, `.` and `..`, which can require following a link before
+removing a directory. A destructive operation that would remove an ancestor of
+protected state is also refused.
+
+The checks cover mutating Node filesystem calls, writable opens, tracked
+descriptors and `FileHandle` mutations, recursive-copy destinations, and native
+SQLite constructors and backup destinations. Windows disk paths undergo Node's
+namespace preparation before physical inspection and protected-root comparison.
+Local `\\.\pipe\` addresses identify IPC objects, so they skip disk-path
+inspection. Other filesystem paths remain available to tests. The standalone
+regression checks its scratch path against protected state before creating
+sentinels and launching guarded probes.
+
+Fixtures capture owned cleanup paths before changing or restoring their
+environment. Global test teardown and the standalone owning process's exit
+cleanup remove the run's private baseline directory. The protection applies only
+to test execution; the installed CLI's configuration precedence and filesystem
+behavior remain unchanged. The
+[test-state isolation decision](../.agents/notes/implemented/testing/2026-11-06-cli-test-state-isolation.md)
+owns the mechanism's alternatives and limits.
+
+### CLI test fixtures
+
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`. Large binary
 payload and copied-resource assertions use `Buffer.equals` to check every byte
@@ -509,6 +559,12 @@ enabled. The raw profile supplies an exact strict comparison; exactly 90% fails
 independently of display rounding. No production files or functions are excluded.
 Only the test-only `cmd/e2e_tests` package is removed from coverage execution;
 a recursive source check rejects non-test Go files there before validation.
+
+TaskGraph exact-limit fixtures collect planner statistics after their complete
+bulk graph load. Their real PostgreSQL traversal, 1000-node backbone, 5000
+references and independent overflow assertions remain part of ordinary validation;
+the [server fixture guide](../packages/daynight-server/README.md#task-graph-boundary-fixtures)
+owns the preparation boundary.
 
 The coverage installation supports the authentication package's installed-CLI
 assertions and its normally issued PAT handoff to two public-command deadline

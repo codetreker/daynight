@@ -17,7 +17,7 @@ const stores = new Set<Store>();
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const proof = { processesExcluded: true, operationsStopped: true } as const;
 const fixtureSource = `import path from 'node:path';
-import {mkdirSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, writeFileSync} from 'node:fs';
 let prompt=''; for await(const chunk of process.stdin) prompt+=chunk;
 const args=process.argv.slice(2);
 const pluginRoot=args.find(arg=>arg.startsWith('--plugin-dir=')).slice('--plugin-dir='.length);
@@ -28,8 +28,13 @@ if(args.includes('skill')&&args.includes('list')) {
  if(discovery==='delay') await new Promise(resolve=>setTimeout(resolve,150));
  if(discovery==='descendant') {
    const {spawn}=await import('node:child_process');
-   spawn(process.execPath,['-e',"const fs=require('node:fs');setInterval(()=>fs.writeFileSync(process.argv[1],String(Date.now())),10);",process.env.FIXTURE_REPORT+'.leaf'],{stdio:'ignore'});
-   await new Promise(resolve=>setTimeout(resolve,100));
+   const leafFile=process.env.FIXTURE_REPORT+'.leaf';
+   const leaf=spawn(process.execPath,['-e',"const fs=require('node:fs');setInterval(()=>fs.writeFileSync(process.argv[1],String(Date.now())),10);",leafFile],{stdio:'ignore'});
+   const deadline=Date.now()+5000;
+   while(!existsSync(leafFile)) {
+     if(leaf.exitCode!==null||Date.now()>=deadline) throw new Error('Discovery descendant did not publish its first write.');
+     await new Promise(resolve=>setTimeout(resolve,10));
+   }
  }
  const entry={name:'daynight-review',source:'plugin',enabled:discovery!=='disabled',path:discovery==='shadow'?process.cwd():path.join(pluginRoot,'skills','daynight-review')};
  let output=JSON.stringify(discovery==='missing'?[]:[entry]);
