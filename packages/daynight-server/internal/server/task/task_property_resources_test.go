@@ -296,3 +296,32 @@ func TestWorkerClaimRejectsMalformedResourceIDs(t *testing.T) {
 		t.Fatal("refused worker resource request changed task or created claim")
 	}
 }
+
+func TestPausedBlockedTaskRetainsDependencyAndInventory(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	project := taskProject(t, handler)
+	prerequisite := createHTTPTask(t, handler, project.ID, "Prerequisite")
+	target := createHTTPTask(t, handler, project.ID, "Dependent", prerequisite.ID)
+	result := propertyResource(t, handler, http.MethodPut, taskPath(target)+"/properties/paused", map[string]any{"version": target.Version, "valueText": "true"})
+	read := readHTTPTask(t, handler, target)
+	if result.Version != target.Version+1 || read.Version != result.Version || string(read.Properties["paused"]) != "true" || read.Status != "todo" || read.Ready || !reflect.DeepEqual(read.DependsOn, []string{prerequisite.ID}) || !reflect.DeepEqual(read.BlockedBy, []string{prerequisite.ID}) {
+		t.Fatalf("paused dependency state: %+v", read)
+	}
+	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID), ""), http.StatusOK)
+	if len(page.Items) != 2 || page.NextCursor != nil {
+		t.Fatalf("paused task inventory: %+v", page)
+	}
+	found := map[string]bool{}
+	for _, item := range page.Items {
+		if item.ProjectID != project.ID || found[item.ID] {
+			t.Fatalf("paused task inventory crossed scope or repeated an ID: %+v", page)
+		}
+		found[item.ID] = true
+		if item.ID == target.ID && (string(item.Properties["paused"]) != "true" || item.Status != "todo" || item.Ready || !reflect.DeepEqual(item.DependsOn, []string{prerequisite.ID}) || !reflect.DeepEqual(item.BlockedBy, []string{prerequisite.ID})) {
+			t.Fatalf("paused task list lost dependency state: %+v", item)
+		}
+	}
+	if !found[prerequisite.ID] || !found[target.ID] {
+		t.Fatalf("paused task inventory lost an ID: %+v", page)
+	}
+}

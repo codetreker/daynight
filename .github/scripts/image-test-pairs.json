@@ -2,22 +2,22 @@
   "schemaVersion": 1,
   "pairs": [
     {
-      "base": "9fda44ee4732bdae0f4033a113cc95373691df7d",
+      "base": "47d9262c84bedf3d96dd1298f764f6ba5b201aaf",
       "implementation": {
         "pr": 661,
-        "sha": "d2cfb6678acaf45f0674345337aada680311a36b",
+        "sha": "b1365a245b81e3fbd55d7fc43dfce2d37fb0258f",
         "reviews": [
-          5801451634
+          5802278357
         ]
       },
       "tests": {
         "pr": 745,
-        "sha": "40a4cd9a302fd95716ca26e67254a16152d42a5c",
+        "sha": "e9eb4e8c4068071f571614344c2087b862cb5014",
         "reviews": [
-          5801521681
+          5802253837
         ]
       },
-      "productionTree": "551d5558f0bf80383c5704d9cfe0fea1e3b5b0ca",
+      "productionTree": "0ddd7cec0f404f472eb615699a18c1f8806d8074",
       "allowPaths": [
         "packages/daynight/test/ci/image-test-pair-input.test.ts"
       ]

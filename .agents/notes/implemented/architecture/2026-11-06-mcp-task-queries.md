@@ -16,10 +16,15 @@ returned key to a repeatable-read fence of task count and exact version sum.
 The fence includes deleted and filtered-out tasks because their changes can
 alter readiness of visible dependents. A changed fence rejects continuation.
 The summary query reads bounded title previews and counts without materializing
-properties or dependency arrays. Full results are materialized incrementally
+properties or dependency arrays. Full list results are materialized incrementally
 under the large-object permit and the response byte budget. Graph reads retain
 the existing snapshot, limits and title-preview semantics; bounded summaries
 mark omitted nodes and provide a full-read continuation.
+
+Ready queries use the separate count-limited operation described by the
+[single-batch ready decision](../simplification/2026-11-06-mcp-ready-candidates.md).
+That decision supersedes the original ready continuation and byte-budget behavior;
+the list fence and graph decisions remain in effect.
 
 ## Alternatives
 
@@ -29,21 +34,22 @@ ordinary status or dependency updates, so it cannot detect priority changes.
 **Sort after fetching a REST page.** Filtering and grouping after the limit can
 omit tasks or produce a different order between pages.
 
-**Add a ready-task cursor now.** That would allow complete ready resources to
-continue directly, but changes the confirmed tool input. The oversized ready
-continuation is deferred while retaining the existing cursor-free input.
+**Add a ready-task cursor at the original query delivery.** That would have
+allowed complete ready resources to continue directly, but changed the confirmed
+tool input. The original delivery retained the cursor-free input and deferred
+complete ready continuation. The later single-batch decision explicitly chooses
+count-limited selection without continuation.
 
 ## Consequences
 
 Every list page scans project task headers in O(n) time with constant-size
 aggregate state. This relies on increasing versions, soft deletion and
 project-local prerequisites; physical purges or version rewrites require a new
-fence. Full results reserve the large-object budget and may require more work
+fence. Full list results reserve the large-object budget and may require more work
 per page. Summary graph omissions are explicit and a full read preserves the
 complete graph within the existing node and edge limits.
 
-If a full ready response exceeds its budget, continuation through the existing
-task list preserves task identities but omits descriptions. `task_show` can
-provide those descriptions when its adapter is available. The continuation
-states that limitation; the ready input remains available for a later compatible
-cursor design without changing REST ordering.
+The original ready continuation used the task list, preserving task identities
+but omitting descriptions; it disclosed that difference and relied on a separate
+Task adapter for complete details. Ready now returns a single current batch,
+while complete list traversal remains an independent operation.
