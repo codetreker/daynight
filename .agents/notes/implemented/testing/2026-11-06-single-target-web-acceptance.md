@@ -4,11 +4,11 @@ Status: implemented
 
 ## Problem
 
-Routine Web validation builds two production runtimes and runs the same complete
-functional browser inventory against both. The native and container branches
-already overlap, so each spends CPU, memory, database work and preparation on a
-second copy of the same UI journeys. The runner also needs a permission handoff
-and shared cleanup coordination solely because both targets are active.
+The earlier routine Web pipeline built two production runtimes and ran the same
+complete functional inventory against both. The branches already overlapped but
+each spent CPU, memory, database work and preparation on a second UI pass. A
+permission handoff and shared cleanup coordination existed solely because both
+targets were active.
 
 Large journeys multiply independent layout dimensions. Claim reading checks the
 Cartesian product of two claim states, two detail surfaces, three viewports and
@@ -43,7 +43,8 @@ CI retains two case shards, one serial browser worker per database and zero
 retries. `inventory.mts` remains the canonical functional/check-name owner. Each
 shard executes its selection once on container, and the final gate requires their
 complete disjoint union. Shard 2 owns one container combined-authentication
-journey, all navigation/lifecycle checks and paired attachment backup/restore.
+journey, the routine navigation selection, deployment lifecycle checks and paired
+attachment backup/restore.
 The backup check keeps its independent persistence and isolation proof; it can
 reuse Docker layers already built by the browser deployment.
 
@@ -81,6 +82,39 @@ checks. Product usability requirements at all supported sizes remain unchanged.
 The test policy no longer claims every language, format, claim state, surface,
 fullscreen mode and viewport combination has been exercised together.
 
+### Routine navigation browser selection
+
+The editor navigation-contract suite retains all 28 cases. The Team/Session and
+Bot commands pass `--grep @routine`; the tag is explicit selection metadata on
+unchanged case bodies. The unfiltered local configurations retain all 136 Team
+and nine Bot cases. Both selected and full commands keep one worker and zero
+retries.
+
+The 20 Team/Session representatives have the following owners:
+
+| Owner | Cases | Retained paths |
+| --- | ---: | --- |
+| Session record and Test Session layout | 2 | Compact record selection and accessible narrow-screen reading/navigation |
+| Worker configuration | 3 | Unsaved identity retention, arrow interaction and visible save actions |
+| Team preference | 7 | Drawer/layer dismissal, keyboard and native links, directory pagination, keyboard activation, account-isolated reload preference, ordinary navigation retention and Team switching |
+| Team management | 3 | Create/rename/typed delete, cancel/Escape and focus, refusal versus unknown outcome without replay |
+| Team membership | 5 | Team→Task→Steps, role changes, member leave, last-admin refusal and unknown outcome without replay |
+
+The two Bot representatives retain responsive A→B→A selection with draft, search
+and reading state, and details/fullscreen transitions across wide and narrow
+viewports. Other viewport/state combinations remain in the full local configs.
+Detailed Team member-state, invitation unknown-outcome and eight-route
+restoration matrices continue in the complete Vitest/V8 suite. Those component
+results do not prove the real geometry or input behavior of an omitted browser
+combination.
+
+The [shared preview decision](2026-11-05-shared-team-navigation-preview.md) still
+owns the common static server, private contexts, deadlines and artifact paths.
+Its original preparation savings and this later coverage reduction are separate
+changes. Navigation and functional branches overlap: a shorter navigation command
+does not imply the same reduction in the complete job. Branch completion, resource
+competition and the final join must be measured independently.
+
 The [case-shard decision](2026-11-04-web-ci-case-shards.md) retains partition and
 aggregate ownership. This decision replaces the dual-target scheduling in the
 [functional overlap decision](2026-11-04-web-functional-target-overlap.md), while
@@ -107,10 +141,11 @@ and profile-layout cases mutate shared personas. More workers require new
 isolation and browser-evidence ownership rather than merely changing a number.
 The selected reduction avoids that new mechanism.
 
-**Preserve every layout product.** This retains exact interaction coverage at
-all combinations but repeats the same renderer and control behavior many times.
-Representative tuples retain the primary mechanisms while accepting a gap for
-failures that occur only at an omitted combination.
+**Preserve every layout and navigation product in routine CI.** This retains
+interaction coverage at all combinations but repeats renderers, controls and
+state/route proofs. Representative tuples and tagged navigation cases retain the
+primary browser paths while accepting gaps for omitted combinations; complete
+local navigation configs and full Vitest remain available.
 
 **Move backup restoration to another job.** A separate runner repeats setup and
 loses warm Docker layers. Keeping the existing check retains its independent
@@ -128,6 +163,9 @@ An interaction defect confined to an omitted layout combination may also pass
 ordinary CI. Restoring a concrete regression requires adding its representative
 tuple; the fixtures remain parameterized by actual state, surface and viewport.
 The complete Cartesian product is not retained as a hidden routine workload.
+An omitted navigation case may expose a browser-only defect that component tests
+do not catch. It can be run locally without changing its body, or included in the
+routine selection by an explicit tag when a regression justifies that coverage.
 
 Removing a concurrent target reduces total work but does not establish a fixed
 job speedup. Runtime comparisons must separate the changed coverage policy from

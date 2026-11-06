@@ -145,7 +145,7 @@ const containerBranches = () => {
   };
   observed.command = async (file, args, options) => {
     observed.calls.push({ file, args, options });
-    const config = args.at(-1);
+    const config = args[args.indexOf('--config') + 1];
     const name = config === 'tests/navigation/playwright.config.ts' ? 'navigation'
       : config === 'tests/navigation/team-playwright.config.ts' ? 'team'
       : config === 'tests/navigation/bots-viewport-playwright.config.ts' ? 'bots' : undefined;
@@ -174,6 +174,11 @@ test('container functional verification overlaps three serial navigation command
   assert.equal(run.settled(), false, 'The callback must join functional browser cleanup.');
   run.gates.functional.resolve(); assert.equal((await run.completion).error, undefined);
   assert.deepEqual(run.observed.calls.map(({ options }) => options.timeoutMs), [180_000, 540_000, 180_000]);
+  assert.deepEqual(run.observed.calls.map(({ args }) => args), [
+    ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/playwright.config.ts'],
+    ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/team-playwright.config.ts', '--grep', '@routine'],
+    ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', 'tests/navigation/bots-viewport-playwright.config.ts', '--grep', '@routine'],
+  ]);
   for (const call of run.observed.calls) { assert.equal(call.file, 'pnpm'); assert.equal(call.options.cwd, repositoryRoot); assert.equal(call.options.signal, run.controller.signal); assert.equal(call.options.forceAfterMs, 1_000); }
 });
 

@@ -55,7 +55,7 @@ for (const scenario of [
   { width: 1280, height: 900, locale: 'en' }, { width: 390, height: 844, locale: 'en' }, { width: 320, height: 844, locale: 'en' },
   { width: 1280, height: 900, locale: 'zh-CN' }, { width: 390, height: 844, locale: 'zh-CN' }, { width: 320, height: 844, locale: 'zh-CN' },
 ]) {
-  test(`${scenario.locale} ${scenario.width}px Worker configuration arrow layout and interaction`, async ({ page }, testInfo) => {
+  test(`${scenario.locale} ${scenario.width}px Worker configuration arrow layout and interaction`, { tag: scenario.locale === 'en' && scenario.width === 320 ? ['@routine'] : [] }, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: scenario.width, height: scenario.height });
     await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), scenario.locale);
     const state = await install(page);

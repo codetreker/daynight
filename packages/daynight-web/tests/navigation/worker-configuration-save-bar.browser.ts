@@ -55,7 +55,7 @@ const clearField = async (page: Page) => {
 };
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 375, height: 667 }, { width: 1360, height: 900 }]) {
-  test(`${viewport.width}x${viewport.height} keeps dirty save actions visible and focused fields unobscured`, async ({ page }, info) => {
+  test(`${viewport.width}x${viewport.height} keeps dirty save actions visible and focused fields unobscured`, { tag: viewport.width === 390 && viewport.height === 844 ? ['@routine'] : [] }, async ({ page }, info) => {
     await page.setViewportSize(viewport);
     const state = await install(page);
     const bar = page.locator('.config-save-bar'), first = page.locator('#config-maxConcurrent');

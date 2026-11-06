@@ -1892,7 +1892,8 @@ admission independently of Steps forms and HTTP writes, including indexed
 history traversal, retirement, beforeunload, keyboard focus and both languages at
 320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
 tests/navigation/playwright.config.ts` after installing Chromium. Browser CI
-shard 2 runs all 28 cases before its full-stack acceptance. Its results and failure captures
+shard 2 runs all 28 cases in its navigation branch alongside container functional
+acceptance. Its results and failure captures
 are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
 inside the browser CI artifact directory.
 
@@ -1906,9 +1907,13 @@ context and controlled API responses; the preview serves only static assets.
 Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
 tests/navigation/team-playwright.config.ts`; add `--project team-management` to
 focus on settings geometry, wrapping, text selection and rename interactions.
-Browser CI shard 2 runs the complete suite between editor navigation and Bot
-viewport checks before full-stack acceptance. One worker and zero retries remain
-in effect. Preference and Session layout cases use 45-second deadlines, while
+Browser CI shard 2 selects the 20 `@routine` cases with `--grep @routine`,
+between the full editor suite and selected Bot viewport checks. The unfiltered
+local command runs the complete 136-case Team/Session suite. The routine set
+covers Session record/Test layout, Worker identity/arrow/save bar, Team preference,
+management CRUD/cancellation/unknown result, and member Task/Steps navigation,
+role, leave, last-admin and unknown-result paths. One worker and zero retries
+remain in effect. Preference and Session layout cases use 45-second deadlines, while
 management and members retain 30 seconds; preview startup retains 90 seconds.
 CI gives the grouped command a 540-second aggregate deadline, equal to the three
 former 180-second command budgets. Its output remains separated under the existing
@@ -1923,9 +1928,15 @@ against controlled HTTP and Session API responses. It checks long-history
 scrolling, bounded pagination, visible input and retained reading positions at
 desktop and 390px widths. Run `pnpm --filter @codetreker/daynight-web exec playwright
 test --config tests/navigation/bots-viewport-playwright.config.ts`. Browser CI
-shard 2 also runs this suite; captures are stored in
+shard 2 selects two `@routine` cases with `--grep @routine`: responsive A→B→A
+selection retains draft/search/reading state, and details/fullscreen traverses
+wide and narrow viewports. The unfiltered local command runs all nine cases;
+captures are stored in
 `packages/daynight-web/.tmp/acceptance/bots-viewport/`. These fixtures do not
-establish native Worker or Provider behavior.
+establish native Worker or Provider behavior. CI intentionally omits the other
+browser combinations while the full Vitest/V8 suite remains required. The
+[single-target decision](../../.agents/notes/implemented/testing/2026-11-06-single-target-web-acceptance.md)
+records that coverage trade-off and the local full-suite commands.
 
 The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
 fails independently of display rounding. Pure-type declarations contribute zero
@@ -1987,7 +1998,8 @@ browser/tool settings. Branch failures cancel shared work and preserve operation
 and cleanup failures. Navigation cancellation escalates after one second inside
 the callback termination grace; verification deadlines remain unchanged.
 
-Shard 2 owns the complete navigation-contract suite, dev-ci lifecycle fixtures,
+Shard 2 owns all 28 editor navigation-contract cases, the tagged 20-case Team
+and two-case Bot routine selections, dev-ci lifecycle fixtures,
 one eleven-check container combined-authentication journey and real attachment
 persistence/paired-backup restoration. Shard 1 runs its functional selection and
 owned cleanup. Both entries require the actual built/running image identity,

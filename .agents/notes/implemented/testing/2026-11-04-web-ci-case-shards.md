@@ -32,8 +32,9 @@ schema 4 functional evidence. Container callbacks read that selection through th
 existing source/run-bound parent receipt. Failed, malformed or incomplete
 collection cannot establish a valid selection.
 
-Shard 2 owns all existing once-only checks: complete navigation-contract cases, dev-ci
-lifecycle fixtures, one container eleven-check combined-authentication journey, and real
+Shard 2 owns all once-only checks: the complete editor navigation-contract suite,
+Team/Session and Bot `@routine` selections, dev-ci lifecycle fixtures, one
+container eleven-check combined-authentication journey, and real
 attachment persistence with paired-backup restoration. Ownership derives from
 the shard identity. Every shard still verifies its one functional target, built and
 running image identity, private resources, browser recovery and CLI cleanup.

@@ -79,7 +79,7 @@ const singleRow = async (page: Page) => {
   return geometry;
 };
 for (const locale of ['zh-CN', 'en']) for (const [width, height] of [[320, 640], [375, 667], [390, 844], [768, 900], [1360, 900]]) {
-  test(`${locale} ${width}px record selection stays compact and operable`, async ({ page }, info) => {
+  test(`${locale} ${width}px record selection stays compact and operable`, { tag: locale === 'zh-CN' && width === 320 ? ['@routine'] : [] }, async ({ page }, info) => {
     await page.setViewportSize({ width: width!, height: height! });
     const state = await open(page, locale);
     const geometry = await singleRow(page);

@@ -205,7 +205,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
   });
 }
 
-test('preserves selection, searches, drafts and reading through responsive navigation', async ({ page }, info) => {
+test('preserves selection, searches, drafts and reading through responsive navigation', { tag: '@routine' }, async ({ page }, info) => {
   const writes = await install(page);
   await page.setViewportSize({ width: 1024, height: 1000 });
   await page.goto('/bots');
@@ -303,7 +303,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
   });
 }
 
-test('retains display, details and fullscreen across wide and narrow workspaces', async ({ page }) => {
+test('retains display, details and fullscreen across wide and narrow workspaces', { tag: '@routine' }, async ({ page }) => {
   const writes = await install(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`/bots/${botId(1)}`);

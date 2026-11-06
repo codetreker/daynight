@@ -954,13 +954,18 @@ unchanged. The
 [browser job scheduling decision](../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
 owns that network lifetime and error propagation.
 
-Shard 2 owns complete navigation-contract, dev-ci lifecycle fixtures, one
+Shard 2 owns all 28 editor navigation-contract cases, 20 tagged Team/Session
+cases and two tagged Bot cases, dev-ci lifecycle fixtures, one
 container eleven-check combined journey and real attachment persistence/paired
 backup restoration. Both shards retain their functional, image identity, process,
 browser and resource cleanup requirements. Matrix `fail-fast` remains false.
 Local ordinary acceptance is complete and unsharded; native stress adds capacity
 after functional/browser and CLI barriers, refusing CI or a shard combination
-before preparation.
+before preparation. The Team and Bot commands add `--grep @routine`; their
+unfiltered local configs retain all 136 and nine cases. Tags select routine
+coverage without changing case bodies, one-worker isolation or zero retries.
+Full Vitest/V8 coverage remains required; omitted browser combinations are an
+explicit trade-off described in the single-target decision.
 
 The existing final `checks` job first applies its general preceding-job gate.
 For selected Web validation it also requires quality and the browser matrix to

@@ -168,7 +168,7 @@ test('long and whitespace-containing Team names remain selectable without overla
   }
 });
 
-test('creates, renames and typed-deletes a Team, preserving raw input and browser preference', async ({ page }) => {
+test('creates, renames and typed-deletes a Team, preserving raw input and browser preference', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page); api.exists = false;
   await page.goto('/projects'); await openCreate(page);
   const create = page.getByRole('dialog');
@@ -196,7 +196,7 @@ test('creates, renames and typed-deletes a Team, preserving raw input and browse
   expect(api.writes[2]).toEqual({ method: 'DELETE', body: { name: '  Renamed\nTeam  ', version: 2, expectedUserId: userId } });
 });
 
-test('cancel and Escape submit nothing; dialogs retain focus on narrow screens in both languages', async ({ page }) => {
+test('cancel and Escape submit nothing; dialogs retain focus on narrow screens in both languages', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page); await page.goto('/projects');
   await openCreate(page); const dialog = page.getByRole('dialog');
   await expect(dialog.getByLabel('Team name')).toBeFocused();
@@ -233,7 +233,7 @@ test('rename dialog restores focus, discards drafts and fits long text in both l
   await dialog.getByRole('button', { name: '取消' }).click(); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);
 });
 
-test('nonempty refusal and lost response remain distinct, with no automatic replay', async ({ page }) => {
+test('nonempty refusal and lost response remain distinct, with no automatic replay', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page); await page.goto(`/teams/${teamId}/settings`);
   await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible();
   api.refusal = 'team_not_empty';

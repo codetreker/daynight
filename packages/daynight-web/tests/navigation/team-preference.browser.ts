@@ -139,7 +139,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 500 
   }
 }
 
-test('opens directly in collapsed desktop and phone rail, and closes the drawer in layers', async ({ page }) => {
+test('opens directly in collapsed desktop and phone rail, and closes the drawer in layers', { tag: '@routine' }, async ({ page }) => {
   await install(page); await page.goto('/projects');
   const trigger = page.locator('.team-switch');
   const menu = page.locator('.team-options');
@@ -162,7 +162,7 @@ test('opens directly in collapsed desktop and phone rail, and closes the drawer 
   await page.keyboard.press('Escape'); await expect(drawer).toHaveCount(0);
 });
 
-test('supports keyboard navigation, dismissal, native links and route changes', async ({ page }) => {
+test('supports keyboard navigation, dismissal, native links and route changes', { tag: '@routine' }, async ({ page }) => {
   await install(page); await page.goto('/projects');
   const trigger = page.locator('.team-switch');
   const menu = page.locator('.team-options');
@@ -184,7 +184,7 @@ test('supports keyboard navigation, dismissal, native links and route changes', 
   await expect(menu).toBeHidden();
 });
 
-test('preserves a two-page menu, focus and scroll throughout identity and directory checks', async ({ page }) => {
+test('preserves a two-page menu, focus and scroll throughout identity and directory checks', { tag: '@routine' }, async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 500 });
   const api = await install(page); api.paginated = true; api.extraTeams = 16;
   await page.goto('/projects');
@@ -221,7 +221,7 @@ test('preserves a two-page menu, focus and scroll throughout identity and direct
   await stable();
 });
 
-test('activates a Team with the keyboard', async ({ page }) => {
+test('activates a Team with the keyboard', { tag: '@routine' }, async ({ page }) => {
   await install(page); await page.goto('/projects');
   const trigger = page.locator('.team-switch');
   await trigger.focus(); await page.keyboard.press('Enter');
@@ -351,7 +351,7 @@ test('keeps continuation failure reachable and retries it', async ({ page }) => 
 for (const locale of ['en-US', 'zh-CN'] as const) for (const narrow of [false, true]) {
   test.describe(`${locale} ${narrow ? 'narrow' : 'desktop'} Personal sidebar`, () => {
     test.use({ locale, viewport: narrow ? { width: 390, height: 844 } : { width: 1280, height: 900 } });
-    test('switches by Team identity and keeps navigation continuous', async ({ page }) => {
+    test('switches by Team identity and keeps navigation continuous', { tag: locale === 'zh-CN' && narrow ? ['@routine'] : [] }, async ({ page }) => {
       const api = await install(page);
       const chinese = locale === 'zh-CN';
       const members = chinese ? 'Team 成员' : 'Team members';
@@ -440,7 +440,7 @@ test('keeps Personal management links absent throughout project loading, failure
   } finally { gate.resolve(); }
 });
 
-test('remembers confirmed Team selection on reload and keeps accounts isolated', async ({ page }) => {
+test('remembers confirmed Team selection on reload and keeps accounts isolated', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page);
   await page.goto('/projects');
   await expect(heading(page, 'Personal')).toBeVisible();
@@ -536,7 +536,7 @@ test('sidebar restoration leaves shared content available during slow and failed
   } finally { gate.resolve(); }
 });
 
-test('ordinary workspace navigation retains the current Team until explicit default re-entry', async ({ page }) => {
+test('ordinary workspace navigation retains the current Team until explicit default re-entry', { tag: '@routine' }, async ({ page }) => {
   await install(page);
   await page.goto('/projects'); await expect(heading(page, 'Personal')).toBeVisible();
   await put(page, alice, alpha);

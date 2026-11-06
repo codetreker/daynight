@@ -106,7 +106,7 @@ const foreground = async (page: Page, api: State) => {
   return { finish: finish.resolve };
 };
 
-test('Task Steps use the empty resource contract after Team navigation', async ({ page }) => {
+test('Task Steps use the empty resource contract after Team navigation', { tag: '@routine' }, async ({ page }) => {
   await install(page); await start(page);
   await traverse(page, `/projects/${projectId}/tasks/${taskId}`);
   await expect(page.getByRole('heading', { name: 'Retained Task', exact: true })).toBeVisible();
@@ -184,7 +184,7 @@ test('member loading and read failure retain a working retry', async ({ page }) 
   expect(api.writes).toHaveLength(0);
 });
 
-test('admin promotes and removes members and can demote self while another admin remains', async ({ page }) => {
+test('admin promotes and removes members and can demote self while another admin remains', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page); await start(page);
   const charlieRole = page.getByLabel(`Team role: ${charlie}`);
   await charlieRole.selectOption('admin'); let dialog = page.getByRole('dialog');
@@ -320,7 +320,7 @@ for (const access of ['member', 'unavailable', 'network'] as const) test(`a conf
   await traverse(page, `/teams/${betaId}/members`); await expect(page.locator(`[id="team-role-${betaId}-${bob}"]`)).toBeVisible();
 });
 
-test('member leaves and returns to Personal, keeping direct grant and browser preference', async ({ page }) => {
+test('member leaves and returns to Personal, keeping direct grant and browser preference', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page, 'member'); await start(page);
   await expect(page.getByLabel('Team role: Bob')).toBeDisabled();
   await expect(page.locator('.team-member-row').filter({ hasText: 'Bob' }).getByRole('button', { name: 'Remove' })).toBeDisabled();
@@ -338,7 +338,7 @@ test('member leaves and returns to Personal, keeping direct grant and browser pr
   await expect(page.getByRole('button', { name: 'Leave Team' })).toBeDisabled();
 });
 
-test('an admin can leave with another admin, but a concurrent last-admin change is refused', async ({ page }) => {
+test('an admin can leave with another admin, but a concurrent last-admin change is refused', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page); await start(page);
   await page.getByRole('button', { name: 'Leave Team' }).click();
   const dialog = page.getByRole('dialog');
@@ -366,7 +366,7 @@ test('confirmed success remains visible when subsequent Team reads fail', async 
   expect(api.members.get(bob)?.role).toBe('member'); expect(api.writes).toHaveLength(1);
 });
 
-test('cancellation and Escape do not write; unknown is retained without replay', async ({ page }) => {
+test('cancellation and Escape do not write; unknown is retained without replay', { tag: '@routine' }, async ({ page }) => {
   const api = await install(page); await start(page);
   await page.getByLabel('Team role: Bob').selectOption('member'); let dialog = page.getByRole('dialog');
   await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); expect(api.writes).toHaveLength(0);

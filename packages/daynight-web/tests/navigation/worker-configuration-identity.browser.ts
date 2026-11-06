@@ -44,7 +44,7 @@ const revalidate = async (page: Page, state: Awaited<ReturnType<typeof install>>
 };
 
 for (const scenario of [{ width: 1280, height: 900, locale: 'en', choose: 'Choose projects', done: 'Done' }, { width: 390, height: 844, locale: 'zh-CN', choose: '选择项目', done: '完成' }]) {
-  test(`${scenario.locale} ${scenario.width}px retains unsubmitted configuration through identity and resource checks`, async ({ page }) => {
+  test(`${scenario.locale} ${scenario.width}px retains unsubmitted configuration through identity and resource checks`, { tag: scenario.locale === 'en' && scenario.width === 1280 ? ['@routine'] : [] }, async ({ page }) => {
     await page.setViewportSize({ width: scenario.width, height: scenario.height });
     await page.addInitScript(locale => localStorage.setItem('daynight.web.locale', locale), scenario.locale);
     const state = await install(page);

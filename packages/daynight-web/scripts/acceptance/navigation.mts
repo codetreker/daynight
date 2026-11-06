@@ -27,13 +27,13 @@ export const runNavigationChecks = async (cancellation: AbortController, execute
   const environment = { ...process.env };
   // Production recovery owns only browsers carrying its phase marker.
   delete environment.DAYNIGHT_ACCEPTANCE_DIRECTORY;
-  for (const [configuration, timeoutMs] of [
-    ['tests/navigation/playwright.config.ts', 180_000],
-    ['tests/navigation/team-playwright.config.ts', 540_000],
-    ['tests/navigation/bots-viewport-playwright.config.ts', 180_000],
+  for (const [configuration, timeoutMs, selection] of [
+    ['tests/navigation/playwright.config.ts', 180_000, []],
+    ['tests/navigation/team-playwright.config.ts', 540_000, ['--grep', '@routine']],
+    ['tests/navigation/bots-viewport-playwright.config.ts', 180_000, ['--grep', '@routine']],
   ] as const) {
     cancellation.signal.throwIfAborted();
-    await execute('pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', configuration],
+    await execute('pnpm', ['--filter', '@codetreker/daynight-web', 'exec', 'playwright', 'test', '--config', configuration, ...selection],
       // The dev-ci callback receives five seconds to drain before its group is killed.
       { timeoutMs, forceAfterMs: 1_000, cwd: repositoryRoot, env: environment, signal: cancellation.signal });
   }

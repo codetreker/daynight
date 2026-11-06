@@ -29,8 +29,12 @@ parent after installed-CLI validation. The
 former dual-target permission wait. Direct
 acceptance and the first shard retain their existing paths.
 
-The callback overlaps two operations: the three navigation commands run serially
-in one branch, while the existing container functional browser runs in another.
+The callback overlaps two operations: three navigation commands run serially
+in one branch, while the container functional browser runs in another. The
+editor command runs its complete 28 cases; Team/Session and Bot commands select
+20 and two `@routine` cases with `--grep @routine`. Their unfiltered local configs
+retain the complete 136/nine cases under the
+[single-target coverage policy](2026-11-06-single-target-web-acceptance.md).
 Both branches settle before combined authentication can restart the container.
 Only after authentication and callback exit can dev-ci remove its networks.
 The selected container is the only production target in that invocation.

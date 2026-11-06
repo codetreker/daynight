@@ -866,15 +866,20 @@ CLI 就绪后启动 dev-ci，callback 验证 run/source 绑定的父回执及安
 结束后才回收 run-wide CLI。
 
 Chromium 安装完成后，CI 通过父 evidence 请求 `navigationChecks: true`，该可选字段
-只属于 functional 共享检查分片。容器 callback 在安装 CLI 验证后并行执行串行导航
-与 container functional；两分支排空后才进行 combined-auth 重启，callback 结束后
+只属于 functional 共享检查分片。导航分支依次执行完整 28 项 editor navigation-contract、
+Team/Session 的 20 项 `@routine` 和 Bot 的两项 `@routine`；后两份配置由命令参数
+`--grep @routine` 选择，完整本地命令不带 grep，仍执行全部 136/9 项。测试 body
+保持，常规 CI 主动减少重复浏览器交叉边界；完整 Vitest/V8、Team 状态及 route
+恢复矩阵保持。容器 callback 在安装 CLI 验证后并行执行串行导航与 container
+functional；两分支排空后才进行 combined-auth 重启，callback 结束后
 才允许 dev-ci 清理网络。导航使用独立端口、Vite cache/outDir 和受控 API，不修改
 生产目标数据库、profile 或安装 CLI；其环境副本移除生产浏览器归属标记
 `DAYNIGHT_ACCEPTANCE_DIRECTORY`，保留显式 browser channel 与工具配置。
 任一分支失败立即取消共享 controller，排空后传播原始和清理错误。导航取消后的
 一秒 escalation 位于 dev-ci callback 的五秒 TERM grace 内，验证时限保持不变。
 
-Shard 2 统一拥有完整 navigation-contract、部署生命周期 fixture、一次容器十一项
+Shard 2 统一拥有完整 editor navigation-contract、Team/Bot routine 选择、
+部署生命周期 fixture、一次容器十一项
 combined-auth 和附件持久化/成对备份恢复。归属仅由分片身份推导；Shard 1 完成其
 功能选择及清理。两个分片都要求真实镜像、浏览器、CLI 和 dev-ci 清理证明，矩阵
 `fail-fast` 为 false。本地完整入口有当前目标的一份 combined-auth；`--stress`
