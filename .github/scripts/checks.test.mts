@@ -279,29 +279,24 @@ test("the macOS evidence handoff removes only the two recorder paths", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-const selectedWebStep = gate.match(/      - name: Require selected Web jobs to succeed\n([\s\S]*?)(?=      - )/)![1]!;
-const selectedWebCommand = selectedWebStep.match(/        run: \|\n((?:          .+\n)+)/)![1]!
-  .split("\n").filter(Boolean).map((line) => line.slice(10)).join("\n");
+const selectedWebStep = gate.match(/      - name: Require selected Web quality to succeed\n([\s\S]*?)(?=      - |$(?![\s\S]))/)![1]!;
+const selectedWebCommand = selectedWebStep.match(/^        run: (.+)$/m)![1]!;
 
-test("selected Web evidence requires actual quality and shard success before downloads", () => {
+test("selected Web validation requires actual quality success", () => {
   assert.match(selectedWebStep, /^        if: \$\{\{ needs.detect-changes.outputs.web == 'true' \}\}$/m);
   assert.match(selectedWebStep, /WEB_QUALITY_RESULT: \$\{\{ needs.verify-web-quality.result \}\}/);
-  assert.match(selectedWebStep, /WEB_SHARD_RESULT: \$\{\{ needs.verify-web.result \}\}/);
-  assert.ok(gate.indexOf("Require selected Web jobs to succeed") < gate.indexOf("Download first Web shard summary"));
 });
 
 for (const quality of ["success", "skipped", "failure", "cancelled"]) {
-  for (const shards of ["success", "skipped", "failure", "cancelled"]) {
-    test(`selected Web quality=${quality} shards=${shards} executes the workflow guard`, () => {
-      const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
-        env: { ...process.env, WEB_QUALITY_RESULT: quality, WEB_SHARD_RESULT: shards },
-        encoding: "utf8", timeout: 5_000,
-      });
-      if (result.error) throw result.error;
-      assert.equal(result.signal, null);
-      assert.equal(result.status === 0, quality === "success" && shards === "success");
+  test(`selected Web quality=${quality} executes the workflow guard`, () => {
+    const result = spawnSync("bash", ["-e", "-c", selectedWebCommand], {
+      env: { ...process.env, WEB_QUALITY_RESULT: quality },
+      encoding: "utf8", timeout: 5_000,
     });
-  }
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null);
+    assert.equal(result.status === 0, quality === "success");
+  });
 }
 
 const workflowSteps = (stage: string): string[] => [...stage.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
@@ -369,8 +364,8 @@ test("the final gate checks complete pairing evidence independently of Web selec
   assert.ok(!step.includes("if:"));
   assert.ok(!gate.includes("pattern:"));
   const downloads = workflowSteps(gate).filter((entry) => entry.includes("uses: actions/download-artifact@") && entry.includes("name: daynight-image-test-pairs-"));
-  assert.equal(downloads.length, 16);
-  assert.equal(new Set(downloads.map(artifactName)).size, 16);
+  assert.equal(downloads.length, 14);
+  assert.equal(new Set(downloads.map(artifactName)).size, 14);
   assert.ok(step.includes("IMAGE_PAIR_MANIFEST_COMMIT: ${{ needs.detect-changes.outputs.image_pair_manifest_commit }}"));
   assert.ok(step.includes("IMAGE_PAIR_EXPECTED_COMBINED_TREE: ${{ needs.detect-changes.outputs.image_pair_combined_tree }}"));
 });
@@ -413,7 +408,7 @@ const executePairingGate = (directory: string, environment: Record<string, strin
 test("the actual pairing gate accepts documentation-only and all-module evidence sets", () => withPairingEvidence((directory) => {
   writePairingReceipt(directory, "detect-changes");
   assert.equal(executePairingGate(directory), 0);
-  const names = ["verify-ubuntu-latest", "verify-windows-latest", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-macos", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion", "verify-server", "verify-server-e2e", "verify-web-quality", "verify-web-1", "verify-web-2"];
+  const names = ["verify-ubuntu-latest", "verify-windows-latest", "verify-installed-ubuntu-latest", "verify-installed-windows-latest", "verify-macos", "verify-runtime-22.14.0", "verify-runtime-22", "verify-runtime-24", "verify-runtime-node", "verify-completion", "verify-server", "verify-server-e2e", "verify-web-quality"];
   for (const name of names) writePairingReceipt(directory, name);
   assert.equal(executePairingGate(directory, { IMAGE_PAIR_CLI: "true", IMAGE_PAIR_SERVER: "true", IMAGE_PAIR_WEB: "true" }), 0);
   assert.notEqual(executePairingGate(directory), 0, "Unselected or stale receipts must not be accepted.");
@@ -447,19 +442,13 @@ test("the actual runtime guard rejects differing or absent input identity before
   assert.notEqual(run().status, 0);
 }));
 
-test("main-pinned combinations retain the original Web source gate and event identity", () => {
-  const browser = jobs.get("verify-web")!;
-  const expected = [
-    [browser, "Verify production dashboard and container deployment", 'env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/ci.mts browser --shard=${{ matrix.shard }}/2'],
-    [browser, "Recover recorded dashboard acceptance resources", 'env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/acceptance.mts --cleanup'],
-    [gate, "Verify complete Web shard evidence", 'env GITHUB_SHA="$IMAGE_PAIR_COMBINED_COMMIT" node packages/daynight-web/scripts/acceptance/report.mts --shards .tmp/web-shards/1/*/evidence.json .tmp/web-shards/2/*/evidence.json'],
-  ];
-  for (const [stage, name, command] of expected) {
-    const step = workflowSteps(stage!).find((entry) => entry.includes(`name: ${name}\n`));
-    assert.ok(step, `${name} must remain an original source-identity consumer.`);
-    assert.ok(step.includes("IMAGE_PAIR_COMBINED_COMMIT: ${{ steps.image-pairs.outputs.combined_commit }}"));
-    assert.ok(step.includes(`run: ${command}\n`), `${name} must run the original command against its actual combined commit.`);
-    assert.ok(pairStep(stage!)!.includes("IMAGE_PAIR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}"));
-  }
+test("main-pinned combinations validate the remaining Web quality job without restoring retired acceptance", () => {
+  const quality = jobs.get("verify-web-quality")!;
+  assert.ok(quality);
+  const step = workflowSteps(quality).find((entry) => entry.includes("id: web-quality\n"));
+  assert.ok(step);
+  assert.ok(step.includes("run: node packages/daynight-web/scripts/ci.mts quality\n"));
+  assert.ok(quality.indexOf(pairStep(quality)!) < quality.indexOf(step));
+  assert.doesNotMatch(workflow, /verify-web:|verify-web-[12]|WEB_SHARD_RESULT|daynight-web-summary|scripts\/acceptance|ci\.mts browser/);
   assert.doesNotMatch(workflow, /GITHUB_SHA=.*GITHUB_ENV|^\s+GITHUB_SHA:/m);
 });

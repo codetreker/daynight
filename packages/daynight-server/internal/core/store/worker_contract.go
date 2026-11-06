@@ -32,7 +32,3 @@ type WorkerTaskSource struct {
 	Task        model.Task
 	ProjectName string
 }
-
-var _ WorkerWriter = (*Store)(nil)
-var _ WorkerScope = (*workerTx)(nil)
-var _ WorkerWriteDAO = (*workerTx)(nil)

@@ -126,7 +126,7 @@ and the total length.
 Controller IPC admission tests keep real sockets, assert the production timeout
 and its cancellation, and accelerate the incomplete socket's native expiry;
 virtual time separately exercises the authenticated response wait. The
-[test timing decision](../.agents/notes/implemented/testing/2026-11-04-cli-test-time-and-bytes.md)
+[test timing decision](../.agents/notes/archived/testing/2026-11-04-cli-test-time-and-bytes.md)
 explains the distinction between Node socket timers and global fake timers.
 Controller startup timeout tests keep real SDKs, native fixture processes and
 request logs. A test-only deadline controller waits for the stalled initialization
@@ -140,11 +140,10 @@ owns this timing boundary.
 Controller and Worker lifecycle fixtures record production poll requests while
 using short native promise-timer ticks for their controlled resource states.
 Their tests retain exact cadence, deadline clipping and cancellation assertions;
-the [coordinator polling decision](../.agents/notes/implemented/testing/2026-11-04-coordinator-test-polling.md)
-owns that test boundary.
+the [coordinator polling decision](../.agents/notes/archived/testing/2026-11-04-coordinator-test-polling.md) records the rationale for that test boundary.
 Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
-The [native fixture decision](../.agents/notes/implemented/testing/2026-11-04-native-supervisor-fixture-clock.md)
+The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
 Real Bot integration owns a 180-second teardown hook because original process
 proof, IPC stop, Windows Job termination and diagnostics can outlast the ordinary
@@ -193,7 +192,7 @@ available for direct membership and termination checks. The
 owns the preserved handle lifetime and measurement boundaries.
 The native fsmonitor regression uses a real hook's invocation marker to qualify
 ordinary Git and verify protected-query suppression. Its
-[fixture decision](../.agents/notes/implemented/testing/2026-11-04-fsmonitor-fixture-marker.md)
+[fixture decision](../.agents/notes/archived/testing/2026-11-04-fsmonitor-fixture-marker.md)
 records why no idle delay is required after that marker is written.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
 acceptance uses the development-only `node-pty` dependency, including Windows
@@ -227,7 +226,7 @@ Separating these allowances changes budget ownership; it does not mean the old
 scenario-total allowance or total runtime is unchanged. Teardown aborts and
 awaits pending preparation/behavior, reaps owned processes, closes registries
 and removes private trees before publishing successful cleanup receipts. The
-[hosted-runner and preparation decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
+[hosted-runner and preparation decision](../.agents/notes/archived/testing/2026-11-03-macos-hosted-runner-capacity.md)
 records the platform, linking and lifecycle rationale.
 
 Shell completion has a separate real-shell acceptance command. It requires
@@ -266,8 +265,7 @@ Native development and validation support Linux, Windows and Apple Silicon
 (ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
 build and tests on native Linux, macOS 15 ARM64 and Windows runners. macOS uses
 the standard `macos-15` label for one `verify-macos` allocation, retaining Darwin
-ARM64 verification and the complete ordinary and installed phases. The [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
-owns the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
+ARM64 verification and the complete ordinary and installed phases. The [platform decision](../.agents/notes/archived/testing/2026-11-04-macos-arm64-support.md) records the rationale for the support boundary; the [image availability decision](../.agents/notes/implemented/testing/2026-11-05-macos-ci-image-availability.md)
 records the explicit image selection and its limits. Hosted capacity failures
 require diagnosis within this ARM64 runner policy, and a supported label still
 requires real allocation and complete native test results.
@@ -291,7 +289,7 @@ if the latter fails, provided shared preparation and architecture checks passed
 and the job was not cancelled. Ordinary environment/probe uploads run before the
 fixed receipt paths are cleared and the installed recorder starts. Each phase
 retains its own outcome, artifacts, build and cleanup; an ordinary failure still
-fails the job and final gate. The [phase ownership decision](../.agents/notes/implemented/testing/2026-11-04-parallel-native-cli-validation.md)
+fails the job and final gate. The [phase ownership decision](../.agents/notes/archived/testing/2026-11-04-parallel-native-cli-validation.md)
 records the original parallel model; the [single macOS allocation decision](../.agents/notes/implemented/testing/2026-11-05-single-macos-native-allocation.md)
 owns its partial replacement, failure handling and budget trade-off.
 Main pushes run every module. The checkout includes the required history.
@@ -342,8 +340,17 @@ records the ownership and observation guarantees, and the
 [controlled-holder decision](../.agents/notes/archived/bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
 records the limited process selection and required native evidence. No live GitHub or Copilot
 credentials are required by these checks.
-SQLite tests use real disk databases, including reopen, transaction rollback,
-locking, and revision/retry transitions on every platform.
+SQLite business-state unit tests use private native `:memory:` connections,
+including real constraints, migrations, transaction rollback and revision/retry
+transitions. Stores receive these connections explicitly; fixture cleanup closes
+them. Cases proving file persistence after reopen, WAL snapshots, separate live
+connections, filesystem errors, instance locking or cross-process recovery use
+real file databases in `*.integration.test.ts` suites. Ordinary `pnpm test` and
+the CLI CI matrix run both kinds with the existing platform and failure checks.
+Git repositories, IPC and Controller pending-content files retain their own
+private filesystem fixtures. The
+[memory SQLite decision](../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)
+owns storage selection and connection ownership.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
@@ -357,8 +364,7 @@ native Git imports, while real clone/fetch/worktree operations remain the test
 subjects. Worker worktree cases separately copy file-owned starting repositories
 for the files and reftable backends. Direct mutation checks verify independent
 tracked bytes, refs and Git objects in each copy. The
-[Worker seed decision](../.agents/notes/implemented/testing/2026-11-04-worker-git-fixture-seeds.md)
-owns that fixture lifetime. Tests within a file stay sequential so environment
+[Worker seed decision](../.agents/notes/archived/testing/2026-11-04-worker-git-fixture-seeds.md) records the rationale for that fixture lifetime. Tests within a file stay sequential so environment
 changes and cleanup have one owner.
 The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
@@ -366,7 +372,7 @@ records the isolation rules, and the
 before/after measurements. The repository-discovery submodule case prepares its
 real Git fixture in a case-scoped hook before exercising discovery, retaining
 separate setup and behavior limits and the existing private-directory cleanup.
-The [fixture lifecycle decision](../.agents/notes/implemented/testing/2026-10-22-submodule-discovery-fixture-lifecycle.md)
+The [fixture lifecycle decision](../.agents/notes/archived/testing/2026-10-22-submodule-discovery-fixture-lifecycle.md)
 records that separation. The installed acceptance suite additionally verifies the package
 bin, default native command shims, singleton/stale-lock behavior and the complete
 review/re-review/restart/closure lifecycle. Its Vitest global setup packs and
@@ -376,8 +382,7 @@ uses private CLI package files with shared read-only dependencies. Global
 teardown checks the canonical package bytes and removes that installation after
 all consumers finish. Consumer receipts report runtime cleanup separately from
 the canonical preparation receipt in `.tmp/installed-cli-preparation.json`.
-The [shared preparation decision](../.agents/notes/implemented/testing/2026-11-04-shared-installed-cli-preparation.md)
-owns installation, view and cleanup responsibilities. Separate npm global-prefix
+The [shared preparation decision](../.agents/notes/archived/testing/2026-11-04-shared-installed-cli-preparation.md) records the rationale for installation, view and cleanup responsibilities. Separate npm global-prefix
 acceptance checks self-update and installation ownership. Curated environment and scenario
 receipts are uploaded by each native CI job; [validation](#validation) describes
 their scope and interpretation. Controlled Copilot executables exercise retained sessions, durable
@@ -593,7 +598,7 @@ When [CI selection](#ci-selection) selects the server, `verify-server` and
 PostgreSQL and a 20-minute bound; both contribute to the final `checks` job.
 The [server validation guide](../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 owns receipt paths, resource ownership and requirement-to-test mappings, and the
-[CI split decision](../.agents/notes/implemented/testing/2026-11-04-server-e2e-ci-jobs.md)
+[CI split decision](../.agents/notes/archived/testing/2026-11-04-server-e2e-ci-jobs.md)
 records the execution boundary and retained gates.
 
 ## Web development
@@ -614,8 +619,7 @@ opening and refresh on business-version changes or recovery needs.
 Refresh retains browsing state and the mounted details, including attachment
 inputs and previews. Failed reads keep prior data with an error and recover on a
 later successful read; unavailable resources are cleared. The
-[automatic refresh decision](../.agents/notes/implemented/feature/2026-10-22-project-task-auto-refresh.md)
-owns scheduling, request priority and retained-state guarantees. Its
+[automatic refresh decision](../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md) records the rationale for scheduling, request priority and retained-state guarantees. Its
 [locale runtime](../docs/design/daynight-web-i18n.md) provides English and Simplified
 Chinese across the shipped interface, native Intl formatting and an independent
 saved language preference. Navigation, the centered detail dialog and fullscreen
@@ -631,8 +635,7 @@ installation and registering a first task. Commands stay selectable and provide
 copy feedback; the current origin is informational. The guide mounts outside the
 authenticated shell and makes no API requests, including identity or provider
 discovery, on direct access, reload, language changes or foreground return.
-The [guide decision](../.agents/notes/implemented/architecture/2026-10-26-public-setup-guide.md)
-owns its boundaries; [Web requirements](../docs/spec/daynight-web.md#日常使用引导)
+The [guide decision](../.agents/notes/archived/architecture/2026-10-26-public-setup-guide.md) records the rationale for its boundaries; [Web requirements](../docs/spec/daynight-web.md#日常使用引导)
 own the complete outcomes. With the Go API running on loopback, use:
 
 ```text
@@ -707,7 +710,7 @@ source/browser identity, combined authentication and owned-resource cleanup;
 CI shard 2 owns both combined journeys while each shard owns its full cleanup. Local measurements prove only their recorded source and host;
 they do not establish hosted PR latency.
 
-The [local stress decision](../.agents/notes/implemented/testing/2026-11-03-local-stress-suites.md)
+The [local stress decision](../.agents/notes/archived/testing/2026-11-03-local-stress-suites.md)
 records the workload split and retained correctness guarantees.
 
 ## Package versions
@@ -728,7 +731,7 @@ npm `latest`; existing npm versions and release tags are immutable. The
 [publication procedure](#npm-publication) describes the workflow's admission,
 validation, and existing-version skips. A successful skip alone does not prove
 that the requested source was published. The
-[version policy decision](../.agents/notes/implemented/simplification/2026-11-04-release-time-versioning.md)
+[version policy decision](../.agents/notes/archived/simplification/2026-11-04-release-time-versioning.md)
 records why version selection belongs to release preparation.
 
 ## npm publication
@@ -817,14 +820,11 @@ successfully once the exact npm version or tag exists. These skips do not
 complete a missing tag or claim that the existing package matches the retained
 artifact. Artifacts remain available for 30 days. The workflow serializes
 releases and keeps in-progress releases running. The
-[npm CLI publication-check decision](../.agents/notes/implemented/process/2026-10-22-npm-cli-publication-checks.md)
-owns lookup, skip and duplicate-publication behavior; the
+[npm CLI publication-check decision](../.agents/notes/archived/process/2026-10-22-npm-cli-publication-checks.md) records the rationale for lookup, skip and duplicate-publication behavior; the
 [trusted-publishing decision](../.agents/notes/archived/process/2026-10-20-npm-trusted-publishing.md)
 records the new-artifact identity, OIDC and public-verification choices. The
-[pnpm OIDC decision](../.agents/notes/implemented/process/2026-10-22-pnpm-oidc-publication.md)
-owns the publishing client and its configuration. The
-[CLI publication-validation decision](../.agents/notes/implemented/process/2026-10-22-cli-publication-validation.md)
-owns the release validation scope.
+[pnpm OIDC decision](../.agents/notes/archived/process/2026-10-22-pnpm-oidc-publication.md) records the rationale for the publishing client and its configuration. The
+[CLI publication-validation decision](../.agents/notes/archived/process/2026-10-22-cli-publication-validation.md) records the rationale for the release validation scope.
 
 ## CI selection
 
@@ -869,7 +869,7 @@ path selection, including excluded documentation paths alongside a version
 change. This distinction keeps the exception tied to a complete version-only
 PR rather than an individual file. Version validity, packaging and installed
 artifact validation remain in the existing publication workflow. The
-[version-only PR decision](../.agents/notes/implemented/testing/2026-11-04-version-only-pr-ci.md)
+[version-only PR decision](../.agents/notes/archived/testing/2026-11-04-version-only-pr-ci.md)
 records the rationale and retained publication responsibilities.
 
 The exact build/configuration and acceptance-script inputs in
@@ -880,7 +880,7 @@ ownership. The `.gitignore` exclusion matches only the repository root; nested
 ignore files retain their module ownership or the unclassified-path fallback.
 An excluded path does not suppress jobs selected by other changed files. New
 modules and unclassified patches select all jobs until their consumers are
-explicitly assigned. The [server input decision](../.agents/notes/implemented/testing/2026-11-04-server-ci-input-selection.md)
+explicitly assigned. The [server input decision](../.agents/notes/archived/testing/2026-11-04-server-ci-input-selection.md)
 records the dependency boundary and its maintenance cost.
 
 Selected jobs keep their ordinary functional checks, coverage thresholds,
@@ -894,7 +894,7 @@ browser jobs select the
 official HTTPS Ubuntu archive and security services before package preparation.
 Their shared command changes only the runner's referenced mirror list; signed
 source stanzas and package indices remain intact. An unexpected source layout
-fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/2026-10-22-ubuntu-package-mirrors.md)
+fails explicitly. The [mirror decision](../.agents/notes/archived/testing/2026-10-22-ubuntu-package-mirrors.md)
 records the provisioning failure and the retained acceptance limits.
 Each native phase builds current source for its own validation. Linux/Windows
 ordinary and installed phases use independent jobs; macOS shares checkout and
@@ -908,11 +908,11 @@ The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harn
 the ordinary Vitest/V8 suite and the strict statement checker serially. Harness
 has a 180-second deadline and collection has a 300-second deadline; final source-inventory and
 coverage verification has an independent 60-second deadline. The
-[stage budget decision](../.agents/notes/implemented/testing/2026-11-04-web-coverage-finalization-budget.md)
+[stage budget decision](../.agents/notes/archived/testing/2026-11-04-web-coverage-finalization-budget.md)
 keeps a completed collection from consuming its final verification budget.
 Only the Vitest/V8 subprocess uses four workers
 through its copied environment, retaining the `forks` pool and file isolation.
-The [worker capacity decision](../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+The [worker capacity decision](../.agents/notes/archived/testing/2026-10-28-web-quality-worker-capacity.md)
 calibrates that setting for the dedicated public standard Linux runner's four
 CPUs; it does not change inputs, assertions or coverage gates.
 
@@ -933,8 +933,20 @@ private profile root outside uploaded artifacts. Command wrappers require
 owned groups to stop after settlement; failures and cancellation still fail.
 Both targets drain before run-wide CLI recovery, preserving active commands and
 credentials in the other target. The
-[functional target decision](../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
-owns those isolation constraints.
+[functional target decision](../.agents/notes/archived/testing/2026-11-04-web-functional-target-overlap.md) records the rationale for those isolation constraints.
+
+Chromium installation completes before CI starts acceptance. A validated optional
+navigation request in the existing source/run receipt makes the container callback
+run serial navigation alongside its functional browser, after permission and
+installed-CLI validation. Both branches drain before combined-authentication
+restart and callback exit, keeping network teardown outside navigation. Their
+hosts, output directories, profiles and API fixtures remain separate. Navigation
+command environments omit the production browser-ownership marker while retaining
+browser-channel and tool settings. Navigation
+command cancellation uses a one-second escalation grace inside the callback's
+outer termination grace, preserving verification deadlines. The
+[browser job scheduling decision](../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
+owns cancellation, concurrency and measurement limits.
 
 Shard 2 owns all 28 navigation-contract cases, dev-ci lifecycle fixtures, both
 eleven-check combined-authentication journeys and the existing real attachment
@@ -957,18 +969,18 @@ canonical coverage and both combined receipts only on shard 2. Missing,
 inconsistent or incomplete summaries fail the same required job. Full browser
 artifacts are `daynight-web-acceptance-1` and `daynight-web-acceptance-2`; coverage
 remains separate. Artifacts retain 30 days. The
-[two-shard decision](../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
+[two-shard decision](../.agents/notes/archived/testing/2026-11-04-web-ci-case-shards.md)
 records duplication costs and the limits of the estimated critical path.
 
-The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
-retains the independent quality responsibility and command budgets. Standard
+Quality checks retain their independent responsibility and command budgets;
+the [quality isolation decision](../.agents/notes/archived/testing/2026-10-26-web-quality-job-isolation.md)
+records that separation and its rationale. Standard
 Playwright JSON reports expose named phases for the largest journeys. Selected
 status journeys share worker-owned API/CLI credentials and a project while
 retaining fresh per-case API contexts, browser login and artifact validation;
 permission, platform and assignment share only a project. Worker restart or a
 different service origin cannot reuse another worker's prepared resources. The
-[shared preparation decision](../.agents/notes/implemented/testing/2026-11-04-web-scenario-preparation.md)
-owns those resource lifetimes. The
+[shared preparation decision](../.agents/notes/archived/testing/2026-11-04-web-scenario-preparation.md) records the rationale for those resource lifetimes. The
 [Web validation guide](../packages/daynight-web/README.md#production-browser-acceptance)
 owns detailed receipt and wall-time interpretation rules.
 The Go coverage, Go E2E and Web browser jobs restore module and compiler caches
@@ -995,7 +1007,7 @@ Workflow concurrency groups runs by workflow and ref. A newer PR run cancels an
 older run for that PR. For `refs/heads/main`, `cancel-in-progress` is false: new
 pushes queue behind the active run without cancelling it. GitHub may replace an
 older pending run with a newer pending run in the same group.
-The [main CI continuity decision](../.agents/notes/implemented/process/2026-11-03-main-ci-continuity.md)
+The [main CI continuity decision](../.agents/notes/archived/process/2026-11-03-main-ci-continuity.md)
 records the concurrency and aggregation policy.
 Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
@@ -1007,7 +1019,7 @@ under [package versions](#package-versions). The
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
 records the earlier PR version-check timing and the retained final job-result
-gate choices. The [cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
+gate choices. The [cancellation decision](../.agents/notes/archived/bug-fix/2026-11-03-cancelled-workflow-gate.md)
 preserves the earlier rationale for stopping aggregation during cancellation.
 
 To validate the routing rules locally without application dependencies, run:
@@ -1036,8 +1048,7 @@ it does not fingerprint dirty changes or prove an executed gate, platform result
 or reviewer decision. A failed scenario or cleanup remains a failure even when
 other results pass.
 
-The [lifecycle cross-layer acceptance decision](../.agents/notes/implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
-owns the same-data packed-CLI/production-Web journey, real installed-process
+The [lifecycle cross-layer acceptance decision](../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md) records the rationale for the same-data packed-CLI/production-Web journey, real installed-process
 competition and genuine historical-SQL startup/restart proof. These extend the
 existing service and browser fixtures, with their normal source, fault and cleanup
 ownership. Native project/task HTTP fixtures remain controlled client evidence;

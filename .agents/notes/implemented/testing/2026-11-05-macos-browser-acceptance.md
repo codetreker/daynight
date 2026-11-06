@@ -71,7 +71,7 @@ errors; an `EIO` result alone never establishes that a process stopped.
 
 This extends the executable-path assumptions in the historical
 [production acceptance decision](../../archived/testing/2026-10-20-dashboard-production-acceptance.md).
-The [functional target isolation](2026-11-04-web-functional-target-overlap.md)
+The [functional target isolation](../../archived/testing/2026-11-04-web-functional-target-overlap.md)
 and shared cleanup barriers remain unchanged.
 
 ## Alternatives

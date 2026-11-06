@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { performance } from "node:perf_hooks";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -25,7 +26,7 @@ const fixture = () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-cleanup-tests");
   mkdirSync(base, { recursive: true });
   const directory = mkdtempSync(path.join(base, "cleanup-"));
-  const store = openWorkerStore(path.join(directory, "state.sqlite"), { onMigration: () => {} }); roots.push({ directory, store });
+  const store = openWorkerStore(createMemoryDatabase(), { onMigration: () => {} }); roots.push({ directory, store });
   const project = store.registerProject({ projectId: uuid(1), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(directory, "repo") });
   const owner: ResourceOwner = { projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4) };
   const task = store.activateTask(store.registerPending({ ...owner, agent: "codex" }));

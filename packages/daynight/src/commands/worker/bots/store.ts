@@ -2,7 +2,7 @@ import path from "node:path";
 import type { BotDeletionStop } from "./session-api.js";
 import type { BotDeletionTarget } from "./delete-files.js";
 import { randomUUID } from "node:crypto";
-import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
+import { openSqliteDatabase, closeSqliteDatabase, type SqliteDatabaseSource, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { controllerExecutionDirectory, controllerPayloadHash, controllerTicketPath } from "../../controller/launch-ticket.js";
 import { workerStoreFormat } from "../store-format.js";
@@ -14,7 +14,7 @@ const key = (owner: BotOwner, botId: string) => ({ ...parseBotOwner(owner), botI
 const predicate = "server_origin = @serverOrigin AND owner_user_id = @ownerUserId AND worker_id = @workerId";
 
 /** The caller holds the Worker instance lock throughout inventory and execution access. */
-export const openBotStore = (databaseFile: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
+export const openBotStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
   const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowCreate: true,
     ...(options.busyTimeoutMs === undefined ? {} : { timeoutMs: options.busyTimeoutMs }),
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });

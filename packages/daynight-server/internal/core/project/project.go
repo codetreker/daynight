@@ -39,6 +39,15 @@ func LookupError(err error) error {
 	return err
 }
 func ValidateCreate(p model.Principal, input CreateProject) error {
+	if err := ValidateCreateFields(p, input); err != nil {
+		return err
+	}
+	return validateRepoURL(input.RepoURL)
+}
+
+// ValidateCreateFields validates the common creation fields independently of
+// the repository syntax used by each registration entry point.
+func ValidateCreateFields(p model.Principal, input CreateProject) error {
 	if err := team.RequireActor(p, input.ExpectedUserID); err != nil {
 		return err
 	}
@@ -50,7 +59,7 @@ func ValidateCreate(p model.Principal, input CreateProject) error {
 	if strings.TrimSpace(input.Name) == "" || !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) {
 		return invalidInput("Project name must be nonempty UTF-8 text without NUL characters.")
 	}
-	return validateRepoURL(input.RepoURL)
+	return nil
 }
 func Create(ctx context.Context, dao store.ProjectCreationDAO, userID, id string, input CreateProject) (model.Project, model.ProjectAccess, error) {
 	var teamID string
@@ -178,10 +187,15 @@ func ValidateList(p model.Principal, request ProjectListRequest) error {
 	return err
 }
 func ReadList(ctx context.Context, dao store.ProjectReader, p model.Principal, request ProjectListRequest) (store.ProjectPage, error) {
+	return ReadListBounded(ctx, dao, p, request, 0)
+}
+
+func ReadListBounded(ctx context.Context, dao store.ProjectReader, p model.Principal, request ProjectListRequest, maxItemBytes int) (store.ProjectPage, error) {
 	p, scope, page, err := listScope(p, request)
 	if err != nil {
 		return store.ProjectPage{}, err
 	}
+	scope.MaxItemBytes = maxItemBytes
 	result, err := dao.ScopedProjects(ctx, p, scope, page)
 	if errors.Is(err, model.ErrNotFound) {
 		return store.ProjectPage{}, &model.Fault{Code: "not_found", Message: "Team was not found.", Cause: err}

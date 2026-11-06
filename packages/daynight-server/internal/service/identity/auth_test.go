@@ -18,6 +18,7 @@ import (
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/google/uuid"
@@ -30,7 +31,7 @@ type identityReply struct {
 
 type identityFixture struct {
 	identity *Identity
-	database *store.Store
+	database *postgres.Store
 	now      time.Time
 	calls    atomic.Int32
 	replies  map[string]identityReply
@@ -40,7 +41,7 @@ type identityFixture struct {
 // This server exercises the SDK transport boundary; upstream integration is separate.
 func newIdentityFixture(t *testing.T) *identityFixture {
 	t.Helper()
-	database, err := store.Open(context.Background(), serviceDatabaseURL(t))
+	database, err := postgres.Open(context.Background(), serviceDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

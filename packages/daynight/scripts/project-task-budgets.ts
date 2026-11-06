@@ -105,11 +105,16 @@ const expectedDisconnect = (error: unknown): boolean => typeof error === "object
 
 type TerminateInstalledProcess = typeof import("../test/fixtures/installed-cli.js").terminateInstalledProcess;
 
+export const budgetChildEnvironment = (environment: NodeJS.ProcessEnv, home: string): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries(environment).filter(([name]) => name.toUpperCase() !== "DN_CONFIG_DIR")),
+  HOME: home, USERPROFILE: home,
+});
+
 const runInstalledList = async (installed: InstalledCliReceipt, home: string, cwd: string, watchdogMs: number, receipt: BudgetProbeReceipt, terminate: TerminateInstalledProcess, preload: string | undefined, serverToken: string, signal?: AbortSignal): Promise<void> => {
   signal?.throwIfAborted();
   const started = performance.now();
   const child = spawn(installed.nodePath, [...(preload === undefined ? [] : ["--import", preload]), installed.entryPath, "project", "list", "--json"], {
-    cwd, env: { ...process.env, HOME: home, USERPROFILE: home }, windowsHide: true,
+    cwd, env: budgetChildEnvironment(process.env, home), windowsHide: true,
     detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
   });
   const stderr: Buffer[] = [];

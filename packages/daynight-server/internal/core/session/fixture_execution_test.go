@@ -508,7 +508,7 @@ func (s *fixtureCoordinator) authorize(ctx context.Context, op *Operation, scope
 	return true, nil
 }
 
-func testTransact(s *Execution, db *store.Store, ctx context.Context, fn func(*operationTx) error) error {
+func testTransact(s *Execution, db store.SessionWriter, ctx context.Context, fn func(*operationTx) error) error {
 	op, err := s.BeginOperation()
 	if err != nil {
 		return err

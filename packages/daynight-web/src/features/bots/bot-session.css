@@ -1,2 +1,42 @@
 .bot-session-host, .bot-session-pane { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .bot-session-pane[hidden] { display: none; }
+
+.bot-session-pane .session-presentation-assistant { container: bot-reading / inline-size; background: #fdfdfe; }
+.bot-session-pane .session-presentation-assistant .session-timeline { padding: 32px 36px 20px; }
+.bot-session-pane .session-presentation-assistant .session-timeline-content { max-width: 760px; }
+.bot-session-pane .session-presentation-assistant .session-entry { margin-bottom: 29px; }
+.bot-session-pane .session-presentation-assistant .session-message,
+.bot-session-pane .session-presentation-assistant .session-markdown { color: #303644; font-size: 16px; line-height: 1.8; }
+.bot-session-pane .session-presentation-assistant .session-message.user_message { width: fit-content; max-width: 85%; margin-left: auto; padding: 12px 19px; border: 1px solid #eae7f5; border-radius: 17px 17px 5px 17px; background: #f3f0fa; }
+.bot-session-pane .session-presentation-assistant .assistant_message > .session-markdown:first-child > p:first-child { font-size: 17px; font-weight: 600; }
+.bot-session-pane .session-presentation-assistant .session-markdown :is(h1, h2, h3, h4, h5, h6) { font-size: 17px; line-height: 1.6; color: #303644; margin: 24px 0 12px; }
+.bot-session-pane .session-presentation-assistant .session-markdown > :first-child { margin-top: 0; }
+.bot-session-pane .session-presentation-assistant .session-markdown p { margin-block: 12px; }
+.bot-session-pane .session-presentation-assistant .session-markdown > :last-child { margin-bottom: 0; }
+.bot-session-pane .session-presentation-assistant .session-markdown :is(ul, ol) { margin-block: 12px; padding-inline-start: 24px; }
+.bot-session-pane .session-presentation-assistant .session-markdown li { margin-block: 5px; }
+.bot-session-pane .session-presentation-assistant .session-markdown code { font-size: 13px; }
+.bot-session-pane .session-presentation-assistant .session-markdown pre { margin-block: 18px; padding: 16px; border-radius: 9px; }
+.bot-session-pane .session-presentation-assistant .session-markdown pre code { white-space: pre; overflow-wrap: normal; }
+.bot-session-pane .session-presentation-assistant .session-markdown table { font-size: 13px; }
+.bot-session-pane .session-presentation-assistant .session-markdown :is(th, td) { padding: 10px 12px; }
+.bot-session-pane .session-presentation-assistant .session-markdown blockquote { color: #687085; }
+.bot-session-pane .session-presentation-assistant .session-resource { font-size: 13px; overflow-wrap: anywhere; }
+.bot-session-pane .session-presentation-assistant .session-image { max-width: 100%; }
+.bot-conversation-empty { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; min-height: 100%; width: 100%; max-width: 690px; margin-inline: auto; padding: 50px 38px; color: #303644; overflow-wrap: anywhere; }
+.bot-conversation-mark { display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 27px; border-radius: 12px; background: #6262ba; color: #fff; font-size: 27px; }
+.bot-conversation-empty h3 { margin: 0 0 12px; font-size: 27px; font-weight: 600; letter-spacing: -.5px; }
+.bot-conversation-empty > p { margin: 0 0 30px; color: #687085; font-size: 14px; line-height: 1.8; }
+.bot-conversation-starters { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 420px; }
+.bot-conversation-starters button { display: flex; justify-content: space-between; align-items: center; gap: 16px; min-height: 44px; padding: 13px 0; border: 0; border-bottom: 1px solid #e5e8ee; background: transparent; color: #535d72; font: inherit; font-size: 13px; line-height: 1.6; text-align: start; cursor: pointer; transition: color 150ms; }
+.bot-conversation-starters button:hover { color: #5555b6; }
+.bot-conversation-starters button:focus-visible { outline: 2px solid #6262ba; outline-offset: 3px; border-radius: 3px; }
+@container bot-reading (max-width: 600px) {
+  .bot-session-pane .session-presentation-assistant .session-timeline { padding: 24px 18px 18px; }
+  .bot-session-pane .session-presentation-assistant .session-message,
+  .bot-session-pane .session-presentation-assistant .session-markdown { font-size: 15px; }
+  .bot-session-pane .session-presentation-assistant .session-message.user_message { padding: 11px 15px; }
+  .bot-conversation-empty { padding: 35px 27px; }
+  .bot-conversation-empty h3 { font-size: 25px; }
+}
+@media (prefers-reduced-motion: reduce) { .bot-conversation-starters button { transition: none; } }

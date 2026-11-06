@@ -1,3 +1,4 @@
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +34,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const cwd = path.join(project.localPath, ".worktrees", "daynight", owner.taskId); await mkdir(cwd, { recursive: true });
   const worktree: WorktreeBinding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: cwd, branch: `daynight/${owner.taskId}` };
   const configuration: ExecutionConfiguration = { agent, model: "current-model", args: [], recoveryLimit: 2 };
-  const store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); store.registerProject(project);
+  const store = openWorkerStore(createMemoryDatabase()); stores.push(store); store.registerProject(project);
   store.registerPending({ ...owner, agent, sessionId }); const task = store.activateTask(owner);
   const context: HerdrExecutionContext = { ...owner, cwd, agent };
   const nativeEnvironment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };

@@ -1,7 +1,7 @@
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { acquireMaintenanceLock } from "../../platform/instance-lock.js";
-import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, type SqliteMigrationReporter, type SqliteDatabaseSource } from "../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { reviewFormat } from "./store-format.js";
 import type { ReviewPaths } from "./paths.js";
@@ -61,13 +61,13 @@ const requireExcluded = (proof: ProcessesExcluded): void => {
 
 export type ReviewPublicationState = { phase: "prepared" | "pending" | "verified" | "legacy"; publisherId: string | null; identityFormat: PublicationIdentityFormat; outcome: "approved" | "commented" | null; remoteReviewId: string | null; threadIds: string[]; followupConsumed: boolean };
 const publicationColumns = `phase, publisher_id AS publisherId, identity_format AS identityFormat, outcome, remote_review_id AS remoteReviewId, remote_thread_ids AS threadIds, followup_consumed AS followupConsumed`;
-type ListingPaths = Pick<ReviewPaths, "databaseFile" | "lockFile">;
+type ListingPaths = Pick<ReviewPaths, "lockFile"> & { databaseFile: SqliteDatabaseSource };
 
 export const readReviewListingSnapshot = (
   paths: ListingPaths,
   options: { onMigration?: SqliteMigrationReporter } = {},
 ): ReviewListingSnapshot | null => {
-  if (!path.isAbsolute(paths.databaseFile) || !path.isAbsolute(paths.lockFile)) throw new Error("The SQLite database and instance-lock paths must be absolute.");
+  if ((typeof paths.databaseFile === "string" && !path.isAbsolute(paths.databaseFile)) || !path.isAbsolute(paths.lockFile)) throw new Error("The SQLite database and instance-lock paths must be absolute.");
   return readSqliteDatabase<ReviewListingSnapshot | null>({
     file: paths.databaseFile, format: reviewFormat, onMissing: () => null,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
@@ -86,8 +86,8 @@ export const readReviewListingSnapshot = (
   });
 };
 
-export const openStore = (databaseFile: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
-  if (!path.isAbsolute(databaseFile)) throw new Error("The SQLite database path must be absolute.");
+export const openStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
+  if (typeof databaseFile === "string" && !path.isAbsolute(databaseFile)) throw new Error("The SQLite database path must be absolute.");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
   requireInteger(busyTimeoutMs, "SQLite busy timeout", 1);
   if (busyTimeoutMs > 60000) throw new Error("SQLite busy timeout must not exceed 60000 milliseconds.");
@@ -242,7 +242,7 @@ export const openStore = (databaseFile: string, options: { busyTimeoutMs?: numbe
       db.prepare("UPDATE pull_requests SET desired_revision = desired_revision + 1, observed_at = @now WHERE host = @host AND github_id = @githubId AND number = @number").run({ ...pullRequestKey(pr), now });
       return needPullRequest(pr);
     }),
-    close: (): void => { closeSqliteDatabase(db, { file: databaseFile, format: reviewFormat }); },
+    close: (): void => { closeSqliteDatabase(db, { file: db.name, format: reviewFormat }); },
     getRepository,
     getPullRequest,
     getReview,

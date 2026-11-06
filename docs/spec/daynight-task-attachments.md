@@ -10,13 +10,11 @@
 本文拥有附件的产品行为与 FA1–FA14 要求；
 [架构](../design/daynight-task-attachments.md)拥有模块、接口和运行机制。
 [附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
-[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
+[项目分片决策](../../.agents/notes/archived/architecture/2026-10-24-project-sharded-attachment-layout.md)
 记录范围和取舍。各组件的实际验证结果归属对应源码、PR 与 CI。
 
 [鉴权需求](daynight-auth.md)要求附件请求继承项目成员权限，已在全部附件和预览
-入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。HTTP 入口每次验证会话或 PAT；文件 I/O 前在同一快照确认成员及 task 归属和未删除状态，已准入的
-单文件操作允许完成，I/O 后不再重新检查成员关系。本文的可信同源 HTML、普通
-iframe、相对资源及键盘交互继续保留，单文件操作和 K1 边界继续有效。[Task 软删除](daynight-task-deletion.md)保留全部附件元数据和文件；删除后新附件操作对授权成员返回 `410 task_deleted`。
+入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。HTTP 入口每次验证会话或 PAT；读取在文件 I/O 前通过快照确认成员及 task 归属和未删除状态。上传、覆盖和删除与 Task 软删除串行：先完成的附件变更由删除保留，删除先提交时附件变更不执行文件操作，对授权成员返回 `410 task_deleted`。本文的可信同源 HTML、普通 iframe、相对资源及键盘交互继续保留，单文件操作和 K1 边界继续有效。
 
 ## 目标与范围
 
@@ -189,7 +187,7 @@ Esc、Tab 操作
 
 | 类型 | 展示方式 |
 |---|---|
-| Markdown | CommonMark 与 GFM（含表格）渲染，原始 HTML 作为文本；`mermaid` 图块按[流程图要求](daynight-task-inspection.md#markdown-流程图)展示静态流程图、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块；按文档目录解析相对图片和链接，独立 `#fragment` 保留。 |
+| Markdown | CommonMark 与 GFM（含表格）渲染，原始 HTML 作为文本；`mermaid` 图块按[图表要求](daynight-task-inspection.md#markdown-图表)展示静态图表、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块；按文档目录解析相对图片和链接，独立 `#fragment` 保留。 |
 | 图片 | 图片展示。 |
 | PDF | 浏览器 PDF 展示。 |
 | 文本、JSON、源码 | 保留换行的文本展示。 |
@@ -243,7 +241,7 @@ ID 沿用规范 UUID 解析，附件路径按段编码并仅解码一次，遵�
 
 Markdown、文本/JSON/源码、图片、HTML、PDF 与不支持格式继续使用既有展示规则。
 Markdown 保留 CommonMark/GFM、转义原始 HTML、文档目录相对资源及同一 Mermaid
-流程图行为；独立入口的图块错误、源码、异步切换和窄屏局部滚动与内嵌预览一致。
+图表行为；独立入口的图块错误、源码、异步切换和窄屏局部滚动与内嵌预览一致。
 可信同源 HTML 保持脚本交互、相对 CSS/JS/图片和 fetch。第一方文案、HTML lang 与页面标题跟随
 同一语言状态，附件内容按原文显示。独立详情普通模式使用浏览器键盘行为；全屏
 阅读时启用活动容器的 Escape/边界 Tab 桥，退出后释放，即使 frame 在进入前已加载

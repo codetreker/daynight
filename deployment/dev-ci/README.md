@@ -59,8 +59,7 @@ server use `start_interval: 250ms` during their existing startup grace periods;
 normal checks remain every two seconds. Probe commands, retries, deadlines,
 `service_healthy` dependencies and Compose readiness waits still determine actual
 readiness. PostgreSQL uses TCP so its temporary initialization socket cannot
-admit the application early. The [startup probe decision](../../.agents/notes/implemented/testing/2026-11-04-dev-ci-startup-probes.md)
-owns the timing choice. Business endpoints still require a browser session or
+admit the application early. The [startup probe decision](../../.agents/notes/archived/testing/2026-11-04-dev-ci-startup-probes.md) records the rationale for the timing choice. Business endpoints still require a browser session or
 personal access token; the public readiness example does not perform a login.
 Acceptance clients use the shared
 [authentication fixture helper](../../packages/daynight-server/scripts/auth-fixture.mts)

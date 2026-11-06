@@ -14,18 +14,40 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
-type attachmentStore interface {
-	store.SnapshotReader
-	store.AttachmentWriter
-}
-
 type Attachments struct {
-	store attachmentStore
-	files filestorage.Storage
+	store     store.SnapshotReader
+	mutations store.AttachmentMutationWriter
+	files     filestorage.Storage
 }
 
-func NewAttachments(database attachmentStore, files filestorage.Storage) *Attachments {
-	return &Attachments{store: database, files: files}
+func NewAttachments(database store.SnapshotReader, mutations store.AttachmentMutationWriter, files filestorage.Storage) *Attachments {
+	return &Attachments{store: database, mutations: mutations, files: files}
+}
+
+func (s *Attachments) mutate(ctx context.Context, principal model.Principal, address attachmentcore.Address, operation func(store.AttachmentMutationDAO) error) error {
+	completion, err := s.mutations.WriteAttachmentMutation(ctx, func(scope store.AttachmentMutationScope) error {
+		presence, err := scope.LockTaskPresence(ctx, address.ProjectID, address.TaskID)
+		if err != nil {
+			return err
+		}
+		if _, err := scope.ProjectAuthorization(ctx, principal, address.ProjectID); err != nil {
+			return projectcore.LookupError(err)
+		}
+		if !presence.Found {
+			return taskcore.NotFound(model.ErrNotFound)
+		}
+		if presence.DeletedAt != nil {
+			return taskcore.NotFound(model.ErrTaskDeleted)
+		}
+		return operation(scope.AttachmentDAO())
+	})
+	if err != nil {
+		return err
+	}
+	if completion.Outcome != store.TransactionCommitted {
+		return &store.TransactionError{Phase: "completion", Outcome: completion.Outcome, Cause: errors.New("attachment mutation did not commit")}
+	}
+	return nil
 }
 
 func (s *Attachments) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(store.AttachmentReader) error) error {
@@ -74,22 +96,27 @@ func (s *Attachments) Put(ctx context.Context, principal model.Principal, projec
 	if err := attachmentcore.ValidateContentType(contentType); err != nil {
 		return model.Attachment{}, false, err
 	}
-	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
-		return attachmentcore.CheckPathConflict(ctx, reader, address)
+	var attachment model.Attachment
+	var created bool
+	err = s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
+		if err := attachmentcore.CheckPathConflict(ctx, dao, address); err != nil {
+			return err
+		}
+		info, err := s.files.Put(ctx, attachmentcore.Bucket, address.StoragePath, content)
+		if err != nil {
+			if errors.Is(err, filestorage.ErrPathConflict) {
+				return attachmentcore.StorageConflict(err)
+			}
+			return fmt.Errorf("write attachment content: %w", err)
+		}
+		attachment, created, err = attachmentcore.PutMetadata(ctx, dao, address, contentType, info.Size)
+		if err != nil {
+			return fmt.Errorf("write attachment metadata: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return model.Attachment{}, false, err
-	}
-	info, err := s.files.Put(ctx, attachmentcore.Bucket, address.StoragePath, content)
-	if err != nil {
-		if errors.Is(err, filestorage.ErrPathConflict) {
-			return model.Attachment{}, false, attachmentcore.StorageConflict(err)
-		}
-		return model.Attachment{}, false, fmt.Errorf("write attachment content: %w", err)
-	}
-	attachment, created, err := attachmentcore.PutMetadata(ctx, s.store, address, contentType, info.Size)
-	if err != nil {
-		return model.Attachment{}, false, fmt.Errorf("write attachment metadata: %w", err)
 	}
 	return attachment, created, nil
 }
@@ -126,23 +153,18 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 	if err != nil {
 		return err
 	}
-	err = s.read(ctx, principal, address.ProjectID, address.TaskID, func(reader store.AttachmentReader) error {
-		_, err := attachmentcore.Metadata(ctx, reader, address)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-	if err := s.files.Delete(ctx, attachmentcore.Bucket, address.StoragePath); err != nil {
-		return fmt.Errorf("delete attachment content: %w", err)
-	}
-	if err := attachmentcore.DeleteMetadata(ctx, s.store, address); err != nil {
-		if errors.Is(err, model.ErrNotFound) {
+	return s.mutate(ctx, principal, address, func(dao store.AttachmentMutationDAO) error {
+		if _, err := attachmentcore.Metadata(ctx, dao, address); err != nil {
 			return err
 		}
-		return fmt.Errorf("delete attachment metadata: %w", err)
-	}
-	return nil
+		if err := s.files.Delete(ctx, attachmentcore.Bucket, address.StoragePath); err != nil {
+			return fmt.Errorf("delete attachment content: %w", err)
+		}
+		if err := attachmentcore.DeleteMetadata(ctx, dao, address); err != nil {
+			return fmt.Errorf("delete attachment metadata: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (attachmentcore.Page, error) {

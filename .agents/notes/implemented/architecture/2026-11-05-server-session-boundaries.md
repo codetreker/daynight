@@ -15,9 +15,9 @@ A shared `core/session` engine owns live content and terminal registries. A
 short-lived Operation holds its own drafts, locks and notifications. Session
 services select the transaction and coordinate the participating domain
 capabilities through a single `SessionScope`; Session SQL resides in the
-existing store implementation. The Bot deletion service commits its admission
-barrier before removing live state and performs physical cleanup under the
-same Bot-before-Session ordering.
+[PostgreSQL backend](2026-11-05-server-postgres-ownership.md). The Bot deletion
+service commits its admission barrier before removing live state and performs
+physical cleanup under the same Bot-before-Session ordering.
 
 An Operation acquires a live cell only after the established database locks and
 holds it until the transaction outcome is known. A committed result publishes
@@ -49,5 +49,4 @@ operations.
 
 The durable ledger remains separate from transient content and terminal input.
 Transactions must complete or discard every Operation, including panic and
-cancellation paths. The current store remains the sole SQL implementation;
-its physical PostgreSQL package ownership is handled separately.
+cancellation paths. The PostgreSQL backend remains the sole SQL implementation.

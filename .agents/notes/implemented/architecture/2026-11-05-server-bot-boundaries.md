@@ -19,10 +19,15 @@ binding, startup, preferences and deletion state operations to the caller's
 transaction, preserving Bot-before-Session locking. Worker freshness and path
 rules remain in `core/worker`.
 
-The [definition](2026-11-04-bot-definition-storage.md),
-[defaults](2026-11-04-bot-default-resolution.md) and
-[Session admission](2026-11-04-bot-session-admission.md) decisions own the
-behavior and its rationale.
+The Session-integrated deletion path uses `core/bot` to check the original
+request, owner and version and to construct the initial deletion state. It
+revokes Session admission in the same transaction before persisting that state;
+there is no separate unbound-Bot deletion path.
+
+The [definition](../../archived/architecture/2026-11-04-bot-definition-storage.md),
+[defaults](../../archived/architecture/2026-11-04-bot-default-resolution.md) and
+[Session admission](../../archived/architecture/2026-11-04-bot-session-admission.md) decisions record the
+original behavior and its rationale.
 
 ## Alternatives
 
@@ -40,5 +45,5 @@ implementation while exposing its Bot data operations in the shared transaction.
 Identical creation retries return frozen definitions before Worker availability
 is evaluated. Preferences and binding updates remain atomic with their caller's
 transaction; completion and cleanup errors retain their existing priority. The bound deletion workflow is coordinated by `service/bot` with the shared
-Session engine and transaction-bound DAOs. SQL stays in the existing store
-implementation until its physical migration.
+Session engine and transaction-bound DAOs. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns the Bot
+SQL implementation.

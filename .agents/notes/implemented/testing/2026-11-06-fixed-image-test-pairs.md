@@ -97,13 +97,19 @@ Jobs expose the API token only to validation, not to later candidate execution.
 
 When additional tests are needed, a deterministic local commit records the
 combined tree with the original checkout as its parent. Production bytes and the
-original branch remain unchanged. The local commit is never pushed. Browser
-acceptance and shard aggregation receive the combined commit as their child
-process `GITHUB_SHA`; existing clean-source assertions remain enforced. Evidence
+original branch remain unchanged. The local commit is never pushed. Evidence
 retains the actual event head, original checkout, manifest, I/T/base, combined
 commit/tree and production tree in `.tmp/image-test-pairs.json`. Runtime consumers
 and the final gate compare these identities across all selected jobs. Existing
 test runners retain ownership of test counts and coverage.
+
+The initial wiring also passed the combined commit to the Web browser runner
+and its shard report to preserve their clean-source assertions. The independent
+[Web validation change](https://github.com/codetreker/daynight/commit/6a85f84cc7777e8a849618e533d11224284bc176)
+removed that runner and both shards from main. Pair validation follows the
+remaining jobs, including Web quality and its original coverage threshold;
+it does not restore the removed cross-product framework. The final gate expects
+14 pairing receipts when all modules are selected.
 
 ## Alternatives
 

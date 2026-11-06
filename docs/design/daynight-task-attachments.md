@@ -7,15 +7,21 @@
 
 行为要求由[附件需求](../spec/daynight-task-attachments.md)拥有；本文解释通用存储接口、
 附件元数据及各端集成机制。
-[附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
-[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
+[附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)、
+[项目分片决策](../../.agents/notes/archived/architecture/2026-10-24-project-sharded-attachment-layout.md)、
+[附件变更与 Task 删除串行决策](../../.agents/notes/implemented/architecture/2026-11-06-attachment-task-deletion-serialization.md)与
+[附件准入锁决策](../../.agents/notes/implemented/bug-fix/2026-11-06-attachment-admission-locks.md)
 保存选择依据、已接受的限制及重新评估条件。
 
 [鉴权架构](daynight-auth.md)通过当前会话或 PAT 与项目成员权限保护所有附件
-请求；行为见[鉴权需求](../spec/daynight-auth.md)。`Attachments` 方法显式接收 principal，在
-文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属；快照完成后执行存储
-及元数据操作，允许已准入操作完成，I/O 后不重新检查成员。凭据在 HTTP 准入
-时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
+请求；行为见[鉴权需求](../spec/daynight-auth.md)。`Attachments` 方法显式接收 principal。
+读取在文件 I/O 前的 `ReadSnapshot` 中检查成员、task 和附件归属。上传、覆盖和删除使用持有
+Task SHARE 锁的事务，在获取锁后通过 `pg.ReadProjectAccess` 以单条语句重新读取当前项目授权，
+再检查 Task 删除状态、路径，执行文件操作并通过同一事务写入元数据，直至事务完成才释放 Task 锁。
+该准入查询不锁定 ownership、owner Team member 或 direct grant 来源行，也不在 Task 锁之后获取
+Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
+已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
+凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
 相对资源、键盘机制和单 gateway 部署继续保留；单文件操作和 K1 边界继续有效。
 
 ## 目标与操作单位
@@ -57,7 +63,7 @@ mockup/
 | [Task 模型](../../packages/daynight-server/internal/core/model/task.go)保存正文、状态、版本及依赖 | 新增独立附件模型与服务，不向 task PATCH 加入文件传输 |
 | [HTTP 组装](../../packages/daynight-server/internal/server/server.go)在同一 mux 注册 API 和内嵌页面 | 附件 API 与预览复用同一服务及 origin |
 | [JSON 解码](../../packages/daynight-server/internal/server/httpx/http.go)读取并校验受 1 MiB 限制的 JSON | 二进制上传使用独立的流式处理，既有 JSON 限制保持原义 |
-| [附件迁移](../../packages/daynight-server/internal/core/store/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
+| [附件迁移](../../packages/daynight-server/internal/core/store/postgres/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
 | [CLI API 客户端](../../packages/daynight/src/api/client.ts)区分 JSON、字节与空响应 | 复用期限、取消、错误及元数据预算；原始文件流不经过 JSON 解码 |
 | [CLI 上下文](../../packages/daynight/src/cli/context.ts)提供 text 与 bytes 输出 | `stdoutBytes` 可等待且保留背压，`closeStdoutBytes` 负责命令结束前的输出清理 |
 | [任务详情](../../packages/daynight-web/src/features/task-detail/TaskDetailDialog.tsx)独立加载 task | 组合附件区域，附件 hook 独立持有分页、写状态和预览，保持图和详情读取行为 |
@@ -111,7 +117,7 @@ task ID，校验原始附件相对路径，再精确拼接地址。规范化后�
 拒绝绝对路径、空路径段、`.`、`..`、反斜杠及控制字符。
 
 Put/Open/Delete 共用业务地址值中的规范化 ID、原始相对路径和派生存储路径。principal 与原始输入校验后，
-既有快照检查项目成员、task 归属和逻辑冲突或元数据；通过准入后才执行文件 I/O。List 仅查询元数据，
+读取快照或变更事务检查项目成员、task 归属和逻辑冲突或元数据；通过准入后才执行文件 I/O。List 仅查询元数据，
 元数据和公开 URL 继续使用原有 task 内路径，浏览器与 CLI 无需计算、传入或感知分片。
 
 已有文件 `docs` 时不能创建 `docs/design.md`；已有 `docs/design.md` 时不能创建
@@ -125,7 +131,7 @@ case folding 模拟文件系统规则。创建父目录前、发布临时文件�
 不写入元数据；原文件内容和目录保持不变。这不提供不同大小写名称共存能力。
 大小写检查不改变业务寻址，也不提供普通操作的跨进程协调。Linux gate 保留真实共存测试，
 macOS APFS 专项仍可显式运行，日常开发无需镜像。
-[开发文件系统覆盖决策](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
+[开发文件系统覆盖决策](../../.agents/notes/archived/testing/2026-10-23-native-development-filesystem-coverage.md)
 记录这项平台覆盖取舍。
 
 本地物理布局直接采用：
@@ -213,7 +219,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 | `created_at`、`updated_at` | PG 生成的创建与更新时间 |
 
 以 `(task_id, path)` 作为主键，path 使用 `COLLATE "C"` 保持排序与唯一性区分大小写。业务服务在读写前检查 project/task
-归属及任务未删除状态，不新增 foreign key。[Task 软删除](daynight-task-deletion.md)不改附件元数据或字节；标记后的新操作返回授权的 `410 task_deleted`。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
+归属及任务未删除状态，不新增 foreign key。[Task 软删除](daynight-task-deletion.md)不改附件元数据或字节；附件变更的 Task 锁与软删除的写锁串行，删除先提交时等待中的变更返回授权的 `410 task_deleted` 且不修改文件。文件操作与数据库提交仍不具备跨存储原子性；文件成功后数据库失败或提交结果未知时，保留实际错误和提交状态，不猜测补偿文件。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
 推导，表中不保存分片、`storage_key` 或物理根目录。布局转换不需要新增表、列、索引或修改历史 SQL 迁移。
 
 覆盖保留 `created_at`，更新 MIME、大小和 `updated_at`。删除后重新上传同一路径
@@ -451,7 +457,7 @@ Enter/空格继续有效。`TaskAttachmentsPanel`、表单及目录控件保留�
 各段的祖先加入展开集合，兄弟分支及既有手动状态保持；路径意图不依赖清单是否
 已经到达，因此后续分页出现的目标目录也遵循同一次定位。定位只消费一次，当前
 选择不会持续约束目录状态，因此用户可以收起正在预览的文件所在目录。重复点击
-同一描述链接仍是新的定位，普通刷新及页签切换不重新执行旧定位。相关取舍由[目录展开决策](../../.agents/notes/implemented/feature/2026-10-25-attachment-directory-disclosure.md)
+同一描述链接仍是新的定位，普通刷新及页签切换不重新执行旧定位。相关取舍由[目录展开决策](../../.agents/notes/archived/feature/2026-10-25-attachment-directory-disclosure.md)
 保存。
 
 附件面板使用占满可用正文的 `attachment-split` grid：左侧
@@ -479,7 +485,7 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 滚动所有权，不通过外层滚动或任意 reader 最低高度容纳右侧预览。内嵌预览标题在下载后紧邻提供新标签页打开链接；删除由左侧文件条目菜单提供。链接
 使用当前选择的元数据路径，即使正文请求仍未完成也保持正确地址。
 `attachmentPageUrl` 沿用 ID 与路径校验，生成逐段编码的独立页面 URL。选择与
-滚动所有权的理由见[分屏决策](../../.agents/notes/implemented/architecture/2026-10-22-task-attachment-split-view.md)。
+滚动所有权的理由见[分屏决策](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-split-view.md)。
 
 上传表单位于默认关闭的原生 `details` 内，`summary` 使用当前语言的“上传文件”
 文案。浏览器提供鼠标与键盘展开/收起以及折叠内容的焦点排除。表单始终挂载，收起
@@ -506,7 +512,7 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 订阅当前语言，不渲染语言选择器及其偏好反馈；语言变化只重译内容，不重新提交。
 页面保留自身语言入口与偏好反馈。页签激活状态显式传给附件组件，用于关闭
 隐藏面板中未提交的菜单和确认；task/project 变化释放原组件。
-[删除确认决策](../../.agents/notes/implemented/feature/2026-10-23-attachment-delete-confirmation.md)
+[删除确认决策](../../.agents/notes/archived/feature/2026-10-23-attachment-delete-confirmation.md)
 记录层级与交互取舍。
 
 `useAttachments` 分开持有列表、写操作、选中路径和预览。列表逐页读取，并检查路径
@@ -524,23 +530,23 @@ context 允许收缩，路径和元数据沿用受控省略并保留完整 DOM/t
 
 | 类型 | 预览机制 |
 |---|---|
-| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 流程图组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
+| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 图表组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
 | 图片 | 原生 img 的加载、错误和重试状态 |
 | PDF | HEAD 检查后交给浏览器原生 iframe |
 | 文本、JSON、源码 | 原始文本节点与 pre，保留换行 |
 | HTML | HEAD 检查后在普通同源 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
-`MarkdownContent` 负责 CommonMark/GFM、Mermaid 流程图及样式，URL 转换与链接激活由
-调用方提供。流程图的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
-隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[流程图设计](daynight-task-inspection.md#mermaid-流程图)，
+`MarkdownContent` 负责 CommonMark/GFM、Mermaid 图表及样式，URL 转换与链接激活由
+调用方提供。图表的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
+隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[图表设计](daynight-task-inspection.md#mermaid-图表)，
 内嵌及独立完整详情不建立第二套渲染机制。`MarkdownAttachmentBase` 区分 `document` 与 `root`：附件调用方使用
 当前文件的目录作为资源基准，描述调用方使用任务附件根；不虚构描述文件名。路径解析逐段处理 URL 编码和 parent 段，拒绝
 越过任务根，保留 query/hash。独立 `#fragment` 保持原值，不改成文件请求。绝对、
 协议和根相对 URL 保持正常 URL 语义，并经过渲染库的默认安全规则；原始 HTML
 不作为可执行节点插入 Markdown。描述的内嵌导航和原生点击规则见
 [阅读设计](daynight-task-inspection.md#markdown-与附件链接)，决策见
-[Markdown 描述决策](../../.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)。
+[Markdown 描述决策](../../.agents/notes/archived/architecture/2026-10-22-task-description-markdown.md)。
 
 HTML 入口是固定同源 URL，例如：
 
@@ -575,7 +581,7 @@ Document 监听并释放全部待处理器；退出独立页全屏不重建 fram
 与 frame 控件处理。
 PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的桥接结果作为 PDF
 键盘证明；保留原生 reader 与显式退出/返回控件，并记录真实浏览器验证的边界。
-[全屏阅读决策](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
+[全屏阅读决策](../../.agents/notes/archived/feature/2026-10-25-task-detail-fullscreen.md)
 拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
 
 ## 独立附件阅读页
@@ -618,10 +624,8 @@ frame document/owner/卸载清理和关闭恢复按上述共享规则执行。
 Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 no-store index。
 附件原始路径守卫在 ServeMux 清理或重定向前验证路径，保留中间 `..` 掩盖命名空间
 的意图检查。无效页面 ID 仍由前端显示未找到页面，数据与授权由已有接口检查。
-[完整阅读决策](../../.agents/notes/implemented/architecture/2026-10-22-task-attachment-full-reader.md)
-拥有非模态渲染及路径基础，[共享附件页决策](../../.agents/notes/implemented/architecture/2026-10-24-shared-attachment-page.md)
-保留完整附件面板复用的理由，[独立详情决策](../../.agents/notes/implemented/architecture/2026-10-24-standalone-task-detail.md)
-拥有当前完整任务详情组合。
+[完整阅读决策](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-full-reader.md)记录了非模态渲染及路径基础的历史取舍，[共享附件页决策](../../.agents/notes/archived/architecture/2026-10-24-shared-attachment-page.md)
+保留完整附件面板复用的理由，[独立详情决策](../../.agents/notes/archived/architecture/2026-10-24-standalone-task-detail.md)记录了当前完整任务详情组合的历史取舍。
 
 源码、构建产物及浏览器环境的证据必须对应其被测对象，历史运行结果
 不能替代当前扩展的验证。原有边界的选择依据记录在

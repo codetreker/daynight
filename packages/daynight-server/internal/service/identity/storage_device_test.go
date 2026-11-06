@@ -10,11 +10,12 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/google/uuid"
 )
 
 func deviceStoreHash(value string) []byte { hash := sha256.Sum256([]byte(value)); return hash[:] }
-func deviceStoreGrant(t *testing.T, s *store.Store, now time.Time) model.DeviceAuthorization {
+func deviceStoreGrant(t *testing.T, s *postgres.Store, now time.Time) model.DeviceAuthorization {
 	t.Helper()
 	d := model.DeviceAuthorization{ID: uuid.NewString(), DeviceCodeHash: deviceStoreHash(uuid.NewString()), UserCode: "BCDFGHJKLM", Status: "pending", CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute), NextPollAt: now.Add(5 * time.Second), PollIntervalSeconds: 5}
 	if err := testCreateDeviceAuthorization(s, context.Background(), d); err != nil {

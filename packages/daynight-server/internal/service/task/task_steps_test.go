@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	tasksteps "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/steps"
 	"github.com/google/uuid"
 )
 
@@ -57,6 +59,54 @@ func TestTaskStepsReadWithoutHydratingTaskPolicyAndPreserveParent(t *testing.T) 
 	if _, err := steps.Get(ctx, principal, project.ID, task.ID, "00abcdef"); err == nil {
 		t.Fatal("corrupt item became successful")
 	}
+	if _, err := steps.GetSummary(ctx, principal, project.ID, task.ID, "00abcdef"); err == nil {
+		t.Fatal("corrupt item became a successful summary")
+	}
+}
+
+func TestTaskStepsBoundedPagesAndVersionFence(t *testing.T) {
+	tasks, database, project, _, principal := taskService(t)
+	parent := createTask(t, tasks, principal, project.ID, "Parent")
+	steps := taskservice.NewTaskSteps(database)
+	ctx := context.Background()
+	longTitle := strings.Repeat("界", 600)
+	for i, title := range []string{"First", longTitle, "Last"} {
+		_, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at)
+ VALUES($1,$2,$3,$4,$5,'todo',clock_timestamp(),clock_timestamp())`, parent.ID, fmt.Sprintf("%08x", i), i, title, strings.Repeat("x", 10000))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := steps.ListPage(ctx, principal, project.ID, parent.ID, -1, 2, nil, true)
+	if err != nil || len(page.Items) != 2 || !page.HasMore || page.Header.Version != parent.Version {
+		t.Fatalf("first page: %+v %v", page, err)
+	}
+	if page.Items[0].Step.Description != "" || page.Items[0].TitleTruncated || !page.Items[1].TitleTruncated || utf8.RuneCountInString(page.Items[1].Step.Title) != 512 || page.Items[1].Step.Description != "" {
+		t.Fatalf("summary projection was not bounded: %+v", page.Items)
+	}
+	version := page.Header.Version
+	next, err := steps.ListPage(ctx, principal, project.ID, parent.ID, page.Items[1].Step.Position, 2, &version, false)
+	if err != nil || len(next.Items) != 1 || next.HasMore || next.Items[0].Step.ID != "00000002" || len(next.Items[0].Step.Description) != 10000 {
+		t.Fatalf("full next page: %+v %v", next, err)
+	}
+	single, err := steps.GetSummary(ctx, principal, project.ID, parent.ID, "00000001")
+	if err != nil || single.Header.Version != version || !single.Item.TitleTruncated || single.Item.Step.Position != 1 || single.Item.Step.Description != "" {
+		t.Fatalf("single summary: %+v %v", single, err)
+	}
+	_, err = steps.GetSummary(ctx, principal, project.ID, parent.ID, "ffffffff")
+	var absence *tasksteps.StepAbsence
+	if !errors.As(err, &absence) || absence.Version != version {
+		t.Fatalf("missing step version: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET version=version+1 WHERE id=$1`, parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = steps.ListPage(ctx, principal, project.ID, parent.ID, 1, 2, &version, true)
+	requireThreadFault(t, err, "version_conflict")
+	for _, bounds := range [][2]int64{{-2, 1}, {-1, 0}, {-1, 101}} {
+		_, err := steps.ListPage(ctx, principal, project.ID, parent.ID, bounds[0], int(bounds[1]), nil, true)
+		requireThreadFault(t, err, "invalid_input")
+	}
 }
 
 func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
@@ -82,8 +132,12 @@ func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
 	}
 	_, err := steps.Get(ctx, model.Principal{}, project.ID, task.ID, "00000000")
 	requireThreadFault(t, err, "unauthenticated")
+	_, err = steps.GetSummary(ctx, model.Principal{}, project.ID, task.ID, "00000000")
+	requireThreadFault(t, err, "unauthenticated")
 	for _, id := range []string{"bad", "00000000-0000-4000-8000-000000000001"} {
 		_, err := steps.Get(ctx, principal, project.ID, task.ID, id)
+		requireThreadFault(t, err, "invalid_input")
+		_, err = steps.GetSummary(ctx, principal, project.ID, task.ID, id)
 		requireThreadFault(t, err, "invalid_input")
 	}
 	_, err = steps.Get(ctx, principal, project.ID, task.ID, "00000000")
@@ -93,6 +147,8 @@ func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
 	}
 	_, err = steps.List(ctx, principal, project.ID, task.ID)
 	requireThreadFault(t, err, "task_deleted")
+	_, err = steps.GetSummary(ctx, principal, project.ID, task.ID, "00000000")
+	requireThreadFault(t, err, "task_deleted")
 	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET deleted_at=NULL WHERE id=$1`, task.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +157,9 @@ func TestTaskStepsAdmissionScopeAndFailures(t *testing.T) {
 	}
 	if _, err := steps.Get(ctx, principal, project.ID, task.ID, "00000000"); err == nil {
 		t.Fatal("storage failure concealed")
+	}
+	if _, err := steps.GetSummary(ctx, principal, project.ID, task.ID, "00000000"); err == nil {
+		t.Fatal("summary storage failure concealed")
 	}
 	if _, err := steps.List(ctx, principal, project.ID, task.ID); err == nil {
 		t.Fatal("collection storage failure concealed")

@@ -27,8 +27,9 @@ process cutover and Agent command verification. It uses
 the existing native/Compose deployment and development installer rather than a
 second runtime manager.
 
-The [development CLI architecture](../architecture/2026-10-29-local-development-cli.md)
-continues to own snapshots, configuration roots and private aliases. The skill
+The [development CLI architecture](../../archived/architecture/2026-10-29-local-development-cli.md)
+records the rationale for the existing snapshots, configuration roots and
+private aliases. The skill
 adds an operational procedure around those mechanisms without changing their
 isolation or lifetime guarantees. An environment resource record stays private
 and Git-ignored. Environment preparation does not use Daynight tasks for work

@@ -26,6 +26,7 @@ type IdentityDAO interface {
 	InsertSession(context.Context, model.Session) error
 	Authenticate(context.Context, model.CredentialKind, []byte, time.Time) (model.Principal, error)
 	IdentityUser(context.Context, string) (model.User, PersonalTeamFacts, error)
+	IdentityPersonalTeam(context.Context, string) (PersonalTeamFacts, error)
 	DeleteSession(context.Context, model.Principal) error
 	LockSession(context.Context, model.Principal, time.Time) error
 	InsertPAT(context.Context, model.PersonalAccessToken) error

@@ -114,7 +114,7 @@ Escape 或遮罩关闭后焦点回到展开按钮，选择路由则沿用正文�
 
 配置页编辑云端目标，逐项展示最近报告的实际值与结果；完整字段、权限及失败类型由[云端配置协议](daynight-worker-configuration.md)拥有。保存成功只表示目标已保存，不能显示为 Worker 已应用。配置资源尚未导入、没有应用观测、等待下发、应用中、部分失败、已恢复和 Worker 离线分别表达真实状态；没有最近运行观测时不推断当前在线状态。目标为空时显示尚未接入配置管理，不由 Web 创建首次目标。
 
-全局表单包含并发上限、任务轮询间隔（毫秒）、自动恢复上限和 Agent/model/args。项目选择使用完整可访问目录，保留已选条目的覆盖意图；已选但不可访问的项目只显示其 ID，仍可原样保留或删除，不补回旧名称或仓库信息。项目 Agent 可继承全局；model 的继承、指定值及显式 null，args 的继承及显式 [] 分别保留。项目换用不同 Agent 时，未覆盖的 model/args 使用该工具默认值。参数以 JSON 字符串数组编辑；非法原文和具体校验错误保持可见，不通过截断、丢弃空值或改写原文制造有效输入。repositoryRoot、本机路径、Worker 身份、服务连接与凭据以及 agentControlMode 只在本机管理。
+全局表单包含并发上限、任务轮询间隔（毫秒）、自动恢复上限和 Agent/model/args。项目选择使用完整可访问目录，保留已选条目的覆盖意图；已选但不可访问的项目只显示其 ID，仍可原样保留或删除，不补回旧名称或仓库信息。项目 Agent 可继承全局；model 的继承、指定值及显式 null，args 的继承及显式 [] 分别保留。项目换用不同 Agent 时，未覆盖的 model/args 使用该工具默认值。默认及项目配置下拉框的箭头与边框保持留白，文字与箭头不重叠；窄屏长选项可截断，完整选项可在原生菜单中查看。参数以 JSON 字符串数组编辑；非法原文和具体校验错误保持可见，不通过截断、丢弃空值或改写原文制造有效输入。repositoryRoot、本机路径、Worker 身份、服务连接与凭据以及 agentControlMode 只在本机管理。
 
 目标项目移除在最终保存前确认影响，取消、关闭或 Escape 不发出保存请求。确认说明 Worker 将排除该项目并停止其当前执行，任务状态、认领、工作区和历史保留，后续由人工及既有恢复规则处理；页面不增加任务操作或以配置保存代替停止确认。
 
@@ -442,7 +442,7 @@ HTML 或脚本执行。页面展示不改变 server 对字符串的接受规则�
 ## 描述与附件引用
 
 `description` 按 CommonMark/GFM 展示标题、段落、列表、引用、代码块、表格、链接和
-图片；`mermaid` fenced code block 共享[流程图要求](daynight-task-inspection.md#markdown-流程图)，支持静态流程图、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块。原始 HTML 作为文本显示，URL 协议处理沿用附件 Markdown 的规则。空字符串
+图片；`mermaid` fenced code block 共享[图表要求](daynight-task-inspection.md#markdown-图表)，支持静态图表、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块。原始 HTML 作为文本显示，URL 协议处理沿用附件 Markdown 的规则。空字符串
 显示当前语言的“暂无描述”。标题和仓库地址继续作为文本显示。Markdown 表格与
 代码块在各自区域横向滚动，长描述在 320px 下换行，页面不产生整体横向溢出。
 API 存储与 CLI/Agent 读取保留原始字符串字节，不增加格式标记或改写已有描述。
@@ -474,7 +474,7 @@ TI8–TI11 与 TI15 拥有。
 当前文件清空预览，删除其他文件保留正在阅读的文档与位置。
 
 Markdown 按 CommonMark 和 GFM（包括表格）渲染，`mermaid` 图块与描述共享静态
-流程图、错误隔离、源码、安全及局部滚动规则；原始 HTML 作为文本显示。相对
+图表、错误隔离、源码、安全及局部滚动规则；原始 HTML 作为文本显示。相对
 图片与链接按文档目录指向 task 预览路径，独立 `#fragment` 保留。图片、PDF、文本、
 HTML 和其他格式的展示及可信同源执行约定由[附件需求](daynight-task-attachments.md#web-管理与预览)
 拥有。Markdown、文本/JSON/源码和大图仅由预览正文纵向滚动；HTML/PDF 仅由
@@ -538,7 +538,7 @@ Worker 观测验证 online 优先及组内创建时间升序、相同创建时�
 原始二进制按字节比较；PDF 必须由实际 compositor 截图验证预期页面色块已绘制，
 HTML 相对资源通过可见交互验证。新增附件场景仅允许精确 task/file PUT/DELETE，
 `refresh-staleness` 另仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态保留；其他图功能场景继续只读。每次完整运行复用一次 CLI 安装并核对源码与产物回执，
-`project-view-tabs` 在两个目标上验证页签、分类、详情、独立筛选及浏览偏好。默认本地普通验收严格要求原生、容器各 32 个唯一功能场景，共 64 个。常规 CI 使用两个 case 分片，每份在两个独立目标上分别执行 16 个；最终门禁要求每个目标的两份选择互不重叠并准确覆盖完整规范 32 个 ID。所有 28 项 navigation-contract、部署生命周期、两目标各十一项 combined-auth、附件持久化与成对恢复归 shard 2 完整执行，每个分片都必须完成所有所属资源清理。默认本地普通入口继续保留两个 combined-auth；显式本地压力验收不分片，另加原生五个容量/超限场景，共 69 个（原生 37、容器 32），并在准备资源前拒绝 shard 组合及 CI。三个双语场景保持，`task-status`、`task-status-conflicts`、`task-status-recovery` 与 `task-status-transitions` 覆盖 W13 的三状态设置、状态确认、取消、冲突与结果核对。task-status-transitions 还验证三状态组合、直接完成、重开、同状态及资料/附件保全。状态场景只允许已登记 project/task 的 PUT status 与精确请求次数，六个鉴权场景仅允许各自登记的精确管理请求。`task-description-markdown` 覆盖 CommonMark/GFM 展示、三个入口的 Mermaid 流程图及错误/源码/内容切换/窄屏行为与同一附件控制器导航；该场景浏览器只执行 GET/HEAD，资料通过已安装 CLI 或已认证 API request context 准备。`project-settings` 在两目标覆盖直接入口/重载、管理员保存和另一成员读取、项目隔离、精确大版本、冲突、降权、成员只读、真实提交后的响应丢失与读取重试，以及双语 320px/390px 表单；只允许四次已登记的设置 PATCH，不重放未知结果。`task-agent-permission` 在两个目标验证普通成员双向确认、取消/Escape、锁定、版本冲突、已提交响应丢失与读取核对、详情关闭/切换后操作归属、严格布尔和精确版本、列表/节点及双语窄屏布局；只允许登记任务的许可 PATCH 和固定次数，不重放未知写入。`task-pause` 在两个目标验证项目概览、独立任务与任务链、图和公共详情头部的暂停发现、完整作用域计数、精确版本解除与其他材料保持、提交防重、版本冲突、真实提交丢响应后的 GET-only 核对及双语窄屏；只允许登记任务的解除暂停 PATCH 与精确次数，不重放未知写入。`task-platform` 在两个目标验证状态行选择后确认、当前值无操作、各取消路径零写入及下拉框焦点恢复、确认后设置/清除、共享状态/许可写入锁、冲突/未知结果 GET 核对、跨任务归属、人工开始后锁定、平台传播及双语 320px/390px 布局，仅允许登记平台 PATCH 和精确次数。`task-assignment` 在两个目标验证真实分配/清空、同值零写入、冲突、已提交丢响应与 GET-only 恢复，只放行登记任务与精确次数的负责人 PATCH。`task-assignment-layout` 在双语 1366px/390px/320px 验证长/null 姓名、头像失败、菜单焦点、滚动/全屏、失权人员及只读浏览，并验证负责人筛选不改变隐藏兄弟任务参与的完整链进度。`task-detail-page` 在 source/popup 共用的浏览器 context 上仅允许登记任务的五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件的一次 PUT 与一次 DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，取消不增加写入，未知写结果只 GET 核查。它覆盖完整内容/操作、任务/页签/文件历史、弹窗本地状态、查询参数保留的真实登录返回及双语三个尺寸。`task-execution-time` 只允许浏览器 GET/HEAD，以真实 PostgreSQL、鉴权 API 和安装 CLI 验证持续计时、冻结、阈值跨越/修改与未知历史；图响应挂起和错误本机墙钟仍保持局部 tick、焦点与几何，两语言检查 320px/390px 图卡和独立行。
+`project-view-tabs` 在两个目标上验证页签、分类、详情、独立筛选及浏览偏好。默认本地普通验收严格要求原生、容器各 32 个唯一功能场景，共 64 个。常规 CI 使用两个 case 分片，每份在两个独立目标上分别执行 16 个；最终门禁要求每个目标的两份选择互不重叠并准确覆盖完整规范 32 个 ID。所有 28 项 navigation-contract、部署生命周期、两目标各十一项 combined-auth、附件持久化与成对恢复归 shard 2 完整执行，每个分片都必须完成所有所属资源清理。默认本地普通入口继续保留两个 combined-auth；显式本地压力验收不分片，另加原生五个容量/超限场景，共 69 个（原生 37、容器 32），并在准备资源前拒绝 shard 组合及 CI。三个双语场景保持，`task-status`、`task-status-conflicts`、`task-status-recovery` 与 `task-status-transitions` 覆盖 W13 的三状态设置、状态确认、取消、冲突与结果核对。task-status-transitions 还验证三状态组合、直接完成、重开、同状态及资料/附件保全。状态场景只允许已登记 project/task 的 PUT status 与精确请求次数，六个鉴权场景仅允许各自登记的精确管理请求。`task-description-markdown` 覆盖 CommonMark/GFM 展示、三个入口的 Mermaid 稳定图表矩阵、流程图及错误/源码/内容切换/窄屏行为与同一附件控制器导航；该场景浏览器只执行 GET/HEAD，资料通过已安装 CLI 或已认证 API request context 准备。`project-settings` 在两目标覆盖直接入口/重载、管理员保存和另一成员读取、项目隔离、精确大版本、冲突、降权、成员只读、真实提交后的响应丢失与读取重试，以及双语 320px/390px 表单；只允许四次已登记的设置 PATCH，不重放未知结果。`task-agent-permission` 在两个目标验证普通成员双向确认、取消/Escape、锁定、版本冲突、已提交响应丢失与读取核对、详情关闭/切换后操作归属、严格布尔和精确版本、列表/节点及双语窄屏布局；只允许登记任务的许可 PATCH 和固定次数，不重放未知写入。`task-pause` 在两个目标验证项目概览、独立任务与任务链、图和公共详情头部的暂停发现、完整作用域计数、精确版本解除与其他材料保持、提交防重、版本冲突、真实提交丢响应后的 GET-only 核对及双语窄屏；只允许登记任务的解除暂停 PATCH 与精确次数，不重放未知写入。`task-platform` 在两个目标验证状态行选择后确认、当前值无操作、各取消路径零写入及下拉框焦点恢复、确认后设置/清除、共享状态/许可写入锁、冲突/未知结果 GET 核对、跨任务归属、人工开始后锁定、平台传播及双语 320px/390px 布局，仅允许登记平台 PATCH 和精确次数。`task-assignment` 在两个目标验证真实分配/清空、同值零写入、冲突、已提交丢响应与 GET-only 恢复，只放行登记任务与精确次数的负责人 PATCH。`task-assignment-layout` 在双语 1366px/390px/320px 验证长/null 姓名、头像失败、菜单焦点、滚动/全屏、失权人员及只读浏览，并验证负责人筛选不改变隐藏兄弟任务参与的完整链进度。`task-detail-page` 在 source/popup 共用的浏览器 context 上仅允许登记任务的五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件的一次 PUT 与一次 DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，取消不增加写入，未知写结果只 GET 核查。它覆盖完整内容/操作、任务/页签/文件历史、弹窗本地状态、查询参数保留的真实登录返回及双语三个尺寸。`task-execution-time` 只允许浏览器 GET/HEAD，以真实 PostgreSQL、鉴权 API 和安装 CLI 验证持续计时、冻结、阈值跨越/修改与未知历史；图响应挂起和错误本机墙钟仍保持局部 tick、焦点与几何，两语言检查 320px/390px 图卡和独立行。
 
 显式本地 `pnpm web:acceptance:stress` 保留四个完整输入，各 1,000 任务，单链 999 边，其他各 5,000 边，external 为 2 main/998 external。完整 API 逐 ID/边比较；浏览器验证有界概览、全部可见诱导边、显式展开/reset 及精确计数，不要求全输入同时渲染。每图五次，openMs≤3,000，select/detail/zoom/pan≤300；普通详情关闭后立即缩放/平移、可信选择，再执行高亮态同序列，每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。独立判断完整 H、隐藏祖先、平滑曲线、实际 paint/marker 和几何/视口稳定。本地压力模式保留 69 项场景、超限拒绝、原有性能预算、timeout、零 retry 和清理。常规 CI 保留两目标功能、鉴权、覆盖率与清理门槛，排除压力 case；两种模式都必须记录真实原生/生产容器、源码与浏览器身份，结果按被测源码归属；PR #143 已交付依赖检查，鉴权和生命周期合并后的源码仍需完整运行回执。
 
@@ -551,6 +551,6 @@ CI 回执必须来自干净测试源码且等于对应 `GITHUB_SHA`，保留生�
 全部生产目标通过固定真实 UniAuth gateway 夹具取得正常会话/PAT，验证看板、
 附件及鉴权；凭据不进入公开回执。Playwright action/network trace 因会话、令牌
 和邀请隐私而关闭。两种模式保留场景 PNG、完整图校验及清理；定制容量 CDP 诊断与性能门槛由显式本地压力验收拥有，
-理由由[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)拥有。
+理由由[统一启用决策](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md)拥有。
 
 现有生产浏览器 inventory 验证看板基线。附件生产浏览器场景、安装 CLI 与服务的组合验收纳入对应 CI inventory；保留严格覆盖率门槛。既有看板性能矩阵作为显式本地压力验收保留，附件不增加新的性能门槛。
