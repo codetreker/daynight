@@ -37,13 +37,10 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 # https://github.com/golang/go/blob/go1.27.2/src/cmd/go/internal/test/test.go#L1867-L1869
 go clean -testcache
 
-# Assembled backend tests must instrument their imported production packages.
-coverage_packages="$(go list ./...)"
-export GOFLAGS="${GOFLAGS:+$GOFLAGS }-coverpkg=${coverage_packages//$'\n'/,}"
 export RACE_DETECTION="$race"
 if [[ "$race" == false ]]; then
   # go-cov omits -race=false, so override inherited race instrumentation explicitly.
-  export GOFLAGS="$GOFLAGS -race=false"
+  export GOFLAGS="${GOFLAGS:+$GOFLAGS }-race=false"
 fi
 
 export CI=true
