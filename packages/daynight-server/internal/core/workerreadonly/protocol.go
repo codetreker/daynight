@@ -17,6 +17,15 @@ const Protocol = "daynight.worker-readonly.v1"
 const MaxWireBytes = 256 << 10
 const MaxResultBytes = 64 << 10
 const RequestTimeout = 10 * time.Second
+const ModelRequestTimeout = 30 * time.Second
+
+// OperationTimeout includes discovery and its native resource cleanup.
+func OperationTimeout(operation string) time.Duration {
+	if operation == "model.list" {
+		return ModelRequestTimeout
+	}
+	return RequestTimeout
+}
 
 type Hello struct {
 	Type                 string   `json:"type"`

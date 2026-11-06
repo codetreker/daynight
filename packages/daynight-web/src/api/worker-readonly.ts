@@ -154,7 +154,7 @@ export const requestWorkerReadonly = async <K extends WorkerReadonlyOperation>(w
     }, () => {
       authGeneration = readAuthRequestGeneration();
       check();
-      timer = setTimeout(() => deadline.abort(new WorkerReadonlyError('timeout', 'The Worker read-only request timed out.')), 12_000);
+      timer = setTimeout(() => deadline.abort(new WorkerReadonlyError('timeout', 'The Worker read-only request timed out.')), operation === 'model.list' ? 32_000 : 12_000);
     });
     check();
     assertResponsePrincipal(response, ownerUserId, admission.onPrincipalMismatch);

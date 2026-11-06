@@ -110,7 +110,7 @@ test("model requests dispatch independently of directory result shape", async ()
   const execute = vi.fn(async () => result as any);
   const { emit, fence, socket } = setup(execute);
   expect(socket.sent[0].operations).toContain("model.list");
-  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex" }, timeoutMs: 10000 });
+  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex" }, timeoutMs: 30000 });
   await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
   expect(socket.sent[1].result).toEqual(result);
   expect(execute).toHaveBeenCalledWith("model.list", { provider: "codex" }, expect.any(AbortSignal));
@@ -119,10 +119,10 @@ test("model requests dispatch independently of directory result shape", async ()
 test("model input failures do not dispatch and cleanup errors remain distinguishable", async () => {
   const execute = vi.fn(async () => { throw Object.assign(new Error("private process proof"), { code: "cleanup_unknown" }); });
   const { emit, fence, socket } = setup(execute);
-  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex", model: null }, timeoutMs: 10000 });
+  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex", model: null }, timeoutMs: 30000 });
   expect(socket.sent.at(-1).error.code).toBe("invalid_input");
   expect(execute).not.toHaveBeenCalled();
-  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex" }, timeoutMs: 10000 });
+  emit({ type: "request", ...fence, requestId: randomUUID(), operation: "model.list", input: { provider: "codex" }, timeoutMs: 30000 });
   await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
   expect(socket.sent[2].error.code).toBe("cleanup_unknown");
   expect(JSON.stringify(socket.sent)).not.toContain("private process proof");
@@ -133,7 +133,7 @@ test("reports unconfirmed cleanup even after the caller cancels", async () => {
   const execute = vi.fn(() => new Promise<any>((_resolve, failure) => { reject = failure; }));
   const { emit, fence, socket, onError } = setup(execute);
   const requestId = randomUUID();
-  emit({ type: "request", ...fence, requestId, operation: "model.list", input: { provider: "codex" }, timeoutMs: 10000 });
+  emit({ type: "request", ...fence, requestId, operation: "model.list", input: { provider: "codex" }, timeoutMs: 30000 });
   emit({ type: "cancel", ...fence, requestId });
   reject(Object.assign(new Error("private proof"), { code: "cleanup_unknown" }));
   await vi.waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("cleanup_unknown")));

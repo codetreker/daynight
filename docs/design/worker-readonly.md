@@ -19,7 +19,7 @@ Worker 首帧为 `{type:"hello",protocol,capabilityGeneration,operations:["direc
 
 HTTP 请求包含 UUID `requestId`、`operation:"directory.list"`、`input`。目录输入的 `path`、`filter`、`showHidden`、`cursor`、`limit` 均可省略；`null` 不等同省略。默认值分别为 Worker cwd、空筛选、false、第一页和 100 项。路径最多 4,096 UTF-8 字节，筛选最多 256 字节，游标最多 4,096 字节。
 
-服务端转发 `type:"request"`，附上全部身份字段、原请求字段和 `timeoutMs:10000`。Worker 的 `type:"result"` 保留同一身份及请求 ID，并且恰好包含以下之一：
+服务端转发 `type:"request"`，附上全部身份字段、原请求字段和按操作确定的 `timeoutMs`：目录为 10000，模型为 30000。Worker 的 `type:"result"` 保留同一身份及请求 ID，并且恰好包含以下之一：
 
 - `result:{path,parentPath,entries:[{name,path}],nextCursor}`；父目录与游标可以为 `null`。
 - `error:{code,message}`；错误码见需求，消息不包含原生异常或凭证。
@@ -30,7 +30,7 @@ HTTP 请求包含 UUID `requestId`、`operation:"directory.list"`、`input`。�
 
 服务端按 `(ownerUserId,workerId)` 保存进程内连接。新的连接替换旧连接并使其所有待处理请求失败。Worker 每次重连都生成新能力代次；结果必须完整匹配当前连接。凭证定期复核和 ping 每 5 秒进行，握手最多 10 秒，Worker 在 30 秒内未收到帧或 ping 时重连。
 
-HTTP 入口从正文读取开始计入 10 秒期限和并发容量，正文读取最多 5 秒，响应写入另受 15 秒 socket 期限约束。转发操作使用独立的截止时间上下文，HTTP 响应保留调用方原上下文，使操作超时后仍能返回 HTTP 504 和 `timeout` 错误正文。调用方已断开时不交付结果。单个请求在权限复核时取消或超时，只结束该请求；不能将调用方上下文错误作为 Worker 凭证失效证据而关闭共享连接。每个连接最多接受 4,096 个不同请求 ID；已结束或取消的 ID 不可复用，耗尽后重新连接。
+HTTP 入口从正文读取开始计入操作期限和并发容量：目录为 10 秒，模型为 30 秒。正文读取最多 5 秒，响应写入另受目录 15 秒、模型 35 秒的 socket 期限约束。转发操作使用独立的截止时间上下文，HTTP 响应保留调用方原上下文，使操作超时后仍能返回 HTTP 504 和 `timeout` 错误正文。调用方已断开时不交付结果。单个请求在权限复核时取消或超时，只结束该请求；不能将调用方上下文错误作为 Worker 凭证失效证据而关闭共享连接。每个连接最多接受 4,096 个不同请求 ID；已结束或取消的 ID 不可复用，耗尽后重新连接。
 
 HTTP 查询没有跨实例结果存储或跨服务实例转发。部署多个服务实例时，Worker 和查询必须路由至同一实例；没有本实例连接时不能宣称已经连接或返回其它机器目录。进程重启后能力必须重新握手，不从旧运行记录推测仍在线。
 

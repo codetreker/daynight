@@ -165,3 +165,39 @@ func TestBrokerModelsRequireAdvertisedOperationAndMatchingProvider(t *testing.T)
 		t.Fatal(err)
 	}
 }
+
+func TestBrokerReadOperationsHaveIndependentDeadlines(t *testing.T) {
+	for _, item := range []struct {
+		operation, input string
+		timeout          time.Duration
+	}{{"directory.list", `{}`, 10 * time.Second}, {"model.list", `{"provider":"codex"}`, 30 * time.Second}} {
+		t.Run(item.operation, func(t *testing.T) {
+			var deadline time.Time
+			b := New(func(ctx context.Context, _ model.Principal, _ string) error { deadline, _ = ctx.Deadline(); return nil })
+			defer b.Close()
+			p, worker := brokerPrincipal(), uuid.NewString()
+			hello := brokerHello()
+			hello.Operations = []string{item.operation}
+			c, err := b.Connect(context.Background(), p, worker, hello)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			answer := make(chan error, 1)
+			go func() {
+				_, err := b.Request(ctx, p, worker, Request{RequestID: uuid.NewString(), Operation: item.operation, Input: json.RawMessage(item.input)})
+				answer <- err
+			}()
+			request := receiveRequest(t, c)
+			remaining := time.Until(deadline)
+			if remaining < item.timeout-time.Second || remaining > item.timeout || request.TimeoutMs != int(item.timeout/time.Millisecond) {
+				t.Errorf("deadline=%s wire=%d, want %s", remaining, request.TimeoutMs, item.timeout)
+			}
+			cancel()
+			if err := <-answer; ErrorCode(err) != "cancelled" {
+				t.Fatal(err)
+			}
+		})
+	}
+}

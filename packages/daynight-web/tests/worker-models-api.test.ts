@@ -15,7 +15,7 @@ const envelope = () => ({ type: 'result', protocol: 'daynight.worker-readonly.v1
 const response = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': ownerUserId } });
 const signal = () => new AbortController().signal;
 const admission = () => ({ userId: ownerUserId, onPrincipalMismatch: vi.fn() });
-afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
+afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 it('returns model capabilities from the requested Worker and Provider', async () => {
   const fetch = vi.fn().mockResolvedValue(response(envelope())); vi.stubGlobal('fetch', fetch);
@@ -94,4 +94,22 @@ it('discards late model responses when the caller changes Provider or cancels', 
   const controller = new AbortController();
   vi.stubGlobal('fetch', vi.fn(async () => { controller.abort(); return response(envelope()); }));
   await expect(discoverWorkerModels(workerId, { provider: 'codex' }, controller.signal, admission(), { requestId })).rejects.toMatchObject({ name: 'AbortError' });
+});
+
+it('allows native discovery beyond the directory deadline and cancels at its own bound', async () => {
+  vi.useFakeTimers();
+  let requestSignal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', vi.fn((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+    requestSignal = init.signal!;
+    requestSignal.addEventListener('abort', () => reject(requestSignal!.reason));
+  })));
+  const pending = discoverWorkerModels(workerId, { provider: 'copilot' }, signal(), admission(), { requestId });
+  const assertion = expect(pending).rejects.toMatchObject({ code: 'timeout' });
+  await vi.advanceTimersByTimeAsync(12_000);
+  expect.soft(requestSignal?.aborted).toBe(false);
+  await vi.advanceTimersByTimeAsync(19_999);
+  expect.soft(requestSignal?.aborted).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  await assertion;
+  expect(requestSignal?.aborted).toBe(true);
 });

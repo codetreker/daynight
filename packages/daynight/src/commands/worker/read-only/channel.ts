@@ -84,7 +84,8 @@ export const createWorkerReadOnlyChannel = (options: {
           if (item) { pending.delete(requestId); clearTimeout(item.timer); item.controller.abort(); }
           return;
         }
-        if (value.type !== "request" || pending.has(requestId) || value.timeoutMs !== 10000) throw new Error("Malformed Worker read-only request.");
+        const timeoutMs = value.operation === "model.list" ? 30000 : 10000;
+        if (value.type !== "request" || pending.has(requestId) || value.timeoutMs !== timeoutMs) throw new Error("Malformed Worker read-only request.");
         const reply = (body: unknown): void => {
           if (socket === ws && fence?.connectionId === requestFence.connectionId && options.configurationSignature() === signature) send(ws, { type: "result", ...requestFence, requestId, ...body as object });
         };
@@ -103,7 +104,7 @@ export const createWorkerReadOnlyChannel = (options: {
         const item = { controller, timer: setTimeout(() => {
           if (pending.get(requestId) !== item) return;
           pending.delete(requestId); controller.abort(); reply({ error: { code: "timeout", message: "Worker read-only query timed out." } });
-        }, 10000) };
+        }, timeoutMs) };
         pending.set(requestId, item);
         let operation: Promise<WorkerDirectoryResult | WorkerModelResult>;
         try { operation = options.execute(operationName, input, controller.signal); }

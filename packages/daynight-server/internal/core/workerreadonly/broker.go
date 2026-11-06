@@ -142,7 +142,8 @@ func requestContextError(ctx context.Context, err error) error {
 	}
 }
 func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, r Request) (result Message, err error) {
-	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
+	timeout := OperationTimeout(r.Operation)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// Normalize every exit while the operation context still reflects its caller or deadline.
 	defer func() {
@@ -209,7 +210,7 @@ func (b *Broker) Request(ctx context.Context, p model.Principal, worker string, 
 		_ = json.Unmarshal(r.Input, &input)
 		work.provider = input.Provider
 	}
-	m := Message{Fence: c.Fence, Type: "request", RequestID: r.RequestID, Operation: r.Operation, Input: append(json.RawMessage(nil), r.Input...), TimeoutMs: int(RequestTimeout / time.Millisecond)}
+	m := Message{Fence: c.Fence, Type: "request", RequestID: r.RequestID, Operation: r.Operation, Input: append(json.RawMessage(nil), r.Input...), TimeoutMs: int(timeout / time.Millisecond)}
 	c.pending[r.RequestID] = work
 	c.seen[r.RequestID] = true
 	b.count++

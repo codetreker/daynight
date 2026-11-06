@@ -109,7 +109,7 @@ export const createWorkerModelDiscovery = (options: { configuration(): Configura
       if (occupied >= 4) throw new WorkerModelDiscoveryError("busy");
       occupied++;
       const admittedEpoch = epoch;
-      const operation = createOperation({ signal, limits: { totalMs: 8_000, requestMs: 8_000, responseBytes: 65_536, totalBytes: 65_536 } });
+      const operation = createOperation({ signal, limits: { totalMs: 25_000, requestMs: 25_000, responseBytes: 65_536, totalBytes: 65_536 } });
       let directory: Promise<string> | undefined;
       try {
         const configurationSignature = signature(), configuration = JSON.parse(configurationSignature) as Configuration;

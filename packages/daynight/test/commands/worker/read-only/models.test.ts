@@ -237,9 +237,13 @@ describe("Worker model discovery", () => {
     } });
     vi.useFakeTimers();
     const pending = service.discover({ provider: "codex" }, signal);
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
     const assertion = expect(pending).rejects.toMatchObject({ code: "timeout" });
     await ready;
     await vi.advanceTimersByTimeAsync(8_001);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(17_000);
     await assertion;
   });
 });

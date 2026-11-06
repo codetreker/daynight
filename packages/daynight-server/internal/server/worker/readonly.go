@@ -78,11 +78,12 @@ func readOnlyWorker(r *http.Request) (string, error) {
 	return model.CanonicalID(r.PathValue("workerId"))
 }
 func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	ctx, cancel := context.WithTimeout(r.Context(), ro.RequestTimeout)
+	started := time.Now()
+	ctx, cancel := context.WithDeadline(r.Context(), started.Add(ro.ModelRequestTimeout))
 	defer cancel()
 	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Now().Add(h.bodyTimeout))
-	_ = controller.SetWriteDeadline(time.Now().Add(ro.RequestTimeout + 5*time.Second))
+	_ = controller.SetReadDeadline(started.Add(h.bodyTimeout))
+	_ = controller.SetWriteDeadline(started.Add(ro.ModelRequestTimeout + 5*time.Second))
 	defer func() {
 		_ = controller.Flush()
 		_ = controller.SetReadDeadline(time.Time{})
@@ -132,7 +133,12 @@ func (h *ReadOnlyRoutes) request(w http.ResponseWriter, r *http.Request, p model
 	}
 	var result ro.Message
 	if err == nil {
-		result, err = h.broker.Request(ctx, p, id, input)
+		// The operation budget starts at HTTP admission, including time spent reading its body.
+		timeout := ro.OperationTimeout(input.Operation)
+		operationCtx, stop := context.WithDeadline(ctx, started.Add(timeout))
+		defer stop()
+		_ = controller.SetWriteDeadline(started.Add(timeout + 5*time.Second))
+		result, err = h.broker.Request(operationCtx, p, id, input)
 	}
 	if err != nil {
 		h.failure(w, r, err)
