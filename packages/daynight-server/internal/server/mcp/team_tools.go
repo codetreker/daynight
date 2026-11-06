@@ -207,9 +207,16 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		}
 		return ToolResult{Data: page}, nil
 	}
+	// Failures before a business mutation starts establish that this tool did
+	// not commit a write, even if a separate read transaction is uncertain.
+	preflight := ToolResult{}
+	switch name {
+	case "team_rename", "team_delete", "team_leave", "team_member_set_role", "team_member_remove":
+		preflight.WriteOutcome = "not_committed"
+	}
 	id, err := ResolveTeamID(ctx, identities, p, a.Team)
 	if err != nil {
-		return ToolResult{}, err
+		return preflight, err
 	}
 	switch name {
 	case "team_show":
@@ -221,7 +228,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 	case "team_rename", "team_delete":
 		t, err := teams.GetBounded(ctx, p, id, httpx.MaxJSONBody)
 		if err != nil {
-			return ToolResult{}, err
+			return preflight, err
 		}
 		version, err := observedVersion(a.IfVersion, t.Version)
 		if err != nil {
@@ -294,7 +301,7 @@ func teamTool(ctx context.Context, actor RequestActor, name string, a teamArgume
 		}
 		m, err := teams.Member(ctx, p, id, target)
 		if err != nil {
-			return ToolResult{}, err
+			return preflight, err
 		}
 		version, err := observedVersion(a.IfVersion, m.Version)
 		if err != nil {
