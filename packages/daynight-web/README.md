@@ -1338,7 +1338,7 @@ with actions use eight seconds. Hover or focus pauses expiry. Close and expiry
 change only presentation; unresolved recovery remains accessible from a compact
 floating trigger, without changing write locks or replaying writes. Status does
 not stop a process or provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
-owns server rules, migration and timing. Actual service acceptance proves HTTP,
+owns server rules, migration and timing. Server module tests cover HTTP,
 database and persistence behavior.
 
 Task details share claim display and force withdrawal across the dialog,
@@ -1523,8 +1523,8 @@ receipt and online-admission signal, not a task version or durable commit counte
 task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
-[automatic refresh decision](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md) records the rationale for the scheduling and scope. Production verification uses the real-service
-journeys.
+[automatic refresh decision](../../.agents/notes/archived/feature/2026-10-22-project-task-auto-refresh.md)
+records the rationale for the scheduling and scope.
 
 Same-resource, same-generation graph and detail refresh retain successful data
 while loading and on recoverable failure. Errors remain in state during automatic retries until a
@@ -1734,10 +1734,7 @@ document or native reader owns scrolling. The preview header never scrolls
 independently, exposes the complete path and keeps Download and Open in new tab reachable. File-row menus and confirmation controls remain accessible at narrow widths.
 Left-pane scrolling does not move right-side content or its reading position.
 The standalone complete details reuse this panel, rendering and sizing; their
-outer composition integrates task, tab and file navigation with URL and history. Independent
-real-service runtime acceptance of the attachment-reading group is complete.
-Its source, build, browser and cleanup receipts retain the scope of that result;
-a local browser override does not establish hosted-CI browser behavior.
+outer composition integrates task, tab and file navigation with URL and history.
 
 Markdown uses `react-markdown` 10.1.0 with `remark-gfm` 4.0.1 for CommonMark and GFM
 including tables, plus the shared static Mermaid diagrams described above.
@@ -1873,9 +1870,7 @@ is introduced. The [full-reader decision](../../.agents/notes/archived/architect
 retains routing/rendering foundations and the
 [shared-page decision](../../.agents/notes/archived/architecture/2026-10-24-shared-attachment-page.md)
 retains full attachment-panel reuse rationale. The standalone-detail decision
-records the original complete Task Detail composition choices. The production `task-detail-page`
-and `task-attachments` journeys use actual services on both runtime targets with
-source-qualified receipts.
+records the original complete Task Detail composition choices.
 
 ## Validation and build
 
@@ -1892,22 +1887,21 @@ and replaces `packages/daynight-server/internal/service/webui/dist/`. Failed val
 or publication fails the build; a failed swap attempts to restore previous assets
 and reports both causes if rollback also fails.
 The Go binary embeds the published output. Both generated directories are ignored
-by Git, and clean server builds require this explicit build first. The Go
-`scripts/check.sh` invokes the same command before build, vet and go-cov; Go race
-instrumentation follows the [server validation policy](../daynight-server/README.md#race-instrumentation).
+by Git, and clean production server builds require this explicit build first.
+The Go module check uses its own unit-test Web resource overlay; see the
+[server validation guide](../daynight-server/README.md#validate).
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
-all Node acceptance/tooling harness tests, including the coverage checker,
-asset publication and acceptance receipts. `test:coverage` runs the ordinary
-Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
+its Node tooling tests, including the coverage checker and asset publication.
+`test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
 model and geometry workloads live in `.stress.ts` files and run only through
 `pnpm test:stress` from this package (`pnpm web:test:stress` from the repository
 root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
 excludes those files while retaining compact correctness and boundary cases. Either command can be
 run directly with `pnpm --filter @codetreker/daynight-web test:harness` or
 `pnpm --filter @codetreker/daynight-web test:coverage`; `pnpm web:test` remains the
-complete local gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
+complete local test gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
 to the product manifest, including the browser entry. Tests live outside `src`.
 The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
@@ -1945,10 +1939,9 @@ production router, admitted-location owner and task confirmation. It checks draf
 admission independently of Steps forms and HTTP writes, including indexed
 history traversal, retirement, beforeunload, keyboard focus and both languages at
 320px. Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
-tests/navigation/playwright.config.ts` after installing Chromium. Browser CI
-shard 2 runs all 28 cases before its full-stack acceptance. Its results and failure captures
-are written to `packages/daynight-web/.tmp/acceptance/navigation-contract/`,
-inside the browser CI artifact directory.
+tests/navigation/playwright.config.ts` after installing Chromium. Results and
+failure captures are written to
+`packages/daynight-web/.tmp/acceptance/navigation-contract/`.
 
 The Team navigation browser suite builds one production application preview for
 four Playwright projects: `team-preference` covers Team selection and Worker
@@ -1960,15 +1953,10 @@ context and controlled API responses; the preview serves only static assets.
 Run `pnpm --filter @codetreker/daynight-web exec playwright test --config
 tests/navigation/team-playwright.config.ts`; add `--project team-management` to
 focus on settings geometry, wrapping, text selection and rename interactions.
-Browser CI shard 2 runs the complete suite between editor navigation and Bot
-viewport checks before full-stack acceptance. One worker and zero retries remain
-in effect. Preference and Session layout cases use 45-second deadlines, while
-management and members retain 30 seconds; preview startup retains 90 seconds.
-CI gives the grouped command a 540-second aggregate deadline, equal to the three
-former 180-second command budgets. Its output remains separated under the existing
-`.tmp/team-preference-results`, `.tmp/team-management-results` and
-`.tmp/team-members-results` directories; Session layout results use
-`.tmp/session-selector/results`, and members retain failure traces. The
+These module browser fixtures use one worker and zero retries. Preference and
+Session layout cases use 45-second deadlines, management and members use 30
+seconds, and preview startup uses 90 seconds. Their results are kept in the
+corresponding `.tmp/` directories. The
 [shared preview decision](../../.agents/notes/implemented/testing/2026-11-05-shared-team-navigation-preview.md)
 owns preparation sharing, isolation and deadline handling.
 
@@ -1979,116 +1967,12 @@ that they have no runtime body. Temporary native compiler inputs and outputs liv
 under this package's `.tmp/` and are removed after classification. Typechecking
 remains a separate mandatory check; classification is not a substitute for it.
 
-PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection);
-main pushes run the full suite. The Web selector enables `verify-web-quality`
-and a two-entry `verify-web` matrix. Each job keeps a 20-minute bound. The final
-`checks` job retains the general `success`/unselected-`skipped` gate and additionally
-requires selected Web quality and matrix results to be `success`. Missing,
-failed, cancelled or skipped selected validation cannot pass. Shared workflow
-changes retain all-module selection.
-
-`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness`, complete
-Vitest/V8 collection and `scripts/coverage.mts` serially. Harness has a 180-second
-deadline, collection has a 300-second deadline, and final source-inventory and
-strict coverage verification has its own 60-second deadline. Completed collection
-cannot consume the final checker's budget. The
-[stage budget decision](../../.agents/notes/archived/testing/2026-11-04-web-coverage-finalization-budget.md) records the rationale for that separation. Only the Vitest/V8 child receives a copied environment with
-`VITEST_MAX_WORKERS=4`, retaining its `forks` pool, per-file isolation, full product
-manifest and strict statement gate. The
-[worker capacity decision](../../.agents/notes/archived/testing/2026-10-28-web-quality-worker-capacity.md)
-calibrates that resource setting for the dedicated public standard Linux runner's
-four CPUs. Scale workloads use the separate local stress configuration.
-
-The browser matrix invokes `node packages/daynight-web/scripts/ci.mts browser
---shard=1/2` or `--shard=2/2`. Both install pinned Chromium and Linux dependencies
-under the existing 600-second bound, build real embedded Go targets and own
-independent native/container services, databases, private credentials and cleanup.
-Playwright selects cases with `--fully-parallel --workers=1 --retries=0
---shard=i/2`: fully-parallel controls case-level partitioning, while each database
-still executes one browser worker serially. The current canonical inventory is
-41 scenarios, divided into disjoint sets of 21 and 20. Default file-level partitioning
-does not provide this case-level balance.
-
-Before preparing services, the runner collects the complete canonical functional
-inventory and the selected shard using the same functional arguments as the
-actual run. It records only the validated selected scenario IDs. Native and
-container phases execute that same selection; the callback derives it from its
-existing source/run-bound parent receipt. Invalid identities, collection errors,
-unknown/duplicate/missing scenarios or a mismatched selection fail validation.
-The pure `scripts/acceptance/inventory.mts` owns canonical functional and
-combined-authentication check names.
-
-After Chromium installation, CI requests navigation checks through its existing
-source/run-bound acceptance receipt. The container callback waits for permission
-and installed-CLI validation, then overlaps the serial navigation branch with
-container functional validation. Both branches drain before combined
-authentication can restart a target and before callback exit allows dev-ci network
-cleanup. Navigation hosts use separate ports, build/cache directories and routed
-API fixtures. A branch failure cancels their shared controller and preserves
-operation and cleanup failures. Navigation commands receive an environment copy
-without the production browser-ownership marker, preserving explicit browser
-channel and tool settings. Navigation command cancellation escalates after
-one second, within dev-ci's callback termination grace, while its verification
-deadlines remain unchanged. Direct acceptance callers and shard 1 keep their
-existing paths. The
-[browser job scheduling decision](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
-owns this isolation and resource trade-off.
-
-Shard 2 owns the complete 28-case navigation-contract suite, dev-ci lifecycle
-fixtures, both eleven-check combined-authentication journeys, and the real
-attachment persistence/paired-backup-restoration check. Ownership derives from
-the shard identity. Shard 1 runs its functional selection and full owned-resource
-cleanup. Both entries retain normal dev-ci built/running image checks, private
-browser profiles, source validation and the CLI cleanup barrier. Matrix
-`fail-fast` is false so one failure does not cancel the other entry's diagnostics
-and cleanup.
-
-The CI wrapper requires each owned command group to stop after settlement,
-not merely its leader. Command, cancellation and cleanup failures remain failures,
-including combined errors. Native preparation installs the shared CLI before an
-atomic, run/source-bound permission releases the container browser. Selected
-native/container phases overlap against independent service, database,
-authentication and storage resources. The container permission wait remains
-900 seconds. Run-wide CLI recovery waits until both targets drain; combined CLI
-commands receive cancellation without terminating commands in the other target.
-The [functional target decision](../../.agents/notes/archived/testing/2026-11-04-web-functional-target-overlap.md) records the rationale for those isolation constraints; the
-[quality isolation decision](../../.agents/notes/archived/testing/2026-10-26-web-quality-job-isolation.md) records the rationale for the separate quality workload and command budgets.
-
-Quality uploads `coverage-final.json` and `summary.json` as
-`daynight-web-coverage`. Browser entries upload full evidence as
-`daynight-web-acceptance-1` and `daynight-web-acceptance-2`; shard 2 includes
-navigation and persistence receipts. Each also uploads its existing
-`acceptance/*/evidence.json` as `daynight-web-summary-1` or `daynight-web-summary-2`,
-preserving `runID/evidence.json`. The existing final `checks` job downloads only
-these small JSON summaries. All artifact families retain 30 days.
-
-For selected Web validation, that final job checks out its current source, sets
-up Node 24, downloads both exact summary names, and invokes the install-free
-`scripts/acceptance/report.mts --shards file1 file2` validator. It requires exactly
-shards 1/2 and 2/2 with distinct run IDs, clean passing receipts, the current
-`GITHUB_SHA` and checkout tree, accurate native/container targets and browser/CLI
-cleanup, matching selected inventories, disjoint canonical unions and both
-complete combined-authentication receipts owned only by shard 2. Missing or
-inconsistent evidence fails the same required gate. No executable, image or
-resource ownership is transferred between runners. The
-[two-shard decision](../../.agents/notes/archived/testing/2026-11-04-web-ci-case-shards.md)
-records duplication costs and performance-model limits.
-
-Default local `pnpm web:acceptance` retains complete unsharded functional and
-combined-authentication validation with its preinstalled browser. Explicit local
-stress runs capacity last after functional, container, browser and CLI barriers;
-a stress/shard combination is rejected before preparation. Browser jobs select
-official Ubuntu archives before installation, as delivered in
-[PR #148](https://github.com/codetreker/daynight/pull/148). Go module/compiler caches
-remain reusable. The
-[pipeline decision](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
-records the original scheduling and ownership choices. The
-[deployment decision](../../.agents/notes/archived/architecture/2026-10-20-embedded-dashboard-deployment.md)
-records embedded HTTP/container smoke checks and concurrent dev-ci isolation;
-the [production acceptance decision](../../.agents/notes/archived/testing/2026-10-20-dashboard-production-acceptance.md)
-records the separate real-Docker fault matrix and its limits. CI repeats the
-controlled lifecycle fixtures and full production-browser suite. Manual Docker
-fault testing and controlled fixtures each retain their own evidence scope.
+PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection).
+The Web selector runs `verify-web-quality`; the final gate requires it to succeed
+when selected. The quality command runs the harness, Vitest/V8 collection and
+coverage checker serially with bounded stages. The navigation and Team browser
+fixtures above run independently; the assistant browser suite below also runs in
+the selected Web CI job.
 
 ### Assistant browser validation
 
@@ -2135,570 +2019,9 @@ and [Session](../../docs/design/bot-session-view.md) validation responsibilities
 
 ## Production browser acceptance
 
-On a Linux or macOS host, with Go 1.27.2, Docker Engine 28+, Compose 2.20.2+ and Linux
-containers available, run from the repository root to install the pinned browser
-into the project:
-
-```bash
-export PLAYWRIGHT_BROWSERS_PATH="$PWD/.tmp/playwright-browsers"
-pnpm --filter @codetreker/daynight-web exec playwright install chromium
-pnpm web:acceptance
-# Explicit local capacity and timing matrix:
-pnpm web:acceptance:stress
-```
-
-The ordinary local command requires thirty-six functional scenarios on each
-native/container target, seventy-two in total. CI retains that complete inventory
-across two disjoint case shards, running eighteen selected scenarios per shard on both targets. The explicit local stress command adds five native
-capacity/limit scenarios and their performance receipt. From this package, use
-`pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
-`--apfs --stress` combines the local capacity matrix with explicit APFS storage.
-Stress mode is refused in CI and cannot be combined with a shard before fixture
-preparation. Raw Playwright selection excludes the capacity spec by default and
-rejects a stress selection in CI. Both local modes retain combined authentication,
-exact source/browser identity and full cleanup; CI runs the two combined journeys
-on shard 2 while every shard performs its owned cleanup.
-
-Selected functional journeys, including assignment reconciliation, inject shorter
-named polling intervals before page initialization: task synchronization and
-current-Session summary refreshes still use the real service, HTTP responses and
-normal state publication. The shared
-polling module keeps the production defaults of fifteen and five seconds;
-unit tests verify those defaults and the shorter schedules. Browser tests change
-only their owned polling periods, preserving request deadlines, freshness,
-execution clocks and real warning-threshold crossing. Cases with controlled
-browser clocks and local capacity measurements retain their own timing setup.
-The [polling decision](../../.agents/notes/archived/testing/2026-11-04-web-functional-polling.md) records the rationale for this separation and its validation limits. The isolated dev-ci stack probes
-startup readiness every 250ms while preserving its normal health cadence and real
-readiness gates; the [startup probe decision](../../.agents/notes/archived/testing/2026-11-04-dev-ci-startup-probes.md) records the rationale for that deployment timing.
-
-Use Node 24, pnpm 11.28.6 and a frozen dependency install first. Chromium requires
-its normal runtime libraries on Linux; CI installs them with Playwright's
-`--with-deps` option. Locally, `DAYNIGHT_BROWSER_EXECUTABLE` can select an existing
-Chromium executable. That override is recorded and is forbidden for CI delivery
-evidence, which must use the full bundled Chromium channel (`chromium`) pinned by
-Playwright 1.64.1. This channel renders PDF pages; MIME-document readiness alone
-is not a painted-content oracle. Native and container phases record and require
-the same browser identity. macOS also requires Xcode Command Line Tools (the Apple
-SDK and `xcrun clang`). The runner compiles its process inspection helper into
-project temporary storage. Default acceptance uses an owned ordinary directory,
-including on a case-insensitive Mac disk, without creating or attaching images.
-Linux still requires a case-sensitive directory. The storage receipt records
-the measured `caseSensitive` capability and each browser phase records
-`caseSensitiveStorage`. Native Mac phases without that capability use a
-non-colliding attachment fixture path; Linux and container phases retain the
-case-sensitive fixture. A normal Mac pass does not claim native case-coexistence
-coverage. Windows native Web acceptance is unsupported.
-
-Native select keyboard scenarios use character typeahead on macOS and direction
-keys on other browser platforms. They retain value, focus and persistence checks,
-and platform changes still require an explicit confirmation with no write before
-confirmation. Modified-link scenarios use the browser platform's new-tab
-modifier. Combined authentication viewport changes also synchronize macOS native
-browser content dimensions with the requested layout viewport so wheel input
-can reach its full reading area. Layout dimensions and scrolling assertions stay
-unchanged. The [macOS browser acceptance decision](../../.agents/notes/implemented/testing/2026-11-05-macos-browser-acceptance.md)
-records these input and recovery boundaries.
-
-Routine `pnpm web:test` does not attach disk images on macOS. It checks storage
-receipts and refusal paths without requesting disk authorization. Run the explicit
-`pnpm web:test:storage-native` suite for APFS lifecycle checks; its cases share
-one mounted image, including a real read-only file holder that prevents the first
-detach and releases the file before cleanup retries. For a complete native Web
-run with case-sensitive storage on a Mac, explicitly run
-`pnpm web:acceptance:apfs`. It uses one owned case-sensitive APFS sparse image
-when the parent filesystem folds case. These diagnostic commands may request
-macOS disk authorization; routine development and validation do not need them.
-Receipts are persisted before attachment and server startup. Cleanup confirms
-the server stopped, validates image/mount ownership, detaches normally, and only
-then removes storage. Busy detach retries share one 30-second deadline with
-ownership revalidation. Uncertain ownership fails without recursive removal.
-Existing recovery commands remain available without opting into new attachment.
-
-The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same seventy-two functional scenarios and
-additional combined authentication checks, with native filesystem coverage
-qualified by its recorded capability. Explicit local stress acceptance adds the
-same five capacity/limit scenarios and fixed performance budgets on Linux and
-macOS. A local pass does not establish
-macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/archived/testing/2026-10-23-native-development-filesystem-coverage.md) records the rationale for this distinction. For networks requiring an npm mirror, use
-`pnpm install --frozen-lockfile --registry=https://mirrors.cloud.tencent.com/npm/`
-for the workspace. Export `pnpm_config_registry=https://mirrors.cloud.tencent.com/npm/` for the
-acceptance CLI installation, and `DAYNIGHT_NPM_REGISTRY` for Docker builds. Both Compose stacks default to the official
-npm registry unless the build variable is explicitly supplied.
-
-The command builds real embedded assets and a new Go executable and owns a
-separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
-the normal dev-ci runner builds and starts the actual production image. Browser
-execution overlaps the same selected functional scenarios in native and
-production-image stream-gateway targets. Local ordinary execution selects all
-thirty-six scenarios; each CI shard selects eighteen, and the final gate requires the complete disjoint union. Explicit local stress mode then runs five native
-capacity/limit scenarios. In
-that mode, the native process and PostgreSQL remain alive through capacity;
-other preparation commands and the complete container stack finish before it
-starts. No normal localhost service or dataset is used. Functional and
-capacity fixtures use normal UniAuth-acquired sessions/PATs and real write APIs.
-The shared gateway fixture is pinned to
-`0978963813fcefd9d553f6cb9bcc319084c764b3`; App credentials, browser session and PAT
-metadata remain in private 0600 files outside public artifact trees. External
-provider HTTP responses are controlled, so this proves the real gateway/SDK
-protocol and differs from a real upstream-provider login. The graph scenarios and `project-view-tabs` retain GET/HEAD-only browser checks
-except for one exact registered fixture-file PUT in `refresh-staleness`, which
-holds its upload response across automatic reads to verify retained pending work.
-`task-attachments` and
-`language-state-preservation` allow exact fixture-scoped PUT/DELETE file routes;
-the latter checks state preservation during language changes at operable entries
-and separately holds upload, overwrite and deletion to verify pending state and
-write counts. Component tests control locale changes during pending operations. `task-description-markdown` and the other
-language scenarios remain GET/HEAD-only in the browser; fixture writes use the
-installed CLI or authenticated API request context. The three task-status scenarios
-and `task-status-transitions` separately admit only registered project/task PUT status requests with exact expected
-counts. Six authentication scenarios declare only their exact expected management writes;
-unrelated browser mutations remain failures. The visible `auth-login-session`
-journey names its awaited operations and saves `auth-login-operations` on success
-and failure. The JSON attachment contains only operation labels, status, duration
-and optional error names; authentication traces remain disabled. Owned route and
-provider cleanup actions each have a five-second limit. Interception disable
-failure still attempts CDP detach, and original, cleanup and attachment errors
-remain visible together. The [login diagnostics decision](../../.agents/notes/implemented/testing/2026-11-05-auth-login-failure-diagnostics.md)
-owns failure preservation and diagnostic privacy.
-
-The `project-settings` journey admits exactly four registered project-settings PATCHes: successful save, stale
-conflict, committed response loss and demoted-member refusal. Other users and
-administrative preparation use authenticated request contexts; a failed read
-reconciliation can be recovered only by an explicit read retry, without a fifth
-browser PATCH. The `task-execution-time` journey keeps the browser GET/HEAD-only;
-real service/API and installed CLI prepare timing, save thresholds and complete
-work while controlled browser receipt delivery isolates the local ticker.
-
-The `task-assignment` journey admits only exact registered assignee PATCHes and
-checks real set/clear writes, same-value zero writes, conflicts, committed response
-loss and GET-only recovery with preserved task materials. The
-`task-assignment-layout` journey covers bilingual 1366px/390px/320px layouts,
-long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
-members, read-only browsing, local filters and complete progress with hidden
-siblings. It also checks persisted changed-or-missing profile reads and real
-current-account HTTP validation without routing that would disable Chromium's
-cache. Its request-ID collector joins independently ordered CDP lifecycle and
-extra-information events before checking the original 200/304/401 wire status,
-outgoing validator and encoded transfer bytes. Missing observations remain
-pending, and the profile/cache attachment records collected receipts on success
-and failure. The [wire receipt decision](../../.agents/notes/implemented/testing/2026-11-05-cdp-wire-receipts.md)
-owns the ordering constraint and regression coverage.
-
-The `task-pause` journey verifies pause discovery in the project overview,
-standalone and chain lists, dependency graph and common detail heading. It admits
-only registered exact-version Unpause PATCHes, checks preserved task materials,
-pending protection, stale conflicts and committed-response-loss GET-only
-reconciliation, and covers English/Chinese narrow layouts. Pause counts retain
-their complete project/component scope independently of status and list filters.
-
-The [status journeys](tests/e2e/status.spec.ts) are task-status,
-task-status-conflicts, task-status-recovery and task-status-transitions. Within
-one Playwright worker incarnation and exact service origin, they share an
-Alice API PAT, a separately acquired CLI PAT/client, and a project created through
-the installed CLI. Each case opens a fresh API request context and independently
-validates the installed package's source and artifact hashes. Its command, write
-and snapshot receipt remains case-owned. The shared setup receipt records the
-actual project-creation command once; case receipts reference that source-qualified
-receipt. Worker teardown drains preparation and closes its owned CLI client.
-The status open helper waits for a successful completed GET to that project's
-task-sync endpoint before reading the authoritative graph and selecting the
-detail UI. An initial read cancelled by manual refresh cannot satisfy that
-completion event; the replacement can. Existing status, version, material and
-rendered-state assertions remain independent of this network barrier. The
-[completion decision](../../.agents/notes/archived/testing/2026-11-04-web-status-sync-completion.md)
-records the response-lifecycle distinction.
-
-The automatic-permission, platform and assignment journeys share only a project
-within the same worker. Their API authentication stays case-owned, and assignment
-retains its normal Bob login, invitation and acceptance assertions. All seven
-journeys retain fresh browser contexts, pages, storage and normal browser logins;
-each creates its own mutable tasks and retains its exact write/fault assertions.
-A common worker-fixture registration and test-scoped family option preserve
-worker-pool reuse. Restarted workers prepare new resources. The
-[shared preparation decision](../../.agents/notes/archived/testing/2026-11-04-web-scenario-preparation.md)
-records ownership and measurement limits.
-
-Origin, method, headers and body pass through the redacting authenticated wrapper
-unchanged; receipts exclude credentials. The status-transition extension was
-validated against its 28-per-target functional inventory with five additional
-native capacity/limit checks (61 combined); the current complete inventory below
-also includes later functional scenarios.
-
-The journeys exercise direct completion, reopening, all three states, current
-same-state no-op, exact stale conflicts and shared status/permission ownership.
-CLI readback verifies ready/list/graph, full materials, PRs, dependency classification,
-timing and attachment bytes. Starting/finishing blocked tasks and reopening done
-with active/done dependents are refused without changing either task. Derived
-readiness changes do not revise the dependent task.
-
-Unknown-response scenarios forward a genuine status PUT and confirm its commit
-before dropping the browser response. GET reconciliation can fail independently;
-it never retries the PUT or attributes the observed state to the uncertain write.
-Late responses remain with the original resource across navigation. Large int64
-version cases retain exact GET/PUT/database digits. Real graph failures preserve
-the confirmed detail and restore the owned fixture table afterward. Timing barriers
-control response delivery without fabricating status-changing responses. The
-[cross-layer decision](../../.agents/notes/archived/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
-distinguishes installed-process races, production journeys and offline fixtures.
-The status journeys retain their annotations, target topology, coverage and
-cleanup checks. Capacity workloads run separately under the existing local
-stress selection rules; the
-[local stress decision](../../.agents/notes/archived/testing/2026-11-03-local-stress-suites.md)
-records that separation and its rationale.
-
-One packed/installed CLI is shared by the whole web run. On each target,
-`task-attachments` uploads through that CLI and consumes the same task/files in
-the production page, then checks Web mutations through raw CLI reads. It covers
-Markdown relative images, image/text/PDF and interactive HTML resources, detail
-tabs and retained attachment state, adjacent panes, scroll-owner geometry, and
-standalone opening and reload. Standalone address/history and shared file-operation
-checks remain tied to the corresponding source-qualified browser result. PDF acceptance polls compositor screenshots for a substantial fixture-only colored
-marker. It measures matching connected components independently and checks the
-largest main-page candidate extending into the frame's right half. This
-fixture/viewer location rule excludes thumbnail-only paint; independent bounds
-also prevent a separate thumbnail from diluting the page marker's density. The
-successful PNG and component metrics remain in the marker evidence; HTTP success
-or an iframe load cannot satisfy this check. The
-[combined acceptance decision](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-records the original data-sharing, rendering and independent-reading proof choices.
-
-The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
-requires a separate eleven-check receipt on each runtime target, alongside the
-72 ordinary Playwright cases or 77 cases in local stress mode. It reuses the same installed package and normal Alice/Bob
-identities, records their initial project sets, and crosses browser and CLI data
-through shared/private projects, original-credential service restart, logout/PAT
-independence, revocation, admitted upload, real socket interruption and normally
-minted PAT expiry. The bilingual token journey holds a real server response and
-checks retained pending input and one-time reveal; screenshots follow secret
-closure or masking. The runner supplies service-only restart callbacks and the
-explicit validated installed-package receipt. Actual staging bytes and metadata
-are observed independently of client write completion. The
-[authentication acceptance decision](../../.agents/notes/archived/testing/2026-10-23-authentication-combined-acceptance.md) records the rationale for these mechanisms, failure/cleanup rules and the separate actual-upstream
-human login requirement. Implemented checks and source-bound run results remain
-distinct; a focused pass or historical baseline does not establish full current
-acceptance.
-
-Browser attachment selection uses the shared
-[attachment-tree helper](tests/e2e/attachment-tree.ts) to resolve the full relative
-path and explicitly open each ancestor before accessing its file or actions.
-Both E2E scenarios and CLI/browser combined acceptance follow this rule. Unit
-interactions must also open ancestors; a `fireEvent` dispatched to a hidden
-jsdom descendant does not prove visible navigation.
-
-Independent reading acceptance supplements the strict pipeline with real-service
-probes across desktop, tablet, narrow and short viewports in both languages. It
-checks wheel and keyboard access to the document end, fitting-content overflow,
-left/right independence, and ordinary standalone focus behavior. Native PDF
-input reaches the actual viewer through keyboard navigation; real wheel and
-Home/PageDown/End input plus the unique painted final-page footer establish
-usable reading. Private viewer DOM is used only for read-only offset diagnostics.
-
-Failure probes hold request timing while an owned metadata-table failure or an
-unavailable stored file produces actual service errors. Partial-list failure
-remains incomplete, preview 404 remains a visible error, and upload failure
-retains the busy/form lifecycle before retry. Missing-file recovery, delayed
-responses and unchanged task/graph state remain explicit checks. Restored faults
-and all owned browser, service, database and storage resources require confirmed
-cleanup. First-party fixture checks remain distinct from source-bound probes. The probe's local browser identity
-is recorded and is not a hosted-CI browser claim.
-
-The explicit local browser stress matrix retains the complete capacity fixtures,
-five repetitions and fixed latency budgets. Its chain, merge and external
-fixtures create independent tasks in their
-source-first batches, then attach dependencies with versioned PATCH requests
-from sinks toward sources. Merge and external attach one complete layer at a
-time, with at most six requests within that layer; predecessors have no upstream
-dependencies when cycle validation visits them. Each PATCH-returned task replaces
-its earlier version, including the merge limit probe and the external sink before
-its dependency classification. Shared-root construction retains its direct API
-writes. Complete snapshots compare every node and dependency with the fixture;
-the actual API order remains the overview oracle's input. The [fixture
-construction decision](../../.agents/notes/archived/testing/2026-10-28-web-capacity-fixture-construction.md)
-records the additional API-write cost and the retained acceptance boundaries.
-
-Capacity keeps four exact complete API inputs: 1,000 tasks each, a 999-edge chain
-and 5,000-edge merge/shared/external graphs. Complete snapshots still compare
-every task and dependency. Browser readiness now checks bounded overview S and
-all real induced visible edges, followed by explicit expansion/reset and exact
-counts; it no longer requires every input task/edge in the DOM simultaneously.
-
-Inspection acceptance retains five samples and all mandatory
-visibility rows, adding selectedId/hiddenUpstream and selectMs≤300. open≤3000 and
-detail/zoom/pan≤300 remain. Normal Details→close→immediate zoom/pan precedes trusted
-visible-task selection and the highlighted sequence; each metric uses the worse
-state with independent network timing, and no close-to-zoom reset/fit/wait.
-Independent API/P/S topology derives compact/expandable heights from hidden direct
-neighbors inside P; unrelated outside-P successors cannot create a footer.
-Actual DOM fixed ports, cubic tangency in the selected direction, card avoidance,
-body/marker coverage and independently integrated curved dash phase cover every visible edge.
-Stable owner transforms are graph-relative real root/owner CTMs; raw screen,
-page-scroll and canvas diagnostics stay separate from reset equality.
-The `task-agent-permission` journey on both targets covers member-authorized
-permission changes, both confirmations, cancellation/Escape, in-progress
-locking, exact versions, conflicts, actual writes with lost responses and read
-recovery, close/reopen ownership, bilingual narrow layouts and task-local
-list/node indicators. Only registered permission PATCHes and exact request
-counts are permitted; unknown writes are not replayed. The `task-platform`
-journey covers status-row selection and confirmation, zero-write cancellation
-with select-focus restoration, explicit set/clear, shared mutation locks,
-conflicts, unknown-result readback, late-response ownership and bilingual
-320px/390px layouts through the real service.
-
-Platform-review helpers wait for an enabled select, focus it and verify that
-focus before choosing an option. Cached details can appear while the live read
-still disables editing; option selection's later actionability wait does not
-repair a focus attempt on a disabled control. The cancellation assertions still
-require the saved value, restored select focus and zero writes, without forcing
-focus after dismissal or increasing timeouts. Attachment component checks wait
-for actual preview focus after delete-dialog teardown while its list reload is
-still pending, then release the reload and require focus to remain. The
-[observable-readiness decision](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)
-records the synchronization rule.
-
-The `task-detail-page` journey observes source and popup requests at the browser
-context boundary. Only one registered task may receive exactly five PATCHes
-(platform success, permission enable, platform conflict, deliberate platform
-retry and committed response loss) and three PUT `/status` requests for
-todo → in_progress → done → todo. Version increments, start/finish/reset timing,
-and running-state permission/platform locks are checked. One exact attachment
-URL permits one PUT and one DELETE. Cancellation adds no write;
-uncertain outcomes reconcile by GET without PATCH replay. The source page itself
-has no mutation allowance. A separate anonymous context exercises real
-login-return redirects while only the provider endpoint is controlled, with
-zero application mutations. Complete content/actions, modal-local navigation,
-task/tab/file history, retained state and bilingual desktop/narrow/short layouts
-are checked in both runtime targets.
-
-The selected inventory (82 ordinary cases; local stress adds five native cases
-for 46 native / 41 container, 87 total), current manual/periodic refresh,
-attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
-coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
-its receipts bind results to that exact tested source. The authentication/lifecycle
-merge requires its own complete receipts.
-
-The [graph functional scenarios](tests/e2e/workflow.spec.ts),
-[attachment journey](tests/e2e/attachments.spec.ts),
-[Markdown description journey](tests/e2e/markdown.spec.ts),
-[language journeys](tests/e2e/i18n.spec.ts),
-[authentication journeys](tests/e2e/auth.spec.ts),
-[status journeys](tests/e2e/status.spec.ts),
-[permission journey](tests/e2e/task-agent-permission.spec.ts),
-[pause journey](tests/e2e/task-pause.spec.ts),
-[platform journey](tests/e2e/task-platform.spec.ts),
-[standalone-detail journey](tests/e2e/task-detail-page.spec.ts),
-[project-settings journey](tests/e2e/project-settings.spec.ts),
-[execution-time journey](tests/e2e/task-execution-time.spec.ts),
-[capacity scenarios](tests/e2e/capacity.spec.ts) and
-[acceptance runner](scripts/acceptance.mts) map to the
-[Web requirements](../../docs/spec/daynight-web.md) and
-[language requirements](../../docs/spec/daynight-web-i18n.md) and
-[execution-timing requirements](../../docs/spec/daynight-task-timing.md) as follows. Names are stable
-scenario annotations validated in each target's report. `capacity-*` annotations
-belong only to explicit local browser stress acceptance; ordinary CI validates
-the remaining functional scenarios.
-
-| Requirement | Production checks |
-|---|---|
-| W1 | `project-list`: more than 50 projects, cursor requests, unique cards and navigation to a later-page project |
-| W2 | `project-graph`, `deep-links`, `task-attachments`, `task-detail-page`: project entry, direct HTML reload, complete standalone task/tab/file navigation and history without source-tab state; modal selection remains local |
-| W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained task-list subtree and closed graph dialog across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/shared task-list scroll restoration, category switches without programmatic scrolling, natural short-content clamping and temporary graph-dialog opening, dependency reclassification and consistent full refresh |
-| W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: Goal disclosure with complete unique child rows and direct task details, independent explicit 80% graph dialog and narrow-screen gutters, list/focus/scroll restoration, complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and detail/viewport actions |
-| W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
-| W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, cached content with correlated refresh errors across reload, cold-cache initial failure/loading, empty/not-found states, cached project navigation during delayed sync with request cancellation, and complete size refusal |
-| W10 | Native and container functional targets, exact image identity and dev-ci cleanup receipt |
-| W11 | Strict raw Go/V8 coverage reports, validated functional browser receipts and the final `checks` result; explicit local stress mode additionally validates complete performance receipts |
-| W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
-| W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
-| Steps add | `task-step-add`: real-service append and relative insertion with CLI readback, pagination and focus, draft navigation, conflict and committed response loss, late receipt, bilingual desktop and narrow keyboard behavior |
-| Steps delete | `task-step-delete`: real-service removal, draft consequences, pagination focus, reference preservation, missing targets and unknown-result readback, bilingual desktop and narrow keyboard behavior |
-| Steps status | `task-step-status`, `task-step-access-retirement`: real-service status transitions, conflict, committed response loss and failed readback, malformed success, child 404 and parent deletion, late dialog receipt, bilingual desktop and narrow keyboard menus |
-| Steps position | `task-step-position`: real-service ordered moves, bounded search and paging, no-op, invalid anchor and self-reference, conflict and lost response, focus, bilingual narrow and touch controls |
-| W20 | `task-assignment`, `task-assignment-layout`: native field propagation, real exact-version assignment/clear PATCHes, same-value zero writes, conflict and committed-response-loss GET-only recovery, people identity/access presentation, local filters with full-chain facts, bilingual desktop/narrow menu, focus, scroll and fullscreen behavior |
-| W21 | `task-pause`: project/list/chain/graph pause discovery, complete-scope counts, common heading and Unpause, exact-version property PATCH with preserved task materials, duplicate protection, conflict and committed-response-loss GET-only recovery, bilingual narrow layouts |
-| W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
-| TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |
-| TT1–TT2, TT4–TT6 | `task-execution-time`: real PostgreSQL crossing with graph deliveries held and an incorrect client wall clock, one-second local progress, stable focus/DOM/geometry/edges/viewport, real saved-threshold changes, installed-CLI completion and frozen polling, unknown legacy starts, sub-minute/multi-day/shared/external cards and standalone rows, bilingual 320px/390px layout; browser GET/HEAD only, with fixture mutations through authenticated API or installed CLI |
-| FA1–FA12 | `task-attachments`: installed CLI and production UI share real task/files on native and container targets; exact bytes, file mutations, detail tabs, shared full attachment panel, unique preview scroll owners, rendered formats, standalone address/history and embedded-local selection. Independent real-service probes add end-of-document wheel/keyboard, native PDF final-page paint, fault/retry and unchanged task/graph proof |
-| TI8–TI9, TI15 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; the stable diagram matrix, TD/LR/Chinese flowcharts, independent failures/source, static image safety, content switches and standalone reload share the three Markdown entries; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
-| TP-V1, TP-V7, TP-V8 | `detail-navigation`, `refresh-staleness`, `keyboard-focus`, `narrow-layout`: real API round trips for empty/NUL/control/long/HTML-looking values and duplicates, complete locally paged lists with bounded row counts, page/collection reset and focus, plain-text unsafe addresses, isolated HTTP(S) navigation, rereading properties and compact graph responses |
-| L1–L4 | `language-startup-preferences`: browser default, saved override, reload, route metadata, shared selectors and unchanged user data |
-| L2, L4–L5 | `language-state-preservation`: graph geometry/viewport and selection across fullscreen changes, fullscreen and modal focus, and PR page, file input and iframe identity across detail tab switches; separately held upload, overwrite and deletion retain pending state and execute once. Component tests cover controlled locale changes in mounted graphs and during pending operations |
-| L3–L4, L6–L8 | `language-errors-and-narrow`: storage failures/retry, owned-database failure with current-language safe text and unchanged request ID, English/Chinese 1440px/320px graph/dialog/attachment layout; graph modes have no local language entry or gap and retain accessible long titles and controls |
-| L9–L10 | Task-attached offline mockup checks, typed catalog/component checks, and complete native/container production receipts with the existing coverage and cleanup gates |
-| Authentication | `auth-login-session`, `auth-project-isolation`, `auth-project-members`, `auth-personal-tokens`, `auth-invitations`, `auth-resource-session`: normal login/logout, private project access, roles and removal, PAT creation/revocation, explicit invitation acceptance, protected files and resource-session loss |
-
-Receipts live in `packages/daynight-web/.tmp/acceptance/<run-id>/`, with the
-latest aggregate at `.tmp/acceptance/evidence.json` inside this package. They
-use top-level `schemaVersion: 3` and record source identity, including required
-`source.gitTreeSha` from actual `git rev-parse HEAD^{tree}`, the installed CLI
-receipt and raw artifact identities, native binary
-SHA-256, PostgreSQL/browser versions, `mode: functional` or `mode: stress`, pipeline
-stages, target phases, container image identity and cleanup outcomes. Stress
-mode additionally records capacity measurements. Each stage records
-its result, start/end times, observed command process identities and spawned
-process groups. Each browser phase records its own result, browser identity,
-Playwright process/group and `browserCleanup` result. Raw reports and screenshots
-live under `native/functional/` and `container/`; stress runs additionally create
-`native/capacity/` and its unchanged schema 1 `performance.json` receipt.
-Local ordinary/stress runs and CI shard 2 require
-`native/auth-combined/target.json` and `container/auth-combined/target.json`, both
-schema 1 with `kind: auth-combined`. They require all eleven canonical checks,
-source/browser/installed-package identity, old/new restart process identity and
-passed browser/resource cleanup. Shard 1 has no combined-authentication receipts.
-They retain safe observations and hashes, not credential/configuration bodies
-or raw logs.
-
-Schema 3 functional `evidence.json` includes `shard: { current, total: 2 }` and
-`selection: string[]` for CI shards. Each native/container target and functional
-phase must match that selection. The final validator requires the two selections
-to be disjoint and cover the canonical inventory exactly once per target, with
-all 22 combined checks assigned to shard 2. Local unsharded receipts keep their
-complete inventory without shard metadata. `CI` requires a clean checkout
-matching `GITHUB_SHA` and the pinned browser. Each database uses one worker and
-zero retries; skipped, flaky, duplicate/missing or incomplete scenarios fail.
-
-Full shard artifacts are `daynight-web-acceptance-1` and
-`daynight-web-acceptance-2`, separate from raw coverage and retained for 30 days.
-Inspect the artifact from the exact workflow run and tested checkout identity,
-which is normally a merge revision for PR runs. Complete ordinary validation
-requires thirty-six native and thirty-six container functional scenarios across
-the two CI shards or in one local run. Explicit local stress requires their
-strict native union with five capacity/limit scenarios and the same thirty-six
-container scenarios. Every selected phase rejects missing, extra or duplicate
-scenarios and skipped/flaky/retried results.
-Installed-CLI handoff, container callbacks and recovery require matching source
-commit/tree/dirty state as well as existing package/artifact ownership. A missing
-or mismatched tree field fails; no old-receipt fallback is introduced. The tree
-identifies committed source and does not fingerprint local modifications or prove
-an executed platform/gate. Lifecycle attachments to each status scenario retain
-CLI arguments/outputs/exits, raw-byte digests, task/graph snapshots, captured Web
-requests/responses and declared controlled faults under the same run identity.
-Browser identities must agree across a target's phases. In local stress mode,
-every fixed graph's five timing repetitions and independent size refusals must
-pass. Cleanup and recovery remain required in both modes.
-Local receipts retain their source and browser identity; they do not establish
-clean hosted delivery results. The
-[paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
-retains raster evidence and visual tolerances needed to assess that mechanism.
-
-Functional `playwright.json` reports retain named body steps for attachment
-fixture uploads, preview/deletion matrices, task-page reading layouts and
-execution-time synchronization. Compare each test's total with its sibling step
-durations; a parent duration already includes its nested steps. The remaining time includes
-fixture/authentication setup, unwrapped actions, screenshots outside the named
-blocks and teardown; it is not pure fixture time. The pinned JSON reporter omits
-steps nested under fixture hooks. These wall-time observations do not alter
-assertions, deadlines or acceptance thresholds and do not establish CPU or I/O
-causality. The [journey timing decision](../../.agents/notes/archived/testing/2026-11-04-web-journey-timing.md)
-records the reporting and privacy limits.
-
-Capacity receipts also retain per-interaction `feedbackDiagnostics`: input,
-capture, first ready condition, first/second frame and final end timestamps,
-status/error and phase differences. Missing milestones stay null. Each repetition
-attaches `*-chromium-trace.json` from CDP timeline/frame/GC/User Timing events,
-without CPU sampling or CDP screenshots. These diagnostics preserve all original
-total timing/readiness gates; they do not subtract queue/frame time or turn a
-failed measurement into success. Scenario PNG evidence remains independent.
-All production browser tests disable Playwright action/network traces to keep
-session Cookies, PATs and invitation contents out of published artifacts. The
-[activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for that privacy requirement. The custom streamed CDP traces, scenario PNGs and
-complete graph/geometry checks remain. Controller-side
-`controllerDurations` records fixture creation, graph snapshot validation and
-per-repetition interaction/total durations. These diagnostics locate harness
-costs outside the browser input-to-feedback gates; they do not alter those gates.
-The [CI efficiency decision](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
-records why this avoids duplicate capture work without splitting the suite.
-
-### Cleanup and interrupted-run recovery
-
-Combined browser and command recovery includes both `native/auth-combined/` and
-`container/auth-combined/` alongside the existing phase directories. The runner
-retains the same service origin, UniAuth, PostgreSQL and file root during each
-service-only restart, and verifies original credentials before intentional
-logout, revocation or expiry.
-
-The runner registers owned-resource cleanup before creating its database or
-native process. Timeouts and cancellation stop owned command groups; browser
-receipts identify the detached Chromium group and project-local profile as well.
-A passing run requires confirmed native, browser/profile and dev-ci cleanup.
-Each phase verifies its Playwright group has stopped and recovers owned browser
-resources immediately. Profile roots are derived from the validated phase
-location under `acceptance-private/<run>/`, outside the uploaded acceptance
-artifacts. Playwright allocates profiles there; Chromium keeps the short relative
-`.tmp` directory for Unix sockets so the private path does not exceed socket
-path limits. Inventory and recovery inspect only that phase's root, preserving
-unknown-startup and process-identity failures without touching another target.
-After native preparation, an atomically written
-`container/container-permission.json` binds completed preparation to the exact
-acceptance run ID, dev-ci run ID and source SHA. The container callback records
-its identity before waiting, and inventories browsers only after permission;
-its `ready.json` is diagnostic timing, not browser permission. Both functional
-targets drain before run-wide CLI recovery and optional local capacity. Any stage
-failure or unexpected native-server exit cancels sibling work, drains started
-tasks and preserves failures before unconditional final cleanup.
-
-After the original runner, callback/Playwright processes and their owned groups
-have stopped, run
-from the repository root:
-
-```bash
-node packages/daynight-web/scripts/acceptance.mts --cleanup
-# Select a retained run instead of the latest receipt:
-node packages/daynight-web/scripts/acceptance.mts --cleanup RUN_ID
-```
-
-No receipt is a no-op. Recovery accepts only top-level schema 3 receipts;
-schema 1, schema 2 and unknown versions fail without a compatibility fallback. Valid
-receipts constrain recovery to recorded run/source identities, exact Docker labels and names, and host platform/PID/executable/start-time
-identity. Linux uses procfs ticks; macOS uses kernel start time in microseconds,
-actual executable paths and process groups. Receipts from another platform are rejected. It verifies recorded stage command identities/groups and visits browser
-recorded phases in reverse order: optional `native/capacity`, then `container`
-and `native/functional`.
-A still-running native Go process also requires its recorded binary
-hash before targeted termination. Browser recovery checks its recorded executable,
-process group and profile marker. On macOS, the inventory also freezes the selected
-main executable's device and inode. A recorded hard-link alias can identify that
-same file, including Chromium's code-signing clone; a copy or a familiar path
-name cannot. Active recovery rechecks the file and original process identity;
-helper and companion executable paths retain exact membership checks. A browser
-installation replaced between launch inventory and ownership recording is
-rejected before its profile marker or process receipt is written. Combined
-authentication passes its saved receipt inventory; the Playwright fixture reads
-the runner's prelaunch inventory from the same phase's `target.json`. Recording
-requires that inventory, including macOS file identities; missing or invalid
-input fails without resampling or path-only trust. The caller still closes the
-launched browser. Once that browser has stopped and its profile is gone, the
-rejected recording leaves no new receipt to obstruct repeated recovery. Existing
-valid records remain intact. Ambiguous startup processes, orphan-only groups
-or unknown new profiles cause failure and remain for diagnosis. It does not kill
-unidentified processes or remove unidentified profiles. Dev-ci recovery uses the
-same recorded project identity and bounded cleanup entry.
-
-The runner persists one `installedCli` ownership record before package
-preparation: its deterministic `<acceptanceRun>/installed-cli` root and cleanup
-state exist even if a completed receipt does not. Preparation creates that root
-exclusively. Cleanup requires recorded commands/groups to have stopped, validates
-completed artifacts when present, removes only that root and persists its cleanup
-state in the original evidence before later native/Docker cleanup. Recovery can
-repeat after interrupted preparation or a subsequent cleanup failure; a live
-preparation process blocks removal.
-
-After verifying owned installed-CLI members and sending SIGTERM, recovery waits
-for both an empty owned-member scan and ESRCH from `kill(-PGID, 0)` on the original
-group. It uses the existing two phases of fifty 100ms polls; an exited but unreaped
-group cannot satisfy cleanup merely because `/proc` ownership or executable data
-has disappeared. Remaining members require unchanged identities before SIGKILL.
-An initially live group without verified owned members fails immediately, and
-EPERM or other probe errors remain failures. The
-[pipeline decision](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
-owns the recovery rationale and real-kernel reproduction.
-
-Recovery writes separate per-run/latest `recovery.json` receipts and preserves
-the original acceptance outcome while retaining completed cleanup state. A successful recovery does not turn a failed
-browser or performance result into acceptance. The CI `always()` recovery step
-and artifact upload retain this distinction; cleanup uncertainty fails the job.
+The Web quality command does not run a cross-product acceptance suite. Controlled
+browser fixtures establish only their stated frontend scope. A real-service result
+requires its own source-bound execution and cleanup evidence.
 
 ## Dependency declarations
 

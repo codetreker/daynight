@@ -8,39 +8,33 @@ export type ModuleSelection = Record<Module, boolean>;
 const allModules: ModuleSelection = { cli: true, server: true, web: true };
 const sharedInputs = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"]);
 const cliManifestPath = "packages/daynight/package.json";
-const lazyCliCommands = ["worker", "controller", "review", "skill", "update", "completion"]
-  .map((command) => `packages/daynight/src/commands/${command}/`);
-const serverCliInputs = new Set([
-  cliManifestPath,
-  "packages/daynight/tsconfig.json",
-  "packages/daynight/tsconfig.build.json",
-  "packages/daynight/config.example.yml",
-  "packages/daynight/scripts/clean-dist.ts",
-  "packages/daynight/scripts/copy-resources.ts",
-  "packages/daynight/scripts/project-task-acceptance.ts",
-  "packages/daynight/scripts/project-task-budgets.ts",
-  "packages/daynight/test/fixtures/installed-operation-limits.ts",
-]);
 const webPatches = new Set([
   "patches/@dagrejs__dagre@3.1.1.patch",
   "patches/@xyflow__system@0.0.83.patch",
 ]);
 
-export const selectModules = (paths: readonly string[], cliManifestRequiresServer = true): ModuleSelection => {
+export const selectModules = (paths: readonly string[]): ModuleSelection => {
   const selected = { cli: false, server: false, web: false };
   for (const path of paths) {
     if (sharedInputs.has(path)) return { ...allModules };
-    if (path === "packages/daynight/test/fixtures/installed-cli.ts") {
-      selected.cli = true;
-      selected.server = true;
-      continue;
-    }
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
-      // Command definitions load at startup; their implementations load only when selected.
-      if (path.endsWith("/definition.ts") || !lazyCliCommands.some((prefix) => path.startsWith(prefix))) selected.server = true;
+      // Web imports these production modules; the service embeds the Web build.
       if (path.startsWith("packages/daynight/src/api/") || path.startsWith("packages/daynight/src/session/") ||
-        path === "packages/daynight/src/platform/text.ts") selected.web = true;
+        path === "packages/daynight/src/platform/text.ts") {
+        selected.web = true;
+        selected.server = true;
+      }
+      if (path === "packages/daynight/src/commands/controller/providers/projection.ts" ||
+        path === "packages/daynight/src/commands/controller/providers/codex-errors.ts" ||
+        path === "packages/daynight/src/commands/controller/providers/native-rpc.ts" ||
+        path === "packages/daynight/src/commands/controller/providers/types.ts" ||
+        path === "packages/daynight/src/commands/controller/provider-display.ts") selected.web = true;
+      continue;
+    }
+    if (path.startsWith("packages/daynight/test/session/fixtures/")) {
+      selected.cli = true;
+      selected.web = true;
       continue;
     }
     if (
@@ -48,7 +42,6 @@ export const selectModules = (paths: readonly string[], cliManifestRequiresServe
       /(^|\/)(README|AGENTS|CLAUDE)\.md$/.test(path) || path === ".gitignore" ||
       path === ".github/workflows/publish.yml"
     ) continue;
-    if (serverCliInputs.has(path) && (path !== cliManifestPath || cliManifestRequiresServer)) selected.server = true;
     if (path.startsWith("packages/daynight/") || path === "scripts/dev-install.mjs" || path === "scripts/dev-install.test.mjs") selected.cli = true;
     else if (path.startsWith("packages/daynight-server/")) selected.server = true;
     else if (path.startsWith("packages/daynight-web/") || webPatches.has(path)) {
@@ -112,7 +105,6 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
   if (cwd === undefined) throw new Error("PR change detection requires a repository directory.");
   const diff = await pullRequestDiff(cwd, base, head);
   const manifestChange = diff.changes.find(({ path }) => path === cliManifestPath);
-  let cliManifestRequiresServer = true;
   if (manifestChange?.status === "M") {
     const [beforeSource, afterSource, beforeMode, afterMode] = await Promise.all([
       git(cwd, ["show", `${diff.comparisonBase}:${cliManifestPath}`]),
@@ -124,13 +116,12 @@ export const detectModules = async ({ event, base, head, cwd }: { event: string 
     if (regularFile(beforeMode) && regularFile(afterMode)) {
       const before = parseManifest(beforeSource);
       const after = parseManifest(afterSource);
-      cliManifestRequiresServer = beforeMode !== afterMode || !isDeepStrictEqual(before.inputs, after.inputs);
-      if (diff.changes.length === 1 && !cliManifestRequiresServer && before.version !== after.version) {
+      if (diff.changes.length === 1 && beforeMode === afterMode && isDeepStrictEqual(before.inputs, after.inputs) && before.version !== after.version) {
         return { cli: false, server: false, web: false };
       }
     }
   }
-  return selectModules(diff.changes.map(({ path }) => path), cliManifestRequiresServer);
+  return selectModules(diff.changes.map(({ path }) => path));
 };
 
 if (import.meta.main) {

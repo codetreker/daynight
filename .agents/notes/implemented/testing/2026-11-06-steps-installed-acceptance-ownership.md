@@ -7,23 +7,25 @@ Status: implemented
 Installed Steps acceptance exercised the complete read and write matrices through
 both package launchers, although both launchers resolve to the same CLI entry.
 It also repeated the same missing-title rejection under broken configuration in
-two files. Native launcher behavior, argument forwarding, request contracts and
-failure recovery still require installed-package evidence.
+two files. The decision sought installed-package evidence for native launcher
+behavior, argument forwarding, request contracts and failure recovery.
 
 ## Decision
 
-The `daynight` launcher owns the complete installed Steps business matrices.
-The `dn` launcher retains representative native successes across the operations
-and error checks.
-The Add test sends the same complex, separate arguments through both launchers
-and compares their request bodies and complete receipts. It owns the missing-title
-rejection for both launchers, including the unchanged broken configuration and
-absence of requests. Windows uses the installed `.cmd` launchers.
+The initial decision assigned the complete installed Steps business matrices to
+the `daynight` launcher and kept representative native successes and errors for
+`dn`. The Add test sent the same complex, separate arguments through both
+launchers and compared their request bodies and complete receipts. It also owned
+the missing-title rejection for both launchers, including the unchanged broken
+configuration and absence of requests. Windows used installed `.cmd` launchers.
 
-The matrices retain explicit and discovered versions, exact routes and fields,
-receipts, refusals, unknown outcomes and correlated observations. The existing
-[shared installed CLI preparation](2026-11-04-shared-installed-cli-preparation.md)
+The matrices covered explicit and discovered versions, exact routes and fields,
+receipts, refusals, unknown outcomes and correlated observations. The
+[shared installed CLI preparation](../../archived/testing/2026-11-04-shared-installed-cli-preparation.md)
 continues to own one pack and installation and independent consumer views.
+The [CLI artifact validation boundary](2026-11-06-cli-artifact-validation-boundary.md)
+supersedes the installed business-matrix ownership while retaining a native
+launcher argument-forwarding check.
 
 ## Alternatives
 
@@ -36,8 +38,7 @@ handles success and error execution, especially on Windows.
 
 ## Consequences
 
-Installed acceptance starts fewer CLI processes while retaining complete
-application-level checks and explicit launcher equivalence evidence. Launcher
-checks sample operations rather than duplicating every error and recovery case;
-changes to launcher generation or argument handling still require native
-validation on each supported platform.
+The consolidation reduced CLI process starts while preserving the original
+application-level matrices and explicit launcher equivalence evidence. Changes
+to launcher generation or argument handling still require native validation on
+each supported platform.

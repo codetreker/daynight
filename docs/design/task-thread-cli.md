@@ -157,13 +157,12 @@ PublicDiagnosticError 保留内部 cause 和安全 publicText/exitCode；最终 
 
 ## 验证与文档入口
 
-验证覆盖命令发现、零 I/O 拒绝、一次 Thread 请求、严格来源/字段、账号准入、真实服务
+验证须覆盖命令发现、零 I/O 拒绝、一次 Thread 请求、严格来源/字段、账号准入、真实服务
 响应一致性、精确资源/输出边界、DEL/C1/LF/TAB 可逆性、连续双向读取、提交结果和确认后
-本地失败。真实服务契约验收由
-[acceptance_thread_cli_test.go](../../packages/daynight-server/cmd/e2e_tests/acceptance_thread_cli_test.go)
-持有，与 `cmd/e2e_tests` 的进程及证据 harness 共用真实认证、隔离PostgreSQL、已构建服务、
-安装包归属和资源清理证明。单元 fixture 不替代该验收。CLI 使用仓库现有
-typecheck/test/build、版本门禁和安装包检查，安装包 help 与 `daynight --skill` 必须能发现 Thread。
+本地失败。CLI 模块测试使用受控服务；真实认证、隔离 PostgreSQL、构建服务和安装产物的
+互操作证据须独立提供，单元 fixture 不替代该验收。当前入口不执行独立跨产品进程验收。
+CLI 使用仓库现有 typecheck/test/build 和安装包检查，安装包 help 与 `daynight --skill`
+必须能发现 Thread。
 
 [CLI 指南](../../packages/daynight/README.md#task-discussion-threads)和独立 usage.md 手册
 拥有操作说明；using-daynight 源技能持有用途与写入安全规则。实际字节与调用数可以测量，
