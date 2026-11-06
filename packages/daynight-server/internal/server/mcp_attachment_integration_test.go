@@ -146,4 +146,15 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	if oversized["code"] != "resource_conflict" || refs["path"] != "giant" || refs["readTool"] != "task_attachment_read" {
 		t.Fatalf("oversized metadata: %+v", oversized)
 	}
+	boundaryPath := strings.Repeat(strings.Repeat("😀", 50)+"/", 20) + "😀😀😀😀"
+	boundedContentType := "text/plain; x=" + strings.Repeat("a", 4000)
+	if _, _, err := attachments.Put(t.Context(), principal, projectID, parent.ID, boundaryPath, boundedContentType, strings.NewReader("x")); err != nil {
+		t.Fatalf("boundary path: %v", err)
+	}
+	boundaryPage := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": refs["nextCursor"]}, false)["data"])
+	boundaryItems := boundaryPage["items"].([]any)
+	if len(boundaryItems) != 1 || obj(boundaryItems[0])["path"] != boundaryPath || obj(boundaryItems[0])["contentType"] != boundedContentType {
+		t.Fatalf("boundary page: %+v", boundaryPage)
+	}
+
 }

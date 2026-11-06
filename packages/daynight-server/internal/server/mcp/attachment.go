@@ -20,7 +20,7 @@ import (
 var attachmentToolsJSON []byte
 
 type attachmentOperations interface {
-	ListBounded(context.Context, model.Principal, string, string, model.PageRequest, int) (attachmentcore.Page, error)
+	ListBounded(context.Context, model.Principal, string, string, model.PageRequest, int, int) (attachmentcore.Page, error)
 	Delete(context.Context, model.Principal, string, string, string) error
 }
 
@@ -99,14 +99,14 @@ func listAttachments(ctx context.Context, actor RequestActor, attachments attach
 	if input.Limit != nil {
 		limit = *input.Limit
 	}
-	page, err := attachments.ListBounded(ctx, actor.Principal, project, task, model.PageRequest{Limit: limit, Cursor: input.Cursor}, 8192)
+	page, err := attachments.ListBounded(ctx, actor.Principal, project, task, model.PageRequest{Limit: limit, Cursor: input.Cursor}, 2048, 8192)
 	if err != nil {
 		return ToolResult{}, err
 	}
 	if len(page.Items) > 0 && len(page.Oversized) > 0 && page.Oversized[0] && page.Items[0].Path == "" {
 		// Re-read at most one item under the large permit. The cursor is applied
 		// again in a new snapshot, so a changed first row becomes the observation.
-		page, err = attachments.ListBounded(ctx, actor.Principal, project, task, model.PageRequest{Limit: 1, Cursor: input.Cursor}, 4<<20)
+		page, err = attachments.ListBounded(ctx, actor.Principal, project, task, model.PageRequest{Limit: 1, Cursor: input.Cursor}, 4<<20, 8192)
 		if err != nil {
 			return ToolResult{}, err
 		}

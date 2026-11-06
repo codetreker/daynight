@@ -7,8 +7,9 @@ import (
 type AttachmentQuery struct {
 	After *string
 	Limit int
-	// MaxFieldBytes bounds each projected path and content type. Zero preserves
-	// the full fields. Oversized values are omitted and marked in the result.
+	// Each zero limit preserves the corresponding complete field. Oversized
+	// values are omitted and marked in the result.
+	MaxPathBytes  int
 	MaxFieldBytes int
 }
 

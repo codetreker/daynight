@@ -15,15 +15,16 @@ import (
 )
 
 type attachmentTestOperations struct {
-	items     []model.Attachment
-	err       error
-	calls     int
-	principal model.Principal
-	request   model.PageRequest
-	removed   string
+	items       []model.Attachment
+	err         error
+	calls       int
+	principal   model.Principal
+	request     model.PageRequest
+	removed     string
+	missingPath bool
 }
 
-func (s *attachmentTestOperations) ListBounded(_ context.Context, principal model.Principal, project, task string, request model.PageRequest, maxFieldBytes int) (attachmentcore.Page, error) {
+func (s *attachmentTestOperations) ListBounded(_ context.Context, principal model.Principal, project, task string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
 	s.calls++
 	s.principal, s.request = principal, request
 	if s.err != nil {
@@ -47,7 +48,7 @@ func (s *attachmentTestOperations) ListBounded(_ context.Context, principal mode
 	}
 	oversized := make([]bool, len(items))
 	for i := range items {
-		if len(items[i].Path) > maxFieldBytes {
+		if len(items[i].Path) > maxPathBytes || s.missingPath {
 			items[i].Path = ""
 			oversized[i] = true
 		}
@@ -242,5 +243,34 @@ func TestAttachmentToolRegistrationFailures(t *testing.T) {
 				t.Fatal("invalid tool registration accepted")
 			}
 		})
+	}
+}
+
+func TestAttachmentListRereadsBoundedUnicodePath(t *testing.T) {
+	fixture := newEntryFixture(t)
+	path := strings.Repeat(strings.Repeat("😀", 50)+"/", 20) + "😀😀😀😀"
+	contentType := "text/plain; x=" + strings.Repeat("a", 4000)
+	s := &attachmentTestOperations{items: []model.Attachment{{Path: path, ContentType: contentType}}}
+	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
+		t.Fatal(err)
+	}
+	client := fixture.client(t, "2026-07-28", "alice")
+	data := object(t, invitationCall(t, client, "task_attachment_list", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}, false)["data"])
+	if len(data["items"].([]any)) != 1 || object(t, data["items"].([]any)[0])["path"] != path || object(t, data["items"].([]any)[0])["contentType"] != contentType || s.calls != 2 {
+		t.Fatalf("bounded reread: %#v calls=%d", data, s.calls)
+	}
+}
+
+func TestAttachmentListMissingPathDoesNotInventReference(t *testing.T) {
+	fixture := newEntryFixture(t)
+	s := &attachmentTestOperations{items: []model.Attachment{{Path: "file", ContentType: "text/plain"}}, missingPath: true}
+	if err := RegisterAttachmentTools(fixture.entry, s); err != nil {
+		t.Fatal(err)
+	}
+	client := fixture.client(t, "2026-07-28", "alice")
+	failure := object(t, invitationCall(t, client, "task_attachment_list", map[string]any{"projectId": invitationTestProjectID, "taskId": invitationTestTeamID}, true)["error"])
+	refs := object(t, failure["refs"])
+	if failure["code"] != "resource_conflict" || refs["path"] != nil || refs["nextCursor"] != nil || refs["readTool"] != nil || s.calls != 2 {
+		t.Fatalf("invented reference: %#v calls=%d", failure, s.calls)
 	}
 }

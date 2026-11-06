@@ -143,12 +143,12 @@ func TestAttachmentBoundedProjectionPreservesPageBoundary(t *testing.T) {
 		}
 	}
 	err := db.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
-		page, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, MaxFieldBytes: 5})
+		page, err := snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, MaxPathBytes: 5, MaxFieldBytes: 5})
 		if err != nil || len(page.Items) != 2 || !page.HasMore || page.Items[0].Path != "a" || page.Items[0].ContentType != "short" || page.Oversized[0] || page.Items[1].Path != "b" || page.Items[1].ContentType != "" || !page.Oversized[1] {
 			t.Fatalf("bounded first page: %+v %v", page, err)
 		}
 		after := page.Items[1].Path
-		page, err = snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, After: &after, MaxFieldBytes: 5})
+		page, err = snapshot.AttachmentDAO().Attachments(ctx, projectID, taskID, AttachmentQuery{Limit: 2, After: &after, MaxPathBytes: 5, MaxFieldBytes: 5})
 		if err != nil || len(page.Items) != 1 || page.Items[0].Path != "" || !page.Oversized[0] {
 			t.Fatalf("bounded long path: %+v %v", page, err)
 		}

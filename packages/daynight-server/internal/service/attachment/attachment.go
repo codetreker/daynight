@@ -206,19 +206,19 @@ func (s *Attachments) Delete(ctx context.Context, principal model.Principal, pro
 }
 
 func (s *Attachments) List(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest) (attachmentcore.Page, error) {
-	return s.list(ctx, principal, projectID, taskID, request, 0)
+	return s.list(ctx, principal, projectID, taskID, request, 0, 0)
 }
 
 // ListBounded omits oversized path or content type fields and marks those rows.
 // It avoids materializing unbounded metadata before an adapter's output limit.
-func (s *Attachments) ListBounded(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxFieldBytes int) (attachmentcore.Page, error) {
-	if maxFieldBytes < 1 {
+func (s *Attachments) ListBounded(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
+	if maxPathBytes < 1 || maxFieldBytes < 1 {
 		return attachmentcore.Page{}, &model.Fault{Code: "invalid_input", Message: "Field limit must be positive."}
 	}
-	return s.list(ctx, principal, projectID, taskID, request, maxFieldBytes)
+	return s.list(ctx, principal, projectID, taskID, request, maxPathBytes, maxFieldBytes)
 }
 
-func (s *Attachments) list(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxFieldBytes int) (attachmentcore.Page, error) {
+func (s *Attachments) list(ctx context.Context, principal model.Principal, projectID, taskID string, request model.PageRequest, maxPathBytes, maxFieldBytes int) (attachmentcore.Page, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return attachmentcore.Page{}, err
 	}
@@ -235,6 +235,7 @@ func (s *Attachments) list(ctx context.Context, principal model.Principal, proje
 		return attachmentcore.Page{}, err
 	}
 	query.MaxFieldBytes = maxFieldBytes
+	query.MaxPathBytes = maxPathBytes
 	var result store.AttachmentPage
 	err = s.read(ctx, principal, projectID, taskID, func(reader store.AttachmentReader) error {
 		var err error

@@ -44,13 +44,13 @@ func (s *Reader) Attachment(ctx context.Context, projectID, taskID, path string)
 
 func (s *Reader) Attachments(ctx context.Context, projectID, taskID string, query store.AttachmentQuery) (store.AttachmentPage, error) {
 	rows, err := s.tx.Query(ctx, `SELECT project_id::text, task_id::text,
-		CASE WHEN $5::integer = 0 OR octet_length(path) <= $5 THEN path ELSE '' END,
+		CASE WHEN $6::integer = 0 OR octet_length(path) <= $6 THEN path ELSE '' END,
 		CASE WHEN $5::integer = 0 OR octet_length(content_type) <= $5 THEN content_type ELSE '' END,
 		size_bytes, created_at, updated_at,
-		($5::integer > 0 AND (octet_length(path) > $5 OR octet_length(content_type) > $5))
+		(($6::integer > 0 AND octet_length(path) > $6) OR ($5::integer > 0 AND octet_length(content_type) > $5))
 		FROM task_attachments
 		WHERE project_id = $1 AND task_id = $2 AND ($3::text IS NULL OR path > $3 COLLATE "C")
-		ORDER BY path LIMIT $4`, projectID, taskID, query.After, query.Limit+1, query.MaxFieldBytes)
+		ORDER BY path LIMIT $4`, projectID, taskID, query.After, query.Limit+1, query.MaxFieldBytes, query.MaxPathBytes)
 	if err != nil {
 		return store.AttachmentPage{}, pg.QueryError("list attachments", err)
 	}
@@ -78,7 +78,7 @@ func (s *Reader) Attachments(ctx context.Context, projectID, taskID string, quer
 		items = items[:query.Limit]
 		oversized = oversized[:query.Limit]
 	}
-	if query.MaxFieldBytes == 0 {
+	if query.MaxFieldBytes == 0 && query.MaxPathBytes == 0 {
 		oversized = nil
 	}
 	return store.AttachmentPage{Items: items, HasMore: hasMore, Oversized: oversized}, nil
