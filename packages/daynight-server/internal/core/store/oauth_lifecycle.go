@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 // GrantLifecycleWriter supplies a transaction-bound DAO. Token lookups before
@@ -26,6 +28,7 @@ type OAuthRotation struct {
 
 type GrantLifecycleDAO interface {
 	CredentialFamilyDAO
+	LockOwnerSession(context.Context, model.Principal, time.Time) error
 	FreshTime(context.Context, time.Time) (time.Time, error)
 	Refresh(context.Context, []byte, bool) (OAuthRefresh, error)
 	AccessGrant(context.Context, []byte) (string, error)

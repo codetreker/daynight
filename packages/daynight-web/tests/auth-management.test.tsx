@@ -5,12 +5,15 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import * as auth from '../src/api/auth';
+import * as grants from '../src/api/oauth-grants';
 import { messagesByLocale } from '../src/i18n/messages';
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { AccountPage } from '../src/features/management/AccountPage';
 import { MembersPanel } from '../src/features/management/MembersPanel';
 import { Identity, ManagementError, SecretDialog } from '../src/features/management/feedback';
 import type { CurrentUser, PersonalAccessToken, ProjectInvitation, ProjectParticipant, ProjectParticipants, ProjectGrant } from '../src/api/auth';
+
+vi.mock('../src/api/oauth-grants', () => ({ listOwnerGrants: vi.fn(), revokeOwnerGrant: vi.fn() }));
 
 vi.mock('../src/api/project-settings', () => ({ getProject: vi.fn() }));
 
@@ -50,7 +53,7 @@ const clickWhenReady = async (name: string) => {
 const dialogClick = async (name: string) => { const button = within(screen.getByRole('dialog')).getByRole('button', { name }); await waitFor(() => expect(button).not.toBeDisabled()); fireEvent.click(button); };
 const account = () => render(<AccountPage user={user} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
 const members = (props: Partial<Parameters<typeof MembersPanel>[0]> = {}) => render(<MembersPanel projectId="00000000-0000-4000-8000-000000000101" user={user} onRemoved={vi.fn()} {...props} />);
-const tokensTab = async () => { click('访问令牌'); await waitFor(() => expect(screen.queryByText('正在加载访问令牌…')).toBeNull()); };
+const tokensTab = async () => { click('访问凭据'); await waitFor(() => expect(screen.queryByText('正在加载访问令牌…')).toBeNull()); };
 const readyMembers = async () => { await waitFor(() => expect(screen.queryByText('正在加载项目成员…')).toBeNull()); };
 const createForm = async (name = 'new device', expiry: string | null = null) => {
   click('创建令牌');
@@ -68,6 +71,7 @@ beforeEach(() => {
   actorRole = 'admin';
   vi.mocked(auth.getProjectAccess).mockImplementation(async (projectId) => directAccessFixture(projectId, user.id, actorRole));
   vi.mocked(auth.listTokens).mockResolvedValue([]);
+  vi.mocked(grants.listOwnerGrants).mockResolvedValue([]);
   vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id, 'admin'), member('Alice')]));
   vi.mocked(auth.listInvitations).mockResolvedValue([]);
   vi.mocked(auth.revokeToken).mockResolvedValue();
@@ -93,7 +97,7 @@ describe('account credentials', () => {
   it('keeps a loading state, marks expired tokens unusable, and cancels the creation dialog with focus recovery', async () => {
     const result = deferred<readonly PersonalAccessToken[]>();
     vi.mocked(auth.listTokens).mockReturnValue(result.promise);
-    account(); click('访问令牌');
+    account(); click('访问凭据');
     expect(screen.getByText('正在加载访问令牌…')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建令牌' })).toBeDisabled();
     await act(async () => result.resolve([{ ...token, expiresAt: '2000-01-01T00:00:00Z' }]));
@@ -211,7 +215,7 @@ describe('account credentials', () => {
 
   it('aborts stale loads and never renders old account metadata after account replacement', async () => {
     const late = deferred<readonly PersonalAccessToken[]>(); vi.mocked(auth.listTokens).mockReturnValue(late.promise);
-    const view = account(); click('访问令牌');
+    const view = account(); click('访问凭据');
     const signal = vi.mocked(auth.listTokens).mock.calls[0]![0];
     view.rerender(<AccountPage user={{ ...user, id: 'new-account', name: 'New account' }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
     expect(signal.aborted).toBe(true); expect(screen.getByText('New account')).toBeInTheDocument();
