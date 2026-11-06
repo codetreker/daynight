@@ -1204,3 +1204,159 @@ func TestLifecycleRechecksRevocationAfterWaitingForGate(t *testing.T) {
 	}
 	probe.Close()
 }
+
+func TestBindingNumberLimitsAndOperationFences(t *testing.T) {
+	for _, tc := range []struct {
+		a, b  string
+		equal bool
+	}{
+		{"-1.20", "-12e-1", true},
+		{"1e9223372036854775808", "1", false},
+		{"1.1e-9223372036854775808", "1", false},
+		{"10e9223372036854775807", "1", false},
+	} {
+		if got := equalJSON(json.Number(tc.a), json.Number(tc.b)); got != tc.equal {
+			t.Errorf("%s versus %s: %v", tc.a, tc.b, got)
+		}
+	}
+	if got := operationID(json.RawMessage(`{"operationId":2}`)); got != "" {
+		t.Fatalf("invalid operation ID: %q", got)
+	}
+	for _, terminal := range []string{"closed", "failed", "committed", "cleanup_pending"} {
+		if allowed(terminal, "receiving") {
+			t.Errorf("%s transfer can restart", terminal)
+		}
+	}
+	if !allowed("unknown", "unknown") || allowed("unknown", "committing") {
+		t.Fatal("unknown commit permits replay")
+	}
+}
+
+type failedGate struct {
+	filestorage.Storage
+	err error
+}
+
+func (g failedGate) AcquireGate(context.Context, filestorage.GateDomain, string) (io.Closer, error) {
+	return nil, g.err
+}
+
+type lateGate struct {
+	filestorage.Storage
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g lateGate) AcquireGate(ctx context.Context, domain filestorage.GateDomain, id string) (io.Closer, error) {
+	p, err := g.Storage.AcquireGate(ctx, domain, id)
+	if err != nil {
+		return nil, err
+	}
+	close(g.entered)
+	<-g.release
+	return p, nil
+}
+
+func TestLifecyclePermitFailureAndLateShutdown(t *testing.T) {
+	f := newFixture(t)
+	r := openRecord(t, f)
+	failure := errors.New("gate unavailable")
+	l, err := New(f.db, failedGate{f.files, failure}, f.files, 1<<30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.AcquirePermit(t.Context(), f.actor, r.ID); !errors.Is(err, failure) {
+		t.Fatalf("gate failure: %v", err)
+	}
+	if err := l.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	late, err := New(f.db, lateGate{f.files, entered, release}, f.files, 1<<30, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		p, err := late.AcquirePermit(t.Context(), f.actor, r.ID)
+		if p != nil {
+			p.Close()
+		}
+		result <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("gate did not acquire")
+	}
+	closeResult := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	go func() { closeResult <- late.Close(ctx) }()
+	for {
+		late.mu.Lock()
+		stopping := late.stopping
+		late.mu.Unlock()
+		if stopping {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("shutdown did not start")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	close(release)
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("permit admitted during shutdown")
+		}
+	case <-ctx.Done():
+		t.Fatal("permit did not finish")
+	}
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("shutdown did not join")
+	}
+	p, err := f.files.AcquireGate(ctx, filestorage.PrivateGate, r.ID)
+	if err != nil {
+		t.Fatalf("late permit leaked gate: %v", err)
+	}
+	p.Close()
+}
+
+func TestLifecyclePermitRejectsTerminalAndCapsRenewal(t *testing.T) {
+	f := newFixture(t)
+	r := openRecord(t, f)
+	if _, err := f.db.Pool.Exec(t.Context(), `UPDATE private_transfers SET expires_at=now()+interval '10 seconds',hard_expires_at=now()+interval '30 seconds' WHERE id=$1`, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	p, err := f.lifecycle.AcquirePermit(t.Context(), f.actor, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := f.lifecycle.LookupBound(t.Context(), f.actor, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.ExpiresAt.Equal(current.HardExpiresAt) {
+		t.Fatal("renewal exceeded maximum lifetime")
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.lifecycle.RequestCleanup(t.Context(), f.actor, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.lifecycle.AcquirePermit(t.Context(), f.actor, r.ID); err == nil {
+		t.Fatal("cleanup pending admitted")
+	}
+	if _, err := f.lifecycle.AcquirePermit(t.Context(), f.actor, uuid.NewString()); err == nil {
+		t.Fatal("missing transfer admitted")
+	}
+}

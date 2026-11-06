@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -866,8 +865,4 @@ func (s *Lifecycle) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (s *Lifecycle) String() string {
-	return fmt.Sprintf("private transfer lifecycle (budget %d bytes)", s.budget)
 }
