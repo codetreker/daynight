@@ -165,7 +165,7 @@ func TestAttachmentUploadAndProjectGrantRemovalSerialize(t *testing.T) {
 
 	var waiter, blocker int32
 	wait("grant row lock wait", func() (bool, error) {
-		err := integration.database.Pool.QueryRow(ctx, `SELECT waiting.pid, blocking.pid
+		err := integration.database.QueryRow(ctx, `SELECT waiting.pid, blocking.pid
 			FROM pg_stat_activity waiting
 			JOIN pg_locks tuple_lock ON tuple_lock.pid=waiting.pid AND tuple_lock.locktype='tuple'
 				AND tuple_lock.relation='project_grants'::regclass
@@ -190,7 +190,7 @@ func TestAttachmentUploadAndProjectGrantRemovalSerialize(t *testing.T) {
 	default:
 	}
 	var grants, metadata int
-	if err := integration.database.Pool.QueryRow(ctx, `SELECT
+	if err := integration.database.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2),
 		(SELECT count(*) FROM task_attachments WHERE project_id=$1 AND task_id=$3 AND path=$4)`, project.ID, memberUser.ID, task.ID, "lock/retained.bin").Scan(&grants, &metadata); err != nil || grants != 1 || metadata != 0 {
 		t.Fatalf("held upload or grant changed before release: grants=%d metadata=%d error=%v", grants, metadata, err)
@@ -225,7 +225,7 @@ func TestAttachmentUploadAndProjectGrantRemovalSerialize(t *testing.T) {
 	if identityDecode[api.ErrorResponse](t, patDenial).Error.Code != "not_found" {
 		t.Fatal("the upload PAT retained access after grant removal")
 	}
-	if err := integration.database.Pool.QueryRow(ctx, `SELECT
+	if err := integration.database.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2),
 		(SELECT count(*) FROM task_attachments WHERE project_id=$1 AND task_id=$3 AND path=$4)`, project.ID, memberUser.ID, task.ID, "lock/retained.bin").Scan(&grants, &metadata); err != nil || grants != 0 || metadata != 1 {
 		t.Fatalf("committed grant or attachment metadata differs: grants=%d metadata=%d error=%v", grants, metadata, err)
