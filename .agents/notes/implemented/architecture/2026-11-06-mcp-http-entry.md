@@ -16,7 +16,8 @@ the stateless MCP entry. Each HTTP request authenticates its own PAT or MCP OAut
 access token, checks any Origin against an exact allowlist, and carries its
 principal and stable authority reference into tool handlers. The
 [OAuth credential decision](2026-11-06-mcp-oauth-credentials.md) describes the
-family and transaction boundaries. The official SDK supports the two declared protocol versions.
+family and transaction boundaries. The official SDK supports the two declared
+protocol versions.
 Registered tools use one low-level wrapper with precompiled input and output
 schemas, safe structured errors, and explicit completion facts. The production
 registry exposes only complete business adapters.
@@ -25,9 +26,10 @@ Separate control and large-object permits are selected by internal materializati
 not the returned view. Permits remain held through handler and response delivery.
 Shutdown cancels and waits for MCP handlers before stopping the shared relay. It
 then waits for the remaining handlers and database cancellation before closing
-borrowed storage. An HTTP drain timeout remains an error, but does not end this
-cleanup; an uncooperative handler can delay process exit beyond the configured
-HTTP drain timeout.
+borrowed storage. An HTTP drain timeout remains an error. A separate five-second
+cleanup budget waits for actual work; if it expires, the application retains its
+resources for a further close attempt. The [application lifecycle decision](2026-11-06-server-application-lifecycle.md)
+owns this bounded cleanup and resource ownership.
 
 ## Alternatives
 
@@ -42,7 +44,8 @@ credential revocation and risk divergent relay or authorization state.
 **Return while cleanup runs in the background.** The executable exits when the
 runtime returns, terminating asynchronous PostgreSQL cancellation before a
 blocked transaction has necessarily stopped. Waiting for cleanup preserves the
-outcome and shared-resource lifetime at the cost of a potentially delayed exit.
+outcome and shared-resource lifetime; bounded failure retains ownership when work
+has not stopped.
 
 ## Consequences
 

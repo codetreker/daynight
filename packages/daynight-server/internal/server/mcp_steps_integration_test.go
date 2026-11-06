@@ -14,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
@@ -31,7 +32,7 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 	config.UniAuthAppID, config.UniAuthAppSecret = gateway.AppID, gateway.AppSecret
 	config.AllowHTTPTestOrigin, config.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler, err := New(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +47,7 @@ func TestMCPStepsProductionLifecycle(t *testing.T) {
 			t.Errorf("shutdown: %v", err)
 		}
 	})
-	identityClient, err := config.identityClient()
+	identityClient, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}

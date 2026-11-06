@@ -49,7 +49,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	}](t, projectRequest(f.handler, http.MethodPost, f.base, jsonBody(t, f.registration)), http.StatusOK)
 	f.snapshot = result.Session
 	f.grant = f.mint(t, "bootstrap")
-	application, err := New(Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
+	application, err := newTestHandler(Dependencies{Store: f.db, Files: attachmentTestFiles(t)}, configuredTestConfig(), testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

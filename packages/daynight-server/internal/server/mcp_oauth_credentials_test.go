@@ -53,6 +53,22 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 	}
 	p := identity.Principal
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Exercise the production composition, which constructs OAuth admission
+	// from the same store as the business services.
+	config := configuredTestConfig()
+	config.PublicOrigin = "https://daynight.test"
+	config.UniAuthCallbackURL = config.PublicOrigin + "/api/v1/auth/callback"
+	production, err := newTestHandler(Dependencies{Store: db, Ready: db.Ready, Files: attachmentTestFiles(t)}, config, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	productionServer := httptest.NewServer(httpx.RequestLogging(logger, production))
+	defer productionServer.Close()
+	defer production.(Handler).Shutdown(context.Background())
+	productionClient := mcpPATClient(t, productionServer.URL, token)
+	if _, err = productionClient.ListTools(ctx, nil); err != nil {
+		t.Fatalf("production MCP OAuth: %v", err)
+	}
 	entry, err := mcphttp.New(identityservice.New(db, nil, ""), "https://daynight.test", nil, logger, auth)
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +323,9 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 	}
 	if _, err = bots.Get(ctx, p, bot.ID); err == nil {
 		t.Fatal("revoked bot accepted")
+	}
+	if _, err = productionClient.ListTools(ctx, nil); err == nil {
+		t.Fatal("production MCP accepted revoked access")
 	}
 	if _, err = session.CallTool(ctx, &sdk.CallToolParams{Name: "actor", Arguments: map[string]any{}}); err == nil {
 		t.Fatal("revoked MCP accepted")
