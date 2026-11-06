@@ -630,6 +630,14 @@ retain the storage boundary. The
 records the proof split. The [server organization rules](../../docs/daynight-server.md#测试职责)
 own the stable test-layer policy.
 
+Session command and interaction admission tests use `SessionDAO` query mocks
+that check context, identity arguments, call counts and error propagation.
+Ordinary Task rules and independent Test Session first-input rules keep separate
+fixtures. A real timeline-upsert, Submit, operation-readback and duplicate-callback
+witness retains the persisted interaction-ID mapping. The
+[command-rule decision](../../.agents/notes/implemented/testing/2026-11-06-session-command-rule-isolation.md)
+records that split.
+
 Project request validation uses a valid synthetic principal and a fail-on-access
 store for UUID, creation input, pagination and entropy refusals that precede
 storage. Real creation, readback, keyset paging and operational-error tests keep
