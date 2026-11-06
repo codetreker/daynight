@@ -325,10 +325,11 @@ The stateless `/mcp` endpoint supports Streamable HTTP protocol versions
 ending in `/mcp` and an `Authorization: Bearer <PAT>` header. Each request
 validates its own credential; browser cookies are not accepted. Requests carrying
 an Origin must match `DAYNIGHT_PUBLIC_ORIGIN` or an explicitly configured origin.
-The endpoint advertises Team invitation creation, listing and revocation, and
-inspection and acceptance of Team or Project invitations. A tool is discoverable
-only after its complete business adapter is registered. Invitation links are
-returned only by creation; listing returns metadata without secrets.
+The endpoint advertises Project creation, transfer, listing and inspection,
+Team invitation creation, listing and revocation, and inspection and acceptance
+of Team or Project invitations. A tool is discoverable only after its complete
+business adapter is registered. Invitation links are returned only by creation;
+listing returns metadata without secrets.
 
 The request body limit is 4 MiB. Operations that may materialize large objects
 reserve a single 512 MiB working slot before calling a use case; bounded control

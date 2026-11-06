@@ -44,7 +44,7 @@ outcome and shared-resource lifetime at the cost of a potentially delayed exit.
 
 ## Consequences
 
-The entry delegates business capabilities to domain adapters, which register
-only complete tools and select their worst-case materialization class. OAuth and
-other business tools require their separately owned implementations. Clients and
-proxies handling future full resources must support the declared result capacity.
+Domain adapters register complete tools and select their worst-case materialization
+class. OAuth and other business tools require their separately owned
+implementations. Clients and proxies handling full resources must support the
+declared result capacity.
