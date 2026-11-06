@@ -41,7 +41,7 @@ func TestMCPShutdownTimeoutRetainsDependenciesUntilWorkAndRelayStop(t *testing.T
 	controller, _ := fixture.controller(t, uuid.NewString())
 	routes := fixture.application.relay
 	engine := fixture.application.engine
-	endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
+	endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestForcedShutdownJoinsDatabaseCancellationWithIdleMCP(t *testing.T) {
 	queryDone := make(chan error, 1)
 	var application *sessionApplication
 	runtime, _ := startRuntimeTest(t, config, func(deps *runtimeTestResources) http.Handler {
-		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger())
+		endpoint, err := mcphttp.New(shutdownTestAuthenticator{}, "https://daynight.test", nil, testLogger(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -41,7 +41,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := mcphttp.New(app.Identity, config.PublicOrigin, config.MCPAllowedOrigins, logger)
+	endpoint, err := mcphttp.New(app.Identity, config.PublicOrigin, config.MCPAllowedOrigins, logger, app.OAuth)
 	if err != nil {
 		return nil, err
 	}
