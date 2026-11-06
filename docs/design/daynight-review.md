@@ -759,10 +759,9 @@ Node 文档说明了相关的
 ## 验证与交付
 
 应用工具链提供 `pnpm typecheck`、`pnpm test`、`pnpm build` 和独立的 `pnpm acceptance`。
-CI 要求源码、包元数据、构建或依赖输入发生变化时升级包版本；具体范围和本地检查命令见
-[README](../../README.md#package-versions)。版本检查只在 PR 的 Linux CLI 任务中运行，
-使用事件中的 base 与 head 提交；任务失败使最终 `checks` 汇总失败。main push 保留全量
-应用检查。包构建及命令间依赖隔离由[客户端设计](daynight.md)定义。
+普通变更保持 CLI 包版本不变；版本选择、发布与验证由
+[README](../../README.md#package-versions)拥有。main push 执行全量应用检查，
+包构建及命令间依赖隔离由[客户端设计](daynight.md)定义。
 
 review 测试覆盖组与操作参数、帮助、编译后的入口、仓库添加、审查列表、严格配置解析
 和路径校验；GitHub Actions 在 Linux、macOS ARM64 和 Windows 上运行这些检查。SQLite 业务单测使用独立的原生内存连接，验证迁移、事务回滚、
@@ -794,8 +793,8 @@ open thread 时等待，以及 actor 切换后已提交结果的核对与草稿�
 验证两个等待 PR 均先于持续更新 PR 的后续修订，且就绪候选保持 FIFO。时钟在准入比较
 期间固定，机器负载不会使其中一个候选的 CI 证据先过期；选择依据记录在
 [公平调度验证决策](../../.agents/notes/archived/testing/2026-10-19-deterministic-coordinator-fairness.md)。
-集成案例组合真实本地 Git、Copilot 受控进程和生产进程监督模块。编译后 CLI 测试验证
-实例锁、状态创建、信号退出和资源释放，无需真实远程认证。调度器内部失败也会取消
+集成案例组合真实本地 Git、Copilot 受控进程和生产进程监督模块，验证实例锁、
+状态及资源释放，无需真实远程认证。调度器内部失败也会取消
 仍在等待的轮询，再等待所有已启动操作结束。
 [协调决策](../../.agents/notes/archived/architecture/2026-10-17-foreground-review-coordination.md)
 记录这些责任和异常恢复前提。
@@ -835,30 +834,20 @@ Promise，防止重复获得清理预算。120 秒 setup、40 秒 teardown、600
 两秒内捕获实际 PID，不能由模拟命令参数测试替代；它不用于识别历史持有者或证明
 原生部分卸载阶段。
 
-独立的 `pnpm acceptance` 先打包，再在临时 consumer 中正常安装，驱动实际生成的
-`daynight` bin。真实 SQLite 和本地 Git 配合受控的原生 gh 执行文件及 Copilot 命令
-包装脚本，验证配置登记、根目录变更后保留既有路径、本地审查列表，以及完整的审查、
-重试、重启和关闭清理流程；模型和推理强度从 YAML 经运行时到新建/恢复进程 argv
-的传递，以及 skill 发现不接收任一覆盖，由安装后的原生受控 Copilot 记录验证，
-测试不替换产品内部依赖。该证据证明参数传递与会话编排，不发起真实模型请求，
-不证明模型能力、强度支持或账户可用性。
-该审查生命周期安装步骤需要包注册表访问，使用本地 consumer，也不需要真实 review 凭据。
-客户端的[自更新验收](daynight.md#验证与交付)独立验证真实 npm 全局安装的替换与归属。
-CI 只上传精选的工具版本清单、审查生命周期 receipt 和 `.tmp/update-evidence.json`。
-异常退出验收在直接工具句柄全部关闭后同步结束 CLI，检查锁保留、存活实例拒绝和自动接管失效锁；进程树终止保留独立的原生验证。
-[仓库验证说明](../../README.md#validation)定义原生平台 receipt 的源码身份与真实服务验收边界。
+独立的 `pnpm acceptance` 打包并安装 CLI，验证 launcher 和完整 review skill
+资源；npm 更新接入在隔离的全局 prefix 中验证。审查、重试、重启和关闭的行为
+由模块测试中的真实 SQLite、本地 Git 及受控进程验证；这些测试不发起真实模型
+请求，也不证明模型能力、强度支持或账户可用性。当前安装入口不运行完整审查
+生命周期矩阵；运行结果及清理证据仅属于被测源码和环境。
 
-独立的既有数据 fixture 直接构造重构前的 YAML 与版本 1 SQLite 表和记录，不使用
-当前 store 创建基线。安装后的列表必须只读旧状态，运行时显式迁移并复用永久边界、
-修订、预算、会话、日志、进程和 worktree 身份，保留清理屏障。迁移 fixture 分别
-验证完成记录的 `legacy` 阶段与活跃未完成记录的 `prepared` 阶段，二者均保留明确的
-旧身份格式及未知 publisher。带前缀旧正文中的有效 APPROVED 和带实际 thread 的
-COMMENT 在丢失 marker 后，按旧 token/head 找到实际 actor，再保留该身份完成对账；
-新轮次仍拒绝旧格式。匹配 approval 保持完成；缺少有效 approval 的相关已完成记录
-可消费一次采用轮次，包括只有正文而无 thread 的历史 COMMENT。不能伪造历史 actor
-或 thread，也不能反复重置预算；无关历史不启动模型。
+独立 schema 1 fixture 验证迁移保留完成与活跃记录、旧身份格式及未知 publisher。
+协调器集成测试验证旧 APPROVED 和真实 thread COMMENT 的丢失 marker 对账及
+历史 actor 保留；新轮次仍拒绝旧格式。迁移必须保留永久边界、修订、预算、会话、
+日志、进程、worktree 身份和清理屏障。匹配 approval 保持完成；缺少有效 approval
+的相关已完成记录可消费一次采用轮次，包括只有正文而无 thread 的历史 COMMENT。
+不得伪造历史 actor 或 thread、反复重置预算或为无关历史启动模型。
 
-下表定义模块、原生子进程和安装后验收需要观测的行为；实际通过记录及其对应修订
+下表定义模块与原生子进程验证需要观测的行为；实际通过记录及其对应修订
 随对应 PR 与 CI 保存。历史平台 receipt 不构成自动接管失效锁行为的验证：
 
 | 范围 | 必须观测的行为 |

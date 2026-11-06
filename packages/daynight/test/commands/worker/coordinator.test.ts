@@ -1010,13 +1010,18 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.store.getTask(old)?.sessionId).toBe(old.sessionId);
   });
 
-  it("starts fresh after an interrupted active NULL-session launch", async () => {
+  it.each([false, true])("starts fresh after an interrupted NULL-session launch with frozen native settings=%s", async frozen => {
     const f = await fixture(); f.candidates.splice(0);
     const granted = f.grant(task(f.project.projectId, uuid(200)), { claimId: uuid(201), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(202) });
     f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201), agent: "codex" });
     const active = f.store.activateTask({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201) });
-    await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    if (frozen) f.store.freezeNativeConfiguration(active, configuration);
+    const current = { ...configuration, model: "updated-model" };
+    const restarted = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: current }], globalConfiguration: current });
+    await restarted.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     expect(f.tasks.start.mock.calls[0]![2]).not.toHaveProperty("resumeSessionId");
+    expect(f.tasks.start.mock.calls[0]![2].configuration).toEqual({ ...(frozen ? configuration : current), agentControlMode: "herdr" });
+    expect(f.store.getNativeConfiguration(active)?.model).toBe(frozen ? configuration.model : current.model);
     expect(f.events).toContainEqual({ kind: "info", task: active, message: "Starting a new native conversation in the task worktree." });
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });

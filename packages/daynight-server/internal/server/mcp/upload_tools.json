@@ -1,0 +1,390 @@
+[
+  {
+    "name": "task_attachment_put",
+    "description": "Put bytes inline or through a task-bound upload lifecycle. Chunk decoded size at most512KiB; total file size is not capped.",
+    "inputSchema": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "inline"
+            },
+            "path": {
+              "type": "string"
+            },
+            "contentType": {
+              "type": "string"
+            },
+            "contentBase64": {
+              "type": "string",
+              "contentEncoding": "base64",
+              "maxLength": 699052
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "path",
+            "contentType",
+            "contentBase64"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "begin"
+            },
+            "path": {
+              "type": "string"
+            },
+            "contentType": {
+              "type": "string"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "path",
+            "contentType",
+            "transferId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "chunk"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "chunkId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "contentBase64": {
+              "type": "string",
+              "contentEncoding": "base64",
+              "maxLength": 699052,
+              "minLength": 4
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "transferId",
+            "chunkId",
+            "offset",
+            "contentBase64"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "status"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "transferId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "commit"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "totalBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "transferId",
+            "totalBytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "taskId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "action": {
+              "const": "abort"
+            },
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "projectId",
+            "taskId",
+            "action",
+            "transferId"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "transferId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "state": {
+              "enum": [
+                "receiving",
+                "committing",
+                "committed",
+                "unknown",
+                "failed",
+                "readable",
+                "cleanup_pending",
+                "closed",
+                "preparing"
+              ]
+            },
+            "nextOffset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "sizeBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "totalBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "acceptedBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "readBytes": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "operationId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "cleanupState": {
+              "enum": [
+                "pending",
+                "complete"
+              ]
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "eof": {
+              "type": "boolean"
+            },
+            "encoding": {
+              "enum": [
+                "utf8",
+                "base64"
+              ]
+            },
+            "contentBase64": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "attachment": {
+              "type": "object"
+            },
+            "created": {
+              "type": "boolean"
+            }
+          }
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  }
+]
