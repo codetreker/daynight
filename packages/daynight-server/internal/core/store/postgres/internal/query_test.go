@@ -36,6 +36,9 @@ func TestQueryErrorPreservesMissingRow(t *testing.T) {
 
 func TestConfirmedCleanupRetainsCauseAndDoesNotMaskDriverFailure(t *testing.T) {
 	closed := ConfirmedClosedCleanup(pgconn.ErrConnClosed)
+	if closed.Error() != pgconn.ErrConnClosed.Error() {
+		t.Fatalf("confirmed cleanup changed the retained cause: %v", closed)
+	}
 	cause := errors.Join(context.DeadlineExceeded, closed)
 	err := QueryError("snapshot", cause)
 	if failed, _ := store.DatabaseErrorFacts(err); failed || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, pgconn.ErrConnClosed) {
