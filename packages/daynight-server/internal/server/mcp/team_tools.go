@@ -68,7 +68,7 @@ type teamMemberWithProfile struct {
 	TeamMember
 	Profile teamMemberProfile `json:"profile"`
 }
-type listData[T any] struct {
+type teamListData[T any] struct {
 	Items      []T     `json:"items"`
 	NextCursor *string `json:"nextCursor"`
 }
@@ -76,8 +76,8 @@ type listData[T any] struct {
 // teamListBudget bounds the encoded default result without cutting an item.
 const teamListBudget = 16 << 10
 
-func fitTeamPage[T any](items []T, next *string, cursor func(int) (string, error), refs func(int) map[string]any) (listData[T], ToolResult, error) {
-	page := listData[T]{Items: make([]T, 0, len(items)), NextCursor: next}
+func fitTeamPage[T any](items []T, next *string, cursor func(int) (string, error), refs func(int) map[string]any) (teamListData[T], ToolResult, error) {
+	page := teamListData[T]{Items: make([]T, 0, len(items)), NextCursor: next}
 	encodedBytes := 0
 	for i, item := range items {
 		encoded, err := json.Marshal(item)
