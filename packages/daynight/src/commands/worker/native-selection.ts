@@ -2,42 +2,43 @@ import { fileURLToPath } from "node:url";
 import type { Operation } from "../../api/operation.js";
 import type { WorkerCloudNative } from "../../api/worker-configuration.js";
 import { createBotCliProbe, BotCliProbeCleanupError } from "./bots/cli-probe.js";
-import type { NativeModelObservation } from "../controller/providers/native-selection.js";
+import { NativeCapabilityError, validateNativeModelObservation, type NativeModelObservation } from "../controller/providers/native-selection.js";
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
-const isObservation = (value: unknown): value is NativeModelObservation => record(value)
-  && (value.model === null || typeof value.model === "string")
-  && (value.effort === undefined || value.effort === null || typeof value.effort === "string")
-  && Array.isArray(value.models) && value.models.length <= 500
-  && value.models.every(model => record(model) && typeof model.id === "string"
-    && (model.aliases === undefined || strings(model.aliases))
-    && (model.efforts === null || strings(model.efforts)));
-
-export const verifyWorkerNativeSelection = async (options: { native: WorkerCloudNative; cwd: string; environment: NodeJS.ProcessEnv }, operation: Operation): Promise<NativeModelObservation> => {
+const capabilityFailure = (error: unknown): unknown => error instanceof Error && "code" in error && ["capability_error", "limit_exceeded", "cleanup_unknown"].includes(String(error.code)) ? error
+  : new NativeCapabilityError("capability_error", error instanceof Error ? error.message : "Native capability discovery failed.", { cause: error });
+type NativeProbeOptions = { native: WorkerCloudNative; cwd: string; environment: NodeJS.ProcessEnv };
+const runNativeProbe = async (options: NativeProbeOptions, operation: Operation, mode: "verify" | "discover"): Promise<NativeModelObservation> => {
   const environment = { ...options.environment };
   for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN"]) delete environment[key];
-  const probe = await createBotCliProbe({ cwd: options.cwd, environment }, operation);
+  let probe: Awaited<ReturnType<typeof createBotCliProbe>>;
+  try { probe = await createBotCliProbe({ cwd: options.cwd, environment }, operation); }
+  catch (error) { if (error instanceof BotCliProbeCleanupError) throw new NativeCapabilityError("cleanup_unknown", "Native probe setup cleanup is unconfirmed.", { cause: error }); throw capabilityFailure(error); }
   let failure: unknown;
   let observation: NativeModelObservation | undefined;
   try {
-    const result = await probe.run(process.execPath, [fileURLToPath(new URL("./native-selection-probe.js", import.meta.url)), JSON.stringify({ agent: options.native.agent, model: options.native.model, args: options.native.args })]);
+    const result = await probe.run(process.execPath, [fileURLToPath(new URL("./native-selection-probe.js", import.meta.url)), JSON.stringify({ agent: options.native.agent, model: options.native.model, args: options.native.args }), mode]);
     let response: unknown;
-    try { response = JSON.parse(result.stdout); } catch { throw new Error("Native model/effort selection probe returned invalid output."); }
+    try { response = JSON.parse(result.stdout); } catch { throw new NativeCapabilityError("capability_error", "Native model/effort selection probe returned invalid output."); }
     if (typeof response !== "object" || response === null || !("ok" in response) || response.ok !== true) {
       const detail = typeof response === "object" && response !== null && "error" in response && typeof response.error === "string" ? response.error : "Native selection is unknown.";
-      throw new Error(`Native model/effort selection could not be validated: ${detail.slice(0, 2000)}`);
+      const code = record(response) && (response.code === "limit_exceeded" || response.code === "cleanup_unknown") ? response.code : "capability_error";
+      throw new NativeCapabilityError(code, `Native model/effort selection could not be validated: ${detail.slice(0, 2000)}`);
     }
-    if (!("observation" in response) || !isObservation(response.observation)) throw new Error("Native selection observation is unavailable.");
-    observation = response.observation;
-  } catch (error) { failure = error; }
+    if (!("observation" in response)) throw new NativeCapabilityError("capability_error", "Native selection observation is unavailable.");
+    observation = validateNativeModelObservation(response.observation);
+  } catch (error) { failure = capabilityFailure(error); }
   try { await probe.close(); } catch (error) {
-    throw failure === undefined ? error : new AggregateError([failure, error], "Native selection and probe cleanup failed.");
+    if (failure === undefined) throw new NativeCapabilityError("cleanup_unknown", "Native probe cleanup is unconfirmed.", { cause: error });
+    throw Object.assign(new AggregateError([failure, error], "Native selection and probe cleanup failed."), { code: "cleanup_unknown" as const });
   }
   if (failure !== undefined) throw failure;
   if (observation === undefined) throw new Error("Native selection observation is unavailable.");
   return observation;
 };
+
+export const verifyWorkerNativeSelection = (options: NativeProbeOptions, operation: Operation): Promise<NativeModelObservation> => runNativeProbe(options, operation, "verify");
+export const discoverWorkerNativeCapabilities = (options: NativeProbeOptions, operation: Operation): Promise<NativeModelObservation> => runNativeProbe(options, operation, "discover");
 
 /** One Worker owns selection probes across its per-run Herdr adapters. */
 export const createNativeSelectionVerifier = () => {
@@ -58,19 +59,21 @@ export const createNativeSelectionVerifier = () => {
     }
     if (failures.length) throw new AggregateError(failures, "Native selection probe cleanup remains unconfirmed.");
   };
-  return {
-    verify: (options: Parameters<typeof verifyWorkerNativeSelection>[0], operation: Operation): Promise<void> => {
+  const enqueue = (options: NativeProbeOptions, operation: Operation, mode: "verify" | "discover"): Promise<NativeModelObservation> => {
       const running = tail.then(async () => {
         if (closed) throw new Error("Native selection verifier is closed.");
         operation.check();
         await cleanup();
         operation.check();
-        try { await verifyWorkerNativeSelection(options, operation); }
+        try { return await runNativeProbe(options, operation, mode); }
         catch (error) { retain(error); throw error; }
       });
-      tail = running.catch(() => {});
+      tail = running.then(() => {}, () => {});
       return running;
-    },
+  };
+  return {
+    verify: async (options: NativeProbeOptions, operation: Operation): Promise<void> => { await enqueue(options, operation, "verify"); },
+    discover: (options: NativeProbeOptions, operation: Operation): Promise<NativeModelObservation> => enqueue(options, operation, "discover"),
     settle: (): Promise<void> => {
       const running = tail.then(cleanup);
       tail = running.catch(() => {});
@@ -79,4 +82,4 @@ export const createNativeSelectionVerifier = () => {
     close: async (): Promise<void> => { closed = true; await tail; await cleanup(); },
   };
 };
-export type NativeSelectionVerifier = ReturnType<typeof createNativeSelectionVerifier>;
+export type NativeSelectionVerifier = Pick<ReturnType<typeof createNativeSelectionVerifier>, "verify" | "settle" | "close">;

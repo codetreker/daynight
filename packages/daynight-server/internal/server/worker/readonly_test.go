@@ -86,7 +86,7 @@ func (f *readOnlyFixture) report(t *testing.T, worker, token string) {
 		t.Fatalf("report: %d", response.StatusCode)
 	}
 }
-func (f *readOnlyFixture) connect(t *testing.T, worker, token string) (*websocket.Conn, ro.Message) {
+func (f *readOnlyFixture) connect(t *testing.T, worker, token string, operations ...string) (*websocket.Conn, ro.Message) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -98,7 +98,10 @@ func (f *readOnlyFixture) connect(t *testing.T, worker, token string) (*websocke
 		t.Fatal("missing authenticated owner")
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	hello, _ := json.Marshal(ro.Hello{Type: "hello", Protocol: ro.Protocol, CapabilityGeneration: uuid.NewString(), Operations: []string{"directory.list"}})
+	if len(operations) == 0 {
+		operations = []string{"directory.list"}
+	}
+	hello, _ := json.Marshal(ro.Hello{Type: "hello", Protocol: ro.Protocol, CapabilityGeneration: uuid.NewString(), Operations: operations})
 	if err = conn.Write(ctx, websocket.MessageText, hello); err != nil {
 		t.Fatal(err)
 	}
