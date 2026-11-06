@@ -61,7 +61,7 @@ export const createWorkerReporter = (options: {
     send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation): Promise<WorkerCloudReportReceipt>;
     accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void>;
   };
-}): { trigger(): void; publishInventory(inventory: WorkerTaskInventory): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
+}): { trigger(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
   const failures = new Map<string, FailureState>();
   const cleanupFailures = new Set<unknown>();
@@ -137,8 +137,7 @@ export const createWorkerReporter = (options: {
       }
       operation.check();
       phase = "send";
-      const report = Object.freeze({ ...sample.telemetry, taskInventory: inventory });
-      if (options.configuration === undefined) await options.send(report, operation);
+      if (options.configuration === undefined) await options.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), operation);
       else {
         phase = "configuration-read";
         await options.configuration.prepare?.(operation);
@@ -146,7 +145,7 @@ export const createWorkerReporter = (options: {
         const captured = options.configuration.capture();
         const sent = immutable(parseWorkerCloudReport(captured));
         phase = "send";
-        const receipt = await options.configuration.send(report, sent, operation);
+        const receipt = await options.configuration.send(Object.freeze({ ...sample.telemetry, taskInventory: inventory }), sent, operation);
         phase = "configuration";
         await options.configuration.accept(captured, receipt.configuration);
       }
@@ -176,7 +175,7 @@ export const createWorkerReporter = (options: {
     trigger,
     publishInventory: (value) => {
       if (stopped) return;
-      inventory = copyInventory(value);
+      inventory = value === null ? null : copyInventory(value);
       trigger();
     },
     recordClaim: (reference) => {

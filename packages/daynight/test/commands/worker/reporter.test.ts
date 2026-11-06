@@ -93,6 +93,19 @@ it("keeps a claim grant unknown until a complete inventory establishes its obser
   await reporter.stop();
 });
 
+it("invalidates a complete observation during partial coverage until coverage is restored", async () => {
+  const f = fixture(), reporter = f.start(); await settle();
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("old")] }); await settle();
+  reporter.publishInventory(null); await settle();
+  reporter.recordClaim(claim("new")); await settle();
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(f.send.mock.calls.slice(2).map(([report]) => report.taskInventory)).toEqual([null, null, null]);
+  expect(f.send.mock.calls[4]![0].machine).toEqual(telemetry.machine);
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("new")] }); await settle();
+  expect(f.send.mock.calls[5]![0].taskInventory).toEqual({ observedAt: timestamp, claims: [claim("new")] });
+  await reporter.stop();
+});
+
 it("copies inventory and grant references without changing an in-flight payload", async () => {
   const f = fixture(), blocked = deferred<{ observedAt: string; lastReportedAt: string }>();
   const reporter = f.start(); await settle();
@@ -387,6 +400,44 @@ it("starts no work when its root signal is already cancelled", async () => {
 
 const cloudValue = { maxConcurrent: 2, pollIntervalMs: 60_000, recoveryLimit: 3, native: { agent: "codex" as const, model: null, args: [] }, projects: [] };
 const cloudDesired = { revision: "1", updatedAt: timestamp, value: cloudValue };
+
+it("uses the latest inventory after a delayed cloud configuration preparation", async () => {
+  const f = fixture(), preparation = deferred<void>();
+  const prepare = vi.fn().mockImplementationOnce(() => preparation.promise).mockResolvedValue(undefined);
+  const capture = () => ({ bootstrap: null, observation: null });
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit, configuration: { prepare, capture, send, accept: async () => {} } });
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim()] });
+  await settle();
+  reporter.publishInventory(null);
+  preparation.resolve(); await settle();
+  expect(send.mock.calls[0]![0].taskInventory).toBeNull();
+  await reporter.stop();
+});
+
+it("keeps partial inventory invalidated while a timed-out probe is confirmed during configuration preparation", async () => {
+  const f = fixture(), probe = await timedOutProbe(), preparation = deferred<void>();
+  f.collect.mockResolvedValueOnce({ telemetry, issues: [{ component: "codex", code: "unavailable", error: probe.error }] })
+    .mockResolvedValue({ telemetry, issues: [] });
+  const prepare = vi.fn().mockImplementationOnce(() => preparation.promise).mockResolvedValue(undefined);
+  const receipt = { desired: cloudDesired, observationRevision: "1", observationAccepted: false };
+  const send = vi.fn(async (_report: WorkerReport, _configuration: WorkerCloudReport, _operation: Operation) => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt }));
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { prepare, capture: () => ({ bootstrap: null, observation: null }), send, accept: async () => {} } });
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("old")] });
+  await settle();
+  reporter.publishInventory(null);
+  reporter.recordClaim(claim("new"));
+  probe.child.emit("close", null, "SIGKILL");
+  preparation.resolve(); await settle();
+  expect(send.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(send.mock.calls.map(([report]) => report.taskInventory)).toEqual([null, null]);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed", "worker_report_recovered"]);
+  reporter.publishInventory({ observedAt: timestamp, claims: [claim("new")] }); await settle();
+  expect(send.mock.lastCall![0].taskInventory).toEqual({ observedAt: timestamp, claims: [claim("new")] });
+  await expect(reporter.stop()).resolves.toBeUndefined();
+});
 
 it("exchanges cloud configuration without a task inventory and acknowledges only the sent immutable snapshot", async () => {
   const f = fixture();
