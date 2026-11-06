@@ -133,6 +133,10 @@ func TestMutationTaskLockAndFreshAuthorization(t *testing.T) {
 		if err != nil || !presence.Found {
 			t.Fatalf("lock Task: %+v %v", presence, err)
 		}
+		var otherID string
+		if err := db.Pool.QueryRow(ctx, `SELECT id::text FROM tasks WHERE id=$1 FOR UPDATE NOWAIT`, other).Scan(&otherID); err != nil || otherID != other {
+			t.Fatalf("other Task was blocked: %q %v", otherID, err)
+		}
 		competitor, err := db.Pool.Begin(ctx)
 		if err != nil {
 			return err
