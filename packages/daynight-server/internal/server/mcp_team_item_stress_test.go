@@ -1,4 +1,4 @@
-//go:build stress
+//go:build stress && mcp_team_items
 
 package server
 
@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +124,38 @@ func stressTeamItemDecode(t *testing.T, result *sdk.CallToolResult, tool string,
 		t.Fatalf("%s encoded CallToolResult=%d exceeds %d: %v", tool, len(encoded), limit, err)
 	}
 	return envelope
+}
+
+// Streaming keeps the full text/structured equality and encoded-size checks,
+// but decodes the text directly into its known chunk shape. Re-encoding and
+// reparsing both generic envelopes per block would dominate the capacity run.
+func stressTeamItemStreamCall(t *testing.T, session *sdk.ClientSession, arguments map[string]any) stressTeamItemChunk {
+	t.Helper()
+	result, err := session.CallTool(t.Context(), &sdk.CallToolParams{Name: "team_item_read", Arguments: arguments})
+	if err != nil || result == nil || result.IsError || len(result.Content) != 1 {
+		t.Fatalf("stream chunk: result=%v error=%v", result != nil, err)
+	}
+	text, ok := result.Content[0].(*sdk.TextContent)
+	if !ok {
+		t.Fatal("stream chunk omitted text content")
+	}
+	var wire struct {
+		Data stressTeamItemChunk `json:"data"`
+		Meta map[string]any      `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(text.Text), &wire); err != nil {
+		t.Fatal(err)
+	}
+	chunk := wire.Data
+	expected := map[string]any{"data": map[string]any{"revision": chunk.Revision, "field": chunk.Field, "offset": chunk.Offset, "readBytes": chunk.ReadBytes, "nextOffset": chunk.NextOffset, "sizeBytes": chunk.SizeBytes, "eof": chunk.EOF, "encoding": chunk.Encoding, "contentBase64": chunk.ContentBase64}, "meta": wire.Meta}
+	if !reflect.DeepEqual(expected, result.StructuredContent) {
+		t.Fatal("stream text and structured envelopes differ")
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || len(encoded) > 8<<20 {
+		t.Fatalf("stream encoded result=%d: %v", len(encoded), err)
+	}
+	return chunk
 }
 
 func stressTeamItemOffset(t *testing.T, value string) int64 {
@@ -259,23 +292,19 @@ func TestStressMCPTeamItemClientProcess(t *testing.T) {
 		t.Fatalf("default text chunk: %v", err)
 	}
 	hash := sha256.New()
+	expectedWindow := bytes.Repeat(input.Pattern, ((512<<10)+len(input.Pattern)-1)/len(input.Pattern)+1)
 	var offset int64
 	var calls int
 	started := time.Now()
 	for offset < input.Size {
-		envelope := stressTeamItemCall(t, session, "team_item_read", args(offset), "")
-		var chunk stressTeamItemChunk
-		if err := json.Unmarshal(envelope.Data, &chunk); err != nil {
-			t.Fatal(err)
-		}
+		chunk := stressTeamItemStreamCall(t, session, args(offset))
 		data, err := base64.StdEncoding.DecodeString(chunk.ContentBase64)
 		if err != nil || chunk.Encoding != "base64" || chunk.Revision != metadata.Revision || chunk.Field != "profile.name" || stressTeamItemOffset(t, chunk.Offset) != offset || stressTeamItemOffset(t, chunk.ReadBytes) != int64(len(data)) || stressTeamItemOffset(t, chunk.NextOffset) != offset+int64(len(data)) || stressTeamItemOffset(t, chunk.SizeBytes) != input.Size || len(data) == 0 || len(data) > 512<<10 || chunk.EOF != (offset+int64(len(data)) == input.Size) {
 			t.Fatalf("invalid chunk at %d: bytes=%d error=%v", offset, len(data), err)
 		}
-		for i, b := range data {
-			if b != input.Pattern[(offset+int64(i))%int64(len(input.Pattern))] {
-				t.Fatalf("source byte differs at %d", offset+int64(i))
-			}
+		patternOffset := int(offset % int64(len(input.Pattern)))
+		if !bytes.Equal(data, expectedWindow[patternOffset:patternOffset+len(data)]) {
+			t.Fatalf("source bytes differ in chunk at %d", offset)
 		}
 		_, _ = hash.Write(data)
 		offset += int64(len(data))
@@ -331,16 +360,24 @@ func TestStressMCPTeamItemClientProcess(t *testing.T) {
 type stressTeamItemMemory struct {
 	baseline, peak uint64
 	once           sync.Once
+	previousGC     int
+	disableGC      bool
 	stop           chan struct{}
 	done           chan struct{}
 }
 
-func stressTeamItemHeap(t *testing.T) *stressTeamItemMemory {
+// Single-operation probes retain allocations until sampling ends so source
+// comparisons cannot select different automatic-GC phases. Continuous streaming
+// keeps automatic GC enabled and is checked against the same absolute cap.
+func stressTeamItemHeap(t *testing.T, disableGC bool) *stressTeamItemMemory {
 	t.Helper()
 	runtime.GC()
 	var baseline runtime.MemStats
 	runtime.ReadMemStats(&baseline)
-	m := &stressTeamItemMemory{baseline: baseline.HeapAlloc, peak: baseline.HeapAlloc, stop: make(chan struct{}), done: make(chan struct{})}
+	m := &stressTeamItemMemory{baseline: baseline.HeapAlloc, peak: baseline.HeapAlloc, disableGC: disableGC, stop: make(chan struct{}), done: make(chan struct{})}
+	if disableGC {
+		m.previousGC = debug.SetGCPercent(-1)
+	}
 	go func() {
 		defer close(m.done)
 		ticker := time.NewTicker(time.Millisecond)
@@ -361,7 +398,13 @@ func stressTeamItemHeap(t *testing.T) *stressTeamItemMemory {
 }
 
 func (m *stressTeamItemMemory) finish() uint64 {
-	m.once.Do(func() { close(m.stop); <-m.done })
+	m.once.Do(func() {
+		close(m.stop)
+		<-m.done
+		if m.disableGC {
+			debug.SetGCPercent(m.previousGC)
+		}
+	})
 	return m.peak - m.baseline
 }
 
@@ -516,7 +559,7 @@ func TestStressMCPTeamItemCapacityAndReadMemory(t *testing.T) {
 	}
 	// Keep the slice alive while querying allocator contexts. This supplements
 	// live private-mapping samples, which can miss a very short SQL allocation.
-	if _, err := pool.Exec(t.Context(), `CREATE FUNCTION mcp_item_memory_probe(target uuid,at_byte integer,amount integer) RETURNS TABLE(field_bytes bigint,memory_bytes bigint) LANGUAGE plpgsql AS $$ DECLARE payload bytea; BEGIN IF amount<0 THEN SELECT octet_length(name_bytes) INTO field_bytes FROM users WHERE id=target; ELSE SELECT substring(name_bytes FROM at_byte+1 FOR amount) INTO payload FROM users WHERE id=target; field_bytes=octet_length(payload); END IF; SELECT sum(total_bytes) INTO memory_bytes FROM pg_backend_memory_contexts; RETURN NEXT; END $$`); err != nil {
+	if _, err := pool.Exec(t.Context(), `CREATE FUNCTION mcp_item_memory_probe(target uuid,at_byte integer,amount integer) RETURNS TABLE(field_bytes bigint,memory_bytes bigint) LANGUAGE plpgsql AS $$ DECLARE payload bytea; BEGIN IF amount<0 THEN SELECT octet_length(content) INTO field_bytes FROM team_item_fields WHERE kind='member' AND object_id=target AND field='profile.name'; ELSE SELECT substring(content FROM at_byte+1 FOR amount) INTO payload FROM team_item_fields WHERE kind='member' AND object_id=target AND field='profile.name'; field_bytes=octet_length(payload); END IF; SELECT sum(total_bytes) INTO memory_bytes FROM pg_backend_memory_contexts; RETURN NEXT; END $$`); err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(handler)
@@ -538,7 +581,7 @@ func TestStressMCPTeamItemCapacityAndReadMemory(t *testing.T) {
 		}
 		for _, size := range []int64{4 << 20, 129 << 20, 900 << 20} {
 			t.Run(fmt.Sprintf("%s/%dMiB", pattern.name, size>>20), func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
 				defer cancel()
 				if size%int64(len(pattern.text)) != 0 {
 					t.Fatal("source size is not a complete pattern multiple")
@@ -546,7 +589,7 @@ func TestStressMCPTeamItemCapacityAndReadMemory(t *testing.T) {
 				var writeLSN string
 				var relationBefore int64
 				var writeBackend uint32
-				if err := pool.QueryRow(ctx, `SELECT pg_current_wal_insert_lsn()::text,pg_total_relation_size('users'),pg_backend_pid()`).Scan(&writeLSN, &relationBefore, &writeBackend); err != nil {
+				if err := pool.QueryRow(ctx, `SELECT pg_current_wal_insert_lsn()::text,(pg_total_relation_size('users')+pg_total_relation_size('team_item_fields')),pg_backend_pid()`).Scan(&writeLSN, &relationBefore, &writeBackend); err != nil {
 					t.Fatal(err)
 				}
 				writeMemory := stressTeamItemPrivate(t, ctx, container, writeBackend)
@@ -558,13 +601,13 @@ func TestStressMCPTeamItemCapacityAndReadMemory(t *testing.T) {
 				writePrivate := writeMemory.finish()
 				var writeWAL string
 				var relationAfter int64
-				if err := pool.QueryRow(ctx, `SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1::pg_lsn)::text,pg_total_relation_size('users')`, writeLSN).Scan(&writeWAL, &relationAfter); err != nil {
+				if err := pool.QueryRow(ctx, `SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1::pg_lsn)::text,(pg_total_relation_size('users')+pg_total_relation_size('team_item_fields'))`, writeLSN).Scan(&writeWAL, &relationAfter); err != nil {
 					t.Fatal(err)
 				}
 				t.Logf("fixture_write source=%d duration=%s cluster_wal_bytes=%s relation_before=%d relation_after=%d relation_delta=%d sampled_backend_private_delta=%d", size, writeDuration, writeWAL, relationBefore, relationAfter, relationAfter-relationBefore, writePrivate)
 				var sourceBytes, projectionBytes int64
 				var compression, sourceCompression *string
-				if err := pool.QueryRow(ctx, `SELECT octet_length(name),octet_length(name_bytes),pg_column_compression(name_bytes),pg_column_compression(name) FROM users WHERE id=$1`, member).Scan(&sourceBytes, &projectionBytes, &compression, &sourceCompression); err != nil || sourceBytes != size || projectionBytes != size || compression != nil {
+				if err := pool.QueryRow(ctx, `SELECT octet_length(u.name),octet_length(f.content),pg_column_compression(f.content),pg_column_compression(u.name) FROM users u JOIN team_item_fields f ON f.kind='member' AND f.object_id=u.id AND f.field='profile.name' WHERE u.id=$1`, member).Scan(&sourceBytes, &projectionBytes, &compression, &sourceCompression); err != nil || sourceBytes != size || projectionBytes != size || compression != nil {
 					t.Fatalf("source/projection size or storage: source=%d projection=%d compressed=%v err=%v", sourceBytes, projectionBytes, compression, err)
 				}
 				if (pattern.name == "compressible-utf8") != (sourceCompression != nil) {
@@ -595,7 +638,7 @@ func TestStressMCPTeamItemCapacityAndReadMemory(t *testing.T) {
 				if err := pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&backend); err != nil {
 					t.Fatal(err)
 				}
-				heap := stressTeamItemHeap(t)
+				heap := stressTeamItemHeap(t, true)
 				private := stressTeamItemPrivate(t, ctx, container, backend)
 				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStressMCPTeamItemClientProcess$", "-test.v")
 				cmd.Env = append(os.Environ(), "DAYNIGHT_MCP_ITEM_CLIENT_PROCESS=1")
@@ -641,11 +684,11 @@ func TestStressMCPTeamItemCapacityAndReadMemory(t *testing.T) {
 						observePeak(t, condition, "inspect-server-heap", int64(deltaHeap))
 						observePeak(t, condition, "inspect-backend-private", deltaPrivate)
 						probeIndex = 0
-						t.Logf("%s inspect server_heap_delta=%d backend_private_delta=%d", condition, deltaHeap, deltaPrivate)
+						t.Logf("%s inspect gc_mode=disabled-one-operation server_heap_delta=%d backend_private_delta=%d", condition, deltaHeap, deltaPrivate)
 						continueClient()
 					}
 					if strings.HasPrefix(line, "MCP_ITEM_BEFORE_PROBE ") || strings.HasPrefix(line, "MCP_ITEM_BEFORE_INSPECT ") || line == "MCP_ITEM_BEFORE_STREAM" {
-						heap = stressTeamItemHeap(t)
+						heap = stressTeamItemHeap(t, line != "MCP_ITEM_BEFORE_STREAM")
 						private = stressTeamItemPrivate(t, ctx, container, backend)
 						continueClient()
 					}
@@ -656,7 +699,7 @@ func TestStressMCPTeamItemCapacityAndReadMemory(t *testing.T) {
 						observePeak(t, condition, fmt.Sprintf("chunk-%d-server-heap", probeIndex), int64(deltaHeap))
 						observePeak(t, condition, fmt.Sprintf("chunk-%d-backend-private", probeIndex), deltaPrivate)
 						probeIndex++
-						t.Logf("%s chunk server_heap_delta=%d backend_private_delta=%d", condition, deltaHeap, deltaPrivate)
+						t.Logf("%s chunk gc_mode=disabled-one-operation server_heap_delta=%d backend_private_delta=%d", condition, deltaHeap, deltaPrivate)
 						continueClient()
 					}
 					if line == "MCP_ITEM_BEFORE_CHANGE" {

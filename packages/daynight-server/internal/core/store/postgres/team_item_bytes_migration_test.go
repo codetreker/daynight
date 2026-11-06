@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,24 +43,29 @@ func TestTeamItemByteMigrationBackfillsWithoutChangingBusinessTime(t *testing.T)
 	ctx := t.Context()
 	var projections, times, nulls bool
 	if err := s.Pool.QueryRow(ctx, `SELECT
-		(SELECT name_bytes=convert_to(name,'UTF8') AND email_bytes IS NULL AND avatar_url_bytes=''::bytea FROM users WHERE id=$1)
-		AND (SELECT name_bytes=convert_to(name,'UTF8') FROM teams WHERE id=$2)
-		AND (SELECT name_bytes=convert_to(name,'UTF8') AND repo_url_bytes=convert_to(repo_url,'UTF8') FROM projects WHERE id=$3),
+		(SELECT f.content=convert_to(u.name,'UTF8') FROM team_item_fields f JOIN users u ON u.id=f.object_id
+		 WHERE f.kind='member' AND f.object_id=$1 AND f.field='profile.name')
+		AND (SELECT f.content=convert_to(t.name,'UTF8') FROM team_item_fields f JOIN teams t ON t.id=f.object_id
+		 WHERE f.kind='team' AND f.object_id=$2 AND f.field='name')
+		AND (SELECT bool_and(CASE f.field WHEN 'name' THEN f.content=convert_to(p.name,'UTF8')
+		 ELSE f.content=convert_to(p.repo_url,'UTF8') END) FROM team_item_fields f JOIN projects p ON p.id=f.object_id
+		 WHERE f.kind='project' AND f.object_id=$3),
 		(SELECT bool_and(updated_at='2026-01-01Z'::timestamptz) FROM users)
 		AND (SELECT bool_and(updated_at='2026-01-01Z'::timestamptz) FROM teams)
 		AND (SELECT updated_at='2026-01-01Z'::timestamptz FROM projects WHERE id=$3),
-		(SELECT name_bytes IS NULL AND email_bytes IS NULL AND avatar_url_bytes IS NULL FROM users WHERE id=$4)
-		AND (SELECT name_bytes IS NULL FROM teams WHERE id=$5)`, queryID(1), queryID(2), queryID(3), queryID(4), queryID(5)).Scan(&projections, &times, &nulls); err != nil || !projections || !times || !nulls {
+		(SELECT count(*)=3 AND bool_and(content IS NULL) FROM team_item_fields WHERE kind='member' AND object_id=$4)
+		AND (SELECT content IS NULL FROM team_item_fields WHERE kind='team' AND object_id=$5 AND field='name')
+		AND (SELECT content=''::bytea FROM team_item_fields WHERE kind='member' AND object_id=$1 AND field='profile.avatarUrl')`, queryID(1), queryID(2), queryID(3), queryID(4), queryID(5)).Scan(&projections, &times, &nulls); err != nil || !projections || !times || !nulls {
 		t.Fatalf("backfill projection/time/null facts: %v %v %v: %v", projections, times, nulls, err)
 	}
-	var external int
-	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_attribute WHERE attrelid IN ('users'::regclass,'teams'::regclass,'projects'::regclass)
-		AND attname IN ('name_bytes','email_bytes','avatar_url_bytes','repo_url_bytes') AND attstorage='e'`).Scan(&external); err != nil || external != 6 {
-		t.Fatalf("expected six EXTERNAL projections, got %d: %v", external, err)
+	var external bool
+	if err := s.Pool.QueryRow(ctx, `SELECT attstorage='e' FROM pg_attribute WHERE attrelid='team_item_fields'::regclass AND attname='content'`).Scan(&external); err != nil || !external {
+		t.Fatalf("projection content is not EXTERNAL: %v %v", external, err)
 	}
 	var compression *string
 	var source, part []byte
-	if err := s.Pool.QueryRow(ctx, `SELECT pg_column_compression(name_bytes),convert_to(name,'UTF8'),substring(name_bytes FROM 3 FOR 7) FROM users WHERE id=$1`, queryID(1)).Scan(&compression, &source, &part); err != nil || compression != nil || !bytes.Equal(part, source[2:9]) {
+	if err := s.Pool.QueryRow(ctx, `SELECT pg_column_compression(f.content),convert_to(u.name,'UTF8'),substring(f.content FROM 3 FOR 7)
+		FROM users u JOIN team_item_fields f ON f.object_id=u.id AND f.kind='member' AND f.field='profile.name' WHERE u.id=$1`, queryID(1)).Scan(&compression, &source, &part); err != nil || compression != nil || !bytes.Equal(part, source[2:9]) {
 		t.Fatalf("byte range/compression: %v %x: %v", compression, part, err)
 	}
 	if err := migrate(ctx, s.Pool, schemaMigrations); err != nil {
@@ -80,31 +86,53 @@ func TestTeamItemProjectionBackfillTraversesEveryBatch(t *testing.T) {
 	}
 	var count int
 	var valid bool
-	if err := s.Pool.QueryRow(t.Context(), `SELECT count(*),bool_and(name_bytes IS NOT DISTINCT FROM convert_to(name,'UTF8')
-		AND email_bytes IS NOT DISTINCT FROM convert_to(email,'UTF8')
-		AND avatar_url_bytes IS NOT DISTINCT FROM convert_to(avatar_url,'UTF8')) FROM users`).Scan(&count, &valid); err != nil || count != 515 || !valid {
+	if err := s.Pool.QueryRow(t.Context(), `SELECT count(*),bool_and(f.content IS NOT DISTINCT FROM convert_to(
+		CASE f.field WHEN 'profile.name' THEN u.name WHEN 'profile.email' THEN u.email ELSE u.avatar_url END,'UTF8'))
+		FROM users u JOIN team_item_fields f ON f.kind='member' AND f.object_id=u.id`).Scan(&count, &valid); err != nil || count != 1545 || !valid {
 		t.Fatalf("multi-batch backfill: %d %v %v", count, valid, err)
 	}
 }
 
 func TestTeamItemByteProjectionNullEmptyAndChanges(t *testing.T) {
 	s := itemBytesMigratedStore(t)
-	for _, column := range []string{"name", "email", "avatar_url"} {
-		t.Run(column, func(t *testing.T) {
-			for _, value := range []*string{nil, stringPointer(""), stringPointer("名字😀\n\""), nil} {
-				mustQueryExec(t, s, `UPDATE users SET `+column+`=$2 WHERE id=$1`, queryID(1), value)
+	for _, item := range []struct{ table, column, kind, field, id string }{
+		{"users", "name", "member", "profile.name", queryID(1)},
+		{"users", "email", "member", "profile.email", queryID(1)},
+		{"users", "avatar_url", "member", "profile.avatarUrl", queryID(1)},
+		{"teams", "name", "team", "name", queryID(2)},
+		{"projects", "name", "project", "name", queryID(3)},
+		{"projects", "repo_url", "project", "repoUrl", queryID(3)},
+	} {
+		t.Run(item.table+"/"+item.column, func(t *testing.T) {
+			values := []*string{stringPointer("first"), stringPointer("名字😀\n\""), stringPointer("last")}
+			if item.table == "users" {
+				values = append(values, nil, stringPointer(""), nil)
+			}
+			for _, value := range values {
+				mustQueryExec(t, s, `UPDATE `+item.table+` SET `+item.column+`=$2 WHERE id=$1`, item.id, value)
 				var equal bool
-				if err := s.Pool.QueryRow(t.Context(), `SELECT `+column+`_bytes IS NOT DISTINCT FROM convert_to(`+column+`,'UTF8') FROM users WHERE id=$1`, queryID(1)).Scan(&equal); err != nil || !equal {
-					t.Fatalf("projection differs for %s: %v", column, err)
+				if err := s.Pool.QueryRow(t.Context(), `SELECT f.content IS NOT DISTINCT FROM convert_to(s.`+item.column+`,'UTF8')
+					FROM `+item.table+` s JOIN team_item_fields f ON f.object_id=s.id AND f.kind=$2 AND f.field=$3 WHERE s.id=$1`, item.id, item.kind, item.field).Scan(&equal); err != nil || !equal {
+					t.Fatalf("projection differs for %s: %v", item.column, err)
 				}
 			}
 		})
 	}
-	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,name,name_bytes,created_at,updated_at)
-		VALUES($1,'insert-derived','right','wrong'::bytea,'2026-01-01Z','2026-01-01Z')`, queryID(6))
+	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,name,created_at,updated_at)
+		VALUES($1,'insert-derived','right','2026-01-01Z','2026-01-01Z')`, queryID(6))
 	var inserted string
-	if err := s.Pool.QueryRow(t.Context(), `SELECT convert_from(name_bytes,'UTF8') FROM users WHERE id=$1`, queryID(6)).Scan(&inserted); err != nil || inserted != "right" {
+	if err := s.Pool.QueryRow(t.Context(), `SELECT convert_from(content,'UTF8') FROM team_item_fields
+		WHERE kind='member' AND object_id=$1 AND field='profile.name'`, queryID(6)).Scan(&inserted); err != nil || inserted != "right" {
 		t.Fatalf("insert did not derive projection: %q %v", inserted, err)
+	}
+	mustQueryExec(t, s, `INSERT INTO users(id,uniauth_id,name,created_at,updated_at)
+		VALUES($1,'insert-derived','updated','2026-01-01Z','2026-01-01Z')
+		ON CONFLICT(uniauth_id) DO UPDATE SET name=EXCLUDED.name,updated_at=EXCLUDED.updated_at`, queryID(7))
+	var conflictValid bool
+	if err := s.Pool.QueryRow(t.Context(), `SELECT
+		(SELECT convert_from(content,'UTF8')='updated' FROM team_item_fields WHERE kind='member' AND object_id=$1 AND field='profile.name')
+		AND NOT EXISTS(SELECT 1 FROM team_item_fields WHERE kind='member' AND object_id=$2)`, queryID(6), queryID(7)).Scan(&conflictValid); err != nil || !conflictValid {
+		t.Fatalf("upsert published discarded insert identity: %v %v", conflictValid, err)
 	}
 }
 
@@ -112,17 +140,17 @@ func stringPointer(value string) *string { return &value }
 
 func TestTeamItemProjectionRejectsIndependentMutation(t *testing.T) {
 	s := itemBytesMigratedStore(t)
-	for _, item := range []struct{ table, column, id string }{
-		{"users", "name_bytes", queryID(1)}, {"users", "email_bytes", queryID(1)}, {"users", "avatar_url_bytes", queryID(1)},
-		{"teams", "name_bytes", queryID(2)}, {"projects", "name_bytes", queryID(3)}, {"projects", "repo_url_bytes", queryID(3)},
+	for _, statement := range []string{
+		`INSERT INTO team_item_fields VALUES('member','` + queryID(7) + `','profile.name','tampered'::bytea)`,
+		`UPDATE team_item_fields SET content='tampered'::bytea`,
+		`DELETE FROM team_item_fields`,
+		`TRUNCATE team_item_fields`,
 	} {
-		t.Run(item.table+"/"+item.column, func(t *testing.T) {
-			_, err := s.Pool.Exec(t.Context(), `UPDATE `+item.table+` SET `+item.column+`='tampered'::bytea WHERE id=$1`, item.id)
-			var failure *pgconn.PgError
-			if !errors.As(err, &failure) || failure.Code != "23514" {
-				t.Fatalf("independent projection mutation was not rejected: %v", err)
-			}
-		})
+		_, err := s.Pool.Exec(t.Context(), statement)
+		var failure *pgconn.PgError
+		if !errors.As(err, &failure) || failure.Code != "23514" {
+			t.Fatalf("independent projection mutation was not rejected: %s: %v", statement, err)
+		}
 	}
 }
 
@@ -157,6 +185,38 @@ func TestTeamItemModifiedTimeStrictlyAdvancesAndNeverRegresses(t *testing.T) {
 	}
 }
 
+func TestTeamItemProjectionSourceRollbackAndCleanup(t *testing.T) {
+	s := itemBytesMigratedStore(t)
+	tx, err := s.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(t.Context(), `UPDATE users SET name='rolled back' WHERE id=$1`, queryID(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var retained bool
+	if err := s.Pool.QueryRow(t.Context(), `SELECT f.content=convert_to(u.name,'UTF8') AND u.name<>'rolled back'
+		FROM users u JOIN team_item_fields f ON f.kind='member' AND f.object_id=u.id AND f.field='profile.name' WHERE u.id=$1`, queryID(1)).Scan(&retained); err != nil || !retained {
+		t.Fatalf("rolled-back source left published projection: %v %v", retained, err)
+	}
+	for _, item := range []struct{ table, kind, id string }{{"users", "member", queryID(1)}, {"teams", "team", queryID(2)}, {"projects", "project", queryID(3)}} {
+		mustQueryExec(t, s, `DELETE FROM `+item.table+` WHERE id=$1`, item.id)
+		var absent bool
+		if err := s.Pool.QueryRow(t.Context(), `SELECT NOT EXISTS(SELECT 1 FROM team_item_fields WHERE kind=$1 AND object_id=$2)`, item.kind, item.id).Scan(&absent); err != nil || !absent {
+			t.Fatalf("physical source deletion retained projection: %s %v %v", item.table, absent, err)
+		}
+	}
+	mustQueryExec(t, s, `TRUNCATE users,teams,projects CASCADE`)
+	var empty bool
+	if err := s.Pool.QueryRow(t.Context(), `SELECT NOT EXISTS(SELECT 1 FROM team_item_fields)`).Scan(&empty); err != nil || !empty {
+		t.Fatalf("source truncation retained projections: %v %v", empty, err)
+	}
+}
+
 func TestTeamItemProjectionMigrationRollsBackOnFailure(t *testing.T) {
 	s := itemBytesMigrationSource(t)
 	broken := append([]migration(nil), schemaMigrations...)
@@ -165,11 +225,70 @@ func TestTeamItemProjectionMigrationRollsBackOnFailure(t *testing.T) {
 		t.Fatal("expected migration failure")
 	}
 	var absent bool
-	if err := s.Pool.QueryRow(t.Context(), `SELECT NOT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='users'::regclass AND attname='name_bytes' AND NOT attisdropped)
+	if err := s.Pool.QueryRow(t.Context(), `SELECT to_regclass('team_item_fields') IS NULL
 		AND NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=45)`).Scan(&absent); err != nil || !absent {
 		t.Fatalf("failed migration exposed partial projection: %v %v", absent, err)
 	}
 	if err := migrate(t.Context(), s.Pool, schemaMigrations); err != nil {
 		t.Fatalf("migration restart failed: %v", err)
+	}
+}
+
+func TestTeamItemMigrationSerializesConcurrentSourceWrite(t *testing.T) {
+	s := itemBytesMigrationSource(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	blocker, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Release()
+	const barrier int64 = 7814501
+	if _, err := blocker.Exec(ctx, "SELECT pg_advisory_lock($1)", barrier); err != nil {
+		t.Fatal(err)
+	}
+	held := true
+	defer func() {
+		if held {
+			_, _ = blocker.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", barrier)
+		}
+	}()
+	migrations := append([]migration(nil), schemaMigrations...)
+	migrations[len(migrations)-1].sql = strings.Replace(migrations[len(migrations)-1].sql,
+		"DO $$", "SELECT pg_advisory_xact_lock(7814501); DO $$", 1)
+	migrator, migrationApplication := migrationInstance(t, s.Pool)
+	writer, writerApplication := migrationInstance(t, s.Pool)
+	migrated, written := make(chan error, 1), make(chan error, 1)
+	go func() { migrated <- migrate(ctx, migrator, migrations) }()
+	waitForMigration(t, func() bool {
+		var blocked bool
+		return s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a USING(pid)
+			WHERE l.locktype='advisory' AND l.objid=7814501 AND NOT l.granted AND a.application_name=$1)`, migrationApplication).Scan(&blocked) == nil && blocked
+	})
+	go func() {
+		_, err := writer.Exec(ctx, `UPDATE users SET name='concurrent field' WHERE id=$1`, queryID(1))
+		written <- err
+	}()
+	waitForMigration(t, func() bool {
+		var blocked bool
+		return s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity w
+			JOIN pg_stat_activity m ON m.pid=ANY(pg_blocking_pids(w.pid))
+			WHERE w.application_name=$1 AND m.application_name=$2 AND w.wait_event_type='Lock')`, writerApplication, migrationApplication).Scan(&blocked) == nil && blocked
+	})
+	if _, err := blocker.Exec(ctx, "SELECT pg_advisory_unlock($1)", barrier); err != nil {
+		t.Fatal(err)
+	}
+	held = false
+	if err := receiveQueryResult(t, ctx, migrated); err != nil {
+		t.Fatalf("migration failed: %v", err)
+	}
+	if err := receiveQueryResult(t, ctx, written); err != nil {
+		t.Fatalf("concurrent source update failed: %v", err)
+	}
+	var coherent bool
+	if err := s.Pool.QueryRow(ctx, `SELECT u.name='concurrent field' AND f.content=convert_to(u.name,'UTF8')
+		FROM users u JOIN team_item_fields f ON f.kind='member' AND f.object_id=u.id AND f.field='profile.name'
+		WHERE u.id=$1`, queryID(1)).Scan(&coherent); err != nil || !coherent {
+		t.Fatalf("write after migration missed projection maintenance: %v %v", coherent, err)
 	}
 }

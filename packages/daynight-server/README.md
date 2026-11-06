@@ -381,14 +381,19 @@ explicit `maxBytes` above 8192 uses the 8 MiB result limit. Chunks default to
 smaller to fit the result budget. SDK JSON-RPC IDs and HTTP batch framing are
 outside that per-result limit; other tools retain their own output strategy.
 
-The reader uses write-maintained UTF-8 bytea projections stored EXTERNAL, so
-metadata and range reads do not materialize complete source fields. Migration
-`045_team_item_bytes.sql` backfills those projections and installs maintenance
-and strictly advancing modification-time rules in one migration transaction.
-SQL batches do not commit independently or release DDL locks. Plan a migration
-window for backfill, locks, WAL and disk growth. The uncompressed projections add
-persistent storage; source conversion and equality checks can load full fields
-on writes, outside the bounded read-memory guarantee.
+The reader uses `team_item_fields`, with one UTF-8 bytea field per row and
+EXTERNAL storage, so metadata and range reads do not materialize complete source
+fields. Keeping each field separate avoids the PostgreSQL pre-TOAST tuple limit
+that a large source plus a same-row copy can exceed. Source AFTER triggers
+maintain the field rows transactionally, including explicit nulls and cleanup
+when source objects are physically deleted. Migration `045_team_item_bytes.sql`
+locks source tables against concurrent writes before backfilling the field table,
+then installs maintenance and strictly advancing modification-time rules in the
+same migration transaction. The source locks remain held through commit; SQL
+batches do not commit independently. Plan a migration window for the source-write barrier, backfill,
+locks, WAL and disk growth. Uncompressed field rows add persistent storage;
+source conversion and equality checks can load full fields on writes, outside
+the bounded read-memory guarantee.
 
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and
@@ -438,11 +443,17 @@ resources and returns an error; a caller can retry close.
 
 ### Team item capacity and SDK validation
 
-The Team item stress tests are local-only and reject a nonempty `CI` environment.
+The Team item stress tests require both `stress` and `mcp_team_items` build tags,
+are local-only and reject a nonempty `CI` environment. The additional tag keeps
+their external SDK/container setup and longer runtime outside the general stress
+runner.
 Use an exclusive, disposable PostgreSQL **18.6-bookworm** container with role
-`daynight` and database `daynight_test`; its connection must be the one selected
-by `DAYNIGHT_TEST_DATABASE_URL`. Do not share that cluster with another validator:
-full capacity mode restarts the explicitly named container for each source.
+`daynight` and database `daynight_test`. Bind a fixed loopback host port when
+creating it, for example `--publish 127.0.0.1:PORT:5432`, and use that port in
+`DAYNIGHT_TEST_DATABASE_URL`. Docker can change an automatically assigned host
+port on restart. Do not share that cluster with another validator: full capacity
+mode restarts the explicitly named container for each source and verifies the
+configured TCP connection after restart.
 From this module, after preparing that isolated database, run:
 
 ```bash
@@ -451,16 +462,19 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(GOFLAGS= node scripts/prepare-uniauth-fi
 export GOFLAGS='-overlay=scripts/unit-overlay.json'
 export DAYNIGHT_TEST_POSTGRES_CONTAINER='mcp-team-item-postgres'
 export DAYNIGHT_TEST_MCP_ITEM_CACHE_MODE=restart
-go test -race -p 1 -tags=stress ./internal/server -run '^TestStressMCPTeamItemCapacityAndReadMemory$' -count=1 -timeout=90m
+go test -race -p 1 -tags='stress,mcp_team_items' ./internal/server -run '^TestStressMCPTeamItemCapacityAndReadMemory$' -count=1 -timeout=90m
 ```
 
 Replace the container name with the explicit isolated instance. The test uses
 4, 129 and 900 MiB compressible and incompressible UTF-8 fields, streams byte
 verification through a separate Go SDK client process, checks text/structured
 parity, traverses oversized items and verifies modification-time conflicts.
-Server Go heap is measured separately from client allocations. PostgreSQL private
-memory is measured rather than RSS; a held-live slice MemoryContext probe
-supplements sampled private peaks and proves only that slice's allocation.
+Server Go heap is measured separately from client allocations. Each isolated
+inspect/range sample forces GC, pauses automatic GC only for that sample to
+capture a conservative retained-allocation bound, then restores it immediately;
+full streaming keeps automatic GC. PostgreSQL private memory is measured rather
+than RSS; a held-live slice MemoryContext probe supplements sampled private peaks
+and proves only that slice's allocation.
 `restart` measures PostgreSQL-cold and warm conditions; the host OS page cache is
 not flushed. `warm-only` is a smoke/debug subset and does not establish the full
 cache-condition acceptance. The Go client negotiates `2026-07-28`.
@@ -476,7 +490,7 @@ mkdir -p "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT"
 printf '%s\n' '{"name":"mcp-team-item-sdk-acceptance","private":true,"type":"module","dependencies":{"@modelcontextprotocol/sdk":"1.32.2"}}' > "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/package.json"
 printf 'packages:\n  - .\n' > "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/pnpm-workspace.yaml"
 pnpm --dir "$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT" --config.store-dir="$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/store" --config.cache-dir="$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/cache" --config.state-dir="$DAYNIGHT_MCP_TYPESCRIPT_SDK_ROOT/state" install --ignore-scripts --no-frozen-lockfile
-go test -race -p 1 -tags=stress ./internal/server -run '^TestStressMCPTeamItemsTypeScriptSDK$' -count=1 -timeout=10m
+go test -race -p 1 -tags='stress,mcp_team_items' ./internal/server -run '^TestStressMCPTeamItemsTypeScriptSDK$' -count=1 -timeout=10m
 ```
 
 This test runs the checked-in

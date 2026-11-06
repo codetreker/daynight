@@ -34,15 +34,20 @@ func utcMember(m *model.TeamMember) { m.CreatedAt = m.CreatedAt.UTC(); m.Updated
 func (r *teamItemReader) teamMetadata(ctx context.Context, p model.Principal, id string) (model.TeamItemMetadata, error) {
 	t := model.Team{}
 	var owner *string
-	var null bool
+	var null, present bool
 	var size int64
 	err := r.tx.QueryRow(ctx, `SELECT t.id::text,t.personal_user_id::text,t.version,t.created_at,t.updated_at,
  m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at,
- t.name_bytes IS NULL,coalesce(octet_length(t.name_bytes),0)
- FROM teams t JOIN team_members m ON m.team_id=t.id WHERE t.id=$1 AND m.user_id=$2`, id, p.UserID).Scan(
-		&t.ID, &owner, &t.Version, &t.CreatedAt, &t.UpdatedAt, &t.Membership.TeamID, &t.Membership.UserID, &t.Membership.Role, &t.Membership.Version, &t.Membership.CreatedAt, &t.Membership.UpdatedAt, &null, &size)
+ f.content IS NULL,coalesce(octet_length(f.content),0),f.object_id IS NOT NULL
+ FROM teams t JOIN team_members m ON m.team_id=t.id
+ LEFT JOIN team_item_fields f ON f.kind='team' AND f.object_id=t.id AND f.field='name'
+ WHERE t.id=$1 AND m.user_id=$2`, id, p.UserID).Scan(
+		&t.ID, &owner, &t.Version, &t.CreatedAt, &t.UpdatedAt, &t.Membership.TeamID, &t.Membership.UserID, &t.Membership.Role, &t.Membership.Version, &t.Membership.CreatedAt, &t.Membership.UpdatedAt, &null, &size, &present)
 	if err != nil {
 		return model.TeamItemMetadata{}, pg.QueryError("read Team item metadata", err)
+	}
+	if !present {
+		return model.TeamItemMetadata{}, fmt.Errorf("Team name projection is missing")
 	}
 	t.Kind = "ordinary"
 	if owner != nil {
@@ -65,14 +70,22 @@ func (r *teamItemReader) memberMetadata(ctx context.Context, p model.Principal, 
 	var changed time.Time
 	var names [3]bool
 	var sizes [3]int64
+	var present bool
 	err := r.tx.QueryRow(ctx, `SELECT m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at,u.updated_at,
- u.name_bytes IS NULL,coalesce(octet_length(u.name_bytes),0),u.email_bytes IS NULL,coalesce(octet_length(u.email_bytes),0),
- u.avatar_url_bytes IS NULL,coalesce(octet_length(u.avatar_url_bytes),0)
+ n.content IS NULL,coalesce(octet_length(n.content),0),e.content IS NULL,coalesce(octet_length(e.content),0),
+ a.content IS NULL,coalesce(octet_length(a.content),0),n.object_id IS NOT NULL AND e.object_id IS NOT NULL AND a.object_id IS NOT NULL
  FROM teams t JOIN team_members actor ON actor.team_id=t.id AND actor.user_id=$1
- JOIN team_members m ON m.team_id=t.id JOIN users u ON u.id=m.user_id WHERE t.id=$2 AND m.user_id=$3`, p.UserID, teamID, userID).Scan(
-		&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt, &changed, &names[0], &sizes[0], &names[1], &sizes[1], &names[2], &sizes[2])
+ JOIN team_members m ON m.team_id=t.id JOIN users u ON u.id=m.user_id
+ LEFT JOIN team_item_fields n ON n.kind='member' AND n.object_id=u.id AND n.field='profile.name'
+ LEFT JOIN team_item_fields e ON e.kind='member' AND e.object_id=u.id AND e.field='profile.email'
+ LEFT JOIN team_item_fields a ON a.kind='member' AND a.object_id=u.id AND a.field='profile.avatarUrl'
+ WHERE t.id=$2 AND m.user_id=$3`, p.UserID, teamID, userID).Scan(
+		&m.TeamID, &m.UserID, &m.Role, &m.Version, &m.CreatedAt, &m.UpdatedAt, &changed, &names[0], &sizes[0], &names[1], &sizes[1], &names[2], &sizes[2], &present)
 	if err != nil {
 		return model.TeamItemMetadata{}, pg.QueryError("read member item metadata", err)
+	}
+	if !present {
+		return model.TeamItemMetadata{}, fmt.Errorf("member profile projection is missing")
 	}
 	utcMember(&m)
 	fields := make([]model.TeamItemField, 3)
@@ -85,15 +98,22 @@ func (r *teamItemReader) memberMetadata(ctx context.Context, p model.Principal, 
 func (r *teamItemReader) projectMetadata(ctx context.Context, p model.Principal, teamID, id string) (model.TeamItemMetadata, error) {
 	project := model.Project{}
 	var nameSize, repoSize int64
+	var present bool
 	err := r.tx.QueryRow(ctx, `SELECT p.id::text,p.created_at,p.updated_at,p.settings_version,p.execution_warning_minutes,
- o.team_id::text,o.version,o.updated_at,octet_length(p.name_bytes),octet_length(p.repo_url_bytes)
+ o.team_id::text,o.version,o.updated_at,coalesce(octet_length(n.content),0),coalesce(octet_length(r.content),0),
+ n.object_id IS NOT NULL AND r.object_id IS NOT NULL
  FROM projects p JOIN project_ownership o ON o.project_id=p.id
  JOIN teams t ON t.id=o.team_id JOIN team_members actor ON actor.team_id=t.id AND actor.user_id=$1
+ LEFT JOIN team_item_fields n ON n.kind='project' AND n.object_id=p.id AND n.field='name'
+ LEFT JOIN team_item_fields r ON r.kind='project' AND r.object_id=p.id AND r.field='repoUrl'
  WHERE p.id=$2 AND t.id=$3 AND p.deleted_at IS NULL`, p.UserID, id, teamID).Scan(
 		&project.ID, &project.CreatedAt, &project.UpdatedAt, &project.Settings.Version, &project.Settings.ExecutionWarningMinutes,
-		&project.Ownership.TeamID, &project.Ownership.Version, &project.Ownership.UpdatedAt, &nameSize, &repoSize)
+		&project.Ownership.TeamID, &project.Ownership.Version, &project.Ownership.UpdatedAt, &nameSize, &repoSize, &present)
 	if err != nil {
 		return model.TeamItemMetadata{}, pg.QueryError("read Project item metadata", err)
+	}
+	if !present {
+		return model.TeamItemMetadata{}, fmt.Errorf("Project field projection is missing")
 	}
 	project.CreatedAt = project.CreatedAt.UTC()
 	project.UpdatedAt = project.UpdatedAt.UTC()
@@ -102,36 +122,23 @@ func (r *teamItemReader) projectMetadata(ctx context.Context, p model.Principal,
 }
 
 func (r *teamItemReader) FieldBytes(ctx context.Context, target model.TeamItemTarget, field string, offset int64, length int) ([]byte, error) {
-	var table, column, id string
+	var id string
+	valid := false
 	switch target.Kind {
 	case "team":
-		if field == "name" {
-			table, column, id = "teams", "name_bytes", target.TeamID
-		}
+		id, valid = target.TeamID, field == "name"
 	case "member":
-		table, id = "users", target.UserID
-		switch field {
-		case "profile.name":
-			column = "name_bytes"
-		case "profile.email":
-			column = "email_bytes"
-		case "profile.avatarUrl":
-			column = "avatar_url_bytes"
-		}
+		id = target.UserID
+		valid = field == "profile.name" || field == "profile.email" || field == "profile.avatarUrl"
 	case "project":
-		table, id = "projects", target.ProjectID
-		switch field {
-		case "name":
-			column = "name_bytes"
-		case "repoUrl":
-			column = "repo_url_bytes"
-		}
+		id = target.ProjectID
+		valid = field == "name" || field == "repoUrl"
 	}
-	if column == "" || offset < 0 || offset > 1<<30 || length < 1 || length > 512<<10 {
+	if !valid || offset < 0 || offset > 1<<30 || length < 1 || length > 512<<10 {
 		return nil, fmt.Errorf("invalid bounded item field read")
 	}
 	var data []byte
-	err := r.tx.QueryRow(ctx, `SELECT substring(`+column+` FROM $2::integer FOR $3::integer) FROM `+table+` WHERE id=$1`, id, offset+1, length).Scan(&data)
+	err := r.tx.QueryRow(ctx, `SELECT substring(content FROM $4::integer FOR $5::integer) FROM team_item_fields WHERE kind=$1 AND object_id=$2 AND field=$3`, target.Kind, id, field, offset+1, length).Scan(&data)
 	if err != nil {
 		return nil, pg.QueryError("read item field bytes", err)
 	}

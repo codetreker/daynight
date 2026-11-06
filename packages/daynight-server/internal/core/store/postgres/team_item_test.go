@@ -136,6 +136,37 @@ func TestProjectItemPreservesTeamScopeAndDeletion(t *testing.T) {
 	}
 }
 
+func TestTeamItemMissingProjectionDoesNotBecomeEmptyOrNull(t *testing.T) {
+	for _, kind := range []string{"team", "member", "project"} {
+		t.Run(kind, func(t *testing.T) {
+			s, actor, team := storeTeamFixture(t)
+			a := itemPAT(t, s, actor.UserID)
+			target := core.Target{Kind: kind, TeamID: team.ID}
+			id, field := team.ID, "name"
+			if kind == "member" {
+				target.UserID = actor.UserID
+				id, field = actor.UserID, "profile.name"
+			}
+			if kind == "project" {
+				target.ProjectID = uuid.NewString()
+				id = target.ProjectID
+				mustQueryExec(t, s, `INSERT INTO projects(id,name,repo_url)VALUES($1,'Project','repo')`, id)
+				mustQueryExec(t, s, `INSERT INTO project_ownership(project_id,team_id)VALUES($1,$2)`, id, team.ID)
+			}
+			// Simulate damaged derived storage outside the guarded write path.
+			// Source presence must not make an absent field appear null or empty.
+			mustQueryExec(t, s, `ALTER TABLE team_item_fields DISABLE TRIGGER team_item_fields_source_owned`)
+			mustQueryExec(t, s, `DELETE FROM team_item_fields WHERE kind=$1 AND object_id=$2 AND field=$3`, kind, id, field)
+			mustQueryExec(t, s, `ALTER TABLE team_item_fields ENABLE TRIGGER team_item_fields_source_owned`)
+			result, err := itemservice.New(s).Read(t.Context(), a, core.Input{Target: target, Action: "inspect"})
+			var completion *store.TransactionError
+			if err == nil || errors.Is(err, model.ErrNotFound) || !errors.As(err, &completion) || completion.Cause == nil || !strings.Contains(completion.Cause.Error(), "projection is missing") || result.Metadata.Revision != "" {
+				t.Fatalf("missing derived field became a resource projection: %#v %v", result, err)
+			}
+		})
+	}
+}
+
 type itemReadThen struct {
 	*Store
 	after func()

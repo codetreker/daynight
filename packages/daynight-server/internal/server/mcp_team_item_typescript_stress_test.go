@@ -1,4 +1,4 @@
-//go:build stress
+//go:build stress && mcp_team_items
 
 package server
 

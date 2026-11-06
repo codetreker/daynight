@@ -26,9 +26,11 @@ flowchart LR
 
 列表项只有六种可变长度源字段：users 的 name/email/avatar_url，teams 的 name，projects 的 name/repo_url。inspect 返回字段 null 标志和 `octet_length`，其余固定数据构成 header。chunk 只读取被选择的字段；所有分块都标识同一目标和 revision。
 
-原始 text 的 substring 不是可证明的固定内存范围读取。UTF-8 字符偏移可能使 PostgreSQL 从开头取得前缀，压缩 TOAST 切片还可能读取或解压更大的输入。实现为源字段维护 UTF-8 bytea 投影，设置 `STORAGE EXTERNAL`，使大值不压缩并支持按真实字节位置取得所需片段。DAO 不在读路径执行全字段 convert_to、JSON 构造、hash 或 Go 扫描。
+原始 text 的 substring 不是可证明的固定内存范围读取。UTF-8 字符偏移可能使 PostgreSQL 从开头取得前缀，压缩 TOAST 切片还可能读取或解压更大的输入。`team_item_fields(kind,object_id,field,content)` 按字段保存 UTF-8 bytea，主键是前三列，content 使用 `STORAGE EXTERNAL`。一个字段单独占一行，大值不压缩并支持按真实字节位置取得所需片段。DAO 不在读路径执行全字段 convert_to、JSON 构造、hash 或 Go 扫描。
 
-这一存储选择由 PostgreSQL 的[文本切片实现](https://github.com/postgres/postgres/blob/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/backend/utils/adt/varlena.c#L950-L1038)、[bytea 切片实现](https://github.com/postgres/postgres/blob/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/backend/utils/adt/varlena.c#L3074-L3131)及[未压缩 TOAST 切片路径](https://github.com/postgres/postgres/blob/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/backend/access/common/detoast.c#L226-L234)决定。原始 text 继续是业务字段，bytea 只承担有界读取。
+这种单字段物理行避免把源 text 与一份同等大小的 bytea 同时放入源行。PostgreSQL 在 TOAST 处理前构造 tuple；900 MiB 源字段加同大小的同行副本会超过其约 1 GiB 单次分配限制，即使源字段自身是合法值。字段表不与源表建立 foreign key；对应关系由同事务源触发器维护。
+
+范围读取选择由 PostgreSQL 的[文本切片实现](https://github.com/postgres/postgres/blob/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/backend/utils/adt/varlena.c#L950-L1038)、[bytea 切片实现](https://github.com/postgres/postgres/blob/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/backend/utils/adt/varlena.c#L3074-L3131)及[未压缩 TOAST 切片路径](https://github.com/postgres/postgres/blob/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/backend/access/common/detoast.c#L226-L234)决定。原始 text 继续是业务字段，bytea 只承担有界读取。
 
 字段名使用固定白名单，SQL 偏移为源字节 offset 加一。范围和算术在参数转换前检查。text 用固定额外字节判断 UTF-8 起终点；base64 可返回跨码点的原字节，调用方解码后再拼接。最终 EOF 与实际返回字节相关，不与请求的 maxBytes 相等关系相关。
 
@@ -58,13 +60,13 @@ Project 读取沿用 Team 目录资格，外部 Project grant 不代替成员关
 
 ## 投影维护与迁移
 
-迁移 `045_team_item_bytes.sql` 为上述字段增加派生 bytea 列，并在填充值前设置 EXTERNAL。现有值以 256 行 SQL 批次回填，再安装字段维护与修改时间 trigger、null 对应约束和必需字段约束；整个过程与迁移登记处于同一个既有迁移事务。DDL 锁在提交前保持，中间状态不会作为新读取能力对外暴露。
+迁移 `045_team_item_bytes.sql` 创建 `team_item_fields` 并设置 content 为 EXTERNAL，在回填前对 users、teams、projects 取得 SHARE ROW EXCLUSIVE 表锁，阻止旧写入越过回填至 trigger 安装的边界。随后以有界 UUID 批次遍历源对象，每批最多 256 个 ID。每种字段分别执行 INSERT SELECT，避免将多份大字段合并为一个待插入 tuple。回填、源字段维护 trigger、修改时间 trigger 和迁移登记属于同一个既有迁移事务；新应用在完整迁移成功后才接受请求。
 
-INSERT 在同一事务编码对应源字段；UPDATE 只重建实际改变的投影。源字段未变化时直接修改投影会显式拒绝，避免业务值与范围读取值分离。null 源得到 null 投影，空字符串得到零字节投影。后续修改时间规则不依赖应用正确采样到一个更晚的时刻。
+源表的 BEFORE UPDATE trigger 只保证修改时间随实际变化前进。AFTER INSERT 为每种字段建立独立行；AFTER UPDATE 只重建实际改变的字段，和原始内容在同一事务提交。null 源仍保留一行 content NULL，空字符串保存零字节 bytea；元数据查询核对字段行存在，缺行是完整性错误，不能伪装成 null。物理 DELETE 清理对应对象的字段行，源表 TRUNCATE 清理相应 kind。Project 软删除保留源资源及字段，但所有读取仍先按删除标记拒绝。
 
-SQL 批次不等于分批提交，也不承诺在线无阻塞。迁移失败整体回滚，新应用在成功完成迁移后才接受请求。部署应安排相应迁移窗口并保留既有备份和恢复规则；迁移器的 advisory lock 协调迁移器，不使旧写入程序理解新合同。
+SQL 批次不等于分批提交，也不承诺在线无阻塞。迁移失败整体回滚。部署应安排相应迁移窗口并保留既有备份和恢复规则；迁移器的 advisory lock 仅协调迁移器，源表写入锁覆盖回填至维护 trigger 安装并持有到提交，避免旧写入改变已回填内容。
 
-bytea 投影增加接近原始 UTF-8 字节量的磁盘数据。由于 EXTERNAL 不压缩，这份数据可能显著大于已压缩 text；还须计入写入 WAL、迁移中新旧行版本、临时空间及复制积压。UTF-8 编码、text 相等比较和 upsert 的 INSERT/UPDATE trigger 路径可能物化全字段；这些是写入与迁移成本，不属于有界块读取的内存保证。
+独立 bytea 字段增加接近原始 UTF-8 字节量的磁盘数据。由于 EXTERNAL 不压缩，这份数据可能显著大于已压缩 text；还须计入写入 WAL、迁移中新旧行版本、临时空间及复制积压。UTF-8 编码、text 相等比较和 upsert 的 BEFORE/AFTER trigger 路径可能物化全字段；这些是写入与迁移成本，不属于有界块读取的内存保证。
 
 ## 结果编码与准入
 
@@ -82,9 +84,9 @@ bytea 投影增加接近原始 UTF-8 字节量的磁盘数据。由于 EXTERNAL 
 
 调查成员读取时，在 JSON 日志中筛选 `component=mcp`、`operation=team_item_read`、目标 team_id 与 member_user_id，并用 request_id 关联完成或失败；查看 error_code 区分权限拒绝、version_conflict 和输出构造失败，成功返回量使用 returned_bytes。分块延迟、Go heap、数据库 MemoryContext/私有内存和编码量在独立容量验证中分别记录；不将 RSS 共享缓存映射直接等同私有分配。
 
-普通测试覆盖接口、原始时间、触发器、权限等待、软删除和续页重建；大于 128 MiB 及接近 PostgreSQL 合法容量的样本独立运行。`TestStressMCPTeamItemCapacityAndReadMemory` 使用 4、129、900 MiB 可压缩和不可压缩 UTF-8 字段，独立 Go SDK 子进程流式核对完整字节，避免客户端分配进入服务器 Go heap。私有内存采样按 PostgreSQL 进程的 Private_Clean、Private_Dirty 和 Private_Hugetlb 计算；持有切片的 MemoryContext 探针补充采样，其结果只描述该切片机制，不替代生产查询全链路测量。
+普通测试覆盖接口、原始时间、触发器、权限等待、软删除和续页重建；大于 128 MiB 及接近 PostgreSQL 合法容量的样本独立运行。`TestStressMCPTeamItemCapacityAndReadMemory` 使用 4、129、900 MiB 可压缩和不可压缩 UTF-8 字段，独立 Go SDK 子进程流式核对完整字节，避免客户端分配进入服务器 Go heap。私有内存采样按 PostgreSQL 进程的 Private_Clean、Private_Dirty 和 Private_Hugetlb 计算；持有切片的 MemoryContext 探针补充采样，其结果只描述该切片机制，不替代生产查询全链路测量。每个独立 inspect/范围探测样本先强制 GC，再只在该次样本内暂停自动 GC，记录保留全部调用分配的保守上界，结束立即恢复；完整流式重建保持自动 GC。
 
-完整模式由 `DAYNIGHT_TEST_MCP_ITEM_CACHE_MODE=restart` 明确选择，只重启 `DAYNIGHT_TEST_POSTGRES_CONTAINER` 指定的专用可丢弃 PostgreSQL 集群，验证 PostgreSQL 缓冲和 backend 缓存冷/热两种条件；主机 OS page cache 仍可能是热的。`warm-only` 仅用于 smoke/debug，不代替完整模式。该集群运行时不能被其他测试共享。Go 客户端协商 `2026-07-28`；独立的 `TestStressMCPTeamItemsTypeScriptSDK` 使用官方固定版本 `@modelcontextprotocol/sdk@1.32.2`，协商其支持的 `2025-11-25`，并从 TextContent 完成三类目录的读取、重建、续页和时间变化拒绝。
+完整模式由 `DAYNIGHT_TEST_MCP_ITEM_CACHE_MODE=restart` 明确选择，只重启 `DAYNIGHT_TEST_POSTGRES_CONTAINER` 指定的专用可丢弃 PostgreSQL 集群，验证 PostgreSQL 缓冲和 backend 缓存冷/热两种条件；容器必须使用固定的 loopback host port，并与数据库 URL 一致，因为自动分配的 host port 可能在 restart 后改变。恢复就绪时也核对配置的 TCP 连接。主机 OS page cache 仍可能是热的。`warm-only` 仅用于 smoke/debug，不代替完整模式。该集群运行时不能被其他测试共享。Go 客户端协商 `2026-07-28`；独立的 `TestStressMCPTeamItemsTypeScriptSDK` 使用官方固定版本 `@modelcontextprotocol/sdk@1.32.2`，协商其支持的 `2025-11-25`，并从 TextContent 完成三类目录的读取、重建、续页和时间变化拒绝。
 
 两项测试均使用 stress build tag，检测到 CI 时明确失败；SDK 安装在项目临时目录的独立 private pnpm workspace，包、缓存与状态不进入用户目录或产品依赖。可复现准备和命令见[服务验证说明](../../packages/daynight-server/README.md#team-item-capacity-and-sdk-validation)。迁移和写入另量化锁、WAL、磁盘和内存，不用读路径的有界结论掩盖它们；容量结论以对应源码与独立执行记录为准。
 

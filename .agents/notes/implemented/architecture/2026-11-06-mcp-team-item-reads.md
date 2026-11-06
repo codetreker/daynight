@@ -27,11 +27,15 @@ visible change. No separate profile revision counter is stored. A changed tuple
 rejects continuation so clients discard that item's accumulated content and
 inspect its current value again.
 
-Uncompressed EXTERNAL bytea projections provide direct byte-range reads for the
-six unbounded text fields. Transactional triggers keep each projection equal to
-its source, preserve nulls and reject direct divergence. The migration backfills
-existing rows and enables the constraints atomically within the existing
-migration transaction. The original text remains the business value.
+The `team_item_fields` table stores one uncompressed EXTERNAL bytea field per
+physical row, keyed by kind, object ID and field. Source AFTER triggers maintain
+these rows in the source transaction, preserve explicit null field rows and clean
+up physically deleted objects. Source BEFORE triggers maintain strictly advancing
+modification times. No foreign key is needed for this derived relationship.
+Metadata distinguishes an absent field row, which is an integrity error, from a
+stored null. The migration backfills existing fields and installs maintenance
+atomically within the existing migration transaction. The original text remains
+the business value.
 
 Content and its revision share one read snapshot. A separate current-authority
 transaction checks credentials, OAuth grant, selected Team membership, target
@@ -79,6 +83,12 @@ compressed TOAST access can materialize growing prefixes; whole-value conversion
 or hashing repeats full work. Write-maintained uncompressed byte projections
 move that cost to writes and support bounded range reads.
 
+**Keep binary copies in the source row.** PostgreSQL constructs a tuple before
+TOAST storage. A legal 900 MiB source together with an equal-size same-row copy
+requires an allocation above the approximately 1 GiB limit. One field per
+separate row preserves the source's capacity without combining the source and
+copy or multiple copies in one tuple.
+
 **Expose resource links instead of an application read tool.** Standard resource
 reads do not supply content pagination. A custom URI/manifest contract would
 still be needed alongside another protocol entry, while ordinary tools/call
@@ -92,12 +102,13 @@ item shapes, and clients consuming only TextContent can follow the same loop.
 Continuously changing content can require repeated restarts; no historical-read
 or frozen-directory guarantee is made.
 
-Binary projections increase persistent space and write/WAL costs. Uncompressed
+Separate field rows increase persistent space and write/WAL costs. Uncompressed
 copies can be much larger than compressed text. Trigger comparisons, conversion
 and migration backfill may load full source fields, so bounded read allocation
 does not imply bounded write allocation. The single migration transaction holds
-DDL locks through completion and requires a suitable migration window; SQL
-batching does not release those locks or provide incremental commits.
+source-table write barriers from before backfill through trigger installation and
+commit, requiring a suitable migration window; SQL batching does not provide
+incremental commits.
 
 Read, authorization, serialization and concurrent admission remain part of the
 same capacity claim. Separate capacity measurements include metadata, early and
