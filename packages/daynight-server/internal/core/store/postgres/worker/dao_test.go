@@ -116,6 +116,12 @@ func TestWorkerDAOSnapshotRetentionVisibilityAndPagination(t *testing.T) {
 			t.Fatalf("unavailable worker %s: %v", id, err)
 		}
 	}
+	execute(t, tx, `UPDATE projects SET deleted_at=statement_timestamp() WHERE id=$1`, projectID)
+	got, err = reader.Worker(ctx, user, original.WorkerID, stamp)
+	if err != nil || len(got.TaskSnapshot.Items) != 0 || got.TaskSnapshot.State != model.WorkerTasksStale {
+		t.Fatalf("deleted project visibility: %+v %v", got, err)
+	}
+	execute(t, tx, `UPDATE projects SET deleted_at=NULL WHERE id=$1`, projectID)
 	execute(t, tx, `DELETE FROM project_grants WHERE project_id=$1`, projectID)
 	got, err = reader.Worker(ctx, user, original.WorkerID, stamp)
 	if err != nil || len(got.TaskSnapshot.Items) != 0 {
@@ -218,6 +224,12 @@ func TestWorkerDAOReportedTaskSourcesAndStoredCorruption(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].Task.ID != task || items[0].ProjectName != "Sources" || items[0].Task.Properties["worker"] == nil {
 		t.Fatalf("reported sources: %+v %v", items, err)
 	}
+	execute(t, tx, `UPDATE projects SET deleted_at=statement_timestamp() WHERE id=$1`, project)
+	items, err = writer.ReportTaskSnapshots(ctx, user, inventory)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("deleted project sources: %+v %v", items, err)
+	}
+	execute(t, tx, `UPDATE projects SET deleted_at=NULL WHERE id=$1`, project)
 	items, err = writer.ReportTaskSnapshots(ctx, uuid.NewString(), inventory)
 	if err != nil || len(items) != 0 {
 		t.Fatalf("private sources: %+v %v", items, err)

@@ -11,7 +11,7 @@ import (
 )
 
 func readProject(ctx context.Context, tx pgx.Tx, id string) (model.Project, error) {
-	project, err := pg.ScanProject(tx.QueryRow(ctx, `SELECT `+pg.ProjectProjection+` FROM `+pg.ProjectRelation+` WHERE p.id = $1`, id))
+	project, err := pg.ScanProject(tx.QueryRow(ctx, `SELECT `+pg.ProjectProjection+` FROM `+pg.ProjectRelation+` WHERE p.id = $1 AND p.deleted_at IS NULL`, id))
 	if err != nil {
 		return model.Project{}, pg.QueryError("read project", err)
 	}
@@ -38,7 +38,7 @@ func (s *reader) Project(ctx context.Context, id string) (model.Project, error) 
 func (s *reader) Projects(ctx context.Context, page Page) (ProjectPage, error) {
 	afterTime, afterID := pg.PageValues(page)
 	rows, err := s.tx.Query(ctx, `SELECT `+pg.ProjectProjection+` FROM `+pg.ProjectRelation+`
-		WHERE ($1::timestamptz IS NULL OR (p.created_at, p.id) > ($1, $2::uuid))
+		WHERE p.deleted_at IS NULL AND ($1::timestamptz IS NULL OR (p.created_at, p.id) > ($1, $2::uuid))
 		ORDER BY p.created_at, p.id LIMIT $3`, afterTime, afterID, page.Limit+1)
 	if err != nil {
 		return ProjectPage{}, pg.QueryError("list projects", err)

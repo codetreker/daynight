@@ -135,6 +135,9 @@ var privateTransfersSQL string
 //go:embed migrations/042_oauth_cleanup_cursor.sql
 var oauthCleanupCursorSQL string
 
+//go:embed migrations/043_project_soft_delete.sql
+var projectSoftDeleteSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -185,6 +188,7 @@ var schemaMigrations = []migration{
 	{version: 40, sql: oauthAuthorizationsSQL},
 	{version: 41, sql: privateTransfersSQL},
 	{version: 42, sql: oauthCleanupCursorSQL},
+	{version: 43, sql: projectSoftDeleteSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
