@@ -151,6 +151,8 @@ Copilot runtime 的 `--allow-all` 与 Session 的工具审批开关不能证明 
 
 `COPILOT_HOME` 在 launch ticket 中冻结并传给原生进程。未指定 model/effort 时不传对应 SDK 字段；显式 effort 仅接受 `low|medium|high|xhigh`。创建会话后核对 snapshot 的 session ID、working directory、remote 与占用状态；恢复还先核对 metadata 的精确 ID/cwd 和 `checkInUse`，拒绝来源不匹配或已有 writer 的会话。历史与实时事件复用稳定原生条目身份投影，初始化期间缓冲实时事件，避免历史覆盖新内容。
 
+待办通过串行 `readSqlTodos()` 读取当前状态，复用 `nativeEntryId(nativeId, "todos")`；Controller 继续负责修订递增。新 provider 从尚未投影待办开始，仅在原生 `rows` 非空时首次投影；成功投影后，空列表仍作为同一条目的清空更新。恢复 provider 保守地视为可能已有该条目，因此首次当前列表为空也必须投影，不能从当前 SQL 空结果推断旧历史没有待办。读取失败不改变该标记；异常行继续产生既有诊断与映射结果，串行顺序、关闭和断线检查不变。取舍见[Copilot 空待办投影决策](../../.agents/notes/implemented/bug-fix/2026-11-06-copilot-empty-todo.md)。
+
 发送只有 SDK 返回有效 native message ID 才取得原生 ACK。同一活跃 provider 内，超时调用的原 Promise 迟到返回该 ID，可通过它捕获的 operationId 精确补记受理。SDK 不支持把 caller operationId 写入可用于恢复对账的原生输入：ACK 永久丢失或原进程已丢失时，历史中的相同正文、idle 或新连接均不能消除 unknown，也不能跨 generation 用迟到结果确认或自动重发。foreground cancel 使用 `interruptMainTurn`，等待原生活动结束证据，不将整个 session 的销毁冒充停止 turn。
 
 审批、问题、MCP form 和计划审批共用现有 typed interaction。callback 返回不等于请求完成；响应保持原生请求身份并等待 matching completed 事件。计划审批 form 保留 `exit_only`、`interactive`、`reject` 及可选 feedback，禁用 autopilot；未知 schema、URL elicitation 和不支持的二进制资源投影为明确错误。原生 `immediate` steer 和这些交互的真实运行效果须分别验收，协议可解析不构成验收结果。
