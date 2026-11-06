@@ -173,7 +173,7 @@ test('member loading and read failure retain a working retry', async ({ page }) 
   api.holdRosterRead = { started: started.resolve, wait: finish.promise };
   try {
     await page.goto(`/teams/${teamId}/members`); await started.promise;
-    await expect(page.getByRole('status').filter({ hasText: 'Loading' })).toBeVisible();
+    await expect(page.locator('#main-content').getByRole('status').filter({ hasText: 'Loading' })).toBeVisible();
   } finally { finish.resolve(); }
   await expect(page.getByLabel('Team role: Bob')).toBeVisible();
   api.rosterReadNetworkFailure = true; await page.reload();

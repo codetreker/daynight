@@ -17,8 +17,11 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
   const checkActive = useRef<AbortController | null>(null);
   const checkSnapshot = useRef<ReadonlyMap<string, string> | null>(null);
   const itemGenerations = useRef(new Map<string, ReadonlyMap<string, string>>());
+  const loadedPages = useRef(0);
   const checkAction = useRef<() => void>(() => {});
   const restorePending = useRef(false);
+  const restoring = useRef(false);
+  const mounted = useRef(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [check, setCheck] = useState<{ status: "idle" | "loading" | "ready" | "error"; items: readonly Project[]; nextCursor: string | null; error: unknown }>({ status: "idle", items: [], nextCursor: null, error: null });
@@ -35,7 +38,10 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
     };
   }, []);
-  useEffect(() => () => active.current?.abort(), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; restorePending.current = false; active.current?.abort(); };
+  }, []);
   useEffect(() => {
     if (admission === undefined) return;
     return admission.subscribeProjection((event) => {
@@ -50,39 +56,62 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       const observed = itemGenerations.current.get(event.projectId);
       const remove = observed !== undefined && admission.projectionEventMatches(observed, event);
       const cancel = !(event.error instanceof TaskCacheError) && checkActive.current !== null && admission.projectionEventMatches(checkSnapshot.current, event);
-      if (cancel) { checkActive.current?.abort(); if (active.current === checkActive.current) active.current = null; checkActive.current = null; checkSnapshot.current = null; }
+      const resumeRestoration = cancel && restoring.current;
+      if (cancel) { checkActive.current?.abort(); if (active.current === checkActive.current) active.current = null; checkActive.current = null; checkSnapshot.current = null; restoring.current = false; }
       if (remove || cancel || event.error instanceof TaskCacheError && admission.isProjectionDenied(event.projectId)) {
         setCheck((previous) => ({ ...previous, items: remove ? previous.items.filter((item) => item.id !== event.projectId) : previous.items,
           status: event.error instanceof TaskCacheError ? "error" : cancel ? "ready" : previous.status,
           error: event.error instanceof TaskCacheError ? event.error : previous.error }));
       }
+      if (resumeRestoration) checkAction.current();
     });
   }, [admission]);
   const checkProjects = (cursor: string | null, preserve = false) => {
-    if (active.current !== null) return;
+    if (!mounted.current) return;
+    if (active.current !== null) {
+      if (preserve || !restoring.current || checkActive.current !== active.current) return;
+      restorePending.current = true;
+      active.current.abort(); active.current = null; checkActive.current = null; checkSnapshot.current = null;
+    }
     const controller = new AbortController();
     const signal = admission === undefined ? controller.signal : AbortSignal.any([controller.signal, admission.signal]);
     active.current = controller;
     checkActive.current = controller;
     checkSnapshot.current = null;
-    setCheck((previous) => ({ status: "loading", items: cursor === null && !preserve ? [] : previous.items, nextCursor: preserve ? previous.nextCursor : cursor, error: null }));
+    restoring.current = preserve;
+    if (!preserve) setCheck((previous) => ({ status: "loading", items: cursor === null ? [] : previous.items, nextCursor: cursor, error: null }));
     void (async () => {
       try {
         const snapshot = admission === undefined ? new Map<string, string>() : await admission.prepareProjection(signal);
         if (signal.aborted) return;
         checkSnapshot.current = snapshot;
-        const page = await listProjects({ limit: 50, ...(cursor === null ? {} : { cursor }), ...(targetTeamId === undefined ? {} : { teamId: targetTeamId }) }, signal, { userId, onPrincipalMismatch: onIdentityMismatch });
+        const pages: Project[] = [];
+        let nextCursor = cursor, pageCount = 0;
+        const limit = preserve ? Math.max(1, loadedPages.current) : 1;
+        const cursors = new Set<string>();
+        do {
+          if (admission !== undefined) await admission.ready(signal);
+          if (signal.aborted) return;
+          if (preserve && nextCursor !== null) {
+            if (cursors.has(nextCursor)) throw new ApiError('protocol');
+            cursors.add(nextCursor);
+          }
+          const page = await listProjects({ limit: 50, ...(nextCursor === null ? {} : { cursor: nextCursor }), ...(targetTeamId === undefined ? {} : { teamId: targetTeamId }) }, signal, { userId, onPrincipalMismatch: onIdentityMismatch });
+          if (preserve && page.nextCursor !== null && cursors.has(page.nextCursor)) throw new ApiError("protocol");
+          pages.push(...page.items); nextCursor = page.nextCursor; pageCount++;
+        } while (preserve && pageCount < limit && nextCursor !== null);
         if (admission !== undefined) await admission.ready(signal);
         if (!signal.aborted) {
-          const visible = page.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
+          const visible = pages.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
           if (cursor === null && !preserve) itemGenerations.current.clear();
           for (const item of visible) if (preserve || !itemGenerations.current.has(item.id)) itemGenerations.current.set(item.id, snapshot);
+          loadedPages.current = cursor !== null ? loadedPages.current + pageCount : pageCount;
           setCheck((previous) => {
             const failure = admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null);
             const retained = cursor === null && !preserve ? [] : previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
-            const items = new Map(retained.map((item) => [item.id, item]));
-            for (const item of visible) if (preserve || !items.has(item.id)) items.set(item.id, item);
-            return { status: failure === null ? "ready" : "error", items: [...items.values()], nextCursor: preserve ? previous.nextCursor : page.nextCursor, error: failure };
+            const items = new Map<string, Project>();
+            for (const item of preserve ? [...visible, ...retained] : [...retained, ...visible]) if (!items.has(item.id)) items.set(item.id, item);
+            return { status: failure === null ? "ready" : "error", items: [...items.values()], nextCursor, error: failure };
           });
         }
       } catch (cause) {
@@ -91,8 +120,8 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
         if (!signal.aborted) setCheck((previous) => ({ ...previous, status: "error", error: cause }));
       } finally {
         if (active.current === controller) active.current = null;
-        if (checkActive.current === controller) { checkActive.current = null; checkSnapshot.current = null; }
-        if (restorePending.current && active.current === null) { restorePending.current = false; checkAction.current(); }
+        if (checkActive.current === controller) { checkActive.current = null; checkSnapshot.current = null; restoring.current = false; }
+        if (mounted.current && restorePending.current && active.current === null) { restorePending.current = false; checkAction.current(); }
       }
     })();
   };

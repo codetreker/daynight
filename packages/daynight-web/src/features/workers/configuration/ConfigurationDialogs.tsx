@@ -24,7 +24,7 @@ export const ConfigurationProjectsDialog = ({ projects, selected, loading, error
     const project = metadata.get(id), search = query.toLocaleLowerCase();
     return `${project?.name ?? ''} ${project?.repoUrl ?? ''} ${id}`.toLocaleLowerCase().includes(search);
   });
-  return <ManagementDialog title={m.chooseProjects} onClose={onClose} footer={<><button className="button" type="button" onClick={onClose}>{m.cancel}</button><button className="button primary" type="button" disabled={loading || error !== null && !(error instanceof TaskCacheError)} onClick={() => onApply([...selection])}>{m.done}</button></>}>
+  return <ManagementDialog title={m.chooseProjects} onClose={onClose} footer={<><button className="button" type="button" onClick={onClose}>{m.cancel}</button><button className="button primary" type="button" disabled={loading} onClick={() => onApply([...selection])}>{m.done}</button></>}>
     <div className="field"><label htmlFor="configuration-project-search">{m.projectSearch}</label><input id="configuration-project-search" type="search" value={query} onChange={event => setQuery(event.target.value)} autoComplete="off" /></div>
     {loading && <div className="configuration-project-loading" role="status"><span className="spinner" aria-hidden="true" /></div>}
     {error !== null && <div className="notice error" role="alert"><p>{error instanceof TaskCacheError ? workers.cacheStorageError : m.projectsFailed}</p><button className="button" type="button" onClick={refresh}>{workers.retry}</button></div>}

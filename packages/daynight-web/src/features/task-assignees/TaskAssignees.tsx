@@ -128,7 +128,7 @@ export class TaskAssignees {
   }
   private adoptHistory(state: ProjectPeopleState, current: CachedProject): SyncTicket | null {
     const { userFence, cacheGeneration, epoch, maxUpdatedAt, projectId, generationAncestors, unknownAncestors } = current.manifest;
-    const ticket = { userId: this.scope.userId, projectId, userFence, cacheGeneration, epoch, maxUpdatedAt, scopeRevision: this.scope.getProjectRevision(projectId), generationAncestors: generationAncestors ?? [], unknownAncestors: unknownAncestors === true };
+    const ticket = { userId: this.scope.userId, projectId, userFence, cacheGeneration, epoch, maxUpdatedAt, scopeRevision: this.scope.getProjectRevision(projectId), admissionRevision: this.scope.getAdmissionRevision(projectId), generationAncestors: generationAncestors ?? [], unknownAncestors: unknownAncestors === true };
     if (state.userFence !== ticket.userFence) this.clear(state);
     if (state.generation !== ticket.cacheGeneration) { state.resolvedAgainst.clear(); state.unresolvedVersions.clear(); }
     state.generation = ticket.cacheGeneration; state.userFence = ticket.userFence;

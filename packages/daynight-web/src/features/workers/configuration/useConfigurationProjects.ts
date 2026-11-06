@@ -60,7 +60,11 @@ export const useConfigurationProjects = (readEnabled: boolean) => {
           setState({ scope, fence: prepared, items: [...projects.values()].filter(project => !scope.projectionSnapshotDenied(prepared, project.id)), loading: false, loaded: true, error: snapshotError ?? scope.projectionSnapshotError(prepared) ?? cleanupErrors.values().next().value ?? null });
         }
       } catch (error) {
-        if (current()) { controller = null; setState({ scope, fence: null, items: [], loading: false, loaded: false, error: snapshotError ?? (preparedFence === null ? scope.projectionError : scope.projectionSnapshotError(preparedFence)) ?? cleanupErrors.values().next().value ?? error }); }
+        if (current()) {
+          controller = null;
+          const failure = snapshotError ?? (preparedFence === null ? scope.projectionError : scope.projectionSnapshotError(preparedFence)) ?? cleanupErrors.values().next().value ?? error;
+          setState(old => old.scope === scope ? { ...old, loading: false, error: failure } : { scope, fence: null, items: [], loading: false, loaded: false, error: failure });
+        }
       }
     };
     const visibility = () => {

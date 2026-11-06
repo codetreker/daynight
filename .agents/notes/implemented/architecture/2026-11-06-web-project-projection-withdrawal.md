@@ -21,8 +21,12 @@ replacement and cache invalidation persist predecessor generations atomically wi
 the manifest. A denial ticket carries the complete history, so a later denial
 withdraws ancestor observations even if a replacement hint was lost or delayed.
 A corrupt predecessor that cannot be identified remains explicitly unknown; an
-incomparable projection is hidden and reread, while a proven descendant survives
-an older hint. The history is not truncated. Events also fence in-flight reads. A same-user negative hint reaches independent consumers
+incomparable cross-tab hint is checked against the durable generation before it
+withdraws and rereads a projection. If storage cannot establish the history, the
+projection is hidden with an error. During identity checking, incomparable content
+is provisionally hidden immediately and restored after the durable check rejects
+a stale hint. A proven descendant survives an older hint. A scope also rejects an incomparable old ticket after
+its own later online admission. The history is not truncated. Events also fence in-flight reads. A same-user negative hint reaches independent consumers
 even if its durable cleanup has already changed the manifest; cache cleanup itself
 still uses the captured generation. Cleanup failures retain a local denial, expose
 an error and prevent that Project from being republished until cleanup succeeds.

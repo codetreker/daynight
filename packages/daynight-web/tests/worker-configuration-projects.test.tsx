@@ -24,6 +24,19 @@ const page = (items: readonly Project[], nextCursor: string | null = null, userI
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); });
 
 describe('configuration Project choices', () => {
+  it.each(['offline', 'page failure'] as const)('keeps healthy metadata and the error when a withdrawal refresh has %s', async failure => {
+    const scope = makeScope(), target = project(3), healthy = project(4), retry = deferred<Response>();
+    const fetch = vi.fn().mockResolvedValueOnce(page([target, healthy]));
+    if (failure === 'offline') fetch.mockRejectedValueOnce(new Error('offline'));
+    else fetch.mockResolvedValueOnce(page([project(5)], 'next')).mockResolvedValueOnce(configurationError(403, 'forbidden'));
+    fetch.mockImplementationOnce(() => retry.promise); vi.stubGlobal('fetch', fetch);
+    const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(scope) }); await flush();
+    act(() => scope.suspendProject(target.id)); await flush();
+    expect(result.current.items).toEqual([healthy]); expect(result.current.loading).toBe(false); expect(result.current.error).not.toBeNull();
+    act(() => result.current.refresh()); await flush();
+    expect(result.current.items).toEqual([healthy]); expect(result.current.loading).toBe(false);
+    retry.resolve(page([healthy])); await flush(); expect(result.current.items).toEqual([healthy]); expect(result.current.error).toBeNull();
+  });
   it('removes suspended metadata immediately and restores it only after a new authorized read', async () => {
     const scope = makeScope(), target = project(3), healthy = project(4), old = deferred<Response>(), suspended = deferred<Response>();
     const fetch = vi.fn().mockResolvedValueOnce(page([target, healthy])).mockImplementationOnce(() => old.promise)
@@ -88,13 +101,13 @@ describe('configuration Project choices', () => {
     next.resolve(page(items.map(item => ({ ...item })))); await flush();
     expect(result.current.loading).toBe(false); expect(result.current.items).toEqual(items);
   });
-  it('drops cached metadata after permission/read failure without publishing a partial refresh', async () => {
+  it('retains the last complete metadata after a page failure without publishing a partial refresh', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(page([project(3)]))
       .mockResolvedValueOnce(page([project(4)], 'next')).mockResolvedValueOnce(configurationError(403, 'forbidden'));
     vi.stubGlobal('fetch', fetch);
     const { result } = renderHook(() => useConfigurationProjects(true), { wrapper: wrapper(makeScope()) });
     await flush(); expect(result.current.items).toEqual([project(3)]);
-    act(() => result.current.refresh()); await flush(); expect(result.current.items).toEqual([]); expect(result.current.error).toMatchObject({ status: 403 });
+    act(() => result.current.refresh()); await flush(); expect(result.current.items).toEqual([project(3)]); expect(result.current.error).toMatchObject({ status: 403 });
   });
   it('rejects repeated pagination cursors and recovers from the first page', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(page([project(3)], 'repeated')).mockResolvedValueOnce(page([project(4)], 'repeated'))

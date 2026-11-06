@@ -33,6 +33,14 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
+  it('keeps healthy choices editable and reports a failed refresh after withdrawal', () => {
+    const apply = vi.fn(), target = workerId(3), healthy = project(4);
+    renderWithLocale(<ConfigurationProjectsDialog projects={[healthy]} selected={[target]} loading={false} error={new Error('offline')} refresh={vi.fn()} onClose={vi.fn()} onApply={apply} />, { locale: 'en' });
+    expect(screen.getByRole('alert')).toHaveTextContent('Available projects could not be loaded.');
+    expect(screen.queryByText('Project 3')).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Project 4/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' })); expect(apply).toHaveBeenCalledWith([target, healthy.id]);
+  });
   it.each([['en', 'The local project cache could not be checked or cleared.'], ['zh-CN', '无法检查或清理本地项目缓存。']] as const)('shows cache failures in %s while allowing unavailable selections to be removed', (locale, message) => {
     const apply = vi.fn(), id = workerId(3);
     renderWithLocale(<ConfigurationProjectsDialog projects={[]} selected={[id]} loading={false} error={new TaskCacheError('storage')} refresh={vi.fn()} onClose={vi.fn()} onApply={apply} />, { locale });

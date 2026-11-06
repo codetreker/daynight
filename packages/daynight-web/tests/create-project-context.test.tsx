@@ -120,6 +120,114 @@ describe('project creation context', () => {
     view.unmount(); admission.dispose();
   }, 20000);
 
+  it('restores a project from a later inspected page without losing other projects or the form', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const project = (id: string, name: string) => ({ id, name, repoUrl: `git@example.test:${name}.git`, ownership: { teamId: teamA, version: 1 }, settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' });
+    const healthy = project('10000000-0000-4000-8000-000000000037', 'Healthy');
+    const affected = project('10000000-0000-4000-8000-000000000038', 'Restored');
+    const page = (item: ReturnType<typeof project>, nextCursor: string | null) => new Response(JSON.stringify({ items: [item], nextCursor }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    const later = Promise.withResolvers<Response>();
+    let reads = 0;
+    const fetcher = vi.fn((_url: string, options?: RequestInit) => {
+      if (options?.method === 'POST') return Promise.reject(new Error('connection lost'));
+      reads++;
+      if (reads === 4) return later.promise;
+      return Promise.resolve(reads % 2 === 1 ? page(healthy, 'next') : page(affected, null));
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    const input = screen.getByLabelText(/Project name/);
+    fireEvent.change(input, { target: { value: 'Draft name' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:draft.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Check projects' }));
+    const healthyLink = await screen.findByRole('link', { name: 'Healthy' }, { timeout: 10000 });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more projects' }));
+    await screen.findByRole('link', { name: 'Restored' }, { timeout: 10000 });
+    healthyLink.focus();
+    await act(async () => admission.suspendProject(affected.id));
+    expect(screen.queryByRole('link', { name: 'Restored' })).toBeNull();
+    await act(async () => admission.resumeProject(affected.id));
+    await waitFor(() => expect(reads).toBe(4), { timeout: 10000 });
+    expect(screen.getByRole('link', { name: 'Healthy' })).toBe(healthyLink);
+    expect(document.activeElement).toBe(healthyLink);
+    await act(async () => later.resolve(page(affected, null)));
+    await screen.findByRole('link', { name: 'Restored' }, { timeout: 10000 });
+    expect(screen.queryByRole('button', { name: 'Load more projects' })).toBeNull();
+    expect(input).toHaveValue('Draft name');
+    expect(document.activeElement).toBe(healthyLink);
+    view.unmount(); admission.dispose();
+  }, 20000);
+
+  it('keeps continuation usable during an automatic restoration reread', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const project = (id: string, name: string) => ({ id, name, repoUrl: `git@example.test:${name}.git`, ownership: { teamId: teamA, version: 1 }, settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' });
+    const healthy = project('10000000-0000-4000-8000-000000000039', 'Healthy');
+    const affected = project('10000000-0000-4000-8000-000000000040', 'Restored');
+    const added = project('10000000-0000-4000-8000-000000000041', 'Later');
+    const page = (items: ReturnType<typeof project>[], nextCursor: string | null) => new Response(JSON.stringify({ items, nextCursor }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    const pending = Promise.withResolvers<Response>();
+    let reads = 0;
+    vi.stubGlobal('fetch', vi.fn((_url: string, options?: RequestInit) => {
+      if (options?.method === 'POST') return Promise.reject(new Error('connection lost'));
+      reads++;
+      if (reads === 2) return pending.promise;
+      return Promise.resolve(reads === 1 || reads === 4 ? page([healthy, affected], 'next') : page([added], null));
+    }));
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Draft name' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:draft.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Check projects' }));
+    await screen.findByRole('link', { name: 'Restored' }, { timeout: 10000 });
+    await act(async () => admission.suspendProject(affected.id));
+    await act(async () => admission.resumeProject(affected.id));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 10000 });
+    fireEvent.click(screen.getByRole('button', { name: 'Load more projects' }));
+    await screen.findByRole('link', { name: 'Later' }, { timeout: 10000 });
+    await screen.findByRole('link', { name: 'Restored' }, { timeout: 10000 });
+    await act(async () => pending.resolve(page([healthy, affected], 'next')));
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Draft name');
+    expect(reads).toBe(5);
+    view.unmount(); admission.dispose();
+  }, 20000);
+
+  it('resumes an inspected-project restoration when another project is suspended mid-read', async () => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const project = (id: string, name: string) => ({ id, name, repoUrl: `git@example.test:${name}.git`, ownership: { teamId: teamA, version: 1 }, settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' });
+    const first = project('10000000-0000-4000-8000-000000000042', 'Restored');
+    const second = project('10000000-0000-4000-8000-000000000043', 'Withdrawn');
+    const page = (items: ReturnType<typeof project>[]) => new Response(JSON.stringify({ items, nextCursor: null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    const pending = Promise.withResolvers<Response>();
+    let reads = 0;
+    vi.stubGlobal('fetch', vi.fn((_url: string, options?: RequestInit) => {
+      if (options?.method === 'POST') return Promise.reject(new Error('connection lost'));
+      reads++;
+      if (reads === 2) return pending.promise;
+      return Promise.resolve(page(reads === 1 ? [first, second] : [first]));
+    }));
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Draft name' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:draft.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Check projects' }));
+    await screen.findByRole('link', { name: 'Restored' }, { timeout: 10000 });
+    await act(async () => admission.suspendProject(first.id));
+    await act(async () => admission.resumeProject(first.id));
+    await waitFor(() => expect(reads).toBe(2), { timeout: 10000 });
+    await act(async () => admission.suspendProject(second.id));
+    await screen.findByRole('link', { name: 'Restored' }, { timeout: 10000 });
+    expect(screen.queryByRole('link', { name: 'Withdrawn' })).toBeNull();
+    await act(async () => pending.resolve(page([first, second])));
+    expect(screen.queryByRole('link', { name: 'Withdrawn' })).toBeNull();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Draft name');
+    expect(reads).toBe(3);
+    view.unmount(); admission.dispose();
+  }, 20000);
+
   it.each(['same', 'changed'] as const)('holds a successful creation until the %s identity is confirmed', async (outcome) => {
     const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
     const pending = Promise.withResolvers<Awaited<ReturnType<typeof auth.createProject>>>();

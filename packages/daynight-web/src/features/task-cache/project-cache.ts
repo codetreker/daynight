@@ -15,6 +15,7 @@ export type SyncTicket = {
   readonly userId: string; readonly projectId: string; readonly userFence: string;
   readonly cacheGeneration: string; readonly epoch: string | null; readonly maxUpdatedAt: string | null;
   readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean;
+  readonly admissionRevision?: number;
   readonly scopeRevision: number;
 };
 export type CachedProject = TaskProjection & {
@@ -43,7 +44,7 @@ const nextHistory = (manifest: ProjectRecord) => ({ generationAncestors: [manife
 const recoverHistory = (value: ProjectRecord | undefined, userId: string, projectId: string, userFence: string) => {
   if (value === undefined || value.userId !== userId || value.projectId !== projectId || value.userFence !== userFence ||
     typeof value.cacheGeneration !== "string" || canonicalId(value.cacheGeneration) !== value.cacheGeneration) return { generationAncestors: [], unknownAncestors: true };
-  const ancestors = value.generationAncestors ?? [];
+  const ancestors = value.generationAncestors === undefined ? [] : value.generationAncestors;
   if (!Array.isArray(ancestors) || ancestors.some(item => typeof item !== "string" || canonicalId(item) !== item) ||
     new Set(ancestors).size !== ancestors.length || ancestors.includes(value.cacheGeneration) ||
     value.unknownAncestors !== undefined && typeof value.unknownAncestors !== "boolean") return { generationAncestors: [value.cacheGeneration], unknownAncestors: true };
@@ -70,10 +71,13 @@ export class TaskCacheScope {
   private readonly projectionHints = new Set<Promise<void>>();
   private readonly projections = new Map<string, CachedProject>();
   private readonly authorizedProjects = new Set<string>();
+  private readonly admissionRevisions = new Map<string, number>();
+  private readonly onlineGenerations = new Map<string, string>();
   private readonly historyPreviews = new Map<string, SyncTicket>();
   private readonly uncertainHistory = new Map<string, { readonly userFence: string; readonly cacheGeneration: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound: boolean; readonly revision: number; readonly allowedToken: string | null }>();
   private uncertaintyRevision = 0;
   private readonly suspendedProjects = new Set<string>();
+  private readonly pendingUnknownProjects = new Map<string, number>();
   private readonly projectRevisions = new Map<string, number>();
   private readonly pending = new Set<Transaction>();
   // Retired generations also fence results whose transactions committed before access withdrawal.
@@ -171,40 +175,75 @@ export class TaskCacheScope {
     };
   }
   private receiveNegative(projectId: string, userFence: string, generation: string, history: readonly string[] = [], unknownAncestors = false): void {
-    for (const cacheGeneration of new Set([generation, ...history])) {
-      let retired = this.revokedGenerations.get(projectId);
-      if (retired === undefined) { retired = new Set(); this.revokedGenerations.set(projectId, retired); }
-      if (retired.has(cacheGeneration)) continue;
-      // A committed old transaction may not have published yet.
-      retired.add(cacheGeneration);
-      const current = this.projections.get(projectId)?.manifest ?? this.historyPreviews.get(projectId);
-      const ticket = { userId: this.userId, projectId, userFence, cacheGeneration,
-        epoch: current?.epoch ?? null, maxUpdatedAt: current?.maxUpdatedAt ?? null,
-        generationAncestors: cacheGeneration === generation ? history : [], unknownAncestors: cacheGeneration === generation && unknownAncestors, scopeRevision: this.getProjectRevision(projectId) };
-      const uncertainCurrent = current !== undefined && cacheGeneration === generation && unknownAncestors && current.cacheGeneration !== generation &&
-        !(current.generationAncestors ?? []).includes(generation);
-      const currentTicket = uncertainCurrent ? { userId: this.userId, projectId, userFence, cacheGeneration: current.cacheGeneration,
-        epoch: current.epoch, maxUpdatedAt: current.maxUpdatedAt, generationAncestors: current.generationAncestors ?? [], unknownAncestors: current.unknownAncestors === true, scopeRevision: this.getProjectRevision(projectId) } : ticket;
-      const action = current !== undefined && (current.cacheGeneration === cacheGeneration || uncertainCurrent)
-        ? this.revokeProject(currentTicket, this.signal, false, new ApiError("server", 404, "not_found"), false).then(() => {})
-        : Promise.resolve().then(async () => {
-          if (current !== undefined) return;
-          await this.ready(this.signal);
-          const matches = await this.userTransaction(async (transaction, fence) => {
-            const manifest = await this.manifest(transaction, projectId, fence);
-            return fence === userFence && manifest?.cacheGeneration === cacheGeneration;
-          }, this.signal);
-          if (matches) await this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false);
-        });
-      const work = action.catch((error: unknown) => {
-        if (!isAbortError(error)) {
-          this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: cacheGeneration, ...(ticket.unknownAncestors ? { unknownAncestors: true as const } : {}), error });
-          console.warn("Task cache access cleanup failed", { projectId, error_category: error instanceof TaskCacheError ? error.category : "protocol" });
-        }
-      }).finally(() => { this.projectionHints.delete(work); });
-      this.projectionHints.add(work);
-      this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: cacheGeneration, ...(cacheGeneration === generation && unknownAncestors ? { unknownAncestors: true as const } : {}), error: new ApiError("server", 404, "not_found") });
+    let retired = this.revokedGenerations.get(projectId);
+    if (retired === undefined) { retired = new Set(); this.revokedGenerations.set(projectId, retired); }
+    const newlyRetired = [...new Set([generation, ...history])].filter(value => !retired!.has(value));
+    if (newlyRetired.length === 0) return;
+    for (const value of newlyRetired) retired.add(value);
+    const current = this.projections.get(projectId)?.manifest ?? this.historyPreviews.get(projectId);
+    const matchesCurrent = current !== undefined && (current.cacheGeneration === generation || history.includes(current.cacheGeneration));
+    const unknownNotified = unknownAncestors && authRequestsPaused();
+    const provisional = unknownNotified && !matchesCurrent && (current === undefined || !(current.generationAncestors ?? []).includes(generation));
+    if (provisional) {
+      const count = this.pendingUnknownProjects.get(projectId) ?? 0;
+      this.pendingUnknownProjects.set(projectId, count + 1);
+      if (count === 0) this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
     }
+    const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration: generation,
+      epoch: current?.epoch ?? null, maxUpdatedAt: current?.maxUpdatedAt ?? null,
+      generationAncestors: history, unknownAncestors, scopeRevision: this.getProjectRevision(projectId), admissionRevision: this.getAdmissionRevision(projectId) };
+    const releaseProvisional = (): boolean => {
+      if (!provisional) return true;
+      const count = this.pendingUnknownProjects.get(projectId) ?? 0;
+      if (count > 1) { this.pendingUnknownProjects.set(projectId, count - 1); return false; }
+      this.pendingUnknownProjects.delete(projectId); return true;
+    };
+    // Exact generations can be withdrawn immediately. An unknown predecessor is
+    // resolved against durable state before it can affect an incomparable history.
+    const immediate = matchesCurrent
+      ? this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).then(() => {})
+      : Promise.resolve();
+    const action = immediate.then(async () => {
+      if (!unknownAncestors && current !== undefined) return;
+      await this.ready(this.signal);
+      let matches: boolean;
+      try {
+        matches = await this.userTransaction(async (transaction, fence) => {
+          const manifest = await this.manifest(transaction, projectId, fence);
+          return fence === userFence && (manifest?.cacheGeneration === generation ||
+            manifest?.state === "invalidated" && manifest.invalidatedBy === "access" && manifest.generationAncestors?.[0] === generation);
+        }, this.signal);
+      } catch (error) {
+        if (!unknownAncestors || isAbortError(error)) throw error;
+        this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error });
+        releaseProvisional();
+        if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).catch(() => {});
+        throw error;
+      }
+      const released = releaseProvisional();
+      if (!matches) {
+        if (released && provisional) this.emit({ projectId, accessRestored: true });
+        else if (unknownNotified && !provisional) this.emitProjection({ projectId, accessRestored: true });
+        return;
+      }
+      if (unknownAncestors && !unknownNotified) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error: new ApiError("server", 404, "not_found") });
+      if (!matchesCurrent) {
+        const revoked = await this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false);
+        if (!revoked && released && provisional) this.emit({ projectId, accessRestored: true });
+      }
+    });
+    const work = action.catch((error: unknown) => {
+      if (!isAbortError(error)) {
+        for (const value of newlyRetired) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: value, error });
+        console.warn("Task cache access cleanup failed", { projectId, error_category: error instanceof TaskCacheError ? error.category : "protocol" });
+      }
+    }).finally(() => { this.projectionHints.delete(work); });
+    this.projectionHints.add(work);
+    if (unknownNotified) {
+      const event = { projectId, accessRevoked: true as const, scopeSuspended: true as const, revokedGeneration: generation, unknownAncestors: true as const };
+      if (provisional) this.emit(event); else this.emitProjection(event);
+    }
+    for (const value of newlyRetired) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: value, error: new ApiError("server", 404, "not_found") });
   }
   private readonly onIdentityMismatch: () => void;
   private assertLive(signal?: AbortSignal): void {
@@ -250,7 +289,7 @@ export class TaskCacheScope {
         const corrupt = new Set<string>();
         for (const row of rows) {
           if (typeof row.projectId !== "string" || canonicalId(row.projectId) !== row.projectId) continue;
-          const history = row.generationAncestors ?? [];
+          const history = row.generationAncestors === undefined ? [] : row.generationAncestors;
           if (row.userId !== this.userId || row.userFence !== fence || typeof row.cacheGeneration !== "string" || canonicalId(row.cacheGeneration) !== row.cacheGeneration ||
             !Array.isArray(history) || history.some(value => typeof value !== "string" || canonicalId(value) !== value) || new Set(history).size !== history.length || history.includes(row.cacheGeneration) ||
             row.unknownAncestors !== undefined && typeof row.unknownAncestors !== "boolean") corrupt.add(row.projectId);
@@ -261,7 +300,7 @@ export class TaskCacheScope {
       this.projectionFailure = null;
       this.corruptProjectionProjects = corrupt;
       this.projectionSnapshotCorrupt.set(generations, corrupt);
-      this.projectionSnapshotSuspended.set(generations, new Set(this.suspendedProjects));
+      this.projectionSnapshotSuspended.set(generations, new Set([...this.suspendedProjects, ...this.pendingUnknownProjects.keys()]));
       this.projectionSnapshotAncestors.set(generations, histories);
       return generations;
     } catch (error) {
@@ -293,8 +332,8 @@ export class TaskCacheScope {
   }
   get projectionError(): TaskCacheError | null { return this.projectionFailure ?? (this.corruptProjectionProjects.size ? new TaskCacheError("corrupt") : null); }
   get hasGlobalProjectionFailure(): boolean { return this.projectionFailure !== null; }
-  isProjectionDenied(projectId: string): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.has(projectId) || this.deniedProjects.has(projectId) || this.suspendedProjects.has(projectId); }
-  get hasProjectionDenials(): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.size !== 0 || this.deniedProjects.size !== 0 || this.suspendedProjects.size !== 0; }
+  isProjectionDenied(projectId: string): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.has(projectId) || this.deniedProjects.has(projectId) || this.isProjectSuspended(projectId); }
+  get hasProjectionDenials(): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.size !== 0 || this.deniedProjects.size !== 0 || this.suspendedProjects.size !== 0 || this.pendingUnknownProjects.size !== 0; }
   private hint(projectId: string | null): void {
     this.channel?.postMessage({ userId: this.userId, projectId } satisfies Hint);
   }
@@ -332,7 +371,8 @@ export class TaskCacheScope {
     const project = await this.readProject(projectId, this.lifetime.signal);
     if (project === null || project.manifest.userFence !== userFence || project.manifest.cacheGeneration !== cacheGeneration) return;
     const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: project.manifest.epoch,
-      maxUpdatedAt: project.manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
+      maxUpdatedAt: project.manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId), admissionRevision: this.getAdmissionRevision(projectId),
+      generationAncestors: project.manifest.generationAncestors ?? [], unknownAncestors: project.manifest.unknownAncestors === true };
     const matches = await this.sessionHistoryTransaction(ticket, this.lifetime.signal, async store => {
       const row = await store.get([this.userId, projectId, taskId]);
       return row !== undefined && row.userId === this.userId && row.projectId === projectId && row.taskId === taskId &&
@@ -348,7 +388,8 @@ export class TaskCacheScope {
     const project = await this.readProject(projectId, this.lifetime.signal);
     if (project === null || project.manifest.userFence !== userFence || project.manifest.cacheGeneration !== cacheGeneration) return;
     const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: project.manifest.epoch,
-      maxUpdatedAt: project.manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
+      maxUpdatedAt: project.manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId), admissionRevision: this.getAdmissionRevision(projectId),
+      generationAncestors: project.manifest.generationAncestors ?? [], unknownAncestors: project.manifest.unknownAncestors === true };
     const matches = await this.sessionHistoryTransaction(ticket, this.lifetime.signal, async store => {
       const row = await store.get([this.userId, projectId, settlement.taskId]);
       return row !== undefined && row.userId === this.userId && row.projectId === projectId && row.taskId === settlement.taskId &&
@@ -470,7 +511,8 @@ export class TaskCacheScope {
     const observed = this.historyPreviews.get(projectId) ?? this.projections.get(projectId)?.manifest;
     if (observed === undefined || observed.userFence !== userFence || observed.cacheGeneration !== cacheGeneration || this.userFence !== userFence) return;
     const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration, epoch: observed.epoch,
-      maxUpdatedAt: observed.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId) };
+      maxUpdatedAt: observed.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId), admissionRevision: this.getAdmissionRevision(projectId),
+      generationAncestors: observed.generationAncestors ?? [], unknownAncestors: observed.unknownAncestors === true };
     await this.observeHistoryUncertain(ticket, taskId, expectedToken, this.lifetime.signal, unbound, expectedPaginationToken, expectedLeaseExpiresAt);
   }
   private async transaction<T>(work: (transaction: Transaction) => Promise<T>, signal?: AbortSignal, allowInvalidated = false): Promise<T> {
@@ -578,7 +620,7 @@ export class TaskCacheScope {
   }
   private assertProjectGeneration(projectId: string, cacheGeneration: string, signal?: AbortSignal, revision?: number): void {
     this.assertLive(signal);
-    if (this.suspendedProjects.has(projectId) || revision !== undefined && revision !== (this.projectRevisions.get(projectId) ?? 0)) released();
+    if (this.isProjectSuspended(projectId) || revision !== undefined && revision !== (this.projectRevisions.get(projectId) ?? 0)) released();
     if (this.revokedGenerations.get(projectId)?.has(cacheGeneration) === true) released();
   }
   private clearDeniedProject(projectId: string): Promise<void> {
@@ -609,6 +651,8 @@ export class TaskCacheScope {
     if (denied !== undefined && (denied.userFence !== ticket.userFence || denied.cacheGeneration !== ticket.cacheGeneration)) return false;
     const manifest = this.projections.get(ticket.projectId)?.manifest ?? this.historyPreviews.get(ticket.projectId);
     if (manifest === undefined) return true;
+    if (manifest.cacheGeneration !== ticket.cacheGeneration && ticket.admissionRevision !== undefined &&
+      ticket.admissionRevision !== this.getAdmissionRevision(ticket.projectId)) return false;
     return manifest.userFence === ticket.userFence && (manifest.cacheGeneration === ticket.cacheGeneration ||
       (ticket.generationAncestors ?? []).includes(manifest.cacheGeneration) ||
       ticket.unknownAncestors === true && !(manifest.generationAncestors ?? []).includes(ticket.cacheGeneration));
@@ -640,9 +684,10 @@ export class TaskCacheScope {
     projectId = requestId(projectId);
     const scopeRevision = this.projectRevisions.get(projectId) ?? 0;
     await this.ready(signal);
+    await Promise.allSettled([...this.projectionHints]);
     await this.clearDeniedProject(projectId);
     try {
-      return await this.userTransaction(async (transaction, userFence) => {
+      const ticket = await this.userTransaction(async (transaction, userFence) => {
         let manifest = await this.manifest(transaction, projectId, userFence);
         if (manifest === undefined) {
           manifest = invalidated(this.userId, projectId, userFence);
@@ -652,6 +697,7 @@ export class TaskCacheScope {
         return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt,
           generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true, scopeRevision };
       }, signal);
+      return { ...ticket, admissionRevision: this.getAdmissionRevision(projectId) };
     } catch (error) {
       if (!(error instanceof TaskCacheError) || error.category !== "corrupt") throw error;
       console.warn("Task cache rebuild", { projectId, error_category: "corrupt" });
@@ -718,6 +764,10 @@ export class TaskCacheScope {
         const next = response.assigneeVersions[index]!;
         return person.userId !== next.userId || person.version !== next.version || person.hasProjectAccess !== next.hasProjectAccess;
       });
+    if (!this.authorizedProjects.has(ticket.projectId) || this.onlineGenerations.get(ticket.projectId) !== result.manifest.cacheGeneration) {
+      this.admissionRevisions.set(ticket.projectId, this.getAdmissionRevision(ticket.projectId) + 1);
+      this.onlineGenerations.set(ticket.projectId, result.manifest.cacheGeneration);
+    }
     this.authorizedProjects.add(ticket.projectId);
     const project = this.materialize(result.manifest, result.tasks, response.assigneeVersions);
     if (result.changed) this.hint(ticket.projectId);
@@ -866,6 +916,7 @@ export class TaskCacheScope {
     return result;
   }
   getProjectRevision(projectId: string): number { return this.projectRevisions.get(projectId) ?? 0; }
+  getAdmissionRevision(projectId: string): number { return this.admissionRevisions.get(projectId) ?? 0; }
   getObservedHistoryTicket(projectId: string): SyncTicket | null {
     projectId = requestId(projectId);
     if (this.isInvalidated || authRequestsPaused() || !this.canPreviewProject(projectId)) return null;
@@ -873,11 +924,11 @@ export class TaskCacheScope {
     const manifest = project?.manifest;
     if (manifest !== undefined && manifest.userFence === this.userFence) return { userId: this.userId, projectId, userFence: manifest.userFence,
       cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt, scopeRevision: this.getProjectRevision(projectId),
-      generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true };
+      generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true, admissionRevision: this.getAdmissionRevision(projectId) };
     const preview = this.historyPreviews.get(projectId);
     return preview !== undefined && preview.userFence === this.userFence && preview.scopeRevision === this.getProjectRevision(projectId) ? preview : null;
   }
-  isProjectSuspended(projectId: string): boolean { return this.suspendedProjects.has(projectId); }
+  isProjectSuspended(projectId: string): boolean { return this.suspendedProjects.has(projectId) || this.pendingUnknownProjects.has(projectId); }
   suspendProject(projectId: string): void {
     projectId = requestId(projectId);
     if (this.isInvalidated) return;
@@ -899,11 +950,11 @@ export class TaskCacheScope {
   canPreviewProject(projectId: string): boolean {
     this.assertLive();
     // A surviving replacement generation cannot undo this scope's observed access withdrawal.
-    return !this.suspendedProjects.has(projectId) && (!this.withdrawnProjects.has(projectId) || this.authorizedProjects.has(projectId));
+    return !this.isProjectSuspended(projectId) && (!this.withdrawnProjects.has(projectId) || this.authorizedProjects.has(projectId));
   }
   getAuthorizedProject(projectId: string): CachedProject | null {
     this.assertLive();
-    return !this.suspendedProjects.has(projectId) && this.authorizedProjects.has(projectId) ? this.projections.get(projectId) ?? null : null;
+    return !this.isProjectSuspended(projectId) && this.authorizedProjects.has(projectId) ? this.projections.get(projectId) ?? null : null;
   }
   private async clearProjectRows(transaction: Transaction, projectId: string, includeProfiles = false): Promise<void> {
     const stores = includeProfiles ? ["summaries", "details", "profiles", "sessionHistory"] as const : ["summaries", "details", "sessionHistory"] as const;

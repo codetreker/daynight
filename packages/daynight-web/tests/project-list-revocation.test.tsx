@@ -89,5 +89,74 @@ it('withdraws a suspended project and refreshes it after access is restored with
   await act(async () => scope.resumeProject(lost.id));
   await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
   expect(screen.getByRole('heading', { name: 'Healthy project' })).toBe(retained);
+  expect(screen.getAllByRole('listitem').map(item => item.querySelector('h2')?.textContent)).toEqual(['Lost project', 'Healthy project']);
+  view.unmount(); scope.dispose();
+}, 20000);
+
+it('rechecks all loaded pages on access restoration and preserves unrelated focus', async () => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const second = Promise.withResolvers<Response>();
+  const added = project('10000000-0000-4000-8000-000000000023', 'New project');
+  const fetcher = vi.fn().mockResolvedValueOnce(page([healthy], 'next')).mockResolvedValueOnce(page([lost]))
+    .mockResolvedValueOnce(page([healthy], 'next')).mockReturnValueOnce(second.promise).mockResolvedValueOnce(page([added]));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(<ProjectsProvider admission={scope}><ProjectsPage /></ProjectsProvider>);
+  const heading = await screen.findByRole('heading', { name: 'Healthy project' }, { timeout: 10000 });
+  fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  const link = heading.closest('a')!; link.focus();
+  await act(async () => scope.suspendProject(lost.id));
+  expect(screen.queryByRole('heading', { name: 'Lost project' })).toBeNull();
+  await act(async () => scope.resumeProject(lost.id));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4), { timeout: 10000 });
+  expect(screen.getByRole('heading', { name: 'Healthy project' })).toBe(heading);
+  expect(document.activeElement).toBe(link);
+  await act(async () => second.resolve(page([lost], 'third')));
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  expect(screen.getByRole('button', { name: '加载更多' })).toBeTruthy();
+  expect(document.activeElement).toBe(link);
+  fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+  await screen.findByRole('heading', { name: 'New project' }, { timeout: 10000 });
+  expect(String(fetcher.mock.calls[4]?.[0])).toContain('cursor=third');
+  view.unmount(); scope.dispose();
+}, 20000);
+
+it('keeps loading more usable while a restoration reread is pending', async () => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const pending = Promise.withResolvers<Response>();
+  const added = project('10000000-0000-4000-8000-000000000024', 'Later project');
+  const fetcher = vi.fn().mockResolvedValueOnce(page([healthy, lost], 'next')).mockReturnValueOnce(pending.promise)
+    .mockResolvedValueOnce(page([added])).mockResolvedValueOnce(page([healthy, lost], 'next')).mockResolvedValueOnce(page([added]));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(<ProjectsProvider admission={scope}><ProjectsPage /></ProjectsProvider>);
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  await act(async () => scope.suspendProject(lost.id));
+  await act(async () => scope.resumeProject(lost.id));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2), { timeout: 10000 });
+  fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+  await screen.findByRole('heading', { name: 'Later project' }, { timeout: 10000 });
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  await act(async () => pending.resolve(page([healthy, lost], 'next')));
+  expect(screen.getByRole('heading', { name: 'Healthy project' })).toBeTruthy();
+  expect(fetcher).toHaveBeenCalledTimes(5);
+  view.unmount(); scope.dispose();
+}, 20000);
+
+it('resumes an access restoration after another project is withdrawn during its read', async () => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const pending = Promise.withResolvers<Response>();
+  const fetcher = vi.fn().mockResolvedValueOnce(page([lost, healthy])).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(page([lost]));
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(<ProjectsProvider admission={scope}><ProjectsPage /></ProjectsProvider>);
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  await act(async () => scope.suspendProject(lost.id));
+  await act(async () => scope.resumeProject(lost.id));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2), { timeout: 10000 });
+  await act(async () => scope.suspendProject(healthy.id));
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  expect(screen.queryByRole('heading', { name: 'Healthy project' })).toBeNull();
+  await act(async () => pending.resolve(page([lost, healthy])));
+  expect(screen.queryByRole('heading', { name: 'Healthy project' })).toBeNull();
+  expect(fetcher).toHaveBeenCalledTimes(3);
   view.unmount(); scope.dispose();
 }, 20000);
