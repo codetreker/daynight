@@ -65,10 +65,10 @@ func RegisterBotTools(e *Entry, bots botOperations, relay botDeletion) error {
 		byName[tool.Name] = tool
 	}
 	h := &botTools{bots: bots, relay: relay}
-	if err := RegisterTypedTool(e, byName["bot_list"], BudgetLarge, h.list, "cursor"); err != nil {
+	if err := registerTypedReadTool(e, byName["bot_list"], BudgetLarge, h.list, "cursor"); err != nil {
 		return err
 	}
-	if err := RegisterTypedTool(e, byName["bot_show"], BudgetLarge, h.show, "botId"); err != nil {
+	if err := registerTypedReadTool(e, byName["bot_show"], BudgetLarge, h.show, "botId"); err != nil {
 		return err
 	}
 	if err := RegisterTypedTool(e, byName["bot_create"], BudgetLarge, h.create, "name", "workerId", "cwd", "agent", "requestId"); err != nil {

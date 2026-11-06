@@ -406,3 +406,35 @@ func TestBotShowPreservesBusinessRefusal(t *testing.T) {
 		t.Fatalf("show refusal: %+v calls=%d id=%s", failure, ops.readCalls, ops.readID)
 	}
 }
+
+func TestBotReadErrorsDoNotClaimWriteOutcome(t *testing.T) {
+	for _, outcome := range []store.TransactionOutcome{store.TransactionNotCommitted, store.TransactionUnknown} {
+		for _, name := range []string{"bot_list", "bot_show"} {
+			t.Run(name+"/"+string(outcome), func(t *testing.T) {
+				fixture := newEntryFixture(t)
+				ops := &fakeBotOperations{err: &store.TransactionError{Phase: "operation", Outcome: outcome, Cause: errors.New("snapshot failed")}}
+				if err := RegisterBotTools(fixture.entry, ops, &fakeBotDeletion{}); err != nil {
+					t.Fatal(err)
+				}
+				client := fixture.client(t, "2026-07-28", "alice")
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				args := map[string]any{}
+				if name == "bot_show" {
+					args["botId"] = botTestID
+				}
+				result, err := client.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
+				if err != nil || !result.IsError {
+					t.Fatalf("read: %+v %v", result, err)
+				}
+				failure := object(t, structured(t, result)["error"])
+				if _, present := failure["writeOutcome"]; present {
+					t.Fatalf("snapshot reported a write: %+v", failure)
+				}
+				if name == "bot_show" && ops.readCalls != 1 || name == "bot_list" && ops.listCalls != 1 {
+					t.Fatalf("wrong service calls: %+v", ops)
+				}
+			})
+		}
+	}
+}
