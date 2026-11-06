@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
@@ -107,5 +109,37 @@ func TestStepsHTTPRejectsCorruptStorage(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "body-sentinel-must-not-log") || strings.Contains(logs.String(), "SELECT ") {
 		t.Fatal("storage failure logs exposed row or SQL content")
+	}
+}
+
+func TestStepsHTTPReadPreservesEveryStateAndTimestamp(t *testing.T) {
+	database, handler, task := stepsHTTPFixture(t, io.Discard)
+	stamp := time.Date(2026, 11, 3, 10, 11, 12, 123456000, time.UTC)
+	rows := []api.TaskStep{
+		{ID: "abcdef01", Title: "  <同名&> 😀 \x1b[31m\n", Description: "# 完整 Markdown\n<>& \"\\\r\n\u2028\u2029", Status: "done", CreatedAt: stamp, UpdatedAt: stamp.Add(time.Hour)},
+		{ID: "00000000", Title: "\uFEFF", Description: "", Status: "todo", CreatedAt: stamp.Add(time.Microsecond), UpdatedAt: stamp.Add(time.Microsecond)},
+		{ID: "fedcba98", Title: "same", Description: "third", Status: "skipped", CreatedAt: stamp.Add(time.Second), UpdatedAt: stamp.Add(time.Second)},
+		{ID: "11111111", Title: "same", Description: "fourth", Status: "in_progress", CreatedAt: stamp.Add(2 * time.Second), UpdatedAt: stamp.Add(2 * time.Second)},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for position, step := range rows {
+		if _, err := database.Pool.Exec(ctx, `INSERT INTO task_steps(task_id,id,position,title,description,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, task.ID, step.ID, position, step.Title, step.Description, string(step.Status), step.CreatedAt, step.UpdatedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const version int64 = 9007199254740993
+	if _, err := database.Pool.Exec(ctx, `UPDATE tasks SET version=$1 WHERE id=$2`, version, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/projects/" + strings.ToUpper(task.ProjectID) + "/tasks/" + strings.ToUpper(task.ID) + "/steps"
+	response := projectRequest(handler, "GET", path, "")
+	resource := decodeResponse[api.StepsResource](t, response, 200)
+	if resource.ProjectID != task.ProjectID || resource.TaskID != task.ID || resource.Version != version || !reflect.DeepEqual(resource.Steps, rows) || !bytes.Contains(response.Body.Bytes(), []byte(`"version":9007199254740993`)) {
+		t.Fatalf("complete seeded collection: %+v", resource)
+	}
+	item := decodeResponse[api.StepResource](t, projectRequest(handler, "GET", path+"/ABCDEF01", ""), 200)
+	if item.ProjectID != task.ProjectID || item.TaskID != task.ID || item.Version != version || item.Step != rows[0] {
+		t.Fatalf("complete scoped item: %+v", item)
 	}
 }

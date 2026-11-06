@@ -156,7 +156,7 @@ func (p *persistenceProcess) stop() error {
 func processPersistenceDecode[T any](t *testing.T, response *http.Response, data []byte, status int) T {
 	t.Helper()
 	if response.StatusCode != status {
-		t.Fatalf("HTTP %s %s: %d %s", response.Request.Method, response.Request.URL.Path, response.StatusCode, data)
+		t.Fatalf("HTTP %s %s: got %d, want %d", response.Request.Method, response.Request.URL.Path, response.StatusCode, status)
 	}
 	var result T
 	if err := json.Unmarshal(data, &result); err != nil {
@@ -189,6 +189,8 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	process := startPersistenceProcess(t, values)
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, values["DAYNIGHT_PUBLIC_ORIGIN"], "alice")
+	memberBrowser := testauth.Browser(t)
+	testauth.Login(t, memberBrowser, values["DAYNIGHT_PUBLIC_ORIGIN"], "bob")
 	token := testauth.CreatePAT(t, browser, values["DAYNIGHT_PUBLIC_ORIGIN"])
 	browser.CloseIdleConnections()
 	client := &http.Client{Timeout: 5 * time.Second, Transport: bearerTransport{token: token, next: http.DefaultTransport}}
@@ -221,11 +223,92 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		}
 		return request(method, path, "application/json", data)
 	}
+	browserRequest := func(browser *http.Client, method, path string, input any) (*http.Response, []byte) {
+		t.Helper()
+		var data []byte
+		if input != nil {
+			var err error
+			data, err = json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		req, err := http.NewRequest(method, values["DAYNIGHT_PUBLIC_ORIGIN"]+path, bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if input != nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", values["DAYNIGHT_PUBLIC_ORIGIN"])
+		}
+		response, err := browser.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if err != nil || closeErr != nil {
+			t.Fatalf("read browser response: %v, close: %v", err, closeErr)
+		}
+		return response, body
+	}
+	readBrowserUser := func(browser *http.Client) api.User {
+		t.Helper()
+		response, body := browserRequest(browser, http.MethodGet, "/api/v1/me", nil)
+		return processPersistenceDecode[api.User](t, response, body, http.StatusOK)
+	}
+	aliceBefore, bobBefore := readBrowserUser(browser), readBrowserUser(memberBrowser)
+	if aliceBefore.ID == bobBefore.ID {
+		t.Fatal("fixture sessions do not represent distinct users")
+	}
 	response, body := request(http.MethodGet, "/api/v1/me", "", nil)
 	user := processPersistenceDecode[api.User](t, response, body, http.StatusOK)
 	response, body = jsonRequest(http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Restart persistence", RepoURL: "https://example.com/restart", ExpectedUserID: user.ID})
 	project := processPersistenceDecode[api.Project](t, response, body, http.StatusCreated)
 	projectPath := "/api/v1/projects/" + project.ID
+	if user.ID != aliceBefore.ID {
+		t.Fatal("PAT and browser belong to different users")
+	}
+	invite := func() api.CreatedProjectInvitation {
+		t.Helper()
+		response, body := jsonRequest(http.MethodPost, projectPath+"/invitations", api.ProjectInvitationMutationRequest{ExpectedUserID: user.ID})
+		return processPersistenceDecode[api.CreatedProjectInvitation](t, response, body, http.StatusCreated)
+	}
+	tokenFrom := func(invitation api.CreatedProjectInvitation) string {
+		t.Helper()
+		link, err := url.Parse(invitation.Link)
+		if err != nil || link.Fragment == "" {
+			t.Fatal("invitation omitted its token")
+		}
+		return link.Fragment
+	}
+	joinedInvite := invite()
+	response, body = browserRequest(memberBrowser, http.MethodPost, "/api/v1/invitations/accept", api.AcceptProjectInvitationRequest{Token: tokenFrom(joinedInvite), ExpectedUserID: bobBefore.ID})
+	joined := processPersistenceDecode[api.ProjectInvitationAcceptance](t, response, body, http.StatusOK)
+	if !joined.Joined || !joined.Consumed || joined.DirectGrant.UserID != bobBefore.ID || joined.DirectGrant.Role != "member" {
+		t.Fatalf("member fixture: %+v", joined)
+	}
+	pending := invite()
+	pendingToken := tokenFrom(pending)
+	readMembers := func() api.ProjectParticipantList {
+		t.Helper()
+		response, body := request(http.MethodGet, projectPath+"/members", "", nil)
+		return processPersistenceDecode[api.ProjectParticipantList](t, response, body, http.StatusOK)
+	}
+	readInvitations := func() api.ProjectInvitationList {
+		t.Helper()
+		response, body := request(http.MethodGet, projectPath+"/invitations", "", nil)
+		return processPersistenceDecode[api.ProjectInvitationList](t, response, body, http.StatusOK)
+	}
+	inspectPending := func() api.ProjectInvitationInspection {
+		t.Helper()
+		response, body := browserRequest(memberBrowser, http.MethodPost, "/api/v1/invitations/inspect", api.InspectProjectInvitationRequest{Token: pendingToken})
+		return processPersistenceDecode[api.ProjectInvitationInspection](t, response, body, http.StatusOK)
+	}
+	membersBefore, invitationsBefore, inspectionBefore := readMembers(), readInvitations(), inspectPending()
+	if len(membersBefore.Items) != 2 || len(invitationsBefore.Items) != 1 || invitationsBefore.Items[0].ID != pending.ID || invitationsBefore.Items[0].ConsumedAt != nil || inspectionBefore.ProjectID != project.ID {
+		t.Fatalf("membership or pending invitation fixture incomplete: members=%+v invitations=%+v inspection=%+v", membersBefore, invitationsBefore, inspectionBefore)
+	}
 	response, body = jsonRequest(http.MethodPatch, projectPath+"/settings", api.UpdateProjectSettingsRequest{Version: project.Settings.Version, ExecutionWarningMinutes: 90})
 	processPersistenceDecode[api.Project](t, response, body, http.StatusOK)
 	createTask := func(title, description string, dependencies, external []string) api.Task {
@@ -272,6 +355,19 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		}
 	}
 	checkReferences(target)
+	stepsPath := projectPath + "/tasks/" + target.ID + "/steps"
+	for _, input := range []map[string]any{
+		{"id": "abcdef01", "title": "Review evidence", "description": "First\n中文", "status": "in_progress"},
+		{"id": "00000000", "title": "Follow-up", "description": "Second", "status": "todo"},
+	} {
+		input["version"] = target.Version
+		response, body = jsonRequest(http.MethodPost, stepsPath, input)
+		resource := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusCreated)
+		if resource.Version != target.Version+1 {
+			t.Fatalf("Step creation did not advance parent version: %+v", resource)
+		}
+		target.Version = resource.Version
+	}
 	attachmentPath := projectPath + "/tasks/" + target.ID + "/attachments/files/nested/data.bin"
 	content := []byte{0, 1, 255, 13, 10, 'a'}
 	response, body = request(http.MethodPut, attachmentPath, "application/octet-stream", content)
@@ -305,12 +401,22 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	project = readProject()
 	first, second, target, completed = readTask(first.ID), readTask(second.ID), readTask(target.ID), readTask(completed.ID)
 	checkReferences(target)
+	response, body = request(http.MethodGet, stepsPath, "", nil)
+	stepsBefore := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
+	if stepsBefore.Version != exact || len(stepsBefore.Steps) != 2 || stepsBefore.Steps[0].ID != "abcdef01" || stepsBefore.Steps[0].Title != "Review evidence" || stepsBefore.Steps[0].Description != "First\n中文" || stepsBefore.Steps[0].Status != "in_progress" || stepsBefore.Steps[1].ID != "00000000" || stepsBefore.Steps[1].Title != "Follow-up" || stepsBefore.Steps[1].Description != "Second" || stepsBefore.Steps[1].Status != "todo" {
+		t.Fatalf("persisted Steps fixture: %+v", stepsBefore)
+	}
+	if actual := readTask(target.ID); !reflect.DeepEqual(actual, target) {
+		t.Fatalf("Steps read changed parent before restart: %+v", actual)
+	}
 	graph, attachments := readGraph(), readAttachments()
 	if project.Settings.Version != exact || project.Settings.ExecutionWarningMinutes != 90 || target.Version != exact || first.Version != math.MaxInt64 || first.Description != "Persistent description" || first.Status != "done" || second.Status != "todo" || target.Ready || !reflect.DeepEqual(target.ExternalDependsOn, []string{second.ID}) || len(target.DependsOn) != 2 || !slices.Contains(target.DependsOn, first.ID) || !slices.Contains(target.DependsOn, second.ID) || len(attachments.Items) != 1 || attachments.Items[0].Path != "nested/data.bin" || attachments.Items[0].ContentType != "application/octet-stream" || attachments.Items[0].SizeBytes != int64(len(content)) || graph.Project != project || graph.ObservedAt.IsZero() || !slices.ContainsFunc(graph.Tasks, func(item api.GraphTask) bool {
 		return item.ID == target.ID && reflect.DeepEqual(item.ExternalDependsOn, []string{second.ID})
 	}) {
 		t.Fatalf("persistence fixture incomplete: project=%#v first=%#v second=%#v target=%#v attachments=%#v", project, first, second, target, attachments)
 	}
+	browser.CloseIdleConnections()
+	memberBrowser.CloseIdleConnections()
 	if err := process.stop(); err != nil {
 		t.Fatalf("first process did not stop cleanly: %v; %s", err, process.logs.String())
 	}
@@ -322,6 +428,21 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		t.Fatalf("stopped process retained database connections: %d %v", connections, err)
 	}
 	process = startPersistenceProcess(t, values)
+	if actual := readBrowserUser(browser); !reflect.DeepEqual(actual, aliceBefore) {
+		t.Fatalf("Alice session changed across restart: %+v", actual)
+	}
+	if actual := readBrowserUser(memberBrowser); !reflect.DeepEqual(actual, bobBefore) {
+		t.Fatalf("Bob session changed across restart: %+v", actual)
+	}
+	if actual := readMembers(); !reflect.DeepEqual(actual, membersBefore) {
+		t.Fatalf("project membership changed across restart: %+v", actual)
+	}
+	if actual := inspectPending(); !reflect.DeepEqual(actual, inspectionBefore) {
+		t.Fatalf("pending invitation inspection changed across restart: %+v", actual)
+	}
+	if actual := readInvitations(); !reflect.DeepEqual(actual, invitationsBefore) {
+		t.Fatalf("pending invitation changed or was consumed: %+v", actual)
+	}
 	if actual := readProject(); !reflect.DeepEqual(actual, project) {
 		t.Fatalf("project changed across restart: %#v", actual)
 	}
@@ -333,6 +454,14 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		if before.ID == target.ID {
 			checkReferences(actual)
 		}
+	}
+	response, body = request(http.MethodGet, stepsPath, "", nil)
+	stepsAfter := processPersistenceDecode[api.StepsResource](t, response, body, http.StatusOK)
+	if !reflect.DeepEqual(stepsAfter, stepsBefore) {
+		t.Fatalf("Steps changed across restart: before=%+v after=%+v", stepsBefore, stepsAfter)
+	}
+	if actual := readTask(target.ID); !reflect.DeepEqual(actual, target) {
+		t.Fatalf("Steps read changed parent after restart: %+v", actual)
 	}
 	if actual := readAttachments(); !reflect.DeepEqual(actual, attachments) {
 		t.Fatalf("attachment metadata changed across restart: %#v", actual)

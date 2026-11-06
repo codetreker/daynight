@@ -602,12 +602,12 @@ results and invokes `go-cov` v0.1.4 with the checked-in configuration. Its
 package and function thresholds are 85% and 80%; production packages, files and
 functions are not excluded. `critical_blocks.fail` is false, so the check does
 not analyze or fail on critical blocks. The raw `coverage.out` profile passes
-an exact statement comparison strictly greater than 90%; exactly 90% fails. The check
-selects all listed production packages for `-coverpkg`, so a module test also
-attributes its calls to other production
-packages. Tests and their database state require the isolated PostgreSQL instance;
-preparation failures fail validation. The check limits package concurrency to two:
-schema-isolated fixtures still share the database-wide migration advisory lock.
+an exact statement comparison strictly greater than 90%; exactly 90% fails.
+The check selects all listed production packages for `-coverpkg`, so a module
+test also attributes its calls to other production packages. Tests and their
+database state require the isolated PostgreSQL instance; preparation failures
+fail validation. The check limits package concurrency to two: schema-isolated
+fixtures still share the database-wide migration advisory lock.
 
 `scripts/env.sh` places Go tools, caches and temporary outputs under this
 module's `.tmp/`. The `verify-server` CI job uses its own PostgreSQL service,

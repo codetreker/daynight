@@ -30,8 +30,10 @@ cases.
 Shared scenario bodies have one owner. Root composition and domain protocol
 tests remain separate when they exercise different state preparation,
 observations or dependencies. The [server validation guide](../../../../packages/daynight-server/README.md#http-scenario-ownership)
-owns the test layout; production behavior, package discovery, race policy and
-coverage gates remain unchanged.
+owns the test layout. Consolidation retained the production behavior, package
+discovery, race policy and coverage gates in force at that time. The
+[Go module coverage decision](2026-11-06-go-module-coverage-boundary.md)
+describes the current check.
 
 ## Alternatives
 
