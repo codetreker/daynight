@@ -15,11 +15,11 @@
 | `GET /api/v1/me/workers/{workerId}/readonly/channel` | Worker 以 PAT 建立 WebSocket |
 | `POST /api/v1/me/workers/{workerId}/readonly/requests` | 所有者提交有界查询，HTTP 请求保持到结果或失败 |
 
-Worker 首帧为 `{type:"hello",protocol,capabilityGeneration,operations:["directory.list"]}`，其中能力代次为 UUID。服务端生成连接 UUID 并返回 `ready`，其身份字段为 `ownerUserId`、`workerId`、`connectionId`、`capabilityGeneration` 和 `protocol`。
+Worker 首帧为 `{type:"hello",protocol,capabilityGeneration,operations:["directory.list","model.list"]}`，其中能力代次为 UUID。旧 Worker 可只声明目录操作；服务端保存连接声明的操作，未声明的查询返回 unsupported。服务端生成连接 UUID 并返回 `ready`，其身份字段为 `ownerUserId`、`workerId`、`connectionId`、`capabilityGeneration` 和 `protocol`。
 
 HTTP 请求包含 UUID `requestId`、`operation:"directory.list"`、`input`。目录输入的 `path`、`filter`、`showHidden`、`cursor`、`limit` 均可省略；`null` 不等同省略。默认值分别为 Worker cwd、空筛选、false、第一页和 100 项。路径最多 4,096 UTF-8 字节，筛选最多 256 字节，游标最多 4,096 字节。
 
-服务端转发 `type:"request"`，附上全部身份字段、原请求字段和 `timeoutMs:10000`。Worker 的 `type:"result"` 保留同一身份及请求 ID，并且恰好包含以下之一：
+服务端转发 `type:"request"`，附上全部身份字段、原请求字段和按操作确定的 `timeoutMs`：目录为 10000，模型为 30000。Worker 的 `type:"result"` 保留同一身份及请求 ID，并且恰好包含以下之一：
 
 - `result:{path,parentPath,entries:[{name,path}],nextCursor}`；父目录与游标可以为 `null`。
 - `error:{code,message}`；错误码见需求，消息不包含原生异常或凭证。
@@ -30,7 +30,7 @@ HTTP 请求包含 UUID `requestId`、`operation:"directory.list"`、`input`。�
 
 服务端按 `(ownerUserId,workerId)` 保存进程内连接。新的连接替换旧连接并使其所有待处理请求失败。Worker 每次重连都生成新能力代次；结果必须完整匹配当前连接。凭证定期复核和 ping 每 5 秒进行，握手最多 10 秒，Worker 在 30 秒内未收到帧或 ping 时重连。
 
-HTTP 入口从正文读取开始计入 10 秒期限和并发容量，正文读取最多 5 秒，响应写入另受 15 秒 socket 期限约束。转发操作使用独立的截止时间上下文，HTTP 响应保留调用方原上下文，使操作超时后仍能返回 HTTP 504 和 `timeout` 错误正文。调用方已断开时不交付结果。单个请求在权限复核时取消或超时，只结束该请求；不能将调用方上下文错误作为 Worker 凭证失效证据而关闭共享连接。每个连接最多接受 4,096 个不同请求 ID；已结束或取消的 ID 不可复用，耗尽后重新连接。
+HTTP 入口从正文读取开始计入操作期限和并发容量：目录为 10 秒，模型为 30 秒。正文读取最多 5 秒，响应写入另受目录 15 秒、模型 35 秒的 socket 期限约束。转发操作使用独立的截止时间上下文，HTTP 响应保留调用方原上下文，使操作超时后仍能返回 HTTP 504 和 `timeout` 错误正文。调用方已断开时不交付结果。单个请求在权限复核时取消或超时，只结束该请求；不能将调用方上下文错误作为 Worker 凭证失效证据而关闭共享连接。每个连接最多接受 4,096 个不同请求 ID；已结束或取消的 ID 不可复用，耗尽后重新连接。
 
 HTTP 查询没有跨实例结果存储或跨服务实例转发。部署多个服务实例时，Worker 和查询必须路由至同一实例；没有本实例连接时不能宣称已经连接或返回其它机器目录。进程重启后能力必须重新握手，不从旧运行记录推测仍在线。
 
@@ -42,7 +42,7 @@ Node 文件系统调用没有可依赖的原生取消机制。浏览器在超时
 
 Web 的 `api/worker-readonly.ts` 提供 `requestWorkerReadonly` 与 `browseWorkerDirectory`，校验响应用户、Worker、请求 ID、身份字段和容量。账号认证代次改变或调用方 AbortSignal 取消时拒绝返回结果。调用方切换 Worker 或关闭浏览页时必须取消原 signal；可附加当前表单代次判断。只读操作不自动重试。
 
-CLI 的 `WorkerReadOnlyOperations` 是类型化操作扩展点。增加模型发现时应新增明确的输入/输出校验与有界执行器，并更新协议能力，不接受任意命令字符串。目录 UI 与模型具体选项不属于本通道。
+CLI 的 `WorkerReadOnlyOperations` 是类型化操作扩展点。[模型发现](worker-model-discovery.md)拥有 `model.list` 的输入、结果、原生探测和分页快照；通道不接受任意命令字符串。Go 保存待处理请求的操作和 Provider，据此校验返回值；不能将任意已认证结果当作目录或模型结果。Web 的 `discoverWorkerModels` 同样保留信封并复核 Provider。目录 UI 与模型具体选项不属于通道的通用机制。
 
 ## 验证入口
 

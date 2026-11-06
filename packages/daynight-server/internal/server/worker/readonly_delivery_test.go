@@ -136,12 +136,12 @@ func TestReadOnlyResultJSONRejectsInvalidAndOversizedMessages(t *testing.T) {
 	for _, result := range []json.RawMessage{json.RawMessage(`{`), json.RawMessage(strings.Repeat(" ", ro.MaxResultBytes+1))} {
 		invalid := message
 		invalid.Result = result
-		if raw, err := readOnlyResultJSON(invalid); err == nil || raw != nil {
+		if raw, err := readOnlyResultJSON(invalid, "directory.list"); err == nil || raw != nil {
 			t.Fatal("invalid directory payload was encoded")
 		}
 	}
 	message.OwnerUserID = strings.Repeat("a", ro.MaxWireBytes)
-	if raw, err := readOnlyResultJSON(message); err == nil || raw != nil {
+	if raw, err := readOnlyResultJSON(message, "directory.list"); err == nil || raw != nil {
 		t.Fatal("oversized response envelope was encoded")
 	}
 }
