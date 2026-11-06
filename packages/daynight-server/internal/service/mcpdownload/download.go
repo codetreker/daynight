@@ -17,7 +17,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	transfer "github.com/codetreker/daynight/packages/daynight-server/internal/core/mcptransfer"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 )
 
 const MaxChunkBytes = 512 << 10
@@ -170,6 +172,21 @@ func (s *Service) inline(ctx context.Context, a mcptransfer.Actor, in Input) (ma
 	data := map[string]any{"attachment": wireAttachment(metadata), "sizeBytes": strconv.Itoa(len(b))}
 	return encode(data, in, b, true)
 }
+
+// A failed transaction can carry an earlier not-found cause; only a
+// confirmed refusal may select the missing-snapshot fallback.
+func confirmedMissing(err error) bool {
+	fault, known := operation.KnownFault(err)
+	return known && fault.Code == "not_found" && errors.Is(err, model.ErrNotFound)
+}
+
+// A later successful observation cannot repair unconfirmed transaction cleanup.
+func unsafeCompletion(err error) bool {
+	facts := operation.CompletionFacts(err)
+	return facts.CleanupFailed || (facts.Outcome != "" && facts.Outcome != store.TransactionNotCommitted) ||
+		(facts.Phase != "" && (facts.Phase != "operation" || facts.Outcome != store.TransactionNotCommitted))
+}
+
 func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input, admitContent func(context.Context) error) (result map[string]any, resultErr error) {
 	binding := mcptransfer.Binding{ID: in.TransferID, Direction: "download", ProjectID: in.ProjectID, TaskID: in.TaskID, Path: in.Path}
 	existing, lookupErr := s.lifecycle.LookupBound(ctx, a, in.TransferID)
@@ -177,7 +194,7 @@ func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input, admit
 		return s.existingOpen(ctx, a, binding, existing)
 	}
 	if lookupErr != nil {
-		if !errors.Is(lookupErr, model.ErrNotFound) {
+		if !confirmedMissing(lookupErr) {
 			return nil, lookupErr
 		}
 		if admitContent != nil {
@@ -190,8 +207,11 @@ func (s *Service) open(ctx context.Context, a mcptransfer.Actor, in Input, admit
 			err = source.Body.Close()
 		}
 		if err != nil {
+			if unsafeCompletion(err) {
+				return nil, err
+			}
 			_, recheckErr := s.lifecycle.LookupBound(ctx, a, in.TransferID)
-			if errors.Is(recheckErr, model.ErrNotFound) {
+			if confirmedMissing(recheckErr) {
 				return nil, err
 			}
 			if recheckErr != nil {
@@ -294,6 +314,12 @@ func (s *Service) existingOpen(ctx context.Context, a mcptransfer.Actor, binding
 // revoked caller cannot learn whether a path or oversized metadata exists.
 func (s *Service) source(ctx context.Context, a mcptransfer.Actor, in Input) (model.Attachment, filestorage.Object, error) {
 	metadata, obj, openErr := s.attachments.OpenBounded(ctx, a.Principal, in.ProjectID, in.TaskID, in.Path, MaxContentTypeBytes)
+	if unsafeCompletion(openErr) {
+		if obj.Body != nil {
+			openErr = errors.Join(openErr, obj.Body.Close())
+		}
+		return model.Attachment{}, filestorage.Object{}, openErr
+	}
 	if err := s.lifecycle.Authorize(ctx, a, in.ProjectID, in.TaskID); err != nil {
 		if obj.Body != nil {
 			_ = obj.Body.Close()

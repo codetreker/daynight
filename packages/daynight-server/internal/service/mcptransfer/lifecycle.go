@@ -177,7 +177,7 @@ func (s *Lifecycle) Authorize(ctx context.Context, a Actor, projectID, taskID st
 		return ErrConflict
 	}
 	return s.transaction(ctx, func(d store.PrivateTransferDAO) error {
-		return d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, projectID, taskID)
+		return projectcore.LookupError(d.Authorize(ctx, a.Principal, a.AuthorityKind, a.AuthorityID, projectID, taskID))
 	})
 }
 
