@@ -346,7 +346,7 @@ paths are rejected explicitly. Close and expiry reclaim only the private snapsho
 Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
-property values use `valueText`. Task and Step reads default to marked, bounded
+property values use `valueText`. Task and Step reads default to marked
 summaries; request `full` for complete content. Step page cursors bind the parent
 version and reject
 continuation after a change. Step writes return confirmed version and change facts
@@ -364,10 +364,19 @@ and continuation past that item are not yet available.
 Task list excludes done tasks by default and orders in-progress, ready, blocked
 and done tasks before paging. Its cursor binds the caller, project, filters and
 view to a snapshot fence; `list_changed` requires restarting traversal when
-project task versions change. Graphs retain their node and edge limits. When a
-full ready result exceeds the response budget, continuation uses `task_list`,
-whose full projection omits descriptions; use `task_show` with `view: full` to
-read those complete Tasks. The continuation identifies this difference.
+project task versions change. Graphs retain their node and edge limits.
+
+`task_ready` returns the first matching ready Tasks ordered by creation time and
+UUID. Its `limit` defaults to 5 and accepts 1 through 20; permission and platform
+filters apply before the limit. Each call reads the current first batch without
+pagination. The result contains `items` and `projection`, with no `nextCursor` or
+`next` continuation. It does not calculate a response byte budget or shorten the
+batch based on encoded size. The default `summary` contains marked title previews
+and selection fields; `view: full` returns complete Tasks, including descriptions
+and properties. The shared MCP response limit and resource admission still apply.
+To traverse all ready tasks, use `task_list` with `ready: true`; its full list
+projection omits descriptions. Read current complete Tasks separately through
+`task_show` with `view: full`. These separate reads do not share the list's fence.
 
 OAuth grant families store only hashes of access and refresh secrets. Initial
 issuance and revocation participate in the caller's transaction; access lasts at
