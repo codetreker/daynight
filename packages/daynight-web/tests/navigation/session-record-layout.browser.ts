@@ -4,7 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 import type { SessionArchive } from '../../../daynight/src/session/archive';
 import type { SessionHistoryItem } from '../../src/api/terminal-sessions';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import type { TaskSessionSnapshot } from '../helpers/session';
 import { stringifyWireJson } from '../helpers/wireJson';
 
@@ -47,7 +47,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const failure = (status: number) => send({ error: { code: status === 403 ? 'permission_denied' : 'internal', message: 'Fixture read rejected', requestId: source.sessionId } }, status);
     if (path === '/api/v1/me') { state.identityReads++; if (state.holdIdentity) await state.holdIdentity; return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
@@ -56,7 +56,7 @@ async function install(page: Page, scenario: Scenario = 'completed', locale = 'e
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/members`) return send({ items: [], nextCursor: null, actorAccess: directAccessFixture(projectId) });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
-    if (path === root) return send(detail);
+    if (path === root) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `${root}/sessions`) { state.historyReads++; if (state.holdHistory) await state.holdHistory; if (state.historyError) return failure(state.historyError); return send({ items: state.items, nextCursor: null }); }
     if (scenario === 'herdr') {
       const registration = v2('valid-registration', url.origin), owner = registration.payload.owner;
