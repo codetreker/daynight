@@ -85,6 +85,7 @@ export const searchTasks = async (projectId: string, query: string, filters: Tas
     source = await response.text(); body = JSON.parse(source); signal.throwIfAborted();
     if (!response.ok) throw searchError(body, source, response.status, query);
     if (response.status !== 200) return malformed();
+    record(body);
     integerSource(jsonObjectSources(source), 'total');
     return parseTaskSearchPage(body, project, { ...filters, assignedTo: assignedTo ?? '' }, userId);
   } catch (error) {

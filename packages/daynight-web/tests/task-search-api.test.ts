@@ -46,3 +46,19 @@ it('correlates the response request ID without exposing the query in the URL', a
   await searchTasks(project, 'private query', filters, null, new AbortController().signal, admission, { requestId: 'cycle-id', onResponseId });
   expect(fetch.mock.calls[0]![0]).not.toContain('private'); expect(fetch.mock.calls[0]![1].headers['X-Request-ID']).toBe('cycle-id'); expect(onResponseId).toHaveBeenCalledWith('observed-id');
 });
+it('rejects non-object success and error bodies without scanning them as JSON objects', async () => {
+  for (const body of ['[0]', '[]', 'null', 'true', '0', '"text"']) {
+    for (const status of [200, 400]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(body, status)));
+      await expect(read()).rejects.toMatchObject({ kind: 'protocol' });
+    }
+  }
+  for (const body of [
+    '{"error":[0]}',
+    '{"error":{"code":"invalid_search_expression","message":"bad","requestId":"request","details":[0]}}',
+    '{"error":{"code":"search_context_limit_exceeded","message":"bad","requestId":"request","details":[0]}}',
+  ]) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(body, 400)));
+    await expect(read()).rejects.toMatchObject({ kind: 'protocol' });
+  }
+});
