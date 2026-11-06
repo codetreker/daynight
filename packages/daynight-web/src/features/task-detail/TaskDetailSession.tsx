@@ -1363,6 +1363,13 @@ export class TaskDetailSessions {
       const committedVersion = operation.version + (changed ? 1n : 0n);
       const signal = this.scope.signal;
       let ticket: ReadTicket | null = null;
+      // Verification can retire the owner while a known write outcome is in flight.
+      const settleRetired = (error: unknown): boolean => {
+        if (!this.retiredMutations.has(operation)) return false;
+        if (!submitted) this.expireMutationReview(projectId, taskId, operation);
+        else this.finishRetiredMutation(operation, confirmed, error, committedVersion);
+        return true;
+      };
       try {
         if (review.receipt !== null) ticket = review.receipt.fence;
         else {
@@ -1407,8 +1414,9 @@ export class TaskDetailSessions {
           }, () => !submitted);
           if (response === null) return;
           await this.runMutationStage(projectId, taskId, operation, async () => {
-            if (this.retiredMutations.has(operation)) { this.finishRetiredMutation(operation, confirmed, null, committedVersion); return; }
-            if ("historyGeneration" in requestTicket && !await this.scope.verifyTaskRead(requestTicket, signal)) return;
+            if (settleRetired(null)) return;
+            const current = !("historyGeneration" in requestTicket) || await this.scope.verifyTaskRead(requestTicket, signal);
+            if (settleRetired(null) || !current) return;
             if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, committedVersion)) return;
             const result = response.value;
             const expected = operation.action === "stepPosition" ? moved : operation.action === "stepDelete" ? previousSteps!.steps.filter((step) => step.id !== operation.stepId) : previousSteps!.steps;
@@ -1442,8 +1450,9 @@ export class TaskDetailSessions {
           }, () => !submitted);
           if (response === null) return;
           await this.runMutationStage(projectId, taskId, operation, async () => {
-            if (this.retiredMutations.has(operation)) { this.finishRetiredMutation(operation, confirmed, null, committedVersion); return; }
-            if ("historyGeneration" in requestTicket && !await this.scope.verifyTaskRead(requestTicket, signal)) return;
+            if (settleRetired(null)) return;
+            const current = !("historyGeneration" in requestTicket) || await this.scope.verifyTaskRead(requestTicket, signal);
+            if (settleRetired(null) || !current) return;
             if (this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, committedVersion)) this.markDeleted(projectId, taskId, this.entryGeneration(entry)!, null);
           });
           return;
@@ -1467,8 +1476,9 @@ export class TaskDetailSessions {
         if (response === null) return;
         const detail = response.value;
         await this.runMutationStage(projectId, taskId, operation, async () => {
-          if (this.retiredMutations.has(operation)) { this.finishRetiredMutation(operation, confirmed, null, committedVersion); return; }
-          if ("historyGeneration" in requestTicket && !await this.scope.verifyTaskRead(requestTicket, signal)) return;
+          if (settleRetired(null)) return;
+          const current = !("historyGeneration" in requestTicket) || await this.scope.verifyTaskRead(requestTicket, signal);
+          if (settleRetired(null) || !current) return;
           if (!this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, committedVersion)) return;
           if (confirmed) entry.committedVersion = committedVersion;
           if (this.disposed) {
@@ -1507,11 +1517,7 @@ export class TaskDetailSessions {
         });
       } catch (error) {
         if (this.scope.isInvalidated) return;
-        if (this.retiredMutations.has(operation)) {
-          if (!submitted) this.expireMutationReview(projectId, taskId, operation);
-          else this.finishRetiredMutation(operation, confirmed, error, committedVersion);
-          return;
-        }
+        if (settleRetired(error)) return;
         if (!isStepOperation(operation) && ticket !== null && "historyGeneration" in ticket && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" &&
           this.scope.isTaskReadCurrent(ticket, true) && entry.openingGeneration === ticket.openingSequence) {
           entry.receipt = null; entry.liveVersion = null; entry.withdrawn = true;
@@ -1523,8 +1529,14 @@ export class TaskDetailSessions {
         }
         if (ticket !== null && "historyGeneration" in ticket && !(error instanceof ApiError && error.kind === "server" && (error.status === 404 || error.status === 410))) {
           if (error instanceof TaskCacheError && error.category === "storage") { this.failDirectFence(entry, operation, error, submitted, confirmed, committedVersion); return; }
-          try { if (!await this.scope.verifyTaskRead(ticket, signal)) return; }
-          catch (failure) { if (failure instanceof TaskCacheError && failure.category === "storage") this.failDirectFence(entry, operation, failure, submitted, confirmed, committedVersion); return; }
+          try {
+            const current = await this.scope.verifyTaskRead(ticket, signal);
+            if (settleRetired(error) || !current) return;
+          } catch (failure) {
+            if (settleRetired(error)) return;
+            if (failure instanceof TaskCacheError && failure.category === "storage") this.failDirectFence(entry, operation, failure, submitted, confirmed, committedVersion);
+            return;
+          }
         }
         if (isStepOperation(operation)) {
           await this.runMutationStage(projectId, taskId, operation, async () => {

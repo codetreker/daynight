@@ -673,6 +673,65 @@ it("settles a submitted Step write while closed without locking its next opening
   reopenSteps(); reopen();
 });
 
+it.each([
+  ["status", false], ["step", false], ["delete", false], ["refused", false], ["unknown", false],
+  ["status", true], ["unknown", true],
+] as const)("settles a %s outcome transferred during post-response history verification (throws: %s)", async (kind, throws) => {
+  const { sessions, scope } = world();
+  // This graph read began before the direct opening and may return an old epoch.
+  const delayedGraph = await scope.beginSync(project, signal());
+  const verification = deferred<void>(); const recovery = deferred<Response>();
+  let verifying = false; let held = false; let writes = 0; let recovering = false;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  const changedParent = { ...body(2n), status: "in_progress", ready: false, startedAt: "2026-10-22T10:00:00Z" };
+  const currentParent = () => kind === "status" ? changedParent : body(kind === "step" ? 2n : 1n);
+  const currentSteps = () => ({ projectId: project, taskId: task, version: kind === "step" && writes ? 2n : 1n, steps: [{ ...step, status: kind === "step" && writes ? "done" : "todo" }] });
+  const deleted = () => response({ error: { code: "task_deleted", message: "Deleted", requestId: "deleted" } }, epoch, 410);
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "PUT" || init.method === "DELETE") {
+      writes++;
+      if (kind === "delete") return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(TEST_VIEWER_ID) }));
+      if (kind === "refused" || kind === "unknown") return Promise.resolve(response({ error: { code: kind === "refused" ? "forbidden" : "internal_error", message: "Failed", requestId: "write" } }, null, kind === "refused" ? 403 : 500));
+      return Promise.resolve(response(kind === "step" ? currentSteps() : changedParent));
+    }
+    if (url.endsWith("/steps")) return Promise.resolve(response(currentSteps()));
+    if (recovering) { recovering = false; return recovery.promise; }
+    return Promise.resolve(kind === "delete" && writes ? deleted() : response(writes ? currentParent() : body()));
+  }));
+  sessions.openDirect(project, task);
+  await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  const unsubscribeSteps = kind === "step" ? sessions.subscribeSteps(project, task, () => {}) : () => {};
+  if (kind === "step") { sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true)); }
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, "verifyTaskRead").mockImplementation(async (ticket, abortSignal) => {
+    if (writes && !held) { held = true; verifying = true; await verification.promise; if (throws) throw new Error("verification failed"); }
+    return verify(ticket, abortSignal);
+  });
+  if (kind === "step") sessions.setStepStatus(project, task, step.id, "done", 1n);
+  else if (kind === "delete") sessions.deleteTask(project, task, 1n, false);
+  else sessions.setStatus(project, task, "in_progress", 1n);
+  await waitFor(() => expect(verifying).toBe(true));
+  expect(writes).toBe(1);
+  recovering = true;
+  expect(await scope.observeHistory(delayedGraph, replacement, signal())).toBe("confirm");
+  const retired = (sessions as unknown as { retiredMutations: Map<unknown, { phase: string }> }).retiredMutations;
+  await waitFor(() => expect([...retired.values()]).toMatchObject([{ phase: "pending" }]));
+  const confirmation = await scope.beginTaskRead(project, task, 1, 1, signal());
+  expect(await scope.observeHistory(confirmation, epoch, signal())).toBe("current");
+  verification.resolve();
+  recovery.resolve(kind === "delete" ? deleted() : response(currentParent()));
+  await waitFor(() => expect(retired.size).toBe(0));
+  if (kind === "delete") {
+    await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("deleted"));
+  } else {
+    await waitFor(() => expect(sessions.snapshot(project, task)).toMatchObject({ status: "ready", requiresFreshRead: false }));
+    expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
+    if (kind === "step") await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  }
+  expect(writes).toBe(1);
+  unsubscribeSteps();
+});
+
 it("does not persist or admit a same-version detail from a replacement history against the old graph", async () => {
   const { sessions, scope } = world(); const ticket = await scope.beginSync(project, signal());
   const graph = graphFixture([body()]);
