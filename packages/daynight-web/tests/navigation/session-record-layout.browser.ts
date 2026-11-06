@@ -4,7 +4,7 @@ import type { SessionArchive } from '../../../daynight/src/session/archive';
 import { sessionFence } from '../../../daynight/src/session/protocol';
 import type { SessionHistoryItem } from '../../src/api/terminal-sessions';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
-import { directAccessFixture, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
+import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import type { TaskSessionSnapshot } from '../helpers/session';
 import { stringifyWireJson } from '../helpers/wireJson';
 import { navigateNativeSelect } from '../e2e/native-select';
@@ -38,14 +38,14 @@ const install = async (page: Page) => {
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
-    if (path === root) return send(detail);
+    if (path === root) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `${root}/sessions`) {
       state.reads++; if (state.hold) await state.hold;
       if (state.fail) return send({ error: { code: 'internal', message: 'History unavailable', requestId: source.sessionId } }, 503);
