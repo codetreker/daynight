@@ -11,7 +11,7 @@ import { useTaskDetail } from '../src/features/task-detail/useTaskDetail';
 import { TaskSessionHost } from '../src/features/task-agent-session/TaskSessionHost';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { detailFixture, resourceResponse } from './helpers/taskDetail';
-import { TEST_VIEWER_ID } from './helpers/taskSync';
+import { fixtureTaskEpoch, TEST_VIEWER_ID } from './helpers/taskSync';
 
 vi.mock('../src/api/terminal-sessions', async original => ({ ...await original<typeof import('../src/api/terminal-sessions')>(), createTerminalSessionApi: vi.fn() }));
 vi.mock('../src/features/task-agent-session/TerminalSessionView', () => ({ TerminalSessionView: ({ current }: { current: boolean }) => <span data-testid="live-session-current">{String(current)}</span> }));
@@ -29,24 +29,22 @@ function recording(): SessionV2Archive {
     index: entries.map((entry, i) => ({ fileId: `${file.fileId}-${i}`, segmentId: segment.segmentId, frameSeq: String(i + 1), firstElapsedMs: entry.time, lastElapsedMs: entry.time })), gaps: [] };
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-function setup() {
+function setup(completed = false, live = false) {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const fetcher = vi.fn(async () => resourceResponse(detailFixture(projectId, taskId), TEST_VIEWER_ID)); vi.stubGlobal('fetch', fetcher);
   const api = { history: vi.fn(async () => ({ items: [item], nextCursor: null })), archive: vi.fn(async () => ({ status: { payload: { state: 'ready' } }, archive: recording() })), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
+  if (completed) api.current.mockResolvedValue({ status: 'registered', ...item } as never);
   vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
   let rerenderChecking!: (value: boolean) => void;
   function Harness() {
     const [, setChecking] = useState(false); rerenderChecking = setChecking;
     const task = useTaskDetail(projectId, taskId, { kind: 'direct' });
-    return <TaskSessionHost projectId={projectId} taskId={taskId} claimId={claimId} mode="herdr" active current={task.sessionCurrent} direct />;
+    return <TaskSessionHost projectId={projectId} taskId={taskId} {...(completed || live ? { claimId, mode: 'herdr' as const, completed } : {})} active current={task.sessionCurrent} direct />;
   }
   const view = render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Harness /></TaskDetailSessionProvider></TaskCacheProvider>);
   return { scope, api, fetcher, view, setChecking: (value: boolean) => rerenderChecking(value) };
 }
 async function openRecording() {
-  const select = await screen.findByRole('combobox', { name: 'Execution record' });
-  await waitFor(() => expect(within(select).getAllByRole('option')).toHaveLength(2));
-  fireEvent.change(select, { target: { value: item.sessionId } });
   await screen.findByText('First frame');
   fireEvent.click(screen.getByRole('button', { name: 'Next frame' }));
   expect(screen.getByText('Second frame')).toBeVisible();
@@ -58,11 +56,9 @@ it('retains the selected fullscreen recording and playback position through a sa
   const { scope, api, fetcher, view, setChecking } = setup(); let resume: (() => void) | undefined;
   try {
     await openRecording(); expect(api.archive).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('live-session-current')).toHaveTextContent('true');
     const requests = fetcher.mock.calls.length; const histories = api.history.mock.calls.length;
     act(() => { resume = pauseAuthRequests(); setChecking(true); });
     expect(screen.getByRole('button', { name: 'Exit Session fullscreen' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('live-session-current')).toHaveTextContent('false');
     expect(screen.getByText('Second frame')).toBeVisible(); expect(screen.getByRole('combobox', { name: 'Text size' })).toHaveValue('150');
     const refresh = within(screen.getByRole('region', { name: 'Session recording' }).parentElement!).getByRole('button', { name: 'Refresh' });
     expect(refresh).toBeDisabled(); fireEvent.click(refresh);
@@ -70,10 +66,39 @@ it('retains the selected fullscreen recording and playback position through a sa
     expect(api.archive).toHaveBeenCalledTimes(1); expect(api.history).toHaveBeenCalledTimes(histories); expect(api.command).not.toHaveBeenCalled(); expect(fetcher).toHaveBeenCalledTimes(requests);
     act(() => { resume?.(); resume = undefined; setChecking(false); });
     expect(screen.getByRole('button', { name: 'Exit Session fullscreen' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('live-session-current')).toHaveTextContent('true');
     expect(screen.getByText('Second frame')).toBeVisible(); expect(screen.getByRole('combobox', { name: 'Text size' })).toHaveValue('150');
-    expect(api.archive).toHaveBeenCalledTimes(1);
   } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it('gates the live Session through same-account identity verification', async () => {
+  const { scope, api, view, setChecking } = setup(false, true); let resume: (() => void) | undefined;
+  try {
+    await waitFor(() => expect(screen.getByTestId('live-session-current')).toHaveTextContent('true'));
+    act(() => { resume = pauseAuthRequests(); setChecking(true); });
+    expect(screen.getByTestId('live-session-current')).toHaveTextContent('false');
+    expect(api.history).not.toHaveBeenCalled(); expect(api.command).not.toHaveBeenCalled();
+    act(() => { resume?.(); resume = undefined; setChecking(false); });
+    expect(screen.getByTestId('live-session-current')).toHaveTextContent('true');
+  } finally { resume?.(); view.unmount(); scope.dispose(); }
+});
+it('revalidates a completed direct claim after a peer history denial before restoring its recording', async () => {
+  const { scope, api, view } = setup(true);
+  let finish!: (value: { status: 'registered' } & typeof item) => void;
+  try {
+    expect(await screen.findByText('First frame')).toBeVisible();
+    expect(api.history).not.toHaveBeenCalled();
+    api.current.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }) as never);
+    const signal = new AbortController().signal;
+    const fence = await scope.beginTaskRead(projectId, taskId, 0, 0, signal);
+    await act(async () => { expect(scope.reportDirectSessionDenied(fence, fixtureTaskEpoch(projectId))).toBe(true); });
+    expect(await screen.findByRole('alert')).toBeVisible();
+    expect(screen.queryByText('First frame')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(api.current).toHaveBeenCalledTimes(2));
+    expect(api.history).toHaveBeenCalledOnce();
+    expect(screen.queryByText('First frame')).toBeNull();
+    await act(async () => finish({ status: 'registered', ...item }));
+    expect(await screen.findByText('First frame')).toBeVisible();
+  } finally { view.unmount(); scope.dispose(); }
 });
 it.each(['access', 'identity'] as const)('withdraws the selected fullscreen recording on %s retirement during an identity check', async retirement => {
   const { scope, view, setChecking } = setup(); let resume: (() => void) | undefined;
@@ -89,9 +114,6 @@ it('defers a recording response already in flight until the same account is veri
   const { scope, api, view, setChecking } = setup(); let resume: (() => void) | undefined; let finish!: (value: Awaited<ReturnType<typeof api.archive>>) => void;
   api.archive.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   try {
-    const select = await screen.findByRole('combobox', { name: 'Execution record' });
-    await waitFor(() => expect(within(select).getAllByRole('option')).toHaveLength(2));
-    fireEvent.change(select, { target: { value: item.sessionId } });
     await waitFor(() => expect(api.archive).toHaveBeenCalledOnce());
     act(() => { resume = pauseAuthRequests(); setChecking(true); });
     await act(async () => finish({ status: { payload: { state: 'ready' } }, archive: recording() }));

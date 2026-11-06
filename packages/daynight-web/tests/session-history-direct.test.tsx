@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -8,8 +8,9 @@ import { wireResponse } from './helpers/wireJson';
 import { createTerminalSessionApi, type SessionHistoryItem } from '../src/api/terminal-sessions';
 import { ApiError, pauseAuthRequests } from '../src/api/client';
 import { createTaskCacheScope, TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
+import { TaskCacheLifecycleChanged } from '../src/features/task-cache/project-cache';
 import { TaskDetailSessionProvider, useTaskDetailSessions, TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
-import { ManagedSessionRecords } from '../src/features/task-agent-session/TaskSessionHost';
+import { ManagedSessionRecords, useTaskSessionRecords } from '../src/features/task-agent-session/TaskSessionHost';
 import { beginSessionHistoryRefresh, clearSessionHistory, readCachedSessionHistory, readSessionHistoryOwnership, saveSessionHistory } from '../src/features/task-agent-session/session-history-cache';
 
 vi.mock('../src/api/terminal-sessions', async (original) => ({ ...(await original<typeof import('../src/api/terminal-sessions')>()), createTerminalSessionApi: vi.fn() }));
@@ -43,6 +44,104 @@ it('loads and paginates live records without a project manifest', async () => {
   expect(scope.getAuthorizedProject(projectId)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Load earlier records' }));
   await waitFor(() => expect(screen.getAllByRole('button', { name: /Herdr/ })).toHaveLength(2));
+  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'next']);
+});
+
+it('discovers the newest direct recording after empty history pages without a project manifest', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  const api = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [] as SessionHistoryItem[], nextCursor: null as string | null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
+  api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' }).mockResolvedValueOnce({ items: [item], nextCursor: null });
+  vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
+  function AutomaticRecords() {
+    const sessions = useTaskDetailSessions();
+    useEffect(() => { sessions.openDirect(projectId, taskId); return () => sessions.releaseRead(projectId, taskId); }, [sessions]);
+    const history = useTaskSessionRecords(projectId, taskId, true, true);
+    return <span>{history.items[0]?.sessionId ?? (history.confirmedEmpty ? 'empty' : 'loading')}</span>;
+  }
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><AutomaticRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  expect(await screen.findByText(item.sessionId)).toBeVisible();
+  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'next']);
+  expect(scope.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it('rejects a repeated cursor while discovering direct Session records', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  const api = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [] as SessionHistoryItem[], nextCursor: 'repeat' as string | null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
+  vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
+  function AutomaticRecords() {
+    const sessions = useTaskDetailSessions();
+    useEffect(() => { sessions.openDirect(projectId, taskId); return () => sessions.releaseRead(projectId, taskId); }, [sessions]);
+    const history = useTaskSessionRecords(projectId, taskId, true, true);
+    return <span>{history.error instanceof ApiError && history.error.kind === 'protocol' ? 'protocol error' : 'loading'}</span>;
+  }
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><AutomaticRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  expect(await screen.findByText('protocol error')).toBeVisible();
+  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'repeat']);
+});
+
+it('retains the direct history response through a rapidly completed identity check', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  let finish!: (value: { items: SessionHistoryItem[]; nextCursor: null }) => void;
+  const api = { history: vi.fn((_cursor: string | null, _signal: AbortSignal) => new Promise<{ items: SessionHistoryItem[]; nextCursor: null }>(resolve => { finish = resolve; })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
+  vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
+  function AutomaticRecords() {
+    const sessions = useTaskDetailSessions();
+    useEffect(() => { sessions.openDirect(projectId, taskId); return () => sessions.releaseRead(projectId, taskId); }, [sessions]);
+    const history = useTaskSessionRecords(projectId, taskId, true, true);
+    return <span>{history.items[0]?.sessionId ?? 'loading'}</span>;
+  }
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><AutomaticRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  await waitFor(() => expect(api.history).toHaveBeenCalledOnce());
+  const verify = scope.verifyTaskRead.bind(scope);
+  vi.spyOn(scope, 'verifyTaskRead').mockImplementationOnce(async () => {
+    const resume = pauseAuthRequests(); resume(); throw new TaskCacheLifecycleChanged();
+  }).mockImplementation(verify);
+  await act(async () => finish({ items: [item], nextCursor: null }));
+  expect(await screen.findByText(item.sessionId)).toBeVisible();
+  expect(api.history).toHaveBeenCalledOnce();
+});
+
+it('keeps one recovered direct history owner when a claim starts on the attachments tab', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  const api = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal): Promise<{ items: SessionHistoryItem[]; nextCursor: null }> => ({ items: [second], nextCursor: null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
+  api.history.mockRejectedValueOnce(new ApiError('server', 403));
+  vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
+  function SwitchingRecords() {
+    const sessions = useTaskDetailSessions(); const [claimed, setClaimed] = useState(false);
+    useEffect(() => { sessions.openDirect(projectId, taskId); return () => sessions.releaseRead(projectId, taskId); }, [sessions]);
+    const attachmentsActive = true;
+    const shared = useTaskSessionRecords(projectId, taskId, !claimed || attachmentsActive, true, !claimed);
+    return <><button onClick={() => setClaimed(true)}>Start claim</button><ManagedSessionRecords projectId={projectId} taskId={taskId} active direct records={shared}>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords></>;
+  }
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><SwitchingRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  expect(await screen.findByRole('alert')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  expect(await screen.findByRole('button', { name: /2026-11-02/ })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Start claim' }));
+  expect(screen.getByRole('button', { name: /2026-11-02/ })).toBeVisible();
+  expect(screen.queryByRole('alert')).toBeNull();
+  await waitFor(() => expect(api.history).toHaveBeenCalledTimes(3));
+});
+
+it('keeps an empty direct attachments page with a claim available for manual pagination', async () => {
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  vi.stubGlobal('fetch', vi.fn(async () => wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) })));
+  const api = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [] as SessionHistoryItem[], nextCursor: null as string | null })), archive: vi.fn(), current: vi.fn(), channel: vi.fn(), command: vi.fn() };
+  api.history.mockResolvedValueOnce({ items: [], nextCursor: 'next' }).mockResolvedValueOnce({ items: [item], nextCursor: null });
+  vi.mocked(createTerminalSessionApi).mockReturnValue(api as never);
+  function ClaimedRecords() {
+    const sessions = useTaskDetailSessions();
+    useEffect(() => { sessions.openDirect(projectId, taskId); return () => sessions.releaseRead(projectId, taskId); }, [sessions]);
+    const shared = useTaskSessionRecords(projectId, taskId, true, true, false);
+    return <ManagedSessionRecords projectId={projectId} taskId={taskId} active direct records={shared}>{slots => <>{slots.sidebar}{slots.preview}</>}</ManagedSessionRecords>;
+  }
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><ClaimedRecords /></TaskDetailSessionProvider></TaskCacheProvider>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Load earlier records' }));
+  expect(await screen.findByRole('button', { name: /Herdr/ })).toBeVisible();
   expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'next']);
 });
 

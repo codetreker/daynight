@@ -1,137 +1,220 @@
 import { readFileSync } from 'node:fs';
-import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
+import { createHash } from 'node:crypto';
+import { expect, test, type Page } from '@playwright/test';
 import type { SessionArchive } from '../../../daynight/src/session/archive';
-import { sessionFence } from '../../../daynight/src/session/protocol';
 import type { SessionHistoryItem } from '../../src/api/terminal-sessions';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import type { TaskSessionSnapshot } from '../helpers/session';
 import { stringifyWireJson } from '../helpers/wireJson';
-import { navigateNativeSelect } from '../helpers/native-select';
 
 test.use({ hasTouch: true });
-
 const source: TaskSessionSnapshot = JSON.parse(readFileSync(new URL('../../../daynight/test/session/fixtures/snapshot.json', import.meta.url), 'utf8'));
 const projectId = source.identity.projectId, taskId = source.identity.taskId;
 const root = `/api/v1/projects/${projectId}/tasks/${taskId}`;
+const v2 = (name: string, origin: string) => {
+  let raw = readFileSync(new URL(`../../../daynight/test/session/fixtures/v2/${name}.json`, import.meta.url), 'utf8');
+  const replacements = [source.identity.projectId, source.identity.taskId, source.identity.workerId, source.identity.worktreeId, TEST_VIEWER_ID, source.sessionId, source.claimId];
+  for (let index = 0; index < replacements.length; index++) raw = raw.replaceAll(`00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, replacements[index]!);
+  return JSON.parse(raw.replaceAll('https://daynight.cc', origin));
+};
 const personalId = '00000000-0000-4000-8000-000000000701';
 const time = '2026-11-04T10:00:00Z';
-const snapshot: TaskSessionSnapshot = { ...source, lifecycle: 'archived', connectionState: 'disconnected', lastEventSeq: '0', operations: { canSend: false, canCancel: false, canRespond: false } };
-const archive = (sessionId: string): SessionArchive => ({ schemaVersion: 1, ...sessionFence(snapshot), sessionId,
-  controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId,
-  provider: snapshot.identity.provider, nativeSessionId: snapshot.identity.nativeSessionId,
-  entries: [{ entryId: '00000009-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: `Saved conversation ${sessionId}` }] }], resources: [], });
+const savedText = (id: string) => `Saved conversation ${id}`;
 const archiveStatus = { state: 'ready', sha256: 'a'.repeat(64), byteLength: '100', errorCode: null };
 const record: SessionHistoryItem = { sessionId: source.sessionId, claimId: source.claimId, executionGeneration: source.executionGeneration,
   agentControlMode: 'web', contentKind: 'native_timeline', createdAt: time, endedAt: time,
   archive: { state: 'ready', sha256: archiveStatus.sha256, byteLength: '100', completeness: null } };
-const older = { ...record, sessionId: '00000016-1111-4111-8111-111111111111', createdAt: '2026-11-03T09:30:00Z' };
-const toolbar = (page: Page) => page.locator('.task-session-host > .terminal-host-toolbar');
-const rectangle = (element: Locator) => element.evaluate(node => { const { x, y, width, height } = node.getBoundingClientRect(); return { x, y, width, height }; });
-const install = async (page: Page) => {
-  const worker = { claimId: source.claimId, state: 'completed', userId: TEST_VIEWER_ID, workerId: source.identity.workerId,
-    machine: { id: source.identity.controllerId, name: 'Layout fixture' }, platform: 'macos', agent: 'codex', agentControlMode: 'web',
-    worktreeId: source.identity.worktreeId, phase: 'completing', herdr: null, nativeSessionId: 'native-thread', claimedAt: time };
-  const detail = detailFixture(projectId, taskId, { title: 'Session recording layout', status: 'done', ready: false, completedAt: time, properties: { worker } });
-  const graph = graphFixture([detail]);
-  const state = { reads: 0, more: false, fail: false, hold: null as Promise<void> | null, writes: [] as string[] };
-  await page.route('**/api/v1/**', async (route: Route) => {
+// A newer timestamp belongs to another claim and must never replace the current claim.
+const other = { ...record, sessionId: '00000016-1111-4111-8111-111111111111', claimId: '00000017-1111-4111-8111-111111111111', createdAt: '2026-11-05T09:30:00Z' };
+type Scenario = 'completed' | 'working' | 'starting' | 'empty' | 'history' | 'herdr';
+type Presentation = 'page' | 'dialog' | 'fullscreen';
+async function install(page: Page, scenario: Scenario = 'completed', locale = 'en') {
+  const completed = scenario === 'completed' || scenario === 'herdr';
+  const snapshot: TaskSessionSnapshot = { ...source, lifecycle: completed ? 'archived' : 'active', connectionState: completed ? 'disconnected' : 'connected', lastEventSeq: '0', lastTimelineSeq: '30', activity: completed ? 'idle' : 'working', currentTurnId: completed ? null : 'turn', operations: { canSend: !completed, canCancel: !completed, canRespond: false } };
+  const worker = { claimId: source.claimId, state: completed ? 'completed' : 'active', userId: TEST_VIEWER_ID, workerId: source.identity.workerId,
+    machine: { id: source.identity.controllerId, name: 'Lifecycle fixture' }, platform: 'macos', agent: 'codex', agentControlMode: scenario === 'herdr' ? 'herdr' : 'web',
+    worktreeId: source.identity.worktreeId, phase: completed ? 'completing' : 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: time };
+  let detail = detailFixture(projectId, taskId, { title: 'Session lifecycle acceptance', status: completed ? 'done' : scenario === 'empty' || scenario === 'history' ? 'todo' : 'in_progress', ready: scenario === 'empty' || scenario === 'history', completedAt: completed ? time : null, properties: scenario === 'empty' || scenario === 'history' ? {} : { worker } });
+  let graph = graphFixture([detail]);
+  const entries = (id: string) => Array.from({ length: 30 }, (_, index) => ({ entryId: `00000009-1111-4111-8111-${String(index + 1).padStart(12, '0')}`, entrySeq: String(index + 1), revision: '1', kind: 'assistant_message' as const, content: [{ type: 'text' as const, text: index === 29 ? savedText(id) : `Reading line ${index + 1}: ${'Retained conversation content. '.repeat(6)}` }] }));
+  const archive = (item: SessionHistoryItem): SessionArchive => ({ schemaVersion: 1, sessionId: item.sessionId, claimId: item.claimId, executionGeneration: item.executionGeneration,
+    controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId,
+    provider: snapshot.identity.provider, nativeSessionId: snapshot.identity.nativeSessionId, entries: entries(item.sessionId), resources: [] });
+  const state = { historyReads: 0, currentReads: 0, archiveReads: 0, identityReads: 0, registered: scenario !== 'starting', archiveState: 'ready' as 'ready' | 'pending' | 'failed' | 'unavailable', historyError: 0, currentError: 0, holdIdentity: null as Promise<void> | null, holdHistory: null as Promise<void> | null, items: scenario === 'empty' ? [] as SessionHistoryItem[] : [other, record], writes: [] as string[], channels: 0, sent: [] as string[] };
+  await page.addInitScript(({ locale, key, item }) => { localStorage.setItem('daynight.web.locale', locale); sessionStorage.setItem(key, JSON.stringify(item)); sessionStorage.setItem('unrelated-session-key', 'preserve'); }, { locale, key: `daynight:recording:${TEST_VIEWER_ID}:${projectId}:${taskId}`, item: other });
+  await page.routeWebSocket('**/channel*', socket => { state.channels++; socket.onMessage(message => state.sent.push(String(message))); socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' })); });
+  await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
-    if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
+    const failure = (status: number) => send({ error: { code: status === 403 ? 'permission_denied' : 'internal', message: 'Fixture read rejected', requestId: source.sessionId } }, status);
+    if (path === '/api/v1/me') { state.identityReads++; if (state.holdIdentity) await state.holdIdentity; return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
+    if (path === `/api/v1/projects/${projectId}/members`) return send({ items: [], nextCursor: null, actorAccess: directAccessFixture(projectId) });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
     if (path === root) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
-    if (path === `${root}/sessions`) {
-      state.reads++; if (state.hold) await state.hold;
-      if (state.fail) return send({ error: { code: 'internal', message: 'History unavailable', requestId: source.sessionId } }, 503);
-      return send({ items: [url.searchParams.has('cursor') ? older : record], nextCursor: state.more && !url.searchParams.has('cursor') ? 'older' : null });
+    if (path === `${root}/sessions`) { state.historyReads++; if (state.holdHistory) await state.holdHistory; if (state.historyError) return failure(state.historyError); return send({ items: state.items, nextCursor: null }); }
+    if (scenario === 'herdr') {
+      const registration = v2('valid-registration', url.origin), owner = registration.payload.owner;
+      const terminalArchive = v2('valid-archive', url.origin), bytes = JSON.stringify(terminalArchive);
+      const status = { ...v2('valid-status', url.origin), payload: { ...v2('valid-status', url.origin).payload, sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: String(Buffer.byteLength(bytes)), completeness: terminalArchive.completeness, finalizationId: terminalArchive.finalizationId } };
+      if (path === `${root}/sessions/current`) { state.currentReads++; return send({ status: 'registered', protocol: registration.protocol, schemaVersion: 2, projectionVersion: 1, sessionId: source.sessionId, claimId: source.claimId, executionGeneration: '1', agentControlMode: 'herdr', contentKind: 'terminal_recording', owner, binding: registration.payload.binding, connectionEpoch: '1', connected: false, capabilities: registration.payload.capabilities, control: v2('valid-control', url.origin).payload, snapshot: v2('valid-snapshot', url.origin).payload, ledger: v2('valid-active-ledger', url.origin).payload, archive: status.payload, recording: [] }); }
+      if (path === `${root}/sessions/${source.sessionId}/archive`) { state.archiveReads++; return send(state.archiveState === 'pending' ? v2('valid-status-pending', url.origin) : status); }
+      if (path === `${root}/sessions/${source.sessionId}/archive/content`) return send(terminalArchive);
     }
-    if (path === `${root}/sessions/current`) return send({ status: 'registered', session: snapshot });
-    for (const item of [record, older]) {
-      if (path === `${root}/sessions/${item.sessionId}/archive`) return send({ archive: archiveStatus });
-      if (path === `${root}/sessions/${item.sessionId}/archive/content`) return send({ archive: archive(item.sessionId) });
+    if (path === `${root}/sessions/current`) { state.currentReads++; if (state.currentError) return failure(state.currentError); return send(state.registered ? { status: 'registered', session: snapshot } : { status: 'not_registered', claimId: source.claimId, agentControlMode: 'web' }); }
+    if (path === `${root}/sessions/${source.sessionId}/timeline`) return send({ sessionId: snapshot.sessionId, historyEpoch: snapshot.historyEpoch, items: entries(source.sessionId), resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
+    for (const item of [record, other]) {
+      if (path === `${root}/sessions/${item.sessionId}/archive`) { state.archiveReads++; return send({ archive: state.archiveState === 'ready' ? archiveStatus : { state: state.archiveState, sha256: null, byteLength: null, errorCode: state.archiveState === 'failed' ? 'archive_invalid' : null } }); }
+      if (path === `${root}/sessions/${item.sessionId}/archive/content`) return send({ archive: archive(item) });
     }
-    if (path.endsWith('/attachments') || path.endsWith('/steps')) return send({ items: [], nextCursor: null });
-    return send({ error: { code: 'not_found', message: 'Not found', requestId: source.sessionId } }, 404);
+    if (path.endsWith('/attachments')) return send({ items: [], nextCursor: null });
+    if (path.endsWith('/steps')) return send({ projectId, taskId, version: detail.version, steps: [] });
+    return failure(404);
   });
-  return state;
+  return Object.assign(state, {
+    complete: () => { detail = { ...detail, status: 'done', version: detail.version + 1n, updatedAt: new Date().toISOString(), completedAt: time, properties: { worker: { ...worker, state: 'completed' } } }; graph = graphFixture([detail]); },
+    release: () => { detail = { ...detail, status: 'todo', ready: true, version: detail.version + 1n, updatedAt: new Date().toISOString(), properties: {} }; graph = graphFixture([detail]); },
+  });
+}
+async function navigate(page: Page, presentation: Presentation = 'page') {
+  if (presentation === 'dialog') {
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: /^(Standalone tasks|独立任务)$/ }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+    await page.getByRole('tab', { name: 'Session', exact: true }).click();
+  } else await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=session`);
+  if (presentation === 'fullscreen') await page.getByRole('button', { name: /^(Enter Session fullscreen|会话全屏)$/ }).click();
+}
+async function returnToPage(page: Page) {
+  // Headless Chrome keeps focus emulation enabled for every tab. Exercise the
+  // product's top-level departure/return admission with controlled focus facts.
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false });
+    window.dispatchEvent(new Event('blur'));
+    Reflect.deleteProperty(document, 'hasFocus');
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+const noSelector = async (page: Page) => {
+  await expect(page.locator('.task-session-host > .terminal-host-toolbar')).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: /^(Execution record|执行记录)$/ })).toHaveCount(0);
 };
-const open = async (page: Page, locale: string) => {
-  await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
-  const state = await install(page);
-  await page.goto(`/projects/${projectId}/tasks/${taskId}?tab=session`);
-  await expect(page.getByText(`Saved conversation ${source.sessionId}`, { exact: true })).toBeVisible();
-  await expect(toolbar(page).getByRole('button', { name: /^(Refresh|刷新)$/ })).toBeEnabled();
-  return state;
+const readonly = async (page: Page) => {
+  const host = page.locator('.task-session-host');
+  await expect(host.locator('textarea')).toHaveCount(0);
+  await expect(host.getByRole('button', { name: /^(Send|发送|Interrupt|Model|模型|Permissions|权限|Take control|取得控制|Paste text|粘贴文字)$/ })).toHaveCount(0);
 };
-const singleRow = async (page: Page) => {
-  const row = toolbar(page), select = row.locator('select'), refresh = row.getByRole('button', { name: /^(Refresh|刷新)$/ });
-  const geometry = { row: await rectangle(row), label: await rectangle(row.locator('label')), select: await rectangle(select), refresh: await rectangle(refresh), conversation: await rectangle(page.locator('.task-session-current .session-timeline-shell')) };
-  expect(Math.abs(geometry.select.y + geometry.select.height / 2 - geometry.refresh.y - geometry.refresh.height / 2), 'Selection and Refresh share a row').toBeLessThanOrEqual(1);
-  expect(geometry.row.height, 'The selector row leaves room for the conversation').toBeLessThanOrEqual(54);
-  expect(await row.evaluate(node => node.scrollWidth <= node.clientWidth), 'No toolbar overflow').toBe(true);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'No page overflow').toBe(true);
-  return geometry;
-};
-for (const locale of ['zh-CN', 'en']) for (const [width, height] of [[320, 640], [375, 667], [390, 844], [768, 900], [1360, 900]]) {
-  test(`${locale} ${width}px record selection stays compact and operable`, async ({ page }, info) => {
-    await page.setViewportSize({ width: width!, height: height! });
-    const state = await open(page, locale);
-    const geometry = await singleRow(page);
-    if (width! >= 768) expect(geometry.select.width).toBeLessThanOrEqual(440);
-    if (width === 1360) expect(geometry.select.width).toBeGreaterThanOrEqual(360);
-    await info.attach('geometry', { body: JSON.stringify({ viewport: { width, height }, locale, geometry }), contentType: 'application/json' });
-    await page.screenshot({ path: info.outputPath('selector.png') });
-    const row = toolbar(page), select = row.locator('select'), refresh = row.getByRole('button', { name: /^(Refresh|刷新)$/ });
-    await select.focus(); await navigateNativeSelect(page, 'ArrowDown', '2');
-    await expect(select).toHaveValue(record.sessionId);
-    // Selection commits through arrows or typeahead; close any native picker before testing Tab.
-    await page.keyboard.press('Escape');
-    await expect(page.locator('.terminal-session').getByText(`Saved conversation ${record.sessionId}`, { exact: true })).toBeVisible();
-    const selectedGeometry = await singleRow(page);
-    expect(selectedGeometry.select).toEqual(geometry.select);
-    await select.selectOption(''); await select.focus(); await page.keyboard.press('Tab'); await expect(refresh).toBeFocused();
-    const before = state.reads; await page.keyboard.press('Enter'); await expect.poll(() => state.reads).toBeGreaterThan(before);
-    await expect(refresh).toBeEnabled();
-    await select.tap(); await expect(select).toBeFocused(); await page.keyboard.press('Escape');
-    await refresh.tap();
-    await expect.poll(() => state.reads).toBeGreaterThan(before + 1);
-    expect(state.writes).toEqual([]);
+for (const locale of ['zh-CN', 'en']) for (const width of [390, 1360]) for (const presentation of ['page', 'dialog', 'fullscreen'] as const) {
+  test(`${locale} ${width}px ${presentation} automatically reads the completed claim`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    const state = await install(page, 'completed', locale); await navigate(page, presentation);
+    await expect(page.getByText(savedText(record.sessionId), { exact: true })).toBeVisible();
+    await expect(page.getByText(savedText(other.sessionId), { exact: true })).toHaveCount(0);
+    await noSelector(page); await readonly(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await page.evaluate(() => sessionStorage.getItem('unrelated-session-key'))).toBe('preserve');
+    await page.screenshot({ path: info.outputPath('automatic-session.png') });
+    if (presentation === 'fullscreen') await page.keyboard.press('Escape');
+    await page.getByRole('tab', { name: /^(Attachments|附件)$/ }).click();
+    await page.locator('.managed-session-records').getByRole('button', { name: /2026-11-05/ }).click();
+    await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Session', exact: true }).click();
+    await expect(page.getByText(savedText(record.sessionId), { exact: true })).toBeVisible();
+    expect(state.writes).toEqual([]); expect(state.sent).toEqual([]);
   });
 }
 
-test('busy, failure, pagination and sibling toolbars retain their behavior', async ({ page }, info) => {
-  const state = await open(page, 'en');
-  const row = toolbar(page), refresh = row.getByRole('button', { name: 'Refresh', exact: true });
-  const initial = await singleRow(page);
-  const pending = Promise.withResolvers<void>(); state.hold = pending.promise;
-  await refresh.click(); await expect(refresh).toBeDisabled(); expect((await rectangle(row)).height).toBe(initial.row.height);
-  state.fail = true; state.hold = null; pending.resolve();
-  await expect(page.locator('.task-session-host > [role="alert"]')).toBeVisible(); await expect(refresh).toBeEnabled();
-  expect((await rectangle(row)).height).toBe(initial.row.height);
-  state.fail = false; state.more = true; await refresh.click();
-  const more = row.getByRole('button', { name: 'Load earlier records', exact: true });
-  await expect(more).toBeVisible(); await expect(page.locator('.task-session-host > [role="alert"]')).toHaveCount(0);
-  const desktop = await rectangle(more); expect(Math.abs(desktop.y - (await rectangle(refresh)).y)).toBeLessThanOrEqual(1);
-  await page.setViewportSize({ width: 320, height: 640 });
-  const narrow = await rectangle(more); expect(narrow.y).toBeGreaterThan((await rectangle(refresh)).y);
-  expect(await row.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
-  await more.click(); await expect(more).toHaveCount(0); await expect(row.locator('option')).toHaveCount(3);
-  await singleRow(page);
-  await row.locator('select').selectOption(older.sessionId);
-  const terminal = page.locator('.terminal-session > .terminal-host-toolbar');
-  await expect(terminal).toBeVisible();
-  const terminalStyle = await terminal.evaluate(node => ({ padding: getComputedStyle(node).padding, marginBottom: getComputedStyle(node).marginBottom, border: getComputedStyle(node).borderBottomWidth }));
-  expect(terminalStyle).toEqual({ padding: '0px', marginBottom: '9.1px', border: '0px' });
-  await page.getByRole('tab', { name: 'Attachments', exact: true }).click();
-  const sidebar = page.locator('.managed-session-records .terminal-host-toolbar'); await expect(sidebar).toBeVisible();
-  const sidebarStyle = await sidebar.evaluate(node => ({ padding: getComputedStyle(node).padding, marginBottom: getComputedStyle(node).marginBottom, border: getComputedStyle(node).borderBottomWidth }));
-  expect(sidebarStyle).toEqual({ padding: '0px', marginBottom: '7px', border: '0px' });
-  await info.attach('states', { body: JSON.stringify({ initial, desktop, narrow, terminalStyle, sidebarStyle }), contentType: 'application/json' });
+test('confirmed empty history hides Session; failed and first reads stay distinguishable', async ({ page }) => {
+  const state = await install(page, 'empty');
+  const pending = Promise.withResolvers<void>(); state.holdHistory = pending.promise;
+  await navigate(page); await expect(page.getByRole('tab', { name: 'Session', exact: true })).toBeVisible();
+  await expect.poll(() => state.historyReads).toBeGreaterThan(0);
+  state.historyError = 503; state.holdHistory = null; pending.resolve();
+  await expect(page.locator('.task-session-host [role="alert"]')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Session', exact: true })).toBeVisible();
+  state.historyError = 0;
+  await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Session', exact: true })).toHaveCount(0);
   expect(state.writes).toEqual([]);
+});
+
+test('released claim in todo automatically reads the latest real history without writes', async ({ page }) => {
+  const state = await install(page, 'history'); await navigate(page);
+  await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
+  await noSelector(page); await readonly(page); expect(state.currentReads).toBe(0); expect(state.writes).toEqual([]);
+});
+
+test('new claim waiting for registration never borrows an older conversation', async ({ page }) => {
+  const state = await install(page, 'starting'); await navigate(page);
+  await expect(page.locator('.task-session-host')).toContainText(/not registered|waiting/i);
+  await expect(page.getByText(savedText(other.sessionId), { exact: true })).toHaveCount(0);
+  await expect(page.locator('.task-session-host textarea')).toHaveCount(0);
+  state.registered = true; await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeVisible();
+  await expect(page.getByText(savedText(record.sessionId), { exact: true })).toBeVisible();
+  expect(state.writes).toEqual([]); expect(state.sent).toEqual([]);
+});
+
+for (const status of ['pending', 'failed', 'unavailable'] as const) test(`completed ${status} remains read-only and retry reads its original archive`, async ({ page }) => {
+  const state = await install(page); state.archiveState = status; await navigate(page);
+  await expect(page.locator('.task-session-host')).toContainText(status === 'pending' ? /waiting to be archived/ : status === 'failed' ? /could not be saved or verified/ : /No recording is available/);
+  await readonly(page);
+  state.archiveState = 'ready'; await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByText(savedText(record.sessionId), { exact: true })).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
+test('working refresh and background identity checks preserve the draft and rendered reading state', async ({ page }) => {
+  const state = await install(page, 'working'); await navigate(page);
+  const input = page.getByRole('textbox', { name: 'Message', exact: true }); await input.fill('Retained unsent draft');
+  await noSelector(page);
+  await input.evaluate(node => { node.setAttribute('data-retained-input', 'yes'); });
+  const message = page.getByText(savedText(record.sessionId), { exact: true }); await message.evaluate(node => node.setAttribute('data-retained-message', 'yes'));
+  const pending = Promise.withResolvers<void>(); state.holdIdentity = pending.promise; const before = state.identityReads;
+  await returnToPage(page);
+  await expect.poll(() => state.identityReads).toBeGreaterThan(before);
+  await expect(input).toHaveValue('Retained unsent draft'); await expect(input).toHaveAttribute('data-retained-input', 'yes');
+  await expect(message).toHaveAttribute('data-retained-message', 'yes');
+  state.holdIdentity = null; pending.resolve();
+  await expect(input).toHaveValue('Retained unsent draft');
+  await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(input).toHaveValue('Retained unsent draft');
+  expect(state.writes).toEqual([]); expect(state.sent).toEqual([]);
+});
+
+
+test('completed Herdr reads its bound terminal archive without acquiring control', async ({ page }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = await install(page, 'herdr'); state.archiveState = 'pending'; await navigate(page);
+  await expect(page.locator('.task-session-host')).toContainText('Recording is waiting to be archived.');
+  await readonly(page); state.archiveState = 'ready';
+  await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.locator('.terminal-recording')).toBeVisible();
+  await expect(page.locator('.terminal-recording input[type="range"]')).toBeVisible();
+  await noSelector(page); await readonly(page);
+  await page.screenshot({ path: info.outputPath('herdr-readonly-390.png') });
+  expect(state.writes).toEqual([]); expect(state.channels).toBe(0); expect(state.sent).toEqual([]);
+});
+
+
+test('an already open working Session becomes readonly before its native lifecycle drains, then survives release', async ({ page }) => {
+  const state = await install(page, 'working'); await navigate(page);
+  const input = page.getByRole('textbox', { name: 'Message', exact: true }); await input.fill('Keep this draft private');
+  state.archiveState = 'pending'; state.complete();
+  await returnToPage(page);
+  await expect(page.locator('.task-session-host')).toContainText('Recording is waiting to be archived.');
+  await readonly(page); expect(state.writes).toEqual([]);
+  state.archiveState = 'ready'; await page.locator('.task-session-host').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByText(savedText(record.sessionId), { exact: true })).toBeVisible();
+  state.release();
+  await returnToPage(page);
+  await expect(page.getByText(savedText(other.sessionId), { exact: true })).toBeVisible();
+  await readonly(page); expect(state.writes).toEqual([]); expect(state.sent).toEqual([]);
 });

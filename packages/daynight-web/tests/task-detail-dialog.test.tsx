@@ -20,6 +20,13 @@ vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({
   TaskAttachmentsPanel: ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => <section aria-label="附件" data-project-id={projectId} data-task-id={taskId}><input aria-label="附件草稿" defaultValue="" /></section>,
 }));
 vi.mock('../src/features/task-agent-session/TaskSessionHost', async original => ({ ...await original<typeof import('../src/features/task-agent-session/TaskSessionHost')>(), ManagedSessionRecords: ({ children }: { children: (records: AttachmentRecordSlots) => ReactNode }) => children({ sidebar: null, preview: null, clearSelection: () => {} }) }));
+// Detail response sequences own only task reads; Session discovery has its own API.
+vi.mock('../src/api/terminal-sessions', async original => {
+  const api = await original<typeof import('../src/api/terminal-sessions')>();
+  return { ...api, createTerminalSessionApi: (...args: Parameters<typeof api.createTerminalSessionApi>) => ({
+    ...api.createTerminalSessionApi(...args), history: async () => ({ items: [], nextCursor: null }),
+  }) };
+});
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;

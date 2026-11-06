@@ -25,6 +25,11 @@ Team locks. The [Team creation decision](../../archived/architecture/2026-11-04-
 [transfer decision](../../archived/architecture/2026-11-04-project-transfer.md) retain their concurrency
 rationale. `ProjectScope` remains a query value for scoped project pagination.
 
+Repository registration uses `core/project` to select a unique visible match,
+reject ambiguity and require confirmation before creation. The service reads all
+pages in one snapshot and coordinates creation separately; matching does not
+make repository identity globally unique.
+
 ## Alternatives
 
 **Use the existing Project writer for creation.** A new Project row does not

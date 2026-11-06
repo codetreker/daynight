@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { ApiError, isAbortError } from '../../api/client';
+import { ApiError, authRequestsPauseRevision, isAbortError } from '../../api/client';
 import { createTerminalSessionApi, type SessionHistoryItem } from '../../api/terminal-sessions';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useTaskDetailSessions, type DirectQualification } from '../task-detail/TaskDetailSession';
-import type { SyncTicket } from '../task-cache/project-cache';
+import { TaskCacheLifecycleChanged, type SyncTicket } from '../task-cache/project-cache';
 import { clearSessionHistory, readSessionHistoryOwnership, type SessionHistoryOwnership } from './session-history-cache';
 
 type Page = { readonly items: SessionHistoryItem[]; readonly cursor: string | null };
@@ -12,7 +12,7 @@ const initial = (): State => ({ page: null, error: null, loading: false, checkin
 
 // Direct detail receipts authorize only this opening. Session records obtained
 // under them are never installed in the project-summary cache.
-export function useDirectSessionRecords(projectId: string, taskId: string, active: boolean) {
+export function useDirectSessionRecords(projectId: string, taskId: string, active: boolean, automatic = false) {
   const scope = useTaskCacheScope();
   const sessions = useTaskDetailSessions();
   const api = useMemo(() => createTerminalSessionApi(projectId, taskId, scope.userId, scope.principalMismatch), [projectId, taskId, scope]);
@@ -21,6 +21,7 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
   const detail = useSyncExternalStore(subscribe, snapshot);
   const [state, setState] = useState<State>(initial);
   const [request, setRequest] = useState<{ cursor: string | null; sequence: number }>({ cursor: null, sequence: 0 });
+  const [retryInactive, setRetryInactive] = useState(false);
   const qualificationRef = useRef<DirectQualification | null>(null);
   if (qualificationRef.current === null || !sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualificationRef.current)) {
     qualificationRef.current = sessions.captureDirectSessionQualification(projectId, taskId);
@@ -38,6 +39,7 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
       blocked.current && (event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId)) return;
     if (event.accessRevoked || event.scopeSuspended || event.historyChanged || event.sessionHistoryUncertain?.taskId === taskId || event.sessionHistoryCleared?.taskId === taskId) {
       activeRead.current?.abort();
+      setRetryInactive(false);
       blocked.current = !event.historyChanged;
       if (event.historyChanged) setRequest(old => ({ cursor: null, sequence: old.sequence + 1 }));
       setState({ page: null, error: event.error ?? null, loading: false, checking: false, denied: true });
@@ -48,7 +50,7 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
   }), [scope, projectId, taskId]);
 
   useEffect(() => {
-    if (!active || qualification === null || !readReady || blocked.current) return;
+    if ((!active && !retryInactive) || qualification === null || !readReady || blocked.current) return;
     const controller = new AbortController(); activeRead.current = controller;
     const signal = AbortSignal.any([controller.signal, scope.signal]);
     const current = () => !signal.aborted && sessions.isDirectQualificationHistoryCurrent(projectId, taskId, qualification);
@@ -74,14 +76,37 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
           await scope.ready(signal);
         }
         if (!current()) return;
-        const result = await api.history(request.cursor, signal);
-        await scope.ready(signal);
-        if (!current() || !await sessions.verifyDirectQualificationHistory(projectId, taskId, qualification, signal) || !current()) return;
-        setState(old => {
-          const previous = request.cursor === null ? [] : old.page?.items ?? [];
-          const items = [...previous, ...result.items.filter(item => !previous.some(existing => existing.sessionId === item.sessionId))];
-          return { page: { items, cursor: result.nextCursor }, error: null, loading: false, checking: false, denied: false };
-        });
+        let result = await api.history(request.cursor, signal);
+        if (automatic && request.cursor === null) {
+          const visited = new Set<string>();
+          while (result.items.length === 0 && result.nextCursor !== null) {
+            if (visited.has(result.nextCursor)) throw new ApiError('protocol');
+            visited.add(result.nextCursor);
+            await scope.ready(signal);
+            if (!current()) return;
+            result = await api.history(result.nextCursor, signal);
+          }
+        }
+        // A same-account pause may interrupt the fence transaction after the
+        // network result arrives. Retry admission, never the history request.
+        for (;;) {
+          const pauseRevision = authRequestsPauseRevision();
+          try {
+            await scope.ready(signal);
+            const verified = await sessions.verifyDirectQualificationHistory(projectId, taskId, qualification, signal);
+            if (pauseRevision !== authRequestsPauseRevision() && current()) continue;
+            if (!verified || !current()) return;
+            setState(old => {
+              const previous = request.cursor === null ? [] : old.page?.items ?? [];
+              const items = [...previous, ...result.items.filter(item => !previous.some(existing => existing.sessionId === item.sessionId))];
+              return { page: { items, cursor: result.nextCursor }, error: null, loading: false, checking: false, denied: false };
+            });
+            break;
+          } catch (error) {
+            if (error instanceof TaskCacheLifecycleChanged && pauseRevision !== authRequestsPauseRevision() && current()) continue;
+            throw error;
+          }
+        }
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
         const denied = error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0);
@@ -114,13 +139,13 @@ export function useDirectSessionRecords(projectId: string, taskId: string, activ
           } catch { /* Identity retirement or a new history fences this denial. */ }
         }
       }
-    })();
+    })().finally(() => { if (!signal.aborted) setRetryInactive(false); });
     return () => { controller.abort(); if (activeRead.current === controller) activeRead.current = null; };
-  }, [scope, sessions, api, projectId, taskId, active, qualification, readReady, request]);
+  }, [scope, sessions, api, projectId, taskId, active, retryInactive, automatic, qualification, readReady, request]);
   const denied = scope.isInvalidated || scope.isProjectSuspended(projectId) || detail.detail === null || detail.status === 'deleted' || state.denied;
   const page = denied ? null : state.page;
   return { api, scope, items: page?.items ?? [], cursor: page?.cursor ?? null, error: state.error,
     loading: state.loading, checking: state.checking, confirmedEmpty: page !== null && page.items.length === 0 && page.cursor === null,
-    denied, refresh: () => { blocked.current = false; setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); },
+    denied, refresh: () => { blocked.current = false; if (!active) setRetryInactive(true); setRequest(old => ({ cursor: null, sequence: old.sequence + 1 })); },
     more: () => { if (page?.cursor) setRequest(old => ({ cursor: page.cursor, sequence: old.sequence + 1 })); } };
 }

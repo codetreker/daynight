@@ -20,6 +20,7 @@ vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAt
 vi.mock('../src/features/task-agent-session/TaskSessionHost', () => ({
   TaskSessionHost: ({ current }: { current: boolean }) => <span data-testid="session-current">{String(current)}</span>,
   ManagedSessionRecords: ({ children }: { children: (value: { sidebar: null; preview: null; clearSelection: () => void }) => ReactNode }) => children({ sidebar: null, preview: null, clearSelection: () => {} }),
+  useTaskSessionRecords: () => ({ confirmedEmpty: true, error: null, denied: false }),
 }));
 const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';

@@ -14,6 +14,8 @@ A conflicting manifest observed from another tab fences existing receipts and pr
 
 Earlier decisions established [persistent summaries](../../archived/architecture/2026-10-24-persistent-task-summary-cache.md), [local summary display](../../archived/architecture/2026-10-27-project-cache-display.md) and [timestamp-window detail caching](../../archived/architecture/2026-10-24-task-view-timestamp-window.md). The [standalone detail decision](../../archived/architecture/2026-10-24-standalone-task-detail.md) originally required a project graph; this decision adds direct admission. Summary-backed details and writes still require this mount's successful project sync and matching live detail admission. Direct observations do not fabricate or persist summaries. Successful writes retain their confirmation and committed version until a subsequent live observation reaches that floor. Steps use the source's verified parent version. History replacement retires the graph, detail and reading resources before a bounded fresh read. Task not_found withdraws the detail and triggers project access revalidation instead of inferring project denial from a missing task.
 
+Direct Session discovery and attachment browsing share one opening-bound history owner, so a change of claim cannot revive a separately retained denial or duplicate the same read. A completed claim resolves its own Session without automatically scanning older records. Returning to a visible direct detail immediately refreshes its Task, allowing lifecycle changes to update the Session view.
+
 The [requirements](../../../../docs/spec/daynight-task-sync.md) and [design](../../../../docs/design/daynight-task-sync.md) own the current contracts.
 
 ## Alternatives

@@ -308,6 +308,24 @@ describe('standalone full task details', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
+  it('immediately reobserves direct details when the page becomes visible', async () => {
+    const fixture = installed();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    window.history.replaceState(null, '', address());
+    render(<App />);
+    await screen.findByRole('heading', { name: '独立任务' });
+    expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
+    visibility.mockReturnValue('hidden');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    const previous = fixture.tasks.get(taskId)!;
+    fixture.tasks.set(taskId, { ...previous, title: '更新后的任务', version: previous.version + 1n });
+    visibility.mockReturnValue('visible');
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(await screen.findByRole('heading', { name: '更新后的任务' })).toBeVisible();
+    expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(2);
+    expect(fixture.fetcher.mock.calls.filter(([, options]) => options?.method === 'PUT' || options?.method === 'PATCH' || options?.method === 'DELETE')).toHaveLength(0);
+  });
+
   it('keeps page keys ordinary and uses current exact-version status confirmations, including cancel and no-op', async () => {
     const { fetcher, tasks } = installed();
     window.history.replaceState(null, '', address());

@@ -39,9 +39,13 @@ export const useTaskDetail = (projectId: string, taskId: string, input: TaskObse
       if (timer !== null) clearInterval(timer);
       timer = document.visibilityState === "hidden" ? null : setInterval(() => sessions.load(projectId, taskId, 1, "automatic"), pollingInterval("taskSync"));
     };
+    const onVisibilityChange = () => {
+      schedule();
+      if (document.visibilityState !== "hidden") sessions.load(projectId, taskId, 1, "automatic");
+    };
     schedule();
-    document.addEventListener("visibilitychange", schedule);
-    return () => { if (timer !== null) clearInterval(timer); document.removeEventListener("visibilitychange", schedule); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => { if (timer !== null) clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
   }, [sessions, projectId, taskId, direct]);
   useEffect(() => () => { sessions.releaseRead(projectId, taskId); }, [sessions, projectId, taskId]);
   const retry = useCallback(() => {
