@@ -3,6 +3,9 @@ import { openKeyboardSession } from '../helpers/sessionKeyboard';
 
 async function installViewport(page: Page) {
   await page.addInitScript(() => {
+    const errors: { message: string; fullscreen: boolean; displayMenu: boolean }[] = [];
+    Object.defineProperty(window, '__sessionKeyboardErrors', { value: errors });
+    window.addEventListener('error', event => errors.push({ message: event.message, fullscreen: document.querySelector('[data-session-fullscreen="true"]') !== null, displayMenu: document.querySelector('.session-display-menu') !== null }));
     const viewport = Object.assign(new EventTarget(), { width: innerWidth, height: innerHeight, offsetTop: 0, offsetLeft: 0, pageTop: 0, pageLeft: 0, scale: 1 });
     Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
   });
@@ -25,14 +28,16 @@ async function geometry(page: Page) {
 async function beforeFullscreen(page: Page, observations: Awaited<ReturnType<typeof openKeyboardSession>>['observations'], info: TestInfo, entry: string) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const errors = [...observations.pageErrors];
+  const atError = await page.evaluate(() => (window as unknown as { __sessionKeyboardErrors: { message: string; fullscreen: boolean; displayMenu: boolean }[] }).__sessionKeyboardErrors);
+  await info.attach('before-fullscreen-errors', { body: JSON.stringify({ phases: observations.pageErrorPhases, atError }), contentType: 'application/json' });
   // WebKit can report this existing Task/Bot draft resize warning before fullscreen
   // is enabled. Keep its evidence separate; no new warning is allowed afterward.
   if ((entry === 'assistant' || entry === 'task') && info.project.name === 'webkit') {
     expect(errors.length).toBeLessThanOrEqual(1);
-    expect(observations.pageErrorPhases.every(error => error.phase === 'fill-draft')).toBe(true);
+    expect(atError.length).toBe(errors.length);
+    expect(atError.every(error => !error.fullscreen && !error.displayMenu)).toBe(true);
     expect(errors.every(error => error === 'ResizeObserver loop completed with undelivered notifications.')).toBe(true);
   } else expect(errors).toEqual([]);
-  await info.attach('before-fullscreen-errors', { body: JSON.stringify(observations.pageErrorPhases), contentType: 'application/json' });
   return errors;
 }
 

@@ -93,7 +93,6 @@
 .standalone-task-route > .standalone-deletion-slot { position: relative; z-index: 35; flex: none; padding: 8px 12px; background: #fff; }
 .standalone-task-route:has(.task-agent-session.session-fullscreen) > .standalone-deletion-slot:not(:empty) {
   position: fixed;
-  z-index: 41;
   top: calc(var(--standalone-session-viewport-top, 0px) + var(--standalone-session-viewport-height, 100dvh) - var(--standalone-session-result-reserve, 0px));
   left: var(--standalone-session-viewport-left, 0px);
   width: var(--standalone-session-viewport-width, 100%);
