@@ -17,6 +17,9 @@ const Bucket = "task-attachments"
 // MaxPathCharacters counts Unicode code points, including path separators.
 const MaxPathCharacters = 1024
 
+// MaxContentTypeBytes limits the original MIME value on new writes.
+const MaxContentTypeBytes = 2048
+
 // ValidateWritePath rejects new writes beyond the path length limit. Existing
 // metadata may still refer to longer paths, which remain readable and removable.
 func ValidateWritePath(path string) error {
@@ -55,6 +58,9 @@ func TaskStoragePath(projectID, taskID string) string {
 }
 
 func ValidateContentType(contentType string) error {
+	if len(contentType) > MaxContentTypeBytes {
+		return &model.Fault{Code: "invalid_input", Message: "Attachment content type must not exceed 2048 bytes."}
+	}
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil || !strings.Contains(mediaType, "/") {
 		return &model.Fault{Code: "invalid_input", Message: "Attachment content type is invalid."}
