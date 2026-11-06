@@ -58,11 +58,41 @@ func (d *DAO) PruneAuthorizations(ctx context.Context, now time.Time, limit int)
 	if _, err := d.tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, authorizationCapacityLock); err != nil {
 		return 0, pg.AuthQueryError("lock OAuth authorization capacity", err)
 	}
-	tag, err := d.tx.Exec(ctx, `UPDATE oauth_authorizations SET status='expired',state='',state_present=false WHERE id IN (SELECT id FROM oauth_authorizations WHERE status='pending' AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED)`, now, limit)
-	if err != nil {
-		return 0, pg.AuthQueryError("expire OAuth authorizations", err)
+	if limit <= 0 {
+		return 0, nil
 	}
-	expired := int(tag.RowsAffected())
-	tag, err = d.tx.Exec(ctx, `DELETE FROM oauth_authorizations WHERE id IN (SELECT id FROM oauth_authorizations WHERE retain_until<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY retain_until,id LIMIT $2 FOR UPDATE SKIP LOCKED)`, now, limit-expired)
-	return expired + int(tag.RowsAffected()), pg.AuthQueryError("prune OAuth authorizations", err)
+	var start int
+	if err := d.tx.QueryRow(ctx, `SELECT next_kind FROM oauth_authorization_cleanup_cursor WHERE singleton=true FOR UPDATE`).Scan(&start); err != nil {
+		return 0, pg.AuthQueryError("read OAuth authorization cleanup cursor", err)
+	}
+	if _, err := d.tx.Exec(ctx, `UPDATE oauth_authorization_cleanup_cursor SET next_kind=($1::int+$2::int)%2 WHERE singleton=true`, start, limit); err != nil {
+		return 0, pg.AuthQueryError("advance OAuth authorization cleanup cursor", err)
+	}
+	queries := []string{
+		`UPDATE oauth_authorizations SET status='expired',state='',state_present=false WHERE id IN (SELECT id FROM oauth_authorizations WHERE status='pending' AND expires_at<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM oauth_authorizations WHERE id IN (SELECT id FROM oauth_authorizations WHERE retain_until<=GREATEST($1::timestamptz,clock_timestamp()) ORDER BY retain_until,id LIMIT $2 FOR UPDATE SKIP LOCKED)`,
+	}
+	total := 0
+	for offset := 0; offset < 2; offset++ {
+		quota := limit / 2
+		if offset < limit%2 {
+			quota++
+		}
+		if quota == 0 {
+			continue
+		}
+		tag, err := d.tx.Exec(ctx, queries[(start+offset)%2], now, quota)
+		if err != nil {
+			return total, pg.AuthQueryError("prune OAuth authorizations", err)
+		}
+		total += int(tag.RowsAffected())
+	}
+	for offset := 0; offset < 2 && total < limit; offset++ {
+		tag, err := d.tx.Exec(ctx, queries[(start+offset)%2], now, limit-total)
+		if err != nil {
+			return total, pg.AuthQueryError("prune OAuth authorizations", err)
+		}
+		total += int(tag.RowsAffected())
+	}
+	return total, nil
 }

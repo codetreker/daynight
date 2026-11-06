@@ -18,6 +18,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func authorizationFixture(t *testing.T) (context.Context, *postgres.Store, *Authorizations, model.Principal, StartInput) {
@@ -683,5 +684,40 @@ func TestAuthorizationRedeemStorageFailuresRollBack(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCodeAdmissionReleasesConnectionBeforeClientBudget(t *testing.T) {
+	ctx, db, svc, user, in := authorizationFixture(t)
+	_, redeem := approvedCode(t, ctx, svc, user, in)
+	config := db.Pool.Config()
+	config.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	single := &postgres.Store{Pool: pool}
+	svc.writer = single
+	admission := core.PublicAdmission{Writer: single}
+	permit, allowed, err := admission.TakeToken(ctx, "single-pool")
+	if err != nil || !allowed {
+		t.Fatalf("permit: %v %v", allowed, err)
+	}
+	redeem.AdmitClient = func(ctx context.Context, id string) error {
+		ok, err := permit.TakeClient(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return core.ErrRateLimited
+		}
+		return nil
+	}
+	bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	tokens, err := svc.RedeemCode(bounded, redeem)
+	if err != nil || tokens.AccessToken == "" {
+		t.Fatalf("single-connection exchange: %+v %v", tokens, err)
 	}
 }

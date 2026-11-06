@@ -37,7 +37,11 @@ type DecisionInput struct {
 	Principal                                    model.Principal
 }
 type DecisionResult struct{ RedirectURI string }
-type RedeemInput struct{ Code, ClientID, RedirectURI, Resource, Verifier string }
+type RedeemInput struct {
+	Code, ClientID, RedirectURI, Resource, Verifier string
+	// AdmitClient runs after the credential binding is verified, before any mutation.
+	AdmitClient func(context.Context, string) error
+}
 type TokenResult struct {
 	AccessToken, RefreshToken, TokenType, Scope string
 	ExpiresIn                                   int64
@@ -239,6 +243,32 @@ func (s *Authorizations) RedeemCode(ctx context.Context, in RedeemInput) (TokenR
 		return TokenResult{}, core.ErrInvalidGrant
 	}
 	hash := secret.Hash(in.Code)
+	// Verify the client against stored bindings before charging its budget.
+	// Release the lookup transaction first: charging uses the same connection
+	// pool, and holding a connection across that call can exhaust the pool.
+	if in.AdmitClient != nil {
+		var verified string
+		c, e := s.writer.WriteAuthorizations(ctx, func(scope store.AuthorizationScope) error {
+			a, err := scope.AuthorizationDAO().AuthorizationByCode(ctx, hash, false)
+			if err != nil {
+				return err
+			}
+			if a.ClientID != in.ClientID || a.RedirectURI != in.RedirectURI || a.Resource != in.Resource || a.Scope != core.Scope || !core.VerifyChallenge(a.Challenge, in.Verifier) {
+				return core.ErrInvalidGrant
+			}
+			verified = a.ClientID
+			return nil
+		})
+		if c.Outcome != store.TransactionUnknown && errors.Is(e, model.ErrNotFound) {
+			return TokenResult{}, core.ErrInvalidGrant
+		}
+		if err := completionError(c, e); err != nil {
+			return TokenResult{}, err
+		}
+		if err := in.AdmitClient(ctx, verified); err != nil {
+			return TokenResult{}, err
+		}
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		var result TokenResult
 		var replay bool
