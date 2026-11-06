@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { CopilotProcessOutcome } from "./adapters/copilot.js";
 import type { AttemptIdentity, ReviewState } from "./model.js";
+import { stopWindowsProcessTree } from "./windows-process-stop.js";
 
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 const command = (file: string, args: string[], timeout: number): Promise<string> => new Promise((resolve, reject) => {
@@ -102,8 +103,12 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
     if (entry.stopping === undefined) entry.stopping = (async () => {
       try {
         if (process.platform === "win32") {
-          if (entry.closed || child.exitCode !== null || child.signalCode !== null) uncertain("The Windows agent exited before its current process tree could be terminated; operator recovery is required.");
-          await command("taskkill", ["/PID", String(entry.pid), "/T", "/F"], grace);
+          await stopWindowsProcessTree({ pid: entry.pid, graceMs: grace,
+            assertCurrent: () => {
+              if (entry.closed || child.exitCode !== null || child.signalCode !== null) uncertain("The Windows agent exited before its current process tree could be terminated; operator recovery is required.");
+            },
+            terminate: async () => { await command("taskkill", ["/PID", String(entry.pid), "/T", "/F"], grace); },
+          });
           await waitForClose(entry);
           entry.excluded = true;
         } else await stopGroup(entry);
