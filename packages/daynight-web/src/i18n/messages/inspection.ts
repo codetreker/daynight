@@ -199,7 +199,6 @@ export type InspectionMessages = {
     readonly copyTitleFailed: string;
     readonly copied: string;
     readonly copyFailed: string;
-    readonly footer: string;
     readonly countedHeading: (args: { label: string; count: string }) => string;
   };
   readonly pr: {

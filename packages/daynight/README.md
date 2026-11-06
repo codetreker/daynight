@@ -1629,11 +1629,35 @@ command or configuration switch.
 
 The cloud target owns concurrency, polling and recovery limits, Project
 selection, and global/per-Project Agent, model and arguments. Repository roots,
-local paths, service credentials, Worker identity and `agentControlMode` stay
-local. First enrollment imports a candidate from the original local YAML only
+local paths, service credentials, Worker identity, `agentControlMode`, and optional
+`agentModel` / `agentReasoningEffort` overrides stay local. First enrollment imports a candidate from the original local YAML only
 when no cloud target exists. Later starts and heartbeats always use the cloud
-target; a local copy cannot replace it. Configuration enrollment does not depend
+target; legacy local managed fields cannot replace it. Configuration enrollment does not depend
 on active claims or alter task/claim formats, permission or recovery rules.
+
+Set `worker.agentModel` and/or `worker.agentReasoningEffort` to override only
+those settings for new executions, even after enrollment. Each field independently
+uses its local explicit value, then the effective cloud value (including native
+arguments), then the Agent default. Remove a field and restart the Worker to
+restore inheritance. Empty strings and explicit null are invalid. Legacy
+`worker.model` keeps its first-import semantics; a nonempty legacy value must
+agree with `agentModel` when both are present, while `model: null` permits it.
+
+Model and effort arguments are normalized for the effective Provider and mode;
+unrelated arguments keep their existing validation. These overrides do not edit
+native configuration files or write local values into cloud desired state.
+Telemetry reports `runtimeConfiguration` schema version 1 with each effective
+model/effort value and its `local`, `cloud`, or `native` source. A null value with
+`native` means Daynight leaves that setting to the Agent, not that Daynight has
+observed its resolved native value. Existing claims and assistants retain their
+frozen native settings; new defaults do not restart or reconfigure them.
+Deploy a server that supports the optional report field before using this client;
+older stored reports remain readable, but older servers reject unknown fields.
+
+Setting either local override enables native model/effort validation for the first
+launch. An unresolved Copilot default model or Codex OSS/local-provider catalog
+cannot be validated and fails explicitly. Existing native sessions resume with
+their preserved settings.
 
 For a Worker that has not enrolled, optional interactive setup prepares its local
 candidate:
@@ -1866,7 +1890,7 @@ recovery and native values. Lowering concurrency does not stop existing tasks;
 new starts wait until usage is below the limit. The next post-round polling wait
 uses the applied interval. Running native processes retain their launch
 arguments. Each claim retains its recorded agent type and native session ID;
-Herdr restarts use current settings appropriate to that type, while Web recovery
+Herdr restarts preserve the claim’s frozen native settings, while Web recovery
 keeps its existing frozen execution configuration. Settings for another type are
 not applied to it. A running disconnected Worker retains successful values;
 restart checks the cloud before normal scheduling. Task inventory or backend

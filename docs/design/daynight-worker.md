@@ -21,7 +21,7 @@ flowchart TB
   A -->|claim-bound done| S
 ```
 
-服务端提供当前 claim 归属，SQLite 保存本机认领、原生会话索引与独立终态清理调度，macOS Herdr 的独立 lifecycle 库保存原运行身份与停止证据，Git 与 Herdr 提供实际资源。[Herdr 生命周期设计](herdr-worker-lifecycle.md)拥有该机制，Linux/Windows 使用共享私有 daemon 路径。顶层 assignedTo 是独立人的责任归属，所有 worker 服务端写入保留它；自动候选使用 assignedTo=me，自动 claim 事务要求当前负责人等于认证账号 userId；未分配或他人任务不具备自动领取资格。既有 claim、Session 或 archive 权限保持原执行归属。Agent 完成实现、验证、PR、审查、授权合并和任务验收，最后提交原 claim 的 done；worker 按自己的完整 claim 清单决定资源生命周期，不再次解释业务验收。
+服务端提供当前 claim 归属，SQLite 保存本机认领、原生配置冻结、原生会话索引与独立终态清理调度，macOS Herdr 的独立 lifecycle 库保存原运行身份与停止证据，Git 与 Herdr 提供实际资源。[Herdr 生命周期设计](herdr-worker-lifecycle.md)拥有该机制，Linux/Windows 使用共享私有 daemon 路径。顶层 assignedTo 是独立人的责任归属，所有 worker 服务端写入保留它；自动候选使用 assignedTo=me，自动 claim 事务要求当前负责人等于认证账号 userId；未分配或他人任务不具备自动领取资格。既有 claim、Session 或 archive 权限保持原执行归属。Agent 完成实现、验证、PR、审查、授权合并和任务验收，最后提交原 claim 的 done；worker 按自己的完整 claim 清单决定资源生命周期，不再次解释业务验收。
 
 ## 状态来源与清理判定
 
@@ -65,7 +65,7 @@ macOS Herdr 将本地原运行停止证明和封段作为执行槽释放目标�
 
 ### 本地配置与首次候选
 
-本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode 与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影首次候选。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
+本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort 与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影首次候选。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
@@ -79,6 +79,18 @@ Setup 在终端内汇总只读环境报告、单选 Copilot/Codex/Claude、选�
 
 本地托管字段写入在交互前和紧邻取得本地锁之前核对云端目标；已有目标时要求从云端修改，缺失缓存不能绕过该判断。原 YAML 写入继续锁内重读、比较 workerId、服务/凭据、root、repositories 以及 setup 拥有的 native 基线，基线保留字段原始存在性和值，深比较支持未知字段的循环 alias。Repo 只拥有 repositories 及保留条目的 projectId，setup 另拥有全局 native 及确认重置的项目 native 字段；repositoryRoot 和保留条目的未知字段始终受保护，显式删除拥有整个条目。网络和提示不持配置锁；共享 alias 使非归属解码值改变时保留原文件并拒绝，无关节点、注释和安全 alias 保留。
 
+### 本地原生覆盖与来源
+
+`local-native.ts` 负责两个新字段的存在性、字符串约束及旧 model 同层冲突。`native-overrides.ts` 在已解析云端全局或项目原生元组上独立应用本地两项，抽取 model/effort 参数、去重并映射当前 Provider 的 Web/Herdr 表达。其它原生参数交给既有验证器；Codex 非相关 TOML 设置保留。
+
+`runtime.ts` 的云端应用入口验证规范化结果，管理器仍持久保存原始云端 appliedValue。提供给 coordinator 与助手 host 的是规范化后配置；机器报告单独输出 `runtimeConfiguration`，由 `schemaVersion:1` 标识来源对象。这样本地覆盖不冒充 desired 或云端应用值，移除后重新组合会恢复真实下层来源。null/native 表示委托原生配置，不把未知值当作探测结果。云端目标缺失而本地候选部分运行时，报告与 coordinator 相同的全局配置和可运行项目，候选中明确的 model/effort 均归 local；不能用尚为空的云端管理器快照覆盖实际运行来源。
+
+Worker SQLite `claim_native_configurations` 以 project/task/claim 关联不可变原生元组。新登记与冻结在同一事务中，旧无会话记录在首次启动前冻结；有会话而缺少旧快照的记录保持未知。原 Session 恢复不追加当前 model/effort，避免覆盖会话内原生设置。已有助手沿用自己的持久冻结记录。
+
+本地新字段使新执行携带 `validateNativeSelection`，随 claim 配置和 Web launch ticket 冻结。Web 首次启动使用 Provider 原生目录校验；Herdr 在实际 task cwd 运行无业务输入探测。Codex 探测与实际 Herdr 启动共用规范化后的真实 cwd 和启动配置层，包括临时项目信任覆盖；它读取 app-server 配置与完整目录；配置未指定模型时，按原生目录的默认标记与顺序解析有效默认值，启动模型参数仍保持省略。能力验证包含隐藏模型，UI 选择器仍按 hidden 过滤。Claude 不持久保存探测 Session，Copilot SessionFs 读穿原生文件而全部写入仅在内存。Copilot 未解析默认模型而缺少 modelId、Codex OSS/local-provider 无法等效取得能力时明确失败，不猜测模型。恢复原 Session 不重新注入选择。
+
+Worker 共享探测 verifier 保留未确认清理的进程身份及重试能力；新探测前、Herdr 资源释放前与 Worker 退出时等待清理。单个 Herdr adapter 仅等待共享清理，不关闭其它执行的探测准入。探测清理与已归属业务进程停止独立尝试并汇总错误；探测失败或等待不能阻止调用原进程停止。原停止证据可保存，探测清理未确认时仍禁止封段和资源释放。清理成功不证明业务 Agent 未启动，持久化 Herdr 原有启动与停止证明仍独立成立。
+
 ### 云端接收与本机提交
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
@@ -91,7 +103,7 @@ reporter 在发送前捕获不可变配置快照，通过独立报告扩展交�
 
 ### 实际配置消费
 
-同一个 coordinator 接收不可变的有效配置视图，后续容量判断、恢复上限和 native 选择读取成功值。等值视图保留身份，避免无配置变化的报告确认使在途领取失效；实际视图变化仍阻止使用旧配置提交领取。降低 maxConcurrent 不抢占已有执行；pollIntervalMs 在每轮完成后的下一次等待读取当前成功值。健康原生进程不因参数更新重启；Herdr 重新启动沿用当前适用于原 Agent 的 model/args，Web 恢复继续使用原执行记录的冻结配置。配置功能不增加按 claim 冻结或迁移任务参数的机制。
+同一个 coordinator 接收不可变的有效配置视图，后续容量判断、恢复上限和 native 选择读取成功值。等值视图保留身份，避免无配置变化的报告确认使在途领取失效；实际视图变化仍阻止使用旧配置提交领取。降低 maxConcurrent 不抢占已有执行；pollIntervalMs 在每轮完成后的下一次等待读取当前成功值。健康原生进程不因参数更新重启；Herdr 与 Web 的新 claim 都保留已冻结原生配置；coordinator 不用当前默认替换 model/args，recoveryLimit 仍沿用原有实时策略。旧已有 Session 的未知配置不回填伪造快照，恢复时省略模型和 effort 覆盖。
 
 项目目标、就绪集合与 projects 持久映射分开。只有已选且准备就绪的项目可以自动推进 active、pending 和新领取；在途领取完成后再次检查有效集合。移除先从有效集合排除并取消该项目 job，再由 stopProject 等待收尾，按 claim 串行使用 Herdr 或 Web 的直接停止能力。停止保留任务状态、认领、工作区及会话历史；映射继续服务归属清单、资源发现及人工处置。停止未确认时保留容量，已确认停止后仅保留工作区不永久占槽。重启时保留但未选的映射也进入配置模块的项目移除责任；结果、错误和重试沿用同一提交与报告入口。重新选择不能抹掉已开始的停止，后续恢复沿用任务系统原有规则。
 
@@ -372,4 +384,4 @@ Web 恢复验证使用可重开的 SQLite 和受控 Controller/进程证据，�
 
 命名验证覆盖创建与活 workspace 改名、同名/长标题/中文/emoji/分隔符/终端控制字符、无变化不请求 rename、未知回执再观察、执行超限仍同步、改名与 claim 结束竞争及冷恢复；四项身份和原 native session 不得因展示变化而改变。迁移验证覆盖各阶段故障/中断、启动阻塞、持久读回、原子 marker、恢复快照、全组回滚与重入，不用成功退出码替代持久状态观察。
 
-Herdr 的业务恢复累计次数、原 model/args 和中断管理意图保持进程内语义；两种模式具备完整资源身份的终态清理责任、原期限和退避由 cleanup_schedules 持久保存；身份不完整时保留索引、使用进程内退避并在重启重新发现，Linux/Windows legacy Herdr 不保存通知步骤状态；macOS 的输入操作与条件 cleanup 由独立持久仲裁保存。Web 的冻结配置、恢复暂停及清理操作身份由独立执行库保留，操作回执和原生 generation 来自 Controller journal。既有详细状态模型的原始理由与替代方案保存在[简化决策](../../.agents/notes/archived/simplification/2026-10-27-worker-claim-records.md)及其前驱记录中。
+Herdr 的业务恢复累计次数和中断管理意图保持进程内语义；新 claim 的原生 model/args 独立持久冻结；两种模式具备完整资源身份的终态清理责任、原期限和退避由 cleanup_schedules 持久保存；身份不完整时保留索引、使用进程内退避并在重启重新发现，Linux/Windows legacy Herdr 不保存通知步骤状态；macOS 的输入操作与条件 cleanup 由独立持久仲裁保存。Web 的冻结配置、恢复暂停及清理操作身份由独立执行库保留，操作回执和原生 generation 来自 Controller journal。既有详细状态模型的原始理由与替代方案保存在[简化决策](../../.agents/notes/archived/simplification/2026-10-27-worker-claim-records.md)及其前驱记录中。

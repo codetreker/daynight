@@ -15,7 +15,7 @@ export const limited = (value: string): string => {
   const end = /[\uD800-\uDBFF]/.test(value[199_999]!) && /[\uDC00-\uDFFF]/.test(value[200_000]!) ? 199_999 : 200_000;
   return value.slice(0, end) + "\n[Output truncated at 200000 characters]";
 };
-export type ProviderArguments = { sandbox?: "read-only" | "workspace-write"; approvalPolicy?: "untrusted" | "on-request" | "never"; effort?: "low" | "medium" | "high" | "xhigh" | "max"; permissionMode?: "default" | "acceptEdits" | "plan"; additionalDirectories?: string[] };
+export type ProviderArguments = { sandbox?: "read-only" | "workspace-write"; approvalPolicy?: "untrusted" | "on-request" | "never"; effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"; permissionMode?: "default" | "acceptEdits" | "plan"; additionalDirectories?: string[] };
 export const parseProviderArguments = (provider: "codex" | "claude" | "copilot", args: readonly string[]): ProviderArguments => {
   const result: ProviderArguments = {};
   for (let i = 0; i < args.length; i++) {
@@ -24,7 +24,7 @@ export const parseProviderArguments = (provider: "codex" | "claude" | "copilot",
     if (provider === "codex" && ["--sandbox", "-s"].includes(arg) && ["read-only", "workspace-write"].includes(value)) result.sandbox = value as NonNullable<ProviderArguments["sandbox"]>;
     else if (provider === "codex" && ["--ask-for-approval", "-a"].includes(arg) && ["untrusted", "on-request", "never"].includes(value)) result.approvalPolicy = value as NonNullable<ProviderArguments["approvalPolicy"]>;
     else if (provider === "claude" && arg === "--permission-mode" && ["default", "acceptEdits", "plan"].includes(value)) result.permissionMode = value as NonNullable<ProviderArguments["permissionMode"]>;
-    else if (arg === "--effort" && (provider === "copilot" ? ["low", "medium", "high", "xhigh"] : ["low", "medium", "high", "xhigh", "max"]).includes(value)) result.effort = value as NonNullable<ProviderArguments["effort"]>;
+    else if (arg === "--effort" && (provider === "codex" ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] : provider === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh", "max"]).includes(value)) result.effort = value as NonNullable<ProviderArguments["effort"]>;
     else if (provider === "claude" && arg === "--add-dir") (result.additionalDirectories ??= []).push(value);
     else throw new Error(`Unsupported Web ${provider} argument: ${arg}`);
   }

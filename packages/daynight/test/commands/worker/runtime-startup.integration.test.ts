@@ -110,10 +110,26 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
-  it("retains unavailable local IDs while running healthy projects and bootstraps only after full recovery", async () => {
+  it("applies persistent local overrides to registered cloud targets without rewriting desired", async () => {
+    const f = await fixture(), cancellation = new AbortController();
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, agentControlMode: "web", agentModel: "local-model", agentReasoningEffort: "high" } }));
+    const target = desired();
+    Object.assign(target.value.native, { args: ["--effort", "medium"] });
+    mocks.remote().configuration.mockResolvedValue(resource(target)); mocks.remote.mockClear();
+    finishAtTick(cancellation, current => {
+      expect(current.globalConfiguration).toMatchObject({ model: "local-model", args: ["--effort", "high"] });
+      expect(current.repositories[0]!.configuration).toMatchObject({ model: "local-model", args: ["--effort", "high"] });
+      const report = (mocks.reporter.mock.calls[0]![0] as ReporterOptions).configuration!.capture();
+      expect(report.bootstrap).toBeNull();
+      expect(report.observation!.items.find(item => item.key.kind === "native")!.appliedValue).toEqual(target.value.native);
+    });
+    await runWorker({ ...f, signal: cancellation.signal });
+  });
+
+  it.each([true, false])("retains unavailable local IDs and reports fallback sources with local overrides=%s", async overrides => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
-    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1 } }));
     let available = false;
     const unavailable = new ApiError({ operation: "project.show" }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -141,6 +157,13 @@ describe("worker cloud-first startup", () => {
             expect(current.targetProjectIds).toEqual([uuid(1), uuid(2)]);
             expect(current.readyProjectIds).toEqual([uuid(2)]);
             expect(reporterOptions!.configuration!.capture().bootstrap).toBeNull();
+            const operation = createOperation();
+            try {
+              const sample = await reporterOptions!.collect(operation);
+              const native = { agent: "codex", model: { value: "local-model", source: "local" }, reasoningEffort: { value: overrides ? "high" : "low", source: "local" } };
+              expect(sample.telemetry.runtimeConfiguration).toEqual({ schemaVersion: 1, native, projects: [{ projectId: uuid(2), native }] });
+              expect(current.repositories[0]!.configuration.model).toBe("local-model");
+            } finally { operation.dispose(); }
             available = true;
           } else {
             expect(current.readyProjectIds).toEqual([uuid(1), uuid(2)]);
@@ -735,7 +758,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(mocks.reporter).toHaveBeenCalledOnce(); expect(mocks.coordinator).not.toHaveBeenCalled();
   expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error", error: expect.objectContaining({ message: expect.stringContaining("unsupported-version") }) }));
   expect(mocks.reporter.mock.results[0]!.value.stop).toHaveBeenCalledOnce();
-  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(11);
+  const worker = new Database(f.paths.databaseFile); expect(worker.pragma("user_version", { simple: true })).toBe(12);
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 }); worker.close();
   const web = new Database(webFile);
   expect(web.pragma("user_version", { simple: true })).toBe(4);
@@ -749,7 +772,7 @@ it("retains committed Worker state while a Web state failure leaves the configur
   expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(3);
   upgradedWeb.close();
   const unchangedWorker = new Database(f.paths.databaseFile);
-  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(11);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(12);
   unchangedWorker.close();
 });
 
