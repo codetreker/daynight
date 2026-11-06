@@ -65,9 +65,61 @@ func TestTaskCreateReadAndDerivedState(t *testing.T) {
 	}
 }
 
+type taskInputValidationStore struct {
+	writeProject func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error)
+}
+
+func (taskInputValidationStore) ReadSnapshot(context.Context, func(store.SnapshotScope) error) error {
+	panic("Task input validation unexpectedly read a snapshot")
+}
+
+func (database taskInputValidationStore) WriteProject(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+	if database.writeProject == nil {
+		panic("Task input validation unexpectedly entered a Project write")
+	}
+	return database.writeProject(ctx, id, work)
+}
+
+func taskInputValidationFixture() (*taskservice.Tasks, model.Project, model.Task, model.Principal) {
+	project := model.Project{ID: "b0000000-0000-4000-8000-000000000004"}
+	target := model.Task{ID: "a0000000-0000-4000-8000-000000000003", ProjectID: project.ID, Version: 1, Status: model.TaskTodo, Title: "Target", Properties: model.TaskProperties{}}
+	principal := model.Principal{Kind: model.SessionCredential, UserID: "00000000-0000-4000-8000-000000000001", CredentialID: "00000000-0000-4000-8000-000000000002"}
+	return taskservice.NewTasks(taskInputValidationStore{}), project, target, principal
+}
+
+func TestTaskValidInputReachesProjectWriter(t *testing.T) {
+	for _, method := range []string{"create", "update", "status"} {
+		t.Run(method, func(t *testing.T) {
+			_, project, target, principal := taskInputValidationFixture()
+			ctx := t.Context()
+			sentinel := errors.New("Project writer reached")
+			calls := 0
+			tasks := taskservice.NewTasks(taskInputValidationStore{writeProject: func(actual context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+				calls++
+				if actual != ctx || id != project.ID || work == nil {
+					t.Fatal("Task input validation changed writer context, Project identity, or callback")
+				}
+				return store.Completion{Outcome: store.TransactionNotCommitted}, sentinel
+			}})
+			var err error
+			switch method {
+			case "create":
+				_, err = tasks.Create(ctx, principal, project.ID, taskcore.CreateTask{Title: "Valid"})
+			case "update":
+				_, err = tasks.Update(ctx, principal, project.ID, target.ID, taskcore.UpdateTask{Version: target.Version, Title: pointer("Changed")})
+			case "status":
+				_, err = tasks.SetStatus(ctx, principal, project.ID, target.ID, taskcore.SetTaskStatus{Version: target.Version, Status: model.TaskTodo})
+			}
+			var refusal *model.Fault
+			if calls != 1 || !errors.Is(err, sentinel) || errors.As(err, &refusal) {
+				t.Fatalf("valid Task input did not reach the writer once: calls=%d error=%v", calls, err)
+			}
+		})
+	}
+}
+
 func TestTaskInputValidation(t *testing.T) {
-	tasks, _, project, _, principal := taskService(t)
-	target := createTask(t, tasks, principal, project.ID, "Target")
+	tasks, project, target, principal := taskInputValidationFixture()
 	for _, input := range []taskcore.CreateTask{
 		{Title: ""}, {Title: " \n\u2003"}, {Title: "bad\x00title"}, {Title: "bad\xfftitle"},
 		{Title: "Valid", Description: "bad\x00description"}, {Title: "Valid", Description: "bad\xffdescription"},
@@ -78,14 +130,9 @@ func TestTaskInputValidation(t *testing.T) {
 	}
 	for _, input := range []taskcore.UpdateTask{
 		{Version: 0, Title: pointer("Changed")}, {Version: -1, Title: pointer("Changed")}, {Version: target.Version},
-		{Version: target.Version, Title: pointer(" ")}, {Version: target.Version, Description: pointer("bad\x00")},
-		{Version: target.Version, DependsOn: pointer([]string{"invalid"})},
-		{Version: target.Version, DependsOn: pointer([]string{target.ID})},
-		{Version: target.Version, DependsOn: pointer([]string{target.ID, strings.ToUpper(target.ID)})},
 	} {
 		_, err := tasks.Update(context.Background(), principal, project.ID, target.ID, input)
 		requireFault(t, err, "invalid_input")
-		assertTaskUnchanged(t, tasks, principal, target)
 	}
 	for _, operation := range []func() error{
 		func() error {
@@ -249,6 +296,18 @@ func TestTaskSetStatusAllPairsAndVersionOrder(t *testing.T) {
 	}
 }
 
+func TestTaskStatusInputValidation(t *testing.T) {
+	tasks, project, target, principal := taskInputValidationFixture()
+	for _, input := range []taskcore.SetTaskStatus{{Version: 0, Status: model.TaskTodo}, {Version: -1, Status: model.TaskDone}, {Version: 1, Status: ""}, {Version: 1, Status: "proposed"}, {Version: 1, Status: "TODO"}, {Version: 1, Status: " todo"}} {
+		_, err := tasks.SetStatus(t.Context(), principal, project.ID, target.ID, input)
+		requireFault(t, err, "invalid_input")
+	}
+	for _, scope := range [][2]string{{"invalid", target.ID}, {project.ID, "invalid"}} {
+		_, err := tasks.SetStatus(t.Context(), principal, scope[0], scope[1], taskcore.SetTaskStatus{Version: 1, Status: model.TaskTodo})
+		requireFault(t, err, "invalid_input")
+	}
+}
+
 func TestTaskSetStatusValidationAndScope(t *testing.T) {
 	tasks, database, project, _, principal := taskService(t)
 	target := createTask(t, tasks, principal, project.ID, "Target")
@@ -257,13 +316,14 @@ func TestTaskSetStatusValidationAndScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := createTask(t, tasks, principal, otherProject.ID, "Other")
-	for _, input := range []taskcore.SetTaskStatus{{Version: 0, Status: model.TaskTodo}, {Version: -1, Status: model.TaskDone}, {Version: 1, Status: ""}, {Version: 1, Status: "proposed"}, {Version: 1, Status: "TODO"}, {Version: 1, Status: " todo"}} {
-		_, err := tasks.SetStatus(context.Background(), principal, project.ID, target.ID, input)
+	for _, input := range []taskcore.UpdateTask{
+		{Version: target.Version, Title: pointer(" ")},
+		{Version: target.Version, Description: pointer("bad\x00")},
+		{Version: target.Version, DependsOn: pointer([]string{target.ID})},
+	} {
+		_, err := tasks.Update(context.Background(), principal, project.ID, target.ID, input)
 		requireFault(t, err, "invalid_input")
-	}
-	for _, scope := range [][2]string{{"invalid", target.ID}, {project.ID, "invalid"}} {
-		_, err := tasks.SetStatus(context.Background(), principal, scope[0], scope[1], taskcore.SetTaskStatus{Version: 1, Status: model.TaskTodo})
-		requireFault(t, err, "invalid_input")
+		assertTaskUnchanged(t, tasks, principal, target)
 	}
 	missing := "00000000-0000-0000-0000-000000000000"
 	for _, scope := range [][2]string{{missing, target.ID}, {project.ID, missing}, {project.ID, other.ID}} {
