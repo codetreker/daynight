@@ -82,7 +82,7 @@ describe("Bot execution file persistence and migration", () => {
     expect(() => openBotExecutionStore(file, { onMigration: () => {} })).toThrow(/migration/);
     expect(db.pragma("user_version", { simple: true })).toBe(8); expect(db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all()).toEqual(schema); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     vi.restoreAllMocks(); const store = openBotExecutionStore(file, { onMigration: () => {} }); handles.push(store);
-    expect(db.pragma("user_version", { simple: true })).toBe(11); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
+    expect(db.pragma("user_version", { simple: true })).toBe(12); expect(db.prepare("SELECT * FROM bots").all()).toEqual(rows);
     expect(db.prepare("SELECT * FROM projects").get()).toMatchObject({ project_id: id(4), local_path: home });
   });
   it("atomically replaces a stopped generation while preserving registration, role and original conversation", () => {
@@ -119,15 +119,16 @@ describe("Bot execution file persistence and migration", () => {
     const record = bots.get(owner, id(3))!;
     expect(record).toEqual(f.record);
     expect(store.get(record)).toEqual(f.store.get(f.record));
-    expect(db.pragma("user_version", { simple: true })).toBe(11);
+    expect(db.pragma("user_version", { simple: true })).toBe(12);
   });
   it("upgrades format ten without rewriting Bot execution, inventory or Task cleanup responsibility", () => {
     const f = formatTenFixture(), rows = f.rows();
     const schema = f.db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all();
     const bots = openBotStore(f.database, { onMigration: () => {} }), executions = openBotExecutionStore(f.database, { onMigration: () => {} }); handles.push(bots, executions);
-    expect(f.db.pragma("user_version", { simple: true })).toBe(11);
+    expect(f.db.pragma("user_version", { simple: true })).toBe(12);
     expect(f.rows()).toEqual(rows);
-    expect(f.db.prepare("SELECT * FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
+    expect(f.db.prepare("SELECT * FROM sqlite_schema WHERE tbl_name != 'claim_native_configurations' ORDER BY name").all()).toEqual(schema);
+    expect(f.db.prepare("SELECT * FROM claim_native_configurations").all()).toEqual([]);
     expect(bots.get(owner, id(3))).toEqual(f.record);
     expect(executions.get(f.record)).toEqual(f.store.get(f.record));
   });
@@ -158,7 +159,7 @@ describe("Bot execution file persistence and migration", () => {
     expect(f.rows()).toEqual(rows);
     vi.restoreAllMocks();
     const reopened = openBotStore(f.database, { onMigration: () => {} }); handles.push(reopened);
-    expect(f.db.pragma("user_version", { simple: true })).toBe(11);
+    expect(f.db.pragma("user_version", { simple: true })).toBe(12);
     expect(f.rows()).toEqual(rows);
   });
 });

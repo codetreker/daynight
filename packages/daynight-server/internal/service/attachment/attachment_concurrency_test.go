@@ -3,6 +3,7 @@ package attachment
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -246,6 +247,30 @@ func assertAttachmentState(t *testing.T, ctx context.Context, database *postgres
 	}
 }
 
+// The local gate deliberately shares 256 stripes across targets; see
+// docs/design/daynight-task-attachments.md. This fixture tests database lock
+// isolation, so unrelated writes must not wait for the paused storage stripe.
+func independentAttachmentPath(t *testing.T, held, independent model.Task) string {
+	t.Helper()
+	heldAddress, err := attachmentcore.NewAddress(held.ProjectID, held.ID, "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	heldStripe := sha256.Sum256([]byte(heldAddress.StoragePath))[0]
+	for index := range 4096 {
+		path := fmt.Sprintf("independent-%d", index)
+		address, err := attachmentcore.NewAddress(independent.ProjectID, independent.ID, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sha256.Sum256([]byte(address.StoragePath))[0] != heldStripe {
+			return path
+		}
+	}
+	t.Fatal("no independent attachment gate stripe found")
+	return ""
+}
+
 func TestAttachmentMutationBlocksTaskDeletion(t *testing.T) {
 	for _, operation := range []string{"put", "overwrite", "delete"} {
 		t.Run(operation, func(t *testing.T) {
@@ -261,6 +286,8 @@ func TestAttachmentMutationBlocksTaskDeletion(t *testing.T) {
 				t.Fatal(err)
 			}
 			otherProjectTask := createTask(t, tasks, principal, otherProject.ID, "Independent project task")
+			otherPath := independentAttachmentPath(t, task, other)
+			otherProjectPath := independentAttachmentPath(t, task, otherProjectTask)
 			observed := &observedAttachmentStorage{Storage: files, reached: make(chan struct{}), release: make(chan struct{})}
 			mutation := make(chan error, 1)
 			go func() {
@@ -283,10 +310,10 @@ func TestAttachmentMutationBlocksTaskDeletion(t *testing.T) {
 				deletion <- tasks.Delete(ctx, principal, task.ProjectID, task.ID, taskcore.DeleteTask{Version: task.Version})
 			}()
 			waitAttachmentBlocked(t, ctx, database, blocker)
-			if _, _, err := attachments.Put(ctx, principal, other.ProjectID, other.ID, "independent", "text/plain", strings.NewReader("ok")); err != nil {
+			if _, _, err := attachments.Put(ctx, principal, other.ProjectID, other.ID, otherPath, "text/plain", strings.NewReader("ok")); err != nil {
 				t.Fatalf("independent Task blocked or failed: %v", err)
 			}
-			if _, _, err := attachments.Put(ctx, principal, otherProjectTask.ProjectID, otherProjectTask.ID, "independent", "text/plain", strings.NewReader("ok")); err != nil {
+			if _, _, err := attachments.Put(ctx, principal, otherProjectTask.ProjectID, otherProjectTask.ID, otherProjectPath, "text/plain", strings.NewReader("ok")); err != nil {
 				t.Fatalf("independent Project blocked or failed: %v", err)
 			}
 			close(observed.release)

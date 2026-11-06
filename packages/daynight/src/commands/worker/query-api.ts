@@ -1,4 +1,5 @@
 import { array, canonicalId, id, malformed, record, text as plainText, timestamp } from "../../api/validation.js";
+import { parseWorkerRuntimeConfiguration } from "../../api/worker-runtime-configuration.js";
 import type { TaskPlatform, TaskStatus, WorkerAgent, WorkerAssistantHost, WorkerAssistantHostReason, WorkerMachine, WorkerPhase, WorkerProbe, WorkerProbeCode, WorkerTelemetry } from "../../api/types.js";
 
 const executionPlatform = (value: unknown): TaskPlatform => value === "macos" || value === "linux" || value === "windows" ? value : malformed();
@@ -89,10 +90,11 @@ const assistantHost = (value: unknown, platform: TaskPlatform): WorkerAssistantH
     defaultProvider: choice(data.defaultProvider, providerNames), providers };
 };
 const telemetry = (value: unknown): WorkerTelemetry => {
-  const data = fields(value, ["machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", ...(Object.hasOwn(record(value), "assistantHost") ? ["assistantHost"] : [])]);
+  const data = fields(value, ["machine", "platform", "workingDirectory", "sampledAt", "os", "cpu", "memory", "disk", "versions", ...["assistantHost", "runtimeConfiguration"].filter(key => Object.hasOwn(record(value), key))]);
   const versions = fields(data.versions, ["daynight", "herdr", "codex", "copilot"]);
   return {
     ...(Object.hasOwn(data, "assistantHost") ? { assistantHost: assistantHost(data.assistantHost, executionPlatform(data.platform)) } : {}),
+    ...(Object.hasOwn(data, "runtimeConfiguration") ? { runtimeConfiguration: parseWorkerRuntimeConfiguration(data.runtimeConfiguration) } : {}),
     machine: machine(data.machine), platform: executionPlatform(data.platform), workingDirectory: text(data.workingDirectory), sampledAt: timestamp(data.sampledAt),
     os: probe(data.os, value => {
       const os = fields(value, ["type", "release", "version", "arch"]);

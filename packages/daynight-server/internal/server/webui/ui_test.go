@@ -252,3 +252,34 @@ func TestRegisterRoutesUsesProvidedResources(t *testing.T) {
 		t.Fatalf("registered route did not use provided resources: %d %q", response.Code, response.Body.String())
 	}
 }
+
+func TestBadRequestHandlerServesShellAndPreservesFailureBoundaries(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	index := "<html><body>server test shell</body></html>\n"
+	handler := New(testUIResources()).BadRequestHandler(logger)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(method, "/oauth/authorize?private=value", nil))
+		if w.Code != http.StatusBadRequest || w.Header().Get("Content-Type") != "text/html; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Content-Length") != strconv.Itoa(len(index)) || (method == http.MethodGet && w.Body.String() != index) || (method == http.MethodHead && w.Body.Len() != 0) {
+			t.Fatalf("bad-request shell: %s %d %+v %q", method, w.Code, w.Header(), w.Body)
+		}
+	}
+	for _, tc := range []struct {
+		resources ResourceReader
+		status    int
+	}{
+		{resources.NewFromFS(fstest.MapFS{}), http.StatusNotFound},
+		{resources.NewFromFS(resourceFailureFS{openErr: errors.New("private-resource-failure")}), http.StatusInternalServerError},
+	} {
+		w := httptest.NewRecorder()
+		New(tc.resources).BadRequestHandler(logger).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil))
+		if w.Code != tc.status || strings.Contains(w.Body.String(), "private") || strings.Contains(w.Body.String(), "<html") {
+			t.Fatalf("resource failure: %d %q", w.Code, w.Body)
+		}
+	}
+	writer := &countFailedUIWriter{header: make(http.Header)}
+	handler.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil))
+	if writer.status != http.StatusBadRequest || writer.writes != 1 {
+		t.Fatalf("failed delivery retried response: %+v", writer)
+	}
+}

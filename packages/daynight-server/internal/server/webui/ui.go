@@ -33,7 +33,12 @@ func (e *ResponseError) Unwrap() error { return e.Cause }
 func New(resources ResourceReader) *UI { return &UI{resources: resources} }
 
 func (u *UI) Page(w http.ResponseWriter, request *http.Request) error {
-	return u.serve(w, request, "dist/index.html", "text/html; charset=utf-8", "no-store")
+	return u.serve(w, request, "dist/index.html", "text/html; charset=utf-8", "no-store", http.StatusOK)
+}
+
+// BadRequestPage serves the application shell with its HTTP error status intact.
+func (u *UI) BadRequestPage(w http.ResponseWriter, request *http.Request) error {
+	return u.serve(w, request, "dist/index.html", "text/html; charset=utf-8", "no-store", http.StatusBadRequest)
 }
 
 func (u *UI) Asset(w http.ResponseWriter, request *http.Request) error {
@@ -48,10 +53,10 @@ func (u *UI) Asset(w http.ResponseWriter, request *http.Request) error {
 	if hashedAsset.MatchString(path.Base(name)) {
 		cache = "public, max-age=31536000, immutable"
 	}
-	return u.serve(w, request, "dist/assets/"+name, mime.TypeByExtension(path.Ext(name)), cache)
+	return u.serve(w, request, "dist/assets/"+name, mime.TypeByExtension(path.Ext(name)), cache, http.StatusOK)
 }
 
-func (u *UI) serve(w http.ResponseWriter, request *http.Request, name, contentType, cache string) error {
+func (u *UI) serve(w http.ResponseWriter, request *http.Request, name, contentType, cache string, status int) error {
 	if err := request.Context().Err(); err != nil {
 		return err
 	}
@@ -68,7 +73,7 @@ func (u *UI) serve(w http.ResponseWriter, request *http.Request, name, contentTy
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("Cache-Control", cache)
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	if request.Method == http.MethodHead {
 		return nil
 	}

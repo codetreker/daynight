@@ -11,6 +11,7 @@ import (
 type Config struct {
 	PublicOrigin         string
 	MCPAllowedOrigins    []string
+	OAuthClients         map[string][]byte
 	MCPTempBudgetBytes   int64
 	MCPReservedFreeBytes int64
 	UniAuthURL           string
@@ -28,6 +29,10 @@ type Config struct {
 }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
+	clients, err := parseOAuthClients(getenv("DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS"))
+	if err != nil {
+		return Config{}, err
+	}
 	tempBudget, err := loadBytes(getenv, "DAYNIGHT_MCP_TEMP_BUDGET_BYTES", 8<<30, false)
 	if err != nil {
 		return Config{}, err
@@ -63,6 +68,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	config := Config{
 		PublicOrigin:         getenv("DAYNIGHT_PUBLIC_ORIGIN"),
 		MCPAllowedOrigins:    splitMCPOrigins(getenv("DAYNIGHT_MCP_ALLOWED_ORIGINS")),
+		OAuthClients:         clients,
 		MCPTempBudgetBytes:   tempBudget,
 		MCPReservedFreeBytes: reservedFree,
 		UniAuthURL:           getenv("DAYNIGHT_UNIAUTH_URL"),
@@ -132,6 +138,9 @@ func loadDuration(getenv func(string) string, field string) (time.Duration, erro
 }
 
 func (c Config) Validate() error {
+	if err := validateOAuthClients(c.OAuthClients); err != nil {
+		return err
+	}
 	if c.MCPTempBudgetBytes < 0 || c.MCPReservedFreeBytes < 0 {
 		return &ConfigurationError{Field: "MCP temporary capacity", Rule: "must not be negative"}
 	}

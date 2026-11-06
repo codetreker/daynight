@@ -42,6 +42,22 @@ func (s *Reader) Attachment(ctx context.Context, projectID, taskID, path string)
 	return attachment, nil
 }
 
+// AttachmentBounded avoids materializing oversized content types in the caller.
+func (s *Reader) AttachmentBounded(ctx context.Context, projectID, taskID, path string, maxBytes int) (model.Attachment, bool, error) {
+	var a model.Attachment
+	var oversized bool
+	err := s.tx.QueryRow(ctx, `SELECT project_id::text, task_id::text, path,
+		CASE WHEN octet_length(content_type) <= $4 THEN content_type ELSE '' END,
+		size_bytes, created_at, updated_at, octet_length(content_type) > $4
+		FROM task_attachments WHERE project_id = $1 AND task_id = $2 AND path = $3`, projectID, taskID, path, maxBytes).
+		Scan(&a.ProjectID, &a.TaskID, &a.Path, &a.ContentType, &a.SizeBytes, &a.CreatedAt, &a.UpdatedAt, &oversized)
+	if err != nil {
+		return model.Attachment{}, false, pg.QueryError("read bounded attachment", err)
+	}
+	a.CreatedAt, a.UpdatedAt = a.CreatedAt.UTC(), a.UpdatedAt.UTC()
+	return a, oversized, nil
+}
+
 func (s *Reader) Attachments(ctx context.Context, projectID, taskID string, query store.AttachmentQuery) (store.AttachmentPage, error) {
 	rows, err := s.tx.Query(ctx, `SELECT project_id::text, task_id::text,
 		CASE WHEN $6::integer = 0 OR octet_length(path) <= $6 THEN path ELSE '' END,
