@@ -42,7 +42,8 @@ describe("Windows supervisor direct closure after native failure", () => {
     f.child.emit("close", 0, null);
     await vi.advanceTimersByTimeAsync(25);
     const result = await stopped;
-    expect(causes(result)).toContain(nativeFailure);
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).cause).toBe(nativeFailure);
     expect(f.supervisor.safeToReleaseLock).toBe(false);
     await expect(f.supervisor.exclude(review)).rejects.toBe(result);
   });
@@ -53,6 +54,8 @@ describe("Windows supervisor direct closure after native failure", () => {
     const stopped = f.stop();
     await vi.advanceTimersByTimeAsync(100);
     const result = await stopped, errors = causes(result);
+    expect((result as Error).cause).toBeInstanceOf(AggregateError);
+    expect(((result as Error).cause as AggregateError).errors).toHaveLength(2);
     expect(errors).toContain(nativeFailure);
     expect(errors.some(error => error instanceof Error && error.message.includes("did not close its process and streams"))).toBe(true);
     expect(f.settled).toBe(true);

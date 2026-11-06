@@ -115,7 +115,8 @@ export const createProcessSupervisor = (options: { graceMs?: number; previousPro
           // Native exit observation can precede Node's close event. Preserve
           // tree failure while still joining the original child and streams.
           try { await waitForClose(entry); } catch (error) { failures.push(error); }
-          if (failures.length) throw new AggregateError(failures, "Windows agent tree termination or direct-process closure failed.");
+          if (failures.length === 1) throw failures[0];
+          if (failures.length > 1) throw new AggregateError(failures, "Windows agent tree termination or direct-process closure failed.");
           entry.excluded = true;
         } else await stopGroup(entry);
       } catch (cause) { uncertain("Cannot confirm that the current agent and its foreground tools have stopped; execution state was retained.", cause); }
