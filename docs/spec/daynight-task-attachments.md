@@ -10,13 +10,11 @@
 本文拥有附件的产品行为与 FA1–FA14 要求；
 [架构](../design/daynight-task-attachments.md)拥有模块、接口和运行机制。
 [附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
-[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
+[项目分片决策](../../.agents/notes/archived/architecture/2026-10-24-project-sharded-attachment-layout.md)
 记录范围和取舍。各组件的实际验证结果归属对应源码、PR 与 CI。
 
 [鉴权需求](daynight-auth.md)要求附件请求继承项目成员权限，已在全部附件和预览
-入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。HTTP 入口每次验证会话或 PAT；文件 I/O 前在同一快照确认成员及 task 归属和未删除状态，已准入的
-单文件操作允许完成，I/O 后不再重新检查成员关系。本文的可信同源 HTML、普通
-iframe、相对资源及键盘交互继续保留，单文件操作和 K1 边界继续有效。[Task 软删除](daynight-task-deletion.md)保留全部附件元数据和文件；删除后新附件操作对授权成员返回 `410 task_deleted`。
+入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。HTTP 入口每次验证会话或 PAT；读取在文件 I/O 前通过快照确认成员及 task 归属和未删除状态。上传、覆盖和删除与 Task 软删除串行：先完成的附件变更由删除保留，删除先提交时附件变更不执行文件操作，对授权成员返回 `410 task_deleted`。本文的可信同源 HTML、普通 iframe、相对资源及键盘交互继续保留，单文件操作和 K1 边界继续有效。
 
 ## 目标与范围
 

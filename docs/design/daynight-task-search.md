@@ -2,7 +2,7 @@
 
 [搜索接口需求](../spec/daynight-task-search.md)定义表达式、投影和可观察结果。服务端是语法与匹配的唯一权威；CLI 和 Web 消费同一个只读接口。
 
-`internal/core/model/tasksearch/` 定义共享的纯表达式数据合同；`internal/core/tasksearch/query/` 解析表达式，保存原始 Unicode 位置并将否定下推到叶节点，不展开 DNF。解析器、业务计算与 PostgreSQL 编译器使用同一合同，store 根包不依赖搜索业务。纯证据计算只合并成立分支的正向命中，生成字段与描述摘录。搜索操作位于 `internal/core/tasksearch/`，通过 `internal/core/store/task_search.go` 的无驱动合同读取；PostgreSQL SQL 位于 `internal/core/store/postgres/`。HTTP 路由、专用 DTO 和服务组装分别由 `internal/server/task/`、`api/` 和 `internal/service/` 持有。
+`internal/core/model/tasksearch/` 定义共享的纯表达式数据合同；`internal/core/tasksearch/query/` 解析表达式，保存原始 Unicode 位置并将否定下推到叶节点，不展开 DNF。解析器、业务计算与 PostgreSQL 编译器使用同一合同，store 根包不依赖搜索业务。纯证据计算只合并成立分支的正向命中，生成字段与描述摘录。搜索操作位于 `internal/core/tasksearch/`，通过 `internal/core/store/task_search.go` 的无驱动合同读取；PostgreSQL SQL 位于 `internal/core/store/postgres/task/`。HTTP 路由、专用 DTO 和服务组装分别由 `internal/server/task/`、`api/` 和 `internal/service/` 持有。
 
 SQL 先按项目和结构化条件限定候选，用物化的 `folded` 和 `atom_hits` 分别对需要的文本每行折叠一次、对每个唯一字段和词计算一次命中；用户词仅作为参数。匹配与标题优先级从同一 NNF 生成，原文在页确定后读取，纯证据计算独立核对返回行。排序和总数先于 keyset 分页。
 

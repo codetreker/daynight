@@ -22,6 +22,13 @@ type BotDeletionReceipt struct {
 	Result     model.BotCleanupResult `json:"result"`
 }
 
+// DeletionCleanupError reports that the deletion barrier committed, but a
+// subsequent cleanup operation failed. The cause retains its own transaction facts.
+type DeletionCleanupError struct{ Cause error }
+
+func (e *DeletionCleanupError) Error() string { return "bot deletion cleanup: " + e.Cause.Error() }
+func (e *DeletionCleanupError) Unwrap() error { return e.Cause }
+
 type liveSessions interface{ DiscardBotSession(string) }
 
 type Deletions struct {
@@ -57,7 +64,7 @@ func deletionID(value string) bool {
 func deletionJSON(value any) []byte { data, _ := json.Marshal(value); return data }
 
 func (s *Deletions) credential(ctx context.Context, dao store.SessionDAO, p model.Principal) error {
-	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential {
+	if p.Kind != model.PATCredential && p.Kind != model.SessionCredential && p.Kind != model.OAuthCredential {
 		return deletionDenied()
 	}
 	if err := dao.LockCredential(ctx, p, s.now()); err != nil {
@@ -79,8 +86,8 @@ func (s *Deletions) lockBot(ctx context.Context, scope store.SessionScope, p mod
 	if err != nil {
 		return bot, err
 	}
-	if bot.OwnerUserID != p.UserID {
-		return bot, deletionDenied()
+	if err := botcore.RequireDeletionOwner(bot, p); err != nil {
+		return bot, err
 	}
 	return bot, nil
 }
@@ -97,11 +104,11 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		if err != nil {
 			return err
 		}
-		change, err := botcore.PrepareDeletion(bot, input)
+		replay, err := botcore.DeletionRequest(bot, input)
 		if err != nil {
 			return err
 		}
-		if !change {
+		if replay {
 			out = bot
 			return s.credential(ctx, scope.SessionDAO(), p)
 		}
@@ -131,7 +138,11 @@ func (s *Deletions) DeleteBot(ctx context.Context, p model.Principal, id string,
 		return model.Bot{}, errors.New("Bot deletion commit was not confirmed")
 	}
 	if botcore.NeedsServerCleanup(out) {
-		return s.clean(ctx, p, id, input.DeletionID)
+		cleaned, err := s.clean(ctx, p, id, input.DeletionID)
+		if err != nil {
+			return model.Bot{}, &DeletionCleanupError{Cause: err}
+		}
+		return cleaned, nil
 	}
 	return out, nil
 }

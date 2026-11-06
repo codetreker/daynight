@@ -29,7 +29,7 @@ safe errors.
 Startup and connection diagnostics are localized and appear once in the header.
 Fixed safe reasons expand with native keyboard-accessible details. Normal native
 activity and operation labels keep the English behavior selected by the
-[operation label decision](2026-11-04-english-session-operation-labels.md); this
+[operation label decision](../../archived/bug-fix/2026-11-04-english-session-operation-labels.md); this
 partially supersedes its blanket header-language rule for lifecycle diagnostics.
 The [requirements](../../../../docs/spec/task-sessions.md#启动结果与恢复阻断) and
 [design](../../../../docs/design/task-session-protocol.md#session-view-的启动状态选择)

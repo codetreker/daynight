@@ -35,7 +35,7 @@ and hover does not establish explicit keyboard candidate selection.
 The [requirements](../../../../docs/spec/task-sessions.md#chatbox-设置命令与运行状态)
 and [design](../../../../docs/design/task-session-protocol.md) own the complete
 behavior. This complements the
-[menu space and dismissal decision](2026-11-04-session-command-menu.md) and
+[menu space and dismissal decision](../../archived/bug-fix/2026-11-04-session-command-menu.md) and
 [slash submission decision](2026-11-05-session-slash-submission.md): menu height,
 catalog discovery, filtering, availability and command dispatch retain their
 existing owners.

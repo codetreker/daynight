@@ -16,6 +16,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	secretutil "github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 
 	taskcodec "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/codec"
@@ -64,7 +65,7 @@ func tracedThreads(t *testing.T, databaseURL string, action taskQueryAction) *ta
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return taskservice.NewTaskThreads(&store.Store{Pool: pool})
+	return taskservice.NewTaskThreads(&postgres.Store{Pool: pool})
 }
 
 func threadWait(t *testing.T, ctx context.Context, condition func() (bool, error)) {

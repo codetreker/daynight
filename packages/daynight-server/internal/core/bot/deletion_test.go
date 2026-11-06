@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"math"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -41,15 +42,15 @@ func faultCode(err error) string {
 func TestDeletionStateTransitions(t *testing.T) {
 	request := store.DeleteBot{Version: 4, DeletionID: "delete"}
 	bot := model.Bot{Version: 4, WorkerID: "worker"}
-	change, err := PrepareDeletion(bot, request)
-	if !change || err != nil {
-		t.Fatalf("new request: %v %v", change, err)
+	replay, err := DeletionRequest(bot, request)
+	if replay || err != nil {
+		t.Fatalf("new request: %v %v", replay, err)
 	}
 	bot.Deletion = NewDeletion(request)
-	if change, err = PrepareDeletion(bot, request); change || err != nil {
-		t.Fatalf("replay: %v %v", change, err)
+	if replay, err = DeletionRequest(bot, request); !replay || err != nil {
+		t.Fatalf("replay: %v %v", replay, err)
 	}
-	if _, err = PrepareDeletion(bot, store.DeleteBot{Version: 5, DeletionID: "delete"}); faultCode(err) != "resource_conflict" {
+	if _, err = DeletionRequest(bot, store.DeleteBot{Version: 5, DeletionID: "delete"}); faultCode(err) != "resource_conflict" {
 		t.Fatalf("request conflict: %v", err)
 	}
 	if _, _, err = PrepareWorkerCleanup(bot, "other", "delete", model.BotCleanupResult{}, "digest"); faultCode(err) != "forbidden" {
@@ -101,5 +102,39 @@ func TestDeletionStateTransitions(t *testing.T) {
 	}
 	if _, err = FailServerCleanup(&bot, "other"); faultCode(err) != "session_conflict" {
 		t.Fatalf("failure identity: %v", err)
+	}
+}
+
+func TestDeletionRequestPreservesOriginalIdentityAndObligations(t *testing.T) {
+	input := store.DeleteBot{Version: 1, DeletionID: botID}
+	bot := model.Bot{OwnerUserID: "owner", Version: 1, SessionID: ptr(workerID)}
+	if err := RequireDeletionOwner(bot, model.Principal{UserID: "other"}); err == nil {
+		t.Fatal("foreign owner was admitted")
+	}
+	if replay, err := DeletionRequest(bot, input); err != nil || replay {
+		t.Fatalf("bound Bot must proceed through the Session barrier: %v %v", replay, err)
+	}
+	bot.Deletion = NewDeletion(input)
+	bot.Deletion.WorkerCleanup.State = "completed"
+	bot.Version++
+	if replay, err := DeletionRequest(bot, input); err != nil || !replay || bot.Deletion.WorkerCleanup.State != "completed" {
+		t.Fatalf("replay changed cleanup responsibility: %+v %v", bot, err)
+	}
+	changed := input
+	changed.DeletionID = workerID
+	_, err := DeletionRequest(bot, changed)
+	assertFault(t, err, "resource_conflict")
+	changed = input
+	changed.Version++
+	_, err = DeletionRequest(bot, changed)
+	assertFault(t, err, "resource_conflict")
+	bot.Deletion = nil
+	_, err = DeletionRequest(bot, input)
+	assertFault(t, err, "version_conflict")
+	bot.Version = math.MaxInt64
+	assertFault(t, CheckDeletionVersion(bot), "version_exhausted")
+	deletion := NewDeletion(input)
+	if deletion.DeletionID != input.DeletionID || deletion.RequestedVersion != input.Version || deletion.WorkerCleanup.State != "pending" || deletion.ServerCleanup.State != "pending" {
+		t.Fatalf("unexpected initial deletion: %+v", deletion)
 	}
 }

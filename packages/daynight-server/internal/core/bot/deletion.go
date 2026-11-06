@@ -16,34 +16,44 @@ func deletionConflict() error {
 	return &model.Fault{Code: "session_conflict", Message: "Session identity or state no longer matches."}
 }
 
-// PrepareDeletion checks an initial request or identifies an exact replay.
-func PrepareDeletion(bot model.Bot, input store.DeleteBot) (bool, error) {
+// RequireDeletionOwner checks the owner after the caller has locked the Bot.
+func RequireDeletionOwner(bot model.Bot, principal model.Principal) error {
+	if bot.OwnerUserID != principal.UserID {
+		return &model.Fault{Code: "forbidden", Message: "Session access is not available."}
+	}
+	return nil
+}
+
+// DeletionRequest checks the original request against the locked Bot.
+// A replay must not recreate or downgrade its cleanup obligations.
+func DeletionRequest(bot model.Bot, input store.DeleteBot) (bool, error) {
 	if bot.Deletion != nil {
 		if bot.Deletion.DeletionID != input.DeletionID || bot.Deletion.RequestedVersion != input.Version {
 			return false, botConflict("Bot deletion belongs to a different request.")
 		}
-		return false, nil
+		return true, nil
 	}
 	if bot.Version != input.Version {
 		return false, &model.Fault{Code: "version_conflict", Message: "Bot version has changed."}
 	}
-	return true, nil
+	return false, nil
 }
 
-func NewDeletion(input store.DeleteBot) *model.BotDeletion {
-	return &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
-}
-
-func deletionVersion(bot model.Bot) error {
+// CheckDeletionVersion runs at the write boundary after Session revocation.
+func CheckDeletionVersion(bot model.Bot) error {
 	if bot.Version == math.MaxInt64 {
 		return &model.Fault{Code: "version_exhausted", Message: "Bot version cannot advance."}
 	}
 	return nil
 }
 
+func NewDeletion(input store.DeleteBot) *model.BotDeletion {
+	return &model.BotDeletion{DeletionID: input.DeletionID, RequestedVersion: input.Version, WorkerCleanup: model.BotCleanupResult{State: "pending"}, ServerCleanup: model.BotCleanupResult{State: "pending"}}
+}
+
 // SaveDeletion persists a transition after the caller has acquired its locks.
 func SaveDeletion(ctx context.Context, dao store.BotWriteDAO, bot model.Bot) (model.Bot, error) {
-	if err := deletionVersion(bot); err != nil {
+	if err := CheckDeletionVersion(bot); err != nil {
 		return model.Bot{}, err
 	}
 	return dao.SaveBotDeletion(ctx, bot.ID, bot.Deletion)

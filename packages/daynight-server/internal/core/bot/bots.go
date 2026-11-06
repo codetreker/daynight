@@ -229,41 +229,6 @@ func ListResult(principal model.Principal, workerID *string, records store.BotPa
 	return result, nil
 }
 
-// Delete records an intent; bound sessions require the separate deletion barrier.
-func Delete(ctx context.Context, tx store.BotWriteDAO, principal model.Principal, id string, input store.DeleteBot) (model.Bot, error) {
-	if err := botCredentialError(tx.Credential(ctx, principal)); err != nil {
-		return model.Bot{}, err
-	}
-	current, err := tx.Bot(ctx, id)
-	if errors.Is(err, model.ErrNotFound) {
-		return model.Bot{}, &model.Fault{Code: "not_found", Message: "Bot was not found.", Cause: err}
-	}
-	if err != nil {
-		return model.Bot{}, err
-	}
-	if err := botOwner(current, principal); err != nil {
-		return model.Bot{}, err
-	}
-	change, err := PrepareDeletion(current, input)
-	if err != nil {
-		return model.Bot{}, err
-	}
-	if !change {
-		return current, botCredentialError(tx.Credential(ctx, principal))
-	}
-	if current.SessionID != nil {
-		return model.Bot{}, botConflict("A bound Bot requires the Session deletion barrier.")
-	}
-	if err := deletionVersion(current); err != nil {
-		return model.Bot{}, err
-	}
-	result, err := tx.DeleteBot(ctx, id, input.Version, *NewDeletion(input))
-	if err != nil {
-		return model.Bot{}, err
-	}
-	return result, botCredentialError(tx.Credential(ctx, principal))
-}
-
 func ResultError(operation string, err error) error {
 	var transaction *store.TransactionError
 	if errors.As(err, &transaction) && transaction.Phase == "operation" && !transaction.CleanupFailed && transaction.Outcome == store.TransactionNotCommitted {

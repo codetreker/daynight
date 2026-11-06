@@ -19,8 +19,8 @@ and the raw path guard used before mux normalization, including standalone pages
 
 Files are written or deleted before metadata. A later metadata failure is
 reported without undoing the file operation; the two stores are not atomic.
-The physical address remains project and task scoped. The existing PostgreSQL
-implementation remains in the store root until its separate physical migration.
+The physical address remains project and task scoped. The [PostgreSQL backend](2026-11-05-server-postgres-ownership.md) owns the
+metadata implementation.
 
 ## Alternatives
 

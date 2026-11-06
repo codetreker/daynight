@@ -50,3 +50,12 @@ content and invalidates reads without cancelling a dispatched save; its result
 waits for renewed access. Identity invalidation still retires the old scope,
 and failed checks remain visible. The server
 continues to enforce authorization and exact version preconditions.
+
+The dispatched-save navigation regression uses the real `AuthenticatedApp`
+route transition. It checks request survival, the confirmed receipt, final value
+and a single write, including the App's responsibility for retaining the owner.
+A panel-only route-flag smoke repeated the save-survival proof without exercising
+that owner. The form tests separately retain the Chinese receipt and exact large
+version request body, while queued-save cancellation and return-read ordering
+remain covered independently. The integration case costs more to localize a
+panel defect, but protects both ownership layers with one navigation proof.

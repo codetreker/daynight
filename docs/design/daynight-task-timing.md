@@ -1,14 +1,14 @@
 # 任务执行耗时与卡住提醒架构
 
 本设计落实[需求 TT1–TT6](../spec/daynight-task-timing.md)，
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-23-task-timing-design.md)保存采用理由。
+[决策记录](../../.agents/notes/archived/architecture/2026-10-23-task-timing-design.md)保存采用理由。
 任务起止持久化、图数据库时间、项目阈值、设置页、共享时钟和实时展示构成当前机制。
 整体验收必须使用对应源码的运行证据，设计与实现代码不能替代运行结果。
 
 ## 现有结构与职责
 
 [状态服务](../../packages/daynight-server/internal/service/task/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
-[项目写事务](../../packages/daynight-server/internal/core/store/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
+[项目写事务](../../packages/daynight-server/internal/core/store/postgres/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
 `updated_at` 随普通编辑变化，不能作为执行起点。
 [任务链图读取服务](../../packages/daynight-server/internal/service/task/task_graph.go)在只读快照中
 读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task/task_sync.go)

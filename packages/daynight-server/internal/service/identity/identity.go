@@ -11,7 +11,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/team"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Identity coordinates the identity module, upstream claims, and transactions.
@@ -33,6 +32,13 @@ func (s *Identity) run(ctx context.Context, operation func(store.IdentityScope) 
 	var rejection error
 	completion, err := s.writer.WriteIdentity(ctx, func(scope store.IdentityScope) error {
 		err := operation(scope)
+		if failed, _ := store.DatabaseErrorFacts(err); failed {
+			return err
+		}
+		var transaction *store.TransactionError
+		if errors.As(err, &transaction) && (transaction.Phase != "operation" || transaction.CleanupFailed || transaction.Outcome != store.TransactionNotCommitted) {
+			return err
+		}
 		var fault *model.Fault
 		var grant *core.DeviceGrantError
 		if errors.As(err, &fault) || errors.As(err, &grant) {
@@ -156,6 +162,23 @@ func (s *Identity) User(ctx context.Context, p model.Principal) (model.User, err
 	}
 	return result, nil
 }
+
+// PersonalTeamID reads only the validated ownership facts, not user profile text.
+func (s *Identity) PersonalTeamID(ctx context.Context, p model.Principal) (string, error) {
+	var id string
+	err := s.run(ctx, func(scope store.IdentityScope) error {
+		facts, err := s.module.PersonalTeam(ctx, scope.IdentityDAO(), p)
+		if err != nil {
+			return err
+		}
+		if err := team.ValidatePersonalTeam(facts); err != nil {
+			return errors.New("user Personal Team is missing or invalid")
+		}
+		id = facts.ID
+		return nil
+	})
+	return id, err
+}
 func (s *Identity) Logout(ctx context.Context, p model.Principal) error {
 	if err := core.ValidateSession(p); err != nil {
 		return err
@@ -240,6 +263,13 @@ func (s *Identity) rate(ctx context.Context, operation, actor string, globalLimi
 		return s.module.DeviceRate(ctx, scope.IdentityDAO(), operation, actor, globalLimit, actorLimit, s.now().UTC())
 	})
 }
+
+func deviceCollision(err error) bool {
+	failure, state := store.DatabaseErrorFacts(err)
+	var transaction *store.TransactionError
+	return failure && state == "23505" && errors.As(err, &transaction) && transaction.Phase == "operation" && !transaction.CleanupFailed && transaction.Outcome == store.TransactionNotCommitted
+}
+
 func (s *Identity) StartDevice(ctx context.Context, clientID, source string) (core.DeviceStart, error) {
 	if err := core.ValidateDeviceClient(clientID); err != nil {
 		return core.DeviceStart{}, err
@@ -255,8 +285,7 @@ func (s *Identity) StartDevice(ctx context.Context, clientID, source string) (co
 			result, err = s.module.StartDevice(ctx, scope.IdentityDAO(), clientID, now)
 			return err
 		})
-		var conflict *pgconn.PgError
-		if errors.As(err, &conflict) && conflict.Code == "23505" {
+		if deviceCollision(err) {
 			continue
 		}
 		if err != nil {

@@ -12,8 +12,9 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 )
 
@@ -23,7 +24,7 @@ type resourceTestHandler struct {
 	principal model.Principal
 }
 
-func resourceTestServer(t *testing.T, database *store.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
+func resourceTestServer(t *testing.T, database *postgres.Store, files filestorage.Storage, output io.Writer) *resourceTestHandler {
 	t.Helper()
 	server := httptest.NewUnstartedServer(nil)
 	t.Cleanup(server.Close)
@@ -39,7 +40,7 @@ func resourceTestServer(t *testing.T, database *store.Store, files filestorage.S
 	config.AllowHTTPTestOrigin = true
 	config.AllowLoopbackHTTP = true
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := New(Dependencies{Store: database, Files: files}, config, logger)
+	handler, err := newTestHandler(Dependencies{Store: database, Ready: database.Ready, Files: files}, config, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +49,7 @@ func resourceTestServer(t *testing.T, database *store.Store, files filestorage.S
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, origin, "alice")
 	token := testauth.CreatePAT(t, browser, origin)
-	client, err := config.identityClient()
+	client, err := service.NewIdentityClient(config)
 	if err != nil {
 		t.Fatal(err)
 	}
