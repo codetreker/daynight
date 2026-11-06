@@ -516,3 +516,56 @@ it("tags same-scope direct denial events without sending the local origin as dat
   expect(scope.reportDirectSessionDenied(fence, epoch, true, origin)).toBe(true);
   await waitFor(() => expect(seen).toEqual([origin]));
 });
+
+it("keeps a direct Task visible when a Step mutation returns 404", async () => {
+  const { sessions, scope } = world(); const events: string[] = []; let writes = 0;
+  scope.subscribe(event => { if (event.taskNotFound) events.push(event.projectId); });
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "DELETE") { writes++; return Promise.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "missing-step" } }, null, 404)); }
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: 1n, steps: [step] }));
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task);
+  await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  sessions.deleteStep(project, task, step.id, 1n);
+  await waitFor(() => expect(sessions.snapshot(project, task).mutation).toMatchObject({ phase: "refused", error: { status: 404 } }));
+  await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  expect(sessions.snapshot(project, task).detail?.title).toBe("Original"); expect(events).toEqual([]); expect(writes).toBe(1);
+});
+
+it("does not treat a retired Step 404 as project access loss", async () => {
+  const { sessions, scope } = world(); const write = deferred<Response>(); let writes = 0; let accessReads = 0;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "DELETE") { writes++; return write.promise; }
+    if (url.endsWith("/access")) { accessReads++; return Promise.resolve(response(directAccessFixture(project), null)); }
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: 1n, steps: [step] }));
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
+  sessions.releaseRead(project, task); sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(true);
+  write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "missing-step" } }, null, 404));
+  await waitFor(() => expect(sessions.directRequiresFreshRead(project, task)).toBe(false));
+  expect(sessions.snapshot(project, task).detail?.title).toBe("Original"); expect(accessReads).toBe(0); expect(scope.isInvalidated).toBe(false);
+});
+
+it("keeps the existing direct receipt fresh during a pending Step write while blocking writes", async () => {
+  const { sessions } = world(); const write = deferred<Response>(); let writes = 0;
+  const step = { id: "00000001", title: "First", description: "", status: "todo", createdAt: "2026-10-22T10:00:00Z", updatedAt: "2026-10-22T10:00:00Z" };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string, init: RequestInit) => {
+    if (init.method === "DELETE") { writes++; return write.promise; }
+    if (url.endsWith("/steps")) return Promise.resolve(response({ projectId: project, taskId: task, version: 1n, steps: [step] }));
+    return Promise.resolve(response(body()));
+  }));
+  sessions.openDirect(project, task); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe("ready"));
+  sessions.subscribeSteps(project, task, () => {}); sessions.loadSteps(project, task); await waitFor(() => expect(sessions.canSetStepStatus(project, task)).toBe(true));
+  sessions.deleteStep(project, task, step.id, 1n); await waitFor(() => expect(writes).toBe(1));
+  expect(sessions.directRequiresFreshRead(project, task)).toBe(false);
+  expect(sessions.canSetStepStatus(project, task)).toBe(false);
+  write.resolve(response({ error: { code: "not_found", message: "Missing step", requestId: "missing-step" } }, null, 404));
+});

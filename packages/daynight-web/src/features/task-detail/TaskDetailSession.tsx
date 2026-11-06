@@ -241,7 +241,7 @@ export class TaskDetailSessions {
     return entry.source !== "direct" || entry.receipt === null || !this.ticketCurrent(entry, entry.receipt.fence) || entry.state.requiresFreshRead ||
       this.hasRetiredWrite(projectId, taskId) ||
       entry.state.status !== "ready" || entry.state.error !== null || entry.state.detail?.version !== entry.receipt.detail.version ||
-      entry.state.mutation.phase === "pending" || entry.state.mutation.phase === "unknown" || entry.state.mutation.reconciling || entry.state.mutation.reconciliationError !== null ||
+      entry.state.mutation.phase === "unknown" || entry.state.mutation.reconciling || entry.state.mutation.reconciliationError !== null ||
       entry.committedVersion !== null && entry.receipt.detail.version < entry.committedVersion;
   }
   private hasRetiredWrite(projectId: string, taskId: string): boolean {
@@ -249,11 +249,11 @@ export class TaskDetailSessions {
   }
   captureDirectQualification(projectId: string, taskId: string): DirectQualification | null {
     const entry = this.entry(projectId, taskId);
-    return this.directRequiresFreshRead(projectId, taskId) || entry.receipt === null ? null : { [directQualification]: entry.receipt };
+    return this.directRequiresFreshRead(projectId, taskId) || entry.state.mutation.phase === "pending" || entry.receipt === null ? null : { [directQualification]: entry.receipt };
   }
   isDirectQualificationCurrent(projectId: string, taskId: string, qualification: DirectQualification): boolean {
     const entry = this.entry(projectId, taskId);
-    return entry.receipt === qualification[directQualification] && !this.directRequiresFreshRead(projectId, taskId);
+    return entry.receipt === qualification[directQualification] && entry.state.mutation.phase !== "pending" && !this.directRequiresFreshRead(projectId, taskId);
   }
   async verifyDirectQualification(projectId: string, taskId: string, qualification: DirectQualification, signal: AbortSignal): Promise<boolean> {
     if (!this.isDirectQualificationCurrent(projectId, taskId, qualification)) return false;
@@ -1033,7 +1033,7 @@ export class TaskDetailSessions {
       ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
     retired.error = error;
     if (confirmed && committedVersion !== null) retired.committedVersion = committedVersion;
-    if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+    if (!isStepOperation(operation) && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
       if (retired.fence === null || !this.scope.isTaskReadCurrent(retired.fence, true)) { this.retiredMutations.delete(operation); return; }
       const current = this.entries.get(`${retired.projectId}/${retired.taskId}`);
       if (!this.disposed && current !== undefined) {
@@ -1341,7 +1341,7 @@ export class TaskDetailSessions {
       } catch (error) {
         if (this.scope.isInvalidated) return;
         if (this.retiredMutations.has(operation)) { this.finishRetiredMutation(operation, confirmed, error, committedVersion); return; }
-        if (ticket !== null && "historyGeneration" in ticket && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" &&
+        if (!isStepOperation(operation) && ticket !== null && "historyGeneration" in ticket && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found" &&
           this.scope.isTaskReadCurrent(ticket, true) && entry.openingGeneration === ticket.openingSequence) {
           entry.receipt = null; entry.liveVersion = null; entry.withdrawn = true;
           this.clearSteps(entry.steps, emptyTaskStepsState);
