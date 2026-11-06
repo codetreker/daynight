@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -89,5 +90,61 @@ func TestPrivateProjectResourceHTTPAuthenticationAndScope(t *testing.T) {
 				t.Fatalf("HEAD denial: type=%q bytes=%d error=%v", response.Header.Get("Content-Type"), len(body), err)
 			}
 		})
+	}
+}
+
+func TestPrivateProjectListsRemainIsolatedAcrossPATs(t *testing.T) {
+	integration := newIdentityIntegration(t)
+	alice, bob := identityBrowser(t), identityBrowser(t)
+	aliceUser, bobUser := integration.login(t, alice, "alice"), integration.login(t, bob, "bob")
+	if aliceUser.ID == bobUser.ID {
+		t.Fatal("fixture identities are not distinct")
+	}
+	origin := map[string]string{"Origin": integration.server.URL}
+	_, data := identityRequest(t, bob, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Bob private project", RepoURL: "https://example.test/bob", ExpectedUserID: bobUser.ID}), origin, http.StatusCreated)
+	bobProject := identityDecode[api.Project](t, data)
+	mint := func(browser *http.Client, name string) api.CreatedPersonalAccessToken {
+		t.Helper()
+		_, body := identityRequest(t, browser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", jsonBody(t, map[string]any{"name": name, "expiresAt": nil}), origin, http.StatusCreated)
+		created := identityDecode[api.CreatedPersonalAccessToken](t, body)
+		if created.ID == "" || !strings.HasPrefix(created.Token, "dnpat_") {
+			t.Fatal("PAT creation did not return a usable credential")
+		}
+		integration.secrets = append(integration.secrets, created.Token)
+		return created
+	}
+	aliceToken, bobToken := mint(alice, "Alice project access"), mint(bob, "Bob project access")
+	alicePAT, bobPAT := identityBrowser(t), identityBrowser(t)
+	aliceBearer := map[string]string{"Authorization": "Bearer " + aliceToken.Token}
+	bobBearer := map[string]string{"Authorization": "Bearer " + bobToken.Token}
+	list := func(client *http.Client, bearer map[string]string, userID string) api.ProjectPage {
+		t.Helper()
+		response, body := identityRequest(t, client, http.MethodGet, integration.server.URL+"/api/v1/projects", "", bearer, http.StatusOK)
+		if response.Header.Get("Daynight-User-ID") != userID {
+			t.Fatal("PAT project response lost its authenticated identity")
+		}
+		return identityDecode[api.ProjectPage](t, body)
+	}
+	bobBefore := list(bobPAT, bobBearer, bobUser.ID)
+	if len(bobBefore.Items) != 1 || bobBefore.Items[0] != bobProject || bobBefore.NextCursor != nil {
+		t.Fatalf("Bob's initial project scope: %+v", bobBefore)
+	}
+	_, data = identityRequest(t, alicePAT, http.MethodPost, integration.server.URL+"/api/v1/projects", jsonBody(t, api.CreateProjectRequest{Name: "Alice private project", RepoURL: "https://example.test/alice", ExpectedUserID: aliceUser.ID}), aliceBearer, http.StatusCreated)
+	aliceProject := identityDecode[api.Project](t, data)
+	alicePage := list(alicePAT, aliceBearer, aliceUser.ID)
+	if len(alicePage.Items) != 1 || alicePage.Items[0] != aliceProject || alicePage.Items[0].ID == bobProject.ID || alicePage.NextCursor != nil {
+		t.Fatalf("Alice's PAT project scope: %+v", alicePage)
+	}
+	bobAfter := list(bobPAT, bobBearer, bobUser.ID)
+	if !reflect.DeepEqual(bobAfter, bobBefore) {
+		t.Fatalf("Alice's project creation changed Bob's scope: %+v", bobAfter)
+	}
+	identityRequest(t, alice, http.MethodDelete, integration.server.URL+"/api/v1/me/tokens/"+aliceToken.ID, "", origin, http.StatusNoContent)
+	identityRequest(t, alicePAT, http.MethodGet, integration.server.URL+"/api/v1/projects", "", aliceBearer, http.StatusUnauthorized)
+	if afterRevocation := list(bobPAT, bobBearer, bobUser.ID); !reflect.DeepEqual(afterRevocation, bobBefore) {
+		t.Fatal("Alice's PAT revocation changed Bob's access")
+	}
+	if integration.logs.contains(aliceToken.Token) || integration.logs.contains(bobToken.Token) {
+		t.Fatal("project request diagnostics exposed a PAT")
 	}
 }

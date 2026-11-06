@@ -257,6 +257,21 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	}
 	second := createTask("External prerequisite", "Awaiting work", []string{}, []string{})
 	target := createTask("Blocked classified task", "Retained task", []string{first.ID, second.ID}, []string{second.ID})
+	references := []api.PullRequestProperty{
+		{URL: "", Title: ""},
+		{URL: "-arbitrary=地址, text", Title: "  标题\n\x1b[2J  "},
+		{URL: "-arbitrary=地址, text", Title: "  标题\n\x1b[2J  "},
+	}
+	response, body = jsonRequest(http.MethodPatch, projectPath+"/tasks/"+target.ID, map[string]any{"version": target.Version, "properties": map[string]any{"pullRequests": references}})
+	target = processPersistenceDecode[api.Task](t, response, body, http.StatusOK)
+	checkReferences := func(value api.Task) {
+		t.Helper()
+		var actual []api.PullRequestProperty
+		if err := json.Unmarshal(value.Properties["pullRequests"], &actual); err != nil || !reflect.DeepEqual(actual, references) {
+			t.Fatalf("PR references did not survive: %#v %v", actual, err)
+		}
+	}
+	checkReferences(target)
 	attachmentPath := projectPath + "/tasks/" + target.ID + "/attachments/files/nested/data.bin"
 	content := []byte{0, 1, 255, 13, 10, 'a'}
 	response, body = request(http.MethodPut, attachmentPath, "application/octet-stream", content)
@@ -289,6 +304,7 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 	}
 	project = readProject()
 	first, second, target, completed = readTask(first.ID), readTask(second.ID), readTask(target.ID), readTask(completed.ID)
+	checkReferences(target)
 	graph, attachments := readGraph(), readAttachments()
 	if project.Settings.Version != exact || project.Settings.ExecutionWarningMinutes != 90 || target.Version != exact || first.Version != math.MaxInt64 || first.Description != "Persistent description" || first.Status != "done" || second.Status != "todo" || target.Ready || !reflect.DeepEqual(target.ExternalDependsOn, []string{second.ID}) || len(target.DependsOn) != 2 || !slices.Contains(target.DependsOn, first.ID) || !slices.Contains(target.DependsOn, second.ID) || len(attachments.Items) != 1 || attachments.Items[0].Path != "nested/data.bin" || attachments.Items[0].ContentType != "application/octet-stream" || attachments.Items[0].SizeBytes != int64(len(content)) || graph.Project != project || graph.ObservedAt.IsZero() || !slices.ContainsFunc(graph.Tasks, func(item api.GraphTask) bool {
 		return item.ID == target.ID && reflect.DeepEqual(item.ExternalDependsOn, []string{second.ID})
@@ -310,8 +326,12 @@ func TestServerProcessPersistsResourcesAcrossRestart(t *testing.T) {
 		t.Fatalf("project changed across restart: %#v", actual)
 	}
 	for _, before := range []api.Task{first, second, target, completed} {
-		if actual := readTask(before.ID); !reflect.DeepEqual(actual, before) {
+		actual := readTask(before.ID)
+		if !reflect.DeepEqual(actual, before) {
 			t.Fatalf("task changed across restart: %#v", actual)
+		}
+		if before.ID == target.ID {
+			checkReferences(actual)
 		}
 	}
 	if actual := readAttachments(); !reflect.DeepEqual(actual, attachments) {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -177,6 +178,21 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 	held = false
 	waitMigrationProcessReady(t, ctx, first, firstValues["DAYNIGHT_PUBLIC_ORIGIN"])
 	waitMigrationProcessReady(t, ctx, second, secondValues["DAYNIGHT_PUBLIC_ORIGIN"])
+	var versions []int64
+	if err := observer.QueryRow(ctx, `SELECT array_agg(version ORDER BY version) FROM schema_migrations`).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	wantVersions := make([]int64, 43)
+	for index := range wantVersions {
+		wantVersions[index] = int64(index + 1)
+	}
+	if !slices.Equal(versions, wantVersions) {
+		t.Fatalf("concurrent processes did not share the complete migration ledger: %v", versions)
+	}
+	var grants, access, refresh, clients int
+	if err := observer.QueryRow(ctx, `SELECT (SELECT count(*) FROM oauth_grants), (SELECT count(*) FROM oauth_access_tokens), (SELECT count(*) FROM oauth_refresh_tokens), (SELECT count(*) FROM oauth_clients)`).Scan(&grants, &access, &refresh, &clients); err != nil || grants != 0 || access != 0 || refresh != 0 || clients != 0 {
+		t.Fatalf("OAuth tables after concurrent startup: grants=%d access=%d refresh=%d clients=%d error=%v", grants, access, refresh, clients, err)
+	}
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, firstValues["DAYNIGHT_PUBLIC_ORIGIN"], "alice")
 	token := testauth.CreatePAT(t, browser, firstValues["DAYNIGHT_PUBLIC_ORIGIN"])

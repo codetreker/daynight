@@ -118,3 +118,30 @@ func TestProjectGrantHTTPSelfRemovalReportsLostAccess(t *testing.T) {
 	}
 	assertProjectError(t, h.call("GET", base+"/members", "", h.member), 404, "not_found")
 }
+
+func TestProjectGrantHTTPDemotedMemberCannotPromoteSelf(t *testing.T) {
+	h := membershipTestHarness(t)
+	base := "/api/v1/projects/" + h.project.ID
+	_, token := h.invitation(t)
+	joined := decodeResponse[api.ProjectInvitationAcceptance](t, h.call("POST", "/api/v1/invitations/accept", invitationAcceptBody(token, h.memberID), h.member), 200).DirectGrant
+	path := base + "/grants/" + h.memberID
+	promote := fmt.Sprintf(`{"version":%d,"role":"admin","expectedUserId":%q}`, joined.Version, h.adminID)
+	promoted := decodeResponse[api.ProjectGrantResult](t, h.call("PUT", path, promote, h.admin), 200)
+	demote := fmt.Sprintf(`{"version":%d,"role":"member","expectedUserId":%q}`, promoted.Grant.Version, h.adminID)
+	demoted := decodeResponse[api.ProjectGrantResult](t, h.call("PUT", path, demote, h.admin), 200)
+	if demoted.Grant.Role != "member" || demoted.Grant.Version <= promoted.Grant.Version {
+		t.Fatalf("demotion did not persist the current grant: %+v", demoted.Grant)
+	}
+	attempt := fmt.Sprintf(`{"version":%d,"role":"admin","expectedUserId":%q}`, demoted.Grant.Version, h.memberID)
+	assertProjectError(t, h.call("PUT", path, attempt, h.member), 403, "forbidden")
+	people := decodeResponse[api.ProjectParticipantList](t, h.call("GET", base+"/members", "", h.admin), 200)
+	for _, person := range people.Items {
+		if person.UserID == h.memberID {
+			if person.DirectGrant == nil || *person.DirectGrant != demoted.Grant || person.EffectiveRole != "member" {
+				t.Fatalf("refused self-promotion changed the grant: %+v", person)
+			}
+			return
+		}
+	}
+	t.Fatal("demoted member disappeared from the participant list")
+}
