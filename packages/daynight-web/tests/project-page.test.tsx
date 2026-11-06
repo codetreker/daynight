@@ -4,6 +4,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getTask, getTaskSync } from "../src/api/client";
+import { searchTasks, TaskSearchError } from "../src/api/task-search";
 import type { GraphTask, TaskDetail, TaskGraph, TaskStatus } from "../src/api/types";
 import { ProjectPage } from "../src/features/projects/ProjectPage";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
@@ -14,6 +15,7 @@ const localeRender = createLocaleRender("zh-CN");
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
 vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
+vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
 vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession }: {
   index: GraphIndex; representativeIds: readonly string[]; openChainId: string | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
@@ -24,12 +26,12 @@ vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, re
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}
 </div>)}</div> }));
-vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
-  projectId: string; taskId: string; snapshot: GraphSnapshot | null; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
+vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
+  projectId: string; taskId: string; snapshot: GraphSnapshot | null; observation: { kind: string }; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
 }) => {
   const state = useTaskDetail(projectId, taskId, snapshot?.revision ?? 0, snapshot?.index.nodes.get(taskId));
   useEffect(() => () => onRestoreFocus(), [onRestoreFocus]);
-  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
+  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="observation-kind">{observation.kind}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
     <button onClick={() => onSelectTask(C)}>关系跳转</button><button onClick={() => onSelectTask(X)}>未知关系</button>
     <button onClick={onRefreshGraph}>刷新全图</button><button onClick={onClose}>关闭详情</button></aside>;
 } }));
@@ -83,6 +85,7 @@ const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullReq
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
+  vi.mocked(searchTasks).mockReset();
   syncFixture.reset();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
@@ -105,6 +108,99 @@ beforeEach(() => {
 });
 
 describe("project dashboard", () => {
+  it("keeps search available without a graph and opens a hit with direct observation", async () => {
+    graphRequest.mockRejectedValue(new ApiError("network"));
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, context: { taskId: A, title: "原任务链" }, match: { fields: ["description"], descriptionSnippet: "匹配描述" } }] });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    const input = screen.getByRole("textbox", { name: "搜索任务标题和描述" });
+    fireEvent.change(input, { target: { value: "历史" } });
+    expect(searchTasks).not.toHaveBeenCalled();
+    fireEvent.submit(input.closest("form")!);
+    const result = await screen.findByRole("button", { name: "打开任务：完整的历史任务" });
+    expect(screen.getByText("原任务链", { exact: false })).toBeTruthy();
+    fireEvent.click(result);
+    expect(screen.getByTestId("selected-task")).toHaveTextContent(X);
+    expect(screen.getByTestId("observation-kind")).toHaveTextContent("direct");
+    fireEvent.click(screen.getByRole("button", { name: "关闭详情" }));
+    expect(result).toHaveFocus();
+  });
+
+  it("keeps draft edits separate and restores ordinary task state on clear", async () => {
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("button", { name: "另一任务链" });
+    const input = screen.getByRole("textbox", { name: "搜索任务标题和描述" });
+    fireEvent.change(input, { target: { value: "缓存" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByText("未找到匹配任务");
+    fireEvent.change(input, { target: { value: "未提交" } });
+    expect(screen.getByText("搜索结果：缓存")).toBeTruthy();
+    expect(searchTasks).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "清空搜索" }));
+    expect(screen.getByRole("button", { name: "另一任务链" })).toBeTruthy();
+    expect(input).toHaveFocus();
+  });
+
+  it("reports syntax errors and selects the Unicode location in the submitted expression", async () => {
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockRejectedValue(new TaskSearchError(400, "invalid_search_expression", "search-request", { reason: "unexpected_closing_group", position: 4, length: 1 }));
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    const input = screen.getByRole("textbox", { name: "搜索任务标题和描述" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "😀中 )" } }); fireEvent.submit(input.closest("form")!);
+    expect(await screen.findByText("搜索语法第 4 个字符：多余的右括号。")).toBeTruthy();
+    expect(input).toHaveFocus();
+    expect([input.selectionStart, input.selectionEnd]).toEqual([4, 5]);
+    expect(screen.queryByText("未找到匹配任务")).toBeNull();
+  });
+
+  it("retains pagination focus while the next page is loading and after it arrives", async () => {
+    graphRequest.mockResolvedValue(graph());
+    const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
+    const item = { id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `page-one-${index}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("heading", { name: "核心项目" });
+    const input = screen.getByRole("textbox", { name: "搜索任务标题和描述" });
+    fireEvent.change(input, { target: { value: "页" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByRole("button", { name: "打开任务：第一页" });
+    const next = screen.getByRole("button", { name: "下一页" }); next.focus(); fireEvent.click(next);
+    expect(next).toHaveFocus(); expect(next).toHaveAttribute("aria-disabled", "true");
+    await act(async () => { pending.resolve({ projectId, total: 16, items: [{ ...item, id: B, title: "第二页" }], nextCursor: null }); });
+    expect(await screen.findByRole("button", { name: "打开任务：第二页" })).toBeTruthy();
+    expect(next).toHaveFocus(); expect(next).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("exits search before navigating from overview to a task chain", async () => {
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("heading", { name: "核心项目" });
+    const input = screen.getByRole("textbox", { name: "搜索任务标题和描述" });
+    fireEvent.change(input, { target: { value: "缓存" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByText("未找到匹配任务");
+    fireEvent.click(screen.getByRole("tab", { name: "概览" }));
+    document.getElementById(`task-root-${C}`)!.scrollIntoView = vi.fn();
+    fireEvent.click(screen.getByRole("button", { name: /另一任务链.*前往任务列表/ }));
+    expect(screen.getByRole("button", { name: "另一任务链" })).toHaveFocus();
+    expect(input).toHaveValue("");
+    expect(screen.queryByText("未找到匹配任务")).toBeNull();
+  });
+
+  it("does not steal focus or selection when a syntax error is repeated by a background check", async () => {
+    graphRequest.mockResolvedValue(graph());
+    vi.mocked(searchTasks).mockImplementation(async () => { throw new TaskSearchError(400, "invalid_search_expression", "search-request", { reason: "unexpected_closing_group", position: 4, length: 1 }); });
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("heading", { name: "核心项目" });
+    const input = screen.getByRole("textbox", { name: "搜索任务标题和描述" }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "😀中 )" } }); fireEvent.submit(input.closest("form")!);
+    await screen.findByText("搜索语法第 4 个字符：多余的右括号。");
+    input.setSelectionRange(0, 0); const help = screen.getByRole("button", { name: "搜索语法" }); help.focus();
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(searchTasks).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(help).toHaveFocus());
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 0]);
+  });
+
   it("routes session shortcuts directly to the selected task session tab", async () => {
     graphRequest.mockResolvedValue(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
