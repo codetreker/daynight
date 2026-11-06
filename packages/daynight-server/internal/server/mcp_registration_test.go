@@ -41,3 +41,24 @@ func TestRegisterMCPAdaptersStopsAndPropagatesFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPRegistrationStopsAtEveryFailure(t *testing.T) {
+	failure := errors.New("registration failed")
+	for _, index := range []int{0, 1, 2, 3, 4} {
+		calls := 0
+		adapters := make([]func() error, 5)
+		for i := range adapters {
+			adapters[i] = func() error {
+				calls++
+				if i == index {
+					return failure
+				}
+				return nil
+			}
+		}
+		err := registerMCPAdapters(adapters...)
+		if !errors.Is(err, failure) || calls != index+1 {
+			t.Fatalf("failure at %d: calls=%d err=%v", index, calls, err)
+		}
+	}
+}

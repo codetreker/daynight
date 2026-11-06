@@ -32,6 +32,100 @@ type StepDocument struct {
 	JSON     []byte
 }
 
+// StepsPage is read under one snapshot with its parent version. Items are
+// ordered by position; summary items do not contain descriptions.
+type StepsPage struct {
+	Header  model.TaskHeader
+	Items   []store.TaskStepProjection
+	HasMore bool
+}
+
+type StepSummary struct {
+	Header model.TaskHeader
+	Item   store.TaskStepProjection
+}
+
+func validateStepProjection(header model.TaskHeader, item store.TaskStepProjection, summary bool) error {
+	step := item.Step
+	if summary && item.TitleTruncated {
+		// A non-whitespace character can occur beyond the bounded prefix.
+		step.Title = "preview"
+	}
+	_, err := taskcodec.Item(header, step)
+	return err
+}
+
+// ListPage returns bounded rows and rejects a cursor from another parent
+// version before reading the page. afterPosition is -1 for the first page.
+func (s *TaskSteps) ListPage(ctx context.Context, principal model.Principal, projectID, taskID string, afterPosition int64, limit int, expectedVersion *int64, summary bool) (StepsPage, error) {
+	if afterPosition < -1 || limit < 1 || limit > 100 || (expectedVersion != nil && *expectedVersion < 1) {
+		return StepsPage{}, &model.Fault{Code: "invalid_input", Message: "Invalid Step page bounds or version."}
+	}
+	var page StepsPage
+	err := s.read(ctx, principal, projectID, taskID, func(reader store.TaskReader, header model.TaskHeader) error {
+		if err := taskcodec.ValidateHeader(header); err != nil {
+			return err
+		}
+		if expectedVersion != nil {
+			if err := taskcore.RequireVersion(header.Version, *expectedVersion); err != nil {
+				return err
+			}
+		}
+		items, err := reader.TaskStepPage(ctx, header.ID, afterPosition, limit+1, summary)
+		if err != nil {
+			return err
+		}
+		for i, item := range items {
+			if item.Step.Position != afterPosition+int64(i)+1 {
+				return errors.New("stored step positions are not dense and ordered")
+			}
+			if err := validateStepProjection(header, item, summary); err != nil {
+				return fmt.Errorf("invalid stored step at position %d: %w", item.Step.Position, err)
+			}
+		}
+		page = StepsPage{Header: header, Items: items, HasMore: len(items) > limit}
+		if page.HasMore {
+			page.Items = page.Items[:limit]
+		}
+		return nil
+	})
+	if err != nil {
+		return StepsPage{}, err
+	}
+	return page, nil
+}
+
+// GetSummary retains the observed parent version even for a missing Step via
+// the same StepAbsence fault used by Get.
+func (s *TaskSteps) GetSummary(ctx context.Context, principal model.Principal, projectID, taskID, stepID string) (StepSummary, error) {
+	if err := model.RequirePrincipal(principal); err != nil {
+		return StepSummary{}, err
+	}
+	id, err := tasksteps.CanonicalID(stepID)
+	if err != nil {
+		return StepSummary{}, err
+	}
+	var result StepSummary
+	err = s.read(ctx, principal, projectID, taskID, func(reader store.TaskReader, header model.TaskHeader) error {
+		item, err := reader.TaskStepSummary(ctx, header.ID, id)
+		if errors.Is(err, model.ErrNotFound) {
+			return tasksteps.NotFound(header.Version, err)
+		}
+		if err != nil {
+			return err
+		}
+		if err := validateStepProjection(header, item, true); err != nil {
+			return err
+		}
+		result = StepSummary{Header: header, Item: item}
+		return nil
+	})
+	if err != nil {
+		return StepSummary{}, err
+	}
+	return result, nil
+}
+
 func (s *TaskSteps) read(ctx context.Context, principal model.Principal, projectID, taskID string, operation func(store.TaskReader, model.TaskHeader) error) error {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return err
