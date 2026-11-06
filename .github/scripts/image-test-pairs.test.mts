@@ -137,6 +137,40 @@ test("an explicitly protected empty manifest leaves ordinary CI unchanged", asyn
   assert.equal(existsSync(join(f.cwd, testPath)), false);
 });
 
+test("an ordinary fork PR with an empty registry retains its original checkout", async (t) => {
+  const f = fixture(t);
+  f.manifest.pairs = [];
+  f.saveManifest();
+  const pr = f.ordinaryPR(f.implementation);
+  f.prs[pr].head.repo = { full_name: "contributor/repository" };
+  const beforeTree = f.git("rev-parse", "HEAD^{tree}");
+  const result = await f.run({ pr });
+  assert.equal(result.mode, "ordinary");
+  assert.equal(result.pairCount, 0);
+  assert.equal(result.changedTestFiles, 0);
+  assert.equal(result.combinedCommit, f.implementation);
+  assert.equal(result.combinedTree, beforeTree);
+  assert.equal(f.git("rev-parse", "HEAD"), f.implementation);
+  assert.equal(readFileSync(join(f.cwd, "packages/daynight/src/value.ts"), "utf8"), "export const value = 2;\n");
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
+});
+
+for (const [label, update, pattern] of [
+  ["a different target repository", (f: ReturnType<typeof fixture>, pr: number) => { f.prs[pr].base.repo = { full_name: "other/repository" }; }, /target the configured repository/],
+  ["a different event HEAD", (f: ReturnType<typeof fixture>, pr: number) => { f.prs[pr].head.sha = f.tests; }, /Event HEAD/],
+  ["a different PR number", (f: ReturnType<typeof fixture>, pr: number) => { f.prs[pr].number = pr + 1; }, /pull request state/],
+] as const) test(`an ordinary fork PR rejects ${label}`, async (t) => {
+  const f = fixture(t);
+  f.manifest.pairs = [];
+  f.saveManifest();
+  const pr = f.ordinaryPR(f.implementation);
+  f.prs[pr].head.repo = { full_name: "contributor/repository" };
+  update(f, pr);
+  await assert.rejects(f.run({ pr }), pattern);
+  assert.equal(f.git("rev-parse", "HEAD"), f.implementation);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
+});
+
 for (const [label, update, pattern] of [
   ["remote I HEAD drift", (f: ReturnType<typeof fixture>) => { f.prs[11].head.sha = "a".repeat(40); }, /HEAD/],
   ["remote T HEAD drift", (f: ReturnType<typeof fixture>) => { f.prs[12].head.sha = "a".repeat(40); }, /HEAD/],
@@ -201,6 +235,15 @@ test("an unrelated PR before I incorporation keeps its original checks and sourc
   const f = fixture(t); const pr = f.ordinaryPR(f.base); f.git("checkout", "--detach", f.base);
   const result = await f.run({ pr, head: f.base });
   assert.equal(result.mode, "ordinary"); assert.equal(result.combinedCommit, f.base);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
+});
+
+test("an ordinary fork PR with an unrelated registered pair keeps its original checks", async (t) => {
+  const f = fixture(t); const pr = f.ordinaryPR(f.base); f.git("checkout", "--detach", f.base);
+  f.prs[pr].head.repo = { full_name: "contributor/repository" };
+  const result = await f.run({ pr, head: f.base });
+  assert.equal(result.mode, "ordinary"); assert.equal(result.combinedCommit, f.base);
+  assert.equal(result.changedTestFiles, 0);
   assert.equal(existsSync(join(f.cwd, testPath)), false);
 });
 
@@ -337,9 +380,11 @@ test("PR event identity cannot substitute a different candidate SHA", async (t) 
   await assert.rejects(f.run({ head: f.tests }), /Event HEAD/);
 });
 
-test("a different repository cannot supply a candidate", async (t) => {
-  const f = fixture(t); f.prs[12].head.repo.full_name = "attacker/repository";
+for (const pr of [11, 12]) test(`a fork cannot supply registered candidate PR ${pr}`, async (t) => {
+  const f = fixture(t); f.prs[pr].head.repo.full_name = "attacker/repository";
   await assert.rejects(f.run(), /configured repository/);
+  assert.equal(f.git("rev-parse", "HEAD"), f.implementation);
+  assert.equal(existsSync(join(f.cwd, testPath)), false);
 });
 
 test("a closed unmerged candidate is revoked", async (t) => {

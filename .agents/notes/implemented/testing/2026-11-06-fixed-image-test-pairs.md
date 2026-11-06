@@ -37,6 +37,13 @@ main push, it uses that push's commit and verifies that it belongs to protected
 main history. This retains the correct input for an earlier queued main run
 after a later run removes a completed mapping. All jobs consume the same pin.
 
+Every PR must target the configured repository, and an event PR must match its
+requested number and event HEAD. Only registered I/T candidates must also have
+their HEAD in that repository. Ordinary fork PRs retain their original checks,
+including with an empty registry; being read as an event does not make a PR a
+candidate. Candidate reads enforce the same repository boundary during registry
+validation and incorporation checks as during test composition.
+
 Each pair has the following fields:
 
 | Field | Meaning |
