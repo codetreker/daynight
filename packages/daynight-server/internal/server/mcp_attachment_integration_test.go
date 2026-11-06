@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	attachmentcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
@@ -139,9 +140,21 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	if err != nil || after.Version != parent.Version || !after.UpdatedAt.Equal(parent.UpdatedAt) {
 		t.Fatalf("attachment modified task: %+v %v", after, err)
 	}
-	if _, _, err := attachments.Put(t.Context(), principal, projectID, parent.ID, "giant", "text/plain; x="+strings.Repeat("a", 100000), strings.NewReader("x")); err != nil {
-		t.Fatal(err)
+	// Historical metadata can exceed the current write limit.
+	putLegacy := func(path, contentType string) {
+		t.Helper()
+		address, err := attachmentcore.NewAddress(projectID, parent.ID, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := files.Put(t.Context(), attachmentcore.Bucket, address.StoragePath, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := database.PutAttachment(t.Context(), model.Attachment{ProjectID: projectID, TaskID: parent.ID, Path: path, ContentType: contentType, SizeBytes: 1}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	putLegacy("giant", "text/plain; x="+strings.Repeat("a", 100000))
 	page := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "limit": 2}, false)["data"])
 	oversized := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": page["nextCursor"]}, true)["error"])
 	refs := obj(oversized["refs"])
@@ -204,9 +217,7 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	}
 	boundaryPath := strings.Repeat(strings.Repeat("😀", 50)+"/", 20) + "😀😀😀😀"
 	boundedContentType := "text/plain; x=" + strings.Repeat("a", 4000)
-	if _, _, err := attachments.Put(t.Context(), principal, projectID, parent.ID, boundaryPath, boundedContentType, strings.NewReader("x")); err != nil {
-		t.Fatalf("boundary path: %v", err)
-	}
+	putLegacy(boundaryPath, boundedContentType)
 	boundaryPage := obj(call(alice, "task_attachment_list", map[string]any{"projectId": projectID, "taskId": parent.ID, "cursor": refs["nextCursor"]}, false)["data"])
 	boundaryItems := boundaryPage["items"].([]any)
 	if len(boundaryItems) != 1 || obj(boundaryItems[0])["path"] != boundaryPath || obj(boundaryItems[0])["contentType"] != boundedContentType {

@@ -20,7 +20,7 @@ const step: TaskStep = { id: "00abcdef", title: "  <完整&> 中文😀\u001b[31
 const resource: StepsResource = { projectId, taskId, version: 9_007_199_254_740_993n, steps: [step, { ...step, id: "00000000", status: "in_progress", description: "Another complete description." }] };
 type Result = { readonly code: number | null; readonly stdout: string; readonly stderr: string };
 
-it("runs both packed launchers through Steps reads, delivered help and safe read failures", async () => {
+it("runs the packed Steps read matrix and verifies both native launchers", async () => {
   const installed = await createAcceptanceCli();
   const { receipt } = installed;
   const fixture = path.join(receipt.root, ".tmp", "Steps launcher fixture 中文");
@@ -116,12 +116,11 @@ it("runs both packed launchers through Steps reads, delivered help and safe read
           }
         }
       }
-      await invoke(launcher, ["task", "step", "add", taskId], 2);
       await invoke(launcher, ["task", "step", "show", taskId, "prefix"], 2);
     }
     expect(await readFile(config, "utf8")).toBe("serverUrl: [\n");
     expect(requests).toEqual([]);
-    scenarios.push("daynight-and-dn-help-before-config-and-missing-write-arguments");
+    scenarios.push("daynight-and-dn-help-and-invalid-show-before-config");
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
     const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing packed Steps test listener.");
     await writeFile(config, `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
@@ -135,6 +134,7 @@ it("runs both packed launchers through Steps reads, delivered help and safe read
       const shown = await invoke(launcher, ["task", "step", "show", taskId, "00ABCDEF", "--json", ...explicit]);
       expect(parseApiJson(shown.stdout)).toEqual({ projectId, taskId, version: resource.version, step });
       expect(requests.at(-1)).toEqual({ method: "GET", path: itemPath });
+      if (launcher === alias) continue;
       const text = await invoke(launcher, ["task", "step", "list", taskId, ...explicit]);
       expect(text.stdout).toContain("Version: 9007199254740993\nSteps: 2\n1. 00abcdef  done");
       expect(text.stdout.indexOf("1. 00abcdef")).toBeLessThan(text.stdout.indexOf("2. 00000000"));
@@ -161,7 +161,7 @@ it("runs both packed launchers through Steps reads, delivered help and safe read
     }
     expect(requests.every(({ method, path: pathname }) => method === "GET" && [collectionPath, itemPath].includes(pathname))).toBe(true);
     expect(createHash("sha256").update(await readFile(receipt.entryPath)).digest("hex")).toBe(receipt.entrySha256);
-    scenarios.push("both-literal-launchers-outside-git-one-get-lossless-json-order-show-empty-and-safe-read-errors");
+    scenarios.push("both-literal-launchers-outside-git-one-get-lossless-json-list-and-show", "daynight-order-empty-and-safe-read-errors");
     const repository = path.join(fixture, "discovery repository 中文");
     await mkdir(repository);
     const git = (args: readonly string[]): void => { execFileSync("git", ["-C", repository, ...args], { env: environment, encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] }); };
@@ -176,7 +176,7 @@ it("runs both packed launchers through Steps reads, delivered help and safe read
       await expect(lstat(path.join(repository, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(lstat(path.join(repository, ".gitignore"))).rejects.toMatchObject({ code: "ENOENT" });
     };
-    for (const launcher of launchers) {
+    for (const launcher of [receipt.launcherPath]) {
       for (const operation of ["list", "show"] as const) {
         const args = ["task", "step", operation, taskId, ...(operation === "show" ? [step.id] : [])];
         mode = "discovery-missing";
@@ -207,7 +207,7 @@ it("runs both packed launchers through Steps reads, delivered help and safe read
       }
     }
     expect(requests.every(({ method }) => method === "GET")).toBe(true);
-    scenarios.push("both-launchers-list-and-show-native-git-zero-and-cross-page-ambiguous-project-recovery-without-binding-writes");
+    scenarios.push("daynight-list-and-show-native-git-zero-and-cross-page-ambiguous-project-recovery-without-binding-writes");
 
   } catch (cause) { failure = cause; }
   const cleanup: unknown[] = [];

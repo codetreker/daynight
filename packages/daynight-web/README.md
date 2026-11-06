@@ -40,27 +40,76 @@ The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web
 
 ## Assistants
 
-The authenticated sidebar opens `/bots`; `/bots/{id}` selects a conversation in
-the same management page. Name-only creation uses server-resolved defaults and
-folds optional Worker, ordinary-directory and Agent choices into advanced
-settings. Unsupported, offline or stale Workers retain their actual reasons.
+Open Assistants in the authenticated sidebar to visit `/bots`; selecting an
+assistant opens `/bots/{id}` in the same workspace. The 256px list and conversation
+sit side by side when the workspace has at least 676px of available width after
+global navigation. Below that width, the page shows one column: select an
+assistant to read its conversation, or use Back to assistants to return to the
+list. Expanding navigation can change this layout without resetting search,
+drafts or reading positions. The list, messages and details scroll independently.
 
-`BotsPage` uses the shared Session View and a bounded cache for stable switching,
-independent drafts and reading positions. The current name opens details without
-rebuilding the conversation; narrow layouts and full screen share the existing
-focus rules. Closing a view does not stop its Worker-owned Agent. List deletion
-uses authoritative cleanup stages and invalidates only the target's known
-conversation state; an old Test URL cannot bypass deletion. Background identity
-and data checks retain confirmed dialogs, the selected conversation and its
-reading state while request and publication admission remain enforced. Actual
-access loss still clears the affected state.
+Search filters assistant names; no matches and an empty account have separate
+states. The list keeps the server's order and shows concise startup or Worker
+warnings. Use its refresh button to reload; a failed read retains the previous
+list and displays the error. Select an offline or failed assistant to inspect its
+actual reason.
+
+Choose Create assistant beside the list title to open the inline name form.
+Advanced settings optionally select a Worker, ordinary absolute working directory
+and Agent. Name-only creation uses server-resolved defaults; changing Worker
+reloads its defaults and clears incompatible directory and Agent overrides.
+Unavailable, unsupported, offline or stale choices retain their actual reasons.
+Before submission, Cancel or Escape closes the form and returns focus to its
+opener without creating an assistant; submission disables cancellation and
+duplicate requests. A confirmed rejection keeps the input for correction. If creation
+has an unknown result, use Check creation to read the original Bot ID; do not
+create a replacement to find out whether the first request succeeded.
+
+The conversation has one header for its name, Agent, Session state and controls.
+Display selects Conversation (the default) or Standard; approvals, errors and
+required responses remain visible. Assistant details opens a separate details
+panel; the name itself is not a button. More actions contains Session refresh and
+Close chat. Closing a chat or returning to the list only exits the current reading
+selection; it does not stop the Worker-owned Agent or delete the assistant.
+
+Details shows the full name, Worker, frozen working directory, Agent, startup and
+Session information. A window at least 1280px wide **and** a stable combined
+conversation/details area at least 760px wide uses a 340px nonmodal side panel,
+leaving at least 420px for the conversation. Otherwise details opens as a modal
+drawer. Closing it restores the trigger's focus. Use Enter Session fullscreen for
+Focus mode, which keeps the same Session and reading position; details and other overlays stay inside its focus boundary.
+Escape closes the top layer before exiting Focus mode.
+
+Messages and input share a reading column capped at 760px. Long code and tables
+scroll locally; use Latest to return from older messages. Empty-conversation
+suggestions only fill the draft and focus the input. Enter submits and Shift+Enter
+adds a line; composing text with an IME does not submit. During execution,
+providers that support Steer expose a separate supplement action, while Interrupt
+remains an independent button; Enter does not interrupt. Model, permission and
+command choices follow the current Session's capabilities and native confirmation.
+The input remains reachable in short layouts and grows to a local scrolling limit.
+Switching assistants restores their independent drafts and reading positions.
+
+Startup success is not proof of a connected Session or permission to send. Use the
+error's own retry or check action: history failures retain readable messages,
+unknown sends check the original operation without resending, and recovery errors
+retain their specific reason. Background identity checks preserve confirmed
+content and local editing while remote operations remain gated; confirmed access
+loss clears the affected private state. Archived history is read-only and has no
+composer. Delete assistant is available in list-row actions and details, with a
+separate confirmation. Unknown deletion results use Check deletion; completion
+requires both Worker and server cleanup to be confirmed. Old Test URLs cannot
+bypass the same deletion barrier.
 
 The [management requirements](../../docs/spec/bot-management-web.md) and
-[Session design](../../docs/design/bot-session-view.md) own behavior and identity
-boundaries. Production-page acceptance uses real management HTTP and the shared
-relay; controlled transport evidence does not prove live Provider execution.
-Existing standalone Test sessions remain separate. Webhook/MCP configuration is
-not available.
+[management design](../../docs/design/bot-management-web.md) own layout and
+management behavior; the [Session requirements](../../docs/spec/bot-session-view.md)
+and [Session design](../../docs/design/bot-session-view.md) own shared controls,
+identity, drafts and reading continuity. See [assistant browser validation](#assistant-browser-validation)
+for executable checks and evidence limits. Standalone Test Sessions retain their
+own entry. The assistant composer currently sends text; displaying an existing
+image resource does not establish image-upload support. Webhook/MCP configuration
+is not available.
 
 ## Public product entry
 
@@ -882,10 +931,26 @@ Actual disconnections and errors remain visible.
 Unknown initial submission disposition and resuming automatic input require
 separate decisions. Unknown manual input is never automatically resent.
 
-The Session selector and the managed Session recordings section in the attachment
-sidebar open fixed original executions in the shared reading area. These entries
-have no attachment mutation actions. Ordinary file previews and upload drafts
-retain their state while a recording is selected.
+The main Session tab automatically follows the task's actual claim and lifecycle,
+without an execution-record selector or catalogue refresh row. Active claims keep
+their existing Web or Herdr reader; a claim waiting for registration never borrows
+an older Session. Completed and released claims resolve their original Session through a
+read-only current request and display fixed history without input or control
+operations. Task completion does not imply archive readiness: pending, failed and
+unavailable archives retain their status and recovery action. Opening, refreshing
+or reconnecting the page does not launch a native conversation or resend input.
+
+With no claim, the tab may show the latest actual Session as read-only history.
+Only a confirmed complete empty inventory hides the tab; initial reads and
+failures remain distinguishable and recoverable. The former per-user/project/task
+recording selection is discarded without clearing unrelated storage. Background
+checks preserve eligible content, drafts, display preferences and reading position;
+identity changes and access revocation still withdraw the affected content.
+
+Older executions remain available through Session recordings in the attachment
+sidebar. Each record opens its fixed original execution in the shared reading
+area and has no attachment mutation actions. Ordinary file previews and upload
+drafts retain their state while a recording is selected.
 The shared cache stores successful first pages and confirmed empty catalogues per
 authenticated user, project and task. Opening or reactivating the view refreshes
 the first page even when cached: confirmed empty stays hidden during refresh and
@@ -911,7 +976,8 @@ identity, verification, control and playback behavior.
 ## Task discussions
 
 Task details always provide Overview, Steps, Attachments and Discussion tabs, followed
-by Session when native execution content is available. Discussion works before
+by Session while its existence is being resolved or actual execution history is
+available. Discussion works before
 execution starts, after completion and while an execution environment is offline.
 It reads and posts directly to the task Thread resource; ordinary browser posts
 use the current authenticated account without a claimId and do not change Task
@@ -1906,15 +1972,6 @@ former 180-second command budgets. Its output remains separated under the existi
 [shared preview decision](../../.agents/notes/implemented/testing/2026-11-05-shared-team-navigation-preview.md)
 owns preparation sharing, isolation and deadline handling.
 
-The Bot viewport suite runs the production application, Session host and timeline
-against controlled HTTP and Session API responses. It checks long-history
-scrolling, bounded pagination, visible input and retained reading positions at
-desktop and 390px widths. Run `pnpm --filter @codetreker/daynight-web exec playwright
-test --config tests/navigation/bots-viewport-playwright.config.ts`. Browser CI
-shard 2 also runs this suite; captures are stored in
-`packages/daynight-web/.tmp/acceptance/bots-viewport/`. These fixtures do not
-establish native Worker or Provider behavior.
-
 The required comparison is `covered * 10 > total * 9` using BigInt. Exactly 90%
 fails independently of display rounding. Pure-type declarations contribute zero
 statements only after the pinned TypeScript compiler's emitted JavaScript proves
@@ -2032,6 +2089,49 @@ the [production acceptance decision](../../.agents/notes/archived/testing/2026-1
 records the separate real-Docker fault matrix and its limits. CI repeats the
 controlled lifecycle fixtures and full production-browser suite. Manual Docker
 fault testing and controlled fixtures each retain their own evidence scope.
+
+### Assistant browser validation
+
+The [Bot viewport suite](tests/navigation/bots-viewport.browser.ts) and
+[assistant presentation suite](tests/navigation/assistant-modern.browser.ts) run
+the production application, Session host and timeline against controlled HTTP and
+Session API responses. Together they cover responsive navigation, inline creation,
+search, unified controls, details, Focus mode, retained DOM/drafts/reading anchors,
+long history and pagination, empty suggestions, errors, archives and identity
+pause. Cases include English and Simplified Chinese, desktop and phone widths,
+390×300 short viewports, reduced motion, accessible names and normal text contrast.
+The details tests check both 1279/1280px window and 759/760px stable-container
+boundaries, including opening details without layout oscillation.
+
+From the repository root, with the workspace dependencies installed:
+
+```bash
+pnpm --filter @codetreker/daynight-web exec playwright install chromium
+pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/bots-viewport-playwright.config.ts --list
+pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/bots-viewport-playwright.config.ts
+```
+
+The [configuration](tests/navigation/bots-viewport-playwright.config.ts) discovers
+both files and starts its own Vite host on `127.0.0.1:4198`; keep that port free.
+It uses one worker, zero retries and a 45-second test timeout. An installed Chrome
+can be selected with `DAYNIGHT_BROWSER_CHANNEL=chrome` on the test command; record
+that browser choice with the result. Captures are saved under
+`packages/daynight-web/.tmp/acceptance/bots-viewport/`.
+The [checks workflow](../../.github/workflows/checks.yml) runs the same suite in
+`verify-web-quality` when Web checks are selected, after the full harness and
+coverage gate, and uploads `daynight-web-assistant-browser` with JUnit results and
+browser captures. Documentation-only PRs follow the repository's separate CI
+selection rules.
+
+These tests prove browser consumption and presentation with controlled services;
+the creation responses, Session operations and archived history are fixtures.
+They do not prove live backend creation/deletion, Worker cleanup, native Provider
+execution, production deployment or a physical phone's keyboard behavior. Static
+prototypes and screenshots also cannot establish those results. Real lifecycle
+acceptance requires an isolated authorized account/Bot and the actual HTTP,
+Worker and Provider path; record each layer's observations and unverified items
+separately, following the [management](../../docs/design/bot-management-web.md)
+and [Session](../../docs/design/bot-session-view.md) validation responsibilities.
 
 ## Production browser acceptance
 
