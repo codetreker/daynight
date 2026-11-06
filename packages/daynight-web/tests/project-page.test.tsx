@@ -13,7 +13,7 @@ import { projectChain, type GraphIndex } from "../src/features/task-graph/model"
 const localeRender = createLocaleRender("zh-CN");
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
-vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), getTask: vi.fn(), getTaskSync: vi.fn() }));
+vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
 vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, onOpenSession }: {
   index: GraphIndex; representativeIds: readonly string[]; openChainId: string | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
@@ -25,9 +25,9 @@ vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, re
   </div>}
 </div>)}</div> }));
 vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
-  projectId: string; taskId: string; snapshot: GraphSnapshot; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
+  projectId: string; taskId: string; snapshot: GraphSnapshot | null; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
 }) => {
-  const state = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
+  const state = useTaskDetail(projectId, taskId, snapshot?.revision ?? 0, snapshot?.index.nodes.get(taskId));
   useEffect(() => () => onRestoreFocus(), [onRestoreFocus]);
   return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
     <button onClick={() => onSelectTask(C)}>关系跳转</button><button onClick={() => onSelectTask(X)}>未知关系</button>
@@ -95,7 +95,7 @@ beforeEach(() => {
 });
 
 beforeEach(() => {
-  graphRequest.mockReset(); detailRequest.mockReset();
+  graphRequest.mockReset().mockImplementation(async (id) => servedGraphs.get(id)!); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
     if (id === X) return { assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
@@ -214,7 +214,7 @@ describe("project dashboard", () => {
     expect(screen.getByRole("heading", { name: "核心项目" })).toHaveFocus();
 
     graphRequest.mockResolvedValue(graph([seeds[2]!, seeds[3]!]));
-    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    fireEvent.click(await screen.findByRole("button", { name: "刷新" }));
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(requests + 1));
     await waitFor(() => expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled());
     expect(screen.queryByText("所选任务已不在新的任务图中，详情已关闭。")).toBeNull();
@@ -390,7 +390,7 @@ describe("status-first task chains", () => {
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${F}`)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
-    await waitFor(() => expect(screen.queryByTestId(`chain-${A}`)).toBeNull());
+    await waitFor(() => expect(presentedRoots()).toEqual([F, E, C].map((id) => `task-root-${id}`)));
     expect(presentedRoots()).toEqual([F, E, C].map((id) => `task-root-${id}`));
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(window.localStorage.getItem(preferenceKey())).toBeNull();

@@ -27,7 +27,7 @@ for await (const line of createInterface({input:process.stdin})) {
   if(process.env.CODEX_TEST_REJECT_ROLE && Object.hasOwn(m.params,'developerInstructions')) {
    out({id:m.id,error:{code:-32602,message:process.env.CODEX_TEST_REJECT_ROLE}});continue;
   }
-  out({id:m.id,result:{...JSON.parse(process.env.CODEX_TEST_THREAD_SETTINGS ?? '{}'),thread:{id:'native-thread',cwd:process.cwd()}}});
+  out({id:m.id,result:{...JSON.parse(process.env.CODEX_TEST_THREAD_SETTINGS ?? '{}'),...(process.env.CODEX_TEST_APPLY_EFFORT ? {reasoningEffort:m.params.config?.model_reasoning_effort ?? 'low'} : {}),thread:{id:'native-thread',cwd:process.cwd()}}});
  }
  if(m.method==='thread/items/list') {
   if(interruptCase) {

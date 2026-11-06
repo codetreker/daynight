@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
+	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -177,6 +179,39 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	if value := call(bobQueries, "task_list", map[string]any{"projectId": project.ID}, true); value["error"] == nil {
 		t.Fatalf("unauthorized project: %#v", value)
 	}
+	attachments := attachmentservice.NewAttachments(database, database, files)
+	put := func(content string) {
+		t.Helper()
+		if _, _, err := attachments.Put(t.Context(), principals[0], project.ID, created.ID, "sample.txt", "text/plain", strings.NewReader(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("first content")
+	base := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt"}
+	inspect := call(productionClient, "task_attachment_read", base, false)["data"].(map[string]any)
+	if inspect["contentIncluded"] != false || inspect["sizeBytes"] != "13" || inspect["contentRef"] == nil {
+		t.Fatalf("attachment inspect: %#v", inspect)
+	}
+	transferID := uuid.NewString()
+	open := map[string]any{"projectId": project.ID, "taskId": created.ID, "path": "sample.txt", "action": "open", "transferId": transferID}
+	opened := call(productionClient, "task_attachment_read", open, false)["data"].(map[string]any)
+	if opened["transferId"] != transferID || opened["state"] != "readable" || opened["totalBytes"] != "13" || opened["sha256"] == nil {
+		t.Fatalf("attachment open: %#v", opened)
+	}
+	put("replacement")
+	chunk := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "chunk", "transferId": transferID, "offset": "0", "format": "base64"}
+	downloadData := call(productionClient, "task_attachment_read", chunk, false)["data"].(map[string]any)
+	if downloadData["contentBase64"] != base64.StdEncoding.EncodeToString([]byte("first content")) || downloadData["nextOffset"] != "13" || downloadData["eof"] != true {
+		t.Fatalf("attachment snapshot: %#v", downloadData)
+	}
+	if value := call(bobQueries, "task_attachment_read", chunk, true); value["error"] == nil {
+		t.Fatalf("unauthorized snapshot: %#v", value)
+	}
+	closeInput := map[string]any{"projectId": project.ID, "taskId": created.ID, "action": "close", "transferId": transferID}
+	closed := call(productionClient, "task_attachment_read", closeInput, false)["data"].(map[string]any)
+	if closed["state"] != "cleanup_pending" || closed["cleanupState"] != "pending" {
+		t.Fatalf("attachment close: %#v", closed)
+	}
 
 	exerciseMCPTeams(t, database, productionClient, mcpPATClient(t, production.URL, tokens[1]), principals)
 
@@ -288,7 +323,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"task_step_set_status": true, "task_step_move": true, "task_step_delete": true,
 		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
-		"task_attachment_list": true, "task_attachment_remove": true, "task_attachment_put": true,
+		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true, "task_attachment_put": true,
 		"task_list": true, "task_ready": true, "task_graph": true,
 	}
 	for _, tool := range tools {

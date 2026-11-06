@@ -162,3 +162,30 @@ func TestAttachmentBoundedProjectionPreservesPageBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAttachmentBoundedSingleProjection(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := t.Context()
+	project, task := uuid.NewString(), uuid.NewString()
+	source := model.Attachment{ProjectID: project, TaskID: task, Path: "file", ContentType: "text/plain; x=" + strings.Repeat("a", 4096), SizeBytes: 3}
+	if _, _, err := database.PutAttachment(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+		a, tooLarge, err := snapshot.AttachmentDAO().AttachmentBounded(ctx, project, task, "file", 64)
+		if err != nil || !tooLarge || a.ContentType != "" || a.Path != "file" {
+			t.Fatalf("oversized projection: %+v %v %v", a, tooLarge, err)
+		}
+		a, tooLarge, err = snapshot.AttachmentDAO().AttachmentBounded(ctx, project, task, "file", len(source.ContentType))
+		if err != nil || tooLarge || a.ContentType != source.ContentType {
+			t.Fatalf("full bounded projection: %+v %v %v", a, tooLarge, err)
+		}
+		_, _, err = snapshot.AttachmentDAO().AttachmentBounded(ctx, project, task, "missing", 64)
+		if !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

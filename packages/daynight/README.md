@@ -16,13 +16,10 @@ the private test home and parent/child protection of real Daynight state
 (`~/.daynight` and the inherited `DN_CONFIG_DIR`) against writes and cleanup,
 including symbolic-link aliases. Ordinary test and installed acceptance suites exclude stress
 workloads. From this package, `pnpm test:stress` builds the CLI and runs the
-rendering and full Session-v2 `.stress.ts` suites;
-`pnpm test:stress:budgets` runs the server validation gate with the four full
-128 MiB/256 MiB installed-CLI byte probes. The latter requires an isolated
-`DAYNIGHT_TEST_DATABASE_URL` and the [server validation prerequisites](../daynight-server/README.md#validate).
-Both commands are explicit local-only validation and refuse CI. The
-[local stress guide](../../docs/development.md#local-stress-validation) owns
-selection and receipt interpretation. Each command's `--help` owns its exact usage. Review execution additionally requires Git, an authenticated
+rendering and full Session-v2 `.stress.ts` suites. The command is local-only
+and refuses CI. The [local stress guide](../../docs/development.md#local-stress-validation) owns
+selection and evidence interpretation. Each command's `--help` owns its exact
+usage. Review execution additionally requires Git, an authenticated
 GitHub CLI and Copilot CLI on `PATH`.
 
 - [Install and update](#install-and-update)
@@ -1167,12 +1164,8 @@ output failure can still leave partial stdout and is reported as a failure.
 Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
 A 401 includes `daynight login` guidance without automatic login or retry.
 Help, Bash/zsh completion and the standalone manual expose the delivered
-list/show/add/update/set-status/move/delete commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
-maps the real-service installed Node-entry read case, separate maximum-resource
-check and their normal fixture prerequisites. The packed CLI acceptance runner
-checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
-Manual copy/byte checks establish package resource fidelity separately from
-these complementary runtime and launcher checks.
+list/show/add/update/set-status/move/delete commands. CLI module tests own read
+and write behavior; installed-package checks verify the launchers and resources.
 
 ### Add a Step
 
@@ -1636,11 +1629,35 @@ command or configuration switch.
 
 The cloud target owns concurrency, polling and recovery limits, Project
 selection, and global/per-Project Agent, model and arguments. Repository roots,
-local paths, service credentials, Worker identity and `agentControlMode` stay
-local. First enrollment imports a candidate from the original local YAML only
+local paths, service credentials, Worker identity, `agentControlMode`, and optional
+`agentModel` / `agentReasoningEffort` overrides stay local. First enrollment imports a candidate from the original local YAML only
 when no cloud target exists. Later starts and heartbeats always use the cloud
-target; a local copy cannot replace it. Configuration enrollment does not depend
+target; legacy local managed fields cannot replace it. Configuration enrollment does not depend
 on active claims or alter task/claim formats, permission or recovery rules.
+
+Set `worker.agentModel` and/or `worker.agentReasoningEffort` to override only
+those settings for new executions, even after enrollment. Each field independently
+uses its local explicit value, then the effective cloud value (including native
+arguments), then the Agent default. Remove a field and restart the Worker to
+restore inheritance. Empty strings and explicit null are invalid. Legacy
+`worker.model` keeps its first-import semantics; a nonempty legacy value must
+agree with `agentModel` when both are present, while `model: null` permits it.
+
+Model and effort arguments are normalized for the effective Provider and mode;
+unrelated arguments keep their existing validation. These overrides do not edit
+native configuration files or write local values into cloud desired state.
+Telemetry reports `runtimeConfiguration` schema version 1 with each effective
+model/effort value and its `local`, `cloud`, or `native` source. A null value with
+`native` means Daynight leaves that setting to the Agent, not that Daynight has
+observed its resolved native value. Existing claims and assistants retain their
+frozen native settings; new defaults do not restart or reconfigure them.
+Deploy a server that supports the optional report field before using this client;
+older stored reports remain readable, but older servers reject unknown fields.
+
+Setting either local override enables native model/effort validation for the first
+launch. An unresolved Copilot default model or Codex OSS/local-provider catalog
+cannot be validated and fails explicitly. Existing native sessions resume with
+their preserved settings.
 
 For a Worker that has not enrolled, optional interactive setup prepares its local
 candidate:
@@ -1873,7 +1890,7 @@ recovery and native values. Lowering concurrency does not stop existing tasks;
 new starts wait until usage is below the limit. The next post-round polling wait
 uses the applied interval. Running native processes retain their launch
 arguments. Each claim retains its recorded agent type and native session ID;
-Herdr restarts use current settings appropriate to that type, while Web recovery
+Herdr restarts preserve the claim’s frozen native settings, while Web recovery
 keeps its existing frozen execution configuration. Settings for another type are
 not applied to it. A running disconnected Worker retains successful values;
 restart checks the cloud before normal scheduling. Task inventory or backend

@@ -1,5 +1,6 @@
 import { decodeWorkerCloudJsonSource, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
 import type { WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "./worker-configuration.js";
+import { workerReportBody } from "./worker-report.js";
 import { jsonObjectSources } from "./json-source.js";
 import { randomUUID } from "node:crypto";
 import { parseCreatedTeamInvitation, parseTeamInvitations, parseTeamInvitationRevoke } from "./team-invitations.js";
@@ -1009,7 +1010,7 @@ export const createApiClient = (options: {
     },
     reportWorker: (workerId, input) => {
       const worker = resourceId(workerId);
-      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], { kind: "json", value: input }, true);
+      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], workerReportBody(input), true);
     },
     getWorkerConfiguration: (workerId) => {
       const worker = resourceId(workerId);
@@ -1033,7 +1034,7 @@ export const createApiClient = (options: {
           if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           return receipt;
         },
-      }, [200], { kind: "json", value: { ...input, configuration: parsed }, maxBytes: 1_048_576 }, true);
+      }, [200], workerReportBody({ ...input, configuration: parsed }), true);
     },
     createProject: (input, requestId) => {
       const expected = resourceId(input.expectedUserId);
