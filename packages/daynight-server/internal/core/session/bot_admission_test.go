@@ -96,9 +96,7 @@ func TestBotDeletedBindingRejectsEverySharedEntryWithStaleLiveState(t *testing.T
 	}
 }
 
-func TestBotRegistrationRejectsInvalidRoleAndFrozenConfiguration(t *testing.T) {
-	f, bot, original := botFixture(t)
-	ctx := context.Background()
+func TestBotRegistrationRejectsInvalidRoleAndProtocolBeforeRunner(t *testing.T) {
 	for name, mutate := range map[string]func(*BotRegistration){
 		"version":       func(v *BotRegistration) { v.BotVersion = 0 },
 		"empty role":    func(v *BotRegistration) { v.RoleConfiguration.Instructions = "" },
@@ -110,15 +108,25 @@ func TestBotRegistrationRejectsInvalidRoleAndFrozenConfiguration(t *testing.T) {
 		"protocol":      func(v *BotRegistration) { v.Registration.Protocol = "invalid" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			input := original
+			execution, principal, bot, input := botRegistrationValidationFixture()
 			mutate(&input)
-			_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
+			_, err := execution.RegisterBot(t.Context(), principal, bot.WorkerID, bot.ID, input)
 			botFault(t, err, "invalid_input")
 		})
 	}
+}
+
+func TestBotRegistrationRejectsInvalidRoleAndFrozenConfiguration(t *testing.T) {
+	f, bot, original := botFixture(t)
+	ctx := context.Background()
+	invalid := original
+	invalid.Configuration.Cwd = ""
+	_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, invalid)
+	botFault(t, err, "invalid_input")
+	assertBotRegistrationUnbound(t, f, bot)
 	changed := original
 	changed.Configuration.Cwd = "/changed"
-	_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, changed)
+	_, err = f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, changed)
 	botFault(t, err, "session_conflict")
 	changed = original
 	changed.Registration.Provider = "claude"

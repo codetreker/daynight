@@ -1,21 +1,59 @@
 package session
 
-import "github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
-	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
 	"reflect"
 	"testing"
 
+	botcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/bot"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	botservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+func botRegistrationValidationFixture() (*Execution, model.Principal, model.Bot, BotRegistration) {
+	principal := model.Principal{Kind: model.PATCredential, UserID: "00000000-0000-4000-8000-000000000001", CredentialID: "00000000-0000-4000-8000-000000000004"}
+	worker := "00000000-0000-4000-8000-000000000003"
+	configuration := model.BotConfiguration{WorkerID: worker, Cwd: "/ordinary/directory", Provider: "codex", Args: []string{}}
+	bot := model.Bot{ID: "00000000-0000-4000-8000-000000000002", OwnerUserID: principal.UserID, WorkerID: worker, Version: 1, ResolvedConfiguration: configuration}
+	digest := sha256.Sum256([]byte("Use Daynight CLI."))
+	input := BotRegistration{BotVersion: 1, Configuration: configuration,
+		RoleConfiguration: model.BotRoleConfiguration{Instructions: "Use Daynight CLI.", Revision: "1", Digest: hex.EncodeToString(digest[:])},
+		Registration: sp.TestRegistration{Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1,
+			RegistrationID: "00000000-0000-4000-8000-000000000005", TestExecutionID: "00000000-0000-4000-8000-000000000006",
+			ControllerID: "00000000-0000-4000-8000-000000000007", ControllerInstanceID: "00000000-0000-4000-8000-000000000008", Provider: "codex", InitialInput: "none"}}
+	execution := &Execution{Engine: NewEngine(nil), botRun: func(context.Context, model.Principal, string, string, func(model.Bot) error, func(model.Bot, *Access) error, func(*Operation, store.SessionScope, model.Bot, *Access, func(model.Principal) error) error) error {
+		panic("Bot registration preflight entered its runner")
+	}}
+	return execution, principal, bot, input
+}
+
+func TestBotRegistrationValidInputReachesRunner(t *testing.T) {
+	execution, principal, bot, input := botRegistrationValidationFixture()
+	ctx := t.Context()
+	sentinel := errors.New("registration runner reached")
+	calls := 0
+	execution.botRun = func(actual context.Context, actor model.Principal, worker, id string, prepare func(model.Bot) error, existing func(model.Bot, *Access) error, work func(*Operation, store.SessionScope, model.Bot, *Access, func(model.Principal) error) error) error {
+		calls++
+		if actual != ctx || actor != principal || worker != bot.WorkerID || id != bot.ID || prepare == nil || existing == nil || work == nil {
+			t.Fatal("valid registration changed its runner context, identity, or callbacks")
+		}
+		return sentinel
+	}
+	_, err := execution.RegisterBot(ctx, principal, bot.WorkerID, bot.ID, input)
+	var refusal *model.Fault
+	if calls != 1 || !errors.Is(err, sentinel) || errors.As(err, &refusal) {
+		t.Fatalf("valid registration did not reach its runner once: calls=%d error=%v", calls, err)
+	}
+}
+
 func TestBotRegistrationRejectsMalformedConfigurationBeforeBinding(t *testing.T) {
-	f, bot, original := botFixture(t)
-	ctx := context.Background()
 	for name, change := range map[string]func(*BotRegistration){
 		"worker identity":  func(v *BotRegistration) { v.Configuration.WorkerID = "invalid" },
 		"empty cwd":        func(v *BotRegistration) { v.Configuration.Cwd = "" },
@@ -29,12 +67,17 @@ func TestBotRegistrationRejectsMalformedConfigurationBeforeBinding(t *testing.T)
 		"argument NUL":     func(v *BotRegistration) { v.Configuration.Args = []string{"--flag\x00suffix"} },
 	} {
 		t.Run(name, func(t *testing.T) {
-			input := original
+			execution, principal, bot, input := botRegistrationValidationFixture()
 			change(&input)
-			_, err := f.s.RegisterBot(ctx, f.p, bot.WorkerID, bot.ID, input)
+			_, err := execution.RegisterBot(t.Context(), principal, bot.WorkerID, bot.ID, input)
 			botFault(t, err, "invalid_input")
 		})
 	}
+}
+
+func assertBotRegistrationUnbound(t *testing.T, f fixture, bot model.Bot) {
+	t.Helper()
+	ctx := t.Context()
 	var count int
 	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_sessions WHERE bot_id=$1`, bot.ID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("invalid configuration created a Session: %d %v", count, err)
