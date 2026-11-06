@@ -1768,9 +1768,11 @@ URLs, bodies, SQL and credentials are excluded from logs.
 [`TestAttachmentGrantRevocationWithFreshProcess`](cmd/daynight-server/attachment_grant_revocation_test.go)
 freshly builds and launches the service and uses normal authentication, real
 HTTP and isolated PostgreSQL. It holds a 1 MiB upload after admission, confirms
-member removal 204 and new-access 404 before releasing the body, then verifies
-upload 201, exact bytes and owned-resource cleanup. Its logged evidence identifies
-the source, tree, dirty state, binary, authentication fixture and PostgreSQL
+member removal 204 and new project access 404 before releasing the body, then
+verifies upload 201, exact bytes, revoked attachment access and owned-resource
+cleanup. A read of the same attachment path waits for the upload's target gate,
+so the attachment denial is checked after the upload finishes. Its logged
+evidence identifies the source, tree, dirty state, binary, authentication fixture and PostgreSQL
 version and the test and binary race settings. The fresh child uses the test's
 race mode and verifies it from the binary build information. It inherits
 `GOFLAGS`; supply an explicit source overlay through `GOFLAGS` so both the test

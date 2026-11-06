@@ -17,10 +17,12 @@ The Go module test
 `TestAttachmentGrantRevocationWithFreshProcess` owns
 the admitted attachment mutation and direct grant removal race. It admits a real
 1 MiB HTTP upload and keeps its body incomplete while Project member DELETE
-completes with 204. A new access returns 404 before the body is released; the
-already admitted upload then returns 201.
-The test verifies the uploaded bytes and owned-resource cleanup against isolated
-PostgreSQL and the real service. Its UniAuth fixture uses bounded process cleanup;
+completes with 204. New project access returns 404 before the body is released;
+the already admitted upload then returns 201. The test verifies revoked access
+to the attachment after upload completion: the [target gate](../architecture/2026-11-06-attachment-target-gate.md)
+serializes a read of that same path with the upload, so a synchronous read cannot
+finish while the body is held. It verifies the uploaded bytes and owned-resource
+cleanup against isolated PostgreSQL and the real service. Its UniAuth fixture uses bounded process cleanup;
 forced termination reports the missed graceful deadline, and an unconfirmed
 service or database-session cleanup retains the guarded gateway and its directory.
 An unconfirmed gateway exit also fails cleanup and retains that directory.

@@ -281,7 +281,7 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	dirty := grantGit(t, "status", "--porcelain") != ""
 	var projectID, userID, taskID, bodySHA string
 	var removalStatus, uploadStatus, observedPrefixBytes, observedBytes int
-	var beforePAT, beforeCookie [2]int
+	var beforePAT, beforeCookie, afterPAT, afterCookie int
 	var prefixObserved, removalBeforeUpload, deniedBeforeUpload, bytesVerified, stagingRemoved bool
 	t.Cleanup(func() {
 		cleanup := cleanupAllowed() && (!processStarted || sessionsRemoved)
@@ -318,7 +318,8 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 			"buildCommand": "go build -race=<test race> -o <owned> .", "binaryGoVersion": binaryGoVersion, "testRaceEnabled": grantRaceEnabled, "binaryRaceEnabled": binaryRace,
 			"binarySHA256": binarySHA, "authFixtureSHA256": fixtureSHA, "postgresql": postgresVersion, "projectId": projectID, "userId": userID, "taskId": taskID,
 			"prefixBytes": observedPrefixBytes, "bytes": observedBytes, "bodySHA256": bodySHA, "uploadStatus": uploadStatus, "removalStatus": removalStatus,
-			"beforePAT": beforePAT, "beforeCookie": beforeCookie, "prefixObserved": prefixObserved, "removalBeforeUpload": removalBeforeUpload,
+			"projectBeforePAT": beforePAT, "projectBeforeCookie": beforeCookie, "attachmentAfterPAT": afterPAT, "attachmentAfterCookie": afterCookie,
+			"prefixObserved": prefixObserved, "removalBeforeUpload": removalBeforeUpload,
 			"deniedBeforeUpload": deniedBeforeUpload, "bytesVerified": bytesVerified, "stagingRemoved": stagingRemoved,
 			"processReaped": processReaped, "serviceSessionsRemoved": sessionsRemoved, "gatewayCleanupConfirmed": gateway != nil && gateway.CleanupConfirmed(), "resourcesRemoved": cleanup, "passed": !t.Failed() && cleanup}
 		encoded, err := json.Marshal(receipt)
@@ -576,16 +577,12 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	if staged != 1 {
 		t.Fatal("held upload did not retain exactly one staging file")
 	}
-	for index, target := range []string{base, path} {
-		response := grantRequest(ctx, client, http.MethodGet, origin+target, memberPAT, nil)
-		beforePAT[index] = response.status
-		grantNotFound(t, response)
-	}
-	for index, target := range []string{base, path} {
-		response := grantRequest(ctx, member, http.MethodGet, origin+target, "", nil)
-		beforeCookie[index] = response.status
-		grantNotFound(t, response)
-	}
+	response := grantRequest(ctx, client, http.MethodGet, origin+base, memberPAT, nil)
+	beforePAT = response.status
+	grantNotFound(t, response)
+	response = grantRequest(ctx, member, http.MethodGet, origin+base, "", nil)
+	beforeCookie = response.status
+	grantNotFound(t, response)
 	select {
 	case <-uploadDone:
 		t.Fatal("upload completed while checking revoked access")
@@ -593,7 +590,12 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	}
 	deniedBeforeUpload = true
 	if n, err := writer.Write(body[prefixSize:]); err != nil || n != len(body)-prefixSize {
-		t.Fatalf("cannot send remaining upload: %d", n)
+		select {
+		case response := <-result:
+			t.Fatalf("cannot send remaining upload: bytes=%d pipe=%v HTTP status=%d transport=%v context=%v", n, err, response.status, response.err, ctx.Err())
+		case <-time.After(5 * time.Second):
+			t.Fatalf("cannot send remaining upload: bytes=%d pipe=%v; HTTP result not available; context=%v", n, err, ctx.Err())
+		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal("cannot finish held upload")
@@ -611,7 +613,13 @@ func TestAttachmentGrantRevocationWithFreshProcess(t *testing.T) {
 	bytesVerified = true
 	observedBytes = len(stored.body)
 	bodySHA = fmt.Sprintf("%x", sha256.Sum256(stored.body))
-	grantNotFound(t, grantRequest(ctx, client, http.MethodGet, origin+path, memberPAT, nil))
+	// The target gate serializes reads of this path with the upload.
+	response = grantRequest(ctx, client, http.MethodGet, origin+path, memberPAT, nil)
+	afterPAT = response.status
+	grantNotFound(t, response)
+	response = grantRequest(ctx, member, http.MethodGet, origin+path, "", nil)
+	afterCookie = response.status
+	grantNotFound(t, response)
 	if err := observer.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_grants WHERE project_id=$1 AND user_id=$2), (SELECT count(*) FROM task_attachments WHERE project_id=$1 AND task_id=$3 AND path=$4)`, project.ID, memberUser.ID, task.ID, "admission/retained.bin").Scan(&grants, &metadata); err != nil || grants != 0 || metadata != 1 {
 		t.Fatal("committed grant or attachment metadata differs")
 	}
