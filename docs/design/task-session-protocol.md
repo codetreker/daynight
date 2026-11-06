@@ -310,7 +310,7 @@ Codex 的 `subAgentActivity` 投影为 `tool_call`，以启动、交互、中断
 
 `SessionTimeline` 的可选 `displayMode` 使用该 selector 派生可见列表；省略时保持 Standard 内部兼容行为。共享 `SessionView` 总是显式传入当前偏好，Task、Test 和可读归档的产品默认均为 Conversation，已有有效保存值优先。渲染仅挂载可见条目，隐藏工具及其输出资源组件卸载；保留消息、计划和交互使用稳定 entry key，资源索引、响应 gating、pendingResponse 与完整 SessionState 不变。切回 Standard 从已有条目恢复显示，不派发工具操作；资源仍按既有读取规则加载。
 
-会话可用或归档已读且 Conversation 无可见条目时显示“当前对话模式下暂无内容”或“No content in conversation mode.”，Standard 保留原空态。`hasOlder`、加载中和历史错误独立于可见列表；可见条目不足视口时按历史加载策略补屏，连续隐藏页不表示历史耗尽。selector 不改写 cursor 或实时归并位置。
+会话可用或归档已读时，`SessionTimeline` 用原始 `state.entries.length === 0` 且 `!hasOlder || historyComplete` 区分真实空历史；此时两种模式都使用现有“尚无对话。”或“No conversation yet.”。其余 Conversation 无可见条目时使用“当前对话模式下暂无内容”或“No content in conversation mode.”，Standard 保留原空态。助手的 `renderEmpty` 欢迎内容和 `suppressEmpty` 仍由原有调用方控制。`hasOlder`、加载中和历史错误独立于可见列表；可见条目不足视口时按历史加载策略补屏，连续隐藏页不表示历史耗尽。selector 不改写 cursor 或实时归并位置。
 
 `SessionTimeline` 通过 `useSessionHistoryPagination` 使用实际 timeline viewport，结合用户上读意图与顶部预取区判断 `client.loadOlder` 的需求。预取区为距顶部不超过 `min(240, clientHeight / 2)` CSS px。控制器等待两个 `requestAnimationFrame`，让初始尾页定位、React 提交和锚定完成；`scrollHeight <= clientHeight + 1` 时允许不改变 following 意图的补屏。已经填满时，挂载、模式切换和程序化锚定不建立上读需求。顶部预取复用 `useTimelineScroll.pause/capture` 保存文字锚点，prepend 后由同一滚动所有者恢复，不叠加 scrollHeight 差值补偿。加载指示和错误/重试独立于条目列表，正常态与历史结束均不保留额外按钮或提示。
 
