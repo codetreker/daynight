@@ -219,3 +219,25 @@ func TestThreadReadLogsSafeScopeAndPreservesFailure(t *testing.T) {
 		t.Fatalf("snapshot completion reported as a write: %+v", failure)
 	}
 }
+
+func TestTypedToolRegistrationRejectsInvalidHandlerAndBudget(t *testing.T) {
+	fixture := newEntryFixture(t)
+	var absent func(context.Context, RequestActor, threadReadInput) (ToolResult, error)
+	handler := func(context.Context, RequestActor, threadReadInput) (ToolResult, error) { return ToolResult{}, nil }
+	for _, tc := range []struct {
+		name     string
+		want     string
+		register func() error
+	}{
+		{"write nil handler", "MCP tool handler is required", func() error { return RegisterTypedTool(fixture.entry, nil, BudgetControl, absent) }},
+		{"write invalid budget", "invalid MCP tool registration", func() error { return RegisterTypedTool(fixture.entry, nil, BudgetClass(0), handler) }},
+		{"read nil handler", "MCP tool handler is required", func() error { return registerTypedReadTool(fixture.entry, nil, BudgetControl, absent) }},
+		{"read invalid budget", "invalid MCP tool registration", func() error { return registerTypedReadTool(fixture.entry, nil, BudgetClass(0), handler) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.register(); err == nil || err.Error() != tc.want {
+				t.Fatalf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
