@@ -145,3 +145,46 @@ func authorizationEqual(actual, expected store.OAuthAuthorization) bool {
 	}
 	return reflect.DeepEqual(actual, expected)
 }
+
+func TestAuthorizationPruneSharesQuotaAndUsesSpare(t *testing.T) {
+	tx, dao := transaction(t)
+	ctx := t.Context()
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
+	for range 4 {
+		a := authorizationRecord(now)
+		created, err := dao.InsertAuthorization(ctx, a, 10, now)
+		check(t, err)
+		if !created {
+			t.Fatal("fixture capacity refused")
+		}
+		_, err = tx.Exec(ctx, `UPDATE oauth_authorizations SET expires_at=$2 WHERE id=$1`, a.ID, now.Add(-time.Minute))
+		check(t, err)
+	}
+	denied := authorizationRecord(now)
+	created, err := dao.InsertAuthorization(ctx, denied, 10, now)
+	check(t, err)
+	if !created {
+		t.Fatal("fixture capacity refused")
+	}
+	_, err = tx.Exec(ctx, `UPDATE oauth_authorizations SET status='denied',retain_until=$2 WHERE id=$1`, denied.ID, now.Add(-time.Minute))
+	check(t, err)
+	count, err := core.PruneAuthorizationBatch(ctx, dao, now, 3)
+	check(t, err)
+	if count != 3 {
+		t.Fatalf("first batch: %d", count)
+	}
+	var pending, expired, removed int
+	check(t, tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'),count(*) FILTER (WHERE status='expired'),count(*) FILTER (WHERE id=$1) FROM oauth_authorizations`, denied.ID).Scan(&pending, &expired, &removed))
+	if pending != 2 || expired != 2 || removed != 0 {
+		t.Fatalf("quota distribution: %d %d %d", pending, expired, removed)
+	}
+	count, err = core.PruneAuthorizationBatch(ctx, dao, now, 3)
+	check(t, err)
+	if count != 2 {
+		t.Fatalf("spare capacity: %d", count)
+	}
+	check(t, tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'),count(*) FILTER (WHERE status='expired') FROM oauth_authorizations`).Scan(&pending, &expired))
+	if pending != 0 || expired != 4 {
+		t.Fatalf("spare allocation: %d %d", pending, expired)
+	}
+}
