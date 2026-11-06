@@ -77,6 +77,29 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestMCPTemporaryCapacityConfiguration(t *testing.T) {
+	c, err := LoadConfig(configEnvironment(nil))
+	if err != nil || c.MCPTempBudgetBytes != 8<<30 || c.MCPReservedFreeBytes != 1<<30 {
+		t.Fatalf("temporary capacity defaults: %+v, %v", c, err)
+	}
+	c, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_TEMP_BUDGET_BYTES": "123", "DAYNIGHT_MCP_RESERVED_FREE_BYTES": "0"}))
+	if err != nil || c.MCPTempBudgetBytes != 123 || c.MCPReservedFreeBytes != 0 {
+		t.Fatalf("temporary capacity overrides: %+v, %v", c, err)
+	}
+	for _, field := range []string{"DAYNIGHT_MCP_TEMP_BUDGET_BYTES", "DAYNIGHT_MCP_RESERVED_FREE_BYTES"} {
+		for _, value := range []string{"-1", "+1", "01", "1GiB", "9223372036854775808"} {
+			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
+			var failure *ConfigurationError
+			if !errors.As(err, &failure) || failure.Field != field {
+				t.Fatalf("accepted %s=%q: %v", field, value, err)
+			}
+		}
+	}
+	if _, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_MCP_TEMP_BUDGET_BYTES": "0"})); err == nil {
+		t.Fatal("zero temporary budget accepted")
+	}
+}
+
 func TestConfigRejectsInvalidInputs(t *testing.T) {
 	for _, field := range []string{"DAYNIGHT_STARTUP_TIMEOUT", "DAYNIGHT_SHUTDOWN_TIMEOUT", "DAYNIGHT_TASK_SYNC_OVERLAP"} {
 		for _, value := range []string{"-1s", "0s", "password", "1", "99999999999999999999h"} {
