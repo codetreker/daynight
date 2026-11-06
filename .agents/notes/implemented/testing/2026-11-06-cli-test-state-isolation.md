@@ -36,10 +36,13 @@ overrides retain their meaning.
 
 The guard protects those recorded real Daynight state directories. Before a
 write or cleanup, it checks the requested path and its physical destination
-through the nearest existing ancestor. Missing descendants inherit that checked ancestor; aliases
-through symbolic links cannot bypass protection. Destructive operations that
-would remove an ancestor containing protected state also fail. Other filesystem
-paths remain available for test fixtures.
+through the nearest existing ancestor. Missing descendants inherit that checked
+ancestor; aliases through symbolic links cannot bypass protection. Destructive
+operations that would remove an ancestor containing protected state also fail.
+Windows local `\\.\pipe\` addresses are IPC objects rather than disk destinations,
+so they skip physical disk inspection. Namespaced disk paths are normalized for
+protected-root comparisons and remain protected. Other filesystem paths remain
+available for test fixtures.
 
 The same protection covers mutating Node filesystem calls, writable opens,
 tracked descriptors, `FileHandle` mutations, recursive-copy destinations,

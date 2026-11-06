@@ -11,7 +11,7 @@ const repositoryRoot = path.resolve(__dirname, "../../..");
 const metadataName = "DAYNIGHT_TEST_ISOLATION";
 const preload = __filename;
 const contains = (root: string, target: string): boolean => {
-  const relative = path.relative(root, target);
+  const relative = path.relative(path.toNamespacedPath(root), path.toNamespacedPath(target));
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 };
 const physicalPath = (target: string, links = new Set<string>()): string => {
@@ -71,6 +71,7 @@ const assertSafePath = (value: unknown, destructive = false, followLeaf = true):
     else if (typeof value === "object" && value !== null && "fd" in value && typeof value.fd === "number") assertSafePath(value.fd, destructive, followLeaf);
     return;
   }
+  if (process.platform === "win32" && target.toLowerCase().startsWith("\\\\.\\pipe\\")) return;
   if (reachesProtectedState(target, destructive, followLeaf)) throw new Error(`Test mutation targets retained Daynight state: ${target}`);
 };
 if (ownsRoot) {

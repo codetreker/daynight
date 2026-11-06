@@ -96,9 +96,11 @@ Daynight state, including aliases through symbolic links and missing descendants
 beneath a protected directory. The checks cover mutating Node filesystem calls,
 writable opens, tracked descriptors and `FileHandle` mutations, recursive-copy
 destinations, and native SQLite constructors and backup destinations. Removing
-an ancestor that contains the protected directory is also refused. Other
-filesystem paths remain available to tests. The standalone regression checks its
-scratch path against the protected state before creating sentinels and launching
+an ancestor that contains the protected directory is also refused. Windows
+`\\.\pipe\` addresses identify IPC objects, so they skip disk-path inspection;
+namespaced disk paths retain the protected-state checks through normalized
+comparisons. Other filesystem paths remain available to tests. The standalone
+regression checks its scratch path against the protected state before creating sentinels and launching
 guarded probes.
 
 Fixtures capture owned cleanup paths before changing or restoring their

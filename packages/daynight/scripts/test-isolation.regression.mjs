@@ -191,3 +191,29 @@ test("protects the OS default Daynight home when home environment variables are 
     cwd: packageDirectory, env: environment, encoding: "utf8", timeout: 10_000, stdio: "pipe",
   });
 });
+
+
+test("permits Windows named pipes while retaining namespace disk protection", t => {
+  if (process.platform !== "win32") return t.skip("Windows pipe namespaces require the native Windows runner.");
+  const f = fixture(t);
+  const pipePrefix = "\\\\.\\pipe\\";
+  const source = `
+    import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path';
+    import { createRequire } from 'node:module';
+    const lstat = fs.lstatSync;
+    fs.lstatSync = (target, ...options) => {
+      if (String(target).toLowerCase().startsWith(${JSON.stringify(pipePrefix)})) throw new Error('Named pipes must not be inspected as disk paths.');
+      return lstat(target, ...options);
+    };
+    const isolation = createRequire(${JSON.stringify(f.preload)})(${JSON.stringify(f.preload)});
+    try {
+      assert.doesNotThrow(() => isolation.assertSafePath(${JSON.stringify(pipePrefix + "daynight-isolation-nonexistent-pipe")}));
+      const disk = path.toNamespacedPath(${JSON.stringify(path.join(f.retained, "config.yml"))});
+      assert.throws(() => isolation.assertSafePath(disk), /retained Daynight state/);
+      assert.throws(() => fs.writeFileSync(disk, 'lost'), /retained Daynight state/);
+    } finally { isolation.cleanup(); }
+  `;
+  execFileSync(process.execPath, ["--input-type=module", "--eval", source], {
+    cwd: packageDirectory, env: f.environment, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"],
+  });
+});
