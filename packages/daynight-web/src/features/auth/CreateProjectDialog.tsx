@@ -79,12 +79,18 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
     checkActive.current = controller;
     checkSnapshot.current = null;
     restoring.current = preserve;
+    let preparationError: TaskCacheError | null = null;
     if (!preserve) setCheck((previous) => ({ status: "loading", items: cursor === null ? [] : previous.items, nextCursor: cursor, error: null }));
     void (async () => {
       try {
         const snapshot = admission === undefined ? new Map<string, string>() : await admission.prepareProjection(signal);
-        if (signal.aborted) return;
+        if (signal.aborted || admission?.isInvalidated) return;
         checkSnapshot.current = snapshot;
+        preparationError = admission?.projectionSnapshotError(snapshot) ?? null;
+        if (admission?.projectionSnapshotHasDenials(snapshot)) {
+          setCheck((previous) => ({ ...previous, items: previous.items.filter((item) => !admission.projectionSnapshotDenied(snapshot, item.id)),
+            error: preparationError ?? previous.error }));
+        }
         const pages: Project[] = [];
         let nextCursor = cursor, pageCount = 0;
         const limit = preserve ? Math.max(1, loadedPages.current) : 1;
@@ -107,7 +113,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
           for (const item of visible) if (preserve || !itemGenerations.current.has(item.id)) itemGenerations.current.set(item.id, snapshot);
           loadedPages.current = cursor !== null ? loadedPages.current + pageCount : pageCount;
           setCheck((previous) => {
-            const failure = admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null);
+            const failure = preparationError ?? admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null);
             const retained = cursor === null && !preserve ? [] : previous.items.filter((item) => admission?.projectionSnapshotDenied(snapshot, item.id) !== true);
             const items = new Map<string, Project>();
             for (const item of preserve ? [...visible, ...retained] : [...retained, ...visible]) if (!items.has(item.id)) items.set(item.id, item);
@@ -117,7 +123,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       } catch (cause) {
         if (signal.aborted || isAbortError(cause)) return;
         try { if (admission !== undefined) await admission.ready(signal); } catch { return; }
-        if (!signal.aborted) setCheck((previous) => ({ ...previous, status: "error", error: cause }));
+        if (!signal.aborted) setCheck((previous) => ({ ...previous, status: "error", error: preparationError ?? cause }));
       } finally {
         if (active.current === controller) active.current = null;
         if (checkActive.current === controller) { checkActive.current = null; checkSnapshot.current = null; restoring.current = false; }
@@ -156,6 +162,7 @@ export const CreateProjectDialog = ({ userId, teamId, teamName, teamPersonal = t
       {unknown && check.status !== "idle" && <section aria-label={m.observedProjects}>
         <h3>{m.observedProjects}</h3>
         {check.items.length > 0 && <ul>{check.items.map((item) => <li key={item.id}><a href={`/projects/${item.id}`}>{item.name}</a> <code>{item.id}</code> <span>{item.repoUrl}</span></li>)}</ul>}
+        {check.error instanceof TaskCacheError && check.status !== "error" && <div role="alert"><p>{m.checkFailed}</p></div>}
         {check.status === "loading" ? <p>{m.checking}</p> : check.status === "error" ? <div role="alert"><p>{m.checkFailed}</p>{check.error instanceof ApiError && check.error.requestId !== null && <p>{common.requestId}<code>{check.error.requestId}</code></p>}</div> : check.items.length === 0 ? <p>{m.noProjects}</p> : null}
         {check.nextCursor !== null && check.status !== "loading" && <button className="button" type="button" onClick={() => checkProjects(check.nextCursor)}>{m.loadMore}</button>}
       </section>}

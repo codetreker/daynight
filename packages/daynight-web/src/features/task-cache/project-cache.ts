@@ -1,5 +1,5 @@
 import type { IDBPObjectStore, IDBPTransaction } from "idb";
-import { ApiError, authRequestsPaused, isAbortError, requestId, waitForAuthRequests } from "../../api/client";
+import { ApiError, authRequestsPaused, isAbortError, requestId, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { canonicalId, record, string } from "../../api/parse";
 import { parseProfileVersion } from "../../api/profile-version";
 import type { ProjectPersonVersion } from "../../api/auth-types";
@@ -182,16 +182,27 @@ export class TaskCacheScope {
     for (const value of newlyRetired) retired.add(value);
     const current = this.projections.get(projectId)?.manifest ?? this.historyPreviews.get(projectId);
     const matchesCurrent = current !== undefined && (current.cacheGeneration === generation || history.includes(current.cacheGeneration));
-    const unknownNotified = unknownAncestors && authRequestsPaused();
-    const provisional = unknownNotified && !matchesCurrent && (current === undefined || !(current.generationAncestors ?? []).includes(generation));
-    if (provisional) {
-      const count = this.pendingUnknownProjects.get(projectId) ?? 0;
-      this.pendingUnknownProjects.set(projectId, count + 1);
-      if (count === 0) this.projectRevisions.set(projectId, this.getProjectRevision(projectId) + 1);
-    }
-    const ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration: generation,
+    let unknownNotified = false, provisional = false;
+    let ticket: SyncTicket = { userId: this.userId, projectId, userFence, cacheGeneration: generation,
       epoch: current?.epoch ?? null, maxUpdatedAt: current?.maxUpdatedAt ?? null,
       generationAncestors: history, unknownAncestors, scopeRevision: this.getProjectRevision(projectId), admissionRevision: this.getAdmissionRevision(projectId) };
+    const isolateUnknown = (): void => {
+      if (!unknownAncestors || unknownNotified || this.isInvalidated) return;
+      unknownNotified = true;
+      provisional = !matchesCurrent && (current === undefined || !(current.generationAncestors ?? []).includes(generation));
+      if (provisional) {
+        const count = this.pendingUnknownProjects.get(projectId) ?? 0;
+        this.pendingUnknownProjects.set(projectId, count + 1);
+        if (count === 0) {
+          const revision = this.getProjectRevision(projectId);
+          this.projectRevisions.set(projectId, revision + 1);
+          if (ticket.scopeRevision === revision) ticket = { ...ticket, scopeRevision: revision + 1 };
+        }
+      }
+      const event = { projectId, accessRevoked: true as const, scopeSuspended: true as const, revokedGeneration: generation, unknownAncestors: true as const };
+      if (provisional) this.emit(event); else this.emitProjection(event);
+    };
+    const unsubscribePause = unknownAncestors ? subscribeAuthPause(isolateUnknown) : () => {};
     const releaseProvisional = (): boolean => {
       if (!provisional) return true;
       const count = this.pendingUnknownProjects.get(projectId) ?? 0;
@@ -205,20 +216,26 @@ export class TaskCacheScope {
       : Promise.resolve();
     const action = immediate.then(async () => {
       if (!unknownAncestors && current !== undefined) return;
-      await this.ready(this.signal);
       let matches: boolean;
-      try {
-        matches = await this.userTransaction(async (transaction, fence) => {
-          const manifest = await this.manifest(transaction, projectId, fence);
-          return fence === userFence && (manifest?.cacheGeneration === generation ||
-            manifest?.state === "invalidated" && manifest.invalidatedBy === "access" && manifest.generationAncestors?.[0] === generation);
-        }, this.signal);
-      } catch (error) {
-        if (!unknownAncestors || isAbortError(error)) throw error;
-        this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error });
-        releaseProvisional();
-        if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).catch(() => {});
-        throw error;
+      for (;;) {
+        try {
+          await this.ready(this.signal);
+          matches = await this.userTransaction(async (transaction, fence) => {
+            const manifest = await this.manifest(transaction, projectId, fence);
+            return fence === userFence && (manifest?.cacheGeneration === generation ||
+              manifest?.state === "invalidated" && manifest.invalidatedBy === "access" && manifest.generationAncestors?.[0] === generation);
+          }, this.signal);
+          break;
+        } catch (error) {
+          // A new foreground check may interrupt the durable read; retain the
+          // provisional isolation until the same live scope can check again.
+          if (error instanceof TaskCacheLifecycleChanged && !this.isInvalidated && !this.signal.aborted) continue;
+          if (!unknownAncestors || isAbortError(error)) throw error;
+          this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: generation, unknownAncestors: true, error });
+          releaseProvisional();
+          if (!matchesCurrent) void this.revokeProject(ticket, this.signal, false, new ApiError("server", 404, "not_found"), false).catch(() => {});
+          throw error;
+        }
       }
       const released = releaseProvisional();
       if (!matches) {
@@ -237,12 +254,9 @@ export class TaskCacheScope {
         for (const value of newlyRetired) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: value, error });
         console.warn("Task cache access cleanup failed", { projectId, error_category: error instanceof TaskCacheError ? error.category : "protocol" });
       }
-    }).finally(() => { this.projectionHints.delete(work); });
+    }).finally(() => { unsubscribePause(); this.projectionHints.delete(work); });
     this.projectionHints.add(work);
-    if (unknownNotified) {
-      const event = { projectId, accessRevoked: true as const, scopeSuspended: true as const, revokedGeneration: generation, unknownAncestors: true as const };
-      if (provisional) this.emit(event); else this.emitProjection(event);
-    }
+    if (authRequestsPaused()) isolateUnknown();
     for (const value of newlyRetired) this.emitProjection({ projectId, accessRevoked: true, revokedGeneration: value, error: new ApiError("server", 404, "not_found") });
   }
   private readonly onIdentityMismatch: () => void;

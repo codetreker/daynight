@@ -1,6 +1,7 @@
-import { IDBObjectStore } from 'fake-indexeddb';
+import { IDBObjectStore, IDBTransaction } from 'fake-indexeddb';
 import { openDB, type IDBPDatabase } from 'idb';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import * as client from '../src/api/client';
 import { pauseAuthRequests } from '../src/api/client';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { createTaskCacheScope, type CacheEvent, type TaskCacheScope } from '../src/features/task-cache/project-cache';
@@ -120,4 +121,108 @@ it('restores a fresh incomparable admission after an old hint is checked followi
   await peer.prepareProjection(signal());
   expect(peer.getAuthorizedProject(projectId)).toBe(fresh);
   expect(events.some(event => event.accessRestored && event.projectId === projectId)).toBe(true);
+});
+
+
+it.each(['current denial', 'obsolete denial', 'scope invalidated'] as const)('resumes an interrupted durable check for %s', async scenario => {
+  const owner = scope(), peer = scope(); await apply(owner); await apply(peer);
+  let snapshot = await peer.prepareProjection(signal());
+  const db = await database(); await corruptGeneration(db);
+  const denied = await owner.beginSync(projectId, signal()); expect(denied.unknownAncestors).toBe(true);
+  await owner.revokeProject(denied, signal()); const hint = negative();
+  if (scenario === 'obsolete denial') { await corruptGeneration(db); await apply(peer); snapshot = await peer.prepareProjection(signal()); }
+  const admitted = peer.getAuthorizedProject(projectId); expect(admitted).not.toBeNull();
+  const events: CacheEvent[] = [];
+  peer.subscribeProjection(event => events.push(event));
+  const gotRead = Promise.withResolvers<void>(), aborted = Promise.withResolvers<void>();
+  let resumeSecond: (() => void) | undefined, invalidation: Promise<void> | undefined, armed = true;
+  const get = IDBObjectStore.prototype.get, abort = IDBTransaction.prototype.abort;
+  vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = get.apply(this, args);
+    if (this.name === 'projects' && armed) {
+      armed = false;
+      request.addEventListener('success', () => { resumeSecond = pauseAuthRequests(); gotRead.resolve(); }, { once: true });
+    }
+    return request;
+  });
+  vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation(function (this: IDBTransaction) {
+    try { return abort.call(this); } finally { aborted.resolve(); }
+  });
+  const resumeFirst = pauseAuthRequests();
+  try {
+    deliver(1, hint);
+    expect(peer.isProjectSuspended(projectId)).toBe(true);
+    expect(events.some(event => event.accessRevoked && peer.projectionEventMatches(snapshot, event))).toBe(true);
+    resumeFirst(); await gotRead.promise; await aborted.promise;
+    expect(peer.isProjectSuspended(projectId)).toBe(true);
+    expect(events.some(event => event.accessRestored)).toBe(false);
+    if (scenario === 'scope invalidated') invalidation = peer.invalidateScope();
+  } finally { resumeFirst(); resumeSecond?.(); }
+  if (invalidation !== undefined) {
+    await invalidation; expect(peer.isInvalidated).toBe(true);
+    expect(events.some(event => event.accessRestored)).toBe(false); return;
+  }
+  await vi.waitFor(() => expect(peer.isProjectSuspended(projectId)).toBe(false));
+  if (scenario === 'current denial') {
+    expect(peer.getAuthorizedProject(projectId)).toBeNull(); expect(peer.canPreviewProject(projectId)).toBe(false);
+  } else {
+    expect(peer.getAuthorizedProject(projectId)).toBe(admitted);
+    expect(events.some(event => event.accessRestored && event.projectId === projectId)).toBe(true);
+  }
+});
+
+it.each(['current denial', 'obsolete denial', 'scope invalidated'] as const)('isolates an in-flight unknown hint on a later identity pause for %s', async scenario => {
+  const owner = scope(), peer = scope(); await apply(owner); await apply(peer);
+  let snapshot = await peer.prepareProjection(signal());
+  const db = await database(); await corruptGeneration(db);
+  const denied = await owner.beginSync(projectId, signal()); await owner.revokeProject(denied, signal()); const hint = negative();
+  if (scenario === 'obsolete denial') { await corruptGeneration(db); await apply(peer); snapshot = await peer.prepareProjection(signal()); }
+  const admitted = peer.getAuthorizedProject(projectId); expect(admitted).not.toBeNull();
+  const events: CacheEvent[] = []; peer.subscribeProjection(event => events.push(event));
+  const unsubscribed = vi.fn(), subscribe = client.subscribeAuthPause;
+  vi.spyOn(client, 'subscribeAuthPause').mockImplementation(listener => { const unsubscribe = subscribe(listener); return () => { unsubscribe(); unsubscribed(); }; });
+  const read = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const aborted = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const resumes: (() => void)[] = []; let readCount = 0, abortCount = 0, invalidation: Promise<void> | undefined;
+  const get = IDBObjectStore.prototype.get, abort = IDBTransaction.prototype.abort;
+  vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = get.apply(this, args);
+    if (this.name === 'projects' && readCount < 2) {
+      const index = readCount++;
+      request.addEventListener('success', () => { resumes[index] = pauseAuthRequests(); read[index]!.resolve(); }, { once: true });
+    }
+    return request;
+  });
+  vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation(function (this: IDBTransaction) {
+    try { return abort.call(this); } finally { aborted[abortCount++]?.resolve(); }
+  });
+  try {
+    deliver(1, hint); await read[0]!.promise;
+    expect(peer.isProjectSuspended(projectId)).toBe(true);
+    expect(events.some(event => event.accessRevoked && peer.projectionEventMatches(snapshot, event))).toBe(true);
+    await aborted[0]!.promise;
+    if (scenario === 'scope invalidated') invalidation = peer.invalidateScope();
+    else {
+      resumes[0]!(); await read[1]!.promise;
+      expect(peer.isProjectSuspended(projectId)).toBe(true);
+      expect(events.some(event => event.accessRestored)).toBe(false);
+      await aborted[1]!.promise;
+    }
+  } finally { for (const resume of resumes) resume?.(); }
+  if (invalidation !== undefined) {
+    await invalidation; expect(peer.isInvalidated).toBe(true);
+    await vi.waitFor(() => expect(unsubscribed).toHaveBeenCalledOnce());
+    const count = events.length, resume = pauseAuthRequests(); resume();
+    expect(events).toHaveLength(count); return;
+  }
+  await vi.waitFor(() => expect(peer.isProjectSuspended(projectId)).toBe(false));
+  if (scenario === 'current denial') {
+    expect(peer.getAuthorizedProject(projectId)).toBeNull(); expect(peer.canPreviewProject(projectId)).toBe(false);
+  } else {
+    expect(peer.getAuthorizedProject(projectId)).toBe(admitted);
+    expect(events.some(event => event.accessRestored)).toBe(true);
+  }
+  await vi.waitFor(() => expect(unsubscribed).toHaveBeenCalledOnce());
+  const count = events.length, resume = pauseAuthRequests(); resume();
+  expect(events).toHaveLength(count);
 });

@@ -52,6 +52,7 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
     activeSnapshot.current = null;
     activeRestoration.current = preserve;
     const currentGeneration = ++generation.current;
+    let preparationError: TaskCacheError | null = null;
     setState((previous) => append && previous.scopeKey === scopeKey
       ? { ...previous, loadingMore: true, moreError: null }
       : preserve && previous.scopeKey === scopeKey && previous.status === 'ready' ? previous
@@ -59,8 +60,18 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
 
     try {
       const snapshot = admission === undefined ? new Map<string, string>() : await admission.prepareProjection(signal);
-      if (signal.aborted || blockedRef.current || currentGeneration !== generation.current || scopeRef.current !== scopeKey) return;
+      if (signal.aborted || admission?.isInvalidated || currentGeneration !== generation.current || scopeRef.current !== scopeKey) return;
       activeSnapshot.current = snapshot;
+      preparationError = admission?.projectionSnapshotError(snapshot) ?? null;
+      if (admission?.projectionSnapshotHasDenials(snapshot)) {
+        setState((previous) => previous.scopeKey !== scopeKey ? previous : {
+          ...previous,
+          items: previous.items.filter((item) => !admission.projectionSnapshotDenied(snapshot, item.id)),
+          status: previous.status === 'loading' && preparationError !== null ? 'error' : previous.status,
+          error: preparationError ?? previous.error,
+        });
+      }
+      if (blockedRef.current) { if (preserve) restorePending.current = true; return; }
       const pages: Project[] = [];
       let nextCursor = cursor, pageCount = 0;
       const limit = preserve ? Math.max(1, loadedPages.current) : 1;
@@ -100,7 +111,7 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
           items: [...projects.values()],
           nextCursor,
           status: 'ready',
-          error: admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null),
+          error: preparationError ?? admission?.projectionSnapshotError(snapshot) ?? (admission?.projectionSnapshotHasDenials(snapshot) ? previous.error : null),
           loadingMore: false,
           moreError: null,
         };
@@ -111,8 +122,8 @@ export const useProjects = (scope: ProjectScope = { kind: 'all' }, admission?: T
       if (signal.aborted || blockedRef.current || currentGeneration !== generation.current || scopeRef.current !== scopeKey) return;
       setState((previous) => blockedRef.current || admission?.isInvalidated || previous.scopeKey !== scopeKey || scopeRef.current !== scopeKey ? previous : append
         ? { ...previous, loadingMore: false, moreError: error }
-        : preserve && previous.status === 'ready' ? { ...previous, error }
-        : { ...initialState(scopeKey), status: 'error', error });
+        : preserve && previous.status === 'ready' ? { ...previous, error: preparationError ?? error }
+        : { ...initialState(scopeKey), status: 'error', error: preparationError ?? error });
     } finally {
       if (currentGeneration === generation.current) {
         active.current = null; activeSnapshot.current = null; activeRestoration.current = false;

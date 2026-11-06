@@ -1,10 +1,13 @@
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { IDBObjectStore } from 'fake-indexeddb';
+import { openDB } from 'idb';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { stringifyWireJson } from './helpers/wireJson';
 import { ProjectsProvider } from '../src/features/projects/ProjectsProvider';
 import { ProjectsPage } from '../src/features/projects/ProjectsPage';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import type { Project } from '../src/api/types';
 
 const render = createLocaleRender('zh-CN');
@@ -20,7 +23,7 @@ class Channel {
   postMessage(data: unknown) { for (const peer of Channel.channels) if (peer !== this) queueMicrotask(() => peer.onmessage?.({ data } as MessageEvent<unknown>)); }
   close() { Channel.channels.delete(this); }
 }
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); Channel.channels.clear(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); Channel.channels.clear(); });
 
 it('withdraws a cold peer directory, fences a late page and accepts a fresh regrant without accepting an old hint', async () => {
   vi.stubGlobal('BroadcastChannel', Channel);
@@ -159,4 +162,62 @@ it('resumes an access restoration after another project is withdrawn during its 
   expect(screen.queryByRole('heading', { name: 'Healthy project' })).toBeNull();
   expect(fetcher).toHaveBeenCalledTimes(3);
   view.unmount(); scope.dispose();
+}, 20000);
+
+it.each([
+  ['corrupt', 'continuation'], ['corrupt', 'restoration'], ['storage', 'continuation'], ['storage', 'restoration'],
+] as const)('withdraws retained projections on %s storage failure before a %s response', async (failure, mode) => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const signal = new AbortController().signal;
+  await scope.beginSync(lost.id, signal);
+  const trigger = project('10000000-0000-4000-8000-000000000025', 'Restoration trigger');
+  const pending = Promise.withResolvers<Response>();
+  const fetcher = vi.fn().mockResolvedValueOnce(page([lost, healthy, trigger], mode === 'continuation' ? 'next' : null)).mockReturnValueOnce(pending.promise);
+  vi.stubGlobal('fetch', fetcher);
+  const view = render(<ProjectsProvider admission={scope}><ProjectsPage /></ProjectsProvider>);
+  await screen.findByRole('heading', { name: 'Lost project' }, { timeout: 10000 });
+  const healthyHeading = screen.getByRole('heading', { name: 'Healthy project' });
+  const healthyLink = healthyHeading.closest('a')!;
+  healthyLink.focus();
+  let fault: ReturnType<typeof vi.spyOn> | undefined;
+  if (failure === 'corrupt') {
+    const db = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+    const row = await db.get('projects', [userId, lost.id]);
+    await db.put('projects', { ...row!, cacheGeneration: 'invalid' });
+    db.close();
+  } else {
+    const original = IDBObjectStore.prototype.get;
+    fault = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+      if (this.name === 'userScopes') throw new DOMException('Injected storage failure', 'QuotaExceededError');
+      return original.apply(this, args);
+    });
+  }
+  if (mode === 'continuation') fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+  else {
+    await act(async () => scope.suspendProject(trigger.id));
+    await act(async () => scope.resumeProject(trigger.id));
+  }
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2), { timeout: 10000 });
+  expect(screen.queryByRole('heading', { name: 'Lost project' })).toBeNull();
+  expect(screen.queryByText(lost.repoUrl)).toBeNull();
+  if (failure === 'corrupt') {
+    expect(screen.getByRole('heading', { name: 'Healthy project' })).toBe(healthyHeading);
+    expect(document.activeElement).toBe(healthyLink);
+  }
+  else expect(screen.queryByRole('heading', { name: 'Healthy project' })).toBeNull();
+  expect(screen.getByRole('alert')).toBeTruthy();
+  if (failure === 'storage') {
+    fault?.mockRestore();
+    await scope.prepareProjection(signal);
+    expect(scope.projectionError).toBeNull();
+  }
+  await act(async () => pending.reject(new Error('offline')));
+  await waitFor(() => expect(screen.queryByRole('button', { name: '正在加载更多…' })).toBeNull(), { timeout: 10000 });
+  expect(screen.queryByText(lost.repoUrl)).toBeNull();
+  if (failure === 'corrupt') {
+    expect(screen.getByRole('heading', { name: 'Healthy project' })).toBe(healthyHeading);
+    expect(document.activeElement).toBe(healthyLink);
+  }
+  expect(screen.getAllByRole('alert').length).toBeGreaterThan(0);
+  fault?.mockRestore(); view.unmount(); scope.dispose();
 }, 20000);

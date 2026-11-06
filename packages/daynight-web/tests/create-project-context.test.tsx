@@ -1,8 +1,11 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { IDBObjectStore } from 'fake-indexeddb';
+import { openDB } from 'idb';
 import { CreateProjectDialog } from '../src/features/auth/CreateProjectDialog';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { ApiError, invalidateAuthRequests, pauseAuthRequests } from '../src/api/client';
 import { act } from '@testing-library/react';
 import * as auth from '../src/api/auth';
@@ -226,6 +229,76 @@ describe('project creation context', () => {
     expect(screen.getByLabelText(/Project name/)).toHaveValue('Draft name');
     expect(reads).toBe(3);
     view.unmount(); admission.dispose();
+  }, 20000);
+
+  it.each([
+    ['corrupt', 'continuation'], ['corrupt', 'restoration'], ['storage', 'continuation'], ['storage', 'restoration'],
+  ] as const)('withdraws retained inspected projects on %s storage failure before a %s response', async (failure, mode) => {
+    const admission = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const project = (id: string, name: string) => ({ id, name, repoUrl: `git@example.test:${name}.git`, ownership: { teamId: teamA, version: 1 }, settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-20T00:00:00Z', updatedAt: '2026-10-20T00:00:00Z' });
+    const lost = project('10000000-0000-4000-8000-000000000046', 'Private');
+    const healthy = project('10000000-0000-4000-8000-000000000047', 'Healthy');
+    const trigger = project('10000000-0000-4000-8000-000000000048', 'Trigger');
+    await admission.beginSync(lost.id, new AbortController().signal);
+    const pending = Promise.withResolvers<Response>();
+    const response = new Response(JSON.stringify({ items: [lost, healthy, trigger], nextCursor: mode === 'continuation' ? 'next' : null }), { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId } });
+    let reads = 0;
+    const fetcher = vi.fn((_url: string, options?: RequestInit) => {
+      if (options?.method === 'POST') return Promise.reject(new Error('connection lost'));
+      return ++reads === 1 ? Promise.resolve(response) : pending.promise;
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const view = render(<CreateProjectDialog userId={userId} teamId={teamA} admission={admission} onIdentityMismatch={vi.fn()} onClose={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'Draft name' } });
+    fireEvent.change(screen.getByLabelText(/Repository/), { target: { value: 'git@example.test:draft.git' } });
+    fireEvent.submit(screen.getByRole('button', { name: 'Create project' }).closest('form')!);
+    await screen.findByText(/creation result is unknown/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Check projects' }));
+    await screen.findByRole('link', { name: 'Private' }, { timeout: 10000 });
+    const healthyLink = screen.getByRole('link', { name: 'Healthy' });
+    healthyLink.focus();
+    let fault: ReturnType<typeof vi.spyOn> | undefined;
+    if (failure === 'corrupt') {
+      const db = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+      const row = await db.get('projects', [userId, lost.id]);
+      await db.put('projects', { ...row!, cacheGeneration: 'invalid' });
+      db.close();
+    } else {
+      const original = IDBObjectStore.prototype.get;
+      fault = vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, ...args) {
+        if (this.name === 'userScopes') throw new DOMException('Injected storage failure', 'QuotaExceededError');
+        return original.apply(this, args);
+      });
+    }
+    if (mode === 'continuation') fireEvent.click(screen.getByRole('button', { name: 'Load more projects' }));
+    else {
+      await act(async () => admission.suspendProject(trigger.id));
+      await act(async () => admission.resumeProject(trigger.id));
+    }
+    await waitFor(() => expect(reads).toBe(2), { timeout: 10000 });
+    expect(screen.queryByRole('link', { name: 'Private' })).toBeNull();
+    expect(screen.queryByText(lost.repoUrl)).toBeNull();
+    if (failure === 'corrupt') {
+      expect(screen.getByRole('link', { name: 'Healthy' })).toBe(healthyLink);
+      expect(document.activeElement).toBe(healthyLink);
+    }
+    else expect(screen.queryByRole('link', { name: 'Healthy' })).toBeNull();
+    expect(screen.getByText('Projects could not be loaded.')).toBeTruthy();
+    if (failure === 'storage') {
+      fault?.mockRestore();
+      await admission.prepareProjection(new AbortController().signal);
+      expect(admission.projectionError).toBeNull();
+    }
+    await act(async () => pending.reject(new Error('offline')));
+    await waitFor(() => expect(screen.queryByText('Loading projects…')).toBeNull(), { timeout: 10000 });
+    expect(screen.queryByText(lost.repoUrl)).toBeNull();
+    if (failure === 'corrupt') {
+      expect(screen.getByRole('link', { name: 'Healthy' })).toBe(healthyLink);
+      expect(document.activeElement).toBe(healthyLink);
+    }
+    expect(screen.getByText('Projects could not be loaded.')).toBeTruthy();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('Draft name');
+    fault?.mockRestore(); view.unmount(); admission.dispose();
   }, 20000);
 
   it.each(['same', 'changed'] as const)('holds a successful creation until the %s identity is confirmed', async (outcome) => {
