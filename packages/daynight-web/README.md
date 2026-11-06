@@ -1819,8 +1819,9 @@ retains routing/rendering foundations and the
 [shared-page decision](../../.agents/notes/implemented/architecture/2026-10-24-shared-attachment-page.md)
 retains full attachment-panel reuse rationale; complete Task Detail composition
 now belongs to the standalone-detail decision. The production `task-detail-page`
-and `task-attachments` journeys use actual services on both runtime targets with
-source-qualified receipts.
+and `task-attachments` journeys use the selected production runtime with
+source-qualified receipts. CI selects the container; explicit local native runs
+exercise host filesystem and process behavior.
 
 ## Validation and build
 
@@ -1955,61 +1956,50 @@ calibrates that resource setting for the dedicated public standard Linux runner'
 four CPUs. Scale workloads use the separate local stress configuration.
 
 The browser matrix invokes `node packages/daynight-web/scripts/ci.mts browser
---shard=1/2` or `--shard=2/2`. Both install pinned Chromium and Linux dependencies
-under the existing 600-second bound, build real embedded Go targets and own
-independent native/container services, databases, private credentials and cleanup.
+--shard=1/2` or `--shard=2/2`. Each entry installs pinned Chromium and Linux
+dependencies under the existing 600-second bound, prepares one installed CLI,
+and builds and starts one production container deployment. The Dockerfile owns
+the actual Web build and embedded Go executable; CI does not repeat those builds
+or the complete browser inventory in a host-native deployment.
+
 Playwright selects cases with `--fully-parallel --workers=1 --retries=0
 --shard=i/2`: fully-parallel controls case-level partitioning, while each database
-still executes one browser worker serially. The current canonical inventory is
-41 scenarios, divided into disjoint sets of 21 and 20. Default file-level partitioning
-does not provide this case-level balance.
+executes one browser worker serially. Before service preparation, the runner
+collects the complete canonical functional inventory and the selected shard using
+the same functional arguments as execution. `scripts/acceptance/inventory.mts`
+owns the scenario and combined-authentication names. Collection errors, unknown,
+duplicate or missing IDs and mismatched selections fail validation.
 
-Before preparing services, the runner collects the complete canonical functional
-inventory and the selected shard using the same functional arguments as the
-actual run. It records only the validated selected scenario IDs. Native and
-container phases execute that same selection; the callback derives it from its
-existing source/run-bound parent receipt. Invalid identities, collection errors,
-unknown/duplicate/missing scenarios or a mismatched selection fail validation.
-The pure `scripts/acceptance/inventory.mts` owns canonical functional and
-combined-authentication check names.
+Every invocation selects exactly one target. Container is the default and the
+required CI target. The installed CLI is ready before dev-ci starts; the callback
+validates its source/run-bound parent receipt and installed-package identity
+before browser work. There is no second target, permission file or permission
+wait. Each target retains private credentials, browser profiles and owned cleanup.
 
-After Chromium installation, CI requests navigation checks through its existing
-source/run-bound acceptance receipt. The container callback waits for permission
-and installed-CLI validation, then overlaps the serial navigation branch with
-container functional validation. Both branches drain before combined
-authentication can restart a target and before callback exit allows dev-ci network
-cleanup. Navigation hosts use separate ports, build/cache directories and routed
-API fixtures. A branch failure cancels their shared controller and preserves
-operation and cleanup failures. Navigation commands receive an environment copy
-without the production browser-ownership marker, preserving explicit browser
-channel and tool settings. Navigation command cancellation escalates after
-one second, within dev-ci's callback termination grace, while its verification
-deadlines remain unchanged. Direct acceptance callers and shard 1 keep their
-existing paths. The
-[browser job scheduling decision](../../.agents/notes/implemented/testing/2026-11-06-web-browser-job-overlap.md)
-owns this isolation and resource trade-off.
+After Chromium installation, CI requests `navigationChecks: true` in the parent
+receipt only for the functional shared-check owner. The container callback
+overlaps the serial navigation branch with container functional validation.
+Both branches drain before combined authentication can restart the container and
+before callback exit allows dev-ci network cleanup. Navigation uses separate
+ports, Vite cache/output directories and routed API fixtures. Its copied command
+environment omits the production browser-ownership marker and retains explicit
+browser/tool settings. Branch failures cancel shared work and preserve operation
+and cleanup failures. Navigation cancellation escalates after one second inside
+the callback termination grace; verification deadlines remain unchanged.
 
-Shard 2 owns the complete 28-case navigation-contract suite, dev-ci lifecycle
-fixtures, both eleven-check combined-authentication journeys, and the real
-attachment persistence/paired-backup-restoration check. Ownership derives from
-the shard identity. Shard 1 runs its functional selection and full owned-resource
-cleanup. Both entries retain normal dev-ci built/running image checks, private
-browser profiles, source validation and the CLI cleanup barrier. Matrix
-`fail-fast` is false so one failure does not cancel the other entry's diagnostics
-and cleanup.
+Shard 2 owns the complete navigation-contract suite, dev-ci lifecycle fixtures,
+one eleven-check container combined-authentication journey and real attachment
+persistence/paired-backup restoration. Shard 1 runs its functional selection and
+owned cleanup. Both entries require the actual built/running image identity,
+source validation, browser recovery and CLI cleanup. Matrix `fail-fast` is false
+so a failure does not cancel the other shard's diagnostics or cleanup.
 
 The CI wrapper requires each owned command group to stop after settlement,
-not merely its leader. Command, cancellation and cleanup failures remain failures,
-including combined errors. Native preparation installs the shared CLI before an
-atomic, run/source-bound permission releases the container browser. Selected
-native/container phases overlap against independent service, database,
-authentication and storage resources. The container permission wait remains
-900 seconds. Run-wide CLI recovery waits until both targets drain; combined CLI
-commands receive cancellation without terminating commands in the other target.
-The [functional target decision](../../.agents/notes/implemented/testing/2026-11-04-web-functional-target-overlap.md)
-owns those isolation constraints; the
+including descendants. Command, cancellation and cleanup failures fail validation.
+The [single-target decision](../../.agents/notes/implemented/testing/2026-11-06-single-target-web-acceptance.md)
+owns the removed native repetition and representative layout matrices. The
 [quality isolation decision](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
-owns the separate quality workload and command budgets.
+retains the independent quality workload and command budgets.
 
 Quality uploads `coverage-final.json` and `summary.json` as
 `daynight-web-coverage`. Browser entries upload full evidence as
@@ -2023,17 +2013,19 @@ For selected Web validation, that final job checks out its current source, sets
 up Node 24, downloads both exact summary names, and invokes the install-free
 `scripts/acceptance/report.mts --shards file1 file2` validator. It requires exactly
 shards 1/2 and 2/2 with distinct run IDs, clean passing receipts, the current
-`GITHUB_SHA` and checkout tree, accurate native/container targets and browser/CLI
-cleanup, matching selected inventories, disjoint canonical unions and both
-complete combined-authentication receipts owned only by shard 2. Missing or
+`GITHUB_SHA` and checkout tree, exactly one container target per run, actual
+container/image and browser/CLI cleanup, matching selected inventories, a disjoint
+canonical union and one complete container combined-authentication receipt owned
+only by shard 2. Missing or
 inconsistent evidence fails the same required gate. No executable, image or
 resource ownership is transferred between runners. The
 [two-shard decision](../../.agents/notes/implemented/testing/2026-11-04-web-ci-case-shards.md)
 records duplication costs and performance-model limits.
 
-Default local `pnpm web:acceptance` retains complete unsharded functional and
-combined-authentication validation with its preinstalled browser. Explicit local
-stress runs capacity last after functional, container, browser and CLI barriers;
+Default local `pnpm web:acceptance` runs complete unsharded container functional
+and combined-authentication validation with its preinstalled browser. Explicit
+`--native`, `--apfs` or `--stress` selects a host-native run. Local stress runs
+capacity last after functional/browser and CLI barriers;
 a stress/shard combination is rejected before preparation. Browser jobs select
 official Ubuntu archives before installation, as delivered in
 [PR #148](https://github.com/codetreker/daynight/pull/148). Go module/compiler caches
@@ -2061,17 +2053,22 @@ pnpm web:acceptance
 pnpm web:acceptance:stress
 ```
 
-The ordinary local command requires thirty-six functional scenarios on each
-native/container target, seventy-two in total. CI retains that complete inventory
-across two disjoint case shards, running eighteen selected scenarios per shard on both targets. The explicit local stress command adds five native
-capacity/limit scenarios and their performance receipt. From this package, use
-`pnpm test:stress:browser`, or invoke `node scripts/acceptance.mts --stress`;
-`--apfs --stress` combines the local capacity matrix with explicit APFS storage.
-Stress mode is refused in CI and cannot be combined with a shard before fixture
-preparation. Raw Playwright selection excludes the capacity spec by default and
-rejects a stress selection in CI. Both local modes retain combined authentication,
-exact source/browser identity and full cleanup; CI runs the two combined journeys
-on shard 2 while every shard performs its owned cleanup.
+The ordinary local command requires the complete canonical functional inventory
+once on the production container and one combined-authentication receipt. CI
+partitions that same inventory into two disjoint case shards; only shard 2 owns
+the combined journey. Native browser duplication is an explicit coverage trade-off:
+host-native UI/runtime and filesystem combinations are no longer part of routine
+Web CI. Native server build, HTTP and embedded-asset checks retain their Go gates.
+
+For a local host-native functional run, invoke
+`node packages/daynight-web/scripts/acceptance.mts --native`. The explicit local
+stress command selects native and adds five capacity/limit scenarios and their
+performance receipt. From this package, use `pnpm test:stress:browser`, or
+`node scripts/acceptance.mts --stress`; `--apfs --stress` combines capacity with
+explicit APFS storage. Stress is refused in CI and cannot combine with a shard
+before fixture preparation. Raw Playwright selection excludes capacity by
+default and rejects stress in CI. Every selected target requires exact
+source/browser identity and full owned-resource cleanup.
 
 Selected functional journeys, including assignment reconciliation, inject shorter
 named polling intervals before page initialization: task synchronization and
@@ -2094,11 +2091,11 @@ its normal runtime libraries on Linux; CI installs them with Playwright's
 Chromium executable. That override is recorded and is forbidden for CI delivery
 evidence, which must use the full bundled Chromium channel (`chromium`) pinned by
 Playwright 1.64.1. This channel renders PDF pages; MIME-document readiness alone
-is not a painted-content oracle. Native and container phases record and require
-the same browser identity. macOS also requires Xcode Command Line Tools (the Apple
+is not a painted-content oracle. Every phase of the selected target records and
+requires the same browser identity. Native macOS runs also require Xcode Command Line Tools (the Apple
 SDK and `xcrun clang`). The runner compiles its process inspection helper into
-project temporary storage. Default acceptance uses an owned ordinary directory,
-including on a case-insensitive Mac disk, without creating or attaching images.
+project temporary storage. Explicit native acceptance uses an owned ordinary
+directory, including on a case-insensitive Mac disk, without creating or attaching images.
 Linux still requires a case-sensitive directory. The storage receipt records
 the measured `caseSensitive` capability and each browser phase records
 `caseSensitiveStorage`. Native Mac phases without that capability use a
@@ -2132,9 +2129,9 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same seventy-two functional scenarios and
-additional combined authentication checks, with native filesystem coverage
-qualified by its recorded capability. Explicit local stress acceptance adds the
+macOS local acceptance runs the canonical functional inventory once on its
+selected target and one combined-authentication journey. Explicit native runs
+qualify filesystem coverage by the recorded capability. Explicit local stress acceptance adds the
 same five capacity/limit scenarios and fixed performance budgets on Linux and
 macOS. A local pass does not establish
 macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
@@ -2144,17 +2141,17 @@ for the workspace. Export `pnpm_config_registry=https://mirrors.cloud.tencent.co
 acceptance CLI installation, and `DAYNIGHT_NPM_REGISTRY` for Docker builds. Both Compose stacks default to the official
 npm registry unless the build variable is explicitly supplied.
 
-The command builds real embedded assets and a new Go executable and owns a
-separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
-the normal dev-ci runner builds and starts the actual production image. Browser
-execution overlaps the same selected functional scenarios in native and
-production-image stream-gateway targets. Local ordinary execution selects all
-thirty-six scenarios; each CI shard selects eighteen, and the final gate requires the complete disjoint union. Explicit local stress mode then runs five native
-capacity/limit scenarios. In
-that mode, the native process and PostgreSQL remain alive through capacity;
-other preparation commands and the complete container stack finish before it
-starts. No normal localhost service or dataset is used. Functional and
-capacity fixtures use normal UniAuth-acquired sessions/PATs and real write APIs.
+Container acceptance builds the actual production image through dev-ci and uses
+its gateway, PostgreSQL, UniAuth and attachment volume. Explicit native acceptance
+builds embedded assets and a host Go executable, then owns a separate PostgreSQL
+container/volume, authentication fixture, storage root and loopback listener.
+A run never prepares or executes both targets. Local ordinary execution selects
+the complete canonical inventory; each CI shard selects its recorded subset and
+the final gate requires their complete disjoint union. Explicit local stress
+retains the native process and database through its five capacity/limit scenarios,
+after functional/browser and CLI cleanup barriers. No normal localhost service or
+dataset is used. Fixtures obtain sessions/PATs through normal UniAuth protocols
+and use real write APIs.
 The shared gateway fixture is pinned to
 `0978963813fcefd9d553f6cb9bcc319084c764b3`; App credentials, browser session and PAT
 metadata remain in private 0600 files outside public artifact trees. External
@@ -2191,7 +2188,7 @@ work while controlled browser receipt delivery isolates the local ticker.
 The `task-assignment` journey admits only exact registered assignee PATCHes and
 checks real set/clear writes, same-value zero writes, conflicts, committed response
 loss and GET-only recovery with preserved task materials. The
-`task-assignment-layout` journey covers bilingual 1366px/390px/320px layouts,
+`task-assignment-layout` journey uses representative bilingual desktop/320px layouts,
 long/null names, avatar failure, popup/focus/scroll/fullscreen behavior, former
 members, read-only browsing, local filters and complete progress with hidden
 siblings. It also checks persisted changed-or-missing profile reads and real
@@ -2351,7 +2348,7 @@ Actual DOM fixed ports, cubic tangency in the selected direction, card avoidance
 body/marker coverage and independently integrated curved dash phase cover every visible edge.
 Stable owner transforms are graph-relative real root/owner CTMs; raw screen,
 page-scroll and canvas diagnostics stay separate from reset equality.
-The `task-agent-permission` journey on both targets covers member-authorized
+The `task-agent-permission` journey on the selected target covers member-authorized
 permission changes, both confirmations, cancellation/Escape, in-progress
 locking, exact versions, conflicts, actual writes with lost responses and read
 recovery, close/reopen ownership, bilingual narrow layouts and task-local
@@ -2385,10 +2382,10 @@ has no mutation allowance. A separate anonymous context exercises real
 login-return redirects while only the provider endpoint is controlled, with
 zero application mutations. Complete content/actions, modal-local navigation,
 task/tab/file history, retained state and bilingual desktop/narrow/short layouts
-are checked in both runtime targets.
+are checked on the selected runtime target.
 
-The selected inventory (82 ordinary cases; local stress adds five native cases
-for 46 native / 41 container, 87 total), current manual/periodic refresh,
+The canonical functional inventory runs once per selected target; local stress
+adds five native cases. Current manual/periodic refresh,
 attachment tabs/standalone reader, bilingual/auth boundaries, zero retries, timeouts,
 coverage, size refusals and cleanup remain. PR #143 delivered dependency inspection;
 its receipts bind results to that exact tested source. The authentication/lifecycle
@@ -2436,54 +2433,51 @@ the remaining functional scenarios.
 | W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
 | TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |
 | TT1–TT2, TT4–TT6 | `task-execution-time`: real PostgreSQL crossing with graph deliveries held and an incorrect client wall clock, one-second local progress, stable focus/DOM/geometry/edges/viewport, real saved-threshold changes, installed-CLI completion and frozen polling, unknown legacy starts, sub-minute/multi-day/shared/external cards and standalone rows, bilingual 320px/390px layout; browser GET/HEAD only, with fixture mutations through authenticated API or installed CLI |
-| FA1–FA12 | `task-attachments`: installed CLI and production UI share real task/files on native and container targets; exact bytes, file mutations, detail tabs, shared full attachment panel, unique preview scroll owners, rendered formats, standalone address/history and embedded-local selection. Independent real-service probes add end-of-document wheel/keyboard, native PDF final-page paint, fault/retry and unchanged task/graph proof |
+| FA1–FA12 | `task-attachments`: installed CLI and production UI share real task/files on the selected target; exact bytes, file mutations, detail tabs, shared full attachment panel, unique preview scroll owners, rendered formats, standalone address/history and embedded-local selection. Independent real-service probes add end-of-document wheel/keyboard, native PDF final-page paint, fault/retry and unchanged task/graph proof |
 | TI8–TI9, TI15 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; the stable diagram matrix, TD/LR/Chinese flowcharts, independent failures/source, static image safety, content switches and standalone reload share the three Markdown entries; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
 | TP-V1, TP-V7, TP-V8 | `detail-navigation`, `refresh-staleness`, `keyboard-focus`, `narrow-layout`: real API round trips for empty/NUL/control/long/HTML-looking values and duplicates, complete locally paged lists with bounded row counts, page/collection reset and focus, plain-text unsafe addresses, isolated HTTP(S) navigation, rereading properties and compact graph responses |
 | L1–L4 | `language-startup-preferences`: browser default, saved override, reload, route metadata, shared selectors and unchanged user data |
 | L2, L4–L5 | `language-state-preservation`: graph geometry/viewport and selection across fullscreen changes, fullscreen and modal focus, and PR page, file input and iframe identity across detail tab switches; separately held upload, overwrite and deletion retain pending state and execute once. Component tests cover controlled locale changes in mounted graphs and during pending operations |
 | L3–L4, L6–L8 | `language-errors-and-narrow`: storage failures/retry, owned-database failure with current-language safe text and unchanged request ID, English/Chinese 1440px/320px graph/dialog/attachment layout; graph modes have no local language entry or gap and retain accessible long titles and controls |
-| L9–L10 | Task-attached offline mockup checks, typed catalog/component checks, and complete native/container production receipts with the existing coverage and cleanup gates |
+| L9–L10 | Task-attached offline mockup checks, typed catalog/component checks, and the selected production target's complete receipts with coverage and cleanup gates |
 | Authentication | `auth-login-session`, `auth-project-isolation`, `auth-project-members`, `auth-personal-tokens`, `auth-invitations`, `auth-resource-session`: normal login/logout, private project access, roles and removal, PAT creation/revocation, explicit invitation acceptance, protected files and resource-session loss |
 
 Receipts live in `packages/daynight-web/.tmp/acceptance/<run-id>/`, with the
 latest aggregate at `.tmp/acceptance/evidence.json` inside this package. They
-use top-level `schemaVersion: 3` and record source identity, including required
-`source.gitTreeSha` from actual `git rev-parse HEAD^{tree}`, the installed CLI
-receipt and raw artifact identities, native binary
-SHA-256, PostgreSQL/browser versions, `mode: functional` or `mode: stress`, pipeline
-stages, target phases, container image identity and cleanup outcomes. Stress
-mode additionally records capacity measurements. Each stage records
-its result, start/end times, observed command process identities and spawned
-process groups. Each browser phase records its own result, browser identity,
-Playwright process/group and `browserCleanup` result. Raw reports and screenshots
-live under `native/functional/` and `container/`; stress runs additionally create
-`native/capacity/` and its unchanged schema 1 `performance.json` receipt.
-Local ordinary/stress runs and CI shard 2 require
-`native/auth-combined/target.json` and `container/auth-combined/target.json`, both
-schema 1 with `kind: auth-combined`. They require all eleven canonical checks,
-source/browser/installed-package identity, old/new restart process identity and
-passed browser/resource cleanup. Shard 1 has no combined-authentication receipts.
-They retain safe observations and hashes, not credential/configuration bodies
-or raw logs.
+use top-level `schemaVersion: 4` and required `target: "container" | "native"`.
+They record source identity, including `source.gitTreeSha` from actual
+`git rev-parse HEAD^{tree}`, installed-package identities, PostgreSQL/browser
+versions, `mode: functional` or `mode: stress`, command stages, exactly one target
+and cleanup outcomes. Container runs record the built/running image and dev-ci
+cleanup; native runs alone contain `native` resource ownership and binary SHA-256.
+Each stage records result, times, observed command identities and spawned process
+groups. Browser phases record their result, identity, Playwright process/group
+and `browserCleanup`. Raw reports/screenshots live under `container/` or
+`native/functional/`; native stress additionally writes `native/capacity/` and its
+schema 1 `performance.json`.
 
-Schema 3 functional `evidence.json` includes `shard: { current, total: 2 }` and
-`selection: string[]` for CI shards. Each native/container target and functional
-phase must match that selection. The final validator requires the two selections
-to be disjoint and cover the canonical inventory exactly once per target, with
-all 22 combined checks assigned to shard 2. Local unsharded receipts keep their
-complete inventory without shard metadata. `CI` requires a clean checkout
-matching `GITHUB_SHA` and the pinned browser. Each database uses one worker and
-zero retries; skipped, flaky, duplicate/missing or incomplete scenarios fail.
+Local unsharded runs and CI shard 2 require exactly one schema 1
+`kind: auth-combined` receipt beneath their selected target's `auth-combined/`.
+It requires all eleven canonical checks, source/browser/installed-package identity,
+old/new restart identity and passed browser/resource cleanup. Shard 1 contains no
+combined-authentication receipt. Public observations retain safe statuses and
+hashes, excluding credentials, configuration bodies and raw logs.
+
+Schema 4 functional shard evidence includes `shard: { current, total: 2 }` and
+`selection: string[]`. The one container target and functional phase must match
+that selection. Final validation requires both container shards, distinct run
+identities, a complete disjoint canonical union, actual image/deployment and CLI
+cleanup and the single combined journey on shard 2. Local unsharded receipts
+contain the complete selected-target inventory without shard metadata. CI also
+requires a clean checkout matching `GITHUB_SHA` and the pinned browser.
+Skipped, flaky, duplicate, missing, retried or incomplete scenarios fail.
 
 Full shard artifacts are `daynight-web-acceptance-1` and
-`daynight-web-acceptance-2`, separate from raw coverage and retained for 30 days.
-Inspect the artifact from the exact workflow run and tested checkout identity,
-which is normally a merge revision for PR runs. Complete ordinary validation
-requires thirty-six native and thirty-six container functional scenarios across
-the two CI shards or in one local run. Explicit local stress requires their
-strict native union with five capacity/limit scenarios and the same thirty-six
-container scenarios. Every selected phase rejects missing, extra or duplicate
-scenarios and skipped/flaky/retried results.
+`daynight-web-acceptance-2`, separate from coverage and retained for 30 days.
+Inspect the exact workflow run and tested checkout identity, normally a synthetic
+merge revision for PR runs. Complete ordinary validation requires the canonical
+functional inventory once; native stress strictly joins functional results with
+the five capacity/limit scenarios. Each database uses one browser worker.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing
 or mismatched tree field fails; no old-receipt fallback is introduced. The tree
@@ -2530,8 +2524,8 @@ records why this avoids duplicate capture work without splitting the suite.
 
 ### Cleanup and interrupted-run recovery
 
-Combined browser and command recovery includes both `native/auth-combined/` and
-`container/auth-combined/` alongside the existing phase directories. The runner
+Combined browser and command recovery includes the selected target's
+`auth-combined/` alongside its functional and optional native capacity directories. The runner
 retains the same service origin, UniAuth, PostgreSQL and file root during each
 service-only restart, and verifies original credentials before intentional
 logout, revocation or expiry.
@@ -2539,7 +2533,8 @@ logout, revocation or expiry.
 The runner registers owned-resource cleanup before creating its database or
 native process. Timeouts and cancellation stop owned command groups; browser
 receipts identify the detached Chromium group and project-local profile as well.
-A passing run requires confirmed native, browser/profile and dev-ci cleanup.
+A passing run requires confirmed browser/profile and CLI cleanup plus the
+selected target's actual native or dev-ci resource cleanup.
 Each phase verifies its Playwright group has stopped and recovers owned browser
 resources immediately. Profile roots are derived from the validated phase
 location under `acceptance-private/<run>/`, outside the uploaded acceptance
@@ -2547,14 +2542,13 @@ artifacts. Playwright allocates profiles there; Chromium keeps the short relativ
 `.tmp` directory for Unix sockets so the private path does not exceed socket
 path limits. Inventory and recovery inspect only that phase's root, preserving
 unknown-startup and process-identity failures without touching another target.
-After native preparation, an atomically written
-`container/container-permission.json` binds completed preparation to the exact
-acceptance run ID, dev-ci run ID and source SHA. The container callback records
-its identity before waiting, and inventories browsers only after permission;
-its `ready.json` is diagnostic timing, not browser permission. Both functional
-targets drain before run-wide CLI recovery and optional local capacity. Any stage
-failure or unexpected native-server exit cancels sibling work, drains started
-tasks and preserves failures before unconditional final cleanup.
+The installed CLI is fully prepared before the selected target starts. Container
+callbacks record their identity and validate the run/source-bound parent and
+installed package before browser work. Callback and navigation branches drain
+before run-wide CLI recovery; native capacity starts only after functional work
+and its cleanup barrier. There are no `ready.json` or container-permission files.
+Stage failures, cancellation and unexpected native exits preserve their errors
+before unconditional owned-resource cleanup.
 
 After the original runner, callback/Playwright processes and their owned groups
 have stopped, run
@@ -2566,13 +2560,13 @@ node packages/daynight-web/scripts/acceptance.mts --cleanup
 node packages/daynight-web/scripts/acceptance.mts --cleanup RUN_ID
 ```
 
-No receipt is a no-op. Recovery accepts only top-level schema 3 receipts;
-schema 1, schema 2 and unknown versions fail without a compatibility fallback. Valid
+No receipt is a no-op. Recovery accepts only top-level schema 4 receipts;
+older and unknown versions fail without a compatibility fallback. Valid
 receipts constrain recovery to recorded run/source identities, exact Docker labels and names, and host platform/PID/executable/start-time
 identity. Linux uses procfs ticks; macOS uses kernel start time in microseconds,
 actual executable paths and process groups. Receipts from another platform are rejected. It verifies recorded stage command identities/groups and visits browser
-recorded phases in reverse order: optional `native/capacity`, then `container`
-and `native/functional`.
+recorded phases of the selected target in reverse order: optional native capacity
+then native functional, or container functional.
 A still-running native Go process also requires its recorded binary
 hash before targeted termination. Browser recovery checks its recorded executable,
 process group and profile marker. On macOS, the inventory also freezes the selected
